@@ -614,3 +614,54 @@ def test_an_editable_artifact_embed_decodes_to_its_tracked_path(name) -> None:
     # The reply parser keeps one destination only without spaces, and refuses `#` and `?`.
     assert not set(destination) & set(" #?()")
     assert unquote(destination) == path
+
+
+def test_paper_attachment_preserves_relative_tree_and_rejects_symlinks(tmp_path):
+    project, chat, client, operation = _ids()
+    store = ChatAttachmentStore(tmp_path / "attachments")
+    refs = [
+        ResolvedProjectReference(
+            name,
+            name,
+            "text/plain",
+            content,
+            ProjectReferenceSource(kind="paper", source_id=name, version="7", path=name),
+        )
+        for name, content in [("main.tex", b"include{parts/a}"), ("parts/a.tex", b"section")]
+    ]
+    batch = store.claim(
+        project_id=project,
+        chat_id=chat,
+        client_id=client,
+        operation_id=operation,
+        reference_files=refs,
+    )
+    pointers = store.stage(
+        batch.attachment_batch_id,
+        batch.attachments,
+        local_stage=tmp_path / "stage",
+        remote_stage=None,
+    )
+    main = Path(pointers[0]["path"])
+    assert main.parent.name == "paper"
+    assert (main.parent / "parts/a.tex").read_bytes() == b"section"
+    assert main.stat().st_mode & 0o222 == 0
+    assert (
+        store.stage(
+            batch.attachment_batch_id,
+            batch.attachments,
+            local_stage=tmp_path / "stage",
+            remote_stage=None,
+        )
+        == pointers
+    )
+    retained = tmp_path / "attachments" / batch.attachment_batch_id / "files/paper/parts"
+    (retained / "a.tex").unlink()
+    (retained / "a.tex").symlink_to(main)
+    with pytest.raises(ValueError):
+        store.stage(
+            batch.attachment_batch_id,
+            batch.attachments,
+            local_stage=tmp_path / "another",
+            remote_stage=None,
+        )

@@ -11,7 +11,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -49,11 +49,12 @@ class NodeReferenceSelector(BaseModel):
 
 
 class PaperReferenceSelector(BaseModel):
-    """A human's pointer to the project's saved paper introduction."""
+    """A human's pointer to the project's saved paper tree or one stable file."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["paper"]
+    file_id: str | None = Field(default=None, min_length=1)
 
 
 ProjectReferenceSelector = Annotated[
@@ -66,7 +67,7 @@ class ProjectReferenceSource(BaseModel):
     """What a retained reference copy was taken from, frozen at admission.
 
     Server-made only. ``version`` is the artifact version id or the paper's
-    content sha256; a node carries its source ``graph_head`` instead.
+    saved revision; a node carries its source ``graph_head`` instead.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -75,6 +76,7 @@ class ProjectReferenceSource(BaseModel):
     source_id: str = Field(min_length=1)
     version: str | None = None
     graph_head: GraphHeadRef | None = None
+    path: str | None = None
 
 
 class ChatAttachmentDescriptor(BaseModel):
@@ -439,7 +441,11 @@ class ChatAttachmentStore:
                     attachment_id = str(uuid.uuid4())
                     extension = Path(item.filename).suffix.casefold()
                     staged_name = f"{len(stored.attachments):02d}-{attachment_id}{extension}"
+                    if item.reference.kind == "paper" and item.reference.path is not None:
+                        relative = _reference_path(item.reference.path)
+                        staged_name = str(PurePosixPath("paper") / relative)
                     destination = files / staged_name
+                    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                     created.append(destination)
                     with destination.open("xb") as output:
                         output.write(item.content)
@@ -563,7 +569,7 @@ class ChatAttachmentStore:
         total = 0
         expected_names = {item.staged_name for item in stored.attachments}
         files = self._set_path(stored.attachment_set_id) / "files"
-        actual_names = {item.name for item in files.iterdir()}
+        actual_names = set(_regular_tree(files))
         if actual_names != expected_names:
             raise ValueError("The saved attachment batch is incomplete.")
         for item in stored.attachments:
@@ -726,9 +732,11 @@ def _stage_local_directory(source: Path, target: Path, stored: _StoredSet) -> No
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}-", dir=target.parent))
     try:
         for item in stored.attachments:
-            shutil.copyfile(source / item.staged_name, temporary / item.staged_name)
-        for item in temporary.iterdir():
-            item.chmod(0o400)
+            destination = temporary / item.staged_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / item.staged_name, destination)
+        for item in temporary.rglob("*"):
+            item.chmod(0o500 if item.is_dir() else 0o400)
         temporary.chmod(0o500)
         os.replace(temporary, target)
     finally:
@@ -740,13 +748,46 @@ def _stage_local_directory(source: Path, target: Path, stored: _StoredSet) -> No
 
 def _verify_staged_tree(root: Path, stored: _StoredSet) -> None:
     expected = {item.staged_name: item for item in stored.attachments}
-    actual = {item.name: item for item in root.iterdir()}
+    actual = _regular_tree(root)
     if set(actual) != set(expected):
         raise ValueError("Saved local attachment batch is incomplete.")
     for name, path in actual.items():
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o222:
             raise ValueError("Saved local attachment input is not immutable.")
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if info.st_size != expected[name].size or digest != expected[name].sha256:
+        if info.st_size != expected[name].size:
             raise ValueError("Saved local attachment input changed after staging.")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != expected[name].sha256:
+            raise ValueError("Saved local attachment input changed after staging.")
+
+
+def _reference_path(value: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or path.is_absolute()
+        or "\\" in value
+        or "\x00" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        raise ValueError("Paper reference path is invalid.")
+    return path
+
+
+def _regular_tree(root: Path) -> dict[str, Path]:
+    """Inventory bounded retained inputs without following symbolic links."""
+    if not stat.S_ISDIR(root.lstat().st_mode):
+        raise ValueError("Paper attachment tree root is not a directory.")
+    result = {}
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        for name in [*dirs, *files]:
+            path = Path(directory) / name
+            info = path.lstat()
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError("Paper attachment tree contains a non-regular entry.")
+            if stat.S_ISREG(info.st_mode):
+                result[path.relative_to(root).as_posix()] = path
+                if len(result) > CHAT_ATTACHMENT_MAX_COUNT:
+                    raise ValueError("The attachment tree exceeds its file-count limit.")
+    return result

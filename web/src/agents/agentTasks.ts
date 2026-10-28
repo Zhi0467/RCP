@@ -270,7 +270,8 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const trigger = taskTrigger(task.request.trigger);
     const graphUpdate = task.result?.graph_update ?? null;
     const turnOutcome = task.result?.turn_outcome ?? null;
-    if (message && trigger === "human") {
+    // A Paper refresh carries its source request but is not a new human message.
+    if (message && trigger === "human" && !task.request.refresh_source_task_id) {
       const attachments = taskAttachments(task.request.attachments);
       lines.push({
         lineId: `task:${task.operation_id}:human`,

@@ -16,6 +16,7 @@ from rcp.providers.base import (
     ProviderTurn,
     ProviderTurnRequest,
     ProviderUsage,
+    _paper_changes_root,
     _require_project_write_scope,
     _require_provider_version,
 )
@@ -24,6 +25,7 @@ from rcp.providers.codex.profile import (
     _codex_autocompact_config,
     _codex_discuss_permission_profile,
     _codex_environment_config,
+    _codex_paper_permission_profile,
     _codex_permission_profile,
     _codex_shell_environment_policy,
     _codex_stage_permission_profile,
@@ -109,6 +111,22 @@ class _CodexAppServerTurn(ProviderTurn):
                     _codex_permission_profile(scope, request.hidden_read_scope),
                 ]
             )
+        elif request.capability == "paper_suggest":
+            if request.write_scope is not None:
+                raise ValueError("paper_suggest cannot carry a project write scope")
+            command.extend(["--enable", "shell_tool"])
+            command.extend(
+                [
+                    "--config",
+                    'approval_policy="never"',
+                    "--config",
+                    'default_permissions="rcp_paper"',
+                    "--config",
+                    _codex_paper_permission_profile(
+                        _paper_changes_root(request.write_dirs), request.hidden_read_scope
+                    ),
+                ]
+            )
         elif request.capability == "discuss":
             if request.write_scope is not None:
                 raise ValueError("Discuss cannot carry a project write scope")
@@ -138,12 +156,11 @@ class _CodexAppServerTurn(ProviderTurn):
                         _codex_stage_permission_profile(
                             request.cwd,
                             request.hidden_read_scope,
-                            read_only=request.capability == "paper_readonly",
                         ),
                     ]
                 )
                 return command
-            sandbox = "read-only" if request.capability == "paper_readonly" else "workspace-write"
+            sandbox = "workspace-write"
             command.extend(
                 [
                     "--config",
@@ -152,8 +169,7 @@ class _CodexAppServerTurn(ProviderTurn):
                     f'sandbox_mode="{sandbox}"',
                 ]
             )
-            if request.capability != "paper_readonly":
-                command.extend(["--config", "sandbox_workspace_write.network_access=true"])
+            command.extend(["--config", "sandbox_workspace_write.network_access=true"])
         return command
 
     def initial_input(self) -> bytes:
@@ -342,6 +358,8 @@ class _CodexAppServerTurn(ProviderTurn):
         return ProviderRuntimeStep()
 
     def _thread_params(self, config: dict[str, object]) -> dict[str, object]:
+        if self._request.capability == "paper_suggest":
+            config = {**config, "features": {"shell_tool": True}}
         params: dict[str, object] = {
             "approvalPolicy": "never",
             "config": config,
@@ -363,14 +381,14 @@ class _CodexAppServerTurn(ProviderTurn):
             params.pop("serviceName")
         if self._work_like:
             params["permissions"] = "rcp_project"
+        elif self._request.capability == "paper_suggest":
+            params["permissions"] = "rcp_paper"
         elif self._request.capability == "discuss":
             params["permissions"] = "rcp_discuss"
         elif self._request.hidden_read_scope is not None:
             params["permissions"] = "rcp_stage"
         else:
-            params["sandbox"] = (
-                "read-only" if self._request.capability == "paper_readonly" else "workspace-write"
-            )
+            params["sandbox"] = "workspace-write"
         return params
 
     def _turn_params(self, thread_id: str) -> dict[str, object]:
@@ -384,12 +402,11 @@ class _CodexAppServerTurn(ProviderTurn):
         }
         if (
             not self._work_like
-            and self._request.capability != "discuss"
+            and self._request.capability not in {"discuss", "paper_suggest"}
             and self._request.hidden_read_scope is None
         ):
             params["sandboxPolicy"] = _sandbox_policy(
                 self._request.cwd,
-                read_only=self._request.capability == "paper_readonly",
             )
         return params
 
@@ -398,12 +415,14 @@ class _CodexAppServerTurn(ProviderTurn):
             return "Codex app-server did not apply RCP's noninteractive approval policy."
         if (
             self._work_like
-            or self._request.capability == "discuss"
+            or self._request.capability in {"discuss", "paper_suggest"}
             or self._request.hidden_read_scope is not None
         ):
             expected = (
                 "rcp_project"
                 if self._work_like
+                else "rcp_paper"
+                if self._request.capability == "paper_suggest"
                 else "rcp_discuss"
                 if self._request.capability == "discuss"
                 else "rcp_stage"
@@ -413,7 +432,7 @@ class _CodexAppServerTurn(ProviderTurn):
                 return "Codex app-server did not activate RCP's exact project permission profile."
             return None
         sandbox = result.get("sandbox")
-        expected = "readOnly" if self._request.capability == "paper_readonly" else "workspaceWrite"
+        expected = "workspaceWrite"
         if not isinstance(sandbox, dict) or sandbox.get("type") != expected:
             return "Codex app-server did not apply RCP's requested sandbox."
         return None
@@ -654,9 +673,7 @@ def _disabled_hooks(configured: object) -> dict[str, object]:
     return hooks
 
 
-def _sandbox_policy(cwd: Path, *, read_only: bool) -> dict[str, object]:
-    if read_only:
-        return {"type": "readOnly", "networkAccess": False}
+def _sandbox_policy(cwd: Path) -> dict[str, object]:
     return {
         "type": "workspaceWrite",
         "writableRoots": [str(cwd)],

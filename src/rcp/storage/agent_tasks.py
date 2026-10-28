@@ -3238,6 +3238,23 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchone()
         return row is not None
 
+    def native_session_origin(
+        self, project_id: str, kind: AgentTaskKind, native_session_id: str
+    ) -> str | None:
+        """The task that started a native session; its later turns share its folder."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT operation_id FROM graph_runs
+                WHERE project_id = ? AND kind = ? AND native_session_id = ?
+                ORDER BY created_at, rowid
+                LIMIT 1
+                """,
+                (project_id, kind, native_session_id),
+            ).fetchone()
+        return row[0] if row is not None else None
+
     def has_chat_native_session_origin(
         self,
         project_id: str,

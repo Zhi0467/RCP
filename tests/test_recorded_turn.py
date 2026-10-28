@@ -31,9 +31,9 @@ def _request(tmp_path: Path) -> ProviderTurnRequest:
         reasoning=None,
         session_id=None,
         read_dirs=[],
-        write_dirs=[],
+        write_dirs=[tmp_path / "changes"],
         write_scope=None,
-        capability="paper_readonly",
+        capability="paper_suggest",
         provider_version="0.153.4",
     )
 
@@ -280,7 +280,7 @@ def _claude_journal(events: str) -> dict[str, object]:
             "pid_file": "/stage/one.pid",
             "provider": "claude",
             "runtime_id": "claude.stream-json.v1",
-            "provider_version": "1.0.0",
+            "provider_version": "2.1.307",
             "accepted": True,
             "terminal_event": True,
             "journal_complete": True,

@@ -11,6 +11,7 @@ import shutil
 import stat
 import tempfile
 from collections.abc import Mapping
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -21,7 +22,6 @@ from rcp.config import load_manifest, resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS
 from rcp.paper.service import (
-    canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
 )
 from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
@@ -43,6 +43,7 @@ from rcp.server_ops.backup_models import (
     BackupImportedProviderSourceCapture,
     BackupProjectCapture,
 )
+from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.server_ops.backup_project_io import (
     BackupProjectFileUnavailable,
     capture_chat_files,
@@ -60,6 +61,7 @@ from rcp.sources.imported import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
 )
+from rcp.storage import AppStore
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError
 from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_for_probe
 
@@ -603,18 +605,34 @@ class BackupProjectFileCaptureCoordinator:
                     operation_projects=operation_projects,
                 )
             )
-            introduction = canonical_introduction_backup_source(source_root)
-            if introduction is not None:
+            with (
+                closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
+                store.connection() as connection,
+            ):
+                # A capture taken before the live-paper migration has no Paper tables.
+                saved = (
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE name = 'paper_publication'"
+                    ).fetchone()
+                    and connection.execute(
+                        "SELECT 1 FROM paper_publication WHERE project_id = ?",
+                        (inventory.project_id,),
+                    ).fetchone()
+                )
+            sources = paper_projection_sources(source_root)
+            for source in sources:
+                legacy = saved is None and sources == (source_root / "paper/introduction.md",)
                 paper_entry = stable_copy_entry(
-                    introduction,
+                    source,
                     project_root,
                     inventory.project_id,
-                    PurePosixPath(".research/paper/introduction.md"),
-                    group="paper_introduction",
+                    PurePosixPath(".research") / source.relative_to(source_root).as_posix(),
+                    group="paper_introduction" if legacy else "paper_projection",
                 )
-                validate_canonical_introduction_backup(
-                    project_root / paper_entry.source_relative_path
-                )
+                if legacy:
+                    validate_canonical_introduction_backup(
+                        project_root / paper_entry.source_relative_path
+                    )
                 files.append(paper_entry)
             for fact in fact_backup_sources(source_root):
                 files.append(

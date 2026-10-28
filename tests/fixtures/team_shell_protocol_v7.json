@@ -8,6 +8,6 @@
     "repository_commit_field": "source_commit",
     "archive_codecs": ["rcp-transfer-v1", "rcp-transfer-v2"],
     "record_schema_field": "record_schema_version",
-    "record_schema_versions": [2, 3, 4, 5, 6]
+    "record_schema_versions": [2, 3, 4, 5, 6, 7]
   }
 }

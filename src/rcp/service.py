@@ -11,6 +11,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -96,7 +97,9 @@ from rcp.limits import (
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.operation_ids import canonical_operation_uuid
-from rcp.paper import PaperService, PaperSnapshot
+from rcp.paper import PaperLive, PaperService
+from rcp.paper.changes import PaperChanges
+from rcp.paper.projection import publication_badge
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -969,6 +972,9 @@ class RunRequest(BaseModel):
 
 class CoachRequest(BaseModel):
     message: str
+    mode: Literal["review", "apply_directly"] = "review"
+    refresh_source_task_id: str | None = None
+    refresh_group_ids: list[str] = Field(default_factory=list)
     provider: ProviderId | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -981,6 +987,21 @@ class CoachRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_directly_mode(cls, value: object) -> object:
+        if not isinstance(value, dict) or "paper_apply_directly" not in value:
+            return value
+        direct = value["paper_apply_directly"]
+        if not isinstance(direct, bool):
+            raise ValueError("paper_apply_directly must be a boolean")
+        mode = "apply_directly" if direct else "review"
+        if "mode" in value and value["mode"] != mode:
+            raise ValueError("Paper mode and paper_apply_directly disagree")
+        return {key: item for key, item in value.items() if key != "paper_apply_directly"} | {
+            "mode": mode
+        }
 
 
 def resolve_dispatch_authority(
@@ -1006,7 +1027,7 @@ def resolve_dispatch_authority(
             raise TypeError("paper_coach dispatch requires a CoachRequest")
         return AgentDispatchAuthority(
             profile="ordinary",
-            task_contract="paper_readonly",
+            task_contract="paper_suggest",
             scope=AgentDispatchScope(),
         )
     if not isinstance(request, RunRequest):
@@ -1155,9 +1176,14 @@ class ProjectService:
         task_continuation_session: Callable[[str, str], str | None] | None = None,
         chat_graph_target: Callable[[str, str], GraphTargetRef | None] | None = None,
         project_service_resolver: Callable[[str], ProjectService] | None = None,
+        paper_live: PaperLive | None = None,
+        paper_admission: Callable[[str], AbstractContextManager[object]] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
+        self.paper_live = paper_live or PaperLive(paper.store, lambda _project: paper.workspace)
+        self._paper_admission = paper_admission
+        self.paper_changes = PaperChanges(paper.store, self.paper_live, self._admit_paper_changes)
         self.launcher = launcher or AgentLauncher()
         self.provider_skills = provider_skills
         self._data_dir = data_dir
@@ -1193,6 +1219,12 @@ class ProjectService:
         self._indexes: dict[str, ConversationIndex] = {}
         self._chat_summary_lock = threading.Lock()
         self._chat_summary_cache: dict[Path, _ChatSummaryCacheEntry] = {}
+
+    @contextmanager
+    def _admit_paper_changes(self, project_id: str) -> Iterator[None]:
+        with self._paper_admission(project_id) if self._paper_admission else nullcontext():
+            self.paper.store.require_project_accepts_new_work(project_id)
+            yield
 
     @property
     def history_engine(self) -> HistoryEngine:
@@ -1255,6 +1287,8 @@ class ProjectService:
             task_continuation_session=self._task_continuation_session,
             chat_graph_target=self._chat_graph_target,
             project_service_resolver=self._project_service_resolver,
+            paper_live=self.paper_live,
+            paper_admission=self._paper_admission,
         )
 
     def resolve_project_service(self, project_id: str) -> ProjectService:
@@ -1657,7 +1691,6 @@ class ProjectService:
         self,
         *,
         materialization: MaterializationResult | None = None,
-        paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
     ) -> _ProjectSnapshotDraft:
         with self.history.workspace.read_snapshot() as root:
@@ -1669,20 +1702,17 @@ class ProjectService:
                     root / "manifest.toml", project_root=self.manifest.path.parent.parent
                 )
                 reader.history.manifest._path = self.manifest.path
-            return reader._project_snapshot(materialization=materialization, paper=paper, head=head)
+            return reader._project_snapshot(materialization=materialization, head=head)
 
     def _project_snapshot(
         self,
         *,
         materialization: MaterializationResult | None,
-        paper: PaperSnapshot | None,
         head: GraphHeadRef | None,
     ) -> _ProjectSnapshotDraft:
         if materialization is None:
             materialization = self.history.current_materialization()
         state = materialization.state
-        if paper is None:
-            paper = self.paper.snapshot()
         if head is None:
             # Previews and Sync report the exact head, transition id included; a
             # display head without it reads as a different head at the same
@@ -1734,7 +1764,7 @@ class ProjectService:
                     mode="json"
                 ),
                 "graph": state.model_dump(mode="json"),
-                "paper": paper.model_dump(mode="json"),
+                "paper": publication_badge(self.paper.store, self.paper.project_id),
                 "paper_coach": self.manifest.coach.model_dump(mode="json"),
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
@@ -2871,7 +2901,7 @@ class ProjectService:
         )
 
     def coach_context(
-        self, request: CoachRequest, draft_path: Path | None = None
+        self, request: CoachRequest, paper_path: Path | None = None
     ) -> tuple[dict[str, object], list[Path]]:
         # Resolved for its validation of the requested provider/model/run_on.
         self.resolve_agent_profile(
@@ -2888,7 +2918,7 @@ class ProjectService:
             )
             for alias in self.manifest.project.truth_scope
         }
-        pointers = ContextAssembler(self.manifest).paper_pointers(draft_path, repository_access)
+        pointers = ContextAssembler(self.manifest).paper_pointers(paper_path, repository_access)
         read_dirs = [
             Path(access.path)
             for access in repository_access.values()
@@ -2897,14 +2927,15 @@ class ProjectService:
         return pointers, read_dirs
 
     def pointer_hashes(self) -> tuple[str, int, str]:
-        snapshot = self.paper.snapshot()
-        intro_hash = (
-            snapshot.canonical_hash or hashlib.sha256(snapshot.content.encode("utf-8")).hexdigest()
+        snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))
+        ordered = snapshot.model_copy(
+            update={"files": sorted(snapshot.files, key=lambda f: f.file_id)}
         )
+        paper_hash = hashlib.sha256(ordered.model_dump_json().encode("utf-8")).hexdigest()
         state = self.history.state()
         research_path = self.manifest.research_dir / "research.md"
         research = research_path.read_bytes() if research_path.exists() else b""
-        return intro_hash, state.revision, hashlib.sha256(research).hexdigest()
+        return paper_hash, state.revision, hashlib.sha256(research).hexdigest()
 
     @staticmethod
     def parse_patch_output(chunks: list[str]) -> tuple[AgentPatch, str | None]:

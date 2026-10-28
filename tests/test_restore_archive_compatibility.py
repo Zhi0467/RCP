@@ -312,6 +312,11 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
             connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE artifact_imports")
         connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
+        # The reconstructed pre-31 boundary predates the additive live Paper schema.
+        from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES
+
+        for table in (*PAPER_PROJECT_TABLES, *PAPER_SHARED_TABLES):
+            connection.execute(f'DROP TABLE IF EXISTS "{table}"')
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")
     assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
 

@@ -1,38 +1,168 @@
 # Paper, artifacts, and viewing
 
-This specification owns the human paper draft, read-only coaching, artifacts,
+This specification owns the shared paper, the writing coach, artifacts,
 versioned reports, content interaction, storage, and repository-file previews.
 [Interface design](interface-and-visual-design.md#artifact-viewer) owns panel layout;
 [API projections](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
 owns viewer state and run inventory payloads.
 
-## Human paper authorship
+## Shared paper
 
-The introduction and draft are human-authored, non-authoritative Markdown covering
-the question, related work, methods, results, and publication case. The graph and
-research rendering remain separate writing inputs.
+The paper is a file tree of Markdown, LaTeX, Typst, BibTeX, figures and any
+other files, written by the project's members. It is non-authoritative: the
+graph and research rendering remain separate writing inputs, and no paper text
+becomes graph state. There is no main file; each preview starts from the file
+being read.
 
-The editor retains its canonical base. Incoming canonical changes preserve the
-draft and mark it behind; Preview exposes incoming content, and reversible Apply
-swaps it with the editor. A later human edit re-pins the draft and resumes saving.
-Neither whole version may be discarded or silently overwritten.
+Every text file is one shared live document. Members edit it at once and their
+edits merge; there is no per-person draft and no edit is refused for being
+concurrent. The RCP process that owns the project holds the live documents: the
+team server for a team project, the member's own RCP for a personal one, even
+when its state root is on an SSH host.
 
-Paper uses an ordinary project resource profile for snapshot/coach sessions:
-cached data paints immediately, without a mandatory entry read. Unknown/failed
-absence never offers Create introduction. Refresh preserves buffers. Snapshots
-carry `draft_version`; saves send the loaded version, or null for no stored draft.
-A changed draft returns 409 `The Paper draft changed since it was loaded.` before
-either draft or canonical write. Typed text remains; refresh and explicit retry
-use the new version. Canonical `base_hash` conflict handling is independent.
-Create/save refresh the project snapshot's copy.
+**Saved and published are separate.** An edit is saved once it, the new paper
+revision, and the intent to publish commit in one SQLite transaction; only then
+is it broadcast and acknowledged, and only an acknowledgement shows the editor
+as saved. Edits made while disconnected wait in the browser until a server
+acknowledges them. Publication writes the saved tree to the state root's
+`paper/` some seconds after editing pauses, and at least every few minutes
+during continuous editing, as one staged tree that replaces the previous one in
+a single step, so a rename and the edit that follows it never appear apart. An
+unreachable state root leaves publication pending; saving continues. Failed
+publication retries after a backoff. Paper is never committed to Git. Candidate document reconstruction
+and SQLite work run on workers under the project lock; the owner loop installs
+and broadcasts only after commit, including when a caller is cancelled. The
+project snapshot exposes `paper` as a boolean badge: true means saved revisions
+still need publication, false means they are published.
 
-## Read-only writing coach
+**Why:** a paper co-written live must not lose an acknowledged keystroke to a
+crash, and a half-published tree breaks every build that includes the missing
+half.
 
-The coach reads draft/graph, flags unsupported claims, asks questions, and points
-to Evidence with native session continuity. It cannot edit the draft, write
-replacement prose into it, emit a Patch, approve Proposals, or promote paper text
-to graph state. Prior transcripts and skills cannot widen its read-only capability
-or public-web contract; see [provider containment](providers-and-containment.md).
+The editor refuses a local edit that would push its file past `max_doc_bytes`
+and flashes a red edge, leaving the text editable. An edit the server refuses,
+such as an invalid one, ends that file's connection for good and the editor
+shows a red edge with one retry action; an edit refused only by the update rate retries on its own. Deletion,
+maintenance, and transfer pause the live paper; paused admission closes with
+retryable socket code 4503, while lost membership or a deleted file closes with
+4403. Refused connections are accepted before closing so browsers receive the
+code. A stop that fails, or maintenance that ends, resumes it. The backup SQLite
+snapshot holds all saved Paper state and marks it unpublished, so a restore
+republishes the saved text rather than trusting the copied folder. An imported
+project's saved Paper publishes once the transfer activates it, without a visit.
+
+Files keep a stable identity across renames. A new or uploaded file opens at
+once; uploads go to the chosen folder, and an upload over an existing path asks
+first. When a member deletes a file another member has open with unsent text,
+that member's editor keeps it read-only and offers to recreate it as a new file;
+with nothing unsent the editor moves to another file. A hidden file deleted that
+way stays reachable from one red icon while it holds unsent text, also after a
+reload, until Recreate moves the text to a new file. A backend
+restart pauses every document without unmounting the editor, so typing carries
+on; text refused by the server, or held when access is lost, can be downloaded,
+and a close before the server answered (such as a room limit) never discards it.
+While the open file has unsent text, leaving the page asks first. One path rule serves editing,
+backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by
+content hash. Paper files are served as files, never as same-origin documents:
+SVG, HTML and unknown types download; only raster images show inline.
+
+A database with no Paper for a project adopts the tree already published in its
+state root, every file and folder, so a fresh install pointed at existing state
+never publishes over it. On a local state root its revisions continue after the
+published one; an SSH mirror omits that marker, so publication waits until the
+new revisions pass it.
+A project that still holds a pre-tree paper keeps it as `introduction.md`. When
+its old draft had diverged from the saved introduction, both are kept, the draft
+becomes the live text, and nothing publishes until a member picks which to keep.
+The text not picked stays in History.
+
+History records a version after each burst of editing and on request. Deleting a
+file, replacing its uploaded content, or restoring History first checkpoints the
+current revision if no version covers it. Restore and text uploads replace only
+the changed span, preserving peer positions in unchanged text; identical content
+creates no edit. History rows include the member display name when available,
+and the tree advertises the per-document byte limit as `max_doc_bytes`. Automatic
+versions form a bounded ring; named versions have a quota, and a full quota
+refuses new names rather than evicting old ones. A history byte budget filled by named
+versions refuses only new names; edits keep saving. Members may delete named versions
+through `DELETE /api/projects/{project_id}/paper/history/{version_id}` to free quota;
+automatic versions refuse deletion with 409. A version is restored per file
+as a new live edit. Revision timing rows are pruned once both publication and
+the newest retained version cover them; unpublished or unversioned edits keep
+their timing records.
+
+### Preview
+
+Markdown renders in the browser, with image paths resolved inside the paper
+tree. A link to another paper file opens it in the editor, an `http(s)` link
+opens a new tab, and any other link is inert. Large Markdown files re-render only
+after typing pauses. Typst compiles in the browser from compiler and font files that the RCP
+backend downloads once, checks against pinned hashes, and serves from its own
+origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
+the same way on first use, run with `--untrusted` and bounded in time, output and
+concurrency. A compile changes no state, so any member may start one; a newer
+compile cancels a different older one for the same project, an identical one
+joins the running compile, a cancelled preview shows the failure with Retry, and
+earlier PDFs stay readable until the result limit ages them out. A
+compile starts from the one root that reaches the open file; with none or
+several, the preview lists the candidates, and the chosen one is sent as the
+compile root, accepted only while it still reaches the open file. The PDF keeps
+its scroll position per
+compile root across file switches, and Typst errors show as path, line and
+message.
+
+Tectonic runs as the RCP server user with no operating-system sandbox.
+`--untrusted` turns off shell escape only, so `\input` of an absolute path
+can print any file that user can read into the preview PDF, including files
+that agent launches hide. This is accepted: members are one trusted lab, the
+PDF goes only to members, and no agent can read the preview.
+
+## Writing coach
+
+The coach reads the paper, graph and research rendering, flags unsupported
+claims, asks questions, and may change the paper: edit, create, rename or delete
+any paper file. It reads a read-only snapshot of the saved paper taken when its
+turn starts, and writes whole files into its own changes folder
+(`changes/files/…`, with renames and deletions in `changes/moves.json`). RCP
+collects that folder alone, validates all of it or none of it, and turns it into
+change cards by diffing against the snapshot; the coach never writes diffs or
+line numbers. Validation applies the live paper's own limits to the whole
+proposed tree. A rename and the edits that depend on it form one card group.
+
+A card applies only to the text it was made from. At the end of a turn RCP
+checks every card against the live paper; a card whose text has since changed is
+refreshed by up to two short follow-up turns of the same coach session, then
+shown as outdated with refresh and reject actions. These follow-ups retain the delivered
+master, send changed snapshot/output paths as a delta, and record a separate
+immutable prompt for each refresh round.
+
+By default each card waits for a member to accept or reject it. In a chat set to
+apply directly, every fresh card is applied when the turn ends, and the cards
+become a log. Either way, applying re-checks the original text, happens once per
+card, and records a receipt that a guarded Undo reverses while the regions it
+changed still hold what the coach wrote; edits elsewhere in the file keep it. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
+to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
+its inverse, and the core's committed result; replay returns that result before
+checking preconditions again. A refused Accept or Undo drops its prepared receipt,
+so a retry prepares it again against the current text. Outstanding cards and active coach turns keep their
+base revisions available even beyond the ordinary snapshot retention window.
+Pending and outdated binary cards retain both original and proposed blobs through
+backup and restore. Card lists load payloads together and read the live paper only
+when pending cards need their anchors checked. Each mapped text anchor exposes
+`current` with live UTF-16 start/end offsets, its 1-based start `line`, revision,
+and anchored text.
+Delete receipts also retain the text document state so Undo restores its CRDT
+identity; reconnecting a cached editor cannot duplicate the restored text.
+
+The coach request's `paper_apply_directly` boolean is normalized into its saved
+`mode`. Rewrite Compare fetches the full proposed text from
+`GET /api/projects/{project_id}/paper/changes/{change_id}/proposed`; this
+membership-protected response is plain text, served as an attachment with
+`nosniff`. From RCP can attach the whole saved paper or any file by stable id.
+
+The coach cannot write the paper directly, emit a Patch, approve Proposals, or
+promote paper text to graph state. Prior transcripts and skills cannot widen its
+capability or public-web contract; see [provider containment](providers-and-containment.md).
 
 ## Answer and artifacts are independent
 
@@ -236,9 +366,9 @@ The shell is same-origin-frameable; agent HTML remains opaque. Repository previe
 are script-free; PDFs/download-only formats follow the type table.
 
 HTML doctype stays before policy/bootstrap; a missing doctype retains browser
-quirks behavior. Uncaught errors/rejections produce bounded plain-text notices
-beneath the frame or in its reply caption, without hiding content or blocking
-live data or Download. First error appears immediately, later summaries
+quirks behavior. Uncaught errors/rejections produce a bounded plain-text notice
+beneath the panel frame, or inside a reply a red edge and one icon action whose
+title holds the summary, without hiding content or blocking live data or Download. First error appears immediately, later summaries
 at most once a second, only from the current private channel. Reload/version
 change clears it. Ask to fix prefills a comment for the human to send.
 
@@ -262,10 +392,12 @@ before declaring absence and retain it across list refreshes.
 Inline uses the same shell without chrome, with transparent background. Every
 frame pins the reply color-scheme; content receives `--rcp-*` palette before its
 CSS. Theme/mode changes reload it. Only inline supplies palette; Expand/download
-use authored fallbacks. Markdown/text have only nonce-bound height reporting.
-The frame grows to `limits.py`'s bound, then scrolls. Private-channel height is
-clamped; root/body viewport-height rules are neutralized to avoid self-measurement.
-Frames mount near the reader and refresh on settled turns, viewer version changes,
+use authored fallbacks. Markdown/text run no script. Every embed holds one box of
+`limits.py`'s fixed height from mount, while its turn loads, and through refreshes
+and versions; taller content scrolls inside it, and an image is centered in it.
+Its caption stays one row until the reader acts (comment mode, a failed Keep), so
+an embed loading never moves the chat. Frames mount within 800px of the reader in
+the chat's own scroll box and refresh on settled turns, viewer version changes,
 page visibility, and a slow live interval. Live data remains one-way.
 
 Comment mode starts off, preserving chart/game input. Mouse/pen readers can enable

@@ -1,763 +1,723 @@
-import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { MAIN_GRAPH } from "../core/graphTarget";
-import type { GraphTargetRef } from "../core/types";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
+import { EditorView } from "@codemirror/view";
 import {
-  TriangleAlert,
-  Check,
-  ChevronRight,
-  Pencil,
+  Cloud,
+  CloudOff,
+  Copy,
+  Download,
+  FileWarning,
   History,
   LoaderCircle,
-  MessageCirclePlus,
-  Send,
-  WifiOff,
+  PanelLeft,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agents/agentTasks";
+import { api } from "../core/api";
+import { referenceUrl } from "../core/projectReferences";
+import type {
+  AgentTask,
+  IdentityResponse,
+  PaperFile,
+  ProjectSnapshot,
+  PublicHealth,
+  StartAgentTask,
+} from "../core/types";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
-import { createPaperDraft, paperProfile, savePaperDraft } from "./paperResources";
-import { MarkdownAnswer } from "../core/chatMarkdown";
-import { profileRunConfig } from "../core/AgentConfigControls";
-import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
-import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
-import type {
-  AgentRunConfig,
-  AgentTask,
-  PaperSnapshot,
-  ProjectSnapshot,
-  StartAgentTask,
-  WritingSession,
-} from "../core/types";
+import { paperProfile } from "./paperResources";
+import {
+  acquirePaperDocument,
+  observePaperBackend,
+  paperBackendKey,
+  recoverUnsentPaperDocuments,
+  resumePaperDocuments,
+  unsentPaperDocuments,
+  type PaperDocument,
+} from "./paperDocuments";
+import { carryPaperSelection, PaperEditor } from "./PaperEditor";
+import { PaperFiles } from "./PaperFiles";
+import { PaperPreview } from "./PaperPreview";
+import { PaperCoach } from "./PaperCoach";
+import { PaperHistory } from "./PaperHistory";
+import { PaperDialog } from "./PaperDialog";
+import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 
+/** Route snapshots retain selection only; IndexedDB owns all document content. */
 export interface PaperEditorState {
-  content: string;
-  draftVersion: string | null;
-  incomingContent: string;
-  incomingCanonicalHash: string | null;
-  saveBaseHash: string | null;
-  dirty: boolean;
-  saveError: string | null;
-  buffersSwapped: boolean;
-  message: string;
+  fileId?: string;
 }
-
 interface Props {
-  graphTarget?: GraphTargetRef;
   apiBase: string;
   project: ProjectSnapshot;
-  initialPaper: PaperSnapshot;
-  owner?: string;
   editorState?: PaperEditorState;
+  requestedFileId?: { fileId: string | null };
   onEditorStateChange?: (state: PaperEditorState) => void;
-  stale?: boolean;
-  sessions?: WritingSession[];
-  onCreate: () => Promise<PaperSnapshot>;
-  onSave: (
-    content: string,
-    baseHash: string | null,
-    version: string | null,
-  ) => Promise<PaperSnapshot>;
   tasks: AgentTask[];
   onStartTask: StartAgentTask;
 }
-
-const MIN_EDITOR_SHARE = 35;
-const MAX_EDITOR_SHARE = 70;
-const MIN_EDITOR_WIDTH = 360;
-const MIN_COACH_WIDTH = 320;
-const DIVIDER_WIDTH = 9;
-const PAPER_VIEW_STORAGE_PREFIX = "rcp:paper-view";
-
-type PaperView = "write" | "preview" | "incoming";
-
-interface EditorShareBounds {
-  minimum: number;
-  maximum: number;
-}
-
-function editorShareBoundsForWidth(width: number): EditorShareBounds {
-  if (!width) return { minimum: MIN_EDITOR_SHARE, maximum: MAX_EDITOR_SHARE };
-  const minimum = Math.min(
-    MAX_EDITOR_SHARE,
-    Math.max(MIN_EDITOR_SHARE, (MIN_EDITOR_WIDTH / width) * 100),
-  );
-  const coachConstrainedMaximum = Math.min(
-    MAX_EDITOR_SHARE,
-    ((width - DIVIDER_WIDTH - MIN_COACH_WIDTH) / width) * 100,
-  );
-  return { minimum, maximum: Math.max(minimum, coachConstrainedMaximum) };
-}
-
-function clampEditorShare(value: number, bounds: EditorShareBounds): number {
-  return Math.min(bounds.maximum, Math.max(bounds.minimum, value));
-}
-
-function storedPaperView(projectId: string, allowIncoming: boolean): PaperView {
+function storedFold() {
   try {
-    const stored = localStorage.getItem(`${PAPER_VIEW_STORAGE_PREFIX}:${projectId}`);
-    if (stored === "preview" || (allowIncoming && stored === "incoming")) return stored;
-    return "write";
+    return localStorage.getItem("rcp:paper-files-folded") === "true";
   } catch {
-    return "write";
+    return false;
   }
 }
-
-export function swapPaperBuffers(editor: string, incoming: string): [string, string] {
-  return [incoming, editor];
-}
-
-/** Paper uses the same resource lifetime and refresh rules as every other view. */
-export function LoadedPaperWorkspace(props: Omit<Props, "initialPaper" | "onSave" | "onCreate">) {
-  const { store } = useRefreshRuntime();
-  const profile = paperProfile(props.project.id, props.apiBase);
-  const id = resourceKeyId(profile.key);
-  const view = useResource(props.owner ?? `${props.project.id}:paper-view`, profile);
-  if (!view.value || (view.stale && view.value.paper.sync_state === "not_created")) {
-    return (
-      <section
-        className="paper-empty"
-        aria-busy={view.loading}
-        style={view.error ? { outline: "1px solid var(--danger, #c33)" } : undefined}
-      >
-        {view.error ? (
-          <button
-            className="icon-button"
-            aria-label="Retry Paper"
-            onClick={() => store.invalidate(id)}
-          >
-            <RotateCcw size={16} />
-          </button>
-        ) : (
-          <LoaderCircle className="spin" size={16} aria-label="Loading Paper" />
-        )}
-      </section>
-    );
-  }
-  return (
-    <PaperWorkspace
-      {...props}
-      initialPaper={view.value.paper}
-      sessions={view.value.sessions}
-      stale={view.stale}
-      onCreate={() => createPaperDraft(store, profile)}
-      onSave={(content, baseHash, version) =>
-        savePaperDraft(store, profile, content, baseHash, version)
-      }
-    />
-  );
-}
-
 export function PaperWorkspace({
+  apiBase,
   project,
-  initialPaper,
-  graphTarget = MAIN_GRAPH,
+  editorState,
+  requestedFileId,
+  onEditorStateChange,
   tasks,
   onStartTask,
-  editorState,
-  onEditorStateChange,
-  stale = false,
-  sessions = [],
-  onCreate,
-  onSave,
 }: Props) {
-  const paper = initialPaper;
-  const [draftVersion, setDraftVersion] = useState(
-    editorState ? editorState.draftVersion : initialPaper.draft_version,
+  const { store } = useRefreshRuntime();
+  const profile = paperProfile(project.id);
+  const resource = useResource(`${project.id}:paper-view`, profile);
+  const tree = resource.value?.tree;
+  const [identity, setIdentity] = useState<IdentityResponse | null>(null);
+  const [identityError, setIdentityError] = useState<string | null>(null);
+  const [identityRetry, setIdentityRetry] = useState(0);
+  // The tree revision at which the selected file is known to exist: a tree at or past it
+  // that lacks the file means it is gone, while an older one may predate a file just
+  // created. A listed file or a link records the current revision, a create its receipt's.
+  const [selection, setSelection] = useState<{ id: string | null; existsAt: number }>(() => ({
+    id:
+      requestedFileId?.fileId ??
+      new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
+      editorState?.fileId ??
+      null,
+    existsAt: -1,
+  }));
+  const selected = selection.id;
+  const treeRevision = useRef(-1);
+  treeRevision.current = tree?.revision ?? -1;
+  const setSelected = useCallback(
+    (id: string | null, existsAt = treeRevision.current) => setSelection({ id, existsAt }),
+    [],
   );
-  const [content, setContent] = useState(editorState?.content ?? initialPaper.content);
-  const [incomingContent, setIncomingContent] = useState(
-    editorState?.incomingContent ?? initialPaper.incoming_content ?? "",
-  );
-  // Keep the version paired with the visible Incoming buffer. Canonical may
-  // advance again while that buffer temporarily holds the displaced draft.
-  const [incomingCanonicalHash, setIncomingCanonicalHash] = useState(
-    editorState
-      ? editorState.incomingCanonicalHash
-      : initialPaper.sync_state === "behind"
-        ? (initialPaper.canonical_hash ?? null)
-        : null,
-  );
-  const [saveBaseHash, setSaveBaseHash] = useState(
-    editorState ? editorState.saveBaseHash : (initialPaper.base_hash ?? null),
-  );
-  const [dirty, setDirty] = useState(editorState?.dirty ?? false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(editorState?.saveError ?? null);
-  const [creating, setCreating] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const activeSession =
-    sessions.find((session) => session.native_session_id === activeSessionId) ?? null;
-  const [freshSession, setFreshSession] = useState(false);
-  const [pendingCoachTaskId, setPendingCoachTaskId] = useState<string | null>(null);
-  const [coachSubmitting, setCoachSubmitting] = useState(false);
-  const [config, setConfig] = useState<AgentRunConfig>(() =>
-    profileRunConfig(project.agent_profiles.paper_coach),
-  );
-  const [message, setMessage] = useState(editorState?.message ?? "");
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [paperView, setPaperView] = useState<PaperView>(() =>
-    storedPaperView(project.id, initialPaper.sync_state === "behind"),
-  );
-  const [editorShare, setEditorShare] = useState(62);
-  const [editorShareBounds, setEditorShareBounds] = useState<EditorShareBounds>({
-    minimum: MIN_EDITOR_SHARE,
-    maximum: MAX_EDITOR_SHARE,
-  });
-  const workspace = useRef<HTMLElement>(null);
-  const textarea = useRef<HTMLTextAreaElement>(null);
-  const coachTextarea = useRef<HTMLTextAreaElement>(null);
-  const latestContent = useRef(content);
-  const buffersSwapped = useRef(editorState?.buffersSwapped ?? false);
-  const paperSaveGeneration = useRef(0);
-
   useEffect(() => {
-    onEditorStateChange?.({
-      content,
-      draftVersion,
-      incomingContent,
-      incomingCanonicalHash,
-      saveBaseHash,
-      dirty,
-      saveError,
-      buffersSwapped: buffersSwapped.current,
-      message,
-    });
-  }, [
-    content,
-    draftVersion,
-    incomingContent,
-    incomingCanonicalHash,
-    saveBaseHash,
-    dirty,
-    saveError,
-    message,
-    onEditorStateChange,
-  ]);
-
+    if (requestedFileId?.fileId) setSelected(requestedFileId.fileId);
+  }, [requestedFileId, setSelected]);
+  const [folded, setFolded] = useState(storedFold);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [view, setView] = useState<"write" | "preview" | "coach">("write");
+  const [right, setRight] = useState<"preview" | "coach">("preview");
+  const [phone, setPhone] = useState(() => window.matchMedia("(max-width: 700px)").matches);
   useEffect(() => {
-    latestContent.current = content;
-  }, [content]);
-
-  useEffect(() => {
-    if (!buffersSwapped.current) {
-      setIncomingContent(paper.incoming_content ?? "");
-      setIncomingCanonicalHash(
-        paper.sync_state === "behind" ? (paper.canonical_hash ?? null) : null,
-      );
-    }
-    // The editor's draft revision stays paired with its buffer, including after a conflict.
-    if (paper.sync_state !== "behind") setSaveBaseHash(paper.base_hash ?? null);
-  }, [paper]);
-
-  const attachSession = (session: WritingSession) => {
-    setActiveSessionId(session.native_session_id);
-    setFreshSession(false);
-    setPendingCoachTaskId(null);
-    setConfig({
-      provider: session.provider,
-      model: session.model === "provider-default" ? "" : session.model,
-      reasoning: session.reasoning ?? "medium",
-      run_on: session.execution_machine,
-    });
-    setSubmitError(null);
-  };
-
-  useEffect(() => {
-    if (freshSession) return;
-    const sessionId = pendingCoachTaskId
-      ? tasks.find((task) => task.operation_id === pendingCoachTaskId)?.native_session_id
-      : (activeSession?.native_session_id ??
-        tasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
-          ?.native_session_id);
-    const session = sessions.find((item) => item.native_session_id === sessionId);
-    if (session && session !== activeSession) attachSession(session);
-  }, [sessions, tasks, freshSession, pendingCoachTaskId, activeSession]);
-
-  const latestCoachTask = tasks.find((task) => task.kind === "paper_coach") ?? null;
-  const pendingCoachTask = pendingCoachTaskId
-    ? (tasks.find((task) => task.operation_id === pendingCoachTaskId) ?? null)
-    : latestCoachTask && isActiveTask(latestCoachTask)
-      ? latestCoachTask
-      : null;
-  const activeCoachTask = tasks.find(
-    (task) =>
-      task.kind === "paper_coach" &&
-      isActiveTask(task) &&
-      (activeSession
-        ? task.native_session_id === activeSession.native_session_id
-        : task.operation_id === pendingCoachTask?.operation_id),
+    const media = window.matchMedia("(max-width: 700px)");
+    const changed = () => setPhone(media.matches);
+    media.addEventListener("change", changed);
+    return () => media.removeEventListener("change", changed);
+  }, []);
+  const writingPane = useRef<HTMLDivElement>(null);
+  const [history, setHistory] = useState(false);
+  const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
+  const [actionError, setActionError] = useState<{
+    error: string;
+    retry: () => Promise<void>;
+  } | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const changeFeed = usePaperChanges(
+    apiBase,
+    `${tree?.revision}:${tasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("|")}`,
   );
-  const skillCatalog = project.skill_catalog ?? [];
-  const skillDefaults = project.skill_defaults ?? EMPTY_SKILL_SELECTION;
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
-  const skills = useSkillPicker({
-    catalog: skillCatalog,
-    defaults: skillDefaults,
-    provider: config.provider,
-    providerLabel: readiness?.label || config.provider,
-    machine: config.run_on,
-    inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
-    getMessage: () => message,
-    onComplete: (next) => {
-      setMessage(next);
-      setSubmitError(null);
-      window.requestAnimationFrame(() => {
-        coachTextarea.current?.focus();
-        coachTextarea.current?.setSelectionRange(next.length, next.length);
-      });
-    },
-  });
-  const resetSkills = skills.reset;
-
+  const refresh = useCallback(
+    () => store.invalidate(resourceKeyId(paperProfile(project.id).key)),
+    [store, project.id],
+  );
   useEffect(() => {
-    resetSkills();
-  }, [project.id, resetSkills]);
-
-  useEffect(() => {
-    if (!dirty || saving || saveError || paper.sync_state === "not_created") return;
-    const timer = window.setTimeout(async () => {
-      setSaving(true);
-      const savedContent = latestContent.current;
-      const generation = ++paperSaveGeneration.current;
-      try {
-        const next = await onSave(savedContent, saveBaseHash, draftVersion);
-        if (generation !== paperSaveGeneration.current) return;
-        paperSaveGeneration.current += 1;
-        setDraftVersion(next.draft_version);
-        setIncomingContent(next.incoming_content ?? "");
-        setIncomingCanonicalHash(
-          next.sync_state === "behind" ? (next.canonical_hash ?? null) : null,
+    const controller = new AbortController();
+    // The previous identity stays until this one is verified, so an open editor keeps
+    // taking input across a backend restart; its document waits, paused, meanwhile.
+    void Promise.all([
+      api<IdentityResponse>("/api/identity", { signal: controller.signal }),
+      api<PublicHealth>("/api/health", { signal: controller.signal }),
+    ])
+      .then(([value, health]) => {
+        if (controller.signal.aborted) return;
+        observePaperBackend({ ok: true, health, message: null, reason: "paper-open" });
+        resumePaperDocuments(paperBackendKey(apiBase, value.space_id), value.user.user_id);
+        setIdentity((current) =>
+          current?.space_id === value.space_id &&
+          current.user.user_id === value.user.user_id &&
+          current.user.display_name === value.user.display_name
+            ? current
+            : value,
         );
-        if (next.sync_state !== "behind") setSaveBaseHash(next.base_hash ?? null);
-        buffersSwapped.current = false;
-        setDirty(next.content !== latestContent.current);
-        setSaveError(null);
-      } catch (error) {
-        setSaveError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setSaving(false);
-      }
-    }, 650);
-    return () => window.clearTimeout(timer);
-  }, [dirty, paper.sync_state, saveBaseHash, saveError, saving, draftVersion, onSave]);
-
-  const create = async () => {
-    if (creating) return;
-    setCreating(true);
-    setSaveError(null);
-    try {
-      const next = await onCreate();
-      setDraftVersion(next.draft_version);
-      setContent(next.content);
-      setIncomingContent(next.incoming_content ?? "");
-      setIncomingCanonicalHash(next.sync_state === "behind" ? (next.canonical_hash ?? null) : null);
-      setSaveBaseHash(next.base_hash ?? null);
-      buffersSwapped.current = false;
-      latestContent.current = next.content;
-      setDirty(next.sync_state === "unsynced");
-      requestAnimationFrame(() => textarea.current?.focus());
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const updateMessage = (next: string) => {
-    setMessage(next);
-    skills.readMessage(next);
-    setSubmitError(null);
-  };
-
-  const send = async () => {
-    const text = message.trim();
-    if (!text || activeCoachTask || coachSubmitting) return;
-    setSubmitError(null);
-    setCoachSubmitting(true);
-    try {
-      const task = await onStartTask("paper_coach", {
-        message: text,
-        ...config,
-        model: config.model || null,
-        session_id: activeSession?.native_session_id ?? null,
-        ...skillInvocationFields(skills.selection, skills.providerSkillNames),
+        setIdentityError(null);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setIdentityError(String(error));
       });
-      setPendingCoachTaskId(task.operation_id);
-      setMessage("");
-      skills.reset();
+    return () => controller.abort();
+  }, [apiBase, identityRetry]);
+  useEffect(() => {
+    const verify = () => setIdentityRetry((value) => value + 1);
+    window.addEventListener("rcp:paper-backend-changed", verify);
+    window.addEventListener("rcp:session-required", verify);
+    return () => {
+      window.removeEventListener("rcp:paper-backend-changed", verify);
+      window.removeEventListener("rcp:session-required", verify);
+    };
+  }, []);
+  const opened = useRef<{ file: PaperFile; document: PaperDocument | null } | null>(null);
+  const last = opened.current;
+  const current = selected ?? last?.file.file_id;
+  const listed = tree?.files.find((item) => item.file_id === current);
+  // A file that left the tree stays reachable, read-only, while it holds unsent local text.
+  const unsent = useSyncExternalStore(
+    unsentPaperDocuments.subscribe,
+    unsentPaperDocuments.getSnapshot,
+  );
+  const backend = identity && paperBackendKey(apiBase, identity.space_id);
+  const strandedFiles = unsent.flatMap((owner) =>
+    tree &&
+    owner.listing &&
+    owner.key.backend === backend &&
+    owner.key.member === identity?.user.user_id &&
+    owner.key.project === project.id &&
+    !tree.files.some((item) => item.file_id === owner.key.file)
+      ? [owner.listing]
+      : [],
+  );
+  const stranded = listed ? undefined : strandedFiles.find((item) => item.file_id === current);
+  // A reload finds unsent files the tree no longer lists in this member's local list.
+  useEffect(() => {
+    if (!identity || !tree) return;
+    recoverUnsentPaperDocuments(
+      {
+        backend: paperBackendKey(apiBase, identity.space_id),
+        member: identity.user.user_id,
+        project: project.id,
+      },
+      new Set(tree.files.map((item) => item.file_id)),
+      apiBase,
+      identity.user.display_name || identity.user.user_id,
+    );
+  }, [identity, tree, project.id, apiBase]);
+  const gone = tree !== undefined && tree.revision >= selection.existsAt;
+  const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
+  const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
+  // A selection waiting for a newer tree asks for it once rather than show nothing.
+  useEffect(() => {
+    if (tree && selection.existsAt > tree.revision) refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one read per tree revision that is still behind
+  }, [tree?.revision, selection.existsAt, refresh]);
+  const document = useMemo(
+    () =>
+      identity && file?.kind === "text"
+        ? acquirePaperDocument(
+            {
+              backend: paperBackendKey(apiBase, identity.space_id),
+              member: identity.user.user_id,
+              project: project.id,
+              file: file.file_id,
+            },
+            apiBase,
+            identity.user.display_name || identity.user.user_id,
+          )
+        : null,
+    [identity, file?.file_id, file?.kind, project.id, apiBase],
+  );
+  useEffect(() => document?.retain(), [document]);
+  useEffect(() => {
+    opened.current = file ? { file, document } : null;
+    if (document && listed && file === listed) document.listing = listed;
+  }, [file, listed, document]);
+  // After a 4403 close the tree read decides between Recreate and Reconnect; until it
+  // lands neither is offered.
+  const resourceNow = useRef(resource);
+  resourceNow.current = resource;
+  const [closeCheck, setCloseCheck] = useState<{
+    document: PaperDocument;
+    seen: typeof resource;
+  } | null>(null);
+  const checking =
+    closeCheck !== null &&
+    closeCheck.document === document &&
+    closeCheck.seen.value === resource.value &&
+    closeCheck.seen.error === resource.error;
+  useEffect(() => {
+    if (!document) return;
+    let lastSavedText: string | null = null;
+    let lastClosed: number | null = null;
+    let timer: ReturnType<typeof setTimeout>;
+    const unsubscribe = document.subscribe(() => {
+      const state = document.getSnapshot();
+      // 4403: the file was deleted or access was lost; the tree says which.
+      if (state.closed !== lastClosed) {
+        lastClosed = state.closed;
+        if (lastClosed === 4403) {
+          setCloseCheck({ document, seen: resourceNow.current });
+          refresh();
+          // A deleted file with nothing unsent leaves for the first file.
+          if (state.saved) setSelected(null);
+        }
+      }
+      if (state.saved && state.text !== lastSavedText) {
+        lastSavedText = state.text;
+        clearTimeout(timer);
+        timer = setTimeout(refresh, 600);
+      }
+    });
+    return () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
+  }, [document, refresh, setSelected]);
+  useEffect(() => {
+    // A pending selection waits for the tree; a gone one hands the URL to the shown file.
+    if (!file || (selected && selected !== file.file_id && !gone)) return;
+    onEditorStateChange?.({ fileId: file.file_id });
+    const [route, query] = window.location.hash.split("?");
+    const params = new URLSearchParams(query);
+    params.set("paper_file", file.file_id);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${window.location.search}${route || "#"}?${params}`,
+    );
+  }, [file, selected, gone, onEditorStateChange]);
+  const perform = async (action: () => Promise<void>) => {
+    setActionError(null);
+    try {
+      await action();
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setCoachSubmitting(false);
+      setActionError({ error: String(error), retry: action });
     }
   };
-
-  const sessionTasks = activeSession
-    ? relatedCoachTasks(tasks, activeSession.native_session_id)
-    : pendingCoachTask
-      ? [pendingCoachTask]
-      : [];
-  const transcript = reconstructTaskTranscript(sessionTasks);
-  const reviewStale = activeSession
-    ? activeSession.graph_revision_examined < project.revision
-    : false;
-  const syncLabel = paper.sync_state.replace("_", " ");
-  const wordCount = useMemo(
-    () => (content.trim() ? content.trim().split(/\s+/).length : 0),
-    [content],
-  );
-  const coachActive = Boolean(activeCoachTask);
-  const constrainEditorShare = (value: number) => {
-    const width = workspace.current?.getBoundingClientRect().width ?? 0;
-    return clampEditorShare(value, editorShareBoundsForWidth(width));
-  };
-  const resizeFromPointer = (clientX: number) => {
-    const bounds = workspace.current?.getBoundingClientRect();
-    if (!bounds) return;
-    setEditorShare(constrainEditorShare(((clientX - bounds.left) / bounds.width) * 100));
-  };
-  const selectPaperView = (next: PaperView) => {
-    setPaperView(next);
+  const act = async (id: string, action: PaperChangeAction) => {
     try {
-      localStorage.setItem(`${PAPER_VIEW_STORAGE_PREFIX}:${project.id}`, next);
-    } catch {}
+      await changeFeed.act(id, action);
+    } finally {
+      refresh();
+    }
   };
-  const applyIncoming = () => {
-    const [nextContent, nextIncoming] = swapPaperBuffers(content, incomingContent);
-    setContent(nextContent);
-    setIncomingContent(nextIncoming);
-    latestContent.current = nextContent;
-    setSaveBaseHash(incomingCanonicalHash);
-    buffersSwapped.current = !buffersSwapped.current;
-    setDirty(false);
-    setSaveError(null);
-  };
-
-  useEffect(() => {
-    if (paperView === "incoming") setSaveBaseHash(incomingCanonicalHash);
-  }, [incomingCanonicalHash, paperView]);
-
-  useEffect(() => {
-    if (paper.sync_state === "behind" || paperView !== "incoming") return;
-    setPaperView("write");
+  const fold = () => {
+    setFolded(true);
+    setFilesOpen(false);
     try {
-      localStorage.setItem(`${PAPER_VIEW_STORAGE_PREFIX}:${project.id}`, "write");
-    } catch {}
-  }, [paper.sync_state, paperView, project.id]);
-
-  const paperCreated = paper.sync_state !== "not_created";
-  useEffect(() => {
-    const element = workspace.current;
-    if (!element) return;
-
-    const updateBounds = (width: number) => {
-      const bounds = editorShareBoundsForWidth(width);
-      setEditorShareBounds(bounds);
-      setEditorShare((current) => clampEditorShare(current, bounds));
-    };
-    updateBounds(element.getBoundingClientRect().width);
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) updateBounds(entry.contentRect.width);
+      localStorage.setItem("rcp:paper-files-folded", "true");
+    } catch {
+      /* Device preference is optional. */
+    }
+  };
+  const unfold = () => {
+    setFolded(false);
+    setFilesOpen(true);
+    try {
+      localStorage.setItem("rcp:paper-files-folded", "false");
+    } catch {
+      /* Device preference is optional. */
+    }
+  };
+  // Focus follows an explicit request (Write, a picked or new file), never a load.
+  const focusPending = useRef(false);
+  const focusEditor = () => {
+    focusPending.current = true;
+    requestAnimationFrame(() => {
+      const editor = writingPane.current?.querySelector<HTMLElement>(".cm-content");
+      if (!editor) return;
+      focusPending.current = false;
+      editor.focus();
     });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [paperCreated]);
-
-  if (paper.sync_state === "not_created") {
-    return (
-      <section className="paper-empty">
-        <div className="paper-sheet-preview">
-          <span># Introduction</span>
-          <i />
-          <i />
-          <i />
-        </div>
-        <div className="paper-empty-action">
-          <button
-            className="button primary"
-            title={saveError ?? undefined}
-            style={saveError ? { outline: "1px solid var(--danger, #c33)" } : undefined}
-            disabled={creating || stale}
-            onClick={() => void create()}
-          >
-            <Pencil size={16} /> {creating ? "Opening editor…" : "Create introduction"}
-          </button>
-        </div>
-      </section>
-    );
-  }
-
+  };
+  const switchView = (next: typeof view) => {
+    setView(next);
+    if (next !== "write") setRight(next);
+    else focusEditor();
+  };
+  const locate = (change: PaperChange) => {
+    setSelected(change.file_id);
+    setFocusChange(change);
+    setView("write");
+  };
+  const previewActive = right === "preview" && (!phone || view === "preview");
+  // Mounted on first view, then kept while hidden so its PDF and position survive.
+  const [previewShown, setPreviewShown] = useState(previewActive);
+  if (previewActive && !previewShown) setPreviewShown(true);
+  const retryError = actionError?.error ?? identityError ?? resource.error ?? changeFeed.error;
   return (
     <section
-      className="paper-workspace"
-      aria-label={stale ? "Paper (stale)" : "Paper"}
-      ref={workspace}
-      style={{
-        gridTemplateColumns: `minmax(${MIN_EDITOR_WIDTH}px, ${editorShare}%) ${DIVIDER_WIDTH}px minmax(${MIN_COACH_WIDTH}px, 1fr)`,
-      }}
+      className={`paper-live-workspace ${folded ? "files-folded" : ""} ${filesOpen ? "files-open" : ""} ${retryError ? "paper-failed" : ""}`}
+      data-view={view}
     >
-      <div className="paper-editor-column">
-        <header className="paper-toolbar">
-          <div className="paper-view-controls">
-            {paper.canonical_available && paper.canonical_hash && (
-              <CopyReferenceButton
-                projectId={project.id}
-                graphTarget={graphTarget}
-                reference={{ kind: "paper" }}
-              />
-            )}
-            <div className="segmented" role="group" aria-label="Paper view">
-              {(["write", "preview"] as const).map((view) => (
-                <button
-                  aria-pressed={paperView === view}
-                  key={view}
-                  onClick={() => selectPaperView(view)}
-                  type="button"
-                >
-                  {view === "write" ? "Write" : "Preview"}
-                </button>
-              ))}
-              {paper.sync_state === "behind" && (
-                <button
-                  aria-pressed={paperView === "incoming"}
-                  onClick={() => selectPaperView("incoming")}
-                  type="button"
-                >
-                  Incoming
-                </button>
-              )}
-            </div>
-            {paper.sync_state === "behind" && (
-              <button
-                aria-label="Swap editor and incoming introduction"
-                className="button compact secondary paper-apply-incoming"
-                disabled={saving}
-                onClick={applyIncoming}
-                type="button"
-              >
-                Apply
-              </button>
-            )}
-          </div>
-          <div className="paper-status">
-            {stale && <WifiOff size={14} aria-label="Paper is stale" />}
-            <span>{wordCount} words</span>
-            <span className={`sync-state ${saveError ? "save-error" : paper.sync_state}`}>
-              {!saveError && paper.sync_state === "synced" && <Check size={14} />}
-              {!saveError && paper.sync_state === "unsynced" && <WifiOff size={14} />}
-              {(saveError || paper.sync_state === "behind") && <TriangleAlert size={14} />}
-              {saveError
-                ? "save failed"
-                : saving
-                  ? "saving"
-                  : dirty
-                    ? "unsaved changes"
-                    : syncLabel}
-            </span>
-          </div>
-        </header>
-        {saveError && (
+      <PaperFiles
+        apiBase={apiBase}
+        files={tree?.files ?? []}
+        selected={file?.file_id ?? null}
+        onSelect={(id, existsAt) => {
+          setSelected(id, existsAt);
+          setFilesOpen(false);
+          switchView("write");
+        }}
+        onFold={fold}
+        onChanged={refresh}
+      />
+      <main className="paper-box paper-editor-box">
+        <header className="paper-bar paper-document-header">
+          <button className="icon-button paper-show-files" aria-label="Show files" onClick={unfold}>
+            <PanelLeft size={16} />
+          </button>
+          <strong className="paper-path" title={file?.path}>
+            {file?.path ?? "Paper"}
+          </strong>
+          {file && <span className="paper-format">{file.format}</span>}
+          <span className="paper-grow" />
+          {strandedElsewhere && (
+            <button
+              className="icon-button paper-failed"
+              aria-label="Open unsent file"
+              title={strandedElsewhere.path}
+              onClick={() => {
+                setSelected(strandedElsewhere.file_id);
+                switchView("write");
+              }}
+            >
+              <FileWarning size={16} />
+            </button>
+          )}
+          {document && (
+            <DocumentStatus
+              owner={document}
+              fileName={file!.path.split("/").at(-1)!}
+              checking={checking}
+              recover={
+                stranded
+                  ? async () => {
+                      const body = new FormData();
+                      const taken = new Set(tree!.files.map((item) => item.path));
+                      let path = file!.path;
+                      for (let n = 1; taken.has(path); n++)
+                        path = file!.path.replace(
+                          /(\.[^./]+)?$/,
+                          ` (recovered${n > 1 ? ` ${n}` : ""})$1`,
+                        );
+                      body.append("path", path);
+                      body.append(
+                        "file",
+                        new Blob([document.getSnapshot().text], { type: "text/plain" }),
+                        path.split("/").at(-1),
+                      );
+                      const editor = writingPane.current?.querySelector<HTMLElement>(".cm-editor");
+                      const cursor = editor && EditorView.findFromDOM(editor)?.state.selection.main;
+                      const receipt = await api<{ file_ids: string[]; revision: number }>(
+                        `${apiBase}/paper/uploads`,
+                        { method: "POST", body },
+                      );
+                      const [created] = receipt.file_ids;
+                      // The new file holds this text now; it opens where the writer was.
+                      if (cursor) carryPaperSelection({ ...document.key, file: created }, cursor);
+                      focusPending.current = true;
+                      // Select first: a render between the two would find the deleted file
+                      // neither listed nor stranded and open another one.
+                      flushSync(() => setSelected(created, receipt.revision));
+                      document.discard();
+                      refresh();
+                    }
+                  : undefined
+              }
+            />
+          )}
+          {retryError && (
+            <button
+              className="icon-button"
+              aria-label="Retry Paper"
+              title={String(retryError)}
+              onClick={() => {
+                if (actionError) void perform(actionError.retry);
+                else if (identityError) setIdentityRetry((value) => value + 1);
+                else {
+                  refresh();
+                  void changeFeed.refresh();
+                }
+              }}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
           <button
             className="icon-button"
-            aria-label="Retry save"
-            title={saveError}
-            style={{ outline: "1px solid var(--danger, #c33)" }}
-            onClick={() => {
-              setDraftVersion(paper.draft_version);
-              setSaveError(null);
-            }}
+            aria-label="Paper history"
+            onClick={() => setHistory(true)}
           >
-            <RotateCcw size={16} />
+            <History size={16} />
           </button>
-        )}
-        {paperView === "write" ? (
-          <textarea
-            ref={textarea}
-            className="markdown-editor"
-            aria-label="Paper introduction Markdown"
-            spellCheck
-            value={content}
-            onChange={(event) => {
-              setContent(event.target.value);
-              setDirty(true);
-              setSaveError(null);
-            }}
-          />
-        ) : (
-          <article
-            aria-label="Paper introduction preview"
-            className="markdown-editor paper-markdown-preview chat-markdown"
-          >
-            <MarkdownAnswer text={paperView === "incoming" ? incomingContent : content} />
-          </article>
-        )}
-      </div>
-
-      <div
-        aria-label="Resize paper editor and writing coach"
-        aria-orientation="vertical"
-        aria-valuemax={editorShareBounds.maximum}
-        aria-valuemin={editorShareBounds.minimum}
-        aria-valuenow={Math.round(editorShare)}
-        className="paper-divider"
-        onKeyDown={(event) => {
-          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-            event.preventDefault();
-            setEditorShare((current) =>
-              constrainEditorShare(current + (event.key === "ArrowLeft" ? -2 : 2)),
-            );
-          }
-          if (event.key === "Home" || event.key === "End") {
-            event.preventDefault();
-            setEditorShare(
-              constrainEditorShare(event.key === "Home" ? MIN_EDITOR_SHARE : MAX_EDITOR_SHARE),
-            );
-          }
-        }}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          resizeFromPointer(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId))
-            resizeFromPointer(event.clientX);
-        }}
-        onPointerUp={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
-          }
-        }}
-        role="separator"
-        tabIndex={0}
-      />
-
-      <aside className="coach-column">
-        <div className="coach-history-bar">
-          <details className="session-history">
-            <summary>
-              <History size={14} />
-              <strong>Chat history</strong>
-              {sessions.length > 0 && <small>{sessions.length}</small>}
-            </summary>
-            <div className="session-strip">
-              {sessions.length === 0 ? (
-                <span className="muted">No prior writing sessions</span>
-              ) : (
-                sessions.map((session) => (
-                  <button
-                    className={
-                      activeSession?.native_session_id === session.native_session_id ? "active" : ""
-                    }
-                    key={session.native_session_id}
-                    onClick={() => {
-                      attachSession(session);
-                    }}
-                  >
-                    <span>{session.title || "Untitled coach session"}</span>
-                    <span className="session-meta">
-                      {session.provider_label || session.provider} · rev{" "}
-                      {session.graph_revision_examined}
-                    </span>
-                    <ChevronRight size={14} />
-                  </button>
-                ))
-              )}
-            </div>
-          </details>
           <button
-            className="icon-button compact coach-new-chat"
-            type="button"
-            title="New chat"
-            aria-label="New chat"
-            onClick={() => {
-              setActiveSessionId(null);
-              setFreshSession(true);
-              setPendingCoachTaskId(null);
-              setConfig(profileRunConfig(project.agent_profiles.paper_coach));
-              skills.reset();
-              setSubmitError(null);
-            }}
+            className="icon-button paper-copy"
+            aria-label="Copy reference"
+            disabled={!file}
+            onClick={() =>
+              void perform(async () => {
+                await navigator.clipboard.writeText(
+                  referenceUrl(
+                    project.id,
+                    { kind: "main" },
+                    { kind: "paper", file_id: file!.file_id },
+                  ),
+                );
+              })
+            }
           >
-            <MessageCirclePlus size={14} />
+            <Copy size={16} />
           </button>
-        </div>
-
-        <div
-          className="agent-provider-label"
-          aria-busy={readiness === undefined}
-          aria-label={`Writing coach provider: ${readiness?.label || config.provider}`}
-        >
-          {readiness?.label || config.provider}
-          {readiness === undefined && (
-            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-          )}
-        </div>
-        {reviewStale && (
-          <div className="stale-review">
-            <TriangleAlert size={14} /> Project understanding changed since this session reviewed
-            the draft.
-          </div>
-        )}
-        {readiness && !readiness.authenticated && (
-          <div className="provider-unavailable">
-            <WifiOff size={14} /> {readiness?.reason || `${config.provider} is unavailable.`}
-          </div>
-        )}
-
-        <div className="coach-transcript" aria-live="polite">
-          {transcript.map((line) => (
-            <div
-              className={`chat-line ${line.role === "agent" ? "coach" : line.role}`}
-              key={line.lineId}
-            >
-              {line.role === "human" ? `You: ${line.text}` : line.text}
-            </div>
+        </header>
+        <div className="paper-phone-segments paper-segments" aria-label="Paper view">
+          {(["write", "preview", "coach"] as const).map((panel) => (
+            <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
+              {panel[0].toUpperCase() + panel.slice(1)}
+            </button>
           ))}
-          {submitError && <div className="chat-line error">{submitError}</div>}
-          {coachActive && (
-            <div className="thinking">
-              <i />
-              <i />
-              <i /> {activeCoachTask?.status_message || "Writing coach is running"}
-            </div>
-          )}
         </div>
-        <div className="coach-composer">
-          <SkillPicker {...skills.props} />
-          <textarea
-            ref={coachTextarea}
-            aria-label="Message"
-            value={message}
-            onChange={(event) => updateMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (skills.handleKeyDown(event)) return;
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                void send();
+        <div className="paper-writing-pane" ref={writingPane}>
+          {document ? (
+            <LiveEditor
+              owner={document}
+              focusPending={focusPending}
+              maxBytes={tree?.max_doc_bytes}
+              format={file!.format}
+              changes={changeFeed.changes}
+              focusChange={focusChange}
+              onDecide={(id, action) => void perform(() => act(id, action))}
+            />
+          ) : file?.kind === "binary" ? (
+            <a
+              className="paper-binary-link"
+              download
+              href={`${apiBase}/paper/files/${encodeURIComponent(file.file_id)}/raw`}
+            >
+              {file.path}
+            </a>
+          ) : !tree || !identity ? (
+            <LoaderCircle size={18} className="spin" aria-label="Loading Paper" />
+          ) : null}
+        </div>
+      </main>
+      <aside className="paper-box paper-right-box">
+        <header className="paper-bar paper-desktop-segments">
+          <div className="paper-segments">
+            {(["preview", "coach"] as const).map((panel) => (
+              <button key={panel} aria-pressed={right === panel} onClick={() => switchView(panel)}>
+                {panel[0].toUpperCase() + panel.slice(1)}
+              </button>
+            ))}
+          </div>
+        </header>
+        <div className="paper-right-pane" hidden={right !== "preview"}>
+          {previewShown &&
+            file &&
+            tree &&
+            (document ? (
+              <LivePreview
+                owner={document}
+                projectId={project.id}
+                file={file}
+                tree={tree}
+                onOpenFile={setSelected}
+                active={previewActive}
+              />
+            ) : (
+              <PaperPreview
+                projectId={project.id}
+                file={file}
+                tree={tree}
+                text=""
+                onOpenFile={setSelected}
+                active={previewActive}
+              />
+            ))}
+        </div>
+        <div className="paper-right-pane" hidden={right !== "coach"}>
+          <PaperCoach
+            apiBase={apiBase}
+            project={project}
+            tasks={tasks}
+            onStartTask={onStartTask}
+            changes={changeFeed.changes}
+            onChangeAction={act}
+            onUndoAll={async (taskId) => {
+              try {
+                await changeFeed.undoAll(taskId);
+              } finally {
+                refresh();
               }
             }}
+            onLocate={locate}
           />
-          <button
-            className="icon-button primary"
-            aria-label={
-              activeSession ? "Resume session in background" : "Start coach task in background"
-            }
-            disabled={
-              !message.trim() ||
-              Boolean(activeCoachTask) ||
-              coachSubmitting ||
-              (readiness !== undefined && !readiness.authenticated)
-            }
-            onClick={() => void send()}
-          >
-            <Send size={16} />
-          </button>
         </div>
       </aside>
+      {history && tree && (
+        <PaperHistory
+          apiBase={apiBase}
+          tree={tree}
+          onClose={() => setHistory(false)}
+          onRestored={refresh}
+        />
+      )}
+      {tree?.hold && (
+        <PaperDialog
+          className={`paper-box paper-confirm ${actionError ? "paper-failed" : ""}`}
+          label="Choose Paper version"
+          onClose={() => {
+            /* A version must be chosen. */
+          }}
+        >
+          <strong>Choose Paper version</strong>
+          <div className="paper-bar">
+            {(["draft", "canonical"] as const).map((keep) => (
+              <button
+                key={keep}
+                className="button"
+                disabled={resolving}
+                onClick={() =>
+                  void perform(async () => {
+                    setResolving(true);
+                    try {
+                      await api(`${apiBase}/paper/hold/resolve`, {
+                        method: "POST",
+                        body: JSON.stringify({ keep }),
+                      });
+                      refresh();
+                    } finally {
+                      setResolving(false);
+                    }
+                  })
+                }
+              >
+                {keep === "draft" ? "Keep draft" : "Keep saved"}
+              </button>
+            ))}
+          </div>
+          {actionError && (
+            <button
+              className="icon-button"
+              aria-label="Retry choice"
+              onClick={() => void perform(actionError.retry)}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
+        </PaperDialog>
+      )}
     </section>
   );
+}
+function DocumentStatus({
+  owner,
+  fileName,
+  checking,
+  recover,
+}: {
+  owner: PaperDocument;
+  fileName: string;
+  checking: boolean;
+  recover?: () => Promise<void>;
+}) {
+  const state = useSyncExternalStore(owner.subscribe, owner.getSnapshot);
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (state.saved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [state.saved]);
+  return (
+    <>
+      <div className="paper-presence" aria-label="People editing">
+        {state.presence.map((person) => (
+          <span
+            key={person.id}
+            title={person.name}
+            className="paper-avatar"
+            style={{ backgroundColor: person.color }}
+          >
+            {person.name
+              .split(/\s+/)
+              .map((part) => part[0])
+              .slice(0, 2)
+              .join("")}
+          </span>
+        ))}
+      </div>
+      <span
+        className={`paper-saved ${state.saved ? "saved" : ""}`}
+        data-testid="paper-saved"
+        data-saved={state.saved}
+        role="status"
+        aria-label={state.saved ? "Saved" : "Saving"}
+        title={state.saved ? "Saved" : "Saving"}
+      >
+        {state.connected ? <Cloud size={16} /> : <CloudOff size={16} />}
+      </span>
+      {state.closed !== null && !state.saved && !recover && (
+        <button
+          className="icon-button"
+          aria-label="Download unsent text"
+          onClick={() => {
+            const link = window.document.createElement("a");
+            link.href = URL.createObjectURL(
+              new Blob([owner.getSnapshot().text], { type: "text/plain" }),
+            );
+            link.download = fileName;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(link.href), 0);
+          }}
+        >
+          <Download size={16} />
+        </button>
+      )}
+      {((state.error && !(checking && state.closed === 4403)) || recover) && (
+        <button
+          className="icon-button paper-failed"
+          aria-label={recover ? "Recreate file" : "Reconnect Paper"}
+          title={recoveryError ?? state.error ?? undefined}
+          disabled={recovering}
+          onClick={async () => {
+            setRecovering(true);
+            setRecoveryError(null);
+            try {
+              await (recover ? recover() : owner.reconnect());
+            } catch (error) {
+              setRecoveryError(String(error));
+            } finally {
+              setRecovering(false);
+            }
+          }}
+        >
+          <RotateCcw size={16} />
+        </button>
+      )}
+    </>
+  );
+}
+function LiveEditor({
+  focusPending,
+  ...props
+}: React.ComponentProps<typeof PaperEditor> & { focusPending: { current: boolean } }) {
+  const state = useSyncExternalStore(props.owner.subscribe, props.owner.getSnapshot);
+  useEffect(() => {
+    if (!state.ready || !focusPending.current) return;
+    const frame = requestAnimationFrame(() => {
+      focusPending.current = false;
+      window.document.querySelector<HTMLElement>(".paper-writing-pane .cm-content")?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.owner, state.ready, focusPending]);
+  return state.ready ? (
+    <PaperEditor {...props} />
+  ) : (
+    <LoaderCircle className="spin" size={18} aria-label="Loading document" />
+  );
+}
+function LivePreview({
+  owner,
+  ...props
+}: Omit<React.ComponentProps<typeof PaperPreview>, "text"> & { owner: PaperDocument }) {
+  const state = useSyncExternalStore(owner.subscribe, owner.getSnapshot);
+  return <PaperPreview {...props} text={state.text} />;
 }

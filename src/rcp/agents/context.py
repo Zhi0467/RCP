@@ -40,7 +40,7 @@ class RunContext(BaseModel):
     branch_parent: str | None = None
     shared_repositories: list[RepositoryPointer] = Field(default_factory=list)
     research_md_path: str
-    introduction_path: str | None
+    paper_path: str | None
     glossary_path: str
     facts_dir: str
     state_repository: str
@@ -94,7 +94,7 @@ class ChatContext(BaseModel):
     group_context: GroupContext | None = None
     loop_status: dict[str, Any] | None = None
     research_md_path: str
-    introduction_path: str | None
+    paper_path: str | None
     glossary_path: str
     facts_dir: str
     state_repository: str
@@ -140,7 +140,7 @@ class ContextAssembler:
                 )
             )
         root = self.graph_root
-        introduction = self.manifest.research_dir / "paper" / "introduction.md"
+        paper = self.manifest.research_dir / "paper"
         return RunContext(
             project_name=self.manifest.name,
             run_truth_scope=selected,
@@ -150,7 +150,7 @@ class ContextAssembler:
             graph_revision=state.revision,
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
-            introduction_path=str(introduction) if introduction.exists() else None,
+            paper_path=str(paper) if paper.is_dir() else None,
             glossary_path=str(root / "glossary.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
@@ -193,7 +193,7 @@ class ContextAssembler:
             if item.alias in selected_set
         ]
         root = self.graph_root
-        introduction = self.manifest.research_dir / "paper" / "introduction.md"
+        paper = self.manifest.research_dir / "paper"
         return ChatContext(
             project_name=self.manifest.name,
             run_truth_scope=selected,
@@ -201,7 +201,7 @@ class ContextAssembler:
             graph_target=graph_target,
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
-            introduction_path=str(introduction) if introduction.exists() else None,
+            paper_path=str(paper) if paper.is_dir() else None,
             glossary_path=str(root / "glossary.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
@@ -226,13 +226,13 @@ class ContextAssembler:
 
     def paper_pointers(
         self,
-        introduction_override: Path | None = None,
+        paper_override: Path | None = None,
         repository_access: dict[str, RepositoryAccess] | None = None,
     ) -> dict[str, object]:
         root = self.manifest.research_dir
-        introduction = introduction_override or root / "paper" / "introduction.md"
+        paper = paper_override or root / "paper"
         return {
-            "introduction": str(introduction),
+            "paper": str(paper),
             "graph": str(root / "graph.json"),
             "research_md": str(root / "research.md"),
             "truth_repositories": [

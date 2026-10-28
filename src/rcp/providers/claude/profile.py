@@ -33,6 +33,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
+    _paper_changes_root,
     _provider_error_text,
     _require_project_write_scope,
     _usage_dedupe_key,
@@ -92,7 +93,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             else:
                 self.command[index] = rendered
         if (
-            request.capability in {"discuss", "paper_readonly"}
+            request.capability in {"discuss", "paper_suggest"}
             and request.invocation_gate is not None
             and request.invocation_gate.client_path is not None
         ):
@@ -510,8 +511,8 @@ class ClaudeProfile(ProviderProfile):
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
         # writes. Work bypasses permission prompts so it can execute unattended;
-        # scratch-patch runs retain acceptEdits and the paper coach remains
-        # plan-only. Native public-web retrieval is pre-authorized explicitly
+        # scratch-patch runs retain acceptEdits; the coach grants only its output.
+        # Native public-web retrieval is pre-authorized explicitly
         # on non-bypass launches without broadening Bash permissions.
         work_like = capability in {"work_auto", "orchestrate"}
         scope = None
@@ -529,7 +530,7 @@ class ClaudeProfile(ProviderProfile):
             "work_auto": "dontAsk",
             "orchestrate": "dontAsk",
             "scratch_patch": "acceptEdits",
-            "paper_readonly": "plan",
+            "paper_suggest": "dontAsk",
         }[capability]
         command = [
             binary,
@@ -548,6 +549,25 @@ class ClaudeProfile(ProviderProfile):
                     json.dumps(
                         _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
                     ),
+                ]
+            )
+        elif capability == "paper_suggest":
+            changes = _paper_changes_root(write_dirs)
+            self.validate_readiness_version(provider_version, capability=capability)
+            settings = _claude_paper_settings(changes, hidden_read_scope)
+            command.extend(
+                [
+                    "--setting-sources",
+                    "",
+                    "--settings",
+                    json.dumps(settings, separators=(",", ":")),
+                    "--allowedTools",
+                    "Read",
+                    "Glob",
+                    "Grep",
+                    "WebSearch",
+                    "WebFetch",
+                    f"Edit({_claude_absolute_pattern(str(changes))})",
                 ]
             )
         else:
@@ -749,6 +769,35 @@ def _claude_context_window(model_usage: object, model: str | None) -> int | None
     if model in windows:
         return windows[model]
     return max(windows.values(), default=None)
+
+
+def _claude_paper_settings(
+    changes: Path, hidden_read_scope: HiddenReadScope | None
+) -> dict[str, object]:
+    # Edit rules govern Write too. dontAsk denies every unlisted command/edit;
+    # empty setting sources prevent ambient user grants from broadening this.
+    hidden = _claude_hidden_read_settings(hidden_read_scope) if hidden_read_scope else {}
+    permissions = hidden.get("permissions", {})
+    assert isinstance(permissions, dict)
+    return {
+        "disableAllHooks": True,
+        "env": hidden.get("env", {}),
+        "permissions": {
+            "defaultMode": "dontAsk",
+            "disableAutoMode": "disable",
+            "disableBypassPermissionsMode": "disable",
+            "allow": [
+                "Read",
+                "Glob",
+                "Grep",
+                "WebSearch",
+                "WebFetch",
+                f"Edit({_claude_absolute_pattern(str(changes))})",
+            ],
+            "deny": permissions.get("deny", []),
+        },
+        "sandbox": {"enabled": False},
+    }
 
 
 def _claude_write_settings(

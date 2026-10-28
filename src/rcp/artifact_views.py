@@ -28,8 +28,6 @@ from rcp.artifacts import (
 )
 from rcp.escaped_lines import escaped_lines
 from rcp.limits import (
-    ARTIFACT_INLINE_INITIAL_HEIGHT_PX,
-    ARTIFACT_INLINE_MAX_HEIGHT_PX,
     ARTIFACT_PREVIEW_MAX_BYTES,
     ARTIFACT_PREVIEW_MAX_LINES,
     LIVE_ARTIFACT_MESSAGE_MAX_BYTES,
@@ -82,41 +80,14 @@ class InlineAppearance:
     mode: ArtifactColorMode
 
 
-# A page sized by the viewport would measure as tall as its own frame and never
-# settle; inside a reply the page's content decides the frame's height instead.
-_INLINE_HEIGHT_CSS = "html,body{height:auto!important;min-height:0!important}"
-
-
 def inline_frame_addon(appearance: InlineAppearance) -> FrameAddon:
-    """Report the page's content height and paint it with the reply's theme.
-
-    The bounded height is relayed by RCP's wrapper over the private channel.
-    """
+    """Paint the page with the reply's theme; its frame's height is fixed by the chat."""
 
     return FrameAddon(
-        frame_style=artifact_theme_css(appearance.theme, appearance.mode) + _INLINE_HEIGHT_CSS,
+        frame_style=artifact_theme_css(appearance.theme, appearance.mode),
         wrapper_style=f":root{{color-scheme:{appearance.mode}}}",
-        frame_script="""
-const sizeRoot=document.documentElement;
-const measureSize=Function.prototype.call.bind(Element.prototype.getBoundingClientRect);
-const SizeObserver=ResizeObserver;
-let reportedSize=-1;
-const reportSize=()=>{
-  const height=Math.ceil(measureSize(sizeRoot).height);
-  if(height===reportedSize) return;
-  reportedSize=height;
-  send({kind:'rcp-artifact-size',height});
-};
-new SizeObserver(reportSize).observe(sizeRoot);
-""",
-        wrapper_script=f"""
-channelListeners.push((value)=>{{
-  if(value.kind!=='rcp-artifact-size' || typeof value.height!=='number' ||
-     !Number.isFinite(value.height) || window.parent===window) return;
-  parentPost({{type:'rcp-artifact-size',version:1,
-    height:Math.max(0,Math.min({ARTIFACT_INLINE_MAX_HEIGHT_PX * 4},Math.ceil(value.height)))}},'*');
-}});
-""",
+        frame_script="",
+        wrapper_script="",
     )
 
 
@@ -287,7 +258,7 @@ def _inline_viewer_document(
     live_url: str | None,
     selectable: bool,
 ) -> tuple[str, str]:
-    """The same shell inside a reply: no chrome, transparent, sized by its content.
+    """The same shell inside a reply: no chrome, transparent, filling its fixed frame.
 
     The chat owns the artifact's actions around it. Agent HTML keeps its unchanged
     opaque sandbox one frame further in; this shell adds no capability to it.
@@ -308,8 +279,6 @@ def _inline_viewer_document(
     config = json.dumps(
         {
             "contentUrl": content_url,
-            "maxHeight": ARTIFACT_INLINE_MAX_HEIGHT_PX,
-            "initialHeight": ARTIFACT_INLINE_INITIAL_HEIGHT_PX,
             "selectable": selectable,
         }
     ).replace("<", "\\u003c")
@@ -340,10 +309,10 @@ def _inline_viewer_document(
 <title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
 {_THEME_TOKENS_CSS}
 *{{box-sizing:border-box}}html,body{{margin:0;background:transparent;color:var(--ink);font:15px/1.5 var(--ui)}}
-.canvas{{position:relative}}iframe{{display:block;border:0;width:100%;height:{ARTIFACT_INLINE_INITIAL_HEIGHT_PX}px;background:transparent}}
-#previewImage{{display:block;max-width:100%;height:auto;border-radius:var(--radius)}}
-.canvas:has(#previewImage){{display:inline-block;max-width:100%}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}
-{_VIDEO_STYLE if kind == "video" else ""}
+html,body,.canvas{{height:100%}}.canvas{{position:relative}}iframe{{display:block;border:0;width:100%;height:100%;background:transparent}}
+#previewImage{{display:block;max-width:100%;max-height:100vh;height:auto;border-radius:var(--radius)}}
+body:has(#previewImage){{display:flex;align-items:center;justify-content:center}}.canvas:has(#previewImage){{display:inline-block;max-width:100%;height:auto}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}
+{_VIDEO_STYLE + "#videoPreview{max-height:100vh}" if kind == "video" else ""}
 </style></head><body><main class="canvas">{preview}</main>{script_markup}</body></html>"""
     csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -388,9 +357,7 @@ def _text_page(
             "</style></head><body>" + marker + body + "</body></html>",
             ARTIFACT_TEXT_CSP,
         )
-    # The page holds only RCP-rendered, escaped text; the one nonce-bound script is
-    # RCP's own height report, so the document still runs no artifact code.
-    nonce = secrets.token_urlsafe(18)
+    # The page holds only RCP-rendered, escaped text and runs no script at all.
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
         + artifact_theme_css(inline.theme, inline.mode)
@@ -405,16 +372,8 @@ def _text_page(
         ".line::before{content:attr(id);display:inline-block;width:4em;margin-left:-4.5em;"
         "color:var(--rcp-muted);user-select:none}"
         "#truncated{color:var(--rcp-muted);font-size:13px}"
-        "</style></head><body>"
-        + marker
-        + body
-        + f'<script nonce="{nonce}">(()=>{{const root=document.documentElement;let last=-1;'
-        "const report=()=>{const height=Math.ceil(root.getBoundingClientRect().height);"
-        "if(height===last)return;last=height;"
-        "parent.postMessage({type:'rcp-artifact-size',version:1,height},'*');};"
-        "new ResizeObserver(report).observe(root);})();</script></body></html>",
-        "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; "
-        f"script-src 'nonce-{nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+        "</style></head><body>" + marker + body + "</body></html>",
+        ARTIFACT_TEXT_CSP,
     )
 
 
@@ -474,8 +433,8 @@ def artifact_content(
 ) -> tuple[str | bytes, str, str]:
     """Render stored bytes through the single sandboxed artifact boundary.
 
-    `inline` renders the same bytes for a frame inside a reply: painted with the
-    reply's theme and reporting its content height. Nothing else differs.
+    `inline` renders the same bytes for a frame inside a reply, painted with the
+    reply's theme. Nothing else differs.
     """
     if classify_artifact_bytes(name, data) != media_type:
         raise ValueError("Artifact media type changed")

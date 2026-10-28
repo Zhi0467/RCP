@@ -368,6 +368,10 @@
 .node-chat-lines {
   flex: 1;
   overflow: auto;
+  /* Every embed holds a fixed box, so nothing above the reader resizes on its
+     own; the chat places the scroll itself. WebKit's anchoring jumped a frame's
+     height each time an embed's placeholder became its frame. */
+  overflow-anchor: none;
   padding: clamp(20px, 4vw, 42px);
   /* Contain `.chat-task-live`. Absolutely positioned descendants resolve
      against the nearest positioned ancestor, so without this the 1px live
@@ -759,8 +763,9 @@
 .chat-artifact:has(.chat-artifact-shell-error) {
   flex-wrap: wrap;
 }
-/* An artifact a reply embeds sits in the reply's flow, sized by its content,
-   with its actions as a quiet caption rather than a file card. */
+/* An artifact a reply embeds sits in the reply's flow in a fixed-height frame,
+   with its actions as a quiet caption rather than a file card. Nothing in it
+   changes height until the reader acts, so loading never moves the chat. */
 .chat-inline-artifact {
   container-type: inline-size;
   display: block;
@@ -773,6 +778,7 @@
     display: none;
   }
 }
+.chat-inline-artifact-box,
 .chat-inline-artifact-frame,
 .chat-inline-artifact-placeholder {
   background: transparent;
@@ -780,6 +786,9 @@
   border-radius: 8px;
   display: block;
   width: 100%;
+}
+.chat-inline-artifact-frame {
+  height: 100%;
 }
 .chat-inline-artifact-placeholder:not([role="alert"]) {
   background: linear-gradient(
@@ -814,19 +823,14 @@
   font-weight: 600;
   order: 1;
 }
-.chat-inline-artifact-page-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
+/* A failure is a red edge drawn outside the layout, plus one icon in the caption. */
+.chat-inline-artifact.failed {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--red);
 }
-.chat-inline-artifact-page-error > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-inline-artifact-page-error > button {
-  flex-shrink: 0;
+.chat-inline-artifact-bar .chat-inline-artifact-page-error {
+  color: var(--red);
+  display: inline-flex;
 }
 .chat-inline-artifact-hint {
   color: var(--cobalt-dark);
@@ -841,11 +845,13 @@
   font-size: var(--type-xs);
   gap: 2px 4px;
   margin-top: 6px;
+  min-height: 24px;
   user-select: none;
 }
+/* The name takes only the room the actions leave, so a badge never wraps them. */
 .chat-inline-artifact-name {
+  flex: 1 1 0;
   font-weight: 600;
-  margin-right: auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -891,8 +897,10 @@
   display: inline-flex;
   font: inherit;
   gap: 4px;
-  padding: 3px 6px;
+  height: 24px;
+  padding: 0 6px;
   text-decoration: none;
+  white-space: nowrap;
 }
 .chat-inline-artifact-bar a:hover,
 .chat-inline-artifact-bar button:hover,

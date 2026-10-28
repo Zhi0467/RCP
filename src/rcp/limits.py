@@ -185,11 +185,9 @@ ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
 # Runtime error summaries use UTF-16 code units, as measured by JavaScript.
 ARTIFACT_ERROR_MAX_CHARS = 1024
 ARTIFACT_ERROR_INTERVAL_MS = 1000
-# An artifact shown inside a reply grows with its content up to this height and
-# scrolls within itself past it; the web mirrors it.
-ARTIFACT_INLINE_MAX_HEIGHT_PX = 1200
-# Shown while an inline frame has not yet measured its content.
-ARTIFACT_INLINE_INITIAL_HEIGHT_PX = 320
+# An artifact shown inside a reply has a frame this tall from before it loads, so
+# loading never moves the chat; taller content scrolls inside it. The web mirrors it.
+ARTIFACT_INLINE_HEIGHT_PX = 480
 # A live inline artifact rechecks its viewer state this often, to show Finished.
 ARTIFACT_INLINE_LIVE_STATE_REFRESH_MS = 10_000
 # Selections one chat turn may carry from an artifact viewer; the web mirrors it.
@@ -737,3 +735,52 @@ BULLETIN_CURSOR_MAX_CHARS = 200
 
 # Semantic branch merge retries after its destination advances.
 MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
+
+# PAPER: saved live documents, bounded history, and publication scheduling.
+PAPER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
+PAPER_MAX_DOC_BYTES = 2 * 1024 * 1024
+PAPER_MAX_UPLOAD_BYTES = 16 * 1024 * 1024
+PAPER_MAX_TREE_BYTES = 64 * 1024 * 1024
+PAPER_MAX_FILES = 256
+PAPER_MAX_ROOMS_PER_PROJECT = 64
+PAPER_MAX_AWARENESS_BYTES = 16 * 1024
+PAPER_AWARENESS_MAX_CLIENTS = 256
+PAPER_CONNECTION_UPDATES_PER_SECOND = 60
+PAPER_PROJECT_UPDATES_PER_SECOND = 240
+PAPER_SOCKET_QUEUE_SIZE = 128
+PAPER_ADMISSION_RECHECK_SECONDS = 1.0
+PAPER_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+PAPER_PUBLISH_IDLE_SECONDS = 30.0
+PAPER_PUBLISH_MAX_SECONDS = 180.0
+PAPER_PUBLISH_RETRY_SECONDS = 60.0
+PAPER_HISTORY_IDLE_SECONDS = 300.0
+PAPER_HISTORY_MAX_SECONDS = 1800.0
+PAPER_HISTORY_AUTO_LIMIT = 100
+PAPER_HISTORY_NAMED_LIMIT = 50
+PAPER_HISTORY_MAX_BYTES = 256 * 1024 * 1024
+PAPER_SAVED_REVISION_LIMIT = 512
+PAPER_COMPACT_UPDATES = 64
+PAPER_TIMER_SECONDS = 1.0
+# Continuous typing rescans history for pruning at most this often.
+PAPER_PRUNE_SECONDS = 30.0
+
+# PAPER_COMPILE: runtime assets and bounded paper previews.
+PAPER_COMPILE_TIMEOUT_SECONDS = 180
+PAPER_COMPILE_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+PAPER_COMPILE_MAX_LOG_BYTES = 64 * 1024
+PAPER_COMPILE_CONCURRENCY = 2
+PAPER_COMPILE_RESULT_LIMIT = 32
+PAPER_COMPILE_POLL_SECONDS = 0.1
+PAPER_COMPILE_DOWNLOAD_TIMEOUT_SECONDS = 120
+PAPER_COMPILE_MAX_ASSET_BYTES = 64 * 1024 * 1024
+
+# PAPER_CHANGES: bounded coach output and persisted card previews (S3).
+PAPER_CHANGES_MAX_FILES = 256
+PAPER_CHANGES_MAX_FILE_BYTES = 16 * 1024 * 1024
+PAPER_CHANGES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+PAPER_CHANGES_MAX_MOVES_BYTES = 64 * 1024
+PAPER_CHANGES_PREVIEW_LINES = 12
+# Line pairs a card diff compares after trimming the common head and tail; past it,
+# the changed middle becomes one card instead of a quadratic comparison.
+PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
+PAPER_COACH_MAX_REFRESH_ROUNDS = 2

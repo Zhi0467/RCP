@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from rcp.attachments import NodeReferenceSelector, PaperReferenceSelector
+from rcp.paper import PaperOp
 from rcp.project_references import resolve_project_references
-from rcp.transport import SSHStateWorkspace
 from tests.test_branch_context import branch_services as branch_services
 
 
@@ -49,28 +48,44 @@ def test_node_snapshot_keeps_source_branch_and_coherent_head(branch_services, mo
         _resolve(branch_services, [selector])
 
 
-def test_paper_reference_reads_saved_canonical_from_completed_generation(
-    branch_services, monkeypatch, tmp_path
-):
-    paper = branch_services[0].paper
-    paper.create()
-    paper._save_draft("unsaved draft", None, None)
-    paper.canonical_path.write_bytes(b"Published canonical paper\r\n")
-    paper.workspace = SSHStateWorkspace(paper.workspace.root, "fixture", "/project")
-    paper.workspace._generations.copy(paper.workspace.root)
-    paper.canonical_path.write_bytes(b"Not yet published\r\n")
-    monkeypatch.setattr(paper.workspace, "refresh", lambda: pytest.fail("reference refreshed"))
-    item = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])[0]
-    assert item.content == b"Published canonical paper\r\n"
-    assert item.reference.version == hashlib.sha256(item.content).hexdigest()
-    with monkeypatch.context() as oversized:
-        oversized.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
-        oversized.setattr(
-            paper.canonical_path.__class__, "read_bytes", lambda _: pytest.fail("read")
-        )
-        with pytest.raises(ValueError):
-            _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
-    paper.workspace = SSHStateWorkspace(tmp_path / "cold-mirror", "fixture", "/cold-project")
+def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_services, monkeypatch):
+    from tests.paper_helpers import apply, saved, start_paper
+
+    live = start_paper(branch_services[0].paper_live)
+    apply(
+        live,
+        [PaperOp(kind="delete", file_id=f.file_id) for f in saved(live, "project").files],
+        "project",
+    )
+    apply(
+        live,
+        [
+            PaperOp(kind="create", file_id="tex", path="main.tex", text="include{sections/a}"),
+            PaperOp(kind="create", file_id="section", path="sections/a.tex", text="Saved draft"),
+            PaperOp(
+                kind="create",
+                file_id="figure",
+                path="figures/a.png",
+                file_kind="binary",
+                data=b"binary",
+            ),
+        ],
+        "project",
+    )
+    snapshot = saved(live, "project")
+    items = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
+    assert [item.reference.path for item in items] == [
+        "figures/a.png",
+        "main.tex",
+        "sections/a.tex",
+    ]
+    assert {item.reference.version for item in items} == {str(snapshot.revision)}
+    one = _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="section")])
+    assert len(one) == 1 and one[0].content == b"Saved draft"
+    assert one[0].reference.source_id == "section"
+    with pytest.raises(ValueError):
+        _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="missing")])
+    monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
 
@@ -124,3 +139,32 @@ def test_expired_artifact_is_refused(branch_services):
             branch_services,
             [ArtifactReferenceSelector(kind="artifact", artifact_id=artifact.artifact_id)],
         )
+
+
+@pytest.mark.parametrize("whole_first", [False, True])
+def test_whole_paper_subsumes_selected_files_and_stages_once(
+    branch_services, tmp_path, whole_first
+):
+    import uuid
+
+    from rcp.attachments import ChatAttachmentStore
+    from tests.paper_helpers import saved, start_paper
+
+    live = start_paper(branch_services[0].paper_live)
+    snapshot = saved(live, "project")
+    selectors = [
+        PaperReferenceSelector(kind="paper", file_id=snapshot.files[0].file_id),
+        PaperReferenceSelector(kind="paper"),
+    ]
+    if whole_first:
+        selectors.reverse()
+    items = _resolve(branch_services, selectors)
+    assert len(items) == len(snapshot.files)
+    batch = ChatAttachmentStore(tmp_path / "attachments").claim(
+        project_id="project",
+        chat_id=str(uuid.uuid4()),
+        client_id=str(uuid.uuid4()),
+        operation_id=str(uuid.uuid4()),
+        reference_files=items,
+    )
+    assert len(batch.attachments) == len(snapshot.files)

@@ -28,6 +28,7 @@ from rcp.limits import (
     PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
 )
 from rcp.runs.membership_fence import press_episode_stop
+from rcp.server_ops.paper_lifecycle import pause_paper_project
 from rcp.storage import AppStore, EpisodeNotRunning, ProjectActiveTaskConflict
 from rcp.storage.models import (
     AgentTaskRecord,
@@ -117,54 +118,59 @@ def stop_project_work(
         raise ProjectDeletionStopsChanged(
             "The running work changed. Review it and confirm Delete again."
         )
-    unstopped: list[str] = []
-    work = store.project_live_work(project_id)
-    for watcher in work.watchers:
-        try:
-            store.stop_watchers(project_id, [watcher.watcher_id])
-        except (KeyError, WatcherClaimConflict) as exc:
-            # A delivery already claimed admits a turn; the task pass stops it.
-            logger.info("Watcher %s left to the task stop: %s", watcher.watcher_id, exc)
-    for episode in work.episodes:
-        try:
-            press_episode_stop(
-                store,
-                background,
-                project_id,
-                episode,
-                diagnostic=_STOP_DIAGNOSTIC,
-                initiated_by="system:project_deleted",
+    with pause_paper_project(store, project_id) as paper:
+        unstopped: list[str] = []
+        work = store.project_live_work(project_id)
+        for watcher in work.watchers:
+            try:
+                store.stop_watchers(project_id, [watcher.watcher_id])
+            except (KeyError, WatcherClaimConflict) as exc:
+                # A delivery already claimed admits a turn; the task pass stops it.
+                logger.info("Watcher %s left to the task stop: %s", watcher.watcher_id, exc)
+        for episode in work.episodes:
+            try:
+                press_episode_stop(
+                    store,
+                    background,
+                    project_id,
+                    episode,
+                    diagnostic=_STOP_DIAGNOSTIC,
+                    initiated_by="system:project_deleted",
+                )
+            except (EpisodeNotRunning, KeyError, ValueError) as exc:
+                # Settled meanwhile, or in wrap-up; its report task is stopped below.
+                logger.info("Episode %s needed no Stop: %s", episode.episode_id, exc)
+        branches = store.branch_names(project_id)
+        # A run's settle or a claimed watcher delivery can admit one last turn.
+        stopping: set[str] = set()
+        for _ in range(2):
+            tasks = store.project_live_work(project_id).tasks
+            if not tasks:
+                break
+            for task in tasks:
+                reason = background.stop_for_project_deletion(task.operation_id)
+                if reason is not None:
+                    unstopped.append(f"{_task_label(task, branches)}: {reason}")
+            stopping.update(
+                background.wait_for_stopped_workers([task.operation_id for task in tasks])
             )
-        except (EpisodeNotRunning, KeyError, ValueError) as exc:
-            # Settled meanwhile, or in wrap-up; its report task is stopped below.
-            logger.info("Episode %s needed no Stop: %s", episode.episode_id, exc)
-    branches = store.branch_names(project_id)
-    # A run's settle or a claimed watcher delivery can admit one last turn.
-    stopping: set[str] = set()
-    for _ in range(2):
-        tasks = store.project_live_work(project_id).tasks
-        if not tasks:
-            break
-        for task in tasks:
-            reason = background.stop_for_project_deletion(task.operation_id)
-            if reason is not None:
-                unstopped.append(f"{_task_label(task, branches)}: {reason}")
-        stopping.update(background.wait_for_stopped_workers([task.operation_id for task in tasks]))
-    # The watchers are already retired, so a retry would no longer find their
-    # jobs: cancel them now, even when the project must be kept below.
-    unstopped.extend(_cancel_external_work(store, project_id, work.watchers))
-    # A worker can settle its task, then keep using the project's rows and
-    # stage; deleting them under it would corrupt both, so keep the project.
-    if background.wait_for_stopped_workers(sorted(stopping), timeout=0.0):
-        raise ProjectActiveTaskConflict(
-            " ".join(
-                [
-                    "An agent task is still stopping. Try Delete again in a moment.",
-                    *(["RCP could not stop:", "; ".join(unstopped)] if unstopped else []),
-                ]
+        # The watchers are already retired, so a retry would no longer find their
+        # jobs: cancel them now, even when the project must be kept below.
+        unstopped.extend(_cancel_external_work(store, project_id, work.watchers))
+        # A worker can settle its task, then keep using the project's rows and
+        # stage; deleting them under it would corrupt both, so keep the project.
+        if background.wait_for_stopped_workers(sorted(stopping), timeout=0.0):
+            raise ProjectActiveTaskConflict(
+                " ".join(
+                    [
+                        "An agent task is still stopping. Try Delete again in a moment.",
+                        *(["RCP could not stop:", "; ".join(unstopped)] if unstopped else []),
+                    ]
+                )
             )
-        )
-    return unstopped
+        if paper is not None:
+            paper.dispose(project_id)
+        return unstopped
 
 
 def _cancel_external_work(

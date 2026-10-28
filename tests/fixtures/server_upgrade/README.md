@@ -157,3 +157,8 @@ boundary source from `pre-chat-forks-v31-cfaebcc`.
 status and ending began refreshing its question cards (storage migration 62),
 ending at migration 61 after machine cards. It is built by the exact boundary
 source from `pre-machine-settings-v32-0a934a6`.
+
+`pre-paper-live-v34-22089be` retains the last shape before shared live Paper
+added its tables (storage migration 63), ending at migration 62 after question
+versions. It is built by the exact boundary source from
+`pre-question-versions-v33-070729d`.

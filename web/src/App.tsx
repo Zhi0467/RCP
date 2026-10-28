@@ -48,7 +48,7 @@ import {
   episodesProfile,
   experimentIndexProfile,
 } from "./experiments/episodeResources";
-import { paperProfile } from "./paper/paperResources";
+import { paperFileRequest, paperProfile } from "./paper/paperResources";
 import type { PaperEditorState } from "./paper/PaperWorkspace";
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
@@ -427,8 +427,8 @@ const ExecutionView = lazy(() =>
 const ResearchDrilldown = lazy(() =>
   import("./graph/ResearchDrilldown").then((module) => ({ default: module.ResearchDrilldown })),
 );
-const LoadedPaperWorkspace = lazy(() =>
-  import("./paper/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
+const PaperWorkspace = lazy(() =>
+  import("./paper/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
   import("./projects/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
@@ -655,6 +655,9 @@ function MemberApp({
     setupOpen: isSetupHash(window.location.hash),
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
+  const [requestedPaperFile, setRequestedPaperFile] = useState(() =>
+    paperFileRequest(window.location.hash),
+  );
   const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
     null,
   );
@@ -1707,14 +1710,6 @@ function MemberApp({
     if (projectId) store.invalidate(resourceKeyId(usageProfile(projectId).key));
   }, [projectId, store]);
 
-  useLayoutEffect(() => {
-    // A new editor supersedes the old one's pending save. Leaving Paper alone
-    // still lets that save update the project snapshot used by other views.
-    if (view === "paper" && project?.id) {
-      dispatchProjectSession({ kind: "paper_editor_opened" });
-    }
-  }, [dispatchProjectSession, project?.id, view]);
-
   useEffect(() => {
     const handleHashChange = (event: HashChangeEvent) => {
       // A notification link is not a project route; the resolver below replaces it
@@ -1725,6 +1720,7 @@ function MemberApp({
       }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
+      setRequestedPaperFile(paperFileRequest(window.location.hash));
       const nextTarget = graphTargetFromHash(window.location.hash);
       setRequestedChat({
         hash: window.location.hash,
@@ -2034,6 +2030,9 @@ function MemberApp({
           sourceTarget,
           link.kind === "node" ? "dag" : link.kind === "paper" ? "paper" : "artifacts",
         );
+        if (link.kind === "paper" && !["all", "introduction"].includes(link.itemId)) {
+          next += `&paper_file=${encodeURIComponent(link.itemId)}`;
+        }
         if (link.kind !== "paper") setNotificationNode(link);
       } else if (link.kind === "consolidation") {
         // A consolidation row or schedule notice lives in the Inbox itself.
@@ -4303,7 +4302,7 @@ function MemberApp({
         {voiceSurface}
       </div>
     );
-  if (!project || !paper)
+  if (!project || paper === null)
     return (
       <div className="fatal-state">
         <TriangleAlert />
@@ -4671,7 +4670,7 @@ function MemberApp({
         {item.view === "attention" && attentionCount > 0 && (
           <small className="inbox-count">{attentionCount}</small>
         )}
-        {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
+        {item.view === "artifacts" && paper && <small>1</small>}
         {item.view === "chats" && chatsIndicator && (
           <small
             className={`chats-indicator ${chatsIndicator}`}
@@ -5181,7 +5180,7 @@ function MemberApp({
               <ArtifactsSubnav
                 view={view}
                 filesActive={!activePin}
-                paperUnsynced={paper.sync_state !== "synced"}
+                paperUnsynced={paper}
                 failed={Boolean(pinsResource.error)}
                 onChange={(next) => {
                   setPinSelection(null);
@@ -5308,20 +5307,20 @@ function MemberApp({
             <div className="artifacts-shell">
               <ArtifactsSubnav
                 view={view}
-                paperUnsynced={paper.sync_state !== "synced"}
+                paperUnsynced={paper}
                 failed={Boolean(pinsResource.error)}
                 onChange={changeView}
               >
                 {pinTabs}
               </ArtifactsSubnav>
-              <LoadedPaperWorkspace
-                graphTarget={graphTarget}
+              <PaperWorkspace
                 key={project.id}
                 apiBase={apiBase}
                 project={project}
                 tasks={projectTasks}
                 onStartTask={startAgentTask}
                 editorState={paperEditorStates.current.get(project.id)}
+                requestedFileId={requestedPaperFile}
                 onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
               />
             </div>
@@ -5436,7 +5435,7 @@ function MemberApp({
         </Suspense>
       </main>
 
-      {phone && view !== "chats" && (
+      {phone && view !== "chats" && view !== "paper" && (
         <PhoneAskButton
           disabled={projectReconciliation !== "authoritative"}
           onAsk={askAboutProject}
@@ -5450,7 +5449,7 @@ function MemberApp({
             (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
           )}
           moreBadge={
-            (chatsIndicator || paper.sync_state !== "synced") && (
+            (chatsIndicator || paper) && (
               <small className="phone-more-badge" aria-label="Updates in More" />
             )
           }

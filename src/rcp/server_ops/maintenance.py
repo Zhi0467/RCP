@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -15,7 +16,10 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks, StartupEffectFence
     from rcp.projects import ProjectCatalog
     from rcp.server_ops.control import ServerControlBackupCaptureResult
+    from rcp.server_ops.paper_lifecycle import PaperLifecycleOwner
     from rcp.storage import AppStore
+
+_LOG = logging.getLogger(__name__)
 
 
 class MaintenanceRefused(RuntimeError):
@@ -151,6 +155,17 @@ class MaintenanceCoordinator:
         self.quiescent = identity is not None
         self.capture = None
         self.verification_sha256 = None
+        self._paused_papers: list[tuple[str, PaperLifecycleOwner]] = []
+
+    def _resume_papers(self) -> None:
+        # One project's failed resume must not keep every other project, or
+        # application admission, closed; it stays paused and is logged.
+        while self._paused_papers:
+            project_id, paper = self._paused_papers.pop()
+            try:
+                paper.resume(project_id)
+            except Exception:
+                _LOG.exception("Paper for project %s could not resume", project_id)
 
     def require_identity(self, identity: MaintenanceIdentity) -> None:
         if self.identity != identity:
@@ -191,8 +206,18 @@ class MaintenanceCoordinator:
         self.background_admission.close_and_wait(
             timeout=remaining(), additional_idle=self.background.runtime_is_idle
         )
-        self.capture = self.capture_sqlite()
-        self.quiescent = True
+        from rcp.server_ops.paper_lifecycle import detach_paper_runtime, get_paper_live
+
+        for record in self.store.projects():
+            get_paper_live(self.store, record.project_id)
+        try:
+            self._paused_papers = detach_paper_runtime(self.store)
+            remaining()
+            self.capture = self.capture_sqlite()
+            self.quiescent = True
+        except BaseException:
+            self._resume_papers()
+            raise
 
     def verify(self, identity: MaintenanceIdentity, *, proof_path: Path, proof_sha256: str) -> None:
         self.require_identity(identity)
@@ -237,5 +262,6 @@ class MaintenanceCoordinator:
                 )
             if self.runtime_error():
                 raise MaintenanceRefused("Deferred runtime startup failed after admission release.")
+        self._resume_papers()
         self.admission.reopen()
         self.quiescent = False

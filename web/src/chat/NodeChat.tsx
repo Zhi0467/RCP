@@ -106,9 +106,9 @@ import {
   openRepositoryFile as openRepositoryFilePanel,
 } from "../artifacts/artifactViewerModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
+import { returnSends } from "../ui/composerKeys";
 import {
   InlineArtifact,
-  InlineArtifactLoading,
   InlineArtifactMissing,
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
@@ -323,6 +323,10 @@ interface KeyboardChatAnnotationComposer {
 }
 
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
+
+// Where the reader left each chat in this session, kept only while they had
+// scrolled up; a chat without an entry opens at its bottom.
+const chatScrollPositions = new Map<string, number>();
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
 const EMPTY_HISTORY: ChatMessage[] = [];
@@ -652,11 +656,15 @@ export function NodeChat({
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
-  const shouldStickToBottomRef = useRef(true);
+  const scrollKey = `${project.id}:${chatId}`;
+  // A saved position is applied as the transcript renders, until the view
+  // reaches it or the reader scrolls.
+  const restoreTopRef = useRef(chatScrollPositions.get(scrollKey) ?? null);
+  const shouldStickToBottomRef = useRef(restoreTopRef.current === null);
   // The last scroll position this view observed; a smaller one means the reader
   // moved up, and only the reader's own return to the bottom re-sticks.
   const lastScrollTopRef = useRef(0);
-  const lastChatIdRef = useRef(chatId);
+  const lastChatIdRef = useRef(scrollKey);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
@@ -907,13 +915,20 @@ export function NodeChat({
   }, [annotationComposerPlaced, annotationComposerStep]);
 
   useEffect(() => {
-    if (lastChatIdRef.current !== chatId) {
-      lastChatIdRef.current = chatId;
-      shouldStickToBottomRef.current = true;
+    if (lastChatIdRef.current !== scrollKey) {
+      lastChatIdRef.current = scrollKey;
+      restoreTopRef.current = chatScrollPositions.get(scrollKey) ?? null;
+      shouldStickToBottomRef.current = restoreTopRef.current === null;
       setRepositoryFileErrors(new Map());
     }
     const element = chatLinesRef.current;
     if (!element) return;
+    if (restoreTopRef.current !== null) {
+      element.scrollTop = restoreTopRef.current;
+      lastScrollTopRef.current = element.scrollTop;
+      if (Math.abs(element.scrollTop - restoreTopRef.current) < 1) restoreTopRef.current = null;
+      return;
+    }
     // A refresh can render between the reader's scroll and its scroll event; their
     // position wins over a follow decided before they moved.
     if (chatReaderMovedUp(chatScrollObservation(element, lastScrollTopRef.current)))
@@ -922,7 +937,7 @@ export function NodeChat({
     element.scrollTop = element.scrollHeight;
     lastScrollTopRef.current = element.scrollTop;
     // Question cards load after the transcript and end it, so they move the bottom too.
-  }, [chatId, transcript, questionState.questions]);
+  }, [scrollKey, transcript, questionState.questions]);
 
   useEffect(() => {
     attachmentSetIdRef.current = attachmentSetId;
@@ -1580,11 +1595,18 @@ export function NodeChat({
 
   const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
+    // A restore the transcript was still too short to reach is not the reader's move.
+    if (restoreTopRef.current !== null) {
+      if (element.scrollTop === lastScrollTopRef.current) return;
+      restoreTopRef.current = null;
+    }
     shouldStickToBottomRef.current = chatFollowsBottom(
       chatScrollObservation(element, lastScrollTopRef.current),
       CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
     );
     lastScrollTopRef.current = element.scrollTop;
+    if (shouldStickToBottomRef.current) chatScrollPositions.delete(scrollKey);
+    else chatScrollPositions.set(scrollKey, element.scrollTop);
   };
 
   const openAnnotationComposer = (range: Range) => {
@@ -1916,6 +1938,7 @@ export function NodeChat({
       return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
+    restoreTopRef.current = null;
     const request = {
       message_id: crypto.randomUUID(),
       attempt: task.attempt,
@@ -2041,6 +2064,7 @@ export function NodeChat({
   const submitTurn = async (turn: PendingChatTurn) => {
     const pending = { ...turn, error: undefined };
     shouldStickToBottomRef.current = true;
+    restoreTopRef.current = null;
     setPendingTurn(pending);
     setSubmitError(null);
     setSubmitting(true);
@@ -2269,7 +2293,9 @@ export function NodeChat({
           return;
         }
       }
-      setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
+      // A path no repository or turn folder owns, such as an API route, is an inert link.
+      if (resolution.reason !== "no-match")
+        setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
 
@@ -2357,17 +2383,11 @@ export function NodeChat({
     const { artifact } = found;
     // An older reply's task, or the earlier turn it cites, has aged out of the recent
     // list, so fetch the exact task before deciding the artifact is missing.
+    // Loading moves from the citing turn to the cited one; each loads on mount.
     if (found.loading)
-      return (
-        <InlineArtifactLoading
-          // Loading moves from the citing turn to the cited one; each loads on mount.
-          key={found.taskId}
-          name={found.name}
-          onLoad={() => {
-            if (!agedInlineArtifacts.has(found.taskId)) void loadTaskArtifacts(found.taskId);
-          }}
-        />
-      );
+      return renderArtifactPlayer(found.taskId, found.name, null, found.name, () => {
+        if (!agedInlineArtifacts.has(found.taskId)) void loadTaskArtifacts(found.taskId);
+      });
     // A PDF or download-only file keeps its card below the reply.
     if (artifact && !isInlineViewable(artifact))
       return (
@@ -2378,18 +2398,22 @@ export function NodeChat({
       );
     if (!artifact || !artifact.available || !artifact.can_open)
       return <InlineArtifactMissing name={found.name} />;
-    return renderArtifactPlayer(found.taskId, artifact, alt.trim() || artifact.name);
+    return renderArtifactPlayer(found.taskId, found.name, artifact, alt.trim() || artifact.name);
   };
 
+  // Keyed by the cited name, so a loading embed becomes its artifact in the same
+  // element: replacing the element let WebKit move the reader's scroll.
   const renderArtifactPlayer = (
     taskId: string,
-    artifact: AgentArtifactDescriptor,
+    slot: string,
+    artifact: AgentArtifactDescriptor | null,
     title: string,
+    onLoadTask?: () => void,
   ) => {
-    const key = `${taskId}:${artifact.artifact_id}`;
+    const key = `${taskId}:${artifact?.artifact_id}`;
     return (
       <InlineArtifact
-        key={key}
+        key={`${taskId}:${slot}`}
         projectId={project.id}
         artifact={artifact}
         title={title}
@@ -2397,12 +2421,13 @@ export function NodeChat({
         canComment={!readOnly || allowArtifactComments}
         keeping={keepingArtifacts.has(key)}
         actionError={artifactShellErrors.get(key)}
-        onExpand={() => void openArtifact(taskId, artifact)}
-        onKeep={artifact.can_keep ? () => void keepArtifact(taskId, artifact) : null}
-        download={artifactDownloadControl(taskId, artifact)}
-        onSelection={(event) => openInlineArtifactComment(taskId, artifact, event)}
-        onSelectionCancel={() => cancelInlineArtifactComment(taskId, artifact)}
-        onVersionChange={() => dropStaleArtifactComments(artifact)}
+        onLoadTask={onLoadTask}
+        onExpand={() => artifact && void openArtifact(taskId, artifact)}
+        onKeep={artifact?.can_keep ? () => void keepArtifact(taskId, artifact) : null}
+        download={artifact && artifactDownloadControl(taskId, artifact)}
+        onSelection={(event) => artifact && openInlineArtifactComment(taskId, artifact, event)}
+        onSelectionCancel={() => artifact && cancelInlineArtifactComment(taskId, artifact)}
+        onVersionChange={() => artifact && dropStaleArtifactComments(artifact)}
       />
     );
   };
@@ -2777,7 +2802,12 @@ export function NodeChat({
                   )
                     return null;
                   if (artifact.view === "video" && artifact.available && artifact.can_open)
-                    return renderArtifactPlayer(line.taskId, artifact, artifact.name);
+                    return renderArtifactPlayer(
+                      line.taskId,
+                      artifact.name,
+                      artifact,
+                      artifact.name,
+                    );
                   const taskUpdatedAt =
                     relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ??
                     "";
@@ -3175,7 +3205,7 @@ export function NodeChat({
                 }
                 return;
               }
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (returnSends(event)) {
                 event.preventDefault();
                 void send();
               }

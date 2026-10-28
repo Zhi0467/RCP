@@ -264,9 +264,28 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
-    (("GET",), "/api/projects/{project_id}/paper"),
-    (("POST",), "/api/projects/{project_id}/paper/create"),
-    (("PUT",), "/api/projects/{project_id}/paper"),
+    (("DELETE",), "/api/projects/{project_id}/paper/files/{file_id}"),
+    (("GET",), "/api/paper-assets/typst/{asset}"),
+    (("GET",), "/api/projects/{project_id}/paper/changes"),
+    (("GET",), "/api/projects/{project_id}/paper/changes/{change_id}/proposed"),
+    (("GET",), "/api/projects/{project_id}/paper/compile/{compile_id}/pdf"),
+    (("GET",), "/api/projects/{project_id}/paper/engines"),
+    (("GET",), "/api/projects/{project_id}/paper/files/{file_id}/raw"),
+    (("DELETE",), "/api/projects/{project_id}/paper/history/{version_id}"),
+    (("GET",), "/api/projects/{project_id}/paper/history"),
+    (("GET",), "/api/projects/{project_id}/paper/history/{version_id}/files/{file_id}"),
+    (("GET",), "/api/projects/{project_id}/paper/tree"),
+    (("POST",), "/api/projects/{project_id}/paper/changes/undo-all"),
+    (("POST",), "/api/projects/{project_id}/paper/changes/{group_id}/{action}"),
+    (("POST",), "/api/projects/{project_id}/paper/compile"),
+    (("POST",), "/api/projects/{project_id}/paper/engines/{name}/install"),
+    (("POST",), "/api/projects/{project_id}/paper/files"),
+    (("POST",), "/api/projects/{project_id}/paper/files/{file_id}/rename"),
+    (("POST",), "/api/projects/{project_id}/paper/history"),
+    (("POST",), "/api/projects/{project_id}/paper/history/{version_id}/restore"),
+    (("POST",), "/api/projects/{project_id}/paper/hold/resolve"),
+    (("POST",), "/api/projects/{project_id}/paper/uploads"),
+    (("PUT",), "/api/projects/{project_id}/paper/files/{file_id}/content"),
     (("GET",), "/api/projects/{project_id}/paper/sessions"),
     (("DELETE",), "/api/projects/{project_id}/terminals/{session_id}"),
     (("GET",), "/api/projects/{project_id}/terminals"),
@@ -329,12 +348,12 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 269
+    assert len(_FROZEN_ROUTE_INVENTORY) == 288
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 265
+    assert sum(isinstance(route, APIRoute) for route in routes) == 284
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

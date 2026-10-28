@@ -34,6 +34,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
+    _paper_changes_root,
     _require_project_write_scope,
     _require_provider_version,
     _usage_dedupe_key,
@@ -104,7 +105,7 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             request.invocation_gate,
         )
         if (
-            request.capability in {"discuss", "paper_readonly"}
+            request.capability in {"discuss", "paper_suggest"}
             and request.invocation_gate is not None
         ):
             self.command[self.command.index("--agent") + 1] = _agent_name(permission)
@@ -314,9 +315,7 @@ class OpenCodeProfile(ProviderProfile):
             command.extend(["--model", model])
         if reasoning:
             command.extend(["--variant", reasoning])
-        # The paper coach denies every edit outright, so no rule depends on the base.
-        guard = "" if capability == "paper_readonly" else _OUTSIDE_GIT_GUARD
-        return ["sh", "-c", guard + _REPORT_EXIT, *command]
+        return ["sh", "-c", _OUTSIDE_GIT_GUARD + _REPORT_EXIT, *command]
 
     def launch_environment(
         self, request: ProviderTurnRequest, *, permission: dict[str, object]
@@ -424,8 +423,8 @@ def _permission(
     base["external_directory"] = "allow"
     if hidden_read_scope is not None:
         # Native read uses worktree-relative paths; the non-Git guard fixes
-        # their base at /. Paper may run inside Git, and grep/glob match
-        # search expressions: the launch reports provider_native_tools_uncovered.
+        # their base at /. Grep/glob match search expressions: the launch
+        # reports provider_native_tools_uncovered.
         patterns = [
             *(path + "/**" for path in hidden_read_scope.hidden_directories),
             *hidden_read_scope.hidden_directories,
@@ -437,7 +436,9 @@ def _permission(
             **dict.fromkeys((path.lstrip("/") for path in patterns), "deny"),
         }
 
-    if capability == "paper_readonly":
+    if capability == "paper_suggest":
+        changes = _paper_changes_root(write_dirs)
+        base["edit"] = {"*": "deny", _root_pattern(str(changes)): "allow"}
         # The owner dispatches only history reads; the client cannot be replaced.
         if invocation_gate is not None and invocation_gate.client_path is not None:
             client = shlex.join(invocation_gate.client_executable_argv())

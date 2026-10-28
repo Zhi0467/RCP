@@ -28,6 +28,7 @@ from .helpers import (
     wait_for_task_response,
     write_turn_outcome,
 )
+from .paper_helpers import wire_saved_paper
 from .test_consolidation_work import _apply_request
 from .test_experiment_loop_agent_io import _LoopLauncher
 from .test_graph_history_commands import request as history_request
@@ -116,7 +117,8 @@ def test_graph_reader_master_commands_and_committed_observation(
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    service.paper.create()
+    if kind == "paper_coach":
+        wire_saved_paper(service)
     if kind != "seed":
         append_fixture_patch(service, seed_patch())
     input_revision = service.history.state().revision

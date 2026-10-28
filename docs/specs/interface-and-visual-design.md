@@ -288,6 +288,10 @@ chat name. More → Agents opens the board, which lists every agent.
 Wider layouts retain resizable-list preferences; viewport changes never overwrite
 them. Only code, tables, and display math scroll sideways in transcripts; paths
 and URLs wrap. Fenced blocks have icon-only exact-text Copy, with 44px phone targets.
+A chat opens at its bottom and follows new content there. A chat the reader
+scrolled up in reopens at that exact position for the rest of the session, kept in
+memory per chat; nothing loading afterwards moves it. On a touch phone Return types
+a newline and only the send button sends.
 
 `/` or `$` selects packages: arrows highlight, Enter chooses instead of sending,
 Escape dismisses. Settings owns defaults; selections apply to one turn. Fresh
@@ -370,9 +374,12 @@ mirrored launch failure offers no cooperative downgrade. Trust rules belong to
 
 ## Paper
 
-The editor/coach split resizes. Authored content leads without a canonical-file
-banner. Write/Preview share one pane and the chat Markdown renderer, so unsaved
-text can be previewed without creating another document.
+The file tree folds beside a live editor and a Preview/Coach pane. Files retain
+their identity across renames; copy links open that file. The editor shows
+durable save coverage separately from publication. Markdown previews use the
+chat renderer; LaTeX and Typst previews show a PDF. At phone width, Write,
+Preview and Coach occupy one pane selected by the segmented control; Files and
+History open as panels.
 
 ## Auto-research and episode history
 

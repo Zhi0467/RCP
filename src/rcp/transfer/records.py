@@ -24,6 +24,7 @@ from pydantic import (
 
 from rcp.artifacts import kept_binding_is_complete
 from rcp.core.models import GraphBranchMetadata
+from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PaperSection
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -31,7 +32,7 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 6
+TRANSFER_RECORD_SCHEMA_VERSION = 7
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -71,6 +72,8 @@ TRANSFER_RECORD_TABLES = frozenset(
         "watchers",
     }
 )
+
+TRANSFER_RECORD_TABLES |= frozenset(PAPER_PROJECT_TABLES)
 
 TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
@@ -1172,7 +1175,7 @@ class TransferGraphBranchRecord(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1180,6 +1183,7 @@ class TransferRecordBundle(_StrictTransferRecord):
     episodes: tuple[TransferEpisodeRecord, ...]
     branches: tuple[TransferGraphBranchRecord, ...] = ()
     paper_draft: TransferPaperDraft | None = None
+    paper: PaperSection | None = None
 
     @field_validator("project_id")
     @classmethod
@@ -1190,6 +1194,10 @@ class TransferRecordBundle(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_bundle(self) -> TransferRecordBundle:
+        if self.paper is not None and (
+            self.schema_version < 7 or self.paper.project_id != self.project_id
+        ):
+            raise ValueError("saved paper requires matching project and record schema version 7")
         if self.schema_version == 1 and any(episode.archive for episode in self.episodes):
             raise ValueError("episode archive state requires transfer record schema version 2")
         if self.schema_version < 3 and any(episode.graph_archived for episode in self.episodes):
@@ -1349,6 +1357,8 @@ class TransferRecordBundle(_StrictTransferRecord):
     @model_serializer(mode="wrap")
     def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
         data = handler(self)
+        if self.schema_version < 7:
+            data.pop("paper", None)
         if self.schema_version < 6:
             data.pop("branches", None)
         if self.schema_version < 4:
@@ -1487,9 +1497,10 @@ def validate_transfer_table_policy(project_linked_tables: tuple[str, ...]) -> No
 
     current = set(project_linked_tables)
     classified = TRANSFER_RECORD_TABLES | TRANSFER_EXCLUDED_PROJECT_TABLES
-    if current != classified:
-        missing = sorted(current - classified)
-        stale = sorted(classified - current)
+    # S1 registers these tables; old database shapes remain transferable.
+    missing = sorted(current - classified)
+    stale = sorted(classified - current - set(PAPER_PROJECT_TABLES))
+    if missing or stale:
         detail = missing[0] if missing else stale[0]
         raise ValueError(f"project transfer table policy is incomplete at {detail}")
 

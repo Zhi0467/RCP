@@ -38,7 +38,8 @@ def _request(capability, *, scope=None, write_dirs=()) -> ProviderTurnRequest:
         reasoning=None,
         session_id=None,
         read_dirs=[],
-        write_dirs=list(write_dirs),
+        write_dirs=list(write_dirs)
+        or ([Path("/stage/changes")] if capability == "paper_suggest" else []),
         write_scope=scope,
         capability=capability,
         provider_version="1.18.30",
@@ -76,14 +77,15 @@ def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
     ]
 
 
-def test_paper_coach_denies_every_edit_so_no_path_base_is_needed():
-    command, permission = _launch(_request("paper_readonly"))
-    assert "rev-parse" not in command[2]
-    assert "edit" not in permission and "bash" not in permission
+def test_paper_coach_edits_only_changes_and_has_no_shell():
+    command, permission = _launch(_request("paper_suggest"))
+    assert "rev-parse" in command[2]
+    assert permission["edit"] == {"*": "deny", "stage/changes/**": "allow"}
+    assert "bash" not in permission
     assert permission["external_directory"] == "allow"
 
 
-@pytest.mark.parametrize("capability", ["discuss", "paper_readonly", "work_auto"])
+@pytest.mark.parametrize("capability", ["discuss", "paper_suggest", "work_auto"])
 def test_every_launch_denies_unlisted_tools_first(capability):
     scope = _scope() if capability == "work_auto" else None
     _, permission = _launch(_request(capability, scope=scope))
@@ -103,7 +105,7 @@ def test_discuss_edits_only_its_own_folders_and_has_no_shell():
     }
 
 
-@pytest.mark.parametrize("capability", ["discuss", "paper_readonly", "work_auto"])
+@pytest.mark.parametrize("capability", ["discuss", "paper_suggest", "work_auto"])
 def test_every_capability_refuses_a_cli_older_than_the_probed_rules(capability):
     scope = _scope() if capability == "work_auto" else None
     request = replace(_request(capability, scope=scope), provider_version="1.18.29")
@@ -222,7 +224,7 @@ def test_the_wrapper_reports_the_exit_and_refuses_a_git_work_tree(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_readonly"]
+    "capability", ["discuss", "work_auto", "orchestrate", "scratch_patch", "paper_suggest"]
 )
 def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability):
     from rcp.core.models import HiddenReadScope, HiddenReadStatus

@@ -464,7 +464,7 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
     elif target in {"node_chat", "project_chat"}:
         capability = "discuss"
     elif target == "paper_coach":
-        capability = "paper_readonly"
+        capability = "paper_suggest"
     elif target == "discuss":
         capability = "discuss"
     elif target == "work_auto":
@@ -473,12 +473,12 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
         capability = "orchestrate"
     elif target == "scratch_patch":
         capability = "scratch_patch"
-    elif target == "paper_readonly":
-        capability = "paper_readonly"
+    elif target == "paper_suggest":
+        capability = "paper_suggest"
     else:
         raise ValueError(f"Unknown agent surface or capability: {target!r}")
 
-    if capability == "paper_readonly":
+    if capability == "paper_suggest":
         return AgentPermissions(
             read_graph=True,
             read_research_md=True,

@@ -383,7 +383,6 @@ def test_mixed_sources_require_only_server_only_bundle(tmp_path):
     app, store, _actor_value, project, repository, head = _source(tmp_path)
     github, _ = capture_project_transfer_source(app.state.catalog.open(project))
     _git(repository, "remote", "remove", "origin")
-    local, _ = capture_project_transfer_source(app.state.catalog.open(project))
     body = dict(
         request_id=str(uuid.uuid4()),
         project_id=project,
@@ -395,6 +394,10 @@ def test_mixed_sources_require_only_server_only_bundle(tmp_path):
             response = client.post("/api/project-transfers/source-requests", json=body)
             assert response.status_code == 201, response.text
             assert response.json()["source_configuration"]["repositories"][0]["repository"] is None
+        # Startup migrates Paper; compare against the boundary the human reviewed.
+        local = ProjectTransferSourceConfiguration.model_validate_json(
+            json.dumps(response.json()["source_configuration"])
+        )
     payload = local.model_dump(mode="json")
     payload["repositories"].append(
         {**github.model_dump(mode="json")["repositories"][0], "alias": "github"}

@@ -46,6 +46,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Live Paper (v63): fresh, immutable fixture upgrades, and in-place upgrades.
+        "14615397c3f599d096a656ee22f3c2e91bcbb6e079c8db15773f39a1f847705b",
+        "190acaf47763878ceea7f9f187c91f49cf83b36d7678dfb069038171ad2333bb",
+        "1f416682dbd31b8046cee749b7f2d7e899510b4560a59f9050bb4abce428e6a6",
+        "23bcf164f89294fd8679ff78651c4ab8f36fa1cd94f4185d0e087038366bf18d",
+        "46bd4faa3ef739b45f279abc86940de8c37d610b2abc1c81294b98fb43ccdfa7",
+        "721aac969b2bc6c75e638c1535ba75ccd152b6a4d8edac0ece8ce6b8cacd7418",
+        "73431ac7d37c91b7366e6fdbef388d051bf93cc28b40be518aafe33cb9025d07",
+        "a9d0562e10adc42dd1c2e7a3e602c9c56e735e8f7d951ed75eb026bbff8f6a18",
+        "ab5e605dc45f9ebcfd591055a3a7aa4a7ccb33473c1f301ce484df20b13b5eda",
+        "bdfa5207dd9069020a80a154d003daf4967353d5c7c9c1c1c348a29f2cdcec46",
+        "f0d5e88d5ddda33cdd4f2a3db64d0513877cf5cbb5167a63c9ad16a6ad609eb3",
         # Episode lifecycle refreshes question cards (v62): fresh, immutable
         # fixture upgrades, and in-place upgrades.
         "110fbdd0ae9273d7dac6ac40870fa9780447146b979b10ce6650144df904e860",
@@ -1295,7 +1307,7 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
             )
         elif entry.group == "paper_introduction":
             owners.paper.restore_canonical(source, **arguments)
-        elif entry.group == "fact":
+        elif entry.group == "paper_projection" or entry.group == "fact":
             owners.workspace.restore_exact_file(
                 entry.source_relative_path.removeprefix(".research/"), source, **arguments
             )

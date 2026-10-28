@@ -180,3 +180,8 @@ def test_served_pages_revalidate_but_hashed_assets_keep_default_caching(
     # A revalidation still answers 304, so no-cache costs one round trip, not a download.
     assert client.get("/", headers={"if-none-match": page.headers["etag"]}).status_code == 304
     assert "cache-control" not in client.get("/assets/index-abc.js").headers
+    # A page navigation onto an unknown path returns to the app; API fetches still get 404.
+    for path in ("/sections/methods.md", "/api/no-such-route"):
+        stray = client.get(path, headers={"sec-fetch-mode": "navigate"}, follow_redirects=False)
+        assert (stray.status_code, stray.headers["location"]) == (303, "/")
+        assert client.get(path, headers={"sec-fetch-mode": "cors"}).status_code == 404

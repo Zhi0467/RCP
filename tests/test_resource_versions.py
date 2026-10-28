@@ -39,6 +39,7 @@ _CASES = [
         ("artifacts", resource, "metadata", {"metadata": '{"origin_operation_id":"task"}'})
         for resource in ("tasks.status", "tasks.progress", "task")
     ],
+    ("paper_publication", "paper", "hold", {}),
 ]
 
 
@@ -99,6 +100,17 @@ def test_owner_writes_commit_atomically_and_pruning_invalidates(
         assert _generation(connection, resource) == inserted
         connection.execute(f"DELETE FROM {table}")
         assert _generation(connection, resource) > inserted
+
+
+def test_paper_edit_stamps_do_not_invalidate_the_paper_badge(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "store.db")
+    with store.connection() as connection:
+        _insert(connection, "paper_publication", {}, store.now())
+        before = _generation(connection, "paper")
+        connection.execute("UPDATE paper_publication SET last_edit_at='later'")
+        assert _generation(connection, "paper") == before
+        connection.execute("UPDATE paper_publication SET saved_revision=1")
+        assert _generation(connection, "paper") > before
 
 
 @pytest.mark.parametrize("experiment", [False, True])
@@ -243,6 +255,18 @@ _EXEMPT_TABLES = {
     "team_device_pairings": "pairing",
     "team_member_tokens": "credential",
     "team_sessions": "authentication",
+    # Live Paper content; paper_publication owns the paper resource for saves.
+    "paper_files": "paper content",
+    "paper_updates": "paper content",
+    "paper_doc_states": "paper content",
+    "paper_blobs": "immutable paper body",
+    "paper_version_texts": "immutable paper body",
+    "paper_revisions": "paper history",
+    "paper_saved_snapshots": "paper history",
+    "paper_versions": "paper history",
+    "paper_change_groups": "coach cards",
+    "paper_changes": "coach cards",
+    "paper_change_receipts": "receipt",
 }
 
 
@@ -273,6 +297,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "auto_research_child_work_attempts",
             "artifact_versions",
             "artifact_operations",
+            "paper_publication",
         }
     )
     store = AppStore(tmp_path / "store.db")

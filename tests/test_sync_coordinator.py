@@ -168,7 +168,7 @@ def test_local_display_journey_keeps_existing_service_without_sync(manifest, tmp
         before = catalog.content_generations(
             project_id, ["graph:main", "chats", "paper", "settings"]
         )
-        for path in ("", "/chats", "/paper"):
+        for path in ("", "/chats", "/paper/tree"):
             response = client.get(f"/api/projects/{project_id}{path}")
             assert response.status_code == 200, response.text
         assert catalog.open_display(project_id) is service
@@ -235,7 +235,8 @@ def test_remote_display_never_prepares_and_cannot_lag_its_content_token(
     assert after["graph:main"] == before["graph:main"]
     second = client.get(f"/api/projects/{project_id}")
     assert second.status_code == 200, second.text
-    assert second.json()["paper"]["content"] == "New canonical introduction"
+    # Canonical transport changes do not replace the saved live Paper tree.
+    assert second.json()["paper"] == first.json()["paper"]
 
 
 def test_execution_reloads_authoritative_manifest_before_resolving_write_scope(

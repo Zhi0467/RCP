@@ -19,7 +19,6 @@ const server = await createServer({
 });
 const { MarkdownAnswer } = await server.ssrLoadModule("/src/core/chatMarkdown.ts");
 const {
-  INLINE_ARTIFACT_MAX_HEIGHT,
   ARTIFACT_ERROR_MAX_CHARS,
   turnArtifactFor,
   inlineArtifactIds,
@@ -165,19 +164,13 @@ test("shell messages are read only from that frame and bounded", () => {
   const origin = "http://rcp.test";
   const read = (data, source = frame, from = origin) =>
     readInlineShellMessage({ source, origin: from, data }, frame, origin);
-  assert.deepEqual(read({ type: "rcp-artifact-size", version: 1, height: 640.2 }), {
-    kind: "size",
-    height: 641,
-  });
-  assert.equal(
-    read({ type: "rcp-artifact-size", version: 1, height: 1e9 }).height,
-    INLINE_ARTIFACT_MAX_HEIGHT,
-    ARTIFACT_ERROR_MAX_CHARS,
-  );
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, {}), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 40 }, frame, "null"), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: "tall" }), null);
-  assert.equal(read({ type: "rcp-artifact-size", version: 2, height: 40 }), null);
+  const cleared = { type: "rcp-artifact-selection", version: 1, selection: null };
+  assert.equal(read(cleared).kind, "selection");
+  assert.equal(read(cleared, {}), null);
+  assert.equal(read(cleared, frame, "null"), null);
+  assert.equal(read({ ...cleared, version: 2 }), null);
+  // The chat fixes each frame's height, so no frame can resize itself.
+  assert.equal(read({ type: "rcp-artifact-size", version: 1, height: 640 }), null);
 
   const box = read({
     type: "rcp-artifact-selection",
@@ -272,14 +265,14 @@ test("Markdown hands an embedded image to the reply's renderer and keeps other i
 test("a link around an embedded artifact renders without the link, so its actions stay its own", () => {
   const rendered = renderToStaticMarkup(
     createElement(MarkdownAnswer, {
-      text: `[![Plot](${dir}/plot.html)](/repo/file.py) and [a link](/repo/other.py)`,
+      text: `[![Plot](${dir}/plot.html)](/repo/file.py) and [a link](https://example.com/other.py)`,
       renderEmbed: (src, alt) =>
         src.endsWith("plot.html") ? createElement("span", { "data-embed": alt }) : null,
     }),
   );
   assert.match(
     rendered,
-    /<p><span data-embed="Plot"><\/span> and <a href="\/repo\/other.py">a link<\/a><\/p>/,
+    /<p><span data-embed="Plot"><\/span> and <a href="https:\/\/example.com\/other.py"[^>]*>a link<\/a><\/p>/,
   );
   // A link around an ordinary image is kept.
   assert.match(
@@ -289,7 +282,7 @@ test("a link around an embedded artifact renders without the link, so its action
         renderEmbed: () => null,
       }),
     ),
-    /<a href="https:\/\/example.com"><img/,
+    /<a href="https:\/\/example.com"[^>]*><img/,
   );
 });
 

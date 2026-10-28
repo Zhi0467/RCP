@@ -22,7 +22,6 @@ import {
   type ExperimentControlState,
   type GraphHeadRef,
   type GraphState,
-  type PaperSnapshot,
   type ProjectSnapshot,
   type TransitionTriggerManifest,
 } from "../core/types";
@@ -59,7 +58,6 @@ export interface ProjectSessionTabState {
   projectId: string | null;
   graphTarget: GraphTargetRef;
   humanDraft: HumanDraft | null;
-  paperEditorGeneration: number;
   draftReconciliationDiscardedProposalIds: string[];
 }
 
@@ -120,13 +118,6 @@ export type ProjectSessionAction =
       request?: { project_id: string; request_id: number };
     }
   | { kind: "project_replaced"; project: ProjectSnapshot | null }
-  | { kind: "paper_editor_opened" }
-  | {
-      kind: "paper_updated";
-      project_id: string;
-      editor_generation: number;
-      paper: PaperSnapshot;
-    }
   | { kind: "human_draft_loaded"; draft: HumanDraft | null }
   | {
       kind: "human_draft_updated";
@@ -223,7 +214,6 @@ export function emptyProjectSessionState(
     }),
     syncRequestSequence: 0,
     draftHistory: {},
-    paperEditorGeneration: 0,
   };
 }
 
@@ -233,14 +223,11 @@ export function projectSessionReducer(
 ): ProjectSessionState {
   switch (action.kind) {
     case "activate": {
-      const next = withTransitionCoordinator(state, {
+      return withTransitionCoordinator(state, {
         kind: "activate",
         project_id: action.project_id,
         graph_target: action.graph_target ?? state.graphTarget,
       });
-      return action.project_id === state.transitionCoordinator.active_project_id
-        ? next
-        : { ...next, paperEditorGeneration: state.paperEditorGeneration + 1 };
     }
     case "reset": {
       const empty = emptyProjectSessionState(action.project_id, action.graph_target);
@@ -255,7 +242,6 @@ export function projectSessionReducer(
           ? {}
           : clearDraftHistory(state, action.project_id, empty.graphTarget),
         draftPreviewPending: false,
-        paperEditorGeneration: state.paperEditorGeneration + 1,
         transitionCoordinator: reduceProjectTransitionCoordinator(
           action.invalidate_backend
             ? emptyProjectTransitionCoordinator()
@@ -281,7 +267,6 @@ export function projectSessionReducer(
         syncRequestSequence: state.syncRequestSequence,
         projectId: action.project_id,
         draftPreviewPending: false,
-        paperEditorGeneration: state.paperEditorGeneration + 1,
         draftReconciliationDiscardedProposalIds: action.consumeDiscardedProposals
           ? []
           : restored.draftReconciliationDiscardedProposalIds,
@@ -310,18 +295,6 @@ export function projectSessionReducer(
         return state;
       }
       return state.project === action.project ? state : { ...state, project: action.project };
-    }
-    case "paper_editor_opened":
-      return { ...state, paperEditorGeneration: state.paperEditorGeneration + 1 };
-    case "paper_updated": {
-      if (
-        action.project_id !== state.transitionCoordinator.active_project_id ||
-        action.project_id !== state.project?.id ||
-        action.editor_generation !== state.paperEditorGeneration
-      ) {
-        return state;
-      }
-      return { ...state, project: { ...state.project, paper: action.paper } };
     }
     case "human_draft_loaded":
       return {
@@ -895,7 +868,6 @@ function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSess
     projectId: state.projectId,
     graphTarget: state.graphTarget ?? MAIN_GRAPH,
     humanDraft: state.humanDraft,
-    paperEditorGeneration: state.paperEditorGeneration,
     draftReconciliationDiscardedProposalIds: [...state.draftReconciliationDiscardedProposalIds],
   };
 }

@@ -133,6 +133,7 @@ class AppStoreBase:
         (60, "chat_forks_v1"),
         (61, "machine_settings_v1"),
         (62, "episode_question_versions_v1"),
+        (63, "paper_live_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -952,11 +953,127 @@ class AppStoreBase:
             name="episode_question_versions_v1",
             migration=migrate_episode_question_versions,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=63,
+            name="paper_live_v1",
+            migration=self._migrate_paper_live,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_paper_live(connection: sqlite3.Connection) -> None:
+        # Execute individually: executescript would commit the migration transaction.
+        statements = (
+            """CREATE TABLE IF NOT EXISTS paper_files (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('text', 'binary')),
+                created_at TEXT NOT NULL,
+                deleted_at TEXT,
+                blob_sha256 TEXT,
+                PRIMARY KEY(project_id, file_id)
+            )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS paper_files_live_path
+                ON paper_files(project_id, path) WHERE deleted_at IS NULL""",
+            """CREATE TABLE IF NOT EXISTS paper_updates (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                "update" BLOB NOT NULL,
+                revision INTEGER NOT NULL,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, file_id, seq)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_doc_states (
+                project_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                state BLOB NOT NULL,
+                through_seq INTEGER NOT NULL,
+                through_revision INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(project_id, file_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_blobs (
+                sha256 TEXT PRIMARY KEY,
+                bytes BLOB NOT NULL,
+                size INTEGER NOT NULL CHECK(size >= 0)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_revisions (
+                project_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                PRIMARY KEY(project_id, revision)
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_publication (
+                project_id TEXT PRIMARY KEY,
+                saved_revision INTEGER NOT NULL DEFAULT 0,
+                published_revision INTEGER NOT NULL DEFAULT 0,
+                pending_since TEXT,
+                last_error TEXT,
+                hold TEXT,
+                last_edit_at TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_versions (
+                project_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('auto', 'named')),
+                name TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                manifest TEXT NOT NULL,
+                PRIMARY KEY(project_id, version_id)
+            )""",
+            """CREATE INDEX IF NOT EXISTS paper_versions_revision
+                ON paper_versions(project_id, revision)""",
+            """CREATE TABLE IF NOT EXISTS paper_version_texts (
+                sha256 TEXT PRIMARY KEY,
+                zbody BLOB NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS paper_saved_snapshots (
+                project_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                manifest TEXT NOT NULL,
+                PRIMARY KEY(project_id, revision)
+            )""",
+            """CREATE TABLE paper_change_groups (
+            project_id TEXT NOT NULL, group_id TEXT NOT NULL, task_id TEXT NOT NULL,
+            base_revision INTEGER NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL,
+            decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, group_id))""",
+            """CREATE INDEX paper_change_groups_task
+            ON paper_change_groups(project_id, task_id, created_at)""",
+            """CREATE TABLE paper_changes (
+            project_id TEXT NOT NULL, change_id TEXT NOT NULL, group_id TEXT NOT NULL,
+            payload TEXT NOT NULL, PRIMARY KEY (project_id, change_id),
+            FOREIGN KEY (project_id, group_id)
+                REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""",
+            """CREATE TABLE paper_change_receipts (
+        project_id TEXT NOT NULL, receipt_key TEXT NOT NULL, group_id TEXT,
+        action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, receipt_key),
+        FOREIGN KEY (project_id, group_id)
+            REFERENCES paper_change_groups(project_id, group_id) ON DELETE CASCADE)""",
+        )
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute(
+            "UPDATE graph_runs SET dispatch_authority_json = "
+            "json_set(dispatch_authority_json, '$.task_contract', 'paper_suggest') "
+            "WHERE json_valid(dispatch_authority_json) "
+            "AND json_extract(dispatch_authority_json, '$.task_contract') = 'paper_readonly'"
+        )
+        from rcp.storage.resource_versions import install_paper_resource_versions
+
+        install_paper_resource_versions(connection)
 
     def _migrate_conversation_names(self, connection: sqlite3.Connection) -> None:
         from rcp.storage.bulletin import migrate_bulletin_actor_ids

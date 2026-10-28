@@ -33,7 +33,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v12"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v14"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -167,7 +167,7 @@ def experiment_loop_task_contract(
     research_path: str,
     focused_experiment_id: str,
     repositories: list[dict[str, str]],
-    introduction_path: str | None,
+    paper_path: str | None,
     human_request_path: str,
     loop_control_path: str,
     watcher_state_path: str,
@@ -249,7 +249,7 @@ Required current inputs:
 - Current watcher state for this Experiment: `{watcher_state_path}`
 - Human objective: `{human_request_path}`
 {_pointer("Ontology extensions", ontology_path if ontology_extensions else None)}
-{_pointer("Human introduction", introduction_path)}
+{_pointer("Paper folder (read-only)", paper_path)}
 Repository pointers and expected operational targets:
 {_repository_pointers(repositories)}{compute_connection_section(compute_profiles)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}
 Exact outputs and RCP tooling:

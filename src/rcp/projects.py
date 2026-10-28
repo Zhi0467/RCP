@@ -13,7 +13,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,7 +48,8 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
 )
-from rcp.paper import PaperService, PaperSnapshot
+from rcp.paper import PaperLive, PaperService
+from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
@@ -538,7 +539,6 @@ def complete_restored_project_publication(
             "The restored canonical identity differs from its catalog home."
         )
     owners.service.chat_summaries(limit=1)
-    owners.paper.snapshot()
     record = store.project(capture.project_id)
     if record is None:
         raise RestoredProjectPublicationRefused(
@@ -851,6 +851,12 @@ class ProjectCatalog:
         self.store = store
         self.launcher = launcher
         self.provider_skills = provider_skills
+        self.paper_live = PaperLive(
+            store, lambda project_id: self._display_workspace_or_refresh(project_id)[1]
+        )
+        self.paper_admission: Callable[[str], AbstractContextManager[object]] = lambda _project_id: (
+            nullcontext()
+        )
         self.on_accepted_transition: Callable[[str, int], None] | None = None
         self.on_accepted_branch_transition: Callable[[str, str, int], None] | None = None
         self._services: dict[str, ProjectService] = {}
@@ -947,6 +953,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         if root != workspace.root:
             self._display_services[project_id] = (root, service, materialization)
@@ -1265,6 +1273,8 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
                 project_service_resolver=self.open,
+                paper_live=self.paper_live,
+                paper_admission=lambda project_id: self.paper_admission(project_id),
             )
             snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1720,6 +1730,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
 
     def discard_retired_transfer_source(self, request_id: str) -> None:
@@ -1978,25 +1990,33 @@ class ProjectCatalog:
                 with suppress(Exception):
                     opening.result()
             unstopped: list[str] = []
+            stopped = False
             if stop_work is not None:
                 # Refuse before stopping anything: a transfer or an unsafe file
                 # target would otherwise leave the work stopped and the project kept.
                 self._validated_deletion_targets(project_id, work_stopped=False)
                 unstopped = stop_work(project_id)
+                stopped = True
             with self._snapshot_lock(project_id):
-                (
-                    stages,
-                    display_snapshot,
-                    paper_snapshot,
-                    project_cache_root,
-                    imported_sources,
-                    imported_inventory,
-                ) = self._validated_deletion_targets(project_id, work_stopped=True)
+                try:
+                    (
+                        stages,
+                        display_snapshot,
+                        paper_snapshot,
+                        project_cache_root,
+                        imported_sources,
+                        imported_inventory,
+                    ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
-                from rcp.runs.browser_lifecycle import close_chat_browser_owners
+                    from rcp.runs.browser_lifecycle import close_chat_browser_owners
 
-                close_chat_browser_owners(self.store, project_id, delete_profile=True)
-                database_records = self.store.delete_project_records(project_id)
+                    close_chat_browser_owners(self.store, project_id, delete_profile=True)
+                    database_records = self.store.delete_project_records(project_id)
+                except BaseException:
+                    if stopped:
+                        # The project is kept, so its paper must publish again.
+                        _resume_kept_paper(self.store, project_id)
+                    raise
                 self._display_workspaces.pop(project_id, None)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
@@ -2232,21 +2252,6 @@ class ProjectCatalog:
             project_id, "snapshot_freshness", lambda: freshness
         )
 
-    def update_cached_snapshot_paper(
-        self, project_id: str, read_paper: Callable[[], PaperSnapshot]
-    ) -> bool:
-        """Keep the display snapshot's Paper current after a create or save.
-
-        Graph refreshes reuse the cached Paper, so without this a restart opens
-        Paper from the state it had before the introduction existed. The Paper
-        is read under the snapshot lock, so of two overlapping saves the later
-        cache update always holds the newer Paper.
-        """
-
-        return self._update_cached_snapshot_field(
-            project_id, "paper", lambda: read_paper().model_dump(mode="json")
-        )
-
     def _update_cached_snapshot_field(
         self, project_id: str, key: str, read_value: Callable[[], object]
     ) -> bool:
@@ -2467,6 +2472,9 @@ class ProjectCatalog:
                 )
         except (TypeError, ValueError):
             return "invalid", None
+        if isinstance(snapshot.get("paper"), dict):
+            # Older releases cached a document summary; the badge is publication state.
+            snapshot["paper"] = publication_badge(self.store, project_id)
         if not _valid_display_snapshot(
             project_id,
             snapshot,
@@ -2558,6 +2566,8 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            paper_live=self.paper_live,
+            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         return service, initialized
 
@@ -2762,6 +2772,7 @@ class ProjectDisplayCache:
         payload["skill_catalog"] = official_registry().catalog()
         _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
+        payload["paper"] = publication_badge(self._store, project_id)
         repositories = payload["repositories"]
         assert isinstance(repositories, list)
         payload["repositories"] = project_repository_descriptors(
@@ -3006,10 +3017,9 @@ class ProjectDisplayCache:
             if cached is None:
                 raise ValueError("The existing project display snapshot is invalid.")
             materialization = service.history.materialize(write_outputs=False)
-            paper = PaperSnapshot.model_validate(cached["paper"])
             snapshot = self.complete_snapshot(
                 project_id,
-                service.project_snapshot(materialization=materialization, paper=paper),
+                service.project_snapshot(materialization=materialization),
                 fresh=True,
             )
             self._catalog.commit_cached_snapshot(
@@ -3136,6 +3146,19 @@ def _is_canonical_uuid4(value: str) -> bool:
     except ValueError:
         return False
     return parsed.version == 4 and str(parsed) == value
+
+
+def _resume_kept_paper(store: AppStore, project_id: str) -> None:
+    from rcp.server_ops.paper_lifecycle import get_paper_live
+
+    live = get_paper_live(store, project_id)
+    if live is None:
+        return
+    try:
+        live.resume(project_id)
+    except Exception:
+        # The deletion's own failure is the one the caller must see.
+        _LOGGER.exception("Paper for kept project %s could not resume", project_id)
 
 
 def _warn_project_cleanup_failure(project_id: str, path: str, error: Exception) -> None:
@@ -3316,6 +3339,8 @@ def _valid_display_snapshot(
     last_remote_sync_at = snapshot.get("last_remote_sync_at")
     if last_remote_sync_at is not None and not isinstance(last_remote_sync_at, str):
         return False
+    if not isinstance(snapshot.get("paper"), bool):
+        return False
     if not all(
         isinstance(snapshot.get(key), dict)
         for key in (
@@ -3324,7 +3349,6 @@ def _valid_display_snapshot(
             "counts",
             "graph_mutation",
             "graph",
-            "paper",
             "paper_coach",
             "agent_profiles",
             "provider_readiness",

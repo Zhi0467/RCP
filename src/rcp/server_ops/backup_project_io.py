@@ -37,6 +37,7 @@ ProjectFileGroup = Literal[
     "canonical",
     "chat",
     "paper_introduction",
+    "paper_projection",
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
@@ -190,7 +191,7 @@ def stable_copy_entry(
     project_id: str,
     relative: PurePosixPath,
     *,
-    group: Literal["canonical", "paper_introduction", "fact"],
+    group: Literal["canonical", "paper_introduction", "paper_projection", "fact"],
     expected_size: int | None = None,
 ) -> BackupFileEntry:
     destination = _destination_path(project_root, relative)

@@ -23,7 +23,11 @@ import type { GraphNode } from "./types";
 /** The Markdown syntax every reply is read with; embed detection parses with it too. */
 export const ANSWER_SYNTAX_PLUGINS = [remarkGfm, remarkMath] as const;
 
-const NODE_REFERENCE_CANDIDATE = /[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
+// The lookbehind starts a candidate only at a word boundary (the same boundary
+// isNodeReferenceBoundary checks); without it a long run of letters with no slash
+// backtracks quadratically and freezes the page.
+const NODE_REFERENCE_CANDIDATE =
+  /(?<![A-Za-z0-9_\/-])[a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*/g;
 const NODE_REFERENCE_HREF_PREFIX = "#rcp-node=";
 const NON_TEXT_CHILDREN = new Set([
   "code",
@@ -258,6 +262,10 @@ function MarkdownLink({ href, children, className, node, ...props }: MarkdownLin
           onOpenNode(nodeId);
         }
       : undefined;
+  const external = /^(https?:|mailto:)/i.test(href ?? "");
+  // A path the app does not handle would navigate the whole page onto a backend URL.
+  if (!nodeId && !repositoryFile && !external && !/^\/?#\//.test(href ?? ""))
+    return createElement("span", { className: className || undefined }, children);
   return createElement(
     "a",
     {

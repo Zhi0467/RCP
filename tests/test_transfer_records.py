@@ -1062,3 +1062,31 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
             connection.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
         store._insert_transfer_episodes(connection, records, {})
     assert store.export_project_transfer_records(project_id, attributions=attributions) == records
+
+
+def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from rcp.server_ops import backup_paper
+    from rcp.transfer.records import TransferRecordBundle
+    from tests.test_backup_paper import _saved_paper
+
+    source, project_id, attributions = _store(manifest, tmp_path)
+    target = AppStore(tmp_path / "target.sqlite3")
+    with source.connection() as connection:
+        connection.execute("PRAGMA defer_foreign_keys=ON")
+        _saved_paper(connection, monkeypatch, project_id=project_id)
+    exported = source.export_project_transfer_records(project_id, attributions=attributions)
+    restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
+    assert restored.schema_version == 7
+    assert restored.paper is not None
+    assert restored.paper == exported.paper
+    for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
+        assert len(restored.paper.tables[table]) == 1
+    with target.connection() as connection:
+        target._insert_transfer_paper(connection, restored)
+        assert backup_paper.capture_paper_section(connection, project_id) == exported.paper
+        publication = connection.execute(
+            "SELECT saved_revision, published_revision, hold FROM paper_publication"
+        ).fetchone()
+        assert tuple(publication) == (4, 2, "legacy-divergence")

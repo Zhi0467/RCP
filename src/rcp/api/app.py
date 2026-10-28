@@ -6,8 +6,8 @@ import os
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import aclosing, asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -18,8 +18,10 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp import __version__
@@ -64,7 +66,12 @@ from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
+from rcp.api.paper import PaperUploadBodyLimit, is_paper_upload
 from rcp.api.paper import router as paper_router
+from rcp.api.paper_changes import router as paper_changes_router
+from rcp.api.paper_compile import assets_router as paper_assets_router
+from rcp.api.paper_compile import router as paper_compile_router
+from rcp.api.paper_live import router as paper_live_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -112,6 +119,8 @@ from rcp.limits import (
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
+from rcp.paper.compile import PaperCompiler
+from rcp.paper.engines import EngineStore
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -210,6 +219,7 @@ from rcp.server_ops.maintenance import (
     RuntimeAdmissionGate,
 )
 from rcp.server_ops.members import MemberRemovalCoordinator
+from rcp.server_ops.paper_lifecycle import register_paper_live, unregister_paper_live
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
@@ -716,6 +726,8 @@ def create_app(
         process_environment=launcher.process_environment,
     )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+
+    paper_live = catalog.paper_live
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
     ensure_episode_graph_target = partial(
@@ -784,6 +796,17 @@ def create_app(
     # different worker threads, so this must remain a primitive Lock, not RLock.
     experiment_operation_lock = KeyedLocks()
     artifact_mutation_locks = KeyedLocks()
+
+    @contextmanager
+    def paper_admission(project_id: str) -> Iterator[None]:
+        with (
+            runtime_admission_gate.mutation("Paper change"),
+            experiment_operation_lock(project_id),
+        ):
+            store.require_project_accepts_new_work(project_id)
+            yield
+
+    catalog.paper_admission = paper_admission
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
         _experiment_control_node_id,
@@ -1883,6 +1906,10 @@ def create_app(
         startup_maintenance.clear()
         artifact_import_tasks.clear()
         runtime_loop[0] = asyncio.get_running_loop()
+        paper_engines = EngineStore(app_data)
+        paper_compiler = PaperCompiler(paper_live, paper_engines, app_data)
+        app.state.paper_engines = paper_engines
+        app.state.paper_compiler = paper_compiler
         control_started = False
         runtime_started = False
         runtime_start_lock = asyncio.Lock()
@@ -1901,6 +1928,8 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                await paper_live.start()
+                register_paper_live(store, paper_live)
                 sync_coordinator.start()
                 # Cards hold provider executables and compute settings; an older
                 # manifest's copy must reach them before recovery relaunches work.
@@ -2079,7 +2108,12 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await sync_coordinator.stop()
-                background_tasks.shutdown()
+                paper_live.fence()
+                await asyncio.to_thread(background_tasks.shutdown)
+                await paper_compiler.close()
+                await paper_engines.close()
+                await paper_live.close()
+                unregister_paper_live(store, paper_live)
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
                 )
@@ -2110,7 +2144,12 @@ def create_app(
                         await start_deferred_runtime()
                     except BaseException as exc:
                         await sync_coordinator.stop()
-                        background_tasks.shutdown()
+                        paper_live.fence()
+                        await asyncio.to_thread(background_tasks.shutdown)
+                        await paper_compiler.close()
+                        await paper_engines.close()
+                        await paper_live.close()
+                        unregister_paper_live(store, paper_live)
                         await asyncio.to_thread(
                             deploy_key_agent.stop_after_workers_drained,
                             background_tasks.runtime_is_idle,
@@ -2127,6 +2166,7 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
+            paper_live.fence()
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
@@ -2154,7 +2194,11 @@ def create_app(
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
             try:
-                background_tasks.shutdown()
+                await asyncio.to_thread(background_tasks.shutdown)
+                await paper_compiler.close()
+                await paper_engines.close()
+                await paper_live.close()
+                unregister_paper_live(store, paper_live)
             finally:
                 await asyncio.to_thread(
                     deploy_key_agent.stop_after_workers_drained, background_tasks.runtime_is_idle
@@ -2177,6 +2221,7 @@ def create_app(
     app.state.services = services
     app.state.server_layout = server_layout
     app.state.catalog = catalog
+    app.state.paper_live = paper_live
     app.state.provider_skills = provider_skills
     app.state.setup = setup
     app.state.default_project_id = default_project_id
@@ -2210,6 +2255,7 @@ def create_app(
     app.state.runtime_admission_gate = runtime_admission_gate
     app.state.background_admission_gate = background_admission_gate
     app.add_middleware(TeamPublicAuthBodyLimit)
+    app.add_middleware(PaperUploadBodyLimit)
 
     @app.middleware("http")
     async def enforce_update_maintenance(request: Request, call_next):
@@ -2341,7 +2387,10 @@ def create_app(
                 )
                 allowed_media_type = (
                     media_type.lower() == "application/json"
-                    or (attachment_upload and media_type.lower() == "multipart/form-data")
+                    or (
+                        (attachment_upload or is_paper_upload(request.method, path))
+                        and media_type.lower() == "multipart/form-data"
+                    )
                     or (transcription_upload and media_type.lower() in {"audio/webm", "audio/mp4"})
                 )
                 if not allowed_media_type:
@@ -2358,7 +2407,7 @@ def create_app(
                                     "Unsupported audio type."
                                     if transcription_upload
                                     else "Authenticated team mutations require JSON, except for "
-                                    "the bounded attachment and transcription uploads."
+                                    "bounded attachment, Paper, and transcription uploads."
                                 ),
                             }
                         },
@@ -2370,8 +2419,8 @@ def create_app(
         ):
             # A cross-site page can send a POST without a CORS preflight
             # only with a simple content type (PUT, PATCH, and DELETE always
-            # preflight), so refuse those; the bounded chat attachment upload is
-            # the one multipart route, as in a team space.
+            # preflight), so refuse those except the bounded attachment and
+            # Paper multipart routes, as in a team space.
             media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
             attachment_upload = (
                 request.method == "POST"
@@ -2386,7 +2435,10 @@ def create_app(
                 "multipart/form-data",
                 "text/plain",
             }
-            if simple and not (attachment_upload and media_type == "multipart/form-data"):
+            if simple and not (
+                (attachment_upload or is_paper_upload(request.method, path))
+                and media_type == "multipart/form-data"
+            ):
                 return JSONResponse(
                     status_code=415,
                     content={
@@ -2519,6 +2571,10 @@ def create_app(
     app.include_router(proposal_refresh_router)
     app.include_router(history_router)
     app.include_router(paper_router)
+    app.include_router(paper_live_router)
+    app.include_router(paper_changes_router)
+    app.include_router(paper_compile_router)
+    app.include_router(paper_assets_router)
     app.include_router(result_views_router)
     app.include_router(artifacts_router)
     app.include_router(research_views_router)
@@ -2553,10 +2609,23 @@ class _WebPages(StaticFiles):
     """
 
     async def get_response(self, path: str, scope) -> Response:
-        response = await super().get_response(path, scope)
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            # A page navigation onto a path the app does not serve (a stray relative
+            # link, a typed URL) returns to the app instead of stranding it on JSON.
+            if exc.status_code == 404 and _is_page_navigation(scope):
+                return RedirectResponse("/", status_code=303)
+            raise
         if response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = "no-cache"
         return response
+
+
+def _is_page_navigation(scope) -> bool:
+    headers = Headers(scope=scope)
+    mode = headers.get("sec-fetch-mode")
+    return mode == "navigate" if mode else "text/html" in headers.get("accept", "")
 
 
 def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:

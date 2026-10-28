@@ -108,11 +108,14 @@ def advance_source_project_transfer(
 ) -> ProjectTransferRequestRecord:
     """Settle, fence, capture, seal, and bind one confirmed source transfer."""
 
+    from rcp.server_ops.paper_lifecycle import stop_paper_project
+
     transfer = _source_transfer(store, request_id)
     if transfer.source_release_receipt is None or transfer.target_admission_receipt is None:
         raise ValueError("source transfer requires both human confirmations")
     if transfer.phase == "source_released":
         service = catalog.open_transfer_source(request_id)
+        stop_paper_project(store, transfer.project_id)
         _require_reviewed_source_unchanged(store, service, transfer)
         store.settle_source_transfer_tasks(request_id)
         attributions = _source_attributions(transfer)
@@ -150,6 +153,7 @@ def advance_source_project_transfer(
             readback = read_transfer_archive(destination)
         else:
             service = catalog.open_transfer_source(request_id)
+            stop_paper_project(store, transfer.project_id)
             _require_reviewed_source_unchanged(store, service, transfer)
             attributions = _source_attributions(transfer)
             records = store.export_project_transfer_records(

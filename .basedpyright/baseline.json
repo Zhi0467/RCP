@@ -9510,14 +9510,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 13,
-                    "endColumn": 30,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 26,
                     "endColumn": 32,
                     "lineCount": 1

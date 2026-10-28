@@ -32,10 +32,10 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
             reasoning=None,
             session_id=None if opener == "thread/fork" else "fence-thread",
             read_dirs=[],
-            write_dirs=[],
+            write_dirs=[tmp_path / "changes"],
             write_scope=None,
-            capability="paper_readonly",
-            provider_version="0.153.4",
+            capability="paper_suggest",
+            provider_version="2.200.0",
             fork_session_id="source-thread" if opener == "thread/fork" else None,
         )
     )
@@ -50,6 +50,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
                     "thread": {"id": "fence-thread"},
                     "approvalPolicy": "never",
                     "sandbox": {"type": "readOnly"},
+                    "activePermissionProfile": {"id": "rcp_paper"},
                 },
             },
         ):
@@ -75,10 +76,10 @@ def _canonical_turn(tmp_path, runtime_id: str):
                 reasoning=None,
                 session_id="corpus-thread",
                 read_dirs=[],
-                write_dirs=[],
+                write_dirs=[tmp_path / "changes"],
                 write_scope=None,
-                capability="paper_readonly",
-                provider_version="0.153.4",
+                capability="paper_suggest",
+                provider_version="2.200.0",
             )
         )
     )

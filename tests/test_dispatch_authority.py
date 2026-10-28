@@ -183,7 +183,7 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
     assert work is not None and work.task_contract == "work_auto"
     assert work.scope.patch_kind == "work"
     assert experiment is not None and experiment.scope.control_episode_id == episode_id
-    assert paper is not None and paper.task_contract == "paper_readonly"
+    assert paper is not None and paper.task_contract == "paper_suggest"
     orchestrator = resolve_dispatch_authority(
         "auto_research",
         AutoResearchRunRequest(
@@ -415,10 +415,10 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
         (
             AgentDispatchAuthority(
                 profile="ordinary",
-                task_contract="paper_readonly",
+                task_contract="paper_suggest",
                 scope=AgentDispatchScope(chat_scope="project", chat_id="chat-one"),
             ),
-            "paper_readonly cannot carry chat, Patch, or control scope",
+            "paper_suggest cannot carry chat, Patch, or control scope",
         ),
     ],
 )
@@ -857,7 +857,7 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
     elif case == "paper":
         authority = AgentDispatchAuthority(
             profile="ordinary",
-            task_contract="paper_readonly",
+            task_contract="paper_suggest",
             scope=AgentDispatchScope(),
         )
     elif case == "scope":

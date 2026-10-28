@@ -1051,6 +1051,15 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                             f"/api/projects/{project.project_id}/watchers",
                         )
                     )
+                    # Paper reads are proven stable here but kept out of `reads`: the
+                    # previous release's baseline names only the reads it served.
+                    paper_proof = _paper_read_proof(client, project.project_id, headers=headers)
+                    if _paper_read_proof(client, project.project_id, headers=headers) != (
+                        paper_proof
+                    ):
+                        raise CandidateRehearsalRefused(
+                            f"Candidate Paper reads changed project {project.project_id}."
+                        )
                     results.append(
                         CandidateProjectVerification(
                             project_id=project.project_id,
@@ -1116,6 +1125,30 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             opened.close()
         if lock_context is not None and lock_acquired:
             lock_context.__exit__(None, None, None)
+
+
+def _paper_read_proof(client, project_id: str, *, headers: dict[str, str]) -> str:
+    """Read durable live Paper through its served API, including every saved file."""
+    base = f"/api/projects/{project_id}/paper"
+    proof: list[object] = []
+
+    def read(path: str):
+        response = client.get(path, headers=headers)
+        if response.status_code != 200:
+            raise CandidateRehearsalRefused(f"Candidate Paper read failed for {project_id}.")
+        return response
+
+    tree = read(f"{base}/tree").json()
+    proof.append(tree)
+    proof.append(read(f"{base}/history").json())
+    for file in tree["files"]:
+        file_id = file["file_id"]
+        raw = read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
+        digest = hashlib.sha256(raw.content).hexdigest()
+        if digest != file["sha256"]:
+            raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")
+        proof.append((file_id, digest))
+    return _canonical_sha256(proof)
 
 
 def _copy_verified_file(

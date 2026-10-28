@@ -628,8 +628,11 @@ with an accessible stale marker; remote-sync health has its own marker.
 
 All open tabs watch project-wide task status; only the active tab watches progress
 and displayed task details. Other resources have their own tokens/profiles. Task
-completion does not trigger a reload bundle. Paper is an ordinary profile with
-its own [draft-version guard](paper-artifacts-and-result-views.md#human-paper-authorship).
+completion does not trigger a reload bundle. Paper is an ordinary profile reading
+the live tree and writing sessions. The project snapshot carries only its
+publication badge; source text and durable acknowledgements belong to the
+[live editor](paper-artifacts-and-result-views.md#shared-paper). Paper links use
+`paper_file=<stable file id>` to select a file, including in an already-open editor.
 
 Commands fence affected reads and install operation-id pending overlays;
 conflicting commands serialize. Success replaces the overlay with the response;
@@ -1608,7 +1611,15 @@ owns inline definitions.
 
 The desktop window is a client of backend-owned durable work. Closing or hiding
 the window never cancels a task. Reopening attaches to the healthy owner and
-current app state.
+current app state. Closing a full-screen window first leaves full screen and
+keeps the window hidden once macOS finishes the transition, so no empty
+full-screen Space remains.
+
+No link strands the app on a page it does not serve. Rendered Markdown keeps
+node, repository-file and in-app `#/` links; external `http(s)` and `mailto`
+links open a new tab, and any other link renders as plain text. A link the page
+did not handle that would leave the app document opens a new tab instead, and a
+page navigation to a path the server does not serve redirects to the app.
 
 A source-mode frontend rebuild preserves content-hashed assets from the prior
 build so an already-open window can keep lazy-loading its coherent bundle until
@@ -1890,12 +1901,10 @@ version 1 to the same-origin parent with the artifact and operation ids.
 The stored artifact `viewer` and `content` routes accept `presentation=inline`;
 `panel`, the default, is unchanged and any other value is a validation error.
 The inline content route also reads `theme` and `color_mode`, falling back to
-the app's default appearance for an unknown value. Every inline frame speaks
+the app's default appearance for an unknown value. The chat fixes every inline
+frame's height; no frame reports or changes it. Every inline frame speaks
 protocol version 1 over `postMessage`:
 
-- content to shell, and shell to chat: `rcp-artifact-size` with a numeric
-  `height`. The wrapper relays only this number from the opaque page; the shell
-  and the chat each clamp it to the inline bound.
 - chat to shell: `rcp-inline-comment-mode` with `enabled`, and
   `rcp-inline-selection-clear`. The shell maps them onto the existing
   `rcp-artifact-selection-enable`, `rcp-artifact-selection-disable`, and

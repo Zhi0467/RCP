@@ -36,7 +36,7 @@ export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability =
-  "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_readonly";
+  "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -3068,12 +3068,13 @@ export interface ChatAttachmentDescriptor {
 export type ProjectReferenceSelector =
   | { kind: "artifact"; artifact_id: string }
   | { kind: "node"; node_id: string; branch_id: string | null }
-  | { kind: "paper" };
+  | { kind: "paper"; file_id?: string | null };
 
 /** What a retained reference copy was taken from, frozen at admission. */
 export interface ProjectReferenceSource {
   kind: ProjectReferenceSelector["kind"];
   source_id: string;
+  path?: string | null;
   version: string | null;
   graph_head: GraphHeadRef | null;
 }
@@ -3115,15 +3116,23 @@ export interface ProviderReadiness {
   default_runtime: string;
 }
 
-export interface PaperSnapshot {
-  draft_version: string | null;
-  content: string;
-  sync_state: "not_created" | "synced" | "unsynced" | "behind";
-  base_hash?: string | null;
-  canonical_hash?: string | null;
-  incoming_content?: string | null;
-  updated_at?: string | null;
-  canonical_available: boolean;
+export interface PaperFile {
+  file_id: string;
+  path: string;
+  kind: "text" | "binary";
+  format: string;
+  size: number;
+  sha256: string;
+}
+
+export interface PaperTree {
+  max_doc_bytes: number;
+  revision: number;
+  saved_revision: number;
+  published_revision: number;
+  publish_state: "published" | "pending" | "failed";
+  hold: string | null;
+  files: PaperFile[];
 }
 
 export interface GraphChangeSource {
@@ -3192,7 +3201,7 @@ export interface ProjectSnapshot {
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
   graph: GraphState;
-  paper: PaperSnapshot;
+  paper: boolean;
   paper_coach: {
     default_provider: ProviderId;
     default_model: string;

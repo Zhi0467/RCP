@@ -19,6 +19,7 @@ from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 from tests.helpers import signed_in_client
+from tests.paper_helpers import start_paper
 
 from .helpers import (
     agent_patch_json,
@@ -647,10 +648,20 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
     assert "handoff artifact" in retained.read_text(encoding="utf-8")
 
 
-def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_path) -> None:
+def test_same_provider_paper_coach_retry_receives_exact_failure(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from rcp.agents import hidden_read
+
+    host_facts = hidden_read.host_facts
+    monkeypatch.setattr(
+        hidden_read,
+        "host_facts",
+        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
+    )
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    start_paper(app.state.paper_live)
     service = app.state.service
-    service.paper.create()
     failure = "Paper coach provider failed while examining the introduction."
     objective = "Review the introduction's causal argument."
     launcher = _FailThenSucceedLauncher(failure)
@@ -686,7 +697,7 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
     assert store.agent_task_contract(str(token), "paper_coach_retry") == prompt
     diagnostics = launcher.input_snapshots[1][f"task-{token}-retry-diagnostics.json"]
     assert json.loads(diagnostics) == {
-        "prior_attempt_diagnostics": [f"Attempt 1 (failed) failed with: {failure}"]
+        "diagnostics": [f"Attempt 1 (failed) failed with: {failure}"]
     }
     master = _master_path(prompt)
     assert master is not None and master.read_text(encoding="utf-8") not in prompt
@@ -707,7 +718,6 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.paper.create()
 
     class RecoveryLauncher(_FailThenSucceedLauncher):
         async def stream(self, provider, prompt, **kwargs):
