@@ -24,6 +24,7 @@ from rcp.limits import (
     PAPER_SOCKET_QUEUE_SIZE,
 )
 from rcp.paper import PaperLive
+from rcp.paper.models import PaperLimit
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter()
@@ -160,7 +161,7 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
                 count, window = 0, now
             count += 1
             if count > PAPER_CONNECTION_UPDATES_PER_SECOND:
-                raise OverflowError("Paper connection update rate exceeded")
+                raise HTTPException(429, "Paper connection update rate exceeded")
             pending_awareness = (
                 _awareness_states(payload, awareness) if payload[:1] == b"\x01" else awareness
             )
@@ -194,7 +195,7 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
             if not live.file_exists(project_id, file_id):
                 raise HTTPException(403, "Paper file was deleted")
             if not payload:
-                raise OverflowError("Paper client fell behind")
+                raise asyncio.QueueFull("Paper client fell behind")
             await socket.send_bytes(payload)
 
     async def watch_admission() -> None:
@@ -211,15 +212,23 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
         for task in done:
             task.result()
     except HTTPException as exc:
-        close_code = {409: 1008, 503: 4503}.get(exc.status_code, 4403)
+        if isinstance(exc.__cause__, PaperLimit):
+            # The shared mutation adapter preserves the live owner's budget error.
+            close_code = (
+                4529 if str(exc.__cause__) == "Paper project update rate exceeded" else 4413
+            )
+        else:
+            close_code = {409: 4400, 429: 4529, 503: 4503}.get(exc.status_code, 4403)
     except MaintenanceAdmissionClosed:
         close_code = 4503
     except KeyError:
         close_code = 4403
-    except (OverflowError, asyncio.QueueFull):
-        close_code = 1009
+    except asyncio.QueueFull:
+        close_code = 1013
+    except OverflowError:
+        close_code = 4413
     except (ValueError, RuntimeError, IndexError):
-        close_code = 1008
+        close_code = 4400
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass
     finally:

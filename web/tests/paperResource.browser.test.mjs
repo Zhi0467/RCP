@@ -32,7 +32,7 @@ function editorMatches(expected) {
 
 async function openPaper(
   t,
-  { room = new Room(), width = 1280, cards = [], proposedTexts = {} } = {},
+  { room = new Room(), width = 1280, cards = [], proposedTexts = {}, configure = () => {} } = {},
 ) {
   const context = await browser.newContext({ viewport: { width, height: 844 } });
   t.after(async () => {
@@ -41,6 +41,7 @@ async function openPaper(
   const page = await context.newPage();
   const errors = [];
   const fixture = createPaperFixture({ room, cards, proposedTexts });
+  configure(fixture);
   const posts = fixture.posts;
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -234,4 +235,80 @@ test("rewrite comparison reads the complete proposed file and fits 390px", async
   assert.deepEqual(await texts.allTextContents(), ["draft", proposed]);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   assert.deepEqual(errors, []);
+});
+
+test("cancelling failed delete and rename removes their retry authority", async (t) => {
+  const { page } = await openPaper(t);
+  for (const operation of ["Delete", "Rename"]) {
+    await page.getByRole("button", { name: `${operation} file`, exact: true }).click();
+    if (operation === "Rename") {
+      await page.getByRole("textbox", { name: "File path" }).fill("renamed.md");
+      await page.getByRole("button", { name: "Save file path" }).click();
+    } else await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.locator(".paper-files.paper-failed").waitFor();
+    await page
+      .getByRole("button", {
+        name: operation === "Rename" ? "Cancel file path" : "Cancel",
+        exact: true,
+      })
+      .click();
+    assert.equal(await page.getByRole("button", { name: "Retry file operation" }).count(), 0);
+    assert.equal(await page.locator(".paper-files.paper-failed").count(), 0);
+  }
+});
+
+test("Locate waits for an unopened file's server text", async (t) => {
+  const { page, context } = await openPaper(t, {
+    cards: [{ ...card, file_id: "f2", lines: { start: 3, end: 3 } }],
+    configure: ({ tree }) =>
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" }),
+  });
+  const room = new Room();
+  room.doc.getText("text").insert(0, "one\ntwo\n");
+  room.hold = true;
+  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => room.connect(socket));
+  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
+  await page.getByRole("button", { name: "Locate change", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent === "");
+  room.flush();
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-position")?.textContent.includes("Ln 3,"),
+  );
+});
+
+test("superseded LaTeX compilation keeps the existing PDF", async (t) => {
+  let currentTree;
+  const { page, context, room } = await openPaper(t, {
+    configure: ({ tree }) => {
+      currentTree = tree;
+      tree.files.push({ ...tree.files[0], file_id: "f2", path: "paper.tex", format: "latex" });
+    },
+  });
+  let compiled = 0;
+  await context.route("**/paper/compile", (route) =>
+    route.fulfill({
+      json:
+        ++compiled === 1
+          ? { status: "ok", pdf_url: "/api/projects/p/paper/compile/good/pdf" }
+          : { status: "superseded", pdf_url: null },
+    }),
+  );
+  await page.getByRole("button", { name: "paper.tex", exact: true }).click();
+  await page.locator(".paper-pdf").waitFor();
+  const next = page.waitForResponse(
+    (reply) => reply.url().endsWith("/paper/compile") && compiled === 2,
+  );
+  currentTree.saved_revision += 1;
+  await append(page, " changed");
+  room.ack();
+  const response = await next;
+  assert.equal((await response.json()).status, "superseded");
+  await page.waitForFunction(
+    () => document.querySelector(".paper-compiled-preview")?.getAttribute("aria-busy") === "false",
+  );
+  assert.equal(await page.locator(".paper-pdf").count(), 1);
+  assert.match(
+    await page.getByRole("link", { name: "Download PDF" }).getAttribute("href"),
+    /compile\/good\/pdf$/,
+  );
 });

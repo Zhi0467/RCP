@@ -58,3 +58,66 @@ test("a delete-only edit advances durability beyond an older in-flight acknowled
   doc.destroy();
   replica.destroy();
 });
+
+test("retaining a released document restores full awareness", async () => {
+  const { PaperDocument } = await server.ssrLoadModule("/src/paper/paperDocuments.ts");
+  globalThis.window = { location: { href: "http://localhost/" } };
+  const owner = new PaperDocument(
+    { backend: "b", member: "m", project: "p", file: "f" },
+    "/api/projects/p",
+    "Writer",
+  );
+  try {
+    const release = owner.retain();
+    owner.provider.awareness.setLocalStateField("cursor", { anchor: 2 });
+    const before = owner.provider.awareness.getLocalState();
+    release();
+    assert.equal(owner.provider.awareness.getLocalState(), null);
+    const releaseAgain = owner.retain();
+    assert.deepEqual(owner.provider.awareness.getLocalState(), before);
+    releaseAgain();
+  } finally {
+    owner.destroy();
+    delete globalThis.window;
+  }
+});
+
+test("backend reverification preserves owners until an observed identity changes", async () => {
+  const { paperBackendIdentityTracker } = await server.ssrLoadModule(
+    "/src/paper/paperDocuments.ts",
+  );
+  const changed = paperBackendIdentityTracker();
+  const health = { instance_id: "i", data_dir_id: "d", version: "v" };
+  assert.equal(changed({ ok: true, health }), false);
+  assert.equal(changed({ ok: true, health: { ...health } }), false);
+  assert.equal(changed({ ok: false, health: null }), false);
+  assert.equal(changed({ ok: false, health: { ...health } }), false);
+  assert.equal(changed({ ok: false, health: { ...health, instance_id: "new" } }), true);
+});
+
+test("insertion anchors are painted only against their verified saved text", async () => {
+  const { paperAnchorMatches } = await server.ssrLoadModule("/src/paper/PaperEditor.tsx");
+  const insertion = { preview: { removed: [] }, anchorText: "one\ntwo" };
+  assert.equal(paperAnchorMatches(insertion, "one\ntwo", ""), true);
+  assert.equal(paperAnchorMatches(insertion, "zero\none\ntwo", ""), false);
+  assert.equal(paperAnchorMatches({ preview: { removed: [] } }, "one\ntwo", ""), false);
+});
+
+test("permanent rejection exposes failure and disables automatic reconnect", async () => {
+  const { PaperDocument } = await server.ssrLoadModule("/src/paper/paperDocuments.ts");
+  globalThis.window = { location: { href: "http://localhost/" } };
+  const owner = new PaperDocument(
+    { backend: "b", member: "m", project: "p", file: "f" },
+    "/api/projects/p",
+    "Writer",
+  );
+  try {
+    for (const code of [4400, 4413]) assert.equal(owner.provider.shouldReconnect({ code }), false);
+    assert.equal(owner.provider.shouldReconnect({ code: 4529 }), true);
+    owner.provider.emit("closed", [{ code: 4400 }]);
+    assert.ok(owner.getSnapshot().error);
+  } finally {
+    owner.destroy();
+    delete globalThis.window;
+  }
+});

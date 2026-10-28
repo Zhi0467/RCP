@@ -135,6 +135,8 @@ export function createPaperFixture({
     posts,
     respond(path, method = "GET", body = {}) {
       if (method === "POST") posts.push({ path, body });
+      if (path === "/api/health")
+        return { json: { instance_id: "instance", data_dir_id: "data", version: "test" } };
       if (path === "/api/identity")
         return {
           json: {
@@ -151,6 +153,7 @@ export function createPaperFixture({
         return {
           json: {
             groups: cards.map((change) => ({
+              base_revision: 1,
               group_id: change.group_id,
               task_id: change.task_id,
               changes: [change],

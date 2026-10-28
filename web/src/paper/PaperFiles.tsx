@@ -113,7 +113,7 @@ export function PaperFiles({
       <div className="paper-tree paper-well">
         {edit && (
           <form
-            className="paper-path-form"
+            className={`paper-path-form ${failure ? "paper-failed" : ""}`}
             onSubmit={(event) => {
               event.preventDefault();
               savePath();
@@ -130,13 +130,17 @@ export function PaperFiles({
               aria-label="Save file path"
               disabled={busy || !edit.path.trim()}
             >
-              <Check size={14} />
+              {failure ? <RotateCcw size={14} /> : <Check size={14} />}
             </button>
             <button
               type="button"
               className="icon-button compact"
               aria-label="Cancel file path"
-              onClick={() => setEdit(null)}
+              disabled={busy}
+              onClick={() => {
+                setEdit(null);
+                setFailure(null);
+              }}
             >
               <X size={14} />
             </button>
@@ -180,7 +184,7 @@ export function PaperFiles({
           })}
       </div>
       <footer className="paper-bar">
-        {failure ? (
+        {failure && !edit && !deleting ? (
           <button
             className="icon-button"
             aria-label="Retry file operation"
@@ -221,14 +225,27 @@ export function PaperFiles({
       </footer>
       {deleting && (
         <div className="paper-dialog-backdrop">
-          <section className="paper-box paper-confirm" role="alertdialog" aria-label="Delete file">
+          <section
+            className={`paper-box paper-confirm ${failure ? "paper-failed" : ""}`}
+            role="alertdialog"
+            aria-label="Delete file"
+          >
             <strong>Delete {deleting.path}?</strong>
             <div className="paper-bar">
-              <button className="button" onClick={() => setDeleting(null)}>
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => {
+                  setDeleting(null);
+                  setFailure(null);
+                }}
+              >
                 Cancel
               </button>
               <button
-                className="button"
+                className={failure ? "icon-button" : "button"}
+                aria-label={failure ? "Retry delete" : undefined}
+                title={failure?.message}
                 disabled={busy}
                 onClick={() =>
                   void perform(async () => {
@@ -239,7 +256,7 @@ export function PaperFiles({
                   })
                 }
               >
-                Delete
+                {failure ? <RotateCcw size={16} /> : "Delete"}
               </button>
             </div>
           </section>

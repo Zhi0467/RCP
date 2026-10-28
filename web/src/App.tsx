@@ -48,7 +48,7 @@ import {
   episodesProfile,
   experimentIndexProfile,
 } from "./experiments/episodeResources";
-import { paperProfile } from "./paper/paperResources";
+import { paperFileRequest, paperProfile } from "./paper/paperResources";
 import type { PaperEditorState } from "./paper/PaperWorkspace";
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
@@ -655,7 +655,7 @@ function MemberApp({
   }));
   const [graphTarget, setGraphTarget] = useState<GraphTargetRef>(initialRoute.graphTarget);
   const [requestedPaperFile, setRequestedPaperFile] = useState(() =>
-    new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file"),
+    paperFileRequest(window.location.hash),
   );
   const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
     null,
@@ -1719,9 +1719,7 @@ function MemberApp({
       }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
-      setRequestedPaperFile(
-        new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file"),
-      );
+      setRequestedPaperFile(paperFileRequest(window.location.hash));
       const nextTarget = graphTargetFromHash(window.location.hash);
       setRequestedChat({
         hash: window.location.hash,
