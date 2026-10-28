@@ -16,7 +16,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const questions = ["single", "multiple", "dismiss"].map((id) => ({
+    const questions = ["single", "multiple", "dismiss", "turns"].map((id) => ({
       question_id: id,
       owner_kind: "chat",
       owner_id: "steering-chat",
@@ -33,6 +33,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       resolved_at: null,
       withdrawn_readonly: false,
       can_answer: true,
+      answer_continues: id === "turns" ? "turns" : null,
       created_at: "2026-09-05T12:00:01Z",
     }));
     const mutations = [];
@@ -96,6 +97,23 @@ test("chat question answers stay separate from steering and resolved cards enter
       .getByRole("button", { name: "Dismiss", exact: true })
       .click();
     await page.locator('.node-chat-lines [data-question-id="dismiss"]').waitFor();
+    // An ended episode's last card names the turns its answer adds.
+    const turns = page.locator('[data-question-id="turns"]');
+    await turns.getByRole("spinbutton", { name: "Turns this answer adds" }).fill("4");
+    await turns.getByRole("button", { name: "b", exact: true }).click();
+    await page.locator('.node-chat-lines [data-question-id="turns"]').waitFor();
+    const continued = mutations.pop();
+    assert.match(continued.body.request_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(continued, {
+      id: "turns",
+      action: "answer",
+      body: {
+        answer: "",
+        choices: ["b"],
+        invocation_ceiling: 4,
+        request_id: continued.body.request_id,
+      },
+    });
     assert.deepEqual(mutations, [
       { id: "single", action: "answer", body: { answer: "", choices: ["a"] } },
       { id: "multiple", action: "answer", body: { answer: "detail", choices: ["a", "b"] } },
@@ -150,7 +168,7 @@ test("chat question answers stay separate from steering and resolved cards enter
       .locator('[data-question-id="parked"]')
       .getByRole("button", { name: "Answer and continue Work", exact: true })
       .waitFor();
-    questions.push({ ...questions[3], question_id: "discuss", capability: "discuss" });
+    questions.push({ ...questions[4], question_id: "discuss", capability: "discuss" });
     await page.evaluate(() => window.refreshQuestions("project", "v4"));
     const discuss = page.locator('[data-question-id="discuss"]');
     await discuss.getByRole("textbox").fill("Discuss this route");
@@ -161,8 +179,8 @@ test("chat question answers stay separate from steering and resolved cards enter
       action: "answer",
       body: { answer: "Discuss this route", choices: [] },
     });
-    questions[3].withdrawn_readonly = true;
-    questions[3].can_answer = false;
+    questions[4].withdrawn_readonly = true;
+    questions[4].can_answer = false;
     await page.evaluate(() => window.refreshQuestions("project", "v5"));
     await page
       .locator('.node-chat-lines [data-question-id="parked"][data-question-state="ended"]')

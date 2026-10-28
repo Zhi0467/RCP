@@ -3861,6 +3861,8 @@ export interface MachinePowerStatus {
 
 export interface AgentQuestion {
   agent_waiting: boolean;
+  /** "turns": answering continues the ended episode; "ending": it is still settling. */
+  answer_continues: "turns" | "ending" | null;
   capability: string;
   question_id: string;
   owner_kind: "chat" | "episode";
@@ -3882,6 +3884,8 @@ export interface AgentQuestion {
 export interface AnswerQuestionRequest {
   answer: string;
   choices: string[];
+  invocation_ceiling?: number;
+  request_id?: string;
 }
 
 export interface ConsolidationSchedule {

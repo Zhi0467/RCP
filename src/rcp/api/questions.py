@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -16,6 +17,7 @@ from rcp.api.dependencies import (
     require_project_membership,
     require_registered_project,
 )
+from rcp.api.episode_routes import continue_ended_episode
 from rcp.api.episodes import _episode_for_http
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import AuthorizedHuman
@@ -23,6 +25,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research_delivery import deliver_pending_auto_research_mail
 from rcp.runs.auto_research_questions import record_auto_research_question_answer
 from rcp.storage import AppStore
+from rcp.storage.models import EpisodeRecord
 from rcp.storage.question_models import QuestionRecord, QuestionStateConflict
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,10 @@ class AnswerQuestionBody(BaseModel):
 
     answer: str = ""
     choices: list[str] = Field(default_factory=list)
+    # Required when the answer continues its ended episode; the request id makes a
+    # retry return the continuation it already created.
+    invocation_ceiling: int | None = Field(default=None, ge=1)
+    request_id: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class DismissQuestionBody(BaseModel):
@@ -60,14 +67,59 @@ class QuestionResponse(BaseModel):
     withdrawn_readonly: bool
     can_answer: bool
     agent_waiting: bool
+    # "turns": answering continues the ended episode and names its turns;
+    # "ending": the episode is still settling, so its last card waits.
+    answer_continues: Literal["turns", "ending"] | None
     created_at: str
+
+
+_ENDED_EPISODE_STATUSES = frozenset({"completed", "failed", "needs_action", "stopped"})
 
 
 def _can_answer(question: QuestionRecord) -> bool:
     return question.state == "pending" and not question.withdrawn_readonly
 
 
-def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
+def _newest_episode(store: AppStore, question: QuestionRecord) -> EpisodeRecord | None:
+    if question.origin.owner_kind != "episode":
+        return None
+    episode = store.episode(question.origin.owner_id)
+    while episode is not None and (newer := store.episode_continuation(episode.episode_id)):
+        episode = newer
+    return episode
+
+
+def _answer_continues(
+    store: AppStore, question: QuestionRecord, episode: EpisodeRecord | None
+) -> Literal["turns", "ending"] | None:
+    """Whether answering this card adds turns to its ended episode.
+
+    Only Stop withdraws an episode's cards. After any other ending the chain's
+    last open card carries the turns, so every answer to one ending turn
+    reaches the continuation's first turn together.
+    """
+
+    if episode is None or question.withdrawn_readonly:
+        return None
+    if episode.status in _ENDED_EPISODE_STATUSES:
+        state: Literal["turns", "ending"] = "turns"
+    elif episode.ending is not None:
+        state = "ending"
+    else:
+        return None
+    others_open = any(
+        other.question_id != question.question_id and _can_answer(other)
+        for other in store.episode_questions(question.origin.project_id, episode.episode_id)
+    )
+    return None if others_open else state
+
+
+def _serialize(
+    store: AppStore,
+    question: QuestionRecord,
+    *,
+    continues: Literal["turns", "ending"] | None = None,
+) -> QuestionResponse:
     task = store.agent_task(question.origin.operation_id)
     state = question.state
     if state == "pending" and (
@@ -85,6 +137,7 @@ def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
         agent_waiting=(
             _can_answer(question) and store.question_activity.is_waiting(question.question_id)
         ),
+        answer_continues=continues,
     )
 
 
@@ -108,7 +161,14 @@ def episode_questions(
 ) -> list[QuestionResponse]:
     project_id = catalog.resolve_project_id(project_id)
     _episode_for_http(store, catalog, project_id, episode_id)
-    return [_serialize(store, item) for item in store.episode_questions(project_id, episode_id)]
+    questions = store.episode_questions(project_id, episode_id)
+    # Only a lone open card can carry the turns; judge it once per list.
+    open_cards = [item for item in questions if _can_answer(item)]
+    lone = open_cards[0] if len(open_cards) == 1 else None
+    continues = _answer_continues(store, lone, _newest_episode(store, lone)) if lone else None
+    return [
+        _serialize(store, item, continues=continues if item is lone else None) for item in questions
+    ]
 
 
 def _question_for_http(store: AppStore, project_id: str, question_id: str) -> QuestionRecord:
@@ -134,7 +194,37 @@ def answer_question(
     project_id = catalog.resolve_project_id(project_id)
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
-        _question_for_http(store, project_id, question_id)
+        current = _question_for_http(store, project_id, question_id)
+        newest = _newest_episode(store, current)
+        continues = _answer_continues(store, current, newest)
+        if current.resolved_at is not None and not (
+            # A resolved card replays its answer. It adds turns only when the
+            # retry names them and no continuation has begun since it was
+            # answered, which is a continuation that failed to start.
+            continues == "turns"
+            and body.invocation_ceiling is not None
+            and body.request_id is not None
+            and newest is not None
+            and datetime.fromisoformat(newest.created_at)
+            <= datetime.fromisoformat(current.resolved_at)
+        ):
+            continues = None
+        if continues == "ending":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "episode_still_ending",
+                    "message": "The episode is still ending. Answer once it settles.",
+                },
+            )
+        if continues == "turns" and (body.invocation_ceiling is None or body.request_id is None):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "question_continuation_required",
+                    "message": "This episode has ended. Choose how many turns the answer adds.",
+                },
+            )
         try:
             question = store.answer_question(
                 question_id, answer=body.answer, choices=body.choices, resolved_by=human
@@ -143,6 +233,26 @@ def answer_question(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if continues == "turns":
+            assert newest is not None
+            assert body.invocation_ceiling is not None and body.request_id is not None
+            # The continuation's first turn claims every held answer of the
+            # chain; any later Add turns does the same if this one fails.
+            try:
+                continue_ended_episode(
+                    newest,
+                    invocation_ceiling=body.invocation_ceiling,
+                    request_id=body.request_id,
+                    authorized_by=human,
+                    catalog=catalog,
+                    store=store,
+                    background_tasks=request.app.state.background_tasks,
+                )
+            except HTTPException:
+                # The card stays open with its turns and the reason, so the
+                # human can fix the cause and answer again.
+                store.reopen_unclaimed_answer(question_id, question.answer_revision)
+                raise
         # Retry delivery even when the answer was already committed: an earlier
         # owner call may have failed. Owner delivery is independently idempotent.
         reconcile = False
@@ -153,7 +263,12 @@ def answer_question(
                 else None
             )
             if episode is not None and episode.mode == "auto_research":
-                mail = record_auto_research_question_answer(store, question_id)
+                # A continuation already claimed this answer for its first turn.
+                mail = (
+                    None
+                    if continues == "turns"
+                    else record_auto_research_question_answer(store, question_id)
+                )
                 if mail is not None:
                     deliver_pending_auto_research_mail(
                         request.app.state.background_tasks,

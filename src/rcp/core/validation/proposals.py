@@ -17,8 +17,6 @@ from rcp.core.authority import (
     STATUS_CHANGE_INTENT,
     SUPERSEDE_INTENT,
     Writer,
-    created_edge_ids,
-    created_node_ids,
 )
 from rcp.core.models import (
     Decision,
@@ -512,7 +510,7 @@ def proposal_work_cannot_refile(state: GraphState, proposal: Proposal) -> bool:
         ) and any(isinstance(update.cause, HumanEditCause) for update in operation.nodes):
             return True
         if isinstance(operation, ProposalRemovalOperation) and any(
-            _existing_protected_node(state, None, node_id) is None for node_id in operation.node_ids
+            _existing_protected_node(state, node_id) is None for node_id in operation.node_ids
         ):
             return True
     return False
@@ -901,7 +899,7 @@ def _validate_content_change_intent(
     assert update is not None
     if update.cause is not None or update.base_updated_rev is not None:
         return "a content change requires exactly id and changes, with no cause."
-    node = _existing_protected_node(state, context_patch, update.id)
+    node = _existing_protected_node(state, update.id)
     if node is None:
         return f"a content change must target one existing {_protected_names(state)}."
     changes = update.changes
@@ -985,7 +983,7 @@ def _validate_removal_intent(
     node_ids = operation.node_ids
     if len(node_ids) != 1:
         return "removal must name exactly one node."
-    if _existing_protected_node(state, context_patch, node_ids[0]) is None:
+    if _existing_protected_node(state, node_ids[0]) is None:
         node = state.nodes.get(node_ids[0])
         if (
             _is_branch_merge(context_patch, writer)
@@ -1013,7 +1011,7 @@ def _validate_supersede_intent(
         return "supersede accepts only id, superseded_by, and optional explanation."
     node_id = item.id
     successor_id = item.superseded_by
-    predecessor = _existing_protected_node(state, context_patch, node_id)
+    predecessor = _existing_protected_node(state, node_id)
     if predecessor is None:
         return f"supersede must retire one existing {_protected_names(state)}."
     if not isinstance(successor_id, str) or not successor_id or successor_id == node_id:
@@ -1042,7 +1040,7 @@ def _validate_merge_intent(
         return "merge accepts only duplicate, canonical, and optional explanation."
     duplicate_id = item.duplicate
     canonical_id = item.canonical
-    duplicate = _existing_protected_node(state, context_patch, duplicate_id)
+    duplicate = _existing_protected_node(state, duplicate_id)
     if duplicate is None:
         return f"merge must fold one existing {_protected_names(state)}."
     if not isinstance(canonical_id, str) or not canonical_id or canonical_id == duplicate_id:
@@ -1096,13 +1094,7 @@ def _validate_protected_relation_change_intent(
             # semantic operation that owns their lifecycle effects.
             if not replaces_existing:
                 return "supersedes and duplicate_of must use their dedicated supersede or merge intent."
-        if context_patch is not None and any(
-            node_id in created_node_ids(context_patch) for node_id in endpoints
-        ):
-            return "connecting a node created in the outer Patch is direct, not a Proposal."
-        if not any(
-            _existing_protected_node(state, context_patch, node_id) for node_id in endpoints
-        ):
+        if not any(_existing_protected_node(state, node_id) for node_id in endpoints):
             return "a protected relation change must touch an existing belief node."
         return None
     if name == "remove_edges":
@@ -1111,15 +1103,12 @@ def _validate_protected_relation_change_intent(
             return "a protected relation change must remove exactly one edge."
         edge_id = edge_ids[0]
         edge = state.edges.get(edge_id) if isinstance(edge_id, str) else None
-        if edge is None or (
-            context_patch is not None and edge_id in created_edge_ids(context_patch)
-        ):
+        if edge is None:
             return "a protected relation removal must target one existing edge."
         if edge.relation not in PROTECTED_EPISTEMIC_RELATIONS:
             return "a protected relation change must use a protected relation."
         if not any(
-            _existing_protected_node(state, context_patch, node_id)
-            for node_id in (edge.source, edge.target)
+            _existing_protected_node(state, node_id) for node_id in (edge.source, edge.target)
         ):
             return "a protected relation change must touch an existing belief node."
         return None
@@ -1137,19 +1126,11 @@ def _one_update(operation: ProposalOperation) -> tuple[NodeUpdate | None, str | 
 
 def _existing_protected_node(
     state: GraphState,
-    context_patch: Patch | None,
     node_id: Any,
 ) -> ResearchQuestion | Hypothesis | None:
     if not isinstance(node_id, str):
         return None
     node = state.nodes.get(node_id)
-    if (
-        context_patch is not None
-        and node_id in created_node_ids(context_patch)
-        and node is not None
-        and node.created_rev == context_patch.revision
-    ):
-        return None
     return node if isinstance(node, (ResearchQuestion, Hypothesis)) else None
 
 

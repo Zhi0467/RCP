@@ -4,6 +4,7 @@ import { useRefreshRuntime, useResource } from "./useResource";
 import { useEffect, useState } from "react";
 import { loadProjectMachineBrowser, setChatBrowser } from "./api";
 import { browserReason } from "./browserStatus";
+import { Banner } from "../ui/Banner";
 import { errorMessage } from "./errors";
 import type { BrowserTurnStatus, MachineBrowserReadiness } from "./types";
 
@@ -154,11 +155,23 @@ export function ChatBrowserControl({
   );
 }
 
-export function BrowserTurnNotice({ status }: { status?: BrowserTurnStatus | null }) {
+export function BrowserTurnNotice({
+  status,
+  turnId,
+}: {
+  status?: BrowserTurnStatus | null;
+  /** The turn this status belongs to, so another turn's loss shows again. */
+  turnId: string;
+}) {
   if (!status || (status.status !== "unavailable" && status.status !== "lost")) return null;
   const reason = browserReason(status.reason_code);
   return (
-    <div className="provider-login-notice" role="status" data-browser-status={status.status}>
+    <Banner
+      dismissKey={`browser-turn:${turnId}:${status.status}`}
+      className="provider-login-notice"
+      role="status"
+      data-browser-status={status.status}
+    >
       <strong>
         {status.status === "lost" ? "Browser connection lost" : "Browser unavailable"}
       </strong>
@@ -167,6 +180,6 @@ export function BrowserTurnNotice({ status }: { status?: BrowserTurnStatus | nul
         {reason.fix ? ` ${reason.fix}` : ""}
       </p>
       {status.detail && <p>{status.detail}</p>}
-    </div>
+    </Banner>
   );
 }

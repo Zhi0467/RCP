@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import uuid
 
+import pytest
+
 from rcp.agents import AgentEvent
 from rcp.agents.command_protocol import AskCommandRequest
 from rcp.background import BackgroundAgentTasks
@@ -41,7 +43,8 @@ def _question(store, episode, root, *, key="question"):
     )
 
 
-def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ending", ["stop", "exhausted"])
+def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch, ending):
     store, episode, root = _setup_auto_research(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -80,18 +83,24 @@ def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch):
     create_question = store.create_or_get_question
 
     def ending_before_insert(**arguments):
-        store.request_episode_stop(episode.episode_id)
+        if ending == "stop":
+            store.request_episode_stop(episode.episode_id)
+        else:
+            store.fence_episode_ending(episode.episode_id, ending)
         return create_question(**arguments)
 
     monkeypatch.setattr(store, "create_or_get_question", ending_before_insert)
     raced = request.model_copy(update={"request_id": uuid.uuid4().hex, "idempotency_key": "raced"})
-    assert dispatcher.dispatch(root.operation_id, raced).status == "unavailable"
+    # Only Stop withdraws; an ask racing another ending stays answerable.
+    assert dispatcher.dispatch(root.operation_id, raced).status == (
+        "unavailable" if ending == "stop" else "ok"
+    )
     raced_question = next(
         question
         for question in store.episode_questions("project", episode.episode_id)
         if question.key == "raced"
     )
-    assert raced_question.withdrawn_readonly
+    assert raced_question.withdrawn_readonly is (ending == "stop")
     assert dispatcher.dispatch(root.operation_id, request).status == "unavailable"
 
 

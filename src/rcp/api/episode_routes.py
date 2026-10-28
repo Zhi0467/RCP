@@ -41,6 +41,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
+from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import parse_head
 from rcp.keyed_locks import KeyedLocks
@@ -804,38 +805,62 @@ def continue_episode(
         # A committed continuation is replayed as is; no fresh write is admitted.
         replayed = _serialize_accepted(store, project_id, existing, catalog=catalog)
         return JSONResponse(status_code=200, content=replayed.model_dump(mode="json"))
-    service = get_project_writer(catalog, project_id)
-    try:
-        service.history.require_writable()
-        if source.mode == "auto_research":
-            continuation, _ = continue_auto_research(
-                background_tasks,
-                source,
-                invocation_ceiling=body.invocation_ceiling,
-                request_id=body.request_id,
-                authorized_by=authorized_by,
-            )
-        else:
-            # The write-admission dependency already holds the project's
-            # Experiment operation lock for this request.
-            continuation = continue_experiment_episode(
-                project_id,
-                source,
-                invocation_ceiling=body.invocation_ceiling,
-                request_id=body.request_id,
-                authorized_by=authorized_by,
-                catalog=catalog,
-                store=store,
-                background_tasks=background_tasks,
-            )
-    except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    continuation = continue_ended_episode(
+        source,
+        invocation_ceiling=body.invocation_ceiling,
+        request_id=body.request_id,
+        authorized_by=authorized_by,
+        catalog=catalog,
+        store=store,
+        background_tasks=background_tasks,
+    )
     return _serialize_accepted(
         store,
         project_id,
         continuation,
         catalog=catalog,
     )
+
+
+def continue_ended_episode(
+    source: EpisodeRecord,
+    *,
+    invocation_ceiling: int,
+    request_id: str,
+    authorized_by: AuthorizedHuman,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    background_tasks: BackgroundAgentTasks,
+) -> EpisodeRecord:
+    """Create one continuation of an ended episode, in either mode.
+
+    The caller holds the project's write admission, which is also the
+    Experiment operation lock this request needs.
+    """
+
+    try:
+        get_project_writer(catalog, source.project_id).history.require_writable()
+        if source.mode == "auto_research":
+            continuation, _ = continue_auto_research(
+                background_tasks,
+                source,
+                invocation_ceiling=invocation_ceiling,
+                request_id=request_id,
+                authorized_by=authorized_by,
+            )
+            return continuation
+        return continue_experiment_episode(
+            source.project_id,
+            source,
+            invocation_ceiling=invocation_ceiling,
+            request_id=request_id,
+            authorized_by=authorized_by,
+            catalog=catalog,
+            store=store,
+            background_tasks=background_tasks,
+        )
+    except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 _ENDED_EPISODE_STATUSES = frozenset({"completed", "failed", "needs_action", "stopped"})

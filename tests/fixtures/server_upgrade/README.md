@@ -152,3 +152,8 @@ names. It is built by the exact boundary source from
 gained compute, access-hint, provider-path, and legacy-import columns (storage
 migration 61), ending at migration 60 after chat forks. It is built by the exact
 boundary source from `pre-chat-forks-v31-cfaebcc`.
+
+`pre-question-versions-v33-070729d` retains the last shape before an episode's
+status and ending began refreshing its question cards (storage migration 62),
+ending at migration 61 after machine cards. It is built by the exact boundary
+source from `pre-machine-settings-v32-0a934a6`.

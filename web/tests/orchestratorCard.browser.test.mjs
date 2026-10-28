@@ -23,6 +23,8 @@ async function withCard(chain, check) {
       if (url.endsWith("/questions")) return route.fulfill({ json: [] });
       if (url.endsWith("/chat-display"))
         return route.fulfill({ json: { archived: [], titles: {}, pinned: [] } });
+      // Listed from main, the card reads its own branch's watchers.
+      if (/\/watchers\?branch_id=root-episode$/.test(url)) return route.fulfill({ json: [] });
       // Only project routes matter: turns start through onStartTask, never directly,
       // and only an ended card's ordinary composer reads its chat's worktree, on its own
       // branch, and browser.

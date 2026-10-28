@@ -263,12 +263,14 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             (project_id, root_episode_id),
         ).fetchall()
         mail: dict[str, list[str]] = {}
+        # Question answers show on their cards, not as turn text.
         for row in connection.execute(
             "SELECT mail.delivery_operation_id, mail.body FROM auto_research_messages AS mail "
             "JOIN episodes AS member ON member.episode_id = mail.episode_id "
             "JOIN episodes AS root ON root.project_id = member.project_id "
             "AND root.graph_target_json = member.graph_target_json "
             "WHERE root.project_id = ? AND root.episode_id = ? AND mail.sender_role = 'human' "
+            "AND mail.message_id NOT LIKE 'question:%' "
             "AND mail.delivery_operation_id IS NOT NULL ORDER BY mail.created_at, mail.message_id",
             (project_id, root_episode_id),
         ):
