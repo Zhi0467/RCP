@@ -228,7 +228,7 @@ export function PaperCoach({
   const retryButton = (task: AgentTask) => (
     <button
       className="icon-button compact paper-reply-retry"
-      aria-label="Retry coach reply"
+      aria-label={task.can_resume ? "Resume coach reply" : "Retry coach reply"}
       title={task.error || undefined}
       disabled={submitting || !(task.can_retry || task.can_resume)}
       onClick={() => void retry(task)}
@@ -236,9 +236,14 @@ export function PaperCoach({
       <RotateCcw size={15} />
     </button>
   );
+  // A resumed or retried turn continues in a child task; only the newest attempt shows.
+  const continued = new Set(sessionTasks.flatMap((task) => task.parent_operation_id ?? []));
   // Failed, stopped, or cut off by a restart: each shows its edge and a way forward.
   const stuck = (task: AgentTask | undefined): task is AgentTask =>
-    !!task && !isActiveTask(task) && (task.failed || task.can_resume || task.can_retry);
+    !!task &&
+    !continued.has(task.operation_id) &&
+    !isActiveTask(task) &&
+    (task.failed || task.can_resume || task.can_retry);
   const renderedTasks = new Set<string>();
   const cards = (taskId: string) => (
     <PaperChanges
@@ -301,7 +306,17 @@ export function PaperCoach({
       )}
       <div className="paper-coach-transcript" aria-live="polite">
         {transcript
-          .filter((line) => line.role !== "error")
+          // The red edge and its icon carry failures and pauses; a continuation repeats
+          // its parent's message, which already shows once.
+          .filter(
+            (line) =>
+              line.role !== "error" &&
+              line.role !== "meta" &&
+              !(
+                line.role === "human" &&
+                sessionTasks.find((task) => task.operation_id === line.taskId)?.parent_operation_id
+              ),
+          )
           .map((line, index, lines) => {
             const task = sessionTasks.find((item) => item.operation_id === line.taskId);
             const lastAnswer =
@@ -326,7 +341,7 @@ export function PaperCoach({
           .map((task) => (
             <div
               key={task.operation_id}
-              className={`paper-coach-message agent${stuck(task) ? " paper-failure" : ""}`}
+              className={`paper-coach-message agent${stuck(task) ? " paper-failure bare" : ""}`}
             >
               {stuck(task) && retryButton(task)}
               {cards(task.operation_id)}

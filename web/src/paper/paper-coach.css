@@ -45,6 +45,15 @@
   top: 7px;
   right: 7px;
 }
+/* A turn that failed before any reply is just its edge and its icon. */
+.paper-coach-message.bare {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px;
+}
+.paper-coach-message.bare .paper-reply-retry {
+  position: static;
+}
 .paper-coach-composer {
   background: var(--aqua-field, var(--paper));
   border-radius: 9px;
