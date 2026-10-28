@@ -31,6 +31,7 @@ from rcp.paper.models import (
     PaperLimit,
     PaperOp,
     PaperPrecondition,
+    PaperRateLimit,
     PaperSnapshot,
     PaperTree,
     PaperTreeFile,
@@ -499,7 +500,7 @@ class PaperLive:
         while rate and rate[0] < now - 1:
             rate.popleft()
         if len(rate) >= limits.PAPER_PROJECT_UPDATES_PER_SECOND:
-            raise PaperLimit("Paper project update rate exceeded")
+            raise PaperRateLimit("Paper project update rate exceeded")
         rate.append(now)
 
     @staticmethod

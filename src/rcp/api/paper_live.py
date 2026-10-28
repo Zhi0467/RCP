@@ -24,7 +24,7 @@ from rcp.limits import (
     PAPER_SOCKET_QUEUE_SIZE,
 )
 from rcp.paper import PaperLive
-from rcp.paper.models import PaperLimit
+from rcp.paper.models import PaperLimit, PaperRateLimit
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter()
@@ -214,9 +214,7 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
     except HTTPException as exc:
         if isinstance(exc.__cause__, PaperLimit):
             # The shared mutation adapter preserves the live owner's budget error.
-            close_code = (
-                4529 if str(exc.__cause__) == "Paper project update rate exceeded" else 4413
-            )
+            close_code = 4529 if isinstance(exc.__cause__, PaperRateLimit) else 4413
         else:
             close_code = {409: 4400, 429: 4529, 503: 4503}.get(exc.status_code, 4403)
     except MaintenanceAdmissionClosed:

@@ -19,6 +19,10 @@ class PaperLimit(ValueError):
     """A Paper resource budget would be exceeded."""
 
 
+class PaperRateLimit(PaperLimit):
+    """Updates arrive faster than the project budget; a later retry can succeed."""
+
+
 class PaperFile(BaseModel):
     file_id: str
     path: str
