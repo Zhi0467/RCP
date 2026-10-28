@@ -175,6 +175,12 @@ def _coach_stopped(execution: AgentTaskExecution | None) -> bool:
     )
 
 
+def _only_files(snapshot: PaperSnapshot, file_ids: set[str]) -> PaperSnapshot:
+    return snapshot.model_copy(
+        update={"files": [file for file in snapshot.files if file.file_id in file_ids]}
+    )
+
+
 def _validate_paper_continuation(
     execution: AgentTaskExecution | None,
     request: CoachRequest,
@@ -322,9 +328,7 @@ async def _stream_coach(
             )
         snapshot = await live.snapshot(paper.project_id)
         if wanted is not None:
-            snapshot = snapshot.model_copy(
-                update={"files": [file for file in snapshot.files if file.file_id in wanted]}
-            )
+            snapshot = _only_files(snapshot, wanted)
         snapshot_path = _stage_saved_paper(live, snapshot, local_stage, snapshots, 0)
         changes_path = Path(tempfile.mkdtemp(prefix="changes-", dir=local_stage)).resolve()
         _record_paper_base(execution, snapshot)
@@ -691,9 +695,7 @@ async def _stream_coach(
             replace_group_ids = await asyncio.to_thread(
                 changes.undecided_group_ids, paper.project_id, token, stale_files
             )
-            snapshot = newer.model_copy(
-                update={"files": [file for file in newer.files if file.file_id in stale_files]}
-            )
+            snapshot = _only_files(newer, stale_files)
             snapshot_path = _stage_saved_paper(
                 live, snapshot, local_stage, snapshots, refresh_round + 1
             )
