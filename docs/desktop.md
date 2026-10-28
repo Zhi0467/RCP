@@ -154,7 +154,8 @@ restart `systemd-logind`. To stop idle sleep while RCP runs, start it under
 
 Artifacts, episode reports, and repository-file previews open in the panel inside
 RCP's main window. There is no native preview window or preview-opening command.
-PDFs still open in the system viewer, and downloads still use the native save dialog.
+PDFs still open in the system viewer, and downloads, including Paper files and
+folders, still use the native save dialog.
 
 After rebuilding the desktop, open an artifact, an episode report, and a
 repository file using disposable data. Verify that each stays in the main window,

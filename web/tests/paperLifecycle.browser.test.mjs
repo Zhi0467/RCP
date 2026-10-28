@@ -213,7 +213,8 @@ test("a created file stays selected while a peer's older save is read first", as
       window.paperPaths.push(document.querySelector(".paper-path")?.textContent),
     ).observe(document.body, { subtree: true, childList: true, characterData: true });
   });
-  await page.getByRole("button", { name: "New file", exact: true }).click();
+  await page.getByRole("button", { name: "File tree actions" }).click();
+  await page.getByRole("menuitem", { name: "New file" }).click();
   const path = page.getByRole("textbox", { name: "File path" });
   await path.fill("new.md");
   await path.press("Enter");

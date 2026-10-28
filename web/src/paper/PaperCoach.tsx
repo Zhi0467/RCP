@@ -261,7 +261,8 @@ export function PaperCoach({
           ref={historyButton}
           className="icon-button compact"
           aria-label="Coach chat history"
-          aria-expanded={historyOpen}
+          aria-expanded={historyOpen && sessions.length > 0}
+          disabled={!sessions.length}
           onClick={() => setHistoryOpen(!historyOpen)}
         >
           <History size={15} />
@@ -291,7 +292,7 @@ export function PaperCoach({
           </button>
         )}
       </div>
-      {historyOpen && (
+      {historyOpen && sessions.length > 0 && (
         <div className="paper-session-list" ref={historyList}>
           {sessions.map((session) => (
             <button
@@ -391,8 +392,8 @@ export function PaperCoach({
             {([false, true] as const).map((apply) => (
               <button
                 key={String(apply)}
-                aria-label={apply ? "Apply changes directly" : "Review changes"}
-                title={apply ? "Apply changes directly" : "Review changes"}
+                aria-label={apply ? "Accept edits" : "Review edits"}
+                title={apply ? "Accept edits" : "Review edits"}
                 aria-pressed={applyDirectly === apply}
                 onClick={() => {
                   setApplyDirectly(apply);

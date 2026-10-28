@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-download-paper-file"
+description = "Enables the download_paper_file command without any pre-configured scope."
+commands.allow = ["download_paper_file"]
+
+[[permission]]
+identifier = "deny-download-paper-file"
+description = "Denies the download_paper_file command without any pre-configured scope."
+commands.deny = ["download_paper_file"]

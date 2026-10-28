@@ -144,7 +144,7 @@ test("Paper fits 390px in Write, Preview, Coach and the file panel", async (t) =
   }
   await page.getByRole("button", { name: "Show files", exact: true }).click();
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  for (const target of await page.locator(".paper-file, .paper-files footer .icon-button").all()) {
+  for (const target of await page.locator(".paper-row button, .paper-files header button").all()) {
     const box = await target.boundingBox();
     assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 390);
   }
@@ -192,8 +192,12 @@ test("rewrite comparison reads the complete proposed file", async (t) => {
 
 test("cancelling failed delete and rename removes their retry authority", async (t) => {
   const { page } = await openPaper(t);
+  const menu = async (action) => {
+    await page.getByRole("button", { name: "Actions for intro.md", exact: true }).click();
+    await page.getByRole("menuitem", { name: action }).click();
+  };
   for (const operation of ["Delete", "Rename"]) {
-    await page.getByRole("button", { name: `${operation} file`, exact: true }).click();
+    await menu(operation);
     if (operation === "Rename") {
       await page.getByRole("textbox", { name: "File path" }).fill("renamed.md");
       await page.getByRole("button", { name: "Save file path" }).click();
@@ -201,7 +205,7 @@ test("cancelling failed delete and rename removes their retry authority", async 
     await page.locator(".paper-files.paper-failed").waitFor();
     if (operation === "Rename") {
       await page.getByRole("textbox", { name: "File path" }).press("Escape");
-      await page.getByRole("button", { name: "Rename file", exact: true }).click();
+      await menu("Rename");
       assert.ok(
         await page
           .getByRole("textbox", { name: "File path" })
@@ -323,15 +327,19 @@ test("folder uploads select the new file and require confirmation before replaci
       }),
   });
   await page.getByRole("button", { name: "Show files", exact: true }).click();
-  await page.locator(".paper-folder").click();
+  const uploadInto = async (file) => {
+    await page.getByRole("button", { name: "Actions for figures/", exact: true }).click();
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("menuitem", { name: "Upload" }).click();
+    await (await chooser).setFiles(file);
+  };
   let replacements = 0;
   await context.route("**/paper/files/img/content", (route) => {
     replacements += 1;
     assert.equal(route.request().method(), "PUT");
     return route.fulfill({ status: replacements === 1 ? 500 : 200, json: { file_ids: ["img"] } });
   });
-  const input = page.locator('input[type="file"]');
-  await input.setInputFiles({
+  await uploadInto({
     name: "figure.png",
     mimeType: "image/png",
     buffer: Buffer.from("image"),
@@ -348,7 +356,7 @@ test("folder uploads select the new file and require confirmation before replaci
   assert.equal(replacements, 2);
   assert.equal(fixture.tree.files.length, 2);
   await page.getByRole("button", { name: "Show files", exact: true }).click();
-  await input.setInputFiles({
+  await uploadInto({
     name: "caption.md",
     mimeType: "text/markdown",
     buffer: Buffer.from("caption"),
@@ -712,7 +720,8 @@ test("a newly created file receives typing and stays selected after reload", asy
     "section 6.md",
     "section 12.md",
   ]);
-  await page.getByRole("button", { name: "New file", exact: true }).click();
+  await page.getByRole("button", { name: "File tree actions" }).click();
+  await page.getByRole("menuitem", { name: "New file" }).click();
   const path = page.getByRole("textbox", { name: "File path" });
   assert.ok((await path.boundingBox()).height >= 44);
   await path.fill("new.md");
@@ -827,4 +836,70 @@ test("history quota refusal dismisses instead of retrying", async (t) => {
   await history.getByRole("button", { name: "Save version" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".paper-history-row").length === 2);
   assert.equal(attempts, 2);
+});
+
+const nested = ({ tree }) =>
+  tree.files.push(
+    { ...tree.files[0], file_id: "d1", path: "draft/one.md" },
+    { ...tree.files[0], file_id: "d2", path: "draft/deep/two.md" },
+  );
+const fileNames = (page) => page.locator(".paper-file span").allTextContents();
+
+test("folders fold, and the shared row menu renames and deletes a whole folder", async (t) => {
+  const { page, posts, errors } = await openPaper(t, { configure: nested });
+  const draft = page.locator(".paper-folder", { hasText: "draft" });
+  assert.deepEqual(await fileNames(page), ["two.md", "one.md", "intro.md"]);
+  await draft.click();
+  assert.equal(await draft.getAttribute("aria-expanded"), "false");
+  assert.deepEqual(await fileNames(page), ["intro.md"]);
+  await draft.click();
+  assert.deepEqual(await fileNames(page), ["two.md", "one.md", "intro.md"]);
+
+  const folderMenu = async (folder, action) => {
+    await page.getByRole("button", { name: `Actions for ${folder}/`, exact: true }).click();
+    await page.getByRole("menuitem", { name: action }).click();
+  };
+  await folderMenu("draft", "Rename");
+  const path = page.getByRole("textbox", { name: "Folder path" });
+  await path.fill("final");
+  await path.press("Enter");
+  await page.getByRole("button", { name: "Actions for final/deep/two.md", exact: true }).waitFor();
+  await folderMenu("final", "Delete");
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".paper-file").length === 1);
+  assert.deepEqual(
+    posts.filter((post) => post.path.includes("/folders/")).map((post) => post.body),
+    [{ path: "draft", to: "final" }, { path: "final" }],
+  );
+  assert.deepEqual(errors, []);
+});
+
+test("Download asks the desktop where to save and is a plain download in a browser", async (t) => {
+  const browserPage = (await openPaper(t, { configure: nested })).page;
+  const download = browserPage.waitForEvent("download");
+  await browserPage.getByRole("button", { name: "Actions for draft/", exact: true }).click();
+  await browserPage.getByRole("menuitem", { name: "Download" }).click();
+  assert.equal((await download).suggestedFilename(), "draft.zip");
+
+  const { page } = await openPaper(t, {
+    configure: nested,
+    init: () => {
+      window.saved = [];
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (command, args) => {
+          if (command === "download_paper_file") window.saved.push(args);
+          return { saved: true, path: "/chosen" };
+        },
+      };
+    },
+  });
+  for (const item of ["draft/deep/two.md", "draft/"]) {
+    await page.getByRole("button", { name: `Actions for ${item}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Download" }).click();
+  }
+  await page.waitForFunction(() => window.saved.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.saved), [
+    { projectId: "p", fileId: "d2", suggestedName: "two.md" },
+    { projectId: "p", folder: "draft", suggestedName: "draft.zip" },
+  ]);
 });

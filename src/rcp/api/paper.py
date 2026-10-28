@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import quote
@@ -76,6 +78,15 @@ class RenameFile(BaseModel):
     path: str = Field(min_length=1)
 
 
+class FolderPath(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1)
+
+
+class RenameFolder(FolderPath):
+    to: str = Field(min_length=1)
+
+
 class NamedVersion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
@@ -125,6 +136,39 @@ async def rename_file(file_id: str, body: RenameFile, request: Request, project_
 async def delete_file(file_id: str, request: Request, project_id: str = _member):
     return await _apply(
         request, project_id, PaperOp(kind="delete", file_id=file_id), checkpoint=True
+    )
+
+
+async def _folder_ops(request: Request, project_id: str, folder: str, op) -> Receipt:
+    """Apply one operation per file under `folder` as a single revision, or refuse."""
+    live = get_paper_live(request)
+    tree = await live.snapshot(project_id)
+    ops = [op(file) for file in tree.files if file.path.startswith(f"{folder}/")]
+    if not ops:
+        raise HTTPException(404, "Paper folder not found")
+    return await paper_mutation(
+        request,
+        project_id,
+        lambda: live.apply(project_id, ops, _actor(request), {}, checkpoint=True),
+    )
+
+
+@router.post(_PREFIX + "/folders/rename")
+async def rename_folder(body: RenameFolder, request: Request, project_id: str = _member):
+    return await _folder_ops(
+        request,
+        project_id,
+        body.path,
+        lambda file: PaperOp(
+            kind="rename", file_id=file.file_id, path=body.to + file.path[len(body.path) :]
+        ),
+    )
+
+
+@router.post(_PREFIX + "/folders/delete")
+async def delete_folder(body: FolderPath, request: Request, project_id: str = _member):
+    return await _folder_ops(
+        request, project_id, body.path, lambda file: PaperOp(kind="delete", file_id=file.file_id)
     )
 
 
@@ -213,6 +257,32 @@ async def raw_file(
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(PurePosixPath(file.path).name)}",
             "Content-Security-Policy": "sandbox; default-src 'none'",
+        },
+    )
+
+
+@router.get(_PREFIX + "/folders/archive")
+async def folder_archive(path: str, request: Request, project_id: str = _member):
+    tree = await get_paper_live(request).snapshot(project_id)
+    files = [file for file in tree.files if file.path.startswith(f"{path}/")]
+    if not files:
+        raise HTTPException(404, "Paper folder not found")
+    name = PurePosixPath(path).name
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file in files:
+            archive.writestr(
+                f"{name}/{file.path[len(path) + 1 :]}",
+                (file.text or "").encode()
+                if file.kind == "text"
+                else tree._blobs[file.blob_sha256 or ""],
+            )
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.zip",
         },
     )
 

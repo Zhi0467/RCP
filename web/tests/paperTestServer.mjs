@@ -231,6 +231,16 @@ export function createPaperFixture({
         tree.saved_revision = tree.revision;
         return { json: { revision: tree.revision, file_ids: [file_id] } };
       }
+      if (method === "POST" && /\/folders\/(rename|delete)$/.test(path)) {
+        const under = tree.files.filter((file) => file.path.startsWith(`${body.path}/`));
+        if (path.endsWith("/delete"))
+          tree.files = tree.files.filter((file) => !under.includes(file));
+        else for (const file of under) file.path = body.to + file.path.slice(body.path.length);
+        tree.revision += 1;
+        tree.saved_revision = tree.revision;
+        return { json: { revision: tree.revision, file_ids: under.map((file) => file.file_id) } };
+      }
+      if (path.endsWith("/folders/archive")) return { body: "zip", contentType: "application/zip" };
       if (path.endsWith("/raw"))
         return { body: room.doc.getText("text").toString(), contentType: "text/plain" };
       if (path.endsWith("/history")) {
@@ -338,6 +348,8 @@ export async function openPaper(
     initialText = "draft",
     touch = false,
     configure = () => {},
+    /** A script run before the page, e.g. a desktop-runtime stub. */
+    init = null,
   },
 ) {
   const context = await browser.newContext({
@@ -345,6 +357,7 @@ export async function openPaper(
     hasTouch: touch,
     isMobile: touch,
   });
+  if (init) await context.addInitScript(init);
   t.after(async () => {
     await context.close();
   });
