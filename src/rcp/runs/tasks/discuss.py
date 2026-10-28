@@ -772,7 +772,9 @@ async def stream_discuss_run(
             project_id = service._project_id
             if project_id is None:
                 raise ValueError("Graph history reads require a canonical project identity.")
-            read_scope = GraphReadScope.resolve(project_id, service.history, context.group_context)
+            read_scope = GraphReadScope.resolve(
+                project_id, service.history, context.group_context, store=service.paper.store
+            )
             context = context.model_copy(
                 update=stage_branch_read_context(context, service, local_stage, remote_stage)
             )
@@ -883,6 +885,10 @@ async def stream_discuss_run(
                 experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
+            if graph_read_scope is not None:
+                discuss_values["branches"] = [
+                    item.model_dump(mode="json") for item in graph_read_scope.branches
+                ]
             handler = discuss_command_handler(
                 execution, service=service, graph_read_scope=graph_read_scope
             )

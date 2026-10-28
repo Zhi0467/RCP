@@ -605,6 +605,9 @@ def _experiment_values(
         execution["helper_owner"] = backend.id if backend is not None else None
     return {
         **values,
+        "branches": [item.model_dump(mode="json") for item in turn.graph_read_scope.branches]
+        if turn.graph_read_scope is not None
+        else [],
         "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
         "compute": {"active": turn.compute_profiles},
@@ -2867,7 +2870,10 @@ async def _stream_work_graph_repair(
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
         graph_read_scope = GraphReadScope.resolve(
-            task_record.project_id, service.history, context.group_context
+            task_record.project_id,
+            service.history,
+            context.group_context,
+            store=service.paper.store,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

@@ -19,6 +19,7 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     async_wait_until,
+    authorized_human,
     changed_values,
     create_named_app,
     launch_contract_path,
@@ -74,9 +75,8 @@ class _HistoryLauncher:
             for code in master.split("`")[1::2]
             if " graph_diff " in code
         )
-        scope = GraphReadScope(
-            project_id=self.service._project_id,
-            target=self.service.history.graph_target,
+        scope = GraphReadScope.resolve(
+            self.service._project_id, self.service.history, store=self.service.paper.store
         )
         assert render_graph_history(scope, command) in master
         await async_wait_until(lambda: gate.mailbox_id in self.handlers)
@@ -121,6 +121,45 @@ def test_graph_reader_master_commands_and_committed_observation(
         wire_saved_paper(service)
     if kind != "seed":
         append_fixture_patch(service, seed_patch())
+    if kind not in {"seed", "paper_coach"}:
+        from .test_history_forks import fork_metadata
+
+        parent = service.history.create_branch(
+            fork_metadata(service.history, service.history.head_ref()).model_copy(
+                update={"project_id": service._project_id, "authorized_by": authorized_human(app)}
+            )
+        )
+        child = service.history.create_branch(
+            fork_metadata(service.history, parent.head_ref()).model_copy(
+                update={"project_id": service._project_id, "authorized_by": authorized_human(app)}
+            )
+        )
+        for branch, name in ((parent, "vla-if"), (child, "child-branch")):
+            service.paper.store.create_graph_branch(
+                project_id=service._project_id,
+                branch_id=branch.branch_id,
+                owner_episode_id=None,
+                parent_head=branch.branch_metadata().effective_parent_head,
+                created_by="human:test",
+                name=name,
+            )
+        scope = GraphReadScope.resolve(
+            service._project_id, service.history, store=service.paper.store
+        )
+        assert [item.model_dump() for item in scope.branches] == [
+            {
+                "name": "vla-if",
+                "id": parent.branch_id,
+                "parent": "main",
+                "head_revision": parent.head_ref().revision,
+            },
+            {
+                "name": "child-branch",
+                "id": child.branch_id,
+                "parent": "vla-if",
+                "head_revision": child.head_ref().revision,
+            },
+        ]
     input_revision = service.history.state().revision
     launcher = _HistoryLauncher(service, history_handlers, kind=kind, succeed=succeed)
 

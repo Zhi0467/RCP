@@ -491,7 +491,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
     """The stable values a Work master states, built from the inputs its renderer uses."""
 
     _prepare_work_observation(turn)
-    return chat_prompt_values(
+    values = chat_prompt_values(
         turn.context,
         turn.request,
         repositories=staged.repositories,
@@ -502,6 +502,11 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
     )
+    if turn.graph_read_scope is not None:
+        values["branches"] = [
+            item.model_dump(mode="json") for item in turn.graph_read_scope.branches
+        ]
+    return values
 
 
 def _resolve_work_execution(
@@ -2827,7 +2832,10 @@ async def _stream_work_graph_repair(
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
         graph_read_scope = GraphReadScope.resolve(
-            task_record.project_id, service.history, context.group_context
+            task_record.project_id,
+            service.history,
+            context.group_context,
+            store=service.paper.store,
         )
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)

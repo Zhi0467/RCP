@@ -281,7 +281,10 @@ async def stage_work_turn(
             else None
         )
         graph_read_scope = GraphReadScope.resolve(
-            write_scope.project_id, service.history, context.group_context
+            write_scope.project_id,
+            service.history,
+            context.group_context,
+            store=service.paper.store,
         )
         validator_lifecycle = start_validator_mailbox(
             service,

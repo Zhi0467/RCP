@@ -315,7 +315,7 @@ async def stream_auto_research_orchestrator_run(
             service, execution.store, turn.request.run_on or ""
         )
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context
+            turn.task.project_id, service.history, context.group_context, store=service.paper.store
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
         allowed_verbs = auto_research_allowed_verbs(
@@ -600,7 +600,7 @@ async def stream_auto_research_worker_run(
             schema,
         )
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context
+            turn.task.project_id, service.history, context.group_context, store=service.paper.store
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
         allowed_verbs = auto_research_allowed_verbs(
@@ -1632,6 +1632,9 @@ def _orchestrator_prompt(
         compute_profiles=compute_profiles,
     )
 
+    if graph_read_scope is not None:
+        values["branches"] = [item.model_dump(mode="json") for item in graph_read_scope.branches]
+
     snapshot, dismissal_ids = auto_research_question_snapshot(
         execution.store,
         project_id=turn.task.project_id,
@@ -1818,6 +1821,9 @@ def _worker_prompt(
         allowed_verbs=allowed_verbs,
         compute_profiles=compute_profiles,
     )
+
+    if graph_read_scope is not None:
+        values["branches"] = [item.model_dump(mode="json") for item in graph_read_scope.branches]
 
     def render_master() -> str:
         return auto_research_worker_task_contract(
@@ -2245,7 +2251,7 @@ async def _settle_worker_patch(
         # The launch's group, which the reused read_dirs were built from.
         context.group_context = correction.group_context
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context
+            turn.task.project_id, service.history, context.group_context, store=service.paper.store
         )
         correction_head = prepare_graph_observation(
             execution,
