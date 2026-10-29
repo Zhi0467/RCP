@@ -595,6 +595,14 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     cache_path.write_text(json.dumps(legacy), encoding="utf-8")
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
+    # A cache from when the coach chose its own machine is re-derived on the base.
+    off_base = dict(legacy, snapshot=authoritative.json())
+    off_base["snapshot"]["agent_profiles"]["paper_coach"]["run_on"] = "elsewhere"
+    cache_path.write_text(json.dumps(off_base), encoding="utf-8")
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
+    profiles = client.get(f"/api/projects/{project_id}").json()["agent_profiles"]
+    assert len({profile["run_on"] for profile in profiles.values()}) == 1
+
     monkeypatch.setattr(projects_module, "PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES", 16)
     cache_path.write_bytes(b"x" * 17)
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404

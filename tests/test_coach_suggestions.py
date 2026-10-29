@@ -3,11 +3,12 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from typing import Literal, cast
 from uuid import uuid4
 
 import pytest
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.launcher import AgentProcessControl
 from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
 from rcp.background import AgentTaskExecution
@@ -29,7 +30,15 @@ def coach(manifest, tmp_path):
     return service, live, tmp_path / "data"
 
 
-async def run_coach(service, launcher, data, *, mode="review", execution=None, request=None):
+async def run_coach(
+    service,
+    launcher,
+    data,
+    *,
+    mode: Literal["review", "apply_directly"] = "review",
+    execution=None,
+    request=None,
+):
     return [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in stream_coach(
@@ -235,7 +244,7 @@ async def test_a_coach_session_keeps_its_folder_and_sessions_never_share_one(coa
             AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
             async for frame in stream_coach(
                 service,
-                Launcher(),
+                cast(AgentLauncher, Launcher()),
                 service.paper,
                 CoachRequest(message="Edit the paper", session_id=session_id),
                 data,
@@ -300,7 +309,7 @@ async def test_invalid_output_records_exact_diagnostics_and_cleans_snapshot(coac
     diagnostic = next(
         r.payload["diagnostics"] for r in task_receipts if r.category == "paper_changes_invalid"
     )
-    assert errors == ["; ".join(diagnostic)]
+    assert errors == ["; ".join(cast(list[str], diagnostic))]
     assert service.paper_changes.groups(service.paper.project_id) == []
     assert service.paper.sessions()[0].native_session_id == "invalid-native"
     assert not list((data / "run-stage").glob("*/paper-base-*"))
@@ -510,19 +519,16 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
     assert execution.stage_unreachable is link_lost
 
 
-@pytest.mark.asyncio
-async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
-    coach, monkeypatch, tmp_path
-):
+@pytest.fixture
+def detached_coach(coach, monkeypatch, tmp_path):
     import shutil
 
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs import recorded_settlement
-    from rcp.runs.remote_finalization import recorded_finalizer
     from rcp.runs.tasks import coach as coach_module
+    from rcp.runs.tasks import work_turn_runtime
 
     from .test_auto_research_stream import _LocalBackedRemoteStage
-    from .test_work_agent_io import _recorded_pass
 
     service, _live, data = coach
     base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
@@ -535,7 +541,12 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
         def touch(self):
             pass
 
+        @property
+        def workspace(self):
+            return Path(super().workspace)
+
         def put_directory(self, source, label, *, reuse=False):
+            assert self.root is not None
             target = self.root / "inputs" / label
             shutil.copytree(source, target)
             return str(target)
@@ -563,21 +574,37 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
 
     monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr(recorded_settlement, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr(work_turn_runtime, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr("rcp.agents.command_mailbox.COMMAND_MAILBOX_REMOTE_POLL_SECONDS", 0.02)
     monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
     monkeypatch.setattr(coach_module, "_stream_agent_events", link_lost)
     execution = execution_for(service)
     request = CoachRequest(message="Edit the paper", provider="codex")
 
+    yield service, data, execution, request
+    if execution.command_mailbox is not None:
+        execution.command_mailbox.suspend()
+
+
+@pytest.mark.asyncio
+async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(detached_coach):
+    from rcp.runs.remote_finalization import recorded_finalizer
+    from rcp.runs.tasks import coach as coach_module
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, data, execution, request = detached_coach
     await run_coach(service, None, data, execution=execution, request=request)
     assert service.paper_changes.groups(service.paper.project_id) == []
 
     finalizer = recorded_finalizer(execution.store, execution.operation_id)
+    assert finalizer is not None
     assert finalizer is coach_module.finalize_recorded_coach_result
     settled = [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in finalizer(
             service,
-            None,
+            service.launcher,
             request,
             data,
             execution,
@@ -589,3 +616,167 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
     groups = service.paper_changes.groups(service.paper.project_id)
     assert [group.changes[0].after for group in groups] == ["Proposed after the drop\n"]
     assert [session.native_session_id for session in service.paper.sessions()] == ["remote-native"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refresh", [False, True])
+async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path, refresh):
+    from rcp.runs.tasks.coach import finalize_recorded_coach_result
+
+    from .test_work_agent_io import _recorded_pass
+
+    service, data, execution, request = detached_coach
+    project = service.paper.project_id
+    if refresh:
+        prior = tmp_path / "prior"
+        (prior / "files").mkdir(parents=True)
+        (prior / "files" / "paper.md").write_text("Previous suggestion\n")
+        source = execution_for(service)
+        source.store.checkpoint_agent_task(source.operation_id, native_session_id="older-session")
+        groups = service.paper_changes.collect(
+            project, source.operation_id, saved(service.paper_live, project), prior
+        )
+        request = request.model_copy(
+            update={
+                "refresh_source_task_id": source.operation_id,
+                "refresh_group_ids": [group.group_id for group in groups],
+            }
+        )
+    launched = await run_coach(service, None, data, execution=execution, request=request)
+    assert not [event for event in launched if event.event == "error"]
+    recorded = _recorded_pass("", "Done", thread_id="remote-native")
+    first = None
+    for _ in range(2):
+        events = [
+            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            async for frame in finalize_recorded_coach_result(
+                service, service.launcher, request, data, execution, recorded
+            )
+        ]
+        assert events[-1].event == "done"
+        groups = service.paper_changes.groups(project)
+        assert len(groups) == 1
+        assert groups[0].changes[0].after == "Proposed after the drop\n"
+        if first is None:
+            first = groups
+        else:
+            assert groups == first
+
+
+@pytest.mark.asyncio
+async def test_pending_coach_restores_history_mailbox(detached_coach):
+    import asyncio
+
+    from rcp.runs.remote_finalization import resume_recorded_command_mailbox
+    from rcp.storage.command_mailbox import CommandMailboxStore
+
+    from .helpers import async_wait_until
+    from .test_staged_command_client import _sign
+
+    service, data, execution, request = detached_coach
+    await run_coach(service, None, data, execution=execution, request=request)
+    owner = execution.command_mailbox
+    assert owner is not None and owner.detached and not owner.closed
+    credential = owner.staged.credential
+    assert not credential.expired
+    assert Path(owner.staged.client_path).is_file()
+    checkpoints = CommandMailboxStore.for_data_dir(execution.store.path.parent)
+    assert checkpoints.load(execution.operation_id) is not None
+    await asyncio.to_thread(owner.suspend)
+    restored = resume_recorded_command_mailbox(lambda: service, execution)
+    assert restored is not None
+    assert restored.staged.credential.identity == credential.identity
+    assert restored.staged.credential.mailbox_id == credential.mailbox_id
+    assert restored.staged.credential.token == credential.token
+    try:
+        workspace = Path(restored.staged.workspace)
+        for arguments, expected in [({}, "ok"), ({"project": "unrelated-project"}, "invalid")]:
+            request_id = uuid4().hex
+            name = f"rcp-command-{credential.mailbox_id}-{request_id}"
+            partial = workspace / f"{name}.partial"
+            partial.write_text(
+                json.dumps(
+                    _sign(
+                        restored.staged,
+                        {
+                            "version": 1,
+                            "mailbox_id": credential.mailbox_id,
+                            "request_id": request_id,
+                            "credential": credential.token,
+                            "verb": "graph_log",
+                            "arguments": {"id": "hyp/missing", **arguments},
+                        },
+                    )
+                )
+            )
+            partial.replace(workspace / f"{name}.request.json")
+            response_path = workspace / f"{name}.response.json"
+            await async_wait_until(response_path.exists)
+            response = json.loads(response_path.read_text())
+            assert response["status"] == expected
+    finally:
+        await asyncio.to_thread(restored.settle)
+    assert restored.staged.credential.expired
+    assert checkpoints.load(execution.operation_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuation", ["resume", "retry"])
+async def test_stored_coach_on_another_machine_starts_fresh_on_base(
+    manifest, tmp_path, monkeypatch, continuation
+):
+    from .helpers import signed_in_client
+
+    data = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data)
+    service = app.state.service
+    wire_saved_paper(service)
+    previous = execution_for(service)
+    request = CoachRequest(
+        message="Edit the paper", provider="codex", run_on="old-machine", session_id="old-session"
+    )
+    with previous.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=?,native_session_id=?,status='paused' "
+            "WHERE operation_id=?",
+            (request.model_dump_json(), request.session_id, previous.operation_id),
+        )
+    spawned = []
+
+    def capture(record, request, **kwargs):
+        spawned.append((record, request, kwargs))
+        return record
+
+    monkeypatch.setattr(app.state.background_tasks, "_spawn_record", capture)
+    response = signed_in_client(app).post(
+        f"/api/projects/{service.paper.project_id}/tasks/{previous.operation_id}/{continuation}",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+    assert len(spawned) == 1
+    record, admitted, kwargs = spawned[0]
+    base = service.manifest.repository_map[service.manifest.state.repository].machine
+    assert record.request["run_on"] == admitted.run_on == base
+    assert record.request["session_id"] is admitted.session_id is record.native_session_id is None
+    assert record.stage_root is None
+    assert kwargs["continuation"] == "handoff"
+    execution = AgentTaskExecution(
+        record.operation_id, previous.store, AgentProcessControl(), continuation="handoff"
+    )
+    launches = []
+
+    class Launcher:
+        async def stream(self, _provider, _prompt, **kwargs):
+            launches.append(kwargs)
+            execution.store.checkpoint_agent_task(
+                execution.operation_id, native_session_id="new-base-session"
+            )
+            yield AgentEvent(event="session", session_id="new-base-session")
+            yield AgentEvent(event="done")
+
+    events = await run_coach(service, Launcher(), data, execution=execution, request=admitted)
+    assert not [event for event in events if event.event == "error"]
+    assert len(launches) == 1
+    assert launches[0]["session_id"] is None
+    assert launches[0]["host"] == service.manifest.machine_map[base].host
+    assert service.paper.sessions()[0].execution_machine == base

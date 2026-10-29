@@ -638,10 +638,19 @@ class PaperChanges:
         mode: Literal["review", "apply_directly"] = "review",
         replace_group_ids: set[str] | None = None,
         replace_source_task_id: str | None = None,
+        receipt_key: str | None = None,
     ) -> list[ChangeGroup]:
-        tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
-        groups, blobs = build_changes(task_id, snapshot, changes_dir, self.live, tree)
         with self.admission(project_id), self.store.connection() as connection:
+            if (
+                receipt_key is not None
+                and connection.execute(
+                    "SELECT 1 FROM paper_change_receipts WHERE project_id=? AND receipt_key=?",
+                    (project_id, receipt_key),
+                ).fetchone()
+            ):
+                return self.groups(project_id, task_id)
+            tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
+            groups, blobs = build_changes(task_id, snapshot, changes_dir, self.live, tree)
             decided: set[tuple[object, ...]] = set()
             for group_id in replace_group_ids or set():
                 row = connection.execute(
@@ -705,6 +714,12 @@ class PaperChanges:
                             change.model_dump_json(exclude_none=True),
                         ),
                     )
+            if receipt_key is not None:
+                # No group foreign key: later refreshes may replace every collected card.
+                connection.execute(
+                    "INSERT INTO paper_change_receipts VALUES (?,?,?,?,?,?)",
+                    (project_id, receipt_key, None, "collect", "{}", self.store.now()),
+                )
         return self.groups(project_id, task_id)
 
     def groups(self, project_id: str, task_id: str | None = None) -> list[ChangeGroup]:

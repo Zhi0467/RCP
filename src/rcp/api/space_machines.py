@@ -10,6 +10,7 @@ import logging
 import os
 import shlex
 import threading
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
@@ -25,6 +26,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_display_cache,
     get_store,
+    project_write_admission,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
@@ -784,25 +786,34 @@ def delete_space_machine(
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
     identity_access.acting_user(request)
-    with MACHINE_ATTACHMENT_LOCK:
-        machine = _machine_or_404(store, machine_id)
-        usage, complete, _, repository_hosts = _machine_usage(store)
-        if not complete or machine.host in repository_hosts:
-            detail = (
-                "A repository lives on this machine."
-                if machine.host in repository_hosts
-                else "RCP could not read every project, so it cannot tell whether this "
-                "machine is used."
-            )
-            raise HTTPException(status_code=409, detail=detail)
-        try:
-            for project in usage.get(machine.host, []):
-                project_display_cache.remove_machine(project["project_id"], project["alias"])
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Project not found") from exc
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        store.delete_space_machine(machine_id)
+    machine = _machine_or_404(store, machine_id)
+    listed = sorted({item["project_id"] for item in _machine_usage(store)[0].get(machine.host, [])})
+    # Each listing project's write fence comes first, as its own machine route takes
+    # it, so a detach never edits a project mid-transfer or under another writer.
+    with ExitStack() as fences:
+        for project_id in listed:
+            fences.enter_context(project_write_admission(project_id, request))
+        with MACHINE_ATTACHMENT_LOCK:
+            usage, complete, _, repository_hosts = _machine_usage(store)
+            if not complete or machine.host in repository_hosts:
+                detail = (
+                    "A repository lives on this machine."
+                    if machine.host in repository_hosts
+                    else "RCP could not read every project, so it cannot tell whether this "
+                    "machine is used."
+                )
+                raise HTTPException(status_code=409, detail=detail)
+            projects = usage.get(machine.host, [])
+            if {item["project_id"] for item in projects} - set(listed):
+                raise HTTPException(status_code=409, detail="A project started using this machine.")
+            try:
+                for project in projects:
+                    project_display_cache.remove_machine(project["project_id"], project["alias"])
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="Project not found") from exc
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 
 

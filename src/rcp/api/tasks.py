@@ -66,7 +66,7 @@ from rcp.runs.steering import (
     finish_chat_steer,
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
-from rcp.runs.tasks.coach import _resolved_coach_request
+from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -966,7 +966,23 @@ def resume_agent_task(
                 with _task_preparation_service(service) as reader:
                     experiment_admission.require_current(reader, previous.request)
                     skills = _validate_stored_task_request(reader, previous.kind, previous.request)
+                    coach_run_on = (
+                        _coach_request_on_base(
+                            reader, CoachRequest.model_validate(previous.request)
+                        ).run_on
+                        if previous.kind == "paper_coach"
+                        else None
+                    )
                 with _chat_recovery_admission(service, store, previous):
+                    if coach_run_on is not None and coach_run_on != previous.request.get("run_on"):
+                        # A move to the base is a fresh attempt, including its stored session
+                        # and stage; Retry already owns that recovery transition.
+                        return background_tasks.retry(
+                            operation_id,
+                            run_on=coach_run_on,
+                            skills=skills,
+                            authorized_by=authorized_by,
+                        ).model_dump(mode="json")
                     return background_tasks.resume(
                         operation_id,
                         skills=skills,
@@ -1133,6 +1149,9 @@ def retry_agent_task(
                     )
                 # A comment's retry is its chat turn's retry: it edits the current version.
                 with _task_preparation_service(service) as reader:
+                    if isinstance(candidate, CoachRequest):
+                        candidate = _coach_request_on_base(reader, candidate)
+                        overrides["run_on"] = candidate.run_on
                     candidate_payload = candidate.model_dump(mode="json")
                     experiment_admission.require_current(reader, candidate_payload)
                     skills = _validate_stored_task_request(
@@ -1446,7 +1465,9 @@ def _validate_stored_task_request(
         )
         return service.resolve_skill_selection(cast(RunRequest, resolved_auto_research))
     if kind == "paper_coach":
-        resolved_coach = _resolved_coach_request(service, CoachRequest.model_validate(body))
+        resolved_coach = _resolved_coach_request(
+            service, _coach_request_on_base(service, CoachRequest.model_validate(body))
+        )
         return service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
