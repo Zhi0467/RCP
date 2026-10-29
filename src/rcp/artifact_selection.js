@@ -138,6 +138,14 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
     endDrag();
   }
 
+  // The reader dismissed the offer: its mark and its text go, so a drag over text
+  // still highlighted cannot move that text instead of selecting.
+  function dismiss() {
+    clear();
+    doc.getSelection()?.removeAllRanges();
+    publish(null);
+  }
+
   function textAtPoint(event) {
     // Preserve native highlighting, but padding around text is still drawable.
     if (event.target instanceof SVGElement) return false;
@@ -254,8 +262,7 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       endDrag();
       // A plain click elsewhere dismisses whatever selection the viewer is offering.
       if (!drawn) {
-        clear();
-        publish(null);
+        dismiss();
         return;
       }
       if (right - left < 4 || bottom - top < 4) {
@@ -336,10 +343,7 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
     true,
   );
   listen(doc, "keydown", (event) => {
-    if (event.key === "Escape") {
-      clear();
-      publish(null);
-    }
+    if (event.key === "Escape") dismiss();
   });
   return clear;
 }
