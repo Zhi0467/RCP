@@ -295,3 +295,24 @@
     min-height: 44px;
   }
 }
+/* Comments waiting for the coach, counted on its Paper view segment. */
+.paper-comment-count {
+  background: var(--cobalt);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  font: 700 10px/16px var(--ui);
+  min-width: 16px;
+  padding: 0 4px;
+  text-align: center;
+}
+.segmented button.paper-failure {
+  box-shadow: inset 3px 0 0 var(--coral);
+}
+.segmented button.paper-failure[aria-pressed="true"] {
+  box-shadow:
+    var(--segmented-selected-shadow),
+    inset 3px 0 0 var(--coral);
+}
+.paper-right-pane:focus {
+  outline: none;
+}

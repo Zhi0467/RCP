@@ -33,6 +33,8 @@ import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
+import { resolvePreviewSelection, type PreviewDirectComment } from "./previewComments";
+import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
 
 /** Route snapshots retain selection only; IndexedDB owns all document content. */
 export interface PaperEditorState {
@@ -111,6 +113,61 @@ export function PaperWorkspace({
     retry: () => Promise<void>;
   } | null>(null);
   const [resolving, setResolving] = useState(false);
+  // The coach's send state and comments live here: the preview stages comments too,
+  // and its failures show on the Coach segment while the coach is hidden.
+  const [coachSubmitting, setCoachSubmitting] = useState(false);
+  const [coachError, setCoachError] = useState<string | null>(null);
+  const coachTranscript = useRef<HTMLDivElement>(null);
+  const coachMessage = useRef<HTMLTextAreaElement>(null);
+  const previewPane = useRef<HTMLDivElement>(null);
+  const comments = useAnswerComments({
+    storageKey: null,
+    enabled: true,
+    busy: coachSubmitting,
+    sources: [
+      transcriptSource(coachTranscript),
+      { root: previewPane, resolve: resolvePreviewSelection },
+    ],
+    message: coachMessage,
+    onError: setCoachError,
+  });
+  const openPreviewComment = (comment: PreviewDirectComment) => {
+    comments.externalSelectionClear.current?.();
+    comments.externalSelectionClear.current = null;
+    if (coachSubmitting || !comment.quote || !comments.roomForAnother()) {
+      comment.clear?.();
+      return;
+    }
+    comments.externalSelectionClear.current = comment.clear ?? null;
+    comments.openComposer({
+      step: "comment",
+      selectedText: comment.quote,
+      ...(comment.where ? { where: comment.where } : {}),
+      anchor: comment.anchor,
+      position: null,
+      origin: previewPane.current,
+    });
+    comments.focusComment();
+  };
+  const waiting = comments.annotations.length;
+  // The Coach segment carries the waiting comments' count and the coach's failure.
+  const segmentLabel = (panel: "write" | "preview" | "coach") => (
+    <>
+      {panel[0].toUpperCase() + panel.slice(1)}
+      {panel === "coach" && waiting > 0 && (
+        <span className="paper-comment-count" aria-hidden="true">
+          {waiting}
+        </span>
+      )}
+    </>
+  );
+  const segmentMark = (panel: "write" | "preview" | "coach") =>
+    panel === "coach"
+      ? {
+          className: coachError ? "paper-failure" : undefined,
+          title: coachError ?? (waiting > 0 ? "Comments waiting for Coach" : undefined),
+        }
+      : {};
   const changeFeed = usePaperChanges(
     apiBase,
     `${tree?.revision}:${tasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("|")}`,
@@ -436,8 +493,13 @@ export function PaperWorkspace({
         <div className="paper-phone-segments">
           <div className="segmented" role="group" aria-label="Paper view">
             {(["write", "preview", "coach"] as const).map((panel) => (
-              <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
-                {panel[0].toUpperCase() + panel.slice(1)}
+              <button
+                key={panel}
+                aria-pressed={view === panel}
+                onClick={() => switchView(panel)}
+                {...segmentMark(panel)}
+              >
+                {segmentLabel(panel)}
               </button>
             ))}
           </div>
@@ -480,14 +542,24 @@ export function PaperWorkspace({
         <header className="paper-bar paper-desktop-segments">
           <div className="segmented" role="group" aria-label="Paper panel">
             {(["preview", "coach"] as const).map((panel) => (
-              <button key={panel} aria-pressed={right === panel} onClick={() => switchView(panel)}>
-                {panel[0].toUpperCase() + panel.slice(1)}
+              <button
+                key={panel}
+                aria-pressed={right === panel}
+                onClick={() => switchView(panel)}
+                {...segmentMark(panel)}
+              >
+                {segmentLabel(panel)}
               </button>
             ))}
           </div>
           {!phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </header>
-        <div className="paper-right-pane" hidden={right !== "preview"}>
+        <div
+          className="paper-right-pane"
+          hidden={right !== "preview"}
+          ref={previewPane}
+          tabIndex={-1}
+        >
           {previewShown &&
             file &&
             tree &&
@@ -501,6 +573,7 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
+                onDirectComment={openPreviewComment}
               />
             ) : (
               <PaperPreview
@@ -512,6 +585,7 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
+                onDirectComment={openPreviewComment}
               />
             ))}
         </div>
@@ -532,9 +606,17 @@ export function PaperWorkspace({
             }}
             onLocate={locate}
             toolbar={(phone ? view : right) === "coach" ? panelBar : null}
+            comments={comments}
+            submitting={coachSubmitting}
+            setSubmitting={setCoachSubmitting}
+            error={coachError}
+            setError={setCoachError}
+            transcriptRef={coachTranscript}
+            textarea={coachMessage}
           />
         </div>
       </aside>
+      <AnswerCommentLayers comments={comments} mode="discuss" />
       {history && tree && (
         <PaperHistory
           apiBase={apiBase}

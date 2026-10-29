@@ -8,6 +8,7 @@ import {
   parseStagedChatAnnotations,
   replaceTextSpan,
   stagedArtifactContext,
+  unsentChatAnnotations,
 } from "../src/chat/chatInput.ts";
 
 test("dictation inserts at the captured cursor and revises only its active span", () => {
@@ -74,6 +75,37 @@ test("artifact comments are chips like answer comments, numbered as their select
     ],
   });
   assert.equal(stagedArtifactContext(staged.filter((chip) => !chip.artifact)), null);
+});
+
+test("a comment's source travels with its quote and survives the tab's draft storage", () => {
+  const preview = {
+    id: "p",
+    selectedText: "The claim.",
+    comment: "Cite it.",
+    where: "notes.md, line 9",
+  };
+  const answer = { id: "a", selectedText: "An answer.", comment: "Why?" };
+  const [staged] = parseStagedChatAnnotations(JSON.stringify([preview]));
+  assert.deepEqual(staged, preview);
+  const long = parseStagedChatAnnotations(JSON.stringify([{ ...preview, where: "x".repeat(500) }]));
+  assert.equal(long[0].where.length, 200);
+  assert.deepEqual(parseStagedChatAnnotations(JSON.stringify([{ ...preview, where: 9 }])), []);
+
+  const turn = assembleChatTurn("", [staged, answer]);
+  const [withSource, withoutSource] = turn.split("\n\n");
+  assert.ok(withSource.startsWith(preview.where));
+  assert.ok(withSource.indexOf(preview.where) < withSource.indexOf(preview.selectedText));
+  assert.ok(withoutSource.startsWith(answer.selectedText));
+});
+
+test("a sent turn clears only the comments it carried", () => {
+  const sent = [{ id: "a", selectedText: "A", comment: "1" }];
+  const later = { id: "b", selectedText: "B", comment: "2" };
+  assert.deepEqual(unsentChatAnnotations([...sent, later], sent), [later]);
+  assert.deepEqual(unsentChatAnnotations(sent, sent), []);
+  // Nothing sent is still staged: the list is left as it is.
+  const current = [later];
+  assert.equal(unsentChatAnnotations(current, sent), current);
 });
 
 test("annotation composer stays beside the selection and inside the viewport", () => {

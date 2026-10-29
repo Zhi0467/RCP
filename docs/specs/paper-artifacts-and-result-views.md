@@ -54,8 +54,9 @@ remain behind a red icon across reloads until recreated. Restart pauses the edit
 without unmounting it or losing typing. Refused or inaccessible unsent text remains
 downloadable. Leaving with unsent text asks first. An early connection close never
 discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
-transfer. Uploaded binaries deduplicate by content hash. SVG, HTML, and unknown
-types download. Only raster images display inline. Paper files never execute as
+transfer. Uploaded binaries deduplicate by content hash. SVG and unknown types
+download. Only raster images display inline. Text HTML previews inside the agent
+artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
 A database without Paper adopts the existing published tree. Local revisions
@@ -101,6 +102,29 @@ disables shell escape, but absolute inputs may expose any server-user-readable
 file in the member-only PDF, including agent-hidden files. This follows the
 [team trust model](server-and-machine-operations.md). Agent launches cannot read
 the preview.
+
+A text `.html` or `.htm` file previews its saved revision through the inline
+artifact shell, one frame inside the same opaque sandbox and CSP as agent HTML
+([Live HTML pages](#live-html-pages)). It never runs as the top document, and
+relative images and Paper links do not load, so the page must be self-contained.
+A save reloads it; unsaved typing does not. Making Paper previews artifacts was
+rejected: artifacts are versioned deliverables with their own chat, while a
+preview changes on every save and needs SyncTeX, Paper links, and tree images.
+
+### Commenting on the preview
+
+A reader comments on what the preview shows with the same Comment button and box
+as chat answers. Text selects natively, also on touch. With a mouse or pen, a drag
+that starts off text draws a box on a PDF page or image. The HTML preview has a
+comment-mode toggle, because comment mode captures the page's own clicks. Each
+comment records where it came from: path and line for Markdown and plain text;
+compile root and page for PDFs, plus "near" a source line from reverse SyncTeX
+for LaTeX, which is approximate because the map keeps one mark per line; path for
+images and HTML. A box adds its area on the page or image, as percentages across
+and down, and sends its text, never pixels. Comments wait
+in the Coach composer, the Coach button shows their count and any staging error,
+and they travel as text with the next Coach message. Coach turns carry no
+artifact context.
 
 ## Writing coach
 

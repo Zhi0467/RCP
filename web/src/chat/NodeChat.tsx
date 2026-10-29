@@ -84,7 +84,12 @@ import {
 } from "../artifacts/InlineArtifact";
 import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import { AnswerCommentButton, AnswerCommentLayers, useAnswerComments } from "./answerComments";
+import {
+  AnswerCommentButton,
+  AnswerCommentLayers,
+  transcriptSource,
+  useAnswerComments,
+} from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -445,7 +450,7 @@ export function NodeChat({
     storageKey: annotationsKey,
     enabled: !readOnly,
     busy: submitting,
-    transcript: chatLinesRef,
+    sources: [transcriptSource(chatLinesRef)],
     message: textareaRef,
     onError: setSubmitError,
   });

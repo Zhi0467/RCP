@@ -357,6 +357,9 @@ test("the coach stages answer comments and files as chat does and sends them wit
   await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Name the claim.");
   await page.getByRole("button", { name: "Add comment" }).click();
   await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
+  // The Coach segment counts the waiting comment, so it shows while the preview is open.
+  const waiting = page.locator(".paper-desktop-segments .paper-comment-count");
+  assert.equal(await waiting.textContent(), "1");
 
   await page
     .locator(".paper-coach .chat-composer .chat-add-picker input[type=file]")
@@ -380,6 +383,7 @@ test("the coach stages answer comments and files as chat does and sends them wit
     .locator(".paper-coach .chat-composer .chat-annotation-count")
     .waitFor({ state: "detached" });
   assert.equal(await page.locator(".paper-coach .chat-composer .chat-attachment-chip").count(), 0);
+  assert.equal(await waiting.count(), 0);
 });
 
 test("a coach turn carrying only a project reference names its attachment scope", async (t) => {

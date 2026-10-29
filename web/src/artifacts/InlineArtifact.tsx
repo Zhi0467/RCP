@@ -5,12 +5,8 @@ import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor } from "../core/types";
-import {
-  INLINE_ARTIFACT_HEIGHT,
-  inlineViewerUrl,
-  readInlineShellMessage,
-  type InlineSelection,
-} from "./inlineArtifacts";
+import { INLINE_ARTIFACT_HEIGHT, inlineViewerUrl, type InlineSelection } from "./inlineArtifacts";
+import { useInlineShell } from "./useInlineShell";
 
 export interface InlineArtifactSelectionEvent {
   selection: InlineSelection | null;
@@ -131,57 +127,16 @@ export function InlineArtifact({
     setPageError(null);
   }, [currentVersion]);
 
-  useEffect(() => {
-    const message = (event: MessageEvent) => {
-      const value = readInlineShellMessage(
-        event,
-        frame.current?.contentWindow,
-        window.location.origin,
-      );
-      if (!value) return;
-      if (value.kind === "error" || value.kind === "error-clear") {
-        setPageError(value.kind === "error" ? value : null);
-        return;
-      }
-      if (!value.selection) {
-        onSelectionCancelRef.current();
-        return;
-      }
-      if (!commentModeRef.current) return;
-      const rect = frame.current?.getBoundingClientRect();
-      if (!rect) return;
-      const box = value.selection.kind === "box" ? value.selection.rect : null;
+  const onFrameLoad = useInlineShell(frame, commentMode, {
+    onPageError: setPageError,
+    onCancel: () => onSelectionCancelRef.current(),
+    onSelection: (event) =>
       onSelectionRef.current({
-        selection: value.selection,
-        description: value.description,
-        anchor: box
-          ? {
-              left: rect.left + box.x * rect.width,
-              right: rect.left + (box.x + box.width) * rect.width,
-              top: rect.top + box.y * rect.height,
-            }
-          : { left: rect.left, right: rect.right, top: rect.top + Math.min(rect.height, 48) },
+        ...event,
         freshSession: freshSessionRef.current,
         version: shownVersion.current,
-        clear: () =>
-          frame.current?.contentWindow?.postMessage(
-            { type: "rcp-inline-selection-clear", version: 1 },
-            window.location.origin,
-          ),
-      });
-    };
-    window.addEventListener("message", message);
-    return () => window.removeEventListener("message", message);
-  }, []);
-
-  const postCommentMode = (enabled: boolean) =>
-    frame.current?.contentWindow?.postMessage(
-      { type: "rcp-inline-comment-mode", version: 1, enabled },
-      window.location.origin,
-    );
-  useEffect(() => {
-    postCommentMode(commentMode);
-  }, [commentMode]);
+      }),
+  });
 
   const selectable =
     canComment &&
@@ -230,7 +185,7 @@ export function InlineArtifact({
             className="chat-inline-artifact-frame"
             src={source}
             title={title}
-            onLoad={() => postCommentMode(commentModeRef.current)}
+            onLoad={onFrameLoad}
           />
         ) : (
           error && (

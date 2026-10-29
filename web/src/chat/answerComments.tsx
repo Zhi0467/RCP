@@ -20,8 +20,10 @@ import {
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
+  MAX_CHAT_ANNOTATION_WHERE_LENGTH,
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
+  unsentChatAnnotations,
   type ChatAnnotationAnchor,
   type ChatAnnotationComposerPosition,
   type ChatAnnotationViewportMetrics,
@@ -29,9 +31,9 @@ import {
   type StagedChatAnnotation,
 } from "./chatInput";
 
-/** Comments on selected answer text, staged for the next turn: chat and the Paper coach
- * share this whole flow. A selection inside a `.chat-annotatable-answer` offers Comment,
- * and the answer's Comment button opens the same composer from the keyboard. */
+/** Comments on selected text, staged for the next turn: chat and the Paper coach
+ * share this whole flow. A selection inside one of the selection sources offers Comment,
+ * and an answer's Comment button opens the same composer from the keyboard. */
 
 interface SelectedAnswerComment {
   step: "comment";
@@ -40,6 +42,31 @@ interface SelectedAnswerComment {
   position: ChatAnnotationComposerPosition | null;
   /** Set when the selection is a part of an artifact shown inside a reply. */
   artifact?: StagedArtifactTarget;
+  /** Where the selection came from, staged and sent with it. */
+  where?: string;
+  /** Where focus returns once the comment is staged or dismissed; the message field if unset. */
+  origin?: HTMLElement | null;
+}
+
+/** A part of the page whose selections can be commented on. */
+export interface SelectionSource {
+  root: RefObject<HTMLElement | null>;
+  /** The commentable part of the selection, its quote, and where it came from; null if none. */
+  resolve(
+    selection: Selection,
+    root: HTMLElement,
+  ): { range: Range; quote: string; where?: string } | null;
+}
+
+/** Selections inside a transcript's `.chat-annotatable-answer`s, clamped to the answer. */
+export function transcriptSource(root: RefObject<HTMLElement | null>): SelectionSource {
+  return {
+    root,
+    resolve: (selection, element) => {
+      const range = annotatableAnswerSelectionRange(selection, element);
+      return range ? { range, quote: range.toString().trim() } : null;
+    },
+  };
 }
 
 interface KeyboardAnswerComment {
@@ -146,24 +173,37 @@ function useComposerPlacement(
   }, [composerPlaced, composerStep, composerRef, fields.select, fields.comment]);
 }
 
-type SelectionOffer = { range: Range; position: ChatAnnotationComposerPosition };
+type SelectionOffer = {
+  range: Range;
+  quote: string;
+  where?: string;
+  position: ChatAnnotationComposerPosition;
+};
 
-/** The selection inside an answer, measured for the Comment offer; null when none applies. */
+/** The first source's commentable selection, measured for the Comment offer; null when none. */
 function measureSelectionOffer(
-  transcript: HTMLElement | null,
+  sources: SelectionSource[],
   offerButton: HTMLButtonElement | null,
 ): SelectionOffer | null {
-  const range = annotatableAnswerSelectionRange(window.getSelection(), transcript);
-  const rects = range?.getClientRects();
-  const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
-  if (!range || !firstLine) return null;
+  const selection = window.getSelection();
+  if (!selection) return null;
+  let match: ReturnType<SelectionSource["resolve"]> = null;
+  for (const source of sources) {
+    const root = source.root.current;
+    match = root ? source.resolve(selection, root) : null;
+    if (match) break;
+  }
+  if (!match) return null;
+  const { range } = match;
+  const firstLine = range.getClientRects().item(0) ?? range.getBoundingClientRect();
+  if (!firstLine) return null;
   const button = offerButton?.getBoundingClientRect();
   const metrics = chatAnnotationViewportMetrics(
     { width: window.innerWidth, height: window.innerHeight },
     window.visualViewport,
   );
   return {
-    range,
+    ...match,
     position: chatSelectionCommentPosition(
       { firstLine, bottom: range.getBoundingClientRect().bottom },
       metrics,
@@ -178,14 +218,14 @@ function measureSelectionOffer(
 // a selection change made while no pointer is down refreshes the offer too.
 function useSelectionOffer({
   enabled,
-  transcript,
+  sources,
   composerOpenRef,
   composerRef,
   offerRef,
   setOffer,
 }: {
   enabled: boolean;
-  transcript: RefObject<HTMLElement | null>;
+  sources: RefObject<SelectionSource[]>;
   composerOpenRef: RefObject<boolean>;
   composerRef: RefObject<HTMLFormElement | null>;
   offerRef: RefObject<HTMLButtonElement | null>;
@@ -200,9 +240,7 @@ function useSelectionOffer({
     // The composer re-selects the staged text; that is not a new offer.
     const refresh = () =>
       setOffer(
-        composerOpenRef.current
-          ? null
-          : measureSelectionOffer(transcript.current, offerRef.current),
+        composerOpenRef.current ? null : measureSelectionOffer(sources.current, offerRef.current),
       );
     const insideOwnControls = (target: EventTarget | null) =>
       target instanceof Node &&
@@ -243,7 +281,7 @@ function useSelectionOffer({
       visual?.removeEventListener("resize", onSettled);
       visual?.removeEventListener("scroll", onSettled);
     };
-  }, [enabled, transcript, composerOpenRef, composerRef, offerRef, setOffer]);
+  }, [enabled, sources, composerOpenRef, composerRef, offerRef, setOffer]);
 }
 
 /** The comments staged for the next turn, kept for this tab under `storageKey`. */
@@ -297,7 +335,7 @@ function useStagedAnnotations(
   const clear = (sent?: StagedChatAnnotation[]) => {
     setOpen(false);
     if (sent) {
-      setAnnotations((current) => (current === sent ? [] : current));
+      setAnnotations((current) => unsentChatAnnotations(current, sent));
       return;
     }
     setAnnotations([]);
@@ -326,7 +364,7 @@ export function useAnswerComments({
   storageKey,
   enabled,
   busy,
-  transcript,
+  sources,
   message,
   onError,
 }: {
@@ -336,8 +374,8 @@ export function useAnswerComments({
   enabled: boolean;
   /** A turn is being sent: staged comments and the composer are fenced. */
   busy: boolean;
-  /** The transcript whose answers can be selected. */
-  transcript: RefObject<HTMLElement | null>;
+  /** Where selections offer Comment, asked in order; the first match wins. */
+  sources: SelectionSource[];
   /** The message field focus returns to. */
   message: RefObject<HTMLTextAreaElement | null>;
   onError: (message: string | null) => void;
@@ -378,24 +416,37 @@ export function useAnswerComments({
     comment: commentRef,
   });
 
-  useSelectionOffer({ enabled, transcript, composerOpenRef, composerRef, offerRef, setOffer });
+  // Read when a selection settles, so callers may pass a fresh list each render.
+  const sourcesRef = useRef(sources);
+  sourcesRef.current = sources;
+  useSelectionOffer({
+    enabled,
+    sources: sourcesRef,
+    composerOpenRef,
+    composerRef,
+    offerRef,
+    setOffer,
+  });
 
   const focusComment = () => window.requestAnimationFrame(() => commentRef.current?.focus());
 
   /** Opens the composer on `next`; focus returns to `origin` when it is dismissed. */
   const openComposer = (
     next: AnswerCommentComposer,
-    { draft = "", origin = null }: { draft?: string; origin?: HTMLElement | null } = {},
+    { draft = "", origin }: { draft?: string; origin?: HTMLElement | null } = {},
   ) => {
-    originRef.current = origin;
+    originRef.current = origin ?? (next.step === "comment" ? next.origin : null) ?? null;
     setComment(draft);
     onError(null);
     setComposer(next);
   };
 
-  const openFromSelection = (range: Range) => {
+  const openFromSelection = ({
+    range,
+    quote: selectedText,
+    where,
+  }: Pick<SelectionOffer, "range" | "quote" | "where">) => {
     if (busy) return;
-    const selectedText = range.toString().trim();
     if (!selectedText) return;
     if (selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) {
       onError(
@@ -417,6 +468,7 @@ export function useAnswerComments({
       selectedText,
       anchor: { left: rect.left, right: rect.right, top: rect.top },
       position: null,
+      ...(where ? { where } : {}),
     });
     focusComment();
   };
@@ -474,7 +526,7 @@ export function useAnswerComments({
     if (composer?.step !== "comment") return;
     const text = comment.trim();
     if (!text) return;
-    const artifact = composer.artifact;
+    const { artifact, where, origin } = composer;
     setAnnotations((current) => [
       ...current,
       {
@@ -482,11 +534,12 @@ export function useAnswerComments({
         selectedText: composer.selectedText,
         comment: text,
         ...(artifact ? { artifact } : {}),
+        ...(where ? { where: where.slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH) } : {}),
       },
     ]);
     setOpen(false);
     dismiss(false);
-    window.requestAnimationFrame(() => message.current?.focus());
+    window.requestAnimationFrame(() => (origin ?? message.current)?.focus());
   };
 
   return {
@@ -588,7 +641,11 @@ export function StagedAnswerComments({ comments }: { comments: AnswerComments })
             {annotations.map((annotation, index) => (
               <article key={annotation.id}>
                 <blockquote>{annotation.selectedText}</blockquote>
-                {annotation.artifact && <small>In {annotation.artifact.name}</small>}
+                {annotation.artifact ? (
+                  <small>In {annotation.artifact.name}</small>
+                ) : (
+                  annotation.where && <small>{annotation.where}</small>
+                )}
                 <textarea
                   aria-label={`Comment for annotation ${index + 1}`}
                   disabled={busy}
@@ -644,9 +701,8 @@ export function AnswerCommentLayers({
               onPointerDown={(event) => event.preventDefault()}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                const { range } = offer;
                 comments.ui.setOffer(null);
-                comments.ui.openFromSelection(range);
+                comments.ui.openFromSelection(offer);
               }}
             >
               <MessageCirclePlus size={13} /> Comment

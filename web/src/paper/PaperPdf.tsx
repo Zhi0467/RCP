@@ -1,10 +1,12 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Download, LoaderCircle, RotateCcw } from "lucide-react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { getDocument, GlobalWorkerOptions, TextLayer } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { panelTools } from "./panelTools";
-import type { PdfSpot } from "./synctex";
+import type { PdfSpot, SyncTexMap } from "./synctex";
+import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
+import { registerPdfSynctex } from "./previewComments";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type LoadedPdf = {
@@ -24,6 +26,9 @@ export default function PaperPdf({
   actions,
   toolbar,
   spot = null,
+  path,
+  synctex,
+  onBox,
 }: {
   url: string;
   name?: string;
@@ -32,6 +37,12 @@ export default function PaperPdf({
   toolbar: HTMLElement | null;
   /** Where the editor's cursor sits; the viewer scrolls there after each render and move. */
   spot?: PdfSpot | null;
+  /** The file or compile root a selection in this PDF names. */
+  path?: string;
+  /** The compile's SyncTeX map, so a selection names the source line near it. */
+  synctex?: SyncTexMap;
+  /** A box drawn on a page; without it pages take no boxes. */
+  onBox?: (box: PaperBox) => void;
 }) {
   const viewer = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
@@ -49,6 +60,12 @@ export default function PaperPdf({
   const [loading, setLoading] = useState(true);
   const shownSlots = useRef<HTMLElement[]>([]);
   const [shown, setShown] = useState(0);
+  useEffect(() => {
+    const element = viewer.current;
+    if (!element) return;
+    registerPdfSynctex(element, synctex);
+    return () => registerPdfSynctex(element, undefined);
+  }, [synctex]);
   useEffect(() => {
     const container = pages.current;
     if (!container) return;
@@ -115,6 +132,7 @@ export default function PaperPdf({
     let disposed = false;
     let committed = false;
     const jobs = new Map<HTMLElement, RenderTask>();
+    const textJobs = new Map<HTMLElement, TextLayer>();
     const pending = new Map<HTMLElement, Promise<void>>();
     const wanted = new Set<HTMLElement>();
     const layer = window.document.createElement("div");
@@ -123,6 +141,8 @@ export default function PaperPdf({
       slot.className = "paper-pdf-page";
       slot.style.height = `${width * ratio}px`;
       slot.dataset.page = String(index + 1);
+      slot.dataset.points = String(document.widths[index]);
+      slot.dataset.boxTarget = "";
       layer.append(slot);
       return slot;
     });
@@ -143,8 +163,9 @@ export default function PaperPdf({
         const page = await document.pdf.getPage(Number(slot.dataset.page));
         if (disposed || !wanted.has(slot)) return;
         const natural = page.getViewport({ scale: 1 });
+        const scale = width / natural.width;
         const viewport = page.getViewport({
-          scale: (width / natural.width) * Math.min(window.devicePixelRatio || 1, 2),
+          scale: scale * Math.min(window.devicePixelRatio || 1, 2),
         });
         const canvas = window.document.createElement("canvas");
         canvas.width = Math.ceil(viewport.width);
@@ -152,14 +173,25 @@ export default function PaperPdf({
         canvas.setAttribute("role", "img");
         canvas.setAttribute("aria-label", `PDF page ${slot.dataset.page}`);
         const job = page.render({ canvas, viewport });
+        // Native selection over the pixels, laid out at the slot's CSS scale.
+        const text = window.document.createElement("div");
+        text.className = "textLayer";
+        text.style.setProperty("--scale-factor", String(scale));
+        const textJob = new TextLayer({
+          textContentSource: page.streamTextContent(),
+          container: text,
+          viewport: page.getViewport({ scale }),
+        });
         jobs.set(slot, job);
+        textJobs.set(slot, textJob);
         try {
-          await job.promise;
-          if (!disposed && wanted.has(slot)) slot.replaceChildren(canvas);
+          await Promise.all([job.promise, textJob.render()]);
+          if (!disposed && wanted.has(slot)) slot.replaceChildren(canvas, text);
         } catch (reason) {
           if (wanted.has(slot)) throw reason;
         } finally {
           jobs.delete(slot);
+          textJobs.delete(slot);
         }
       })().finally(() => pending.delete(slot));
       pending.set(slot, work);
@@ -232,6 +264,7 @@ export default function PaperPdf({
       observer.disconnect();
       wanted.clear();
       jobs.forEach((job) => job.cancel());
+      textJobs.forEach((job) => job.cancel());
     }
     return () => {
       if (!committed) dispose();
@@ -253,6 +286,7 @@ export default function PaperPdf({
   return (
     <div
       ref={viewer}
+      data-paper-path={path}
       onScroll={(event) => {
         scrollPositions.set(scrollKey, event.currentTarget.scrollTop);
       }}
@@ -278,7 +312,9 @@ export default function PaperPdf({
           </a>
         </>,
       )}
-      <div className="paper-pdf-pages" ref={pages} />
+      <PaperBoxSelect onBox={onBox}>
+        <div className="paper-pdf-pages" ref={pages} />
+      </PaperBoxSelect>
     </div>
   );
 }

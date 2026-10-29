@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   History,
   ListChecks,
@@ -30,11 +30,7 @@ import type {
 import { taskRetryRequestBody } from "../taskRecovery";
 import { ChatComposer } from "../chat/ChatComposer";
 import { useComposerAttachments } from "../chat/composerAttachments";
-import {
-  AnswerCommentButton,
-  AnswerCommentLayers,
-  useAnswerComments,
-} from "../chat/answerComments";
+import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
@@ -59,6 +55,13 @@ export function PaperCoach({
   onUndoAll,
   onLocate,
   toolbar,
+  comments,
+  submitting,
+  setSubmitting,
+  error,
+  setError,
+  transcriptRef,
+  textarea,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
@@ -70,6 +73,14 @@ export function PaperCoach({
   onLocate: (change: PaperChange) => void;
   /** Where History and New chat sit: the Paper view row, while the coach shows. */
   toolbar: HTMLElement | null;
+  /** Comments the coach and the preview stage for the next turn; the workspace owns them. */
+  comments: AnswerComments;
+  submitting: boolean;
+  setSubmitting: (value: boolean) => void;
+  error: string | null;
+  setError: (value: string | null) => void;
+  transcriptRef: RefObject<HTMLDivElement | null>;
+  textarea: RefObject<HTMLTextAreaElement | null>;
 }) {
   const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
@@ -83,8 +94,6 @@ export function PaperCoach({
     config: AgentRunConfig;
   } | null>(null);
   const [message, setMessage] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionRefresh, setSessionRefresh] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -98,16 +107,6 @@ export function PaperCoach({
   );
   const modeKey = `rcp:paper-coach-mode:${apiBase}`;
   const [applyDirectly, setApplyDirectly] = useState(() => readPref(modeKey) === "apply");
-  const textarea = useRef<HTMLTextAreaElement>(null);
-  const transcriptRef = useRef<HTMLDivElement>(null);
-  const comments = useAnswerComments({
-    storageKey: null,
-    enabled: true,
-    busy: submitting,
-    transcript: transcriptRef,
-    message: textarea,
-    onError: setError,
-  });
   const text = assembleChatTurn(message, comments.annotations);
   const composer = useComposerAttachments({
     project,
@@ -201,6 +200,7 @@ export function PaperCoach({
   const send = async () => {
     if (!text || composer.unready || activeTask || submitting) return;
     if (!comments.requireComplete()) return;
+    const sent = comments.annotations;
     composer.closeMenu();
     setSubmitting(true);
     setError(null);
@@ -221,7 +221,7 @@ export function PaperCoach({
       setMessage("");
       skills.reset();
       composer.clear();
-      comments.clear();
+      comments.clear(sent);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -502,7 +502,6 @@ export function PaperCoach({
         }
       />
       {agentPicker.panel}
-      <AnswerCommentLayers comments={comments} mode="discuss" />
     </div>
   );
 }
