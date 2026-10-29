@@ -21,9 +21,10 @@ from pydantic import ValidationError
 import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
-from rcp.agents.context import RepositoryPointer
+from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.api.app import (
     _generic_watcher_delivery_request,
 )
@@ -6511,6 +6512,15 @@ def _work_turn_whose_apply_loses_canonical_state(
 def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    # The turn launched while a group sibling was readable; Apply again must
+    # stamp that recorded scope, not re-resolve one without the group.
+    launch_scope = ChatContext.read_scope.fget
+
+    def with_sibling(context: ChatContext) -> RepositoryReadScope:
+        scope = launch_scope(context)
+        return scope.model_copy(update={"paths": {**scope.paths, "sibling:code": "/sibling"}})
+
+    monkeypatch.setattr(ChatContext, "read_scope", property(with_sibling))
     app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
         manifest, tmp_path, monkeypatch, StateUnreachable("ssh exited 255")
     )
@@ -6534,6 +6544,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     assert body["result"]["graph_update"]["applied_revision"] == revision + 1
     assert body["can_apply_again"] is False
     assert "rq/applied-again" in service.history.state().nodes
+    assert "sibling:code" in (service.history.load_patches()[-1].run_read_scope or [])
     assert store.agent_task_patch_output(operation_id) is None
 
     repeated = client.post(
