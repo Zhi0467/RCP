@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   History,
   ListChecks,
@@ -11,6 +10,7 @@ import {
   Zap,
 } from "lucide-react";
 import { coachConversation, isActiveTask, reconstructTaskTranscript } from "../agents/agentTasks";
+import { panelTools } from "./panelTools";
 import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
 import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import { api } from "../core/api";
@@ -297,46 +297,46 @@ export function PaperCoach({
   );
   return (
     <div className="chat-dock paper-coach" data-mode="discuss">
-      {toolbar &&
-        createPortal(
-          <div className={`paper-coach-toolbar${sessionError ? " paper-failure" : ""}`}>
+      {panelTools(
+        toolbar,
+        <>
+          <button
+            ref={historyButton}
+            className="icon-button compact"
+            aria-label="Coach chat history"
+            aria-expanded={historyOpen && sessions.length > 0}
+            disabled={!sessions.length}
+            onClick={() => setHistoryOpen(!historyOpen)}
+          >
+            <History size={15} />
+          </button>
+          <button
+            className="icon-button compact"
+            aria-label="New coach chat"
+            onClick={() => {
+              setSessionId(null);
+              setFresh(true);
+              setStarted([]);
+              setConfigOverride(null);
+              skills.reset();
+              setError(null);
+            }}
+          >
+            <MessageCirclePlus size={15} />
+          </button>
+          {sessionError && (
             <button
-              ref={historyButton}
               className="icon-button compact"
-              aria-label="Coach chat history"
-              aria-expanded={historyOpen && sessions.length > 0}
-              disabled={!sessions.length}
-              onClick={() => setHistoryOpen(!historyOpen)}
+              aria-label="Retry chat history"
+              title={sessionError}
+              onClick={() => setSessionRefresh((value) => value + 1)}
             >
-              <History size={15} />
+              <RotateCcw size={15} />
             </button>
-            <button
-              className="icon-button compact"
-              aria-label="New coach chat"
-              onClick={() => {
-                setSessionId(null);
-                setFresh(true);
-                setStarted([]);
-                setConfigOverride(null);
-                skills.reset();
-                setError(null);
-              }}
-            >
-              <MessageCirclePlus size={15} />
-            </button>
-            {sessionError && (
-              <button
-                className="icon-button compact"
-                aria-label="Retry chat history"
-                title={sessionError}
-                onClick={() => setSessionRefresh((value) => value + 1)}
-              >
-                <RotateCcw size={15} />
-              </button>
-            )}
-          </div>,
-          toolbar,
-        )}
+          )}
+        </>,
+        Boolean(sessionError),
+      )}
       {historyOpen && sessions.length > 0 && (
         <div className="paper-session-list" ref={historyList}>
           {sessions.map((session) => (

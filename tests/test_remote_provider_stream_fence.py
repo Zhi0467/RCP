@@ -7,6 +7,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.providers.base import ProviderUsage
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict
@@ -34,13 +35,14 @@ class _Stage:
         self.last_workspace_write = (name, content)
 
 
-async def _consume(store, launcher, tmp_path, *, stage=None):
+async def _consume(store, launcher, tmp_path, *, stage=None, request=None, **options):
     outcome = _ProviderOutcome()
+    options.setdefault("execution", AgentTaskExecution("first", store, AgentProcessControl()))
     events = [
         event
         async for event in _stream_agent_events(
             launcher,
-            RunRequest(provider="codex"),
+            request or RunRequest(provider="codex"),
             "Run the task",
             workspace=tmp_path,
             session_id=None,
@@ -48,11 +50,11 @@ async def _consume(store, launcher, tmp_path, *, stage=None):
             write_dirs=[],
             write_scope=None,
             execution_host="remote",
-            execution=AgentTaskExecution("first", store, AgentProcessControl()),
             remote_stage=stage or _Stage(),
             capability="work_auto",
             outcome=outcome,
             binary=None,
+            **options,
         )
     ]
     return outcome, events
@@ -166,3 +168,82 @@ async def test_competing_remote_reservation_closes_launcher_before_provider_adva
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [
         ("second", "/stage/other.pid")
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forward_labelled_events", [False, True])
+async def test_labelled_forwarding_keeps_outcome_and_accounting(tmp_path, forward_labelled_events):
+    usage = ProviderUsage(
+        provider_profile="codex",
+        provider_event_type="result",
+        dedupe_key="answer",
+        processed_input_tokens=5,
+        generated_tokens=3,
+    )
+
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="message", text=" trace ")
+            yield AgentEvent(event="answer", text="answer", usage=usage)
+            yield AgentEvent(event="done")
+
+    outcome, frames = await _consume(
+        _store(tmp_path), Launcher(), tmp_path, forward_labelled_events=forward_labelled_events
+    )
+    events = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()) for frame in frames
+    ]
+    assert outcome.answers == ["answer"] and outcome.trace_messages == ["trace"]
+    assert outcome.completed and not outcome.failed
+    assert [event.usage for event in events if event.usage is not None] == [usage]
+    assert [event.text for event in events] == (
+        [" trace ", "answer"] if forward_labelled_events else [""]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forward_labelled_events", [False, True])
+async def test_labelled_forwarding_keeps_fork_session_fence(tmp_path, forward_labelled_events):
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="answer", text="unidentified fork")
+
+    outcome, frames = await _consume(
+        _store(tmp_path),
+        Launcher(),
+        tmp_path,
+        request=RunRequest(
+            provider="codex",
+            fork_session_id="parent",
+            fork_source_host="remote",
+            fork_source_cwd="/parent",
+        ),
+        execution=None,
+        forward_labelled_events=forward_labelled_events,
+    )
+    assert outcome.failed and not outcome.answers
+    assert any(
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()).event == "error"
+        for frame in frames
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forward_labelled_events", [False, True])
+async def test_unowned_remote_session_filter_is_independent_of_labelled_forwarding(
+    tmp_path, forward_labelled_events
+):
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="session", session_id="remote-session")
+            yield AgentEvent(event="done")
+
+    outcome, frames = await _consume(
+        _store(tmp_path),
+        Launcher(),
+        tmp_path,
+        execution=None,
+        forward_labelled_events=forward_labelled_events,
+    )
+    assert outcome.session_id == "remote-session" and outcome.completed
+    assert frames == []

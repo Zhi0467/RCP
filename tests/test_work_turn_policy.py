@@ -102,7 +102,8 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    assert restored["command_handler"].allowed_verbs == {"validate", "lesson", "bulletin", "name"}
+    # This task holds no lesson grant; tests/test_lesson_commands.py owns that gate.
+    assert restored["command_handler"].allowed_verbs == {"validate", "bulletin", "name"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
     # A mailbox retained before reads were stamped resumes without a read scope.
@@ -227,12 +228,7 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
     if ask_allowed and mode == "work":
         assert restored is not None and "ask" in restored.allowed_verbs
     elif mode == "work":
-        assert restored is not None and restored.allowed_verbs == {
-            "validate",
-            "lesson",
-            "bulletin",
-            "name",
-        }
+        assert restored is not None and restored.allowed_verbs == {"validate", "bulletin", "name"}
     else:
         assert restored is not None and restored.allowed_verbs == {"validate", "name"}
 

@@ -14,6 +14,7 @@ from rcp.paper.changes import (
     PaperChanges,
     _RangeMapping,
     line_changes,
+    read_paper_changes,
     validate_output,
 )
 from rcp.storage import AppStore
@@ -64,7 +65,7 @@ def test_invalid_manifest_is_all_or_nothing(setup, moves):
     (output / "files/new.md").write_text("valid")
     (output / "moves.json").write_text(json.dumps(moves))
     with pytest.raises(InvalidChanges):
-        changes.collect("p", "t", snapshot, output)
+        changes.collect("p", "t", snapshot, read_paper_changes(output))
     assert changes.groups("p", "t") == []
 
 
@@ -73,24 +74,23 @@ def test_paths_utf8_symlink_and_size_limits(setup, monkeypatch):
     file = output / "files/section.md"
     file.write_bytes(b"\xff")
     with pytest.raises(InvalidChanges):
-        validate_output(output, snapshot)
+        validate_output(read_paper_changes(output), snapshot)
     file.unlink()
     file.symlink_to(output.parent / "state.sqlite")
     with pytest.raises(InvalidChanges):
-        validate_output(output, snapshot)
+        validate_output(read_paper_changes(output), snapshot)
     file.unlink()
     file.write_text("four")
     monkeypatch.setattr("rcp.paper.changes.PAPER_CHANGES_MAX_FILE_BYTES", 3)
     with pytest.raises(InvalidChanges):
-        validate_output(output, snapshot)
+        validate_output(read_paper_changes(output), snapshot)
 
 
-@pytest.mark.parametrize("collected", [False, True])
-def test_empty_forbidden_directory_is_invalid(setup, collected):
+def test_empty_forbidden_directory_is_invalid(setup):
     snapshot, _live, _changes, output = setup
     (output / "files/.git").mkdir()
     with pytest.raises(InvalidChanges):
-        validate_output(changes_module._read_output(output) if collected else output, snapshot)
+        validate_output(read_paper_changes(output), snapshot)
 
 
 def test_delete_write_conflict_and_moves_filename(setup):
@@ -98,10 +98,10 @@ def test_delete_write_conflict_and_moves_filename(setup):
     (output / "files/section.md").write_text("replacement")
     (output / "moves.json").write_text('{"delete":["section.md"]}')
     with pytest.raises(InvalidChanges):
-        validate_output(output, snapshot)
+        validate_output(read_paper_changes(output), snapshot)
     (output / "moves.json").unlink()
     (output / "files/moves.json").write_text('{"ordinary":"paper file"}')
-    assert "moves.json" in validate_output(output, snapshot)[0]
+    assert "moves.json" in validate_output(read_paper_changes(output), snapshot)[0]
 
 
 def test_line_diff_merges_nearby_and_rewrites_large_changes():
@@ -156,7 +156,7 @@ def test_accept_idempotency_rebase_and_guarded_undo(setup):
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text
     (output / "files/section.md").write_text(before.replace("line 10\n", "improved 10\n"))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     human_edit(live, "f1", "prefix\n" + before)
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert changes.accept("p", group.group_id, "human").state == "accepted"
@@ -176,7 +176,7 @@ def test_a_refused_undo_is_prepared_again_against_the_current_text(setup, monkey
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text
     (output / "files/section.md").write_text(before.replace("line 10\n", "improved 10\n"))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     changes.accept("p", group.group_id, "human")
     apply = live.apply
 
@@ -195,7 +195,7 @@ def test_a_refused_undo_is_prepared_again_against_the_current_text(setup, monkey
 def test_undo_never_deletes_a_created_file_the_human_typed_in(setup):
     snapshot, live, changes, output = setup
     (output / "files/new.md").write_text("new\n")
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     changes.accept("p", group.group_id, "human")
     created = next(file for file in saved(live).files if file.path == "new.md")
     human_edit(live, created.file_id, "new\nmine\n")
@@ -209,7 +209,7 @@ def test_rename_and_dependent_edits_are_atomic(setup):
     (output / "moves.json").write_text('{"rename":[["section.md","renamed.md"]]}')
     (output / "files/renamed.md").write_text("new text\n")
     (output / "files/includes.tex").write_text("\\input{renamed.md}\n")
-    groups = changes.collect("p", "t", snapshot, output)
+    groups = changes.collect("p", "t", snapshot, read_paper_changes(output))
     assert len(groups) == 1 and len(groups[0].changes) == 3
     human_edit(live, "f1", "human changed source\n")
     with pytest.raises(OutdatedChange):
@@ -221,7 +221,9 @@ def test_rename_and_dependent_edits_are_atomic(setup):
 def test_direct_mode_admission_and_receipt_recovery(setup, monkeypatch):
     snapshot, live, changes, output = setup
     (output / "files/new.md").write_text("new")
-    group = changes.collect("p", "t", snapshot, output, mode="apply_directly")[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output), mode="apply_directly")[
+        0
+    ]
     state = changes._state
     monkeypatch.setattr(
         changes, "_state", lambda *_args: (_ for _ in ()).throw(RuntimeError("crash after apply"))
@@ -251,7 +253,7 @@ def test_refresh_replaces_only_selected_groups(setup):
     original = snapshot.files[0].text
     (output / "files/section.md").write_text(original.replace("line 10\n", "coach\n"))
     (output / "files/new.md").write_text("independent\n")
-    groups = changes.collect("p", "t", snapshot, output)
+    groups = changes.collect("p", "t", snapshot, read_paper_changes(output))
     human_edit(live, "f1", original.replace("line 10\n", "human\n"))
     stale = changes.stale_group_ids("p", "t")
     assert len(stale) == 1
@@ -259,7 +261,9 @@ def test_refresh_replaces_only_selected_groups(setup):
     (output / "files/section.md").write_text(
         saved(live).files[0].text.replace("human\n", "refreshed\n")
     )
-    refreshed = changes.collect("p", "t", saved(live), output, replace_group_ids=stale)
+    refreshed = changes.collect(
+        "p", "t", saved(live), read_paper_changes(output), replace_group_ids=stale
+    )
     assert len(refreshed) == 2
     assert {g.group_id for g in groups} - stale <= {g.group_id for g in refreshed}
 
@@ -269,10 +273,12 @@ def test_a_card_decided_during_its_refresh_is_not_offered_again(setup):
     original = snapshot.files[0].text
     coached = original.replace("line 10\n", "coach 10\n")
     (output / "files/section.md").write_text(coached)
-    (group,) = changes.collect("p", "t", snapshot, output)
+    (group,) = changes.collect("p", "t", snapshot, read_paper_changes(output))
     changes.reject("p", group.group_id, "human")
     (output / "files/section.md").write_text(coached.replace("line 25\n", "coach 25\n"))
-    changes.collect("p", "t", snapshot, output, replace_group_ids={group.group_id})
+    changes.collect(
+        "p", "t", snapshot, read_paper_changes(output), replace_group_ids={group.group_id}
+    )
     pending = [
         change.after
         for g in changes.groups("p", "t")
@@ -297,7 +303,9 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
     output = tmp_path / "output"
     (output / "files").mkdir(parents=True)
     (output / "files/new.md").write_text("new file")
-    group = service.paper_changes.collect(project_id, "task", saved(live, project_id), output)[0]
+    group = service.paper_changes.collect(
+        project_id, "task", saved(live, project_id), read_paper_changes(output)
+    )[0]
     base = f"/api/projects/{project_id}/paper/changes"
     from rcp.storage import AgentTaskRecord
 
@@ -367,13 +375,13 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
     (output / "files/section.md").write_text(
         before.replace("line 3\n", "first\n").replace("line 20\n", "second\n")
     )
-    groups = changes.collect("p", "t", snapshot, output)
+    groups = changes.collect("p", "t", snapshot, read_paper_changes(output))
     assert len(groups) == 2
     changes.accept_all("p", "t", "human")
     assert all(group.state == "undone" for group in changes.undo_all("p", "t", "human"))
     assert saved(live).files[0].text == before
     (output / "files/section.md").write_text(before.replace("line 10\n", "third\n"))
-    group = changes.collect("p", "next", saved(live), output)[0]
+    group = changes.collect("p", "next", saved(live), read_paper_changes(output))[0]
     apply = live.apply
 
     async def refused(*_args, **_kwargs):
@@ -387,7 +395,7 @@ def test_undo_all_reverse_order_and_failed_apply_can_refresh(setup, monkeypatch)
         "p",
         "refreshed-task",
         saved(live),
-        output,
+        read_paper_changes(output),
         replace_group_ids={group.group_id},
         replace_source_task_id="next",
     )
@@ -465,7 +473,7 @@ def test_binary_cards_survive_collection_and_undo(setup, monkeypatch, state, kin
         pytest.fail("Binary originals must not be extracted to temporary files")
 
     monkeypatch.setattr(live, "materialize", no_materialization)
-    group = changes.collect("p", "binary", snapshot, output)[0]
+    group = changes.collect("p", "binary", snapshot, read_paper_changes(output))[0]
     changes._state("p", group.group_id, state)
     with live.store.connection() as connection:
         payload = connection.execute("SELECT payload FROM paper_changes").fetchone()[0]
@@ -499,7 +507,7 @@ def test_outstanding_card_keeps_base_past_retention_and_undo_restores_text_ident
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text
     (output / "files/section.md").write_text(before.replace("line 10\n", "coach\n"))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
     for index in range(3):
         human_edit(live, "f1", before + f"later {index}\n")
@@ -514,7 +522,7 @@ def test_outstanding_card_keeps_base_past_retention_and_undo_restores_text_ident
 
     cached = Doc({"text": Text()})
     cached.apply_update(live.run_sync(live.connect("p", "f1")).doc.get_update())
-    deletion = changes.collect("p", "delete", saved(live), output)[0]
+    deletion = changes.collect("p", "delete", saved(live), read_paper_changes(output))[0]
     changes.accept("p", deletion.group_id, "human")
     changes.undo("p", deletion.group_id, "human")
     assert saved(live).files[0].file_id == "f1"
@@ -540,7 +548,9 @@ def test_proposed_endpoint_returns_full_text_without_cross_project_access(
     (output / "files").mkdir(parents=True)
     proposed = "<script>untrusted</script>\n" * 100
     (output / "files/paper.md").write_text(proposed)
-    group = service.paper_changes.collect(project, "task", saved(live, project), output)[0]
+    group = service.paper_changes.collect(
+        project, "task", saved(live, project), read_paper_changes(output)
+    )[0]
     card = group.changes[0]
     assert card.kind == "rewrite"
     with signed_in_client(app) as client:
@@ -592,14 +602,16 @@ def test_active_coach_base_is_retained_before_collection(setup, monkeypatch):
     human_edit(live, "f1", snapshot.files[0].text + "later\n")
     assert live.run_sync(live.text_at("p", "f1", snapshot.revision)) == snapshot.files[0].text
     (output / "files/section.md").write_text(snapshot.files[0].text.replace("line 10\n", "coach\n"))
-    assert changes.collect("p", "active", snapshot, output)[0].state == "pending"
+    assert (
+        changes.collect("p", "active", snapshot, read_paper_changes(output))[0].state == "pending"
+    )
 
 
 def test_new_directory_collision_marks_card_outdated(setup):
     snapshot, live, changes, output = setup
     (output / "files/parts").mkdir()
     (output / "files/parts/new.md").write_text("proposal")
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     apply(live, [PaperOp(kind="create", path="parts", text="human")])
     with pytest.raises(OutdatedChange):
         changes.accept("p", group.group_id, "human")
@@ -622,7 +634,7 @@ def test_collection_enforces_live_tree_validation(setup, monkeypatch, case):
         monkeypatch.setattr(f"rcp.limits.PAPER_MAX_{limit}", 1)
     (output / "files" / name).write_bytes(body)
     with pytest.raises(InvalidChanges):
-        changes.collect("p", "t", snapshot, output)
+        changes.collect("p", "t", snapshot, read_paper_changes(output))
     assert changes.groups("p", "t") == []
 
 
@@ -630,7 +642,9 @@ def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch):
     snapshot, live, changes, output = setup
     for name in ("a.md", "b.md"):
         (output / "files" / name).write_text("new")
-    first, _second = changes.collect("p", "t", snapshot, output, mode="apply_directly")
+    first, _second = changes.collect(
+        "p", "t", snapshot, read_paper_changes(output), mode="apply_directly"
+    )
     original = live.apply
 
     async def apply_group(project, ops, **kwargs):
@@ -650,7 +664,7 @@ def test_failed_direct_group_releases_receipt_and_continues(setup, monkeypatch):
 def test_pure_rename_has_no_line_preview(setup):
     snapshot, _live, changes, output = setup
     (output / "moves.json").write_text('{"rename":[["section.md","renamed.md"]]}')
-    card = changes.collect("p", "t", snapshot, output)[0].changes[0]
+    card = changes.collect("p", "t", snapshot, read_paper_changes(output))[0].changes[0]
     assert card.preview == {"removed": [], "added": [], "more": 0}
     assert card.stats == {"added": 0, "removed": 0}
 
@@ -658,7 +672,7 @@ def test_pure_rename_has_no_line_preview(setup):
 def test_accept_recovers_committed_apply_despite_delivery_failure(setup, monkeypatch):
     snapshot, live, changes, output = setup
     (output / "files/new.md").write_text("new")
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     original = live.apply
 
     async def apply_then_fail(*args, **kwargs):
@@ -674,7 +688,7 @@ def test_pending_card_reports_its_anchor_in_live_utf16_offsets(setup):
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text or ""
     (output / "files/section.md").write_text(before.replace("line 10\n", "line 10\nadded\n"))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     original_line = group.public()["changes"][0]["current"]["line"]
     prefix = "😀 edited elsewhere\nsecond inserted line\n"
     human_edit(live, "f1", prefix + before)
@@ -699,7 +713,7 @@ def test_refresh_subset_is_validated_against_the_whole_tree(setup):
     subset = full.model_copy(update={"files": [f for f in full.files if f.file_id == "f1"]})
     (output / "files/other.md").write_text("collides\n")
     with pytest.raises(InvalidChanges):
-        changes.collect("p", "t", subset, output)
+        changes.collect("p", "t", subset, read_paper_changes(output))
 
 
 def test_repeated_deleted_paragraph_makes_card_outdated(setup):
@@ -708,7 +722,7 @@ def test_repeated_deleted_paragraph_makes_card_outdated(setup):
     human_edit(live, "f1", base)
     snapshot = saved(live)
     (output / "files/section.md").write_text(base.replace("same paragraph", "improved", 1))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     current = base.replace("same paragraph\n", "", 1)
     human_edit(live, "f1", current)
     assert changes.groups("p", "t")[0].state == "outdated"
@@ -722,7 +736,7 @@ def test_groups_without_pending_cards_need_no_live_content(setup, monkeypatch, s
     snapshot, _live, changes, output = setup
     if state is not None:
         (output / "files/new.md").write_text("new")
-        group = changes.collect("p", "task", snapshot, output)[0]
+        group = changes.collect("p", "task", snapshot, read_paper_changes(output))[0]
         changes._state("p", group.group_id, state)
 
     def unavailable(*_args):
@@ -739,7 +753,7 @@ def test_an_added_final_newline_is_not_a_card(setup):
     text = snapshot.files[0].text.rstrip("\n")
     human_edit(live, "f1", text)
     (output / "files/section.md").write_text(text.replace("line 10\n", "coach 10\n") + "\n")
-    (group,) = changes.collect("p", "t", saved(live), output)
+    (group,) = changes.collect("p", "t", saved(live), read_paper_changes(output))
     assert [change.after for change in group.changes] == ["coach 10\n"]
 
 
@@ -748,7 +762,7 @@ def test_typing_during_accept_never_outdates_a_valid_card(setup):
     before = snapshot.files[0].text
     apply(live, [PaperOp(kind="create", file_id="f2", path="other.md", text="other\n")])
     (output / "files/section.md").write_text(before.replace("line 10\n", "coach 10\n"))
-    group = changes.collect("p", "t", snapshot, output)[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output))[0]
     prepare = changes._prepare
     typed: list[tuple[str, str]] = []
 
@@ -764,7 +778,7 @@ def test_typing_during_accept_never_outdates_a_valid_card(setup):
         typed.append(("f2", "typed\n"))
         assert changes.accept("p", group.group_id, "human").state == "accepted"
         changes.undo("p", group.group_id, "human")
-        retry = changes.collect("p", "t2", saved(live), output)[0]
+        retry = changes.collect("p", "t2", saved(live), read_paper_changes(output))[0]
         # The same file changed outside the card: refused once, still reviewable.
         typed.append(("f1", before.replace("line 25\n", "human 25\n")))
         with pytest.raises(OutdatedChange):
@@ -779,7 +793,9 @@ def test_a_crash_after_the_live_apply_still_shows_the_decision(setup, monkeypatc
     snapshot, live, changes, output = setup
     before = snapshot.files[0].text
     (output / "files/section.md").write_text(before.replace("line 10\n", "coach 10\n"))
-    group = changes.collect("p", "t", snapshot, output, mode="apply_directly")[0]
+    group = changes.collect("p", "t", snapshot, read_paper_changes(output), mode="apply_directly")[
+        0
+    ]
 
     def killed(*_args, **_kwargs):
         raise SystemExit("killed after the live commit")

@@ -285,7 +285,6 @@ async def stage_work_turn(
             write_scope.project_id,
             service.history,
             context.group_context,
-            store=service.paper.store,
         )
         validator_lifecycle = start_validator_mailbox(
             service,
@@ -317,17 +316,17 @@ async def stage_work_turn(
             label=skill_bundle_label(skill_selection),
             reuse_existing=True,
         )
-        attachment_pointers = stage_turn_attachments(
+        attachment_pointers, attachment_dirs = stage_turn_attachments(
             data_dir,
             request.attachment_batch_id,
             request.attachments,
             local_stage=local_stage,
             remote_stage=remote_stage,
-            read_dirs=read_dirs,
-            additional=[artifacts.pointer]
-            if artifacts is not None and artifacts.pointer is not None
-            else None,
         )
+        if artifacts is not None and artifacts.pointer is not None:
+            attachment_pointers.append(artifacts.pointer)
+            attachment_dirs.append(Path(str(artifacts.pointer["path"])).parent)
+        read_dirs.extend(directory for directory in attachment_dirs if directory not in read_dirs)
         repositories: list[dict[str, object]] = [
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories

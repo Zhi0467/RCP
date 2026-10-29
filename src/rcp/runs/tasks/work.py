@@ -520,8 +520,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
     )
-    if turn.graph_read_scope is not None:
-        values["branches"] = turn.graph_read_scope.branch_values()
+    values.update(turn.graph_read_prompt.values)
     return values
 
 
@@ -915,7 +914,7 @@ def _work_contract_text(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         command_client=turn.patch_inputs.command_client,
-        graph_read_scope=turn.graph_read_scope,
+        graph_read_prompt=turn.graph_read_prompt,
         write_scope=turn.write_scope,
         skill_pointers=staged.skill_pointers,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1138,7 +1137,7 @@ def _work_chat_master_context(
         workspace_path=str(turn.workspace),
         output_schema_path=turn.patch_inputs.schema_path,
         command_client=turn.patch_inputs.command_client,
-        graph_read_scope=turn.graph_read_scope,
+        graph_read_prompt=turn.graph_read_prompt,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
@@ -2857,7 +2856,6 @@ async def _stream_work_graph_repair(
             task_record.project_id,
             service.history,
             context.group_context,
-            store=service.paper.store,
         )
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)
