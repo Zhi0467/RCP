@@ -12,3 +12,13 @@ export function worktreeRepositoryChoices(
     )
     .map((repository) => repository.alias);
 }
+
+/** The repository a worktree launch names: an inherited worktree's own, else the pick, else the first. */
+export function chosenWorktreeRepository(
+  choices: string[],
+  pick: string | null,
+  inherited: string | null,
+): string | null {
+  if (inherited) return inherited;
+  return pick && choices.includes(pick) ? pick : (choices[0] ?? null);
+}

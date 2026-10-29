@@ -24,6 +24,9 @@ const { RunDialog, agentSelectionChanged } = await server.ssrLoadModule(
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/agents/AgentTaskInspector.tsx");
 const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
 const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { chosenWorktreeRepository } = await server.ssrLoadModule(
+  "/src/chat/worktreeRepositories.ts",
+);
 const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { providerPathPresentation } = await server.ssrLoadModule("/src/projects/providerPaths.ts");
@@ -1254,6 +1257,12 @@ test("isolation choices live in the agent picker, not beside it", () => {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test("an inherited worktree keeps its owner's repository over any pick", () => {
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "repo-a", "repo-b"), "repo-b");
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "repo-b", null), "repo-b");
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "gone", null), "repo-a");
 });
 
 test("Run presents other-target live episodes before submission without disabling admission", () => {

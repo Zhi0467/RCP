@@ -5572,7 +5572,11 @@ function MemberApp({
             }
             inheritedIsolation={
               activeBranchEpisode
-                ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
+                ? {
+                    graph_isolation: true,
+                    code_worktree: activeBranchEpisode.code_worktree,
+                    worktree_repository: activeBranchEpisode.checkout.repository_alias,
+                  }
                 : null
             }
             onOpenChat={() => {

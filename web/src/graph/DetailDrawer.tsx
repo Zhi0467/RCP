@@ -1,5 +1,5 @@
 import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
-import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
+import { chosenWorktreeRepository, worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
@@ -259,10 +259,13 @@ export function DetailDrawer({
     ? worktreeRepositoryChoices(project, project.agent_profiles.node_chat.run_on)
     : [];
   const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<string | null>(null);
-  const worktreeRepository =
-    worktreeRepositoryPick && worktreeRepositories.includes(worktreeRepositoryPick)
-      ? worktreeRepositoryPick
-      : (worktreeRepositories[0] ?? null);
+  // An inherited worktree is bound to its owner's repository; admission refuses any other.
+  const inheritedRepository = inheritedIsolation?.worktree_repository ?? null;
+  const worktreeRepository = chosenWorktreeRepository(
+    worktreeRepositories,
+    worktreeRepositoryPick,
+    inheritedRepository,
+  );
   const codeWorktreeToggle = (
     <span className="code-worktree-choice">
       <label>
@@ -276,9 +279,9 @@ export function DetailDrawer({
       </label>
       {(inheritedIsolation ?? isolation).code_worktree && (
         <WorktreeRepositoryPicker
-          repositories={worktreeRepositories}
+          repositories={inheritedRepository ? [inheritedRepository] : worktreeRepositories}
           value={worktreeRepository}
-          disabled={false}
+          disabled={Boolean(inheritedRepository)}
           onChange={setWorktreeRepositoryPick}
         />
       )}
