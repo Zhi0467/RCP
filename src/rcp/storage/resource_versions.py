@@ -548,3 +548,13 @@ def migrate_space_machine_settings_versions(connection: sqlite3.Connection) -> N
         "space_machines",
         [_bump("''", resource) for resource in _GLOBAL_TABLES["space_machines"]],
     )
+
+
+def install_consolidation_resource_versions(connection: sqlite3.Connection) -> None:
+    for table in ("consolidation_schedules", "consolidation_targets", "consolidation_runs"):
+        statements = [_bump("ROW.project_id", "consolidation")]
+        if table == "consolidation_runs":
+            statements.append(
+                _bump("ROW.project_id", "chat", "ROW.chat_id", "ROW.chat_id IS NOT NULL")
+            )
+        _install(connection, table, statements)

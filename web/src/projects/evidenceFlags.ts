@@ -22,18 +22,17 @@ export interface EvidenceFlagRow {
 }
 
 /**
- * Every open record stays listed until dismissed; only current Evidence takes graph marks.
- * `nodes` is the open graph. Off main it cannot decide Address, which main's
- * endpoint checks, so every open flag offers it there.
+ * Open records belong to the selected graph; only its current Evidence takes marks.
+ * Address and Open Evidence therefore use the same graph as the finding.
  */
 export function evidenceFlagRows(
   flags: readonly EvidenceFlag[],
   nodes: Record<string, GraphNode>,
   repositories: readonly Repository[],
-  onMain = true,
+  target = "main",
 ): EvidenceFlagRow[] {
   return flags.flatMap((flag) => {
-    if (flag.state === "dismissed") return [];
+    if (flag.state === "dismissed" || flag.target !== target) return [];
     const recorded = nodes[flag.evidence_id];
     const node =
       recorded &&
@@ -47,7 +46,7 @@ export function evidenceFlagRows(
     const actions: EvidenceFlagAction[] = [];
     if (flag.state === "addressing") actions.push("open_chat");
     else {
-      if ((node || !onMain) && !NOTICE_FLAG_KINDS.has(flag.kind)) actions.push("address");
+      if (node && !NOTICE_FLAG_KINDS.has(flag.kind)) actions.push("address");
       if (flag.chat_id) actions.push("open_chat");
       if (node) actions.push("open_evidence");
       if (source) actions.push("open_source");

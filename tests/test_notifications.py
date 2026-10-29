@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.core.models import Patch
+from rcp.core.transition_models import GraphHeadRef
 from rcp.notifications import NotificationSender
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import ProjectRecord
@@ -55,8 +56,20 @@ def _blocker_patch(identifier):
     )
 
 
-def test_consolidation_notifications_observed_once_and_closed_items_drop(manifest, tmp_path):
+@pytest.mark.parametrize("target", ["main", "11111111-1111-4111-8111-111111111111"])
+def test_consolidation_notifications_observed_once_and_closed_items_drop(
+    manifest, tmp_path, target
+):
     app, store, project_id, device = _setup(manifest, tmp_path)
+    if target != "main":
+        store.create_graph_branch(
+            project_id=project_id,
+            branch_id=target,
+            owner_episode_id=None,
+            parent_head=GraphHeadRef(revision=0),
+            created_by=f"human:{store.local_owner.user_id}",
+            name="review-branch",
+        )
     now = datetime.fromisoformat(store.now())
     schedule = store.put_consolidation_schedule(
         project_id,
@@ -70,6 +83,7 @@ def test_consolidation_notifications_observed_once_and_closed_items_drop(manifes
         occurrence_date=now.date().isoformat(),
         next_due_at=(now + timedelta(days=1)).isoformat(),
         input_head=0,
+        target=target,
         error_code="authorizer_not_member",
         error_message="Authorization refused.",
     )
@@ -77,7 +91,11 @@ def test_consolidation_notifications_observed_once_and_closed_items_drop(manifes
     sender.run_pass()
     sender.run_pass()
     assert [row["item_id"] for row in store.notification_outbox()] == [run.run_id]
-    assert sender.pending_desktop(device["device_id"])[0]["reason"] == "consolidation"
+    notice = sender.pending_desktop(device["device_id"])[0]
+    assert notice["reason"] == "consolidation"
+    assert notice["project_name"].endswith(" · main" if target == "main" else " · review-branch")
+    target_key = "main" if target == "main" else f"branch%3A{target}"
+    assert f"/targets/{target_key}/" in notice["deep_link"]
     store.resolve_consolidation_run(
         project_id, run.run_id, state="dismissed", resolved_by=authorized_human(store)
     )

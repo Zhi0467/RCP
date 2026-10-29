@@ -98,15 +98,17 @@ def test_unresolved_run_leaves_next_occurrence_owed(runtime):
     due = (runtime.now - timedelta(minutes=1)).isoformat()
     with runtime.store.connection() as conn:
         conn.execute("UPDATE consolidation_schedules SET next_due_at=?", (due,))
+        conn.execute("UPDATE consolidation_targets SET next_due_at=?", (due,))
     runtime.poller.poll_once()
     assert runtime.store.consolidation_schedule(runtime.schedule.project_id).next_due_at == due
     assert len(runtime.dispatched) == 1
 
 
 def test_unchanged_covered_head_skips(runtime):
+    runtime.store.ensure_consolidation_target(runtime.schedule)
     with runtime.store.connection() as conn:
         conn.execute(
-            "UPDATE consolidation_schedules SET covered_head=?",
+            "UPDATE consolidation_targets SET covered_head=?",
             (runtime.service.history.state().revision,),
         )
     runtime.poller.poll_once()
@@ -529,8 +531,8 @@ def test_due_resolution_failure_creates_occurrence_failure_without_task(
     elif failure == "machine":
         original = runtime.poller._task
 
-        def missing_machine(schedule, service):
-            task = original(schedule, service)
+        def missing_machine(schedule, service, *args):
+            task = original(schedule, service, *args)
             return task.model_copy(update={"request": {**task.request, "run_on": "missing"}})
 
         monkeypatch.setattr(runtime.poller, "_task", missing_machine)
@@ -649,14 +651,16 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
             return expected
 
     store = SimpleNamespace(
-        consolidation_run_for_operation=lambda operation: SimpleNamespace(project_id="project"),
-        consolidation_schedule=lambda project: SimpleNamespace(covered_head=7),
+        consolidation_run_for_operation=lambda operation: SimpleNamespace(
+            project_id="project", target="main", graph_target=GraphTargetRef()
+        ),
+        consolidation_target=lambda project, target: SimpleNamespace(covered_head=7),
     )
     execution = cast(AgentTaskExecution, SimpleNamespace(operation_id="night", store=store))
     service = cast(ProjectService, SimpleNamespace(history_engine=Engine()))
     assert consolidation_covered_head(service, execution) == expected
     assert calls == [(7, GraphTargetRef(), GraphTargetRef())]
-    store.consolidation_schedule = lambda project: SimpleNamespace(covered_head=None)
+    store.consolidation_target = lambda project, target: SimpleNamespace(covered_head=None)
     assert consolidation_covered_head(service, execution) is None
     assert len(calls) == 1
 
@@ -715,3 +719,108 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch,
         (flag["evidence_id"], flag["kind"])
         for flag in runtime.store.list_evidence_flags(run.project_id)
     ] == [("ev/added-overnight", "consolidation_added")]
+
+
+def _active_branch(runtime, name, *, changed=True):
+    from rcp.history import HistoryManager
+
+    from .helpers import unchecked_write_authority
+    from .test_branch_history import _branch_metadata, _branch_patch
+
+    history = HistoryManager(
+        runtime.service.manifest,
+        runtime.service.history.workspace,
+        write_authority=unchecked_write_authority(),
+    )
+    metadata = _branch_metadata(history, authorized_by=runtime.schedule.authorized_by).model_copy(
+        update={"project_id": runtime.schedule.project_id}
+    )
+    branch = history.create_branch(metadata)
+    runtime.store.create_graph_branch(
+        project_id=runtime.schedule.project_id,
+        branch_id=metadata.branch_id,
+        owner_episode_id=None,
+        parent_head=metadata.effective_parent_head,
+        created_by="human:test",
+        name=name,
+    )
+    if changed:
+        branch.append(_branch_patch("ev/branch-result"))
+    return branch
+
+
+def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
+    changed = _active_branch(runtime, "changed")
+    fresh = _active_branch(runtime, "fresh", changed=False)
+    unchanged = _active_branch(runtime, "unchanged")
+    runtime.store.ensure_consolidation_target(
+        runtime.schedule, target=unchanged.branch_id, covered_head=unchanged.state().revision
+    )
+    runtime.poller.poll_once()
+    runs = {run.target: run for run in runtime.store.consolidation_runs()}
+    assert set(runs) == {"main", changed.branch_id}
+    task = runtime.store.agent_task(runs[changed.branch_id].operation_id)
+    assert task.graph_target == changed.graph_target
+    assert task.request["graph_target"] == changed.graph_target.model_dump(mode="json")
+    assert (
+        task.request["chat_id"]
+        != runtime.store.agent_task(runs["main"].operation_id).request["chat_id"]
+    )
+    for branch in (fresh, unchanged):
+        coverage = runtime.store.consolidation_target(runtime.schedule.project_id, branch.branch_id)
+        assert coverage.covered_head == branch.state().revision
+        assert coverage.skipped_dates
+
+
+def test_archived_branch_never_runs(runtime):
+    branch = _active_branch(runtime, "archived")
+    with runtime.store.connection() as conn:
+        conn.execute("UPDATE graph_branches SET archived=1 WHERE branch_id=?", (branch.branch_id,))
+    runtime.poller.poll_once()
+    assert [run.target for run in runtime.store.consolidation_runs()] == ["main"]
+    assert runtime.store.consolidation_target(runtime.schedule.project_id, branch.branch_id) is None
+
+
+def test_target_coverage_settles_independently(runtime):
+    branch = _active_branch(runtime, "independent")
+    runtime.poller.poll_once()
+    runs = {run.target: run for run in runtime.store.consolidation_runs()}
+    run = runs[branch.branch_id]
+    runtime.store.create_artifact(
+        Artifact(
+            artifact_id="branch-report",
+            project_id=run.project_id,
+            supplier="turn",
+            supplier_id=run.operation_id,
+            origin_operation_id=run.operation_id,
+            source_name="consolidation-report.html",
+            media_type="text/html",
+            created_at=runtime.store.now(),
+        ),
+        data=b"<html>Branch report</html>",
+    )
+    runtime.store.complete_agent_task(run.operation_id, applied_revision=None, result={})
+    runtime.store.fail_agent_task(runs["main"].operation_id, "Main failed")
+    runtime.poller.reconcile_outcomes()
+    assert (
+        runtime.store.consolidation_target(run.project_id, branch.branch_id).covered_head
+        == branch.state().revision
+    )
+    assert runtime.store.consolidation_target(run.project_id, "main").covered_head is None
+    assert runtime.store.consolidation_run(run.run_id).kind == "report"
+
+
+def test_unresolved_target_does_not_block_other_targets_on_later_nights(runtime, monkeypatch):
+    branch = _active_branch(runtime, "still-running")
+    runtime.poller.poll_once()
+    for day in (1, 2):
+        for run in runtime.store.consolidation_runs():
+            if run.target == "main" and run.outcome_settled_at is None:
+                runtime.store.fail_agent_task(run.operation_id, "Retry next night")
+        now = runtime.now + timedelta(days=day)
+        monkeypatch.setattr(runtime.store, "now", lambda now=now: now.isoformat())
+        runtime.poller.clock = runtime.store.now
+        runtime.poller.poll_once()
+    targets = [run.target for run in runtime.store.consolidation_runs()]
+    assert targets.count("main") == 3
+    assert targets.count(branch.branch_id) == 1

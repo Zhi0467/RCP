@@ -764,6 +764,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     "digest_marks",
                     "digest_heads",
                     "consolidation_schedules",
+                    "consolidation_targets",
                     "consolidation_runs",
                     "consolidation_apply_receipts",
                 ):
@@ -1142,6 +1143,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 "digest_marks",
                 "digest_heads",
                 "consolidation_schedules",
+                "consolidation_targets",
                 "consolidation_runs",
                 "consolidation_apply_receipts",
                 "research_view_pins",

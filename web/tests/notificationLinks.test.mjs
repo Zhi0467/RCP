@@ -42,6 +42,8 @@ test("graph items open the Inbox and episodes their exact run", () => {
   assert.equal(consolidation.kind, "consolidation");
   assert.equal(consolidation.itemId, "run-1");
   assert.equal(graphNotificationHash(consolidation), "#/projects/p?view=attention");
+  const branch = parseNotificationLink("#/projects/p/targets/branch%3Ab1/consolidation/run-2");
+  assert.equal(graphNotificationHash(branch), "#/projects/p?view=attention&branch_id=b1");
 
   const link = parseNotificationLink("#/projects/p/targets/main/episode/e1");
   assert.equal(
