@@ -12,8 +12,16 @@ logger = logging.getLogger(__name__)
 # only after RCP shipped it, later retired it, and documented why dropping that
 # exact field preserves the request's meaning. Unknown fields are left in place
 # so the request model rejects them rather than silently guessing a migration.
+# Releases through 0.4.29 froze each turn's compute selection into every
+# RunRequest. 0.4.31 gives every turn all project machines at launch, so the
+# frozen selection carries no meaning a current launch would honor.
+_RETIRED_COMPUTE_FIELDS: Final = frozenset({"active_compute_ids", "resolved_compute_context"})
 _RETIRED_REQUEST_FIELDS: Final[dict[str, frozenset[str]]] = {
     "auto_research": frozenset({"ending"}),
+    **dict.fromkeys(
+        ("seed", "refresh", "node_chat", "project_chat", "branch_merge", "artifact_edit"),
+        _RETIRED_COMPUTE_FIELDS,
+    ),
 }
 
 

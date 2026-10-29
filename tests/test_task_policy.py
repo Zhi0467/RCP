@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,8 @@ from rcp.runs.task_policy import (
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
+from rcp.storage import AgentTaskKind
+from rcp.storage.request_compat import migrate_stored_task_request
 
 
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
@@ -141,3 +144,13 @@ def test_a_live_request_still_cannot_smuggle_an_unknown_field() -> None:
         AutoResearchRunRequest.model_validate(
             {"episode_id": "episode-1", "role": "orchestrator", "ending": None}
         )
+
+
+@pytest.mark.parametrize("kind", get_args(AgentTaskKind))
+def test_only_run_request_kinds_drop_the_frozen_compute_selection(kind: str) -> None:
+    """Through 0.4.29 every RunRequest froze its compute; the other models never had it."""
+
+    stored = {"active_compute_ids": ["gpu"], "resolved_compute_context": {"active": []}}
+    migrated = migrate_stored_task_request(kind, stored, warn=False)
+    loads_run_request = kind not in {"paper_coach", "auto_research", "episode_report"}
+    assert (migrated == {}) == loads_run_request
