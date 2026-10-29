@@ -220,6 +220,12 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await post(null);
   await page.waitForFunction(() => window.cancels.length === 1);
   assert.equal(await page.evaluate(() => window.cancels[0] === window.comments.at(-1).clear), true);
+  // Leaving comment mode cancels the comment the frame opened.
+  await post({ kind: "text", text: "Plot caption", surrounding_text: "" });
+  await page.waitForFunction(() => window.comments.at(-1)?.quote === "Plot caption");
+  await page.locator('header button[aria-pressed="true"]').click();
+  await page.waitForFunction(() => window.cancels.length === 2);
+  assert.equal(await page.evaluate(() => window.cancels[1] === window.comments.at(-1).clear), true);
 
   await page.setViewportSize({ width: 390, height: 700 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

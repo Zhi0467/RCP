@@ -293,6 +293,13 @@ function useStagedAnnotations(
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedAnnotations(storageKey),
   );
+  // The list belongs to its key: a key that arrives late, like Paper's once the
+  // member is known, loads that key's list instead of overwriting it with this one.
+  const [loadedKey, setLoadedKey] = useState(storageKey);
+  if (loadedKey !== storageKey) {
+    setLoadedKey(storageKey);
+    setAnnotations(readStagedAnnotations(storageKey));
+  }
   const [open, setOpen] = useState(false);
   useEffect(() => writeStagedAnnotations(storageKey, annotations), [annotations, storageKey]);
 

@@ -360,6 +360,11 @@ test("the coach stages answer comments and files as chat does and sends them wit
   // The Coach segment counts the waiting comment, so it shows while the preview is open.
   const waiting = page.locator(".paper-desktop-segments .paper-comment-count");
   assert.equal(await waiting.textContent(), "1");
+  // A reload keeps the waiting comment in this tab.
+  await page.reload();
+  await coach(page);
+  await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
+  assert.equal(await waiting.textContent(), "1");
 
   await page
     .locator(".paper-coach .chat-composer .chat-add-picker input[type=file]")
@@ -409,4 +414,24 @@ test("a coach turn carrying only a project reference names its attachment scope"
   assert.deepEqual(started.request.references, [{ kind: "paper", file_id: "d1" }]);
   assert.equal(typeof started.request.attachment_scope_id, "string");
   assert.equal(started.request.attachment_set_id, undefined);
+});
+
+test("a comment opened from the preview closes when another file is shown", async (t) => {
+  const { page } = await open(t, {
+    width: 1280,
+    configure: ({ tree }) => tree.files.push({ ...tree.files[0], file_id: "f2", path: "other.md" }),
+  });
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  const text = page.locator(".paper-right-pane [data-paper-path] p").first();
+  await text.waitFor();
+  const box = await text.boundingBox();
+  await page.mouse.move(box.x + 1, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+  await comment.waitFor();
+  await page.locator(".paper-file", { hasText: "other.md" }).click();
+  await comment.waitFor({ state: "detached", timeout: 5000 });
 });

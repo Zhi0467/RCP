@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { EditorView } from "@codemirror/view";
 import { Download, FileWarning, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
+import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import type {
   AgentTask,
@@ -121,7 +122,11 @@ export function PaperWorkspace({
   const coachMessage = useRef<HTMLTextAreaElement>(null);
   const previewPane = useRef<HTMLDivElement>(null);
   const comments = useAnswerComments({
-    storageKey: null,
+    // Kept for this tab, as chat keeps its comments, so a reload keeps the waiting ones.
+    storageKey: memberDraftKey(
+      identity?.user.user_id ?? null,
+      `paper-coach-annotations:${encodeURIComponent(project.id)}`,
+    ),
     enabled: true,
     busy: coachSubmitting,
     sources: [
@@ -257,6 +262,16 @@ export function PaperWorkspace({
   const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
+  // A comment opened from the preview, the one kind that names where it came from,
+  // points at the file shown then; showing another file closes it.
+  const openPreviewWhere =
+    comments.composer?.step === "comment" ? comments.composer.where : undefined;
+  const openPreviewRef = useRef(openPreviewWhere);
+  openPreviewRef.current = openPreviewWhere;
+  useEffect(() => {
+    if (openPreviewRef.current) comments.dismiss(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
+  }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.
   useEffect(() => {
     if (tree && selection.existsAt > tree.revision) refresh();

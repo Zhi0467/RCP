@@ -122,10 +122,11 @@ compile root and page for PDFs, plus "near" a source line from reverse SyncTeX
 for LaTeX, which is approximate because the map keeps one mark per line; path for
 images and HTML. A box adds its area on the PDF page, image, or HTML frame, as
 percentages across and down, and sends its text, never pixels. Cancelling the
-selection inside the HTML frame closes the comment box it opened. Comments wait
-in the Coach composer, the Coach button shows their count and any staging error,
-and they travel as text with the next Coach message. Coach turns carry no
-artifact context.
+selection inside the HTML frame, leaving comment mode, or showing another file
+closes the comment box opened from the preview. Comments wait in the Coach
+composer and, as chat comments do, survive a reload of the tab. The Coach button
+shows their count and any staging error, and they travel as text with the next
+Coach message. Coach turns carry no artifact context.
 
 ## Writing coach
 
