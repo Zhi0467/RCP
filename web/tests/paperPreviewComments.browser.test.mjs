@@ -202,12 +202,28 @@ test("preview selections name their source, and boxes on PDF pages open comments
   assert.equal(await page.locator(".paper-select-box").count(), 1);
   await page.evaluate(() => window.comments.at(-1).clear());
   assert.equal(await page.locator(".paper-select-box").count(), 0);
+  // A box over part of a line quotes the boxed words, not the whole line or nothing.
+  await page.mouse.move(slot.x + 4, slot.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(span.x + span.width * 0.45, span.y + span.height + 4, { steps: 4 });
+  await page.mouse.up();
+  assert.match(await page.evaluate(() => window.comments.at(-1).quote), /^Hello\s*$/);
+  await page.evaluate(() => window.comments.at(-1).clear());
+  // Escape during a drag cancels it: no box, no comment.
+  const before = await page.evaluate(() => window.comments.length);
+  await page.mouse.move(slot.x + 4, slot.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(slot.x + 120, slot.y + 120, { steps: 4 });
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  assert.equal(await page.locator(".paper-select-box").count(), 0);
+  assert.equal(await page.evaluate(() => window.comments.length), before);
   // A drag that starts on text stays a native selection.
   await page.mouse.move(span.x + 2, span.y + span.height / 2);
   await page.mouse.down();
   await page.mouse.move(span.x + span.width - 2, span.y + span.height / 2, { steps: 4 });
   await page.mouse.up();
-  assert.equal(await page.evaluate(() => window.comments.length), 1);
+  assert.equal(await page.evaluate(() => window.comments.length), before);
   assert.match(await page.evaluate(() => getSelection().toString()), /Hello/);
 
   // LaTeX: the compile root's page, near the source line SyncTeX puts above the selection.

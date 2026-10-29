@@ -29,6 +29,18 @@ export function PaperBoxSelect({
   const drag = useRef<Drag | null>(null);
   const drawn = useRef<HTMLElement | null>(null);
   useEffect(() => () => drawn.current?.remove(), []);
+  const cancel = () => {
+    drag.current?.box.remove();
+    drag.current = null;
+  };
+  // Escape abandons a box still being drawn, as it does a native selection.
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && drag.current) cancel();
+    };
+    window.addEventListener("keydown", escape);
+    return () => window.removeEventListener("keydown", escape);
+  }, []);
 
   const place = (state: Drag, clientX: number, clientY: number) => {
     const bounds = state.target.getBoundingClientRect();
@@ -92,26 +104,42 @@ export function PaperBoxSelect({
           clear: () => box.remove(),
         });
       }}
-      onPointerCancel={() => {
-        drag.current?.box.remove();
-        drag.current = null;
-      }}
+      onPointerCancel={cancel}
     >
       {children}
     </div>
   );
 }
 
-/** The text-layer runs whose centers fall inside the box, in reading order. */
+/** The text-layer characters whose centers fall inside the box, in reading order.
+ *
+ * pdf.js often lays a whole line out as one run, so a box over part of a line is
+ * judged character by character. */
 function boxText(target: HTMLElement, rect: DOMRect): string {
+  const inside = (box: DOMRect) => {
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    return box.width > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  };
+  const range = document.createRange();
   const text = [...target.querySelectorAll<HTMLElement>(".textLayer span")]
-    .filter((span) => {
+    .map((span) => {
+      const run = span.firstChild;
       const box = span.getBoundingClientRect();
-      const x = box.left + box.width / 2;
-      const y = box.top + box.height / 2;
-      return box.width && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      const overlaps =
+        box.right > rect.left &&
+        box.left < rect.right &&
+        box.bottom > rect.top &&
+        box.top < rect.bottom;
+      if (!(run instanceof Text) || !overlaps) return "";
+      let kept = "";
+      for (let index = 0; index < run.length; index++) {
+        range.setStart(run, index);
+        range.setEnd(run, index + 1);
+        if (inside(range.getBoundingClientRect())) kept += run.data[index];
+      }
+      return kept;
     })
-    .map((span) => span.textContent ?? "")
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
