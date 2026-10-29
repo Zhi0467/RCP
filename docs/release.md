@@ -34,6 +34,9 @@ Check that all CI jobs, including **old-data upgrade**, passed and that the
 build's base version matches the intended `vX.Y.Z` tag. Review release notes for
 operator-visible changes, prerequisites and migration time.
 
+Run the egm drift sweep: one `egm-codebase-details` review per file in
+`docs/specs/` plus `docs/design.md`. Fix confirmed drift before promoting.
+
 Build and download a desktop candidate from that build:
 
 ```bash

@@ -11,8 +11,9 @@ workspace and transition manager.
 set with refs and resource keys, `due` project ids, and optional `activated` id.
 It resolves aliases and membership before reading counters or renewing sync
 demand. Unknown and forbidden ids both appear in `unavailable`; only due projects
-receive tokens. Responses carry `epoch`, one `as_of`, per-resource `key`,
-`version`, `valid_until`, and `state`, plus remote sync health.
+receive tokens. Responses carry `epoch`, one `as_of`, per-resource keys (`name`,
+optional `ref` and `entity`) with `version` and `valid_until`, plus remote sync
+health.
 
 Set-based SQLite reads cover authorization/aliases, transactional counters,
 indexed deadlines, and, when progress is watched, which projects have a running
@@ -66,12 +67,13 @@ own creation), under project membership. A fork reserved but not yet published
 has no row. `POST .../graph-refs` and `POST .../graph-refs/{branch_id}/merge`
 fork and merge forks as described in
 [Forks](auto-research-and-branch-merge.md#forks).
+`GET .../graph-refs/{branch_id}/merge-preview` returns that fork's `MergePreview`.
 
 Rows carry `kind`, `branch_id`, `head`, `base_head`, `episode_id` (chain root),
 `current_episode_id` (newest member), graph-isolation `archived`, and merge fields
 `merge_state`, `merge_eligible`, `merge_blocked_reason`,
 `latest_successful_merge`, `active_merge_task_id`, and `merge_diagnostic`.
-Rows also carry `parent_head`. Branches also carry the root's `mode` (null for a
+Branch rows also carry `parent_head`, and branches carry the root's `mode` (null for a
 member fork), `created_at`, resolved `name`, `running`, and `needs_you`; there is
 no `title`. Running means an active task on that target; attention means an open
 Decision/Blocker or answerable question. Names use the shared SQLite owner with
@@ -95,7 +97,8 @@ with `{request_id, at, name}`, then switches to the new branch. A refused name
 reddens the row and offers one retry icon, reusing the request id only after a
 network or 5xx failure. The artifact viewer's pin picker offers no New branch and
 hides on main with no live branch. An amber dot signals attention on another
-unarchived branch. Rows order main, running, then newest; hide archived branches
+unarchived branch. Rows list main first, then each parent before its indented forks, running then
+newest among siblings. Eligible forks offer Merge after a confirmation. Rows hide archived branches
 except the active one, which offers Unarchive. Rows show running/attention marks,
 rename/archive icons, and a check for selection. Rename is inline; archiving an
 unmerged branch asks first. A failed list disables the picker but retains its name.
@@ -127,7 +130,7 @@ protected active-work counts.
 
 Personal mutations check Origin. Simple POST content types, including absent
 Content-Type, return 415 `personal_simple_request_refused`; bounded multipart
-chat attachments are the exception. JSON and transfer-proof octet streams remain
+chat attachments and Paper uploads are the exceptions. JSON and transfer-proof octet streams remain
 admitted. Session provisioning belongs to
 [personal sign-in](projects-spaces-and-operations.md#personal-sign-in).
 
@@ -159,7 +162,9 @@ fields. Launch-time validation remains necessary after a successful save.
 
 The chat Options menu reads and updates `/api/projects/{project_id}/chats/{chat_id}/browser`
 with the `browser_requested` preference. The strict PUT body contains only that
-boolean. The preference exists before the chat has messages. A failed write
+boolean. The preference exists before the chat has messages. Turning it off
+deletes the chat's browser profile after the response; an active turn keeps its
+browser until it ends. A failed write
 triggers a read to reconcile the server value before another change.
 
 Experiment launch requests and Auto-research episode starts send
@@ -185,7 +190,7 @@ Project terminal routes under `/api/projects/{project_id}/terminals` are:
 | `POST /probe` | Invalidate machine probes and schedule fresh results. |
 | `POST` | Open or return the repository's session; `require_new: true` returns 409 if one exists, under the manager lock. |
 | `DELETE /{session_id}` | End the session. |
-| `WS /{session_id}/ws` | Binary PTY output; JSON `input` (`data`), `resize` (`cols`, `rows`), and `ended`. |
+| `WS /{session_id}/ws` | Binary PTY output; JSON `input` (`data`), `resize` (`cols`, `rows`), `ended` (with a `reason` when the SSH link dropped), and `detached` (`reason`) when output falls behind. |
 
 HTTP checks membership. WebSocket upgrades independently check identity,
 membership, origin, and maintenance, then recheck before input, periodically,
@@ -356,6 +361,7 @@ subscription just before its send. The stable notification id is the `Topic`. A 
 reply means the push service accepted the message; display is best effort. A
 404 or 410 deletes the device, 429 and 5xx retry (honoring `Retry-After`), and
 any other reply drops the item and marks the device Delivery failed.
+`GET /api/notifications/devices` lists the caller's devices.
 `POST /api/notifications/devices/{device_id}/test` sends one test push now and
 sets the device status from its outcome. `DELETE
 /api/notifications/devices/{device_id}` removes the caller's own device of
@@ -446,8 +452,10 @@ as `parked`.
 `POST /api/projects/{project_id}/questions/{question_id}/answer` accepts
 `answer` text and `choices`, plus `invocation_ceiling` and a `request_id` that a
 `turns` card requires: the answer then creates the episode's continuation, as
-**Add turns** does. A retry once a continuation began after the answer replays
-the answer and adds no turns. A card whose
+**Add turns** does. Answering a `turns` card without both returns 409
+`question_continuation_required`. If the continuation cannot start, the answer
+reopens and the error is returned. A retry once a continuation began after the
+answer replays the answer and adds no turns. A card whose
 episode still settles refuses with `episode_still_ending`. The store validates
 the answer and records the authenticated human. An exact retry is idempotent; a conflicting resolution or
 a withdrawn question returns 409. The endpoint enforces the store's resolution
@@ -495,9 +503,9 @@ remain the independent graph delivery record.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
 optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
-The response contains `delivered_baseline`, the graph counts `direct`,
-`conflicts`, and `reviews` (one per connected review group), per-path `paths`,
-optional code status, and `needs_agent`. Each path names its entity, id, and
+The response contains `delivered_baseline`, a `graph` object with the counts
+`direct`, `conflicts`, and `reviews` (one per connected review group) and per-path
+`paths`, an optional `code` status, and `needs_agent`. Each path names its entity, id, and
 field path (`$` for whole-entity presence), its base, branch, and destination
 (`main`) values, and the plan's `delivered`, `conflict`, `needs_agent`, and
 `needs_proposal`, all from the same merge plan. `needs_agent` is true when the
@@ -516,6 +524,11 @@ reads remain available, and Patch history is unchanged. The default episode
 list is the 50 most recent plus every live episode, retained archives, and the
 current member of every Auto-research chain, so each orchestrator card in Agents
 has its episode.
+
+Merge and cleanup pause on the
+[job gate](machines-and-compute.md#episode-merge-and-removal-gate): a live or
+unobservable job returns 409 with a `jobs` list, and resending with
+`confirm_unfinished_jobs: true` proceeds.
 
 ## Compute setup and job APIs
 
@@ -581,8 +594,8 @@ keyed by the episode, target, and preview inputs.
 Human edits that the backend manifest proves rule-inert may update a local draft
 immediately. A possible trigger, absent manifest, or stale tag previews through
 the backend. A preview conflict retains the invalid edit and last valid draft
-separately. Sync revalidates the complete batch against live canonical main and
-commits once or not at all.
+separately. Sync revalidates the complete batch against the live canonical target
+and commits once or not at all.
 
 Human Sync accepts built-in and active custom nodes through the existing
 `custom_nodes` collection, plus `added_edges` and `removed_edge_ids`. Preview and
@@ -966,7 +979,8 @@ owner. Stop takes exact episode id, using Experiment Stop when `experiment_id`
 is present or the Auto-research episode route otherwise.
 
 `rcp_open_view({kind, id})` opens an exact node, conversation, run, artifact, or
-Inbox within the current project/target. First-turn chats open from their task.
+project tab (Inbox included) within the current project/target. A run without an
+Experiment board entry, or on another target, is refused. First-turn chats open from their task.
 Run ids resolve through notification routing. Only `rcp_open_project` changes
 project; opening a view never changes branch.
 
@@ -1118,9 +1132,9 @@ after that reply or the next agent response. Nothing opens on its own.
 
 `GET /api/projects/{project_id}/consolidation` returns `can_write`, `schedule`,
 consolidation `inbox` rows, `recent_nights`, and `evidence_flags`. The last array
-contains only open and addressing flags. Each flag has `flag_id`, nullable
-`run_id` and `occurrence_date`, `evidence_id`, `evidence_revision` (the main
-revision when flagged), `kind` (`overclaim`, `underclaim`, `no_source`,
+contains only open and addressing flags. Each flag has `flag_id`, `target` (the
+consolidation run's graph target), nullable `run_id` and `occurrence_date`,
+`evidence_id`, `evidence_revision` (the target's revision when flagged), `kind` (`overclaim`, `underclaim`, `no_source`,
 `unverified`, or `consolidation_added`), `finding`, nullable `source`, `state`
 (`open`, `addressing`, or `dismissed`), nullable `chat_id`, and `created_at`.
 Findings are non-blank single lines of at most 400 characters; sources are at
@@ -1134,23 +1148,24 @@ identity:
   `{"flag": EvidenceFlag}`; unknown flags return 404 and dismissed flags 409.
 - `POST .../consolidation/evidence-flags/{flag_id}/address` takes
   `{"request_id": string}` and returns `{"flag": EvidenceFlag, "chat_id": string,
-  "operation_id": string}`. It admits an ordinary node Work chat on main using
+  "operation_id": string}`. It admits an ordinary node Work chat on the flag's target using
   the human node-chat path and default node-chat provider profile. The first human
   message is composed on the backend from flag context and fixed instructions;
   it adds no authority. The request id is recorded as the admitted turn's client
   request, so replaying it returns that turn's chat and operation even after a
   later attempt or the turn's own end settled the flag. Addressing an addressing
-  flag returns its current chat and records the request against that turn. Neither starts another turn, whatever main now
+  flag returns its current chat and records the request against that turn. Neither starts another turn, whatever the target now
   holds. An open flag
   that keeps a `chat_id` was reopened by a failed turn, and a new request id
   starts another. Addressing an open flag whose Evidence is absent or retired on
-  main, or a dismissed flag, returns 409; unknown flags return 404.
+  the target, a dismissed flag, or an `unverified` or `consolidation_added` notice
+  returns 409; unknown flags return 404.
 - `POST .../consolidation/evidence-flags/address` takes
   `{"request_id": string, "flag_ids": [string]}` with 1 to 10 unique ids and
   returns `{"flags": [EvidenceFlag], "chat_id": string, "operation_id": string}`.
   One id admits the same node Work chat as the single route; two or more admit
-  one project Work chat on main bound to every flag. Every flag must be open, so
-  an addressing flag returns 409 here. The request key is bound to the exact id
+  one project Work chat on their target bound to every flag. Every flag must be
+  open and share one target, so an addressing flag or mixed targets return 409 here. The request key is bound to the exact id
   set, and a replay returns that request's own turn.
 
 The [consolidation spec](graph-consolidation-and-lessons.md#evidence-to-check)
@@ -1309,12 +1324,14 @@ separate section, retaining each episode's identity, History, and Unarchive even
 outside recent/space windows. Storage refreshes archive metadata on cached controls.
 
 Both `/api/episodes?mode=experiment_loop` and project
-`/api/projects/{id}/experiment-episodes` return `{entries, unavailable}` with
+`/api/projects/{id}/experiment-episodes?mode=experiment_loop` return `{entries, unavailable}` with
 non-null current episodes. Main entries use completed controls; branches use
 exact branch read models. Unreadable live loops yield identity/target/node/episode/
 diagnostic rows without hiding healthy loops; historical failures log and skip.
-Required invalid project caches return 503; `/api/space/runs` returns 503 on the
-first unavailable detail. Task rows publish role/depth rather than client parsing.
+A project whose required cache is invalid or missing makes only its main loops
+unreadable. `/api/space/runs` lists each unreadable live loop as a degraded
+"Unavailable" row beside the healthy runs, so one project never empties the
+space ledger. Task rows publish role/depth rather than client parsing.
 Project lists paint cached data, share in-flight reads, and refresh while Runs
 is visible. A child Experiment appears as one subordinate navigation actor on
 its orchestrator's timeline, never a second budget/lifecycle; it gets a Runs card
@@ -1421,7 +1438,8 @@ target, a graph title, and a `conversation_kind` of `chat`, `episode`,
 `auto_research_child`, or `auto_research`. The Agents tab shows only the
 selected graph's conversations, plus, on main, each listed Auto-research chain's
 orchestrator ([interface](interface-and-visual-design.md)). The Archived
-column starts folded. Read markers and unread finishes cover the whole project.
+column starts folded. Read markers cover the whole project; unread finishes cover
+the selected target unless the read asks for the whole inventory.
 
 Selection stays exact-target. A link to a conversation on another graph switches the
 workspace through `#/projects/P?view=chats&chat=C&branch_id=B` before the
@@ -1489,7 +1507,8 @@ Read state is stored per user on the server, so it survives a reload, a closed
 app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
 the acting user's markers, one finish time per chat, plus a `baseline`: the
 time the markers were introduced, which stands in for any chat without one. It
-also returns `latest_finished`, each unarchived chat's newest finished turn, so a
+also returns `latest_finished`, each unarchived chat's newest finished turn on the
+selected target (every target with `inventory=true`), so a
 reply older than the task list window is still found. A chat is unread when its
 newest finished turn ended after its marker. Viewing a chat
 posts its newest finish time to `POST .../chats/{chat_id}/read`; the marker only
@@ -1497,7 +1516,8 @@ moves forward. Markers are not moved with a transferred project.
 
 ### Paper, Settings, and History
 
-Paper owns human Markdown Write/Preview and read-only coaching. Settings has two
+Paper owns the co-edited file tree, LaTeX and Typst preview, and coach change
+cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
 server status (team spaces), machine cards with their names (renamed in place),
 provider logins, and the personal space's clear-all-caches. Project Settings owns
@@ -1904,7 +1924,7 @@ bindings.
 the acting member's pinned views for one graph target. Writes are idempotent and
 recheck membership; pin eligibility, the limit, and Keep commit together. Artifact
 state reports `pin_branch_id`, its display name `pin_branch_name`, `can_pin`,
-and `pinned` for the acting member. A project route with `view=artifacts` may
+and `pinned_branch_ids` for the acting member. A project route with `view=artifacts` may
 carry `pin=<artifact_id>`; the shell opens that pin once its target's pins load.
 Pin lists refresh through the `artifacts` watermark family.
 
@@ -1995,8 +2015,10 @@ confirming read.
 
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
 accepts `{text, key}` and reparses references and mentions. `DELETE` on the same path soft-deletes the post. Only its author may edit or delete; another author
-gets `403 bulletin_not_author`, and editing a deleted post gets
-`409 bulletin_post_deleted`. Deleted replies and deleted top-level posts without
+gets `403 bulletin_not_author`, and editing or deleting a deleted post gets
+`409 bulletin_post_deleted`. A channel keeps at most 200 posts; a new post drops
+whole threads, least recently active first, and an oversized thread loses its
+oldest replies. Deleted replies and deleted top-level posts without
 replies are omitted; parents with replies remain empty placeholders. Posts
 include `edited_at`, `deleted_at`, `mentions`, and `reply_count`. Replying to a
 deleted post is refused with `bulletin_reply_invalid`.

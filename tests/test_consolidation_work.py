@@ -105,6 +105,8 @@ def _apply_request(key):
 
 
 def _command(app, execution, tmp_path):
+    # The command mailbox exists only inside a launched turn.
+    execution.store.record_agent_task_receipt(execution.operation_id, "agent_launch", {})
     mailbox = RunStageMailbox(tmp_path)
     handler = consolidation_apply_handler(lambda: app.state.service, execution, mailbox, ["repo-a"])
     identity = CommandTurnIdentity(None, execution.operation_id, "turn", "broker")
@@ -185,6 +187,38 @@ def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path)
     flags = execution.store.list_evidence_flags(app.state.default_project_id)
     assert [(item["evidence_id"], item["kind"], item["finding"]) for item in flags] == [
         ("ev/added-overnight", "consolidation_added", "Record the seed 3 result")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_consolidation_final_patch_holds_added_evidence_for_review(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    request, execution = _admit(app)
+    evidence = {
+        "id": "ev/final-patch",
+        "type": "evidence",
+        "title": "Seed 4 shows no spike",
+        "observation": "The seed 4 log has no step-200 spike.",
+        "origin": "analytic",
+    }
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Record the seed 4 result",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[{"op": "create_nodes", "nodes": [evidence]}],
+    )
+    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(patch)}], message="Done")
+    async for _ in stream_work_run(
+        app.state.service, launcher, request, tmp_path / "data", execution=execution
+    ):
+        pass
+    assert "ev/final-patch" in app.state.service.history.state().nodes
+    flags = execution.store.list_evidence_flags(app.state.default_project_id)
+    assert [(item["evidence_id"], item["kind"]) for item in flags] == [
+        ("ev/final-patch", "consolidation_added")
     ]
 
 
