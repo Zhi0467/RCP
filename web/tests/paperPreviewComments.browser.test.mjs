@@ -277,6 +277,21 @@ test("preview selections name their source, and boxes on PDF pages open comments
   });
   await page.waitForFunction(() => window.comments.at(-1)?.where?.startsWith("page.html"));
   const htmlBox = await page.evaluate(() => window.comments.at(-1));
+  // A box over many long elements is cut to the staged-comment limit, so it survives a reload.
+  await post({
+    kind: "box",
+    rect: { x: 0, y: 0, width: 1, height: 1 },
+    viewport: { width: 500, height: 400 },
+    elements: Array.from({ length: 8 }, () => ({
+      path: "body > p",
+      label: "",
+      text: "x".repeat(512),
+    })),
+  });
+  await page.waitForFunction(() => window.comments.at(-1)?.quote.length > 1000);
+  const long = await page.evaluate(() => window.comments.at(-1).quote);
+  assert.equal(long.length, 4096);
+  assert.ok(long.endsWith("…"));
   assert.equal(htmlBox.quote, "Plot");
   assert.equal(htmlBox.where, "page.html, area 10-40% across, 20-60% down");
   // A selection the frame cancels reports the clear of the comment it opened.

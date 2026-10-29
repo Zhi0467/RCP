@@ -1,5 +1,5 @@
 import type { Element as HastElement, ElementContent, Root } from "hast";
-import type { ChatAnnotationAnchor } from "../chat/chatInput";
+import { MAX_CHAT_ANNOTATION_TEXT_LENGTH, type ChatAnnotationAnchor } from "../chat/chatInput";
 import { synctexSource, type SyncTexMap } from "./synctex";
 
 /** A commentable selection in the Paper preview: the range shown, its quote, and its source. */
@@ -95,6 +95,14 @@ export function boxArea(box: { x: number; y: number; width: number; height: numb
   const span = (from: number, size: number) =>
     `${Math.round(from * 100)}-${Math.round((from + size) * 100)}%`;
   return `area ${span(box.x, box.width)} across, ${span(box.y, box.height)} down`;
+}
+
+/** A comment's quote from the text a box or frame selection holds, cut to the staged-comment limit. */
+export function previewQuote(text: string) {
+  if (!text) return "Selected area";
+  return text.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
+    ? `${text.slice(0, MAX_CHAT_ANNOTATION_TEXT_LENGTH - 1)}…`
+    : text;
 }
 
 /** Where a box drawn on a PDF page slot or an image sits, including its area. */

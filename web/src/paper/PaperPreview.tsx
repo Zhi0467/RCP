@@ -37,7 +37,12 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
-import { boxArea, rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
+import {
+  boxArea,
+  previewQuote,
+  rehypeSourceLines,
+  type PreviewDirectComment,
+} from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { useInlineShell } from "../artifacts/useInlineShell";
 
@@ -131,7 +136,7 @@ const MarkdownPreview = memo(function MarkdownPreview({
 /** A drawn box as a comment: its text, where it sits, anchored on the box. */
 function boxComment(box: PaperBox): PreviewDirectComment {
   return {
-    quote: box.text,
+    quote: previewQuote(box.text),
     where: box.where,
     anchor: { left: box.rect.left, right: box.rect.right, top: box.rect.top },
     clear: box.clear,
@@ -175,7 +180,7 @@ function HtmlPreview({
               .join(", ")
           : "";
       onDirectComment?.({
-        quote: selection.kind === "text" ? selection.text : labels || "Selected area",
+        quote: previewQuote(selection.kind === "text" ? selection.text : labels),
         where: selection.kind === "box" ? `${file.path}, ${boxArea(selection.rect)}` : file.path,
         anchor,
         clear,

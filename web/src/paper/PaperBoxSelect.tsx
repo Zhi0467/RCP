@@ -1,12 +1,9 @@
 import { useEffect, useRef, type PointerEvent, type ReactNode } from "react";
 import { boxWhere } from "./previewComments";
 
-// Mirror the inline shell's text selection limit.
-const BOX_TEXT_MAX_CHARS = 4096;
-
 /** A box drawn on a PDF page or an image. */
 export interface PaperBox {
-  /** The text-layer text inside the box, or "Selected area". */
+  /** The text-layer text inside the box; empty when it holds none. */
   text: string;
   where?: string;
   rect: DOMRect;
@@ -116,13 +113,11 @@ export function PaperBoxSelect({
  * pdf.js often lays a whole line out as one run, so a box over part of a line is
  * judged character by character. */
 function boxText(target: HTMLElement, rect: DOMRect): string {
-  const text = [...target.querySelectorAll<HTMLElement>(".textLayer span")]
+  return [...target.querySelectorAll<HTMLElement>(".textLayer span")]
     .map((span) => textInside(span, rect))
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!text) return "Selected area";
-  return text.length > BOX_TEXT_MAX_CHARS ? `${text.slice(0, BOX_TEXT_MAX_CHARS - 1)}…` : text;
 }
 
 /** One text-layer run's characters whose centers fall inside `rect`. */
