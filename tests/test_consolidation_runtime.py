@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -102,9 +103,22 @@ def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runt
         raise OSError("dispatch unavailable")
 
     fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, unavailable)
+    record_event = runtime.store.record_agent_task_event
+    warnings: list[str] = []
+
+    def locked_once(operation_id, message, **kwargs):
+        if kwargs.get("level") == "warning":
+            warnings.append(message)
+            if len(warnings) == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return record_event(operation_id, message, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "record_agent_task_event", locked_once)
     runtime.poller.poll_once()
     (run,) = runtime.store.consolidation_runs()
-    # Every later poll retries; the same error is recorded once, not once a minute.
+    # Every later poll retries; a lost write is retried, then the same error is
+    # recorded once, not once a minute.
+    runtime.poller._launch(run.operation_id)
     runtime.poller._launch(run.operation_id)
 
     assert runtime.store.agent_task(run.operation_id).status == "queued"

@@ -12,10 +12,13 @@ on:
         required: true
         type: string
       desktop_candidate_run:
-        description: Desktop candidate run id whose tested app to publish; empty builds fresh
-        required: false
+        description: Desktop candidate run id whose tested app to publish
+        required: true
         type: string
-        default: ""
+      receipt:
+        description: Qualification receipt JSON from the copied-data rehearsals (docs/release.md)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -63,6 +66,19 @@ jobs:
 
       - name: Verify the build manifest
         run: uv run --no-project python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
+
+      # A stable release needs passing rehearsals on copied team data of these
+      # exact assets, and publishes only the desktop candidate that was tested.
+      - name: Check the qualification receipt
+        env:
+          RECEIPT: ${{ inputs.receipt }}
+          DESKTOP_CANDIDATE_RUN: ${{ inputs.desktop_candidate_run }}
+        run: |
+          printf '%s' "$RECEIPT" > "$RUNNER_TEMP/receipt.json"
+          uv run --no-project python packaging/release_build.py check-receipt "$RUNNER_TEMP/receipt.json" \
+            --manifest build-assets/manifest.sha256 \
+            --desktop-candidate-run "$DESKTOP_CANDIDATE_RUN"
+          { echo '### Qualification receipt'; echo '```json'; cat "$RUNNER_TEMP/receipt.json"; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       # Historical builds have only the RCP wheel and lock; new builds must
       # carry both supervisor assets. A partial supervisor release is invalid.

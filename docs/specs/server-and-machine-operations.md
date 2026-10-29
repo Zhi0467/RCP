@@ -293,6 +293,13 @@ Only a human promotes a release.
 and commit. It refuses existing tags or releases. It copies the same assets
 without rebuilding. Historical complete asset sets remain promotable. A partial
 supervisor pair causes refusal. Installation requires supervisor assets.
+Promotion also refuses without a passing qualification receipt. Each receipt
+entry is one [update rehearsal](#application-boundary-and-local-checkpoint) on
+copied team data. It must report `ready` and name the SHA-256 of this build's
+`manifest.sha256`. The receipt names the desktop candidate run, which must be
+the run promotion publishes. The CI gates, including the browser journey, are
+already implied: a `build/<N>` exists only after they pass. **Why:** 0.4.35
+passed CI but broke on real records.
 [Build pruning](../../.github/workflows/prune-builds.yml) removes only expired
 build prereleases and tags under `STALE_BUILD_DAYS`. Stable releases stay
 retained. **Why:** build expiry bounds CI artifacts while promotion preserves
