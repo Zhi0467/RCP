@@ -377,21 +377,9 @@
   font: var(--type-xs) var(--mono);
   overflow-wrap: anywhere;
 }
-.service-connection-models dd span {
-  color: var(--muted);
-  font-size: var(--type-xs);
-}
 .service-model-field {
   display: grid;
   gap: 6px;
-}
-.service-model-title span {
-  font-weight: 400;
-  letter-spacing: normal;
-  text-transform: none;
-}
-.transcription-note {
-  padding: 8px 16px 0;
 }
 /* A login RCP does not manage is its header alone. */
 .provider-login-account[data-provider-login="unmanaged"] {
@@ -1527,6 +1515,11 @@
   font-weight: 550;
   margin: 20px 0 0;
   padding: 16px 16px 0;
+}
+/* The first group sits under the section header, which already draws its line. */
+.transcription-settings > header + .transcription-group {
+  border-top: 0;
+  margin-top: 0;
 }
 
 .voice-history {
