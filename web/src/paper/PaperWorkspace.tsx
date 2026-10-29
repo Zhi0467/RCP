@@ -36,6 +36,8 @@ import {
 } from "./paperDocuments";
 import { carryPaperSelection, PaperEditor } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
+import { usePaperSplit } from "./usePaperSplit";
+import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
@@ -338,10 +340,12 @@ export function PaperWorkspace({
   const [previewShown, setPreviewShown] = useState(previewActive);
   if (previewActive && !previewShown) setPreviewShown(true);
   const retryError = actionError?.error ?? identityError ?? resource.error ?? changeFeed.error;
+  const split = usePaperSplit();
   return (
     <section
       className={`paper-live-workspace ${folded ? "files-folded" : ""} ${filesOpen ? "files-open" : ""} ${retryError ? "paper-failed" : ""}`}
       data-view={view}
+      style={split.style}
     >
       <PaperFiles
         apiBase={apiBase}
@@ -356,7 +360,7 @@ export function PaperWorkspace({
         onFold={fold}
         onChanged={refresh}
       />
-      <main className="paper-box paper-editor-box">
+      <main className="paper-box paper-editor-box" id="paper-editor-pane" ref={split.editor}>
         <header className="paper-bar paper-document-header">
           <button className="icon-button paper-show-files" aria-label="Show files" onClick={unfold}>
             <PanelLeft size={16} />
@@ -495,7 +499,15 @@ export function PaperWorkspace({
           ) : null}
         </div>
       </main>
-      <aside className="paper-box paper-right-box">
+      {split.handle && (
+        <ResizeHandle
+          label="Resize editor"
+          controls="paper-editor-pane paper-right-pane"
+          className="paper-split-handle"
+          {...split.handle}
+        />
+      )}
+      <aside className="paper-box paper-right-box" id="paper-right-pane" ref={split.right}>
         <header className="paper-bar paper-desktop-segments">
           <div className="paper-segments">
             {(["preview", "coach"] as const).map((panel) => (

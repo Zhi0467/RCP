@@ -1,25 +1,20 @@
 import { ChatOriginLink } from "./ChatBranchPicker";
+import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
-import { ProjectReferencePicker } from "./ProjectReferencePicker";
 import { ReferenceChip } from "../core/ReferenceChip";
-import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
 import {
-  MAX_CHAT_ATTACHMENTS,
-  extractReferences,
-  mergeReferences,
-  referenceKey,
-  referenceDraftKey,
-  referenceFallbackLabel,
-  labelArtifactReferences,
-  parseReferenceDraft,
-  unlabeledArtifactIds,
-  sourceReference,
-  type DraftReference,
-} from "../core/projectReferences";
+  ComposerAddPicker,
+  ComposerAttachmentChips,
+  formatBytes,
+  useComposerAttachments,
+  type InsertReferenceText,
+} from "./composerAttachments";
+import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
+import { referenceDraftKey, sourceReference, type DraftReference } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen, questionTranscript } from "./questions";
@@ -30,45 +25,27 @@ import {
   Download,
   ExternalLink,
   File,
-  FolderOpen,
   History,
   Inbox,
   LoaderCircle,
   MessageCircle,
-  MessageCirclePlus,
   Mic,
   MicOff,
   Play,
-  Plus,
   RadioTower,
   RotateCcw,
   Send,
   SlidersHorizontal,
-  Upload,
   X,
 } from "lucide-react";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   api,
   ApiError,
   loadServiceConnections,
-  removeChatAttachment,
   steerChatTurn,
   loadConnectionModels,
   transcribeAudio,
-  uploadChatAttachment,
 } from "../core/api";
 import {
   artifactUrl,
@@ -113,26 +90,13 @@ import {
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
 import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
+import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
 import {
-  assembleChatTurn,
-  chatAnnotationComposerPosition,
-  chatAnnotationTextControlSelection,
-  chatAnnotationViewportMetrics,
-  chatSelectionCommentPosition,
-  MAX_CHAT_ANNOTATIONS,
-  MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
-  MAX_CHAT_ANNOTATION_TEXT_LENGTH,
-  annotatableAnswerSelectionRange,
-  parseStagedChatAnnotations,
-  replaceTextSpan,
-  stagedArtifactContext,
-  stagedChatAnnotationsAreComplete,
-  type ChatAnnotationAnchor,
-  type ChatAnnotationComposerPosition,
-  type ChatAnnotationViewportMetrics,
-  type StagedArtifactTarget,
-  type StagedChatAnnotation,
-} from "./chatInput";
+  AnswerCommentButton,
+  AnswerCommentLayers,
+  StagedAnswerComments,
+  useAnswerComments,
+} from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -186,7 +150,6 @@ import type {
   GraphTargetRef,
   GraphUpdateRecovery,
   GraphUpdateResult,
-  ProjectArtifact,
   ProjectSnapshot,
   ServiceConnection,
   WatcherRecord,
@@ -280,16 +243,6 @@ interface PendingChatTurn {
   error?: string;
 }
 
-type AttachmentStatus = "preparing" | "ready" | "error";
-
-interface ComposerAttachment {
-  localId: string;
-  file: File;
-  status: AttachmentStatus;
-  descriptor?: ChatAttachmentDescriptor;
-  error?: string;
-}
-
 /** What a Send addresses: the exact running attempt it steers, a new turn with
  *  its launch settings, or nothing while an unsteerable turn runs. */
 function sendTarget(task: AgentTask | undefined, launch: string, active: boolean): string {
@@ -304,25 +257,6 @@ interface NetworkDictation {
   /** Where a detached session's kept speech continues, while the draft is unchanged. */
   resume?: { draft: string; at: number } | null;
 }
-
-interface SelectedChatAnnotationComposer {
-  step: "comment";
-  selectedText: string;
-  anchor: ChatAnnotationAnchor;
-  position: ChatAnnotationComposerPosition | null;
-  /** Set when the selection is a part of an artifact shown inside a reply. */
-  artifact?: StagedArtifactTarget;
-}
-
-interface KeyboardChatAnnotationComposer {
-  step: "select";
-  answerText: string;
-  selectedText: string;
-  anchor: ChatAnnotationAnchor;
-  position: ChatAnnotationComposerPosition | null;
-}
-
-type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 // Where the reader left each chat in this session, kept only while they had
 // scrolled up; a chat without an entry opens at its bottom.
@@ -519,30 +453,28 @@ export function NodeChat({
   const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
-  const annotationPanelId = useId();
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
   const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
-  const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
-    readStagedChatAnnotations(annotationsKey),
-  );
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const chatLinesRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const comments = useAnswerComments({
+    storageKey: annotationsKey,
+    enabled: !readOnly,
+    busy: submitting,
+    transcript: chatLinesRef,
+    message: textareaRef,
+    onError: setSubmitError,
+  });
+  const { annotations, setAnnotations } = comments;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
   // A read-only chat composes only artifact comments, and those edit in Discuss.
   const commentOnly = readOnly && Boolean(artifactContext);
-  const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
-  const [annotationComment, setAnnotationComment] = useState("");
-  const [annotationViewport, setAnnotationViewport] =
-    useState<ChatAnnotationViewportMetrics | null>(null);
-  const [annotationsOpen, setAnnotationsOpen] = useState(false);
-  // A finished selection inside an answer offers Comment; the composer opens
-  // only when the reader asks, so the platform's Copy stays usable.
-  const [selectionComment, setSelectionComment] = useState<{
-    range: Range;
-    position: ChatAnnotationComposerPosition;
-  } | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
@@ -567,49 +499,23 @@ export function NodeChat({
     };
   }, [optionsOpen]);
   const modeRef = useRef(modeState.value);
-  const [submitting, setSubmitting] = useState(false);
   const referencesKey = referenceDraftKey(
     actorId,
     project.id,
     project.graph_target ?? MAIN_GRAPH,
     chatId,
   );
-  const [references, setReferences] = useState<DraftReference[]>(() =>
-    parseReferenceDraft(readStorage(referencesKey)),
-  );
-  const referencesIdentity = useRef(referencesKey);
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const addPickerRef = useRef<HTMLDivElement | null>(null);
-  const addButtonRef = useRef<HTMLButtonElement | null>(null);
-  const closeAddMenu = useCallback(() => setAddMenuOpen(false), []);
-  useLayerDismiss(addMenuOpen, closeAddMenu, [addPickerRef], addButtonRef);
+  const composer = useComposerAttachments({
+    project,
+    scopeId: chatId,
+    referencesKey,
+    onError: setSubmitError,
+  });
+  const { attachments, references, attachmentSetId } = composer;
+  const readyAttachments = composer.ready;
   // Another chat starts with its Add menu closed.
-  useEffect(closeAddMenu, [chatId, closeAddMenu]);
-  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
-  useEffect(() => {
-    if (referencesIdentity.current !== referencesKey) {
-      referencesIdentity.current = referencesKey;
-      setReferences(parseReferenceDraft(readStorage(referencesKey)));
-      return;
-    }
-    if (references.length) writeStorage(referencesKey, JSON.stringify(references));
-    else removeStorage(referencesKey);
-  }, [referencesKey, references]);
-  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
-  useEffect(() => {
-    if (!unlabeledArtifacts) return;
-    const controller = new AbortController();
-    api<ProjectArtifact[]>(`/api/projects/${encodeURIComponent(project.id)}/artifacts`, {
-      signal: controller.signal,
-    })
-      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
-      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [project.id, unlabeledArtifacts]);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
-  const [draggingFiles, setDraggingFiles] = useState(false);
+  const { setAddMenuOpen } = composer;
+  useEffect(() => setAddMenuOpen(false), [chatId, setAddMenuOpen]);
   const [dictationState, setDictationState] = useState<
     "idle" | "starting" | "preparing" | "recording" | "stopping" | "transcribing" | "error"
   >("idle");
@@ -634,24 +540,13 @@ export function NodeChat({
   const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const chatLinesRef = useRef<HTMLDivElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const annotationCommentRef = useRef<HTMLTextAreaElement | null>(null);
-  const annotationSelectionRef = useRef<HTMLTextAreaElement | null>(null);
-  const annotationComposerRef = useRef<HTMLFormElement | null>(null);
-  const selectionCommentRef = useRef<HTMLButtonElement | null>(null);
-  const annotationOriginRef = useRef<HTMLElement | null>(null);
   // Embedded turns that aged out of the recent task list, fetched once on demand.
   // Kept here because a later bounded task-list refresh drops such tasks again.
   const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
     ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
   >(() => new Map());
   // Clears the selection mark inside an inline artifact once its comment closes.
-  const inlineSelectionClearRef = useRef<(() => void) | null>(null);
-  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const attachmentSetIdRef = useRef<string | null>(null);
-  const attachmentUploadBusyRef = useRef(false);
-  const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
+  const inlineSelectionClearRef = comments.externalSelectionClear;
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
@@ -665,7 +560,6 @@ export function NodeChat({
   // moved up, and only the reader's own return to the bottom re-sticks.
   const lastScrollTopRef = useRef(0);
   const lastChatIdRef = useRef(scrollKey);
-  const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
   const [failedArtifactPreviews, setFailedArtifactPreviews] = useState<Set<string>>(
@@ -760,21 +654,10 @@ export function NodeChat({
   // A Work turn also needs the provider's Work probe; Discuss does not.
   const providerReady = launchProviderReady(project, config, mode === "work");
   const chatTitle = node?.title || conversationTitle || project.name;
-  const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
-  const readyAttachments = attachments.flatMap((item) =>
-    item.status === "ready" && item.descriptor ? [item.descriptor] : [],
-  );
-  const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
-  const attachDisabled =
-    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
-    attachmentsPreparing ||
-    submitting ||
-    awaitingSteerReceipt;
-  const attachmentsUnready = attachments.some((item) => item.status !== "ready");
-  const annotationComposerOpen = annotationComposer !== null;
-  const annotationComposerOpenRef = useRef(annotationComposerOpen);
-  annotationComposerOpenRef.current = annotationComposerOpen;
-  const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
+  const attachmentClientId = composer.clientId;
+  const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
+  const attachmentsUnready = composer.unready;
+  const annotationsComplete = comments.complete;
   const dictating = dictationState !== "idle" && dictationState !== "error";
   const kept = useKeptSpeech(draftKey);
   // The chat re-renders when the draft becomes sendable or empty, not per keystroke.
@@ -843,78 +726,6 @@ export function NodeChat({
   }, [draft, draftKey]);
 
   useEffect(() => {
-    if (annotations.length) writeSessionStorage(annotationsKey, JSON.stringify(annotations));
-    else removeSessionStorage(annotationsKey);
-  }, [annotations, annotationsKey]);
-
-  useEffect(() => {
-    if (!annotationComposerOpen) {
-      setAnnotationViewport(null);
-      return;
-    }
-    const viewport = window.visualViewport;
-    const update = () => {
-      setAnnotationViewport(
-        chatAnnotationViewportMetrics(
-          { width: window.innerWidth, height: window.innerHeight },
-          viewport,
-        ),
-      );
-    };
-    update();
-    viewport?.addEventListener("resize", update);
-    viewport?.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    return () => {
-      viewport?.removeEventListener("resize", update);
-      viewport?.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, [annotationComposerOpen]);
-
-  useLayoutEffect(() => {
-    const composer = annotationComposerRef.current;
-    if (!composer || !annotationComposer || !annotationViewport) return;
-    const update = () => {
-      const rect = composer.getBoundingClientRect();
-      const position = chatAnnotationComposerPosition(
-        annotationComposer.anchor,
-        annotationViewport,
-        rect,
-      );
-      setAnnotationComposer((current) => {
-        if (
-          !current ||
-          current.anchor !== annotationComposer.anchor ||
-          (current.position?.left === position.left && current.position.top === position.top)
-        )
-          return current;
-        return { ...current, position };
-      });
-    };
-    update();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(update);
-    observer.observe(composer);
-    return () => observer.disconnect();
-  }, [annotationComposer, annotationViewport]);
-
-  // The composer stays hidden until it is placed, and a hidden field cannot take
-  // focus, so the step's field is focused once the composer becomes visible.
-  const annotationComposerPlaced = Boolean(annotationComposer?.position);
-  const annotationComposerStep = annotationComposer?.step;
-  useEffect(() => {
-    if (!annotationComposerPlaced) return;
-    if (annotationComposerRef.current?.contains(document.activeElement)) return;
-    const field =
-      annotationComposerStep === "select"
-        ? annotationSelectionRef.current
-        : annotationCommentRef.current;
-    field?.focus();
-    if (annotationComposerStep === "select") field?.setSelectionRange(0, 0);
-  }, [annotationComposerPlaced, annotationComposerStep]);
-
-  useEffect(() => {
     if (lastChatIdRef.current !== scrollKey) {
       lastChatIdRef.current = scrollKey;
       restoreTopRef.current = chatScrollPositions.get(scrollKey) ?? null;
@@ -938,10 +749,6 @@ export function NodeChat({
     lastScrollTopRef.current = element.scrollTop;
     // Question cards load after the transcript and end it, so they move the bottom too.
   }, [scrollKey, transcript, questionState.questions]);
-
-  useEffect(() => {
-    attachmentSetIdRef.current = attachmentSetId;
-  }, [attachmentSetId]);
 
   useEffect(() => {
     if (!transcript.some((line) => line.attachments?.length)) return;
@@ -1408,180 +1215,31 @@ export function NodeChat({
     }
   };
 
-  const addFiles = async (incoming: File[]) => {
+  const addFiles = (incoming: File[]) => {
     if (readOnly) return;
-    setDraggingFiles(false);
-    if (attachmentUploadBusyRef.current) {
-      setSubmitError("Wait for the current files to finish preparing before adding more.");
-      return;
-    }
-    attachmentUploadBusyRef.current = true;
-    setSubmitError(null);
-    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
-    if (incoming.length > available) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
-    }
-    const candidates = incoming.slice(0, available).map<ComposerAttachment>((file) => ({
-      localId: crypto.randomUUID(),
-      file,
-      status: "preparing",
-    }));
-    let total = attachments.reduce(
-      (sum, item) => (item.status === "error" ? sum : sum + item.file.size),
-      0,
-    );
-    for (const item of candidates) {
-      const validation = validateChatAttachment(item.file, total);
-      if (validation) {
-        item.status = "error";
-        item.error = validation;
-      } else {
-        total += item.file.size;
-      }
-    }
-    // Publish the preparing rows first: they block sending while the reads below run.
-    setAttachments((current) => [...current, ...candidates]);
-    // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
-    // upload time. Copy them now, so a source that cannot be read fails here, named.
-    const prepared: ComposerAttachment[] = [];
-    for (const item of candidates) {
-      if (item.status !== "preparing") continue;
-      let next: ComposerAttachment;
-      try {
-        const bytes = await item.file.arrayBuffer();
-        if (bytes.byteLength !== item.file.size) throw new Error("short read");
-        next = {
-          ...item,
-          file: new globalThis.File([bytes], item.file.name, {
-            type: item.file.type,
-            lastModified: item.file.lastModified,
-          }),
-        };
-        prepared.push(next);
-      } catch {
-        next = {
-          ...item,
-          status: "error",
-          error: "Could not read this file. Save it to disk first, then attach it.",
-        };
-      }
-      setAttachments((current) =>
-        current.map((candidate) => (candidate.localId === item.localId ? next : candidate)),
-      );
-    }
-
-    const uploadCandidates = prepared;
-    for (const [index, item] of uploadCandidates.entries()) {
-      try {
-        const result = await uploadChatAttachment(
-          apiBase,
-          chatId,
-          item.file,
-          attachmentClientId,
-          attachmentSetIdRef.current,
-        );
-        attachmentSetIdRef.current = result.attachment_set_id;
-        setAttachmentSetId(result.attachment_set_id);
-        if (cancelledAttachmentIdsRef.current.delete(item.localId)) {
-          await removeChatAttachment(
-            apiBase,
-            chatId,
-            result.attachment_set_id,
-            result.attachment.attachment_id,
-            attachmentClientId,
-          );
-          continue;
-        }
-        setAttachments((current) =>
-          current.map((candidate) =>
-            candidate.localId === item.localId
-              ? { ...candidate, status: "ready", descriptor: result.attachment }
-              : candidate,
-          ),
-        );
-      } catch (error) {
-        const cancelled = cancelledAttachmentIdsRef.current.delete(item.localId);
-        const detail = error instanceof Error ? error.message : String(error);
-        if (!cancelled) {
-          setAttachments((current) =>
-            current.map((candidate) =>
-              candidate.localId === item.localId
-                ? {
-                    ...candidate,
-                    status: "error",
-                    error: detail,
-                  }
-                : candidate,
-            ),
-          );
-        }
-        if (!attachmentSetIdRef.current) {
-          const remaining = new Set(
-            uploadCandidates.slice(index + 1).map((candidate) => candidate.localId),
-          );
-          setAttachments((current) =>
-            current.map((candidate) =>
-              remaining.has(candidate.localId)
-                ? { ...candidate, status: "error", error: "Attachment set could not be created" }
-                : candidate,
-            ),
-          );
-          break;
-        }
-      }
-    }
-    attachmentUploadBusyRef.current = false;
+    void composer.addFiles(incoming);
   };
 
   const addReference = (item: DraftReference) => {
     if (submitting || commentOnly) return;
-    const result = mergeReferences(references, [item], attachments.length);
-    setReferences(result.references);
-    if (result.rejected)
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
+    composer.addReference(item);
   };
-  const insertReferenceText = (
-    text: string,
+  const insertReferenceText: InsertReferenceText = (
+    text,
     fileCount = attachments.length,
     insertPlainText = false,
   ) => {
-    if (submitting || commentOnly || !text) return false;
-    const target = project.graph_target ?? MAIN_GRAPH;
-    const result = extractReferences(text, project.id, references, fileCount, (selector) =>
-      selector.kind === "node" &&
-      (selector.branch_id ?? null) === (target.kind === "branch" ? target.branch_id : null)
-        ? (project.graph?.nodes[selector.node_id]?.title ?? selector.node_id)
-        : referenceFallbackLabel(selector),
-    );
-    if (result.rejected)
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
-    if (result.text === text && !insertPlainText) return false;
-    setReferences(result.references);
-    const input = textareaRef.current;
-    const current = draft.get();
-    const start = input?.selectionStart ?? current.length;
-    const end = input?.selectionEnd ?? start;
-    if (dictating) stopDictation(true);
-    updateMessage(current.slice(0, start) + result.text + current.slice(end));
-    requestAnimationFrame(() =>
-      input?.setSelectionRange(start + result.text.length, start + result.text.length),
-    );
-    return true;
-  };
-
-  const removeAttachment = (item: ComposerAttachment) => {
-    if (item.status === "preparing") cancelledAttachmentIdsRef.current.add(item.localId);
-    setAttachments((current) => current.filter((candidate) => candidate.localId !== item.localId));
-    const setId = attachmentSetIdRef.current;
-    if (setId && item.descriptor) {
-      void removeChatAttachment(
-        apiBase,
-        chatId,
-        setId,
-        item.descriptor.attachment_id,
-        attachmentClientId,
-      ).catch((error) => setSubmitError(error instanceof Error ? error.message : String(error)));
-    }
+    if (submitting || commentOnly) return false;
+    return composer.insertReferenceText(text, {
+      fileCount,
+      insertPlainText,
+      input: textareaRef.current,
+      current: draft.get(),
+      update: (next) => {
+        if (dictating) stopDictation(true);
+        updateMessage(next);
+      },
+    });
   };
 
   const toggleHumanMessage = (messageId: string) => {
@@ -1609,167 +1267,6 @@ export function NodeChat({
     else chatScrollPositions.set(scrollKey, element.scrollTop);
   };
 
-  const openAnnotationComposer = (range: Range) => {
-    if (submitting) return;
-    const selectedText = range.toString().trim();
-    if (!selectedText) return;
-    if (selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) {
-      setSubmitError(
-        `Select at most ${MAX_CHAT_ANNOTATION_TEXT_LENGTH.toLocaleString()} characters for one comment.`,
-      );
-      return;
-    }
-    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
-      return;
-    }
-    // Show the reader the text that will be staged, not the overshoot.
-    const selection = window.getSelection();
-    if (selection) {
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-    const rects = range.getClientRects();
-    const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-    annotationOriginRef.current = null;
-    setAnnotationComment("");
-    setSubmitError(null);
-    setAnnotationComposer({
-      step: "comment",
-      selectedText,
-      anchor: { left: rect.left, right: rect.right, top: rect.top },
-      position: null,
-    });
-    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
-  };
-
-  // The pointer often lifts outside the answer that was swept, so the release is
-  // observed on the document and the answer is resolved from the selection itself.
-  // Touch selection (long press, dragged handles) settles without a pointerup, so
-  // a selection change made while no pointer is down refreshes the offer too.
-  useEffect(() => {
-    if (readOnly) {
-      setSelectionComment(null);
-      return;
-    }
-    let pointerDown = false;
-    const refresh = () => {
-      // The composer re-selects the staged text; that is not a new offer.
-      if (annotationComposerOpenRef.current) return setSelectionComment(null);
-      const range = annotatableAnswerSelectionRange(window.getSelection(), chatLinesRef.current);
-      const rects = range?.getClientRects();
-      const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
-      if (!range || !firstLine) {
-        setSelectionComment(null);
-        return;
-      }
-      const button = selectionCommentRef.current?.getBoundingClientRect();
-      const viewport = chatAnnotationViewportMetrics(
-        { width: window.innerWidth, height: window.innerHeight },
-        window.visualViewport,
-      );
-      setSelectionComment({
-        range,
-        position: chatSelectionCommentPosition(
-          { firstLine, bottom: range.getBoundingClientRect().bottom },
-          viewport,
-          button?.width ? button : { width: 96, height: 32 },
-        ),
-      });
-    };
-    const insideOwnControls = (target: EventTarget | null) =>
-      target instanceof Node &&
-      Boolean(
-        annotationComposerRef.current?.contains(target) ||
-        selectionCommentRef.current?.contains(target),
-      );
-    const onPointerDown = (event: PointerEvent) => {
-      if (!insideOwnControls(event.target)) pointerDown = true;
-    };
-    const onPointerUp = (event: PointerEvent) => {
-      pointerDown = false;
-      // Clicks inside the open composer or on Comment must not restart the offer.
-      if (insideOwnControls(event.target)) return;
-      refresh();
-    };
-    const onPointerCancel = () => {
-      pointerDown = false;
-    };
-    const onSelectionChange = () => {
-      if (!pointerDown) refresh();
-    };
-    const onViewportChange = () => {
-      if (!pointerDown) refresh();
-    };
-    // Capture phase: a release over a window resize corner stops propagation.
-    document.addEventListener("pointerdown", onPointerDown, { capture: true });
-    document.addEventListener("pointerup", onPointerUp, { capture: true });
-    document.addEventListener("pointercancel", onPointerCancel, { capture: true });
-    document.addEventListener("selectionchange", onSelectionChange);
-    document.addEventListener("scroll", onViewportChange, { capture: true, passive: true });
-    // A resize, rotation, or soft keyboard moves the selection under a fixed offer.
-    const viewport = window.visualViewport;
-    window.addEventListener("resize", onViewportChange);
-    viewport?.addEventListener("resize", onViewportChange);
-    viewport?.addEventListener("scroll", onViewportChange);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, { capture: true });
-      document.removeEventListener("pointerup", onPointerUp, { capture: true });
-      document.removeEventListener("pointercancel", onPointerCancel, { capture: true });
-      document.removeEventListener("selectionchange", onSelectionChange);
-      document.removeEventListener("scroll", onViewportChange, { capture: true });
-      window.removeEventListener("resize", onViewportChange);
-      viewport?.removeEventListener("resize", onViewportChange);
-      viewport?.removeEventListener("scroll", onViewportChange);
-    };
-  }, [readOnly]);
-
-  const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
-    if (submitting) return;
-    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
-      return;
-    }
-    const answerText = answer.innerText.trim();
-    if (!answerText) return;
-    const rect = origin.getBoundingClientRect();
-    annotationOriginRef.current = origin;
-    setAnnotationComment("");
-    setSubmitError(null);
-    setAnnotationComposer({
-      step: "select",
-      answerText,
-      selectedText: "",
-      anchor: { left: rect.left, right: rect.right, top: rect.top },
-      position: null,
-    });
-    window.requestAnimationFrame(() => {
-      annotationSelectionRef.current?.focus();
-      annotationSelectionRef.current?.setSelectionRange(0, 0);
-    });
-  };
-
-  const updateKeyboardAnnotationSelection = (control: HTMLTextAreaElement) => {
-    const selectedText = chatAnnotationTextControlSelection(control);
-    setAnnotationComposer((current) =>
-      current?.step === "select" ? { ...current, selectedText } : current,
-    );
-  };
-
-  const continueKeyboardAnnotation = () => {
-    if (submitting) return;
-    if (annotationComposer?.step !== "select") return;
-    const selectedText = annotationComposer.selectedText;
-    if (!selectedText || selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) return;
-    setAnnotationComposer({
-      step: "comment",
-      selectedText,
-      anchor: annotationComposer.anchor,
-      position: null,
-    });
-    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
-  };
-
   // A part of an artifact shown inside a reply, selected in its comment mode, is
   // staged like answer text; the turn carries it as that artifact's selection.
   const openInlineArtifactComment = (
@@ -1781,8 +1278,7 @@ export function NodeChat({
       event.clear();
       return;
     }
-    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+    if (!comments.roomForAnother()) {
       event.clear();
       return;
     }
@@ -1800,62 +1296,58 @@ export function NodeChat({
     }
     // A prefill joins an unsent draft on this artifact below its text, keeping
     // the draft's own selection, rather than replacing it.
-    const draft = annotationComposer?.step === "comment" ? annotationComment.trim() : "";
+    const open = comments.composer?.step === "comment" ? comments.composer : null;
+    const draft = open ? comments.comment.trim() : "";
     const prefill = event.initialText ?? "";
-    if (
-      draft &&
-      prefill &&
-      annotationComposer?.step === "comment" &&
-      annotationComposer.artifact?.context.artifact_id === artifact.artifact_id
-    ) {
-      if (!draft.includes(prefill)) setAnnotationComment(`${draft}\n\n${prefill}`);
-      window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+    if (draft && prefill && open?.artifact?.context.artifact_id === artifact.artifact_id) {
+      if (!draft.includes(prefill)) comments.setComment(`${draft}\n\n${prefill}`);
+      comments.focusComment();
       return;
     }
     inlineSelectionClearRef.current?.();
     inlineSelectionClearRef.current = event.clear;
-    annotationOriginRef.current = null;
-    setAnnotationComment(prefill);
-    setSubmitError(null);
-    setAnnotationComposer({
-      step: "comment",
-      selectedText: event.description || artifact.name,
-      anchor: event.anchor,
-      position: null,
-      artifact: {
-        context: {
-          source: "task",
-          operation_id: taskId,
-          artifact_id: artifact.artifact_id,
-          ...(event.freshSession ? { fresh_session: true } : {}),
-          ...(event.version ? { base_version: event.version } : {}),
+    comments.openComposer(
+      {
+        step: "comment",
+        selectedText: event.description || artifact.name,
+        anchor: event.anchor,
+        position: null,
+        artifact: {
+          context: {
+            source: "task",
+            operation_id: taskId,
+            artifact_id: artifact.artifact_id,
+            ...(event.freshSession ? { fresh_session: true } : {}),
+            ...(event.version ? { base_version: event.version } : {}),
+          },
+          name: artifact.name,
+          selection: event.selection ? { ...event.selection, comment: "" } : null,
         },
-        name: artifact.name,
-        selection: event.selection ? { ...event.selection, comment: "" } : null,
       },
-    });
-    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+      { draft: prefill },
+    );
+    comments.focusComment();
   };
 
   // A selection cancelled inside the frame closes the comment staged from it.
   const cancelInlineArtifactComment = (taskId: string, artifact: AgentArtifactDescriptor) => {
     const context =
-      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+      comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
     if (context?.operation_id !== taskId || context.artifact_id !== artifact.artifact_id) return;
     // The frame already cleared its mark; a clear sent now would end the drag that
     // a new selection starts with.
     inlineSelectionClearRef.current = null;
-    dismissAnnotationComposer(false);
+    comments.dismiss(false);
   };
 
   // A new version moves the parts a selection named, so comments on the old one,
   // open or staged, would be sent against bytes the reader never saw.
   const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
     const open =
-      annotationComposer?.step === "comment" ? annotationComposer.artifact?.context : undefined;
+      comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
     if (open?.artifact_id === artifact.artifact_id) {
       inlineSelectionClearRef.current = null;
-      dismissAnnotationComposer(false);
+      comments.dismiss(false);
     }
     const stale = annotations.filter(
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
@@ -1867,65 +1359,11 @@ export function NodeChat({
     );
   };
 
-  const dismissAnnotationComposer = (returnFocus: boolean) => {
-    const origin = annotationOriginRef.current;
-    annotationOriginRef.current = null;
-    inlineSelectionClearRef.current?.();
-    inlineSelectionClearRef.current = null;
-    setAnnotationComposer(null);
-    setAnnotationComment("");
-    if (returnFocus) {
-      window.requestAnimationFrame(() => (origin ?? textareaRef.current)?.focus());
-    }
-  };
-
-  const stageAnnotation = () => {
-    if (submitting) return;
-    if (!annotationComposer) return;
-    if (annotationComposer.step !== "comment") return;
-    const comment = annotationComment.trim();
-    if (!comment) return;
-    const artifact = annotationComposer.artifact;
-    setAnnotations((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        selectedText: annotationComposer.selectedText,
-        comment,
-        ...(artifact ? { artifact } : {}),
-      },
-    ]);
-    setAnnotationsOpen(false);
-    dismissAnnotationComposer(false);
-    window.requestAnimationFrame(() => textareaRef.current?.focus());
-  };
-
-  const updateAnnotation = (id: string, comment: string) => {
-    if (submitting) return;
-    setAnnotations((current) =>
-      current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)),
-    );
-    setSubmitError(null);
-  };
-
-  const removeAnnotation = (id: string) => {
-    if (submitting) return;
-    setAnnotations((current) => {
-      const next = current.filter((annotation) => annotation.id !== id);
-      if (next.length === 0) setAnnotationsOpen(false);
-      return next;
-    });
-  };
-
   const steer = async (task: AgentTask) => {
     const draftMessage = draft.get();
     const draftAnnotations = annotations;
     const text = assembleChatTurn(draftMessage, annotations);
-    if (!annotationsComplete) {
-      setAnnotationsOpen(true);
-      setSubmitError("Each staged annotation needs a comment.");
-      return;
-    }
+    if (!comments.requireComplete()) return;
     // Files and artifact selections are staged for a new turn; a steer carries text only.
     if (
       !text ||
@@ -1965,7 +1403,7 @@ export function NodeChat({
       // still arrive from another view meanwhile, and they survive.
       draft.set((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      setAnnotationsOpen(false);
+      comments.setOpen(false);
       skills.reset();
     } catch (error) {
       setSubmitError(
@@ -2008,11 +1446,7 @@ export function NodeChat({
     }
     const draftMessage = draft.get();
     const text = assembleChatTurn(draftMessage, annotations);
-    if (!annotationsComplete) {
-      setAnnotationsOpen(true);
-      setSubmitError("Each staged annotation needs a comment.");
-      return;
-    }
+    if (!comments.requireComplete()) return;
     if (
       !(text || artifactContext) ||
       attachmentsUnready ||
@@ -2077,14 +1511,8 @@ export function NodeChat({
       setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
       draft.set((current) => (current === turn.draft ? "" : current));
       skills.reset();
-      setAttachments([]);
-      setReferences([]);
-      setReferencePickerOpen(false);
-      setAnnotations([]);
-      setAnnotationsOpen(false);
-      removeSessionStorage(annotationsKey);
-      setAttachmentSetId(null);
-      attachmentSetIdRef.current = null;
+      composer.clear();
+      comments.clear();
       if (!commentOnly) selectMode(turn.mode);
     } catch (error) {
       // A replaced backend admitted nothing and Reconnect is already offered, so
@@ -2662,24 +2090,7 @@ export function NodeChat({
                             {repositoryFileErrors.get(messageId)}
                           </strong>
                         )}
-                        {!readOnly && (
-                          <button
-                            className="chat-answer-annotation-button"
-                            type="button"
-                            aria-label="Comment on this answer"
-                            disabled={submitting}
-                            onClick={(event) => {
-                              const answer =
-                                event.currentTarget.parentElement?.querySelector<HTMLElement>(
-                                  ".chat-annotatable-answer",
-                                );
-                              if (answer)
-                                openKeyboardAnnotationComposer(answer, event.currentTarget);
-                            }}
-                          >
-                            <MessageCirclePlus size={12} /> Comment
-                          </button>
-                        )}
+                        {!readOnly && <AnswerCommentButton comments={comments} />}
                       </>
                     )
                   )
@@ -2994,178 +2405,16 @@ export function NodeChat({
       {!canCompose && readOnlyNotice}
       {canCompose && (
         <div
-          className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
+          className={`chat-composer${composer.dragging ? " is-dragging-files" : ""}`}
           data-mode={mode}
-          onDragEnter={(event) => {
-            if (
-              event.dataTransfer.types.some((type) =>
-                ["Files", "text/plain", "text/uri-list"].includes(type),
-              )
-            )
-              setDraggingFiles(true);
-          }}
-          onDragOver={(event) => {
-            if (
-              !event.dataTransfer.types.some((type) =>
-                ["Files", "text/plain", "text/uri-list"].includes(type),
-              )
-            )
-              return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
-          }}
-          onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setDraggingFiles(false);
-            }
-          }}
-          onDrop={(event) => {
-            setDraggingFiles(false);
-            const files = Array.from(event.dataTransfer.files);
-            const text =
-              event.dataTransfer.getData("text/uri-list") ||
-              event.dataTransfer.getData("text/plain");
-            if (files.length) {
-              event.preventDefault();
-              void addFiles(files);
-            }
-            if (
-              insertReferenceText(
-                text,
-                attachments.length +
-                  Math.min(
-                    files.length,
-                    MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
-                  ),
-                files.length === 0,
-              )
-            )
-              event.preventDefault();
-          }}
+          {...composer.dropTarget(addFiles, insertReferenceText)}
         >
           <SkillPicker {...skills.props} />
           {freshProviderSession && (
-            <div className="chat-composer-hint" role="status">
-              The next turn starts a fresh {readiness?.label || config.provider} session.
-            </div>
+            <ProviderSwitchHint provider={readiness?.label || config.provider} />
           )}
-          {annotations.length > 0 && (
-            <div className="chat-annotation-summary">
-              <button
-                className={`chat-annotation-count${annotationsOpen ? " is-open" : ""}`}
-                type="button"
-                aria-expanded={annotationsOpen}
-                aria-controls={annotationPanelId}
-                onClick={() => setAnnotationsOpen((open) => !open)}
-              >
-                <MessageCircle size={12} /> {annotations.length} annotation
-                {annotations.length === 1 ? "" : "s"}
-              </button>
-            </div>
-          )}
-          {annotationsOpen && annotations.length > 0 && (
-            <section
-              className="chat-annotation-review"
-              id={annotationPanelId}
-              aria-label="Staged annotations"
-            >
-              <header>
-                <strong>Annotations</strong>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Close annotations"
-                  onClick={() => setAnnotationsOpen(false)}
-                >
-                  <X size={14} />
-                </button>
-              </header>
-              <div className="chat-annotation-review-list">
-                {annotations.map((annotation, index) => (
-                  <article key={annotation.id}>
-                    <blockquote>{annotation.selectedText}</blockquote>
-                    {annotation.artifact && <small>In {annotation.artifact.name}</small>}
-                    <textarea
-                      aria-label={`Comment for annotation ${index + 1}`}
-                      disabled={submitting}
-                      maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
-                      value={annotation.comment}
-                      onChange={(event) => updateAnnotation(annotation.id, event.target.value)}
-                    />
-                    <button
-                      type="button"
-                      aria-label={`Remove annotation ${index + 1}`}
-                      disabled={submitting}
-                      onClick={() => removeAnnotation(annotation.id)}
-                    >
-                      <X size={12} /> Remove
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </section>
-          )}
-          {references.length > 0 && (
-            <div className="chat-attachment-chips" aria-label="References for this turn">
-              {references.map((item) => (
-                <ReferenceChip
-                  key={referenceKey(item.selector)}
-                  projectId={project.id}
-                  reference={item}
-                  onRemove={() =>
-                    setReferences((current) =>
-                      current.filter(
-                        (candidate) =>
-                          referenceKey(candidate.selector) !== referenceKey(item.selector),
-                      ),
-                    )
-                  }
-                />
-              ))}
-            </div>
-          )}
-          {attachments.length > 0 && (
-            <div className="chat-attachment-chips" aria-label="Files for this turn">
-              {attachments.map((item) => (
-                <div className={`chat-attachment-chip ${item.status}`} key={item.localId}>
-                  {item.status === "preparing" ? (
-                    <LoaderCircle className="spin" size={12} />
-                  ) : (
-                    <File size={12} />
-                  )}
-                  <span>
-                    <strong>{item.file.name}</strong>
-                    <small>
-                      {item.status === "preparing"
-                        ? "Preparing"
-                        : item.status === "ready"
-                          ? `Ready · ${formatBytes(item.file.size)}`
-                          : item.error || "Could not prepare file"}
-                    </small>
-                  </span>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${item.file.name}`}
-                    onClick={() => removeAttachment(item)}
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <input
-            ref={attachmentInputRef}
-            className="visually-hidden"
-            type="file"
-            multiple
-            accept={CHAT_ATTACHMENT_ACCEPT}
-            onChange={(event) => {
-              const files = Array.from(event.currentTarget.files ?? []);
-              event.currentTarget.value = "";
-              if (files.length) void addFiles(files);
-            }}
-          />
+          <StagedAnswerComments comments={comments} />
+          <ComposerAttachmentChips composer={composer} />
           <ComposerTextarea
             draft={draft}
             ref={textareaRef}
@@ -3177,24 +2426,7 @@ export function NodeChat({
               if (dictating) stopDictation(true);
               updateMessage(event.target.value);
             }}
-            onPaste={(event) => {
-              const files = Array.from(event.clipboardData.files);
-              if (files.length) {
-                event.preventDefault();
-                void addFiles(files);
-              }
-              if (
-                insertReferenceText(
-                  event.clipboardData.getData("text/plain"),
-                  attachments.length +
-                    Math.min(
-                      files.length,
-                      MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
-                    ),
-                )
-              )
-                event.preventDefault();
-            }}
+            onPaste={(event) => composer.paste(event, addFiles, insertReferenceText)}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
               if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
@@ -3212,60 +2444,13 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <div className="chat-add-picker" ref={addPickerRef}>
-                <button
-                  ref={addButtonRef}
-                  className="icon-button chat-add-file"
-                  type="button"
-                  aria-label="Add"
-                  aria-expanded={addMenuOpen}
-                  disabled={attachDisabled}
-                  onClick={() => {
-                    setReferencePickerOpen(false);
-                    setAddMenuOpen((open) => !open);
-                  }}
-                >
-                  <Plus size={16} />
-                </button>
-                {addMenuOpen && (
-                  <div className="chat-add-menu" role="menu">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      disabled={attachDisabled}
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        attachmentInputRef.current?.click();
-                      }}
-                    >
-                      <Upload size={14} />
-                      Upload file
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      disabled={attachDisabled || commentOnly}
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        setReferencePickerOpen(true);
-                      }}
-                    >
-                      <FolderOpen size={14} />
-                      From RCP…
-                    </button>
-                  </div>
-                )}
-                {referencePickerOpen && (
-                  <ProjectReferencePicker
-                    projectId={project.id}
-                    target={project.graph_target ?? MAIN_GRAPH}
-                    nodes={project.graph?.nodes ?? {}}
-                    selectedKeys={new Set(references.map((item) => referenceKey(item.selector)))}
-                    onPick={addReference}
-                    onClose={() => setReferencePickerOpen(false)}
-                  />
-                )}
-              </div>
+              <ComposerAddPicker
+                composer={composer}
+                disabled={attachDisabled}
+                referencesDisabled={commentOnly}
+                onAttach={addFiles}
+                onPickReference={addReference}
+              />
               {!commentOnly && (
                 <>
                   <div
@@ -3469,148 +2654,7 @@ export function NodeChat({
           </div>
         </div>
       )}
-      {selectionComment && !annotationComposer && typeof document !== "undefined"
-        ? createPortal(
-            <button
-              ref={selectionCommentRef}
-              type="button"
-              className="chat-selection-comment"
-              data-mode={mode}
-              style={{ left: selectionComment.position.left, top: selectionComment.position.top }}
-              disabled={submitting}
-              // Keep the selection while pressing, so the staged text is what was shown.
-              onPointerDown={(event) => event.preventDefault()}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                const { range } = selectionComment;
-                setSelectionComment(null);
-                openAnnotationComposer(range);
-              }}
-            >
-              <MessageCirclePlus size={13} /> Comment
-            </button>,
-            document.body,
-          )
-        : null}
-      {annotationComposer && typeof document !== "undefined"
-        ? createPortal(
-            <form
-              ref={annotationComposerRef}
-              className="chat-annotation-composer"
-              data-mode={mode}
-              aria-label={
-                annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
-              }
-              style={
-                {
-                  left: annotationComposer.position?.left,
-                  top: annotationComposer.position?.top,
-                  visibility: annotationComposer.position ? undefined : "hidden",
-                  ...(annotationViewport
-                    ? {
-                        "--chat-annotation-viewport-left": `${annotationViewport.left}px`,
-                        "--chat-annotation-viewport-top": `${annotationViewport.top}px`,
-                        "--chat-annotation-viewport-width": `${annotationViewport.width}px`,
-                        "--chat-annotation-viewport-height": `${annotationViewport.height}px`,
-                        "--chat-annotation-viewport-right": `${annotationViewport.right}px`,
-                        "--chat-annotation-viewport-bottom": `${annotationViewport.bottom}px`,
-                      }
-                    : {}),
-                } as CSSProperties
-              }
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (submitting) return;
-                if (annotationComposer.step === "select") continueKeyboardAnnotation();
-                else stageAnnotation();
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  dismissAnnotationComposer(true);
-                }
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  if (annotationComposer.step === "select") continueKeyboardAnnotation();
-                  else stageAnnotation();
-                }
-              }}
-            >
-              <header>
-                <strong>
-                  {annotationComposer.step === "select" ? "Select text" : "Add annotation"}
-                </strong>
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label="Cancel annotation"
-                  disabled={submitting}
-                  onClick={() => dismissAnnotationComposer(true)}
-                >
-                  <X size={14} />
-                </button>
-              </header>
-              {annotationComposer.step === "select" ? (
-                <>
-                  <textarea
-                    className="chat-annotation-source"
-                    ref={annotationSelectionRef}
-                    aria-label="Select answer text"
-                    disabled={submitting}
-                    readOnly
-                    defaultValue={annotationComposer.answerText}
-                    onSelect={(event) => updateKeyboardAnnotationSelection(event.currentTarget)}
-                  />
-                  {annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH && (
-                    <strong className="chat-annotation-error" role="alert">
-                      Select at most {MAX_CHAT_ANNOTATION_TEXT_LENGTH.toLocaleString()} characters.
-                    </strong>
-                  )}
-                  <button
-                    className="button compact primary"
-                    type="submit"
-                    disabled={
-                      submitting ||
-                      !annotationComposer.selectedText ||
-                      annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
-                    }
-                  >
-                    Comment on selection
-                  </button>
-                </>
-              ) : (
-                <>
-                  <blockquote>{annotationComposer.selectedText}</blockquote>
-                  <textarea
-                    ref={annotationCommentRef}
-                    aria-label="Comment"
-                    disabled={submitting}
-                    maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
-                    value={annotationComment}
-                    onChange={(event) => setAnnotationComment(event.target.value)}
-                    onKeyDown={(event) => {
-                      // Plain Enter only: Shift+Enter inserts a newline and the
-                      // form's own modifier+Enter shortcut stages the comment.
-                      if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey)
-                        return;
-                      event.preventDefault();
-                      if (submitting || !annotationComment.trim()) return;
-                      event.currentTarget.form?.requestSubmit();
-                    }}
-                  />
-                  <button
-                    className="button compact primary"
-                    type="submit"
-                    disabled={submitting || !annotationComment.trim()}
-                  >
-                    Add comment
-                  </button>
-                </>
-              )}
-            </form>,
-            document.body,
-          )
-        : null}
+      <AnswerCommentLayers comments={comments} mode={mode} />
     </div>
   );
 }
@@ -3829,104 +2873,6 @@ const MODE_HINTS: Record<ConversationMode, string> = {
   work: "Work: may edit files in the run's write roots and propose a graph patch.",
 };
 
-const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
-const CHAT_ATTACHMENT_CLIENT_KEY = "rcp:chat-attachment-client";
-const CHAT_ATTACHMENT_EXTENSIONS = new Set([
-  "c",
-  "cc",
-  "cpp",
-  "cs",
-  "css",
-  "csv",
-  "fish",
-  "go",
-  "h",
-  "hpp",
-  "htm",
-  "html",
-  "java",
-  "js",
-  "json",
-  "jsx",
-  "kt",
-  "kts",
-  "lua",
-  "markdown",
-  "md",
-  "mjs",
-  "mm",
-  "php",
-  "py",
-  "r",
-  "rb",
-  "rs",
-  "scala",
-  "sh",
-  "sql",
-  "svg",
-  "swift",
-  "toml",
-  "ts",
-  "tsv",
-  "tsx",
-  "txt",
-  "xml",
-  "yaml",
-  "yml",
-  "zsh",
-]);
-const CHAT_ATTACHMENT_BINARY_EXTENSIONS = new Set(["jpeg", "jpg", "pdf", "png", "webp"]);
-const CHAT_ATTACHMENT_ACCEPT = [
-  ".txt",
-  ".md",
-  ".csv",
-  ".tsv",
-  ".json",
-  ".html",
-  ".htm",
-  ".svg",
-  ".pdf",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ...[...CHAT_ATTACHMENT_EXTENSIONS].map((extension) => `.${extension}`),
-].join(",");
-
-function validateChatAttachment(file: File, currentTotal: number): string | null {
-  const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
-  if (
-    !CHAT_ATTACHMENT_BINARY_EXTENSIONS.has(extension) &&
-    !CHAT_ATTACHMENT_EXTENSIONS.has(extension)
-  ) {
-    return "Unsupported file type";
-  }
-  if (file.size > MAX_CHAT_ATTACHMENT_BYTES) return "File exceeds 16 MiB";
-  if (currentTotal + file.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-    return "Turn exceeds 32 MiB total";
-  }
-  return null;
-}
-
-function chatAttachmentClientId(): string {
-  try {
-    const current = sessionStorage.getItem(CHAT_ATTACHMENT_CLIENT_KEY);
-    if (current) return current;
-    const created = crypto.randomUUID();
-    sessionStorage.setItem(CHAT_ATTACHMENT_CLIENT_KEY, created);
-    return created;
-  } catch {
-    return crypto.randomUUID();
-  }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
-}
-
 function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
   // One ref holds the macOS stop timeout or the network piece interval.
   if (ref.current !== null) {
@@ -3985,29 +2931,6 @@ function chatAnnotationsStorageKey(
     actorId,
     `chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`,
   );
-}
-
-function readStagedChatAnnotations(key: string | null): StagedChatAnnotation[] {
-  if (!key) return [];
-  try {
-    return parseStagedChatAnnotations(sessionStorage.getItem(key));
-  } catch {
-    return [];
-  }
-}
-
-function writeSessionStorage(key: string | null, value: string): void {
-  if (!key) return;
-  try {
-    sessionStorage.setItem(key, value);
-  } catch {}
-}
-
-function removeSessionStorage(key: string | null): void {
-  if (!key) return;
-  try {
-    sessionStorage.removeItem(key);
-  } catch {}
 }
 
 function withMapValue(map: Map<string, string>, key: string, value: string): Map<string, string> {

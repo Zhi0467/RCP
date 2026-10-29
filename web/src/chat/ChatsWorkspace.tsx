@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ResizeHandle } from "../ui/ResizeHandle";
 import {
   AGENT_LIST_SECTIONS,
   AGENT_NAME_MAX_CHARS,
@@ -762,12 +763,6 @@ export function ChatsWorkspace({
       ? { autoResearchEpisodeId: selected.orchestratorEpisodeId }
       : {},
   );
-  const resizeFromPointer = (clientX: number) => {
-    const bounds = workspace.current?.getBoundingClientRect();
-    if (!bounds) return;
-    setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
-  };
-
   const selectedArchived = selected !== null && archivedChatIds.has(selected.chatId);
   const selectedWorking = selectedStatus?.state === "working";
   // Only a chat with a native session can branch; a branched chat has none before its first turn.
@@ -1152,47 +1147,18 @@ export function ChatsWorkspace({
         </div>
       </aside>
       <div className="conversation-divider" hidden={listCollapsed}>
-        <div
-          aria-controls="conversation-list-panel conversation-surface-panel"
-          aria-label="Resize conversation list"
-          aria-orientation="vertical"
-          aria-valuemax={widthBounds.maximum}
-          aria-valuemin={widthBounds.minimum}
-          aria-valuenow={Math.round(listWidth)}
+        <ResizeHandle
+          label="Resize conversation list"
+          controls="conversation-list-panel conversation-surface-panel"
           className="conversation-resize-handle"
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-              event.preventDefault();
-              setListWidth((current) =>
-                clampChatListWidth(current + (event.key === "ArrowLeft" ? -16 : 16), widthBounds),
-              );
-            }
-            if (event.key === "Home" || event.key === "End") {
-              event.preventDefault();
-              setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
-            }
+          width={listWidth}
+          minimum={widthBounds.minimum}
+          maximum={widthBounds.maximum}
+          widthAt={(clientX) => {
+            const bounds = workspace.current?.getBoundingClientRect();
+            return bounds ? clientX - bounds.left : null;
           }}
-          onPointerCancel={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          onPointerDown={(event) => {
-            event.currentTarget.setPointerCapture(event.pointerId);
-            resizeFromPointer(event.clientX);
-          }}
-          onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              resizeFromPointer(event.clientX);
-            }
-          }}
-          onPointerUp={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          role="separator"
-          tabIndex={0}
+          onResize={setListWidth}
         />
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">

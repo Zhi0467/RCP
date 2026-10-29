@@ -50,6 +50,10 @@ export function PaperTreeMenu({
       const node = event.target as Node;
       if (!list.current?.contains(node) && !button.current?.contains(node)) dismiss();
     };
+    // Only a scroll that moves the button strands the fixed list; the editor's own do not.
+    const scrolled = (event: Event) => {
+      if (event.target instanceof Node && event.target.contains(button.current)) dismiss();
+    };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       dismiss();
@@ -59,12 +63,12 @@ export function PaperTreeMenu({
     window.addEventListener("pointerdown", outside);
     window.addEventListener("keydown", escape);
     window.addEventListener("resize", dismiss);
-    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("scroll", scrolled, true);
     return () => {
       window.removeEventListener("pointerdown", outside);
       window.removeEventListener("keydown", escape);
       window.removeEventListener("resize", dismiss);
-      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("scroll", scrolled, true);
     };
   }, [place]);
   const toggle = () => {

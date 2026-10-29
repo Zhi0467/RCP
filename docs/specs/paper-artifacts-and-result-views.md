@@ -59,7 +59,9 @@ new empty folder lives only in that browser until a file lands in it. Renaming
 or deleting a folder changes every file under it in one revision, and a folder
 downloads as one zip. The desktop asks where to save each download through the
 native save dialog; a browser downloads normally. A new or uploaded file opens
-at once; an upload over an existing path asks first. When a member deletes a file another member has open with unsent text,
+at once; an upload over an existing path asks first. The divider between the editor and
+Preview/Coach drags or takes arrow keys, keeps both panes at a usable width, and
+is remembered per browser; panes that stack on a phone have no divider. When a member deletes a file another member has open with unsent text,
 that member's editor keeps it read-only and offers to recreate it as a new file;
 with nothing unsent the editor moves to another file. A hidden file deleted that
 way stays reachable from one red icon while it holds unsent text, also after a
@@ -189,6 +191,12 @@ The coach request's `paper_apply_directly` boolean is normalized into its saved
 `GET /api/projects/{project_id}/paper/changes/{change_id}/proposed`; this
 membership-protected response is plain text, served as an attachment with
 `nosniff`. From RCP can attach the whole saved paper or any file by stable id.
+The coach composer is chat's: uploads, project references and answer-text
+comments behave, and keep or clear their drafts, as in
+[chat](conversations-episodes-and-watchers.md). Each draft uploads into its own
+attachment scope, named in the turn as `attachment_scope_id`. The agent picker
+stays editable inside a session; a provider change shows chat's fresh-session
+notice, and the turn still names the session for the backend to resolve.
 
 The coach cannot write the paper directly, emit a Patch, approve Proposals, or
 promote paper text to graph state. Prior transcripts and skills cannot widen its

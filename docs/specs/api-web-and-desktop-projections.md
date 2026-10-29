@@ -884,7 +884,9 @@ retains more width. Tabs cannot be reordered.
 Each tab retains bounded in-session view, panel, scroll, selection, draft, and
 exact Runs-route state. Every project view writes its route, and leaving a tab
 remembers the exact route it left, so returning lands on that page even when the
-tab's snapshot is gone (for example after a backend restart). Activating a tab is
+tab's snapshot is gone (for example after a backend restart). Within a project,
+each view tab reopens the sub-view the viewer last had open there (Research its
+graph, Artifacts its Paper), remembered per project in browser storage. Activating a tab is
 cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
 left, and the last close returns to the index.
