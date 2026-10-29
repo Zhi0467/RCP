@@ -47,7 +47,8 @@ Other relations, including Hypothesis-to-Hypothesis `contradicts`, reject assess
 
 One observation can carry different weight for different claims. RCP neither
 aggregates scores nor infers Hypothesis status, standing, Decisions, Proposals,
-or Evidence validity. Historical strength remains visible as `legacy_strength`.
+or Evidence validity. Historical strength remains visible as `legacy_strength`. Old Evidence
+with neither strength nor role reads as `preliminary`.
 The value `diagnostic` maps to the diagnostic role. Other values map to `result`.
 No historical strength maps to an edge weight.
 Old epistemic edges without assessments remain readable as unassessed.
@@ -94,7 +95,8 @@ It never silently does nothing.
 
 Supersede and merge set the project type's retirement field to `superseded`
 (`validity` for Evidence, `status` for other base types) and add `supersedes` or
-`duplicate_of`. They retain nodes and edges. Removal deletes incident edges too.
+`duplicate_of`. They retain nodes and edges. Outside an approval, retirement
+returns the retired node's standing to asserted. Removal deletes incident edges too.
 Research rendering omits retired Evidence. Historical `set_coverage` decodes with
 no graph effect and is rejected on admission. Reading reports are absent from
 snapshots, agent context, outputs, validation, and merge comparisons.
@@ -170,7 +172,8 @@ persisted payloads. Each semantic payload is stored once. Actions, causes, and
 events refer to positions. Deterministic hashes form transition and event ids.
 Models reject coercion.
 
-`rcp.lifecycle.v3` records one event per lifecycle-field change. Older rulesets
+`rcp.lifecycle.v3` and the current `rcp.lifecycle.v4` record one event per
+lifecycle-field change. Older rulesets
 recorded `status` alone. Replay computes trace events under their named ruleset.
 
 ## Rule closure
@@ -193,7 +196,7 @@ gate. Active flow and attention omit it. History and detail retain it.
 Resolution watchers fire once from the final committed event.
 
 `blocked` is not a current Experiment phase. Old history adapts it in memory to
-`unspecified`, which cannot be authored. The UI displays it as phase not recorded.
+`unspecified`, which cannot be authored. The UI shows that value as Unspecified.
 Opening the project writes no migration. Derived control alone expresses blocking
 and readiness.
 
