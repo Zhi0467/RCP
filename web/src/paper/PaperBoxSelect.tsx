@@ -116,33 +116,34 @@ export function PaperBoxSelect({
  * pdf.js often lays a whole line out as one run, so a box over part of a line is
  * judged character by character. */
 function boxText(target: HTMLElement, rect: DOMRect): string {
-  const inside = (box: DOMRect) => {
-    const x = box.left + box.width / 2;
-    const y = box.top + box.height / 2;
-    return box.width > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-  };
-  const range = document.createRange();
   const text = [...target.querySelectorAll<HTMLElement>(".textLayer span")]
-    .map((span) => {
-      const run = span.firstChild;
-      const box = span.getBoundingClientRect();
-      const overlaps =
-        box.right > rect.left &&
-        box.left < rect.right &&
-        box.bottom > rect.top &&
-        box.top < rect.bottom;
-      if (!(run instanceof Text) || !overlaps) return "";
-      let kept = "";
-      for (let index = 0; index < run.length; index++) {
-        range.setStart(run, index);
-        range.setEnd(run, index + 1);
-        if (inside(range.getBoundingClientRect())) kept += run.data[index];
-      }
-      return kept;
-    })
+    .map((span) => textInside(span, rect))
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return "Selected area";
   return text.length > BOX_TEXT_MAX_CHARS ? `${text.slice(0, BOX_TEXT_MAX_CHARS - 1)}…` : text;
+}
+
+/** One text-layer run's characters whose centers fall inside `rect`. */
+function textInside(span: HTMLElement, rect: DOMRect): string {
+  const run = span.firstChild;
+  if (!(run instanceof Text) || !overlaps(span.getBoundingClientRect(), rect)) return "";
+  const character = document.createRange();
+  let kept = "";
+  for (let index = 0; index < run.length; index++) {
+    character.setStart(run, index);
+    character.setEnd(run, index + 1);
+    if (centerInside(character.getBoundingClientRect(), rect)) kept += run.data[index];
+  }
+  return kept;
+}
+
+const overlaps = (box: DOMRect, rect: DOMRect) =>
+  box.right > rect.left && box.left < rect.right && box.bottom > rect.top && box.top < rect.bottom;
+
+function centerInside(box: DOMRect, rect: DOMRect) {
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  return box.width > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
