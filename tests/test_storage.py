@@ -129,7 +129,7 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
     gc_enabled = gc.isenabled()
     gc.disable()
     try:
-        for index in range(150):
+        for index in range(2 * STORAGE_IDLE_CONNECTION_LIMIT):
             store = AppStore(tmp_path / str(index) / "rcp.sqlite3")
             store.cycle = store  # Match apps retained until cyclic GC.
             stores.append(store)
