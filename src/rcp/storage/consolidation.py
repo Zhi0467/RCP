@@ -191,15 +191,18 @@ def _record(model: type[_Record], row: sqlite3.Row | None) -> _Record | None:
 
 
 class ConsolidationStoreMixin(StoreMixinBase):
-    def consolidation_schedule(self, project_id: str) -> ConsolidationSchedule | None:
+    def _one_record(
+        self, model: type[_Record], sql: str, params: tuple[object, ...]
+    ) -> _Record | None:
         with self.connection() as conn:
-            return _record(
-                ConsolidationSchedule,
-                conn.execute(
-                    "SELECT s.*,t.covered_head FROM consolidation_schedules s LEFT JOIN consolidation_targets t ON t.project_id=s.project_id AND t.target='main' WHERE s.project_id=?",
-                    (project_id,),
-                ).fetchone(),
-            )
+            return _record(model, conn.execute(sql, params).fetchone())
+
+    def consolidation_schedule(self, project_id: str) -> ConsolidationSchedule | None:
+        return self._one_record(
+            ConsolidationSchedule,
+            "SELECT s.*,t.covered_head FROM consolidation_schedules s LEFT JOIN consolidation_targets t ON t.project_id=s.project_id AND t.target='main' WHERE s.project_id=?",
+            (project_id,),
+        )
 
     def consolidation_schedules(self) -> list[ConsolidationSchedule]:
         with self.connection() as conn:
@@ -252,14 +255,11 @@ class ConsolidationStoreMixin(StoreMixinBase):
     def consolidation_target(
         self, project_id: str, target: str = "main"
     ) -> ConsolidationTarget | None:
-        with self.connection() as conn:
-            return _record(
-                ConsolidationTarget,
-                conn.execute(
-                    "SELECT * FROM consolidation_targets WHERE project_id=? AND target=?",
-                    (project_id, target),
-                ).fetchone(),
-            )
+        return self._one_record(
+            ConsolidationTarget,
+            "SELECT * FROM consolidation_targets WHERE project_id=? AND target=?",
+            (project_id, target),
+        )
 
     def consolidation_targets(self, project_id: str) -> list[ConsolidationTarget]:
         with self.connection() as conn:
@@ -321,22 +321,16 @@ class ConsolidationStoreMixin(StoreMixinBase):
             conn.execute("DELETE FROM consolidation_schedules WHERE project_id=?", (project_id,))
 
     def consolidation_run(self, run_id: str) -> ConsolidationRun | None:
-        with self.connection() as conn:
-            return _record(
-                ConsolidationRun,
-                conn.execute(
-                    "SELECT * FROM consolidation_runs WHERE run_id=?", (run_id,)
-                ).fetchone(),
-            )
+        return self._one_record(
+            ConsolidationRun, "SELECT * FROM consolidation_runs WHERE run_id=?", (run_id,)
+        )
 
     def consolidation_run_for_operation(self, operation_id: str) -> ConsolidationRun | None:
-        with self.connection() as conn:
-            return _record(
-                ConsolidationRun,
-                conn.execute(
-                    "SELECT * FROM consolidation_runs WHERE operation_id=?", (operation_id,)
-                ).fetchone(),
-            )
+        return self._one_record(
+            ConsolidationRun,
+            "SELECT * FROM consolidation_runs WHERE operation_id=?",
+            (operation_id,),
+        )
 
     def drop_consolidation_request_target(self, operation_id: str) -> None:
         # 0.4.35 also copied the run's target into its queued request, which no
