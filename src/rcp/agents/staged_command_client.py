@@ -85,12 +85,38 @@ BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
 BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
 BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
 BULLETIN_BODY = ("body_file", "<body-file>")
+LESSON_OPTIONS = {
+    "add": ((KEY_OPTION, True), (("text", "--text", "<text>"), True)),
+    "list": ((("cursor", "--cursor", "<cursor>"), False),),
+    "update": (
+        (KEY_OPTION, True),
+        (("id", "--id", "<lesson-id>"), True),
+        (("text", "--text", "<text>"), True),
+    ),
+    "delete": ((KEY_OPTION, True), (("id", "--id", "<lesson-id>"), True)),
+}
 NAME_VALUE = ("name", "<name>")
 
 
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
+
+
+def lesson_usages(actions):
+    return tuple(
+        " ".join(
+            [
+                "lesson",
+                action,
+                *(
+                    _option_usage(option) if required else f"[{_option_usage(option)}]"
+                    for option, required in LESSON_OPTIONS[action]
+                ),
+            ]
+        )
+        for action in actions
+    )
 
 
 def merge_usage():
@@ -330,16 +356,10 @@ def _parser():
 
     lesson = subparsers.add_parser("lesson")
     lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
-    for action in ("add", "list", "update", "delete"):
+    for action, options in LESSON_OPTIONS.items():
         command = lesson_actions.add_parser(action)
-        if action == "list":
-            command.add_argument("--cursor")
-        else:
-            command.add_argument("--key", required=True)
-        if action in ("add", "update"):
-            command.add_argument("--text", required=True)
-        if action in ("update", "delete"):
-            command.add_argument("--id", required=True)
+        for (dest, flag, value), required in options:
+            command.add_argument(flag, dest=dest, metavar=value, required=required)
 
     ask = subparsers.add_parser("ask")
     ask.add_argument("--key", required=True)

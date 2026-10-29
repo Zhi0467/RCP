@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import pytest
 
 from rcp.limits import LESSON_TEXT_MAX_CHARS, LESSONS_PER_PROJECT_MAX
 from rcp.storage import ProjectRecord
-from rcp.storage.lessons import LessonError, lesson_edit_authorized
+from rcp.storage.lessons import LessonError, lesson_command_actions
 
 from .test_work_questions import work_execution
 
@@ -16,6 +14,7 @@ def store(tmp_path):
     execution, human = work_execution(tmp_path)
     store = execution.store
     owner = store.local_owner
+    assert owner is not None
     store.upsert_project(
         ProjectRecord(
             project_id="project",
@@ -55,6 +54,7 @@ def command(store, subcommand, **kwargs):
 
 def test_lesson_limits_and_human_ownership(store):
     owner = store.local_owner
+    assert owner is not None
     with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_text_invalid"):
         store.add_lesson(
             "project",
@@ -69,8 +69,10 @@ def test_lesson_limits_and_human_ownership(store):
         command(store, "add", key="full", text="overflow")
 
 
-def test_keyed_receipts_survive_delete_and_reject_changed_arguments(store):
-    consolidate(store)
+@pytest.mark.parametrize("consolidation", [False, True])
+def test_keyed_receipts_survive_delete_and_reject_changed_arguments(store, consolidation):
+    if consolidation:
+        consolidate(store)
     first = command(store, "add", key="add", text="same")
     assert command(store, "add", key="add", text="same") == first
     with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_key_conflict"):
@@ -83,49 +85,27 @@ def test_keyed_receipts_survive_delete_and_reject_changed_arguments(store):
 
 
 def test_edit_authority_and_live_membership(store):
-    lesson = command(store, "add", key="a", text="tip")["lesson"]
-    assert not lesson_edit_authorized(store, "turn")
-    for verb in ("update", "delete", "list"):
-        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_edit_not_authorized"):
-            command(store, verb, key=verb, lesson_id=lesson["lesson_id"], text="new")
-    consolidate(store)
-    assert lesson_edit_authorized(store, "turn")
-    assert not lesson_edit_authorized(store, "other")
+    command(store, "add", key="a", text="tip")
+    assert lesson_command_actions(store, "turn") == ("add", "list", "update", "delete")
+    assert lesson_command_actions(store, "other") == ()
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members WHERE project_id='project'")
     with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
         command(store, "add", key="a", text="tip")
 
 
-@pytest.mark.parametrize("verb", ["update", "delete"])
-def test_human_edit_and_agent_mutation_are_serialized(store, verb):
+def test_consolidation_revises_and_prunes_human_owned_lessons(store):
     consolidate(store)
-    lesson_id = command(store, "add", key="a", text="tip")["lesson"]["lesson_id"]
-
-    def human():
-        try:
-            human_edit(store, lesson_id)
-            return True
-        except LessonError as exc:
-            assert verb == "delete" and exc.code == "lesson_not_found"
-            return False
-
-    def agent():
-        try:
-            command(store, verb, key="race", lesson_id=lesson_id, text="agent")
-        except LessonError as exc:
-            assert exc.code == "lesson_human_owned"
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        human_result = pool.submit(human)
-        agent_result = pool.submit(agent)
-        survived = human_result.result()
-        agent_result.result()
-    if survived:
-        lesson = store.list_lessons("project")[0]
-        assert lesson["text"] == "human" and lesson["human_owned"]
-        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_human_owned"):
-            command(store, verb, key="after", lesson_id=lesson_id, text="agent")
+    first, second = (
+        command(store, "add", key=key, text="tip")["lesson"]["lesson_id"] for key in "ab"
+    )
+    human_edit(store, first)
+    human_edit(store, second)
+    command(store, "update", key="u", lesson_id=first, text="merged")
+    command(store, "delete", key="d", lesson_id=second)
+    assert [(item["text"], item["human_owned"]) for item in store.list_lessons("project")] == [
+        ("merged", False)
+    ]
 
 
 def test_consolidation_can_page_and_prune_beyond_render_cutoff(store):
