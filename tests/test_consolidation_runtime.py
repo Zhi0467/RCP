@@ -84,8 +84,8 @@ def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(runtime
             "WHERE operation_id=?",
             (run.operation_id,),
         )
-    tasks = runtime.app.state.background_tasks
-    monkeypatch.setattr(tasks, "launch_admitted", type(tasks).launch_admitted.__get__(tasks))
+    # Restore the real launch the fixture faked.
+    monkeypatch.delattr(runtime.app.state.background_tasks, "launch_admitted")
 
     runtime.poller.poll_once()
     runtime.poller.poll_once()
@@ -100,9 +100,11 @@ def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runt
     def unavailable(_operation_id):
         raise OSError("dispatch unavailable")
 
-    monkeypatch.setattr(runtime.app.state.background_tasks, "launch_admitted", unavailable)
+    fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, unavailable)
     runtime.poller.poll_once()
     (run,) = runtime.store.consolidation_runs()
+    # Every later poll retries; the same error is recorded once, not once a minute.
+    runtime.poller._launch(run.operation_id)
 
     assert runtime.store.agent_task(run.operation_id).status == "queued"
     assert [event.level for event in runtime.store.agent_task_events(run.operation_id)] == [

@@ -11,7 +11,12 @@ from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.watchers import WatcherPoller
 from tests.helpers import signed_in_client
 
-from .helpers import create_named_app, record_launched_experiment_turn, wait_for_task
+from .helpers import (
+    create_named_app,
+    fake_launch_admitted,
+    record_launched_experiment_turn,
+    wait_for_task,
+)
 from .test_auto_research_children_storage import _experiment_route
 from .test_auto_research_delivery import _sse
 from .test_episode_lifecycle_acceptance import _add_worker_seat
@@ -118,7 +123,7 @@ def _capture_report_launches(app, monkeypatch):
         launches.append(operation_id)
         return task
 
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", launch)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks, launch)
     return launches
 
 

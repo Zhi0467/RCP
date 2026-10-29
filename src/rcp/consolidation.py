@@ -88,6 +88,9 @@ class ConsolidationPoller:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._poll_lock = threading.Lock()
+        # The last retryable launch error recorded per task, so a lasting failure
+        # adds one event rather than one per poll.
+        self._launch_errors: dict[str, str] = {}
 
     def start(self) -> None:
         if self.is_running():
@@ -297,6 +300,7 @@ class ConsolidationPoller:
                 raise ValueError("consolidation_binding_required")
             self.store.drop_consolidation_request_target(operation_id)
             self.tasks.launch_admitted(operation_id)
+            self._launch_errors.pop(operation_id, None)
         except (TypeError, ValueError) as exc:
             # Launch validation judged the durable row, which no later pass changes.
             # Failing the task lets outcome reconciliation settle the run visibly.
@@ -305,9 +309,10 @@ class ConsolidationPoller:
         except Exception as exc:
             # Admission is already durable. A later pass retries exactly this task.
             logger.exception("Consolidation dispatch failed for %s", operation_id)
-            self.store.record_agent_task_event(
-                operation_id, f"Launch failed and will be retried: {exc}", level="warning"
-            )
+            message = f"Launch failed and will be retried: {exc}"
+            if self._launch_errors.get(operation_id) != message:
+                self._launch_errors[operation_id] = message
+                self.store.record_agent_task_event(operation_id, message, level="warning")
 
     def reconcile_outcomes(self) -> None:
         for run in self.store.consolidation_runs(unsettled_only=True):

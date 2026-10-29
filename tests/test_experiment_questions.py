@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import rcp.storage.experiments as experiments_storage
+from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
 from rcp.runs.provider_login import MachineDependenciesMissing
@@ -16,6 +17,7 @@ from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AppStore, EpisodeInvocationCeilingReached
 from rcp.storage.question_models import QuestionOrigin, question_followup_operation_id
 
+from .helpers import fake_launch_admitted
 from .test_experiment_episode_storage import _admit_root, _bind, _identity, _task
 from .test_experiment_loop_recorded_finalization import (
     _ANSWER,
@@ -70,6 +72,18 @@ async def test_question_parks_empty_experiment_handoff_without_graph_pause(manif
 
 def _admit_any(*_args, **_kwargs) -> None:
     return None
+
+
+async def _no_provider(*_args, **_kwargs):
+    raise AssertionError("Question reconciliation tests never start a provider.")
+    yield
+
+
+def _recording_tasks(monkeypatch, store, launches, admit=_admit_any):
+    tasks = BackgroundAgentTasks(store, _no_provider)
+    monkeypatch.setattr(tasks, "admit_provider_task", admit)
+    fake_launch_admitted(monkeypatch, tasks, launches.append)
+    return tasks
 
 
 def _ready_answer(tmp_path: Path, *, ceiling=2):
@@ -306,26 +320,20 @@ def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
     assert store.episode(continued_id).invocations_used == 1
 
 
-def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_path):
+def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_path, monkeypatch):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     launches = []
-    tasks = SimpleNamespace(
-        store=store, admit_provider_task=_admit_any, launch_admitted=launches.append
-    )
+    tasks = _recording_tasks(monkeypatch, store, launches)
     first = reconcile_experiment_question_answers(tasks)
     claimed = store.get_question(question.question_id).followup_operation_id
     assert claimed is not None and first[question.question_id] == claimed
-    restarted = SimpleNamespace(
-        store=AppStore(tmp_path / "rcp.sqlite3"),
-        admit_provider_task=_admit_any,
-        launch_admitted=launches.append,
-    )
+    restarted = _recording_tasks(monkeypatch, AppStore(tmp_path / "rcp.sqlite3"), launches)
     assert reconcile_experiment_question_answers(restarted)[question.question_id] == claimed
     assert launches == [claimed, claimed]
     assert store.episode(episode_id).invocations_used == 2
 
 
-def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path):
+def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path, monkeypatch):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     followup = question_followup_operation_id(question.question_id, question.answer_revision)
     launches = []
@@ -333,26 +341,22 @@ def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path):
     def refuse(*_args, **_kwargs):
         raise MachineDependenciesMissing("missing")
 
-    tasks = SimpleNamespace(
-        store=store, admit_provider_task=refuse, launch_admitted=launches.append
-    )
+    tasks = _recording_tasks(monkeypatch, store, launches, refuse)
     reconcile_experiment_question_answers(tasks)
     assert launches == []
     assert store.get_question(question.question_id).followup_operation_id is None
     assert store.agent_task(followup) is None
     assert store.episode(episode_id).invocations_used == 1
-    tasks.admit_provider_task = _admit_any
+    monkeypatch.setattr(tasks, "admit_provider_task", _admit_any)
     claimed = reconcile_experiment_question_answers(tasks)[question.question_id]
     assert launches == [claimed]
     assert store.episode(episode_id).invocations_used == 2
 
 
-def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path):
+def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path, monkeypatch):
     store, _, question, _ = _ready_answer(tmp_path)
     launches = []
-    tasks = SimpleNamespace(
-        store=store, admit_provider_task=_admit_any, launch_admitted=launches.append
-    )
+    tasks = _recording_tasks(monkeypatch, store, launches)
     assert reconcile_experiment_question_answers(tasks, project_id="other-project") == {}
     assert launches == []
     project_id = question.origin.project_id
@@ -379,7 +383,7 @@ def test_experiment_answer_cannot_change_origin_scope(tmp_path):
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def test_human_experiment_serves_ask_and_continuation_reuses_question_key(tmp_path):
+def test_human_experiment_serves_ask_and_continuation_reuses_question_key(tmp_path, monkeypatch):
     from rcp.agents import AgentProcessControl
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.background import AgentTaskExecution
@@ -463,16 +467,18 @@ def test_human_experiment_serves_ask_and_continuation_reuses_question_key(tmp_pa
     )
     restarted_store = AppStore(tmp_path / "rcp.sqlite3")
     assert restarted_store.question_receipt_candidate_operations(question_id) == ["continued-root"]
+    launches = []
     assert question_id not in reconcile_experiment_question_answers(
-        SimpleNamespace(store=restarted_store, launch_admitted=lambda _operation: None)
+        _recording_tasks(monkeypatch, restarted_store, launches)
     )
     received = store.get_question(question_id)
     assert received.client_receipt_operation_id == "continued-root"
     assert received.client_receipt_revision == 1
     assert received.origin.owner_id == episode_id
     assert question_id not in reconcile_experiment_question_answers(
-        SimpleNamespace(store=store, launch_admitted=lambda _operation: None)
+        _recording_tasks(monkeypatch, store, launches)
     )
+    assert launches == []
 
 
 def test_orchestrator_child_experiment_refuses_ask(tmp_path):
