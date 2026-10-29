@@ -156,7 +156,7 @@ async function ssr(run) {
 
 const count = (html, pattern) => (html.match(pattern) ?? []).length;
 
-test("Sign-ins fold draws trays per setting, personal and unmanaged rules, and device-code privacy", () =>
+test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code privacy", () =>
   ssr(({ React, render, SignInsFold }) => {
     const fold = (rows, settings, viewerUserId = "u-me") =>
       render(
@@ -221,16 +221,10 @@ test("Sign-ins fold draws trays per setting, personal and unmanaged rules, and d
     assert.equal(count(opencode, /data-card-state=/g), 1);
     assert.equal(count(opencode, /data-tray|data-sign-in-add|data-sign-in-action="more"/g), 0);
 
-    // Personal: one shared tray, no switches, swap or Members.
-    const personal = fold(
-      everyState.filter((row) => row.kind === "shared"),
-      settingsFor("shared", "shared", true),
-    );
-    assert.equal(count(personal, /data-tray="shared"/g), 2);
-    assert.equal(
-      count(personal, /data-tray="own"|data-tray-switch|data-sign-ins-swap|sign-ins-members/g),
-      0,
-    );
+    // A space with no other members has no Members row; trays stay the same.
+    const alone = fold(everyState, { ...settingsFor(), other_member_count: 0 });
+    assert.equal(count(alone, /sign-ins-members/g), 0);
+    assert.equal(count(alone, /data-tray="own"/g), 2);
   }));
 
 test("a login notice offers one action, except on another member's own login", () =>

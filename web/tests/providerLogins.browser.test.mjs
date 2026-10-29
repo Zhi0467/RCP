@@ -225,7 +225,6 @@ const codexRows = (sign_in) => [
 const codexSettings = {
   settings: [{ provider: "codex", host: HOST, setting: "shared", changed_at: null, stored: true }],
   other_member_count: 0,
-  personal: false,
 };
 
 test("a pending sign-in keeps polling past a transient status failure", async (t) => {

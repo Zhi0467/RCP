@@ -560,7 +560,7 @@ def test_setting_invalid_value_is_422(member_login_api, setting):
     )
 
 
-def test_settings_get_precedence_and_personal_rules(member_login_api):
+def test_settings_get_precedence(member_login_api):
     client, store, runner, viewer = member_login_api
 
     def current():
@@ -585,6 +585,7 @@ def test_personal_login_rules(tmp_path, monkeypatch):
     client_store = AppStore(tmp_path / "personal.sqlite3")
     accounts = ProviderAccounts.for_store(client_store)
     runner = ProviderSignInRunner(client_store, AgentLauncher(accounts=accounts), accounts)
+    runner.resume_setting = lambda *_: {"checked": 0}
     monkeypatch.setattr(
         provider_login,
         "get_identity_access",
@@ -594,11 +595,12 @@ def test_personal_login_rules(tmp_path, monkeypatch):
     app.include_router(provider_login.router)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
+    # Only the unsaved default differs from a team space.
     assert client_store.provider_login_setting("member", "claude", "").setting == "shared"
-    assert client.post("/api/providers/claude/logins/add", json={"kind": "own"}).status_code == 422
+    assert client.post("/api/providers/claude/logins/add", json={"kind": "own"}).status_code == 200
     assert (
         client.put("/api/providers/claude/logins/setting", json={"setting": "own"}).status_code
-        == 422
+        == 200
     )
     assert (
         client.post("/api/providers/opencode/logins/add", json={"kind": "shared"}).status_code

@@ -313,7 +313,7 @@ function ProviderPanel({
     <SignInTray
       key="shared"
       tray="shared"
-      title={data.settings?.personal ? machineName : `Shared on ${machineName}`}
+      title={`Shared on ${machineName}`}
       hover="Any member can use, add or remove these."
       {...props}
     >
@@ -333,23 +333,6 @@ function ProviderPanel({
       <RotateCcw size={14} />
     </button>
   ) : null;
-
-  // A personal space owns every sign-in: one shared tray, nothing to choose.
-  if (data.settings?.personal) {
-    return (
-      <section
-        ref={panel}
-        className={`sign-ins-panel${failure ? " failed" : ""}`}
-        data-sign-ins-provider={entry.provider}
-      >
-        <header>
-          <strong>{label}</strong>
-          {failed}
-        </header>
-        <div className="sign-ins-trays">{sharedTray({ on: true, switchable: false })}</div>
-      </section>
-    );
-  }
 
   const stored = data.settings?.settings.find(
     (item) => item.provider === entry.provider && item.host === host,
@@ -421,25 +404,27 @@ function ProviderPanel({
         </button>
         {trays[layout.order[1]]}
       </div>
-      <details
-        className="sign-ins-members"
-        title={`Other members' own sign-ins. Signed in: ${members.signedIn} of ${members.of}.`}
-      >
-        <summary>
-          <strong>Members</strong>
-          <span>
-            <span className="sign-ins-members-mark" aria-hidden="true">
-              ▸
-            </span>{" "}
-            {members.signedIn} of {members.of}
-          </span>
-        </summary>
-        <div className="sign-ins-cards">
-          {entry.members.map((row) =>
-            card(row, { name: row.owner_display_name ?? "", actions: false }),
-          )}
-        </div>
-      </details>
+      {members.of > 0 ? (
+        <details
+          className="sign-ins-members"
+          title={`Other members' own sign-ins. Signed in: ${members.signedIn} of ${members.of}.`}
+        >
+          <summary>
+            <strong>Members</strong>
+            <span>
+              <span className="sign-ins-members-mark" aria-hidden="true">
+                ▸
+              </span>{" "}
+              {members.signedIn} of {members.of}
+            </span>
+          </summary>
+          <div className="sign-ins-cards">
+            {entry.members.map((row) =>
+              card(row, { name: row.owner_display_name ?? "", actions: false }),
+            )}
+          </div>
+        </details>
+      ) : null}
     </section>
   );
 }

@@ -1081,8 +1081,8 @@ Sign-out records a new generation, `source="sign_out"` and actor.
 `GET /api/providers/logins/settings` returns the viewer's effective settings:
 host row, migration fallback `*`, then the built-in default. PUT
 `/api/providers/{provider}/logins/setting` accepts only `own`, `own_then_shared`,
-`shared_then_own` or `shared`. Personal spaces use shared sign-ins only; OpenCode
-has no added login or setting. No agent command reaches these routes.
+`shared_then_own` or `shared`. Personal and team spaces follow the same rules;
+only the built-in default differs. OpenCode has no added login or setting. No agent command reaches these routes.
 
 Member removal fences and retains own login rows, deletes member settings and
 removes credentials without deleting sessions. Shared logins stay. Pending removal

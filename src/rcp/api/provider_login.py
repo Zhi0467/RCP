@@ -397,7 +397,6 @@ def provider_login_settings(
             user.user_id != member.user_id and user.removal_started_at is None
             for user in store.space_users()
         ),
-        "personal": store.space_kind == "personal",
     }
 
 
@@ -411,8 +410,6 @@ def set_provider_login_setting(
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
     _managed_host(store, provider, body.host)
-    if store.space_kind == "personal" and body.setting != "shared":
-        raise HTTPException(422, "Personal spaces use shared sign-ins.")
     store.set_provider_login_setting(member.user_id, provider, body.host, body.setting)
     try:
         assert sign_ins.resume_setting is not None
@@ -432,8 +429,6 @@ def add_provider_login(
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
     _managed_host(store, provider, body.host)
-    if body.kind == "own" and store.space_kind == "personal":
-        raise HTTPException(422, "Personal spaces use shared sign-ins.")
     try:
         state = store.add_provider_login(
             provider,

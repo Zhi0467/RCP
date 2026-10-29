@@ -3664,7 +3664,6 @@ export interface ProviderLoginSettings {
   settings: ProviderLoginSetting[];
   /** Other current members of the space. */
   other_member_count: number;
-  personal: boolean;
 }
 
 /** What the UI may know about a stored credential: never the token. */

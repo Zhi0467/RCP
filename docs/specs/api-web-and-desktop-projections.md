@@ -1580,10 +1580,9 @@ Turning the other group back on stores "the tray that is on, then the other". A
 card shows, first match wins, Being removed, signing in (device code and link
 only to the starter; others see who), Signed out (flat, dashed, Sign in), Usage
 limit (amber edge), or Ready. Card actions sit behind a ⋯ shown on hover and
-always at phone width. Explanations are hover text only. A personal space shows
-only the shared tray, titled with the machine name; OpenCode shows only its
-machine sign-in card. A collapsed Members row counts other members' signed-in
-own logins. A refused launch's notice is one row whose icon opens this fold;
+always at phone width. Explanations are hover text only. Personal and team spaces draw the same fold;
+OpenCode shows only its machine sign-in card. A collapsed Members row, shown when
+the space has other members, counts their signed-in own logins. A refused launch's notice is one row whose icon opens this fold;
 work waiting on another member's own login names them and has no action.
 
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
