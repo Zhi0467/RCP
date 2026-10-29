@@ -101,7 +101,7 @@ from rcp.runs.consolidation import (
     require_consolidation_launch,
     settlement_source_effect_id,
 )
-from rcp.runs.evidence_flag_commands import flag_command_usage
+from rcp.runs.evidence_flag_commands import flag_command_usage, hold_consolidation_additions
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
@@ -1462,6 +1462,12 @@ async def _validate_patch_deliverable(
             stop=True,
         )
     if result is not None:
+        if result.status == "applied" and is_consolidation(turn.execution):
+            assert turn.execution is not None
+            # The final patch.json is an Apply too, so its Evidence is held at once.
+            hold_consolidation_additions(
+                lambda: turn.service, turn.execution.store, turn.execution.operation_id
+            )
         settled.graph_update = result.model_copy(update={"correction_rounds": correction_rounds})
         return _DeliverableStep()
     assert failure is not None

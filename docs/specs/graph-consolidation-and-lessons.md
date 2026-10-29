@@ -141,11 +141,12 @@ Identical keys replay. Changed arguments are refused.
 Only one open or addressing flag is allowed per project, target, Evidence, and kind.
 Duplicates return the existing flag.
 
-After every successful or replayed Apply and at settlement, RCP raises idempotent
-`consolidation_added` notices for current Evidence created by that Patch's receipt,
-not a graph diff. Agent keys cannot use the reserved `rcp:` prefix or raise this
-kind. Failure to record a hold produces a warning without undoing Apply.
-Unreadable canonical receipts leave settlement pending until verification succeeds.
+After every successful or replayed Apply, keyed or final, and at settlement, RCP
+raises idempotent `consolidation_added` notices for current Evidence that the run's
+canonical Patches on its target created, not a graph diff. Agent keys cannot use
+the reserved `rcp:` prefix or raise this kind. Failure to record a hold produces a
+warning without undoing Apply. Unreadable canonical history leaves a launched run's
+settlement pending until verification succeeds.
 
 The selected target's open or addressing flags appear in Inbox.
 `consolidation_added` and `unverified` are notice-only. They offer no Address action
