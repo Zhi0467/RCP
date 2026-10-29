@@ -402,6 +402,9 @@ Only the explicit per-kind retirement allowlist removes fields (currently legacy
 `auto_research.ending`). Unknown fields remain for strict rejection; mappings
 assembled outside row decoding use the same helper. Live models remain
 `extra="forbid"`. Retire only shipped fields whose removal preserves meaning.
+Every launch and finalization check uses the one roundtrip rule in the same
+module. Dumping the parsed request must reproduce the stored row. A field the
+row predates may be absent when it parses to its default.
 
 The [backend ownership rationale](../decisions/2026-08-20-backend-structural-refactor-closure.md)
 explains why named engine/owner calls do not require a plugin architecture.

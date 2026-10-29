@@ -39,7 +39,7 @@ from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_reconciliation import Reconciliation
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskAlreadyContinued,
     AgentTaskRecord,
@@ -338,6 +338,29 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
         "operation_created",
         "operation_dispatch_started",
     ]
+
+
+def _v0433_coach_row():
+    # v0.4.33 CoachRequest predates mode, refresh and attachment fields.
+    request = CoachRequest(message="Tighten the abstract.", provider="codex", run_on="laptop")
+    added = {"mode", "refresh_source_task_id", "refresh_group_ids", "attachment_scope_id"}
+    added |= {"attachment_set_id", "attachment_client_id", "attachment_batch_id"}
+    added |= {"attachments", "references"}
+    stored = {k: v for k, v in request.model_dump(mode="json").items() if k not in added}
+    return {
+        "kind": "paper_coach",
+        "request": stored,
+        "dispatch_authority": resolve_dispatch_authority("paper_coach", request),
+    }
+
+
+@pytest.mark.parametrize("legacy_row", [_v0433_coach_row], ids=["v0.4.33-paper-coach"])
+def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="legacy-row", record_updates=legacy_row())
+
+    wait_for_task(store, tasks.launch_admitted(task.operation_id).operation_id, expect="succeeded")
 
 
 def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> None:

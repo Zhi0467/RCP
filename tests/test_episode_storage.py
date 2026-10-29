@@ -1957,8 +1957,8 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
 
 
 def test_a_request_persisted_before_isolation_fields_still_roundtrips():
-    from rcp.background import persisted_request_roundtrips
     from rcp.service import AutoResearchRunRequest
+    from rcp.storage.request_compat import persisted_request_roundtrips
 
     request = AutoResearchRunRequest(
         episode_id="e", role="orchestrator", actor_operation_id="a", provider="codex", run_on="m"
