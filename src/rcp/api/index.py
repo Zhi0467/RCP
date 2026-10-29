@@ -90,6 +90,9 @@ from rcp.transport import StateUnavailable
 
 logger = logging.getLogger(__name__)
 
+# Loops a person still has to see: live ones, and exhausted or paused ones waiting on them.
+_UNAVAILABLE_ROW_STATUSES = (*_LIVE_EPISODE_STATUSES, "needs_action")
+
 router = APIRouter()
 membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -425,7 +428,7 @@ def _experiment_episode_entries(
                 live_episodes = [
                     item[0].episode
                     for item in group
-                    if item[0].episode.status in _LIVE_EPISODE_STATUSES
+                    if item[0].episode.status in _UNAVAILABLE_ROW_STATUSES
                 ]
                 for episode in live_episodes:
                     assert episode.control_node_id is not None
@@ -519,7 +522,7 @@ def _experiment_episode_entries(
                             latest_report_episode_id=read_model.latest_report_episode_id,
                         )
                     except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
-                        if episode.status in _LIVE_EPISODE_STATUSES:
+                        if episode.status in _UNAVAILABLE_ROW_STATUSES:
                             unavailable.append(
                                 UnavailableExperimentLoopResponse(
                                     project_id=record.project_id,
@@ -532,7 +535,7 @@ def _experiment_episode_entries(
                             )
                         logger.warning(
                             "Unavailable %s Experiment episode %s on %s: %s",
-                            "live" if episode.status in _LIVE_EPISODE_STATUSES else "historical",
+                            "live" if episode.status in _UNAVAILABLE_ROW_STATUSES else "historical",
                             episode.episode_id,
                             target.key,
                             exc,

@@ -16,6 +16,8 @@ TESTS = Path(__file__).resolve().parent
 HELPER = TESTS / "helpers.py"
 TARGET = "launch_admitted"
 
+_PATCHERS = frozenset({"setattr", "patch", "object"})
+
 # Path relative to tests/ -> why that file may fake the launch without the helper.
 ALLOWED: dict[str, str] = {}
 
@@ -24,10 +26,14 @@ def _raw_fakes(tree: ast.AST) -> list[int]:
     lines = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            named = isinstance(node.func, ast.Attribute) and node.func.attr == "setattr"
-            named = named or isinstance(node.func, ast.Name) and node.func.id == "setattr"
-            if named and any(
-                isinstance(arg, ast.Constant) and arg.value == TARGET for arg in node.args
+            # setattr, patch.object and dotted-string patch forms all name the target.
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in _PATCHERS and any(
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and (arg.value == TARGET or arg.value.endswith(f".{TARGET}"))
+                for arg in node.args
             ):
                 lines.append(node.lineno)
             lines.extend(keyword.value.lineno for keyword in node.keywords if keyword.arg == TARGET)
