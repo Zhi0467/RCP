@@ -59,7 +59,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
             {file_id:'html',path:'page.html',format:'html',kind:'text',sha256:'e'}
           ];
           window.comments = [];
-          window.show = (id, text = '') => root.render(<PaperPreview projectId="p" file={files.find(f => f.file_id === id)} tree={{files, saved_revision: 7}} text={text} active toolbar={bar} cursorLine={1} onDirectComment={c => window.comments.push({quote: c.quote, where: c.where, anchor: c.anchor, clear: c.clear})} onDirectCancel={clear => window.cancels.push(clear)} />);
+          window.show = (id, text = '', saved = 7, htmlSha = 'e') => { const shown = files.map(f => f.file_id === 'html' ? {...f, sha256: htmlSha} : f); root.render(<PaperPreview projectId="p" file={shown.find(f => f.file_id === id)} tree={{files: shown, revision: saved, saved_revision: saved}} text={text} active toolbar={bar} cursorLine={1} onDirectComment={c => window.comments.push({quote: c.quote, where: c.where, anchor: c.anchor, clear: c.clear})} onDirectCancel={clear => window.cancels.push(clear)} />); };
           window.cancels = [];
           window.select = (element, from, to) => {
             const range = document.createRange();
@@ -304,6 +304,19 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await page.locator('header button[aria-pressed="true"]').click();
   await page.waitForFunction(() => window.cancels.length === 2);
   assert.equal(await page.evaluate(() => window.cancels[1] === window.comments.at(-1).clear), true);
+  // Another file's save leaves the page alone; this file's save reloads it and closes
+  // the comment it opened.
+  await page.locator('header button[aria-pressed="false"]').click();
+  await post({ kind: "text", text: "Plot title", surrounding_text: "" });
+  await page.waitForFunction(() => window.comments.at(-1)?.quote === "Plot title");
+  await page.evaluate(() => window.show("html", "", 8));
+  await page.waitForTimeout(200);
+  assert.match(await frame.getAttribute("src"), /revision=7&/);
+  assert.equal(await page.evaluate(() => window.cancels.length), 2);
+  await page.evaluate(() => window.show("html", "", 9, "e2"));
+  await page.waitForFunction(() => window.cancels.length === 3);
+  assert.match(await frame.getAttribute("src"), /revision=9&/);
+  assert.equal(await page.evaluate(() => window.cancels[2] === window.comments.at(-1).clear), true);
 
   await page.setViewportSize({ width: 390, height: 700 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
