@@ -297,9 +297,17 @@ class ConsolidationPoller:
                 raise ValueError("consolidation_binding_required")
             self.store.drop_consolidation_request_target(operation_id)
             self.tasks.launch_admitted(operation_id)
-        except Exception:
+        except (TypeError, ValueError) as exc:
+            # Launch validation judged the durable row, which no later pass changes.
+            # Failing the task lets outcome reconciliation settle the run visibly.
+            logger.warning("Consolidation task %s cannot launch: %s", operation_id, exc)
+            self.store.fail_agent_task(operation_id, str(exc))
+        except Exception as exc:
             # Admission is already durable. A later pass retries exactly this task.
             logger.exception("Consolidation dispatch failed for %s", operation_id)
+            self.store.record_agent_task_event(
+                operation_id, f"Launch failed and will be retried: {exc}", level="warning"
+            )
 
     def reconcile_outcomes(self) -> None:
         for run in self.store.consolidation_runs(unsettled_only=True):
