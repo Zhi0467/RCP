@@ -7,11 +7,11 @@ from typing import cast
 
 import pytest
 
-from rcp.background import persisted_request_roundtrips
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
+from rcp.storage.request_compat import persisted_request_roundtrips
 
 from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
 

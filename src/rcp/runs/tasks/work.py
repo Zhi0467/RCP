@@ -49,7 +49,7 @@ from rcp.agents.prompts import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.background import AgentTaskExecution, persisted_request_roundtrips
+from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
@@ -218,6 +218,7 @@ from rcp.storage import (
     ExperimentWatcherResourceRecord,
     WatcherContinuation,
 )
+from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
 from rcp.watchers import (

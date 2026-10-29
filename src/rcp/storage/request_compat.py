@@ -4,6 +4,8 @@ import logging
 from collections.abc import Mapping
 from typing import Final
 
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
 
 # Persisted request compatibility is deliberately closed. A field appears here
@@ -39,3 +41,24 @@ def migrate_stored_task_request(
             operation_id or "<unknown>",
         )
     return migrated
+
+
+def persisted_request_roundtrips(request: BaseModel, stored: Mapping[str, object]) -> bool:
+    """Return whether ``request`` is exactly what ``stored`` meant.
+
+    This is the one rule every launch and finalization check applies. A row
+    written before a field existed omits it, and the field's default is the
+    legacy meaning. Every other difference fails.
+    """
+
+    dumped = request.model_dump(mode="json")
+    fields = type(request).model_fields
+    added = {
+        key
+        for key, value in dumped.items()
+        if key not in stored
+        and key in fields
+        and not fields[key].is_required()
+        and value == fields[key].get_default(call_default_factory=True)
+    }
+    return {key: value for key, value in dumped.items() if key not in added} == stored
