@@ -2190,19 +2190,29 @@ def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path
     assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
-@pytest.mark.parametrize("cache", ["missing", "invalid"])
+@pytest.mark.parametrize(
+    ("cache", "status"),
+    [("missing", "running"), ("invalid", "running"), ("wrong_shape", "needs_action")],
+)
 def test_unusable_project_cache_degrades_its_live_loops_to_unavailable_rows(
-    manifest, tmp_path: Path, cache: str
+    manifest, tmp_path: Path, cache: str, status: str
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
     client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
+    with app.state.background_tasks.store.connection() as connection:
+        # An exhausted or human-paused loop still waits on a person.
+        connection.execute(
+            "UPDATE episodes SET status = ? WHERE episode_id = ?", (status, current_episode)
+        )
     cache_path = app.state.catalog._cached_snapshot_path(project_id)
     if cache == "missing":
         cache_path.unlink()
-    else:
+    elif cache == "invalid":
         cache_path.write_text("{", encoding="utf-8")
+    else:
+        cache_path.write_text('{"schema_version": []}', encoding="utf-8")
 
     index = client.get("/api/episodes?mode=experiment_loop")
     runs = client.get("/api/space/runs")
@@ -2212,7 +2222,8 @@ def test_unusable_project_cache_degrades_its_live_loops_to_unavailable_rows(
     assert [row["episode_id"] for row in index.json()["unavailable"]] == [current_episode]
     assert runs.status_code == 200
     row = next(row for row in runs.json() if row["episode_id"] == current_episode)
-    assert (row["health_tone"], row["run_section"]) == ("degraded", "running")
+    assert row["health_tone"] == "degraded"
+    assert status != "running" or row["run_section"] == "running"
     assert row["experiment_id"] == "exp/launched"
 
 
