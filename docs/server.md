@@ -326,6 +326,14 @@ sudo systemctl start rcp.service
 sudo journalctl --unit=rcp.service --no-pager | grep 'operation=<operation-id>'
 ```
 
+When doctor reports a `recurring error` problem or a `service_log_warnings`
+entry, read the full tracebacks in the journal. Doctor shows only the
+[error signature](specs/server-and-machine-operations.md#recurring-service-errors):
+
+```bash
+sudo journalctl --unit=rcp.service --since=yesterday --output=cat --no-pager | grep -A 30 '^ERROR'
+```
+
 ## Update the server release
 
 Review and confirm the exact release identity displayed by:
