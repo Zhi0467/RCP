@@ -27,6 +27,7 @@ export function OverflowMenu({
   triggerClassName = "icon-button",
   listClassName,
   portal = false,
+  disabled = false,
 }: {
   label: string;
   items: readonly OverflowMenuItem[];
@@ -35,6 +36,7 @@ export function OverflowMenu({
   triggerClassName?: string;
   listClassName?: string;
   portal?: boolean;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [place, setPlace] = useState<PopoverPlacement | null>(null);
@@ -130,6 +132,7 @@ export function OverflowMenu({
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => setOpen((value) => !value)}
       >
         <Ellipsis size={16} />

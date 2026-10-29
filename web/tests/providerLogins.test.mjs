@@ -196,7 +196,7 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
     );
     assert.equal(count(claude, /data-sign-in-add="shared"/g), 1);
     assert.equal(count(claude, /data-sign-in-add="own"/g), 0);
-    assert.equal(count(claude, /class="sign-ins-members"/g), 1);
+    assert.equal(count(claude, /sign-ins-members"/g), 1);
 
     // Codex: only Shared on, so it is drawn first, its switch locked, the swap disabled.
     assert.deepEqual(
@@ -219,7 +219,7 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
 
     // An unmanaged CLI: its machine card only, no switch, add or ⋯.
     assert.equal(count(opencode, /data-card-state=/g), 1);
-    assert.equal(count(opencode, /data-tray|data-sign-in-add|data-sign-in-action="more"/g), 0);
+    assert.equal(count(opencode, /data-tray|data-sign-in-add|sign-in-more/g), 0);
 
     // A space with no other members has no Members row; trays stay the same.
     const alone = fold(everyState, { ...settingsFor(), other_member_count: 0 });
@@ -229,12 +229,15 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
 
 test("a login notice offers one action, except on another member's own login", () =>
   ssr(({ React, render, ProviderLoginNotice }) => {
+    const shared = loginRow({ state: "signed_out" });
     const html = render(
       React.createElement(ProviderLoginNotice, {
         viewerUserId: "u-me",
         onOpenSignIns() {},
         states: [
-          loginRow({ state: "signed_out" }),
+          // The same login twice is one row.
+          shared,
+          shared,
           loginRow({ state: "signed_out", kind: "own", login_id: "own-me", owner_user_id: "u-me" }),
           loginRow({
             state: "signed_out",
@@ -252,6 +255,7 @@ test("a login notice offers one action, except on another member's own login", (
       ["open", "open", "other-member"],
     );
     assert.equal(count(html, /data-login-notice-action="open-sign-ins"/g), 2);
+    assert.match(html, /aria-label="Dismiss"/);
     assert.match(html, /provider-login-notice-owner">Dee</);
     // A row is one line: no paragraphs.
     assert.equal(count(html, /<p[ >]/g), 0);

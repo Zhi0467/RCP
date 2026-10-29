@@ -1,7 +1,6 @@
 import {
   ArrowLeftRight,
   ArrowUpDown,
-  Ellipsis,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -44,6 +43,7 @@ import type {
   ProviderSignInStatus,
 } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
+import { OverflowMenu } from "../ui/OverflowMenu";
 
 const SIGN_IN_POLL_MS = 2000;
 const SIGN_IN_POLL_FAILURE_LIMIT = 5;
@@ -406,25 +406,17 @@ function ProviderPanel({
         {trays[layout.order[1]]}
       </div>
       {members.of > 0 ? (
-        <details
+        <Fold
           className="sign-ins-members"
-          title={`Other members' own sign-ins. Signed in: ${members.signedIn} of ${members.of}.`}
+          title={<span title="Other members' own sign-ins.">Members</span>}
+          status={`${members.signedIn} of ${members.of}`}
         >
-          <summary>
-            <strong>Members</strong>
-            <span>
-              <span className="sign-ins-members-mark" aria-hidden="true">
-                ▸
-              </span>{" "}
-              {members.signedIn} of {members.of}
-            </span>
-          </summary>
           <div className="sign-ins-cards">
             {entry.members.map((row) =>
               card(row, { name: row.owner_display_name ?? "", actions: false }),
             )}
           </div>
-        </details>
+        </Fold>
       ) : null}
     </section>
   );
@@ -510,7 +502,6 @@ export function SignInCard({
 }: CardProps) {
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
-  const [menu, setMenu] = useState<"closed" | "open" | "confirm-remove">("closed");
   const [token, setToken] = useState("");
   const [signIn, setSignIn] = useState<ProviderSignInStatus | null>(row.sign_in);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -587,7 +578,6 @@ export function SignInCard({
   async function run(kind: string, action: () => Promise<unknown>) {
     setBusy(kind);
     setFailure(null);
-    setMenu("closed");
     try {
       await action();
       await onChanged();
@@ -638,12 +628,7 @@ export function SignInCard({
       label: "Sign out",
       act: () => void run("sign-out", () => signOutProvider(provider, host, loginId)),
     },
-    removable && {
-      id: "remove",
-      label: "Remove from shared",
-      act: () => setMenu("confirm-remove"),
-    },
-  ].filter((item): item is { id: string; label: string; act: () => void } => Boolean(item));
+  ].filter((item) => !!item);
   // A running sign-in, token entry or a removal has nothing else to offer until it ends.
   const hasMenu =
     actions &&
@@ -651,7 +636,7 @@ export function SignInCard({
     !entering &&
     state !== "draining" &&
     state !== "signing_in" &&
-    items.length > 0;
+    (items.length > 0 || removable);
 
   let body: ReactNode;
   if (state === "draining") {
@@ -797,68 +782,78 @@ export function SignInCard({
         </button>
       ) : null}
       {hasMenu ? (
-        <span
-          className="sign-in-more"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)) setMenu("closed");
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setMenu("closed");
-          }}
-        >
-          <button
-            className="icon-button compact"
-            type="button"
-            data-sign-in-action="more"
-            aria-label="More"
-            title="More"
-            aria-haspopup="menu"
-            aria-expanded={menu !== "closed"}
+        busy === "verify" || busy === "sign-out" || busy === "remove" ? (
+          <span className="sign-in-more">
+            <LoaderCircle size={14} className="spin" />
+          </span>
+        ) : (
+          <OverflowMenu
+            label="More"
+            items={[]}
+            className="sign-in-more"
+            triggerClassName="icon-button compact"
             disabled={disabled}
-            onClick={() => setMenu(menu === "closed" ? "open" : "closed")}
           >
-            {busy && busy !== "sign-in" && busy !== "token" && busy !== "cancel" ? (
-              <LoaderCircle size={14} className="spin" />
-            ) : (
-              <Ellipsis size={14} />
-            )}
-          </button>
-          {menu === "open" ? (
-            <span className="sign-in-menu" role="menu">
-              {items.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="menuitem"
-                  data-sign-in-action={item.id}
-                  onClick={item.act}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </span>
-          ) : menu === "confirm-remove" ? (
-            <span className="sign-in-menu" role="menu">
-              <button
-                type="button"
-                role="menuitem"
-                className="danger"
-                data-sign-in-action="confirm-remove"
-                autoFocus
-                onClick={() =>
-                  void run("remove", () => removeProviderLogin(provider, host, loginId))
-                }
-              >
-                <Trash2 size={14} aria-hidden="true" />
-                Remove from shared
-                <span className="tag" data-bound-running={row.bound_running}>
-                  {row.bound_running} running
-                </span>
-              </button>
-            </span>
-          ) : null}
-        </span>
+            <SignInMenuRows
+              items={items}
+              removable={removable}
+              running={row.bound_running}
+              onRemove={() =>
+                void run("remove", () => removeProviderLogin(provider, host, loginId))
+              }
+            />
+          </OverflowMenu>
+        )
       ) : null}
     </article>
   );
+}
+
+type MenuItem = { id: string; label: string; act: () => void };
+
+/** The ⋯ rows. Remove asks once more, with the running count; reopening starts over. */
+function SignInMenuRows({
+  items,
+  removable,
+  running,
+  onRemove,
+}: {
+  items: MenuItem[];
+  removable: boolean;
+  running: number;
+  onRemove: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming) {
+    return (
+      <button
+        type="button"
+        role="menuitem"
+        className="danger"
+        data-sign-in-action="confirm-remove"
+        autoFocus
+        onClick={onRemove}
+      >
+        <Trash2 size={14} aria-hidden="true" />
+        Remove from shared
+        <span className="tag" data-bound-running={running}>
+          {running} running
+        </span>
+      </button>
+    );
+  }
+  const rows = removable
+    ? [...items, { id: "remove", label: "Remove from shared", act: () => setConfirming(true) }]
+    : items;
+  return rows.map((item) => (
+    <button
+      key={item.id}
+      type="button"
+      role="menuitem"
+      data-sign-in-action={item.id}
+      onClick={item.act}
+    >
+      {item.label}
+    </button>
+  ));
 }

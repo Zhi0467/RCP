@@ -4269,43 +4269,13 @@ button.agent-provider-label {
     opacity: 1;
   }
 }
-.sign-in-menu {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  box-shadow: var(--shadow);
-  display: grid;
-  min-width: 170px;
-  padding: 4px;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 20;
-}
-.sign-in-menu button {
-  align-items: center;
-  background: none;
-  border: 0;
-  border-radius: 5px;
-  color: var(--ink);
-  cursor: pointer;
-  display: flex;
-  font: inherit;
-  font-size: var(--type-2xs);
-  gap: 6px;
-  padding: 7px 8px;
-  text-align: left;
+.sign-in-more .agent-row-menu-list button {
   white-space: nowrap;
 }
-.sign-in-menu button:hover,
-.sign-in-menu button:focus-visible {
-  background: var(--aqua-selected, var(--paper));
-  outline: none;
-}
-.sign-in-menu button.danger {
+.sign-in-more .danger {
   color: var(--red);
 }
-.sign-in-menu .tag {
+.sign-in-more .tag {
   margin-left: auto;
 }
 .sign-in-add {
@@ -4321,28 +4291,6 @@ button.agent-provider-label {
 }
 .sign-in-add:hover:not(:disabled) {
   color: var(--ink);
-}
-.sign-ins-members > summary {
-  align-items: center;
-  cursor: pointer;
-  display: flex;
-  font-size: var(--type-2xs);
-  gap: 8px;
-  list-style: none;
-}
-.sign-ins-members > summary::-webkit-details-marker {
-  display: none;
-}
-.sign-ins-members > summary > span {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.sign-ins-members-mark {
-  display: inline-block;
-  transition: transform 120ms ease;
-}
-.sign-ins-members[open] .sign-ins-members-mark {
-  transform: rotate(90deg);
 }
 .sign-ins-members > .sign-ins-cards {
   margin-top: 6px;
@@ -4365,8 +4313,7 @@ button.agent-provider-label {
   .sign-ins-tray,
   .sign-ins-switch,
   .sign-ins-switch::after,
-  .sign-in-more,
-  .sign-ins-members-mark {
+  .sign-in-more {
     transition: none;
   }
 }
