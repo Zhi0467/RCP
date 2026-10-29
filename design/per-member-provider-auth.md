@@ -59,12 +59,13 @@ from one account to another.
 | Shared login | A login with no `member_id`: the machine sign-in, plus every login a member added as shared. Any member may sign it in, verify it, sign it out, add it or remove it. UI group: "Shared on <machine>". |
 | Own login | A login with `member_id` set. One per member, provider and host. Only that member may act on it. UI row: "Yours". |
 | Setting | Per `(member, provider, host)`: `own`, `own_then_shared` or `shared` (UI: "Yours only", "Yours, then shared", "Shared only"). |
-| Healthy | The credential is present, the row is `signed_in`, and the login is not draining or removed. |
+| Usable | The credential is present, the row is `signed_in`, and the login is not removed. Bound work (rules 1 and 2) needs only this. |
+| Assignable | Usable and not draining. New choices (rules 3 and 4) need this. "Healthy" in the table means assignable. |
 | Limited | A recent turn on this login ended with `session_limit` (section 1, "Limit mark"). A soft mark that lapses. RCP still uses the login when nothing else allowed is free. |
 | Bound | A Codex session stays on the login it started with, because the session lives in that login's home folder. |
-| Turn boundary | The start of a new agent task, including Resume and human Retry. Exceptions: a transport reattempt (`retry` admitted by the transport timer) and a `graph_repair` correction, which inherit their parent's login. |
+| Turn boundary | The start of a new agent task, including human Resume and Retry. Two exceptions inherit their parent's login: a transport reattempt (its parent carries a `transport_auto_retry` receipt), and the initial `graph_repair` correction (admitted with `claim_graph_repair_parent=True`). A human Resume or Retry of a repair task is a boundary. |
 | Previous login | For a continued session: the `login_id` of the latest task row with the same provider, host and `native_session_id` that reached provider start, other than the current task. A fresh session has none. |
-| Park | Work waits, without failing, until its login is healthy again. |
+| Park | Work waits, without failing, until its login is usable again. |
 | Fence, generation | As in the providers spec, [Login state and failure](../docs/specs/providers-and-containment.md#login-state-and-failure). |
 
 "Pool first" was dropped. It would only matter to a member who wants their own
@@ -80,29 +81,53 @@ session writes a `provider_login_switched` receipt with `from`, `to` and a reaso
 Hovering a turn's agent chip names its login, and a moved turn's chip carries a
 small switch mark. No row ever starts a fresh session on its own (invariant 10g).
 
-The limit signal is the existing one: a task whose last
-`provider_terminal_error` receipt has `classification == "session_limit"`
-(`classify_terminal_error`). Today's recovery keeps the session: Auto-research
-resumes it exactly, Experiment episodes record a diagnostic and wait for Retry,
-and chats keep it for the next turn.
+A receipt is written only when the resolved login differs from the previous
+login. When several reasons apply, the first in this order wins:
+
+1. `unhealthy`: the previous login is not assignable;
+2. `limited`: the previous login carries the limit mark;
+3. `sender_setting`: the previous row's `authorized_by` differs from this task's;
+4. `setting_changed`: the setting's `changed_at` is later than the previous row's
+   provider start;
+5. `preferred_source_available`: the setting now prefers a source that has an
+   assignable login without the mark.
+
+The limit signal is the existing one: `_failure_classified_as(record,
+"session_limit")`. It reads the `provider_terminal_error` receipt where one is
+written, and otherwise the error text through `classify_terminal_error`, so Work,
+Discuss and Experiment turns count too. Today's recovery keeps the session:
+Auto-research resumes it exactly, Experiment episodes record a diagnostic and
+wait for Retry, and chats keep it for the next turn.
+
+**After a limit, who triggers the next turn.** If the member's setting has an
+assignable login without the mark, episode work is retried once automatically
+through its owner's existing path:
+
+- Auto-research recovery already resumes on its own;
+- Experiment loops get the `background.retry` that release already uses for
+  `provider_auth`.
+
+A chat moves on the member's next message or Retry. With no such login,
+everything stays as today.
 
 | Event | Yours only | Yours, then shared | Shared only |
 | --- | --- | --- | --- |
 | **New session** (chat, episode, child) | Your login. If it is unhealthy, admission refuses, and the notice opens your row. If it is limited, it still runs. | Your login if it is healthy and not limited. Otherwise the shared login used longest ago. If nothing is healthy, refused, naming your login. | The shared login used longest ago, preferring one that is not limited. If none is healthy, refused, naming the shared set. |
-| **Your login hits a limit mid-episode, Claude** | The turn ends `session_limit`, and your login is marked limited. Existing recovery resumes the same session on your login, and may hit the limit again. Notice: the existing limit notice. | The turn ends `session_limit`. At the next turn the same session moves to a shared login. Receipt reason: `limited`. When your login's mark clears, later turns move back (`preferred_source_available`). | Not applicable. |
+| **Your login hits a limit mid-episode, Claude** | The turn ends `session_limit`, and your login is marked limited. Existing recovery, as today: Auto-research resumes on your login and may hit the limit again; an Experiment waits for Retry. Notice: the existing limit notice. | The turn ends `session_limit`. The episode's next turn comes from the one automatic retry above, and the same session moves to a shared login (`limited`). It moves back (`preferred_source_available`) only after the mark is cleared by evidence: a completed turn on your login, or a Verify. A lapse never moves a running session. | Not applicable. |
 | **Your login hits a limit mid-episode, Codex** | The session is bound. It waits for existing recovery or Retry on your login. Switch provider is offered where it is today. | Same session: bound, waits as before. New Codex sessions, such as new Auto-research children, start on a shared login. | Not applicable. |
-| **The shared login a session is on hits a limit** | Not applicable. | Claude: at the next turn, back to your login if it is healthy and not limited, else another shared login that is not limited (`limited`). Codex: bound, waits; new sessions avoid the limited login. | Claude: at the next turn, another shared login that is not limited (`limited`). Codex: bound, waits; new sessions avoid the limited login. |
-| **Every allowed login is limited** | Runs on your login. | Runs on your login; it comes first even when limited. | Runs on the shared login used longest ago. In every case the limit may have lifted. If not, the turn ends `session_limit` again and existing recovery owns the retry. Nothing is refused. |
-| **Resume or Retry of a paused or limited session** | Your login. Unhealthy: parks under it. | Claude: resolved as a new turn, so it may move (receipt). Codex: the bound login; if unhealthy it parks; if limited it runs. | Claude: resolved as a new turn; sticky if its login is still healthy and not limited. Codex: as left. |
+| **The shared login a session is on hits a limit** | Not applicable. | Claude: the next turn (the automatic retry for episodes, the next message for chats) goes back to your login if it is assignable and not limited, else to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. | Claude: the next turn, triggered the same way, goes to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. |
+| **Every allowed login is limited** | Runs on your login. | Runs on your login; it comes first even when limited. | A continued session stays on its previous login if it is still assignable, with no receipt. A fresh session takes the one used longest ago. In every column the limit may have lifted. If not, the turn ends `session_limit` again and existing recovery owns the next try. Nothing is refused, and no automatic retry fires. |
+| **Resume or Retry of a paused or limited session** | Runs for whoever pressed it; episode tasks for the episode's authorizer. Your login; if unusable, parks under it. | Claude: resolved as a new turn, so it may move (receipt). Codex: the bound login; if unusable it parks; if limited it runs. | Claude: resolved as a new turn; sticky if its login is still assignable and not limited. Codex: as left. |
+| **A teammate presses Retry on your chat** | Claude: resolves by the teammate's setting, since they asked. Receipt `sender_setting` if the login differs. Codex: the bound login. Episode tasks: always the episode's authorizer. | Same rule. | Same rule. |
 | **Switch provider on a run** | Existing handoff: a fresh session on the new provider, with the handoff receipt it records today. The new provider resolves by your setting for it on that machine: your login there. | Fresh session. Your login for the new provider if it is healthy and not limited, else that provider's shared login. | Fresh session on that provider's shared login. |
 | **Switch to a provider whose own login is limited** | Runs on your limited login, since nothing else is allowed. It may hit the limit again. | Falls back to that provider's shared login. | Not affected. |
-| **A login is signed out or revoked mid-run** | The running turn finishes or fails on its login. Provider evidence fences only that login. The work parks as `provider_auth` under your login, and the notice offers sign-in. | Claude: if a shared login is healthy, the parked work is released at once and moves at its next turn (`unhealthy`); otherwise it parks. Codex: bound, parks until that login is verified; Switch provider where offered. | Claude: another healthy shared login at the next turn (`unhealthy`), else it parks. Codex: bound, parks. |
+| **A login is signed out or revoked mid-run** | The running turn finishes or fails on its login. Provider evidence fences only that login. The work parks as `provider_auth` under your login, and the notice offers sign-in. | Unbound work: if another allowed login is assignable, release runs right after settlement records the park, and the next turn moves (`unhealthy`). Otherwise it parks. This includes a Codex task that failed before the provider named its session. Bound Codex: parks until that login is verified; Switch provider where offered. | Same as the middle column, over the shared logins. |
 | **A new turn in a chat whose earlier turns ran on another login** | Claude: your login, the sender's. If it differs from the previous login, a receipt with reason `sender_setting`. Codex: the session's login, whoever sends, so its owner pays. If that login is unhealthy, the turn waits; start a new chat or switch provider. | Claude: by your setting, staying on the previous login if it is the source your setting picks. Codex: as left. | Claude: the previous shared login if it is healthy and not limited, else the one used longest ago. Codex: as left. |
-| **The shared login a session is on is being removed** | Not applicable. | Claude: moves at its next turn (`unhealthy`). Codex: keeps running on it until nothing bound is left (section 3). | Same as the middle column. |
+| **The shared login a session is on is being removed** | Not applicable. | Claude: moves at its next turn (`unhealthy`). Codex: keeps running on it, because draining is still usable, until nothing running is bound (section 3). | Same as the middle column. |
 
-Release rule from the table: when a Claude task parks as `provider_auth` while
-another login its setting allows is healthy, it is released at once. It does not
-wait for a verify.
+Release rule from the table: when unbound work parks as `provider_auth` while
+another login its setting allows is assignable, it is released at once. It does
+not wait for a Verify.
 
 ## 1. Data model and migration
 
@@ -154,17 +179,22 @@ Readers of `provider_login_states` skip removed rows: the Settings list, release
 and the resolver. `mark_provider_login_verified` and the sign-in runner refuse a
 removed login, so a late verify or token paste cannot revive it.
 
-**Limit mark.** When a task's last `provider_terminal_error` receipt is
-classified `session_limit`, settlement sets `limited_at` on that task's login.
+**Limit mark.** When settlement finds `_failure_classified_as(record,
+"session_limit")`, it sets `limited_at` on that task's login. Like a fence, a
+mark or clear applies only from a task whose provider start is later than the
+current `limited_at`, so an overlapping turn cannot undo a fresh mark.
+
 The mark clears in three ways:
 
-- a later completed provider turn on that login;
-- a successful Verify;
-- lapsing after `PROVIDER_LOGIN_LIMIT_HINT_SECONDS` in `limits.py`.
+- **Evidence:** a completed provider turn on that login that started after
+  `limited_at`.
+- **Evidence:** a successful Verify.
+- **Lapse:** after `PROVIDER_LOGIN_LIMIT_HINT_SECONDS` in `limits.py`.
 
 Without the lapse, a login that is always skipped would never get a turn to clear
-its mark. When it lapses too early, the cost is one turn that ends
-`session_limit` again and renews the mark. RCP does not infer when or how widely
+its mark. A lapse only reorders choices for new sessions. A running session moves
+back to that login only after an evidence clear, so an early lapse costs at most
+one new session's turn. RCP does not infer when or how widely
 a limit applies. The mark only orders the choice, and a limited login still runs
 when nothing else allowed is free. That keeps the spec rule that RCP does not
 infer limit scope from prose.
@@ -208,32 +238,36 @@ infer limit scope from prose.
 | Auto-research orchestrator and children | The episode's `authorized_by`. Children already must match it. |
 | Experiment loop turns, wrap-up reports | The episode's `authorized_by`. |
 | Nightly consolidation | The schedule's `authorized_by`. |
-| Recovery, Retry, transport reattempts | The original task's member. |
+| Human Resume and Retry | The member who pressed it, except episode tasks, which use the episode's authorizer (`_start`). |
+| Transport reattempts, automatic recovery | The original task's member. |
 
 **Which login.** One resolver in `agents/provider_accounts.py` returns a
 `LoginKey(provider, host, login_id)` or a refusal. Its inputs are the provider,
 the host, the member, the continued session's login if any, and the session's
 previous login if any. Rules, first match wins:
 
-1. **Same lineage.** A transport reattempt or a `graph_repair` correction keeps
-   its parent row's login. If that login is not healthy, the task waits for it.
+1. **Same lineage.** A transport reattempt (parent has a `transport_auto_retry`
+   receipt) or the initial `graph_repair` correction (`claim_graph_repair_parent`)
+   keeps its parent row's login. If that login is not usable, the task waits.
 2. **Bound session (Codex).** A task that continues a Codex session uses that
    session's login. That is the `login_id` of the earliest task row with the
    same provider and `native_session_id` that reached provider start.
    - A fork has no session id until the provider names it, so it uses its fork
      source session's login.
    - Watcher wakes and Paper coach sessions inherit the login the same way.
-   - If that login is unhealthy, the task waits. If it was removed, the task
+   - If that login is not usable, the task waits. If it was removed, the task
      fails with `session_refused` and the reason "start a new chat".
 3. **Source.** Walk the member's setting over the two sources, own and shared.
-   Take the first source with a healthy login that is not limited. If there is
-   none, take the first source with any healthy login.
+   Take the first source with an assignable login that is not limited. If there
+   is none, take the first source with any assignable login.
 4. **Login within the source.**
    - Own: the member's login.
-   - Shared: the session's previous login, if it is shared, healthy and not
-     limited. Otherwise the healthy shared login with the oldest
-     `last_assigned_at`, preferring ones that are not limited. Ties go to the
-     machine sign-in, then the oldest `added_at`.
+   - Shared: the session's previous login, if it is shared, assignable and not
+     limited. Otherwise the assignable shared login with the oldest
+     `last_assigned_at`, preferring ones that are not limited. Exception: when
+     every assignable shared login is limited, a continued session keeps its
+     previous login if that is still assignable. Ties go to the machine sign-in,
+     then the oldest `added_at`.
 5. **Refuse.** The refusal names the first source in the setting.
 
 OpenCode has no added logins. Its only login is the machine sign-in (section 4).
@@ -289,11 +323,12 @@ existing handoff receipt.
   variable. The session, config and skills stay in the OS home, so the same
   native session resumes under any token. At each turn boundary the resolver runs
   again by the current setting. The session moves only when:
-  - its login is unhealthy or limited;
+  - its login is not assignable, or carries the mark;
   - the setting no longer allows that login's source;
-  - the setting prefers a source that now has a healthy login that is not
-    limited;
-  - or a different member sent the turn.
+  - the setting prefers a source that now has an assignable login without the
+    mark, and that source's mark, if any, was cleared by evidence;
+  - or a different member sent the turn and the resolver picks a different login
+    for them.
 
   Within the shared set it stays put. Every move writes the receipt.
 - **Codex: must wait.** A Codex session lives in its login's `CODEX_HOME`.
@@ -324,25 +359,35 @@ category released today is still released: blocked recoveries, queued tasks,
 failed Experiment-loop turns, watcher groups, and, through episode
 reconciliation, reports and mail.
 
-Four events release work:
+Five events release work:
 
 - **Verifying login L** releases work bound to L, plus other parked work whose
   member's setting includes L's source.
 - **Adding a shared login** that verifies counts as verifying it.
 - **Changing a setting** releases that member's parked work that is not bound,
   for each source the new setting makes usable.
-- **Fencing a login** releases at once any unbound work it parks if the member's
-  setting still has a healthy login. This is the decision table's release rule.
+- **Settling unbound work as `provider_auth`.** If the member's setting still
+  has an assignable login, the same code path that settles the task calls the
+  login-keyed `resume_provider_account` for that login. It runs after the park is
+  recorded, not at the fence, because `_failure_kind` writes the fence before the
+  recovery row exists. This covers Codex tasks with no `native_session_id` too.
+- **Settling unbound episode work as `session_limit`.** One automatic retry
+  through the owner's existing path when an assignable login without the mark is
+  allowed (decision table).
 
 **Removing a shared login.** Any member may remove a shared login except the
 machine sign-in. Removal never cuts off running Codex work:
 
-1. Remove takes the login's credential gate (`hold_blocking`), cancels any
-   pending sign-in on it, and sets `draining_since`. From then on no new session
-   is assigned to it, and Claude sessions move at their next turn.
-2. While a running task or a non-terminal episode is bound to it, the login stays
-   in use for that bound Codex work. It can still be verified if it fails. The
-   confirm dialog for Remove shows how many are bound.
+1. Remove first cancels any pending sign-in on the login through the existing
+   `cancel_sign_in`, because a device sign-in holds the gate for its whole
+   attempt. It then sets `draining_since`, and only then takes the gate
+   (`hold_blocking`). From then on no new session is assigned to it, and Claude
+   sessions move at their next turn.
+2. A draining login is still usable, so bound Codex work keeps running on it.
+   The drain counts only running tasks and running, unpaused episodes bound to
+   it. A paused episode does not hold the drain open. If it resumes after the
+   removal finishes, it fails with `session_refused`. The login can still be
+   verified if it fails. The confirm dialog for Remove shows how many are bound.
 3. When nothing bound is left, a `reconcile_recovery` pass finishes the removal:
    - it records `signed_out` (new generation) and sets `removed_at`;
    - it deletes only the credential, the Claude token or the Codex `auth.json`.
@@ -617,6 +662,13 @@ and Codex where the cell differs. Each test checks:
 - A limited login is skipped while another allowed one is free, and still runs
   when none is. Its mark clears after a completed turn or a Verify, and lapses
   after the hint time.
+- A turn that started before the mark and completes after it leaves the mark in
+  place.
+- A lapse reorders new sessions but does not move a running session back.
+- When every shared login is limited, a continued session stays put and writes no
+  receipt.
+- An Experiment on "Yours, then shared" whose own login hits a limit is retried
+  once automatically and moves to a shared login.
 
 **Lineage and sessions.**
 
@@ -630,8 +682,16 @@ and Codex where the cell differs. Each test checks:
 
 - Gate recheck: unbound work falls back to another login, and bound work fails as
   `provider_auth` through the typed flag.
+- Release after settlement: unbound work parked as `provider_auth` is released at
+  once when another allowed login is assignable.
+- Retry pressed by a teammate resolves by the teammate's setting. In an episode,
+  the episode's authorizer is used.
+- A human Retry of a `graph_repair` task is a turn boundary. The initial
+  correction keeps its parent's login.
 - Fence isolation: a failure on one login fences no other login.
 - Removing a shared login with a running bound Codex episode drains it:
+  - the episode keeps launching turns on the draining login (no deadlock);
+  - Remove during a pending device sign-in cancels it first;
   - no new assignments;
   - the episode keeps running, and removal finishes after it ends;
   - the row and Codex sessions stay;
