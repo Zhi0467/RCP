@@ -21,7 +21,7 @@ test("artifact and terminal resources render at phone width and refresh through 
       route.fulfill({ json: entries }),
     );
     await page.goto("http://127.0.0.1:8469/tests/fixtures/artifacts.html");
-    await page.getByText("No saved artifacts or reports yet.").waitFor();
+    await page.locator('.artifacts-view:not([aria-busy="true"])').waitFor();
     entries = [
       {
         id: "a",

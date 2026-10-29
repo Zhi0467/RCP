@@ -1,6 +1,6 @@
 import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { TriangleAlert, ExternalLink, Maximize2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { edgeValidationFlags } from "./nodeDetail";
 import { humanize, nodeTypeLabel, presentNode } from "./nodePresentation";
@@ -13,6 +13,8 @@ export interface RelationMapProps {
   incidentEdges: Edge[];
   validationMessages: ValidationMessage[];
   onOpenNodeWindow: (nodeId: string) => void;
+  /** The owner's section heading; the expand control shares its row. */
+  heading: ReactNode;
 }
 
 export interface RelationPeerGroup {
@@ -150,6 +152,7 @@ export function RelationMap({
   incidentEdges,
   validationMessages,
   onOpenNodeWindow,
+  heading,
 }: RelationMapProps) {
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [overlayTarget, setOverlayTarget] = useState<Element | null>(null);
@@ -214,14 +217,9 @@ export function RelationMap({
   }, [focusedNode.id]);
 
   const compactMap = (
-    <div
-      className="relation-map relation-map-compact"
-      aria-label={`Relations for ${focusedNode.title}`}
-    >
-      <div className="relation-map-toolbar">
-        <span>
-          {incidentEdges.length} relation{incidentEdges.length === 1 ? "" : "s"}
-        </span>
+    <>
+      <div className="relations-control-heading">
+        {heading}
         <button
           ref={expandButtonRef}
           type="button"
@@ -233,14 +231,19 @@ export function RelationMap({
           <Maximize2 size={16} />
         </button>
       </div>
-      <RelationFlow
-        focusedNode={focusedNode}
-        allNodes={allNodes}
-        groups={groups}
-        validationMessages={validationMessages}
-        onSelectNode={onOpenNodeWindow}
-      />
-    </div>
+      <div
+        className="relation-map relation-map-compact"
+        aria-label={`Relations for ${focusedNode.title}`}
+      >
+        <RelationFlow
+          focusedNode={focusedNode}
+          allNodes={allNodes}
+          groups={groups}
+          validationMessages={validationMessages}
+          onSelectNode={onOpenNodeWindow}
+        />
+      </div>
+    </>
   );
 
   const inspectedNode = inspectedNodeId ? allNodes[inspectedNodeId] : undefined;

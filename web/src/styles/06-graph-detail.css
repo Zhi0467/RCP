@@ -528,15 +528,8 @@
   isolation: isolate;
   padding: 10px;
 }
-.relation-map-toolbar {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font: 650 var(--type-3xs)/1.2 var(--mono);
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
 .relation-map-expand {
+  margin-left: auto;
   min-height: 32px;
   min-width: 32px;
 }
