@@ -116,6 +116,40 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
     assert checked.json()["job_manager"] == expected
 
 
+def test_only_the_base_machine_offers_the_helper_route(compute_api, monkeypatch):
+    from rcp.compute_jobs import probe as probe_module
+
+    app, client, _ = compute_api
+    store = app.state.services.store
+    project_id = app.state.default_project_id
+    app.state.service.add_machine("gpu", "gpu.example", "alice")
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="alice")
+    store.update_space_machine(gpu.machine_id, job_manager="slurm")
+    # A helper check recorded when a turn could still run on any machine.
+    store.record_compute_backend_probe(
+        project_id, _result("gpu", "systemd_user", "ready", ""), "helper"
+    )
+    calls = []
+
+    def run(manifest, machine, route, *, data_dir, compute):
+        calls.append((machine, route))
+        return _result(machine, {"helper": "launchd", "scheduler": "slurm"}[route], "ready", "")
+
+    monkeypatch.setattr(probe_module, "probe_compute_backend", run)
+    monkeypatch.setattr(probe_module, "detect_slurm", lambda host: None)
+    probe_module.refresh_compute_probes(
+        store,
+        load_manifest(store.project(project_id).locator),
+        project_id,
+        data_dir=app.state.catalog.data_dir,
+    )
+    assert sorted(calls) == [("gpu", "scheduler"), ("laptop", "helper")]
+    assert store.compute_backend_probe(project_id, "gpu", "helper") is None
+    assert store.compute_backend_probe(project_id, "gpu", "scheduler") is not None
+    cards = {card["host"]: card for card in client.get("/api/space/machines").json()["machines"]}
+    assert (cards[""]["agents_run_here"], cards["gpu.example"]["agents_run_here"]) == (True, False)
+
+
 def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):
     from rcp.compute_jobs import probe as probe_module
 

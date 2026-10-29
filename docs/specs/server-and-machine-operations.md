@@ -351,6 +351,24 @@ or an Experiment index row that cannot read a copied project, refuses. **Why:** 
 cached bytes that a space-wide read cannot use. A restore has no caches to
 carry and makes only the second pass.
 
+Due consolidation then runs on the copy with the fence still closed. Copied
+queued runs launch first. Then the copied clock advances to each schedule's next
+due time, so real admission writes new rows. Every launch of a copied project
+goes through the engine's own pre-spawn validation, `validate_admitted_launch`,
+and stops where a provider would start. A validation error, a run that never
+reached validation, or a new run with an error code refuses. Provider sign-in
+and machine programs are not part of the copy, so their deferral is accepted.
+Watchers and other scheduled dispatch are not exercised.
+
+The candidate check also captures each application log record at WARNING or
+worse, with the check phase that logged it. Any such record refuses, naming
+the phase, logger and message. The one exception is a short commented
+allowlist in
+[application_validation.py](../../src/rcp/server_ops/application_validation.py).
+An allowlisted warning still refuses when it names a copied project. **Why:**
+the 0.4.35 consolidation failure showed only in the log, and an ended
+Experiment on an unusable cache is only logged.
+
 Projection upgrades verify the baseline digest, remove retired fields and fill
 only proven deterministic defaults. They preserve explicit values, unknown keys,
 edge layers and serializer-owned operations. Display caches upgrade or replay
@@ -370,7 +388,9 @@ CI qualifies published stable releases at or above the floor and frozen
 fixtures, using production installation and update owners, populated old data
 and offline scratch. Failure injection verifies rollback and old-code use before
 retry. Pull requests install the floor and the newest four releases; main
-installs every one. The aggregate gate promotes those same bytes. It does not
+installs every one. After the committed update, the candidate's service journal
+must hold no ERROR line or traceback, and the seeded question follow-up must
+still read as succeeded. The aggregate gate promotes those same bytes. It does not
 prove arbitrary installations, provider authentication, remote-root behavior or
 reboot recovery.
 

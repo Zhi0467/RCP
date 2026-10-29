@@ -1365,7 +1365,7 @@ class WatcherStoreMixin(StoreMixinBase):
             return None
         except AgentTaskAdmissionConflict as exc:
             if record.kind in {"node_chat", "project_chat"} and record.episode_id is None:
-                self._record_deferred_watcher_wake(ids, f"Wake deferred: {exc}")
+                self.record_watcher_wake_error(ids, f"Wake deferred: {exc}")
             return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not queue the watcher notification task.") from exc
@@ -1373,7 +1373,7 @@ class WatcherStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
-    def _record_deferred_watcher_wake(self, watcher_ids: list[str], reason: str) -> None:
+    def record_watcher_wake_error(self, watcher_ids: list[str], reason: str) -> None:
         """Show why a completed watcher has not woken its chat yet.
 
         The reason replaces itself rather than accumulating, is written only when

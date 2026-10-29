@@ -71,6 +71,7 @@ const gpu = {
   ],
   provider_readiness: {},
   compute_probes: { scheduler: null, helper: null },
+  agents_run_here: false,
   reach: [{ from: "laptop", probe: null }],
 };
 
@@ -214,8 +215,12 @@ test("one machine card renders every section folded, with remove-from-project on
     /data-machine-setting="job_manager"[^>]*>\s*<button[^>]*aria-pressed="true"[^>]*>On</,
   );
   assert.match(html, /data-compute-route="scheduler"/);
-  assert.match(html, /data-compute-route="helper"/);
   assert.match(html, /data-compute-reach="laptop"/);
+  // The helper and its job folder appear only where agents run.
+  assert.doesNotMatch(html, /data-compute-row="helper"/);
+  const agentMachine = render({ record: { ...gpu, agents_run_here: true } });
+  assert.match(agentMachine, /data-compute-route="helper"/);
+  assert.match(agentMachine, /data-machine-setting="jobs_root"/);
   // Browser, dependencies, compute, provider executables, provider limits,
   // writable paths and hidden folders all start folded.
   const folds = html.match(/<details[^>]*class="fold[ "][^>]*>/g);
@@ -341,29 +346,44 @@ test("space-wide sections render on space Settings and project sections on proje
 });
 
 test("the machine holding the state repository is the one tagged as the base", () => {
-  const project = settingsProject();
-  project.machines = [
-    ...project.machines,
-    { ...project.machines[0], alias: "gpu", host: "gpu.example", removable: true },
-  ];
-  const html = renderMarkup(
-    React.createElement(ProjectSettings, {
-      apiBase: `/api/projects/${projectId}`,
-      project,
-      identity: null,
-      onLeftProject() {},
-      usage: null,
-      onRefreshUsage: async () => {},
-      cacheClearDisabled: false,
-      onSaved() {},
-      onCacheMetricsChange() {},
-      onRefreshReadiness: async () => {},
-      spaceKind: "personal",
-    }),
-  );
-  const tile = (name) => html.match(new RegExp(`data-machine-tile="${name}".*?</button>`))[0];
+  const render = (gpuCompute) => {
+    const project = settingsProject();
+    project.machines = [
+      ...project.machines,
+      {
+        ...project.machines[0],
+        alias: "gpu",
+        host: "gpu.example",
+        compute: gpuCompute,
+        removable: true,
+      },
+    ];
+    const html = renderMarkup(
+      React.createElement(ProjectSettings, {
+        apiBase: `/api/projects/${projectId}`,
+        project,
+        identity: null,
+        onLeftProject() {},
+        usage: null,
+        onRefreshUsage: async () => {},
+        cacheClearDisabled: false,
+        onSaved() {},
+        onCacheMetricsChange() {},
+        onRefreshReadiness: async () => {},
+        spaceKind: "personal",
+      }),
+    );
+    const tile = (name) => html.match(new RegExp(`data-machine-tile="${name}".*?</button>`))[0];
+    const signals = (name) => tile(name).match(/class="machine-tile-signal /g)?.length ?? 0;
+    return { tile, signals };
+  };
+  const { tile, signals } = render(null);
   assert.match(tile("local"), /machine-tile-base/);
   assert.doesNotMatch(tile("gpu"), /machine-tile-base/);
+  // Helper jobs launch only on the base; another machine shows a jobs route only with Slurm.
+  assert.equal(signals("local"), signals("gpu") + 1);
+  const slurm = render({ job_manager: "slurm", jobs_root: "" });
+  assert.equal(slurm.signals("gpu"), slurm.signals("local"));
 });
 
 test("the identity menu holds Display, and Space settings sits beside it", () => {

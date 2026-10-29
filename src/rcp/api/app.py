@@ -35,6 +35,8 @@ from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
+from rcp.api.client_events import ClientEventLimiter
+from rcp.api.client_events import router as client_events_router
 from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
     ApiServices,
@@ -2238,6 +2240,7 @@ def create_app(
     app.state.background_tasks = background_tasks
     app.state.machine_power = machine_power
     app.state.machine_power_started = False
+    app.state.client_event_limiter = ClientEventLimiter()
     app.state.reconcile_question_answers = reconcile_question_answers
     app.state.sync_coordinator = sync_coordinator
     app.state.watcher_poller = watcher_poller
@@ -2555,6 +2558,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(update_notice_router)
+    app.include_router(client_events_router)
     app.include_router(owner_router)
     app.include_router(team_router)
     app.include_router(notifications_router)

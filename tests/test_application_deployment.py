@@ -1489,7 +1489,7 @@ def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
         )
 
 
-def _seed_experiment_run_with_old_display_cache(request, state) -> None:
+def _seed_experiment_run_with_old_display_cache(request, state, *, live: bool) -> None:
     """A live server whose Runs list reads a cache 0.4.34 wrote, coach on its own machine."""
     from rcp.core.authority import AuthorizedHuman
     from rcp.service import RunRequest
@@ -1542,6 +1542,9 @@ def _seed_experiment_run_with_old_display_cache(request, state) -> None:
             )
         )
         store.complete_agent_task(operation_id, applied_revision=None, result={})
+        if not live:
+            store.request_episode_stop(episode_id)
+            store.mark_episode_stop_skipped(episode_id)
         cache = app.state.catalog._cached_snapshot_path(project_id)
     finally:
         store.close()
@@ -1550,9 +1553,57 @@ def _seed_experiment_run_with_old_display_cache(request, state) -> None:
     cache.write_text(json.dumps(envelope), encoding="utf-8")
 
 
-def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path):
+@pytest.mark.parametrize("live", [True, False])
+def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path, live):
     # 0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal
     # carries the live caches and reads Runs before any project open rebuilds them.
+    # An ended loop on such a cache is only logged, so the log check catches it.
     request, state, _ = captured
-    _seed_experiment_run_with_old_display_cache(request, state)
+    _seed_experiment_run_with_old_display_cache(request, state, live=live)
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+@pytest.mark.parametrize("copied", ["queued_by_0_4_35", "due_later"])
+def test_rehearsal_launches_due_consolidation_through_real_validation(
+    captured, monkeypatch, tmp_path, copied
+):
+    # 0.4.35 queued every nightly consolidation with a request field no model
+    # carries, so each launch failed its roundtrip check and retried forever.
+    from datetime import datetime, timedelta
+
+    from rcp.consolidation import ConsolidationPoller
+    from rcp.core.authority import AuthorizedHuman
+
+    request, state, _ = captured
+    app = create_app(data_dir=Path(request.data_dir))
+    store = app.state.catalog.store
+    try:
+        now = datetime.fromisoformat(store.now())
+        store.put_consolidation_schedule(
+            state["project_id"],
+            local_time="02:00",
+            timezone="UTC",
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"],
+                user_id=state["member_id"],
+                display_name="Qualification researcher",
+            ),
+            next_due_at=(now + timedelta(hours=1)).isoformat(),
+        )
+        if copied == "queued_by_0_4_35":
+            # Admit the run as the live poller does, but leave it queued.
+            poller = ConsolidationPoller(
+                store, app.state.background_tasks, service_for=app.state.catalog.open
+            )
+            monkeypatch.setattr(poller, "_launch", lambda _operation_id: None)
+            poller.dispatch_due(now + timedelta(hours=1))
+            (run,) = store.consolidation_runs()
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target',"
+                    ' json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+                    (run.operation_id,),
+                )
+    finally:
+        store.close()
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
