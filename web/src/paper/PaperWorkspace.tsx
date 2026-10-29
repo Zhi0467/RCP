@@ -445,7 +445,7 @@ export function PaperWorkspace({
             </button>
           )}
           <button
-            className="icon-button"
+            className="icon-button paper-history-button"
             aria-label="Paper history"
             onClick={() => setHistory(true)}
           >

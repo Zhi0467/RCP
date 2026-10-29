@@ -466,6 +466,11 @@
   .paper-format {
     display: none;
   }
+  /* Beside the coach the file row keeps its path and save state, as chat keeps its title. */
+  .paper-live-workspace[data-view="coach"] .paper-presence,
+  .paper-live-workspace[data-view="coach"] .paper-history-button {
+    display: none;
+  }
   .paper-live-workspace:not([data-view="write"]) .paper-editor-box {
     flex: none;
     overflow: visible;
