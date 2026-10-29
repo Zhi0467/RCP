@@ -203,22 +203,31 @@
   gap: 5px;
 }
 /* Every control on the tools row is as tall as its icon buttons: 34px, or the 44px
-   phone target. */
-.chat-composer .chat-send {
-  --composer-control: 34px;
+   phone target. A container whose icon buttons switch at another width sets
+   --composer-control itself. */
+@media (max-width: 560px) {
+  :root {
+    --composer-control: 44px;
+  }
 }
 .chat-composer .chat-send :is(.segmented, .agent-config-chip, .chat-compute-trigger) {
-  height: var(--composer-control);
-  min-height: var(--composer-control);
+  height: var(--composer-control, 34px);
+  min-height: var(--composer-control, 34px);
 }
 .chat-composer .chat-send .segmented button {
   align-self: stretch;
   min-height: 0;
 }
-@media (max-width: 560px) {
-  .chat-composer .chat-send {
-    --composer-control: 44px;
-  }
+/* The agent pick gives way to the other tools, its summary cut short. */
+.chat-composer-tools .agent-config-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-composer-tools .agent-config-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chat-dock {
   background: var(--surface);
@@ -1100,13 +1109,6 @@
   color: var(--muted);
   margin-top: 9px;
 }
-.chat-task-live {
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  width: 1px;
-  clip-path: inset(50%);
-}
 .chat-task-activity > summary {
   align-items: center;
   cursor: pointer;
@@ -1403,14 +1405,6 @@
 .chat-composer.is-dragging-files {
   background: color-mix(in srgb, var(--chat-mode-soft) 72%, var(--surface));
   box-shadow: inset 0 0 0 2px var(--chat-mode-accent);
-}
-.chat-composer > .visually-hidden,
-.chat-add-picker > .visually-hidden {
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  width: 1px;
-  clip-path: inset(50%);
 }
 .chat-add-file {
   border-radius: 10px;

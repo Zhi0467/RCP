@@ -11,19 +11,9 @@
   display: flex;
   gap: 6px;
 }
-/* The agent pick sits among chat's composer tools and gives way to them. */
+/* The coach's few tools keep one row. */
 .paper-coach .chat-composer-tools {
   flex-wrap: nowrap;
-}
-.paper-coach .chat-composer-tools .agent-config-chip {
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.paper-coach .chat-composer-tools .agent-config-chip-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .paper-coach .node-chat-line {
   position: relative;
@@ -64,19 +54,6 @@
 .paper-agent-popover {
   bottom: 8px;
   max-height: min(460px, calc(100% - 16px));
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-.paper-agent-popover > .agent-config {
-  flex: 1;
-  min-width: 0;
-}
-/* Close sits on the select row: below the compact config's padding and field label. */
-.paper-agent-popover > .icon-button {
-  order: 1;
-  flex: none;
-  margin-top: 25px;
 }
 .paper-session-list {
   top: 8px;
@@ -133,12 +110,6 @@
   flex: none;
 }
 @media (min-width: 701px) {
-  .paper-agent-popover > .icon-button {
-    width: 31px;
-    height: 31px;
-    min-height: 31px;
-    padding: 0;
-  }
   .paper-change .icon-button.compact {
     height: 26px;
     min-height: 26px;
@@ -334,11 +305,5 @@
   }
   :root:has(.paper-live-workspace) .branch-picker-trigger {
     min-height: 44px;
-  }
-}
-@media (max-width: 700px) {
-  /* The 44px close target centres on the 31px select row. */
-  .paper-agent-popover > .icon-button {
-    margin-top: calc(25px - (44px - 31px) / 2);
   }
 }

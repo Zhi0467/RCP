@@ -993,7 +993,7 @@ export function TransferProjectSetup({
                   <article className="agent-role-card" key={id}>
                     <header>
                       <strong>{label}</strong>
-                      <span className="role-permission">{profile.machine_alias}</span>
+                      <span className="tag">{profile.machine_alias}</span>
                     </header>
                     <div className="agent-role-fields">
                       <label>

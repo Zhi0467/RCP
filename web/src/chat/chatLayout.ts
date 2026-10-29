@@ -20,10 +20,6 @@ export function chatListWidthBounds(containerWidth: number): ChatListWidthBounds
   return { minimum, maximum };
 }
 
-export function clampChatListWidth(value: number, bounds: ChatListWidthBounds): number {
-  return Math.min(bounds.maximum, Math.max(bounds.minimum, value));
-}
-
 export function isChatListToggleShortcut(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "altKey" | "ctrlKey" | "shiftKey" | "repeat">,
 ): boolean {

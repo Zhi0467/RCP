@@ -27,9 +27,6 @@
   width: 14px;
   margin-left: -14px;
   border-radius: 7px;
-  cursor: col-resize;
-  touch-action: none;
-  transition: background-color 0.14s ease;
   z-index: 2;
 }
 /* The grip shows the gap can be dragged; it turns teal under the pointer and while held. */
@@ -40,13 +37,6 @@
   height: 36px;
   transition: background-color 0.14s ease;
   width: 4px;
-}
-.paper-split-handle:hover,
-.paper-split-handle:focus-visible {
-  background: color-mix(in srgb, var(--teal) 22%, transparent);
-}
-.paper-split-handle:active {
-  background: color-mix(in srgb, var(--teal) 16%, transparent);
 }
 .paper-split-handle:hover::before,
 .paper-split-handle:focus-visible::before,
@@ -85,11 +75,11 @@
     min-height: 29px;
     padding: 5px;
   }
-  .paper-bar .paper-segments {
+  .paper-bar .segmented {
     height: 29px;
     padding: 2px;
   }
-  .paper-bar .paper-segments button {
+  .paper-bar .segmented button {
     padding: 0 12px;
   }
 }
@@ -133,13 +123,6 @@
   font-weight: 700;
 }
 /* Save state is announced, not drawn: unsaved text is guarded on leave, and a failure shows its retry. */
-.paper-saved {
-  clip-path: inset(50%);
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  width: 1px;
-}
 .paper-tree {
   margin: 0 10px;
   flex: 1;
@@ -224,35 +207,6 @@
     opacity: 1;
   }
 }
-.paper-tree-menu {
-  position: fixed;
-  z-index: 40;
-  display: grid;
-  min-width: 170px;
-  padding: 5px;
-  border-radius: 9px;
-  background: var(--aqua-surface, var(--surface));
-  box-shadow: var(--aqua-raised, var(--shadow));
-  color: var(--walnut);
-}
-.paper-tree-menu button {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 6px;
-  box-shadow: none;
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
-  text-align: left;
-}
-.paper-tree-menu button:hover:not(:disabled),
-.paper-tree-menu button:focus-visible {
-  background: color-mix(in srgb, var(--teal) 12%, transparent);
-}
 .paper-path-form {
   display: flex;
   align-items: center;
@@ -263,28 +217,10 @@
   min-width: 0;
   width: 100%;
 }
-.paper-segments {
-  display: inline-flex;
-  gap: 3px;
-  padding: 3px;
-  border-radius: 9px;
-  background: var(--aqua-field, var(--paper-deep));
-  box-shadow: var(--aqua-inset, inset 0 1px 4px rgb(0 0 0 / 12%));
-}
-.paper-segments button {
-  border: 0;
-  box-shadow: none;
-  border-radius: 7px;
-  color: var(--muted);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 12px;
-}
-.paper-segments button[aria-pressed="true"] {
-  color: var(--walnut);
-  background: var(--aqua-surface, var(--surface));
-  box-shadow: var(--aqua-raised, var(--shadow));
+/* A view switch fills its row's height, set per width below. */
+.paper-live-workspace .segmented button {
+  align-self: stretch;
+  min-height: 0;
 }
 .paper-writing-pane,
 .paper-right-pane {
@@ -524,8 +460,7 @@
   }
   .paper-file,
   .paper-folder,
-  .paper-path-form input,
-  .paper-tree-menu button {
+  .paper-path-form input {
     min-height: 44px;
   }
   .paper-tree-menu-button {
@@ -534,19 +469,15 @@
     opacity: 1;
   }
   .paper-live-workspace .icon-button,
-  .paper-dialog .icon-button,
-  .paper-live-workspace .paper-segments button {
+  .paper-dialog .icon-button {
     min-width: 44px;
     min-height: 44px;
   }
   .paper-phone-segments .segmented {
     height: 44px;
   }
-  .paper-phone-segments .segmented button {
-    align-self: stretch;
-    min-height: 0;
-  }
-  .paper-coach .chat-send {
+  /* Paper's icon buttons take the phone target at this width, so its composer does too. */
+  .paper-live-workspace {
     --composer-control: 44px;
   }
 }
