@@ -109,6 +109,8 @@ test("switches and swap write the setting at once and redraw the tray order", as
     ]),
   );
   assert.equal(state.settings.settings[0].setting, "own_then_shared");
+  // Each saved setting tells the app, so launch readiness follows it.
+  await page.waitForFunction(() => window.loginChanges === 3, null, { timeout: 5000 });
   assert.deepEqual(errors, []);
 });
 

@@ -129,7 +129,8 @@ export function useProviderSignIns(viewerUserId: string | null): SignInsData {
         const saved = await write;
         if (settingWrites.current.get(key) === write) replace(saved.setting);
       } catch (failure) {
-        if (settingWrites.current.get(key) === write) void refresh();
+        // The stored value is back on screen before the failure shows.
+        if (settingWrites.current.get(key) === write) await refresh();
         throw failure;
       }
     },
@@ -345,6 +346,8 @@ function ProviderPanel({
     setFailure(null);
     data
       .saveSetting(entry.provider, host, value)
+      // The setting decides which login a launch uses, so readiness follows it.
+      .then(onChanged)
       .catch((cause: unknown) =>
         setFailure({ message: errorMessage(cause), retry: () => write(value) }),
       );
