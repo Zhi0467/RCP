@@ -980,7 +980,9 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 if watcher_ids:
                     claimed = connection.execute(
                         f"""
-                        UPDATE watchers SET notified = 1, notification_operation_id = ?
+                        UPDATE watchers SET notified = 1, notification_operation_id = ?,
+                            last_error = CASE WHEN status = 'completed' THEN NULL
+                                              ELSE last_error END
                         WHERE watcher_id IN ({placeholders}) AND notified = 0
                           AND notification_operation_id IS NULL
                           AND status IN ('completed', 'degraded')

@@ -430,7 +430,7 @@ checkout. Resume, Retry and restart retain it; missing/moved worktrees fail.
 
 Human Merge reserves the isolation owner across all admissions until landing,
 verification and cleanup finish. Live turns must settle. The
-[compute gate](compute-jobs.md#episode-merge-and-removal-gate) owns job checks and
+[compute gate](machines-and-compute.md#episode-merge-and-removal-gate) owns job checks and
 confirmation. Scheduler work without helper rows is represented by active or
 degraded external watchers, or stopped watchers without completion; graph
 conditions do not block removal. Confirmed jobs reach the merge agent. Unfinished
@@ -508,8 +508,9 @@ drawer: the same continuation, with the turns it left unused.
 Fresh human Run may pick provider/model/reasoning, defaulting to node_chat;
 machine stays with that profile. Continuations keep the source binding. Children
 use the orchestrator's explicit pick, otherwise Settings. Starts and
-reauthorization do not gate on compute readiness; [compute jobs](compute-jobs.md)
-owns probes and cancellation.
+reauthorization do not gate on compute readiness;
+[machines and compute](machines-and-compute.md#readiness-and-setup) owns probes and
+cancellation.
 
 Run creates no ExperimentAttempt: attempts are semantic bookkeeping, not budget
 or admission. Nonblank initial goals remain exact; blank input gets a fallback.
@@ -688,8 +689,11 @@ forgets a finished job, therefore cannot hold its episode shut.
 Shell completion reports operational liveness, not scientific success. The
 Experiment watcher-state file and generic Work wake message, including child
 Work, retain the shell watcher's log-path evidence and ordinary coalescing and
-claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
+claim path. The [machines and compute spec](machines-and-compute.md) owns direct scheduler
 submission, generic helper launch, and human cancellation.
+A completed observation whose wake fails or is deferred stays pending and offered
+on every poll. Its watcher's current error names the latest reason, and the claim
+that finally wakes it clears that error.
 
 A human may also retire one live Experiment observer directly once its episode
 carries a durable ending. While the episode can still take a graceful **Stop

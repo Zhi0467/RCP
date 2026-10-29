@@ -284,6 +284,7 @@ def fake_launch_admitted(
     A queued row's request must parse and round-trip as the real launch requires
     before ``launch`` runs, so a producer that persists an unlaunchable request
     fails its test. Without ``launch`` the fake returns the row unchanged.
+    ``test_launch_fakes.py`` keeps every test fake of the launch on this helper.
     """
 
     def launch_admitted(operation_id: str) -> object:

@@ -74,13 +74,15 @@ network access. Helper jobs require linger so the user manager survives logout.
 Failure points to **Allow background processes**. Installation enables and
 verifies service-account linger. Updates retain the existing choices.
 
-Startup probes helper routes on home projects and schedulers where configured. A
-changed compute block invalidates both probes and refreshes that machine in the
-background. `compute_probes_probed_at` drives page refresh. The fixed
-`scheduler` and `helper` slots retain independent backends and results. One
-failure cannot mark the other route unready. Settings' partial `machine_compute`
-map preserves omitted aliases and removes null blocks. Settings displays the
-slots without a probe button.
+Startup checks the routes of every home project's machines. The helper route
+exists only on the base machine, where every agent runs. The scheduler route
+exists on each machine whose card turns Slurm on. A check drops any stored result
+for a route its machine no longer offers. The fixed `scheduler` and `helper`
+slots retain independent backends and results. One failure cannot mark the
+other route unready. Each stored result bumps the project's settings watermark,
+which refreshes open pages. The machine card's compute fields, its **Check
+compute again** button and their synchronous re-check are
+[card endpoints](api-web-and-desktop-projections.md#paper-settings-and-history).
 
 Runs shows each unready route's diagnostic, action, Settings link and **Check
 again**. The button calls
@@ -149,7 +151,8 @@ jobs, and the human either cancels or confirms. Stopping a watcher does not
 prove job completion. A confirmed Merge with a code worktree always runs the
 code merge agent. The agent receives the confirmed jobs and stops them before it
 merges. If a job still reads as unfinished afterwards, Merge keeps the worktree
-for a later Merge to remove. RCP itself never cancels a job.
+for a later Merge to remove. The gate itself never cancels a job. RCP runs a
+job's cancel action only on a human's Cancel or a confirmed project deletion.
 
 ## One watcher and human Cancel contract
 

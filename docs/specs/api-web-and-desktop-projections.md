@@ -1565,8 +1565,9 @@ discovery of a personal checkout's Git remotes.
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
 card view carries its settings (`job_manager` of `slurm`, `none`, or null while
 undecided; `jobs_root`; `access_hint`; `provider_paths`), the provider rows with
-cached readiness, the route probes of any project using it, and `reach`: the
-last on-demand check from each machine an agent runs on.
+cached readiness, the route probes of any project using it, `agents_run_here`
+(some project's agents run on it, so its helper jobs launch there), and `reach`:
+the last on-demand check from each machine an agent runs on.
 `PATCH /api/space/machines/{machine_id}` changes only the fields given; an empty
 provider path forgets it, and a compute change clears the card's probes and
 re-checks them before it returns, so the returned card shows the new routes.
@@ -1912,6 +1913,25 @@ signed-in member's user id, so another member on the same browser never sees
 or submits them. Until a member is verified, no draft is restored or saved.
 Drafts stored before this scoping have no known owner; the web client deletes
 them on load instead of restoring them.
+
+## Client error log
+
+The web client reports what went wrong on screen to `POST /api/client-events`,
+so a failure the person saw leaves a server-side trace. It sends one event for
+each error notice, each uncaught window `error` or `unhandledrejection`, and
+each root render failure. The send is best-effort and silent: a failed send
+never shows a notice, retries, or reports itself.
+
+The route requires the same session as every other `/api` route. An event
+carries only its kind, the error message and the current view name. The backend
+cuts the message to one line of `CLIENT_EVENT_MESSAGE_MAX_CHARS`, refuses any
+other field or a view that is not a bare name, and writes one WARNING record on
+the `rcp.client` logger with the kind, view, its own release build, the member's
+user id and the message. Nothing is stored. Each member gets
+`CLIENT_EVENT_RATE_MAX_EVENTS` per `CLIENT_EVENT_RATE_WINDOW_SECONDS`; the first
+event past that logs one limit line and the rest of the window answers 429
+unlogged. The records reach stderr, which is the service journal on a team
+server.
 
 ## Provider sign-in resume response
 

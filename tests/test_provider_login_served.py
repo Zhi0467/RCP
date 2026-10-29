@@ -15,7 +15,7 @@ from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task, wait_until
+from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task, wait_until
 from .test_provider_sign_in import _fake_codex
 
 
@@ -59,7 +59,7 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
 
     background.stream = stream
     with monkeypatch.context() as park:
-        park.setattr(background, "launch_admitted", store.agent_task)
+        fake_launch_admitted(park, background)
         queued = background.start(
             "project",
             "project_chat",

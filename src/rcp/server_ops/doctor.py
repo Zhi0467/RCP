@@ -20,6 +20,7 @@ from typing import BinaryIO, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from rcp import limits
 from rcp.agents.staged_hidden_read import WrapperReadiness
 from rcp.core.models import DependencyStatus, HiddenReadStatus
 from rcp.dependency_check import script_check
@@ -47,6 +48,7 @@ from rcp.server_ops.models import (
     ServerPlanEvent,
     ServerStep,
 )
+from rcp.server_ops.service_errors import ErrorGroup, group_errors, journal_entries
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -59,6 +61,7 @@ from rcp.server_runtime import (
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}")
 _NO_VALUE = "none"
+_SIGNATURE_PART_CHARS = 32
 MANAGED_SOURCE_ORIGIN_MISMATCH = "managed source origin differs from installed configuration"
 SOURCE_KEY_PAIR_PROBLEMS = (
     "source private key is missing or unreadable",
@@ -171,6 +174,8 @@ class ServerDoctorReport(_StrictModel):
     update_failure: str | None = None
     release_check_status: ReleaseStatus = "unchecked"
     latest_release_version: str | None = None
+    #: Service journal errors below the recurring count, or why it was unreadable.
+    service_log_warnings: tuple[str, ...] = ()
 
     @field_validator(
         "managed_main_head",
@@ -324,6 +329,9 @@ class ServerDoctorReport(_StrictModel):
                 value=_shown(self.update_restored_commit),
             ),
             NonsecretField(name="update_failure", value=_shown(self.update_failure)),
+            NonsecretField(
+                name="service_log_warnings", value=_problem_text(self.service_log_warnings)
+            ),
             NonsecretField(name="problems", value=_problem_text(self.problems)),
         )
 
@@ -708,6 +716,10 @@ class LinuxServerDoctorMachine:
             installation_id=config.installation_id if config is not None else None,
             add_problem=add_problem,
         )
+        # The desktop app has no service journal; only the Linux unit logs there.
+        service_log_warnings = (
+            self._inspect_service_errors(add_problem) if sys.platform == "linux" else ()
+        )
         provider_check_status: Literal["available", "unavailable"] = (
             "available"
             if probe is not None
@@ -801,6 +813,7 @@ class LinuxServerDoctorMachine:
             update_candidate_commit=update.candidate_commit,
             update_restored_commit=update.restored_commit,
             update_failure=update.failure,
+            service_log_warnings=service_log_warnings,
             problems=tuple(problems),
         )
 
@@ -1380,6 +1393,36 @@ class LinuxServerDoctorMachine:
             **common,
         )
 
+    def _inspect_service_errors(self, add_problem: Callable[[str], None]) -> tuple[str, ...]:
+        # Same runner and account as the systemctl reads; journalctl's own `--unit`
+        # match keeps every other unit out. Only signatures and counts leave here.
+        result = self._runner(
+            (
+                "journalctl",
+                f"--unit={self.layout.service_unit_name}",
+                f"--since=-{limits.SERVER_DOCTOR_LOG_WINDOW_SECONDS}s",
+                f"--lines={limits.SERVER_DOCTOR_LOG_MAX_ENTRIES}",
+                "--output=json",
+                "--output-fields=MESSAGE",
+                "--no-pager",
+            )
+        )
+        if result.returncode != 0:
+            return ("service journal is unreadable for this account",)
+        groups = group_errors(
+            journal_entries(result.stdout, max_chars=limits.SERVER_DOCTOR_LOG_MAX_CHARS)
+        )
+        shown = groups[: limits.SERVER_DOCTOR_LOG_MAX_SIGNATURES]
+        warnings = []
+        for group in shown:
+            if group.count >= limits.SERVER_DOCTOR_RECURRING_ERROR_COUNT:
+                add_problem(f"recurring error: {_error_group_text(group)}")
+            else:
+                warnings.append(f"service error: {_error_group_text(group)}")
+        if len(groups) > len(shown):
+            warnings.append(f"{len(groups) - len(shown)} more service error signatures")
+        return tuple(warnings)
+
     def _systemd_property(
         self,
         name: str,
@@ -1696,6 +1739,18 @@ def _version_token(value: str) -> str:
         if _SAFE_VERSION.fullmatch(normalized) and any(character.isdigit() for character in token):
             return normalized
     return "recognized"
+
+
+def _error_group_text(group: ErrorGroup) -> str:
+    # Each part is a matched identifier; the cut keeps one problem within 160 chars.
+    signature = group.signature
+    parts = [signature.logger[:_SIGNATURE_PART_CHARS]]
+    if signature.exception is not None:
+        parts.append(signature.exception[:_SIGNATURE_PART_CHARS])
+    if signature.function is not None:
+        parts.append(f"in {signature.function[:_SIGNATURE_PART_CHARS]}")
+    since = group.first_seen.strftime("%Y-%m-%dT%H:%MZ")
+    return f"{' '.join(parts)} ({group.count}× since {since})"
 
 
 def _shown(value: str | int | None) -> str | int:
