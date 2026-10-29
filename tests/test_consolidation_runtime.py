@@ -103,6 +103,8 @@ def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runt
     fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, unavailable)
     runtime.poller.poll_once()
     (run,) = runtime.store.consolidation_runs()
+    # Every later poll retries; the same error is recorded once, not once a minute.
+    runtime.poller._launch(run.operation_id)
 
     assert runtime.store.agent_task(run.operation_id).status == "queued"
     assert [event.level for event in runtime.store.agent_task_events(run.operation_id)] == [
