@@ -690,6 +690,9 @@ Experiment watcher-state file and generic Work wake message, including child
 Work, retain the shell watcher's log-path evidence and ordinary coalescing and
 claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
 submission, generic helper launch, and human cancellation.
+A completed observation whose wake fails or is deferred stays pending and offered
+on every poll. Its watcher's current error names the latest reason, and the claim
+that finally wakes it clears that error.
 
 A human may also retire one live Experiment observer directly once its episode
 carries a durable ending. While the episode can still take a graceful **Stop
