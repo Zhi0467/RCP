@@ -42,7 +42,8 @@ name, account, writable paths, hidden folders, provider limits, provider
 executables, job manager, jobs root and access hint. A project only adds or
 removes cards under an alias its repositories and agent profiles name; it
 configures none of them, and Project Settings shows the same card. A project
-removes a card only while no repository or agent profile uses it. Cards are
+detaches a machine only while no repository lives on it; agent profiles that ran
+on it move to the base machine. Cards are
 space state and do not travel with a transferred project.
 
 **Why:** settings kept per project disagreed for one machine, and a fix in one
@@ -69,7 +70,8 @@ changed host key cannot be overridden from the UI. Every command a card asks a
 human to run is rendered by `operator_commands` as typed from that human's own
 shell: on a team server that is their own login, with `sudo -u <service> -H` and
 the service account's SSH route to reach another machine. Project
-manifests own machine configuration: setup/Add machine copies card host/account
+manifests own each machine's alias, host, and account; cards own its settings.
+Setup/Add machine copies card host/account
 and rechecks account even when the route omits user. Space card creation never
 writes manifests. Startup, registration and Add machine fill cards from accepted
 manifests; conflicting accounts produce a nameless account and logged warning.
@@ -138,12 +140,13 @@ Episode archives travel with their original archiving-human snapshot and time.
 A graph branch that Merge cleanup archived travels as its owner's
 `graph_archived` flag; the target records a graph-only isolation with that flag,
 and the source's worktree binding and merge state stay behind.
-Operational-record readers accept versions 1 to 6; writers use the lowest that
+Operational-record readers accept versions 1 to 7; writers use the lowest that
 fits: version 1 with none of these, version 2 when episode archive metadata is
 present, version 3 when a graph branch is archived, version 4 when the
 project holds [branch-name](auto-research-and-branch-merge.md#branch-names)
-reservations, version 5 when a member deleted an episode report, and version 6
-when the project holds graph branch records. Older records and source
+reservations, version 5 when a member deleted an episode report, version 6
+when the project holds graph branch records, and version 7 when it holds a saved
+Paper, which travels with the transfer. Older records and source
 configurations keep their original serialized shape. The optional
 `record_schema_version` source-configuration field makes older strict clients
 and targets refuse preparation before the source is released. Release rechecks the required version under the storage write lock,
@@ -528,7 +531,8 @@ renders it verbatim rather than inferring policy from space kind or paths. For a
 team-shell protocol-1 request, the project-card list preserves the older
 contract: `can_delete=false`, `delete_unavailable_reason` explains operator
 deprovisioning, and `delete_confirmation` is absent. Protocol 2 and callers with
-no protocol header receive the deletable card with `delete_confirmation`.
+no protocol header receive the deletable card with `delete_confirmation`, but a
+team `DELETE` itself requires protocol 2 or newer.
 
 ## Bulletin operational storage
 
