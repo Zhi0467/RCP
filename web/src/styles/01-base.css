@@ -217,9 +217,6 @@ button:disabled {
   font-size: 0.82em;
   font-variant-numeric: tabular-nums;
 }
-.muted {
-  color: var(--muted);
-}
 .tiny-tag,
 .status-pill,
 .sync-state,
