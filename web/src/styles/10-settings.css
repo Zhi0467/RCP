@@ -2068,6 +2068,10 @@ button.agent-provider-label {
   gap: 12px;
   padding: 16px;
 }
+/* Add machine sits inside the card's padding, under the list. */
+.space-machine-add {
+  margin: 0 16px 16px;
+}
 .provider-machine {
   background: var(--surface);
   border: 1px solid var(--line);

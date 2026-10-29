@@ -1,5 +1,5 @@
-import { KeyRound, LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CircleHelp, KeyRound, LoaderCircle, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   cancelProviderSignIn,
   providerSignInStatus,
@@ -10,7 +10,7 @@ import {
   startProviderSignIn,
   verifyProviderLogin,
 } from "../core/api";
-import { accountLabel, resumedNote, signInNote, tokenNote } from "./providerLoginsModel";
+import { accountLabel, signInNote, tokenNote } from "./providerLoginsModel";
 import type { ProviderLoginAccount, ProviderSignInStatus } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
 
@@ -57,18 +57,24 @@ export function ProviderLogins({ spaceKind, writesDisabled = false, onLoginChang
   }, [refresh]);
 
   return (
-    <section className="settings-section provider-login-settings">
+    <section className={`settings-section provider-login-settings${loadError ? " failed" : ""}`}>
       <header>
         <span>
           <KeyRound size={16} />
         </span>
         <h2>Provider logins</h2>
+        {loadError ? (
+          <button
+            className="icon-button compact"
+            type="button"
+            aria-label="Retry provider logins"
+            title={loadError}
+            onClick={() => void refresh()}
+          >
+            <RotateCcw size={14} />
+          </button>
+        ) : null}
       </header>
-      <p className="provider-login-intro">
-        One login per provider per machine account, shared by every member and verified by one
-        authenticated request. Available sign-in methods are shown for each account.
-      </p>
-      {loadError ? <p role="alert">{loadError}</p> : null}
       {accounts === null && !loadError ? <p className="provider-login-intro">Loading…</p> : null}
       {accounts?.length === 0 ? (
         <p className="provider-login-intro">No provider accounts are configured yet.</p>
@@ -108,9 +114,10 @@ export function ProviderLoginRow({
   const [busy, setBusy] = useState<"verify" | "sign-in" | "token" | "sign-out" | "cancel" | null>(
     null,
   );
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  // A failed action marks the row and offers itself again from one icon.
+  const [failure, setFailure] = useState<{ message: string; retry: () => void } | null>(null);
   const [token, setToken] = useState("");
+  const helpId = useId();
   const [signIn, setSignIn] = useState<ProviderSignInStatus | null>(account.sign_in);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The parent passes a new callback on every render, and the app re-renders
@@ -141,6 +148,7 @@ export function ProviderLoginRow({
         const status = await providerSignInStatus(account.provider, signIn.login_id);
         if (cancelled) return;
         failures = 0;
+        setFailure(null);
         setSignIn(status);
         if (status.state === "pending") {
           pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
@@ -149,7 +157,13 @@ export function ProviderLoginRow({
         }
       } catch (failure) {
         if (cancelled) return;
-        setError(failure instanceof Error ? failure.message : String(failure));
+        setFailure({
+          message: failure instanceof Error ? failure.message : String(failure),
+          retry: () => {
+            setFailure(null);
+            void onChangedRef.current();
+          },
+        });
         // A transient status failure must not leave the row disabled forever:
         // keep following the sign-in, and give the row back after repeated failures.
         failures += 1;
@@ -167,20 +181,25 @@ export function ProviderLoginRow({
     };
   }, [account.provider, signIn]);
 
-  async function run(kind: NonNullable<typeof busy>, action: () => Promise<string | null>) {
+  async function run(kind: NonNullable<typeof busy>, action: () => Promise<unknown>) {
     setBusy(kind);
-    setError(null);
-    setMessage(null);
+    setFailure(null);
     try {
-      const note = await action();
-      if (note) setMessage(note);
+      await action();
       await onChanged();
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+    } catch (cause) {
+      setFailure({
+        message: cause instanceof Error ? cause.message : String(cause),
+        retry: () => void run(kind, action),
+      });
     } finally {
       setBusy(null);
     }
   }
+  const startSignIn = () =>
+    run("sign-in", async () =>
+      setSignIn(await startProviderSignIn(account.provider, account.host)),
+    );
 
   const label = account.label;
   const disabled = writesDisabled || busy !== null || signIn?.state === "pending";
@@ -197,50 +216,53 @@ export function ProviderLoginRow({
         <header>
           <strong>{label}</strong>
           <span>{accountLabel(account, spaceKind)}</span>
+          <LoginHelp id={helpId} label={`How ${label} signs in`}>
+            RCP does not manage this login; {label} uses its own. For a model backend that needs a
+            sign-in, run <code>{account.login_command}</code> as this machine account.
+          </LoginHelp>
         </header>
-        <p className="provider-login-detail">
-          RCP does not manage this login; {label} uses its own. For a model backend that needs a
-          sign-in, run <code>{account.login_command}</code> as this machine account.
-        </p>
       </article>
     );
   }
 
+  // The row's history and token sit in its state's tooltip, not in lines under it.
+  const since = account.changed_at
+    ? `Since ${formatServerTimestamp(account.changed_at)}${
+        account.changed_by ? ` by ${memberName(account.changed_by)}` : ""
+      }${account.detail ? `: ${account.detail}` : "."}`
+    : "";
+  const tokenText = account.token
+    ? tokenNote({ ...account.token, pasted_by: memberName(account.token.pasted_by) }, new Date())
+    : "";
+  // A device-code sign-in that ended in failure is the row's failure too.
+  const failed =
+    failure ??
+    (signIn?.state === "failed"
+      ? {
+          message: signInNote(signIn),
+          retry: () => {
+            setSignIn(null);
+            void startSignIn();
+          },
+        }
+      : null);
+
   return (
-    <article className={`provider-login-account ${account.state}`}>
+    <article className={`provider-login-account ${account.state}${failed ? " failed" : ""}`}>
       <header>
         <strong>{label}</strong>
         <span>{accountLabel(account, spaceKind)}</span>
         <span
           className={`provider-path-state ${account.state === "signed_in" ? "ready" : "error"}`}
+          title={[since, tokenText].filter(Boolean).join(" ") || undefined}
         >
           {account.state === "signed_in" ? "Signed in" : "Signed out"}
         </span>
       </header>
-      <p className="provider-login-detail">
-        {account.changed_at ? (
-          <>
-            {account.state === "signed_in" ? "Signed in" : "Signed out"} since{" "}
-            <time dateTime={account.changed_at}>{formatServerTimestamp(account.changed_at)}</time>
-            {account.changed_by ? ` by ${memberName(account.changed_by)}` : ""}
-            {account.detail ? `: ${account.detail}` : "."}
-          </>
-        ) : (
-          "No login change has been recorded."
-        )}
-      </p>
-      {account.token ? (
-        <p className="provider-login-detail">
-          {tokenNote(
-            { ...account.token, pasted_by: memberName(account.token.pasted_by) },
-            new Date(),
-          )}
-        </p>
-      ) : null}
-      {signIn ? (
+      {signIn?.state === "pending" ? (
         <div className="provider-login-sign-in" role="status">
           <p>{signInNote(signIn)}</p>
-          {signIn.state === "pending" && signIn.verification_url && signIn.user_code ? (
+          {signIn.verification_url && signIn.user_code ? (
             <p className="provider-login-code">
               <a href={signIn.verification_url} target="_blank" rel="noreferrer">
                 {signIn.verification_url}
@@ -248,34 +270,20 @@ export function ProviderLoginRow({
               <code>{signIn.user_code}</code>
             </p>
           ) : null}
-          {signIn.state === "pending" ? (
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={writesDisabled || busy === "cancel"}
-              onClick={() =>
-                void (async () => {
-                  setBusy("cancel");
-                  try {
-                    setSignIn(await cancelProviderSignIn(account.provider, signIn.login_id));
-                    // The account left the in-progress fence; show what it says now.
-                    await onChanged();
-                  } catch (failure) {
-                    setError(failure instanceof Error ? failure.message : String(failure));
-                  } finally {
-                    setBusy(null);
-                  }
-                })()
-              }
-            >
-              {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : null}
-              Cancel sign-in
-            </button>
-          ) : null}
+          <button
+            className="button secondary compact"
+            type="button"
+            disabled={writesDisabled || busy === "cancel"}
+            onClick={() =>
+              void run("cancel", async () =>
+                setSignIn(await cancelProviderSignIn(account.provider, signIn.login_id)),
+              )
+            }
+          >
+            {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : null}
+            Cancel sign-in
+          </button>
         </div>
-      ) : null}
-      {account.sign_in_methods.includes("token_entry") && account.token_instructions ? (
-        <p className="provider-login-detail">{account.token_instructions}</p>
       ) : null}
       <div className="provider-login-actions">
         {account.sign_in_methods.includes("device_code") ? (
@@ -284,12 +292,7 @@ export function ProviderLoginRow({
             data-provider-action="sign-in"
             type="button"
             disabled={disabled}
-            onClick={() =>
-              void run("sign-in", async () => {
-                setSignIn(await startProviderSignIn(account.provider, account.host));
-                return null;
-              })
-            }
+            onClick={() => void startSignIn()}
           >
             {busy === "sign-in" ? <LoaderCircle size={14} className="spin" /> : null}
             Sign in with device code
@@ -303,12 +306,16 @@ export function ProviderLoginRow({
               const pasted = token.trim();
               if (!pasted) return;
               void run("token", async () => {
-                const result = await saveProviderToken(account.provider, account.host, pasted);
+                await saveProviderToken(account.provider, account.host, pasted);
                 setToken("");
-                return resumedNote(result.resumed);
               });
             }}
           >
+            {account.token_instructions ? (
+              <LoginHelp id={helpId} label={`How to get a ${label} token`}>
+                {account.token_instructions}
+              </LoginHelp>
+            ) : null}
             <input
               type="password"
               autoComplete="off"
@@ -331,10 +338,7 @@ export function ProviderLoginRow({
             type="button"
             disabled={disabled || token.trim() !== ""}
             onClick={() =>
-              void run("verify", async () => {
-                const result = await verifyProviderLogin(account.provider, account.host);
-                return resumedNote(result.resumed);
-              })
+              void run("verify", () => verifyProviderLogin(account.provider, account.host))
             }
           >
             {busy === "verify" ? <LoaderCircle size={14} className="spin" /> : null}
@@ -347,19 +351,45 @@ export function ProviderLoginRow({
             type="button"
             disabled={disabled}
             onClick={() =>
-              void run("sign-out", async () => {
-                await signOutProvider(account.provider, account.host);
-                return `${label} is signed out on this account; new turns wait for a sign-in.`;
-              })
+              void run("sign-out", () => signOutProvider(account.provider, account.host))
             }
           >
             {busy === "sign-out" ? <LoaderCircle size={14} className="spin" /> : null}
             Sign out
           </button>
         ) : null}
+        {failed ? (
+          <button
+            className="icon-button compact"
+            type="button"
+            aria-label="Retry"
+            title={failed.message}
+            disabled={writesDisabled || busy !== null}
+            onClick={failed.retry}
+          >
+            <RotateCcw size={14} />
+          </button>
+        ) : null}
       </div>
-      {message ? <p className="provider-login-detail">{message}</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
     </article>
+  );
+}
+
+/** How a login is done, kept in a popover its icon opens rather than a line under the row. */
+function LoginHelp({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  return (
+    <>
+      <button
+        className="icon-button compact provider-login-help-button"
+        type="button"
+        aria-label={label}
+        popoverTarget={id}
+      >
+        <CircleHelp size={14} />
+      </button>
+      <div id={id} className="provider-login-help" popover="auto" role="dialog" aria-label={label}>
+        {children}
+      </div>
+    </>
   );
 }

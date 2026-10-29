@@ -147,7 +147,7 @@ function SpaceMachineList({
         />
       ) : (
         <button
-          className="button secondary compact"
+          className="button secondary compact space-machine-add"
           type="button"
           disabled={writesDisabled}
           onClick={() => setAdding(true)}
