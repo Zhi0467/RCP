@@ -743,6 +743,11 @@ credential store, never URLs, page storage, registry JSON, logs, or command outp
 and name or exchanges an existing token. Native storage captures issued tokens;
 the secret field and IPC request are cleared after that operation.
 
+The saved rows are listed when the app starts and kept across index visits, so the
+index paints them on its first frame. A row being checked keeps its **Open team
+space** action in place, inert, and a row already available stays available while
+it is checked again.
+
 Before enrollment, token exchange, project-card reads, or cookie installation,
 the shell negotiates the highest overlap of inclusive integer protocol ranges
 and requires the exact echoed integer. Missing/mismatched negotiation or changed
