@@ -29,6 +29,8 @@ limits and bill.
 | Some do, some don't | Members with their own sign-in use it. The rest use the machine sign-in. |
 | Someone joins after the upgrade | Their work is refused until they sign in or pick "Machine first". |
 | You join a teammate's Codex chat or steer their episode | It runs on the sign-in it started with, so that account pays. In a Claude chat each sender pays. |
+| The teammate whose sign-in a Codex chat or episode uses signs out | Everyone's turns there wait until that teammate signs in again. Nobody else can fix it. |
+| That teammate is removed from the space | Their Codex chats and episodes stop; start a new chat. Claude chats carry on. |
 | Someone signs the machine sign-in out | Episodes running on it pause. New work stops for everyone without a signed-in account of their own. |
 
 Defaults: a personal space uses **Mine first**. A team space uses **Mine only**,
@@ -70,11 +72,13 @@ One storage schema migration, numbered after `consolidation_targets_v1`:
 - New `episode_provider_logins(episode_id, provider, host, owner)`, primary key
   `(episode_id, provider, host)`. A table rather than a query over task rows,
   because two first launches in one episode can race. First insert wins.
-- `graph_runs` (task rows): add `login_owner TEXT`. `NULL` means "launched before
-  this change" and reads as the machine login.
+- `graph_runs` (task rows): add `login_owner TEXT`. `NULL` means "not resolved
+  yet". `''` means the machine login.
 
 The migration also:
 
+- sets `login_owner = ''` on every existing task row, so all work from before the
+  upgrade reads as machine work, and `NULL` keeps one meaning;
 - writes `member_first` for every current team member (`identity_kind =
   'team_member'`, `removal_started_at IS NULL`);
 - reinstalls the resource-version triggers on the rebuilt tables and registers
@@ -96,12 +100,12 @@ therefore not backed up either, the same as machine sessions in `~/.codex` today
 
 - Canonical graph data does not change. Patches, replay and merges are untouched,
   and agent Patch input has no login field.
-- Old login rows are machine logins. Task rows without `login_owner` use the
-  machine login. Old queued and recovery rows without `authorized_by` use the
-  machine login. Legacy watcher wakes are already terminalized and need nothing.
+- Old login rows are machine logins. Old task rows carry `login_owner = ''`.
+  Old queued and recovery rows without `authorized_by` use the machine login.
+  Legacy watcher wakes are already terminalized and need nothing.
 - Episodes running at upgrade stay on the machine login through resolver rule 1.
-  The migration does not try to pin them, because queued rows have no host until
-  a manifest is read.
+  The migration does not write pins for them, because queued rows have no host
+  until a manifest is read.
 - Old parked work is released by verifying the machine login, as today.
 - Restore: `detach_provider_logins_for_restore` fences every `signed_in` row,
   including member rows, and carries `owner` into the rows it rebuilds.
@@ -130,12 +134,13 @@ host, the member, the episode if any, and the continued session's login if any.
 Rules, first match wins:
 
 1. **Episode pin.** If the episode has a pin for `(provider, host)`, use it. An
-   episode with no pin but with any task row whose `login_owner` is `NULL` was
-   running at upgrade, so it uses the machine login.
+   episode with no pin but with a task row for that provider whose `login_owner`
+   is `''` was running at upgrade, because every later launch pins. It uses the
+   machine login.
 2. **Bound session.** For Codex, the only provider whose member login has its own
    home, a task that continues a session uses that session's login. That is the
    `login_owner` of the earliest task row with the same provider and
-   `native_session_id` (`NULL` reads as machine). Forks, watcher wakes and Paper
+   `native_session_id`. Forks, watcher wakes and Paper
    coach sessions inherit it the same way. Claude sessions live in the shared OS
    home, so Claude skips this rule and each turn uses its sender's login.
 3. **Order.** Walk the member's order. Take the first login that is usable: its
@@ -162,15 +167,19 @@ take the `LoginKey` instead of `(provider, host)`.
    `admit_provider_task` gains the authorizer, so `_start` substitutes the
    episode's `authorized_by` before admission instead of after.
 2. The launch resolves again. In one transaction it reads the login row and,
-   only if that row is `signed_in`, inserts the episode pin (`INSERT OR IGNORE`).
+   only if that row is `signed_in` (a missing machine row counts as signed in),
+   inserts the episode pin (`INSERT OR IGNORE`).
    It reads back the winning pin and writes `login_owner` to the task row.
 3. The launch takes the credential gate for that login and checks it again.
 4. If the login went bad while the launch waited:
-   - pinned or bound work fails as `provider_auth`, as a failed recheck does
-     today. Its recovery parks under that login;
+   - pinned or bound work fails as `provider_auth` and parks under that login.
+     Today this recheck raises a plain `ValueError` with no failure kind, so it
+     parks nothing. A typed flag on `AgentTaskExecution`, beside
+     `launch_refused`, records the refusal and its `LoginKey`. `_failure_kind`
+     maps the flag to `provider_auth`, never by matching the refusal text;
    - other work releases the gate and resolves once more by its order. If a
      different login is usable, the launch takes that login's gate and overwrites
-     `login_owner`. If none is, it fails as `provider_auth` and parks under the
+     `login_owner`. If none is, it fails the same typed way and parks under the
      first login in its order.
 
 Until the provider starts, `login_owner` on work that is neither pinned nor bound
@@ -210,7 +219,8 @@ or stops the episode (open question 1).
   beside the resolved `LoginKey`.
 
 **Release.** `parked_provider_work` and `resume_provider_account` key by login.
-A watcher group finds its login through its origin task. Every category released
+A Codex watcher group finds its login through its origin task. Other watcher
+groups are selected by the member's order, like other unbound work. Every category released
 today is still released: blocked recoveries, queued tasks, failed Experiment-loop
 turns, watcher groups, and, through episode reconciliation, reports and mail.
 
@@ -235,9 +245,11 @@ tasks and fences their episodes. Next to `remove_member_data()`, it:
    Codex sessions and state stay, so ingestion and other members' history still
    read them;
 3. deletes the same two credentials on each remote host. A host it cannot reach
-   is retried on the next `advance` pass, never blocks `complete_member_removal`,
-   and is listed in a new `provider_cleanup_unreached` field of the advance
-   result.
+   is retried on each later `advance` pass while the removal is pending. It never
+   blocks `complete_member_removal`. Retries stop at completion. Every pass,
+   including the completing one, lists the hosts still unreached in a new
+   `provider_cleanup_unreached` field of the advance result. Those credentials
+   are already fenced, so RCP never uses them.
 
 Work bound or pinned to a removed member's login fails with `session_refused`
 and the reason "start a new chat", not a sign-in notice nobody can act on.
@@ -355,7 +367,7 @@ login is another member's, the row names them and has no action.
 
 **Usage and cost.** RCP adds no billing split of its own: each vendor bills each
 account. The usage view can show whose login paid by joining usage rows to the
-task's `login_owner`, with no new usage column. `authorized_by` already shows who
+task's `login_owner` (`''` is the machine login), with no new usage column. `authorized_by` already shows who
 asked for the work.
 
 ## 7. Verification
@@ -366,12 +378,14 @@ asked for the work.
   - current members have `member_first`;
   - the episode stays on the machine login;
   - verifying the machine login releases everything.
+- An episode created after the upgrade, by a `member_first` member who has a
+  signed-in member login, pins that member login.
 - The migration on a copy of a real team database, never the live one.
 - A race test: two first launches in one episode end on one pin.
 - Fence isolation: a member failure does not fence the machine row, and the
   reverse.
 - Gate recheck: unpinned work falls back to the next login; pinned work fails as
-  `provider_auth` and is released by verifying that login.
+  `provider_auth` through the typed flag and is released by verifying that login.
 - A Codex pin that differs from the continued session's login is refused.
 - Privacy: another member cannot read or cancel your device sign-in, or see your
   login `detail`.
