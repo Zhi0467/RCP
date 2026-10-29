@@ -17,6 +17,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, Artifact
+from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage
 
 
@@ -465,6 +466,6 @@ def validate_artifact_edit_launch(record, request, *, parent):
         parent.project_id != record.project_id
         or parent.kind != record.kind
         or parent.graph_target != record.graph_target
-        or parent.request.get("artifact_edit") != edit.model_dump(mode="json")
+        or not persisted_request_roundtrips(edit, parent.request.get("artifact_edit"))
     ):
         raise ValueError("The edit recovery changed its admitted binding.")

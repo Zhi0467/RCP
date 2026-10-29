@@ -363,10 +363,37 @@ def _v0429_compute_chat_row():
     return {"request": stored}
 
 
+def _v0417_artifact_edit_row():
+    # v0.4.17 artifact edits predate the nested origin_bound flag.
+    edit = {
+        "artifact_id": "artifact",
+        "base_version": "v1",
+        "source_name": "plot.html",
+        "media_type": "text/html",
+        "operation_id": "legacy-row",
+        "staged_scope_id": "scope",
+        "origin_operation_id": "origin",
+        "launch_kind": "discuss",
+        "master_operation_id": None,
+        "master_sha256": None,
+        "master_path": None,
+        "stage_host": None,
+        "stage_root": None,
+        "reply_episode_id": None,
+        "episode_id": None,
+        "fresh_session": False,
+    }
+    stored = _work_request("legacy-edit").model_copy(update={"mode": "discuss"})
+    return {
+        "request": stored.model_dump(mode="json") | {"artifact_edit": edit},
+        "dispatch_authority": None,
+    }
+
+
 @pytest.mark.parametrize(
     "legacy_row",
-    [_v0433_coach_row, _v0429_compute_chat_row],
-    ids=["v0.4.33-paper-coach", "v0.4.29-compute-chat"],
+    [_v0433_coach_row, _v0429_compute_chat_row, _v0417_artifact_edit_row],
+    ids=["v0.4.33-paper-coach", "v0.4.29-compute-chat", "v0.4.17-artifact-edit"],
 )
 def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row) -> None:
     store = _store(tmp_path)
@@ -374,6 +401,34 @@ def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row
     task = _admitted_launch_task(store, operation_id="legacy-row", record_updates=legacy_row())
 
     wait_for_task(store, tasks.launch_admitted(task.operation_id).operation_id, expect="succeeded")
+
+
+@pytest.mark.parametrize("rebound", [False, True])
+def test_a_retry_of_an_older_artifact_edit_keeps_its_binding(tmp_path: Path, rebound) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    legacy = _v0417_artifact_edit_row()
+    parent = _admitted_launch_task(
+        store, operation_id="legacy-row", record_updates=legacy | {"status": "failed"}
+    )
+    # Retry re-dumps the parsed request, so the child carries origin_bound.
+    retried = RunRequest.model_validate(parent.request).model_dump(mode="json")
+    if rebound:
+        retried["artifact_edit"]["artifact_id"] = "another-artifact"
+    child = _admitted_launch_task(
+        store,
+        operation_id="legacy-retry",
+        parent_operation_id=parent.operation_id,
+        record_updates=legacy | {"request": retried},
+        continuation_cause="retry",
+    )
+
+    if rebound:
+        with pytest.raises(ValueError):
+            tasks.launch_admitted(child.operation_id)
+    else:
+        launched = tasks.launch_admitted(child.operation_id)
+        wait_for_task(store, launched.operation_id, expect="succeeded")
 
 
 def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> None:
