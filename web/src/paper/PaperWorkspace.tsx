@@ -98,7 +98,7 @@ export function PaperWorkspace({
   }, []);
   const writingPane = useRef<HTMLDivElement>(null);
   // The coach's History and New chat join the row that switches the Paper view.
-  const [coachBar, setCoachBar] = useState<HTMLElement | null>(null);
+  const [panelBar, setPanelBar] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState(false);
   const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
   const [actionError, setActionError] = useState<{
@@ -436,7 +436,7 @@ export function PaperWorkspace({
               </button>
             ))}
           </div>
-          {phone && <span className="paper-coach-bar" ref={setCoachBar} />}
+          {phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </div>
         <div className="paper-writing-pane" ref={writingPane}>
           {document ? (
@@ -479,7 +479,7 @@ export function PaperWorkspace({
               </button>
             ))}
           </div>
-          {!phone && <span className="paper-coach-bar" ref={setCoachBar} />}
+          {!phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </header>
         <div className="paper-right-pane" hidden={right !== "preview"}>
           {previewShown &&
@@ -493,6 +493,7 @@ export function PaperWorkspace({
                 tree={tree}
                 onOpenFile={setSelected}
                 active={previewActive}
+                toolbar={(phone ? view : right) === "preview" ? panelBar : null}
               />
             ) : (
               <PaperPreview
@@ -502,6 +503,7 @@ export function PaperWorkspace({
                 text=""
                 onOpenFile={setSelected}
                 active={previewActive}
+                toolbar={(phone ? view : right) === "preview" ? panelBar : null}
               />
             ))}
         </div>
@@ -521,7 +523,7 @@ export function PaperWorkspace({
               }
             }}
             onLocate={locate}
-            toolbar={(phone ? view : right) === "coach" ? coachBar : null}
+            toolbar={(phone ? view : right) === "coach" ? panelBar : null}
           />
         </div>
       </aside>

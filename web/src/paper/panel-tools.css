@@ -1,0 +1,15 @@
+/* The active panel's tools (coach history, preview download) sit at the end of the row that switches the Paper view. */
+.paper-panel-bar {
+  margin-left: auto;
+  min-width: 0;
+}
+.paper-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.paper-panel-tools select {
+  min-width: 0;
+  max-width: 14em;
+}
