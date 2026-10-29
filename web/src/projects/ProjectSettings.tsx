@@ -696,11 +696,11 @@ export function ProjectSettings({
           <div>
             <h2>Agent defaults</h2>
           </div>
-          <label className="agent-auto-research-default">
-            <span>
-              Auto-research ceiling
-              <small>Operational invocations per newly authorized episode</small>
-            </span>
+          <label
+            className="agent-auto-research-default"
+            title="Operational invocations per newly authorized episode"
+          >
+            <span>Auto-research ceiling</span>
             <input
               type="number"
               min={1}
@@ -812,10 +812,7 @@ export function ProjectSettings({
         <div className={status ? `settings-save-status ${status.kind}` : "settings-save-status"}>
           {status?.kind === "error" && <TriangleAlert size={16} />}
           {status?.kind === "saved" && <Check size={16} />}
-          <span>
-            {status?.text ||
-              (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}
-          </span>
+          <span>{status?.text}</span>
         </div>
         <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
           <RotateCcw size={14} /> Reset

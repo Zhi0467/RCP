@@ -902,12 +902,6 @@ button.agent-provider-label {
   font-size: var(--type-2xs);
   font-weight: 700;
 }
-.agent-auto-research-default small {
-  color: var(--muted);
-  display: block;
-  font: 500 var(--type-4xs) var(--sans);
-  margin-top: 3px;
-}
 .agent-auto-research-default input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
