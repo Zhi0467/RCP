@@ -12,6 +12,7 @@ import pytest
 from rcp.config import Manifest, load_manifest
 
 from .helpers import isolate_host
+from .shards import SHARD_ENV, parse_shard, shard_items
 
 
 def _skip_xcrun_git_trampoline() -> None:
@@ -32,6 +33,15 @@ def _skip_xcrun_git_trampoline() -> None:
 
 
 _skip_xcrun_git_trampoline()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    spec = os.environ.get(SHARD_ENV)
+    if not spec:
+        return
+    kept, dropped = shard_items(items, *parse_shard(spec))
+    items[:] = kept
+    config.hook.pytest_deselected(items=dropped)
 
 
 @pytest.fixture(autouse=True)

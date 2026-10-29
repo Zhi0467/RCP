@@ -470,8 +470,10 @@ a target requiring a newer supervisor refuses until that supervisor is installed
 
 CI discovers every published stable `v*` release at/above the floor, exhausts
 pagination, and fails on discovery errors or a missing floor. Each gets current-
-and stale-cache checks. The installed matrix uses pristine Ubuntu 24.04 runners,
-production bootstrap and wrappers, historical populated data, and real offline
+and stale-cache checks. The installed matrix takes the floor and the newest four
+on pull requests and every discovered release on main, which gates `build`. It
+uses pristine Ubuntu 24.04 runners, production bootstrap and wrappers,
+historical populated data, and real offline
 scratch (uv hardlinks, Git, FIFOs, sockets, unreadable entries, dangling links,
 empty directories and sparse files). Provider/Git receipts are synthetic.
 A root-owned test hook substitutes the verified candidate bundle and port 18421;

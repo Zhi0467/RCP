@@ -21,8 +21,10 @@ so that merging often costs nothing and releasing stays deliberate.
 
 ## What happens on a merge
 
-1. CI runs lint, pytest on 3.11 and 3.12, old-data upgrade, installed upgrade,
-   web checks, and a macOS web build. Publication requires all of them to pass.
+1. CI runs lint, pytest on 3.11 and 3.12 (two file-level shards each, plus a
+   frozen-backend smoke, aggregated into one check per version), old-data
+   upgrade, installed upgrade, web checks, and a macOS web build. Publication
+   requires all of them to pass.
    The old-data job also fails a change that adds a storage migration unless a
    fixture frozen at the previous schema exists.
 2. The candidate packaging job builds the wheels once on PRs and main. The app
@@ -30,8 +32,9 @@ so that merging often costs nothing and releasing stays deliberate.
    `src/rcp/__init__.py`. It independently builds `supervisor/` without stamping
    its version, exports locked runtime dependencies with hashes, checks the
    complete asset set, and writes the SHA-256 manifest.
-3. The installed upgrade matrix installs every supported stable release's
-   promoted wheels on a fresh Ubuntu runner and drives supervisor update,
+3. The installed upgrade matrix installs supported stable releases' promoted
+   wheels on a fresh Ubuntu runner: the floor and newest four on PRs, every one
+   on main. Each journey drives supervisor update,
    application rollback, a complete subsequent backup, and successful retry
    against those candidate bytes. The `old-data upgrade` check aggregates migration
    and installed tests; discovery, packaging or journey failures fail it.
