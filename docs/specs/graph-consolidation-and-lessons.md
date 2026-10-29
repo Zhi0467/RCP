@@ -26,7 +26,8 @@ An unresolved run leaves that target's occurrence owed without blocking others.
 Expired authorization starts nothing. Departed authorizers, refused work, paused
 resumable chat, unavailable history, or unresolved launch configuration produce
 failure rows. They advance the occurrence, never coverage. If no non-consolidation
-revision followed the covered head, the occurrence records `skipped`. A branch's
+revision followed the covered head, the occurrence records `skipped`. Commits
+of a run that failed count as non-consolidation, so the next night checks them. A branch's
 initial coverage is its immutable fork revision, so inherited work alone does
 not trigger it. Otherwise one turn is admitted on that target.
 
@@ -196,7 +197,9 @@ Members also manage lessons in Settings.
 
 Child Work, Experiment, and Auto-research roots and workers may only add lessons.
 Consolidation may manage all notes, including human-owned ones.
-It reports every change. Seed, Refresh, and branch merge have no lesson commands.
+It reports every change. A note's author is its last editor, but an agent's
+edit keeps a human-owned note human-owned, so it still leads `lessons.md`.
+Seed, Refresh, and branch merge have no lesson commands.
 Discuss gains no graph or Apply authority. Resolved handler actions render usage
 from parser option records.
 **Why:** ordinary chat acts for its member on operational notes.

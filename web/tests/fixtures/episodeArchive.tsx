@@ -71,6 +71,14 @@ function Fixture() {
         pendingProposals={[]}
         decisionsAwaitingChoice={[]}
         onNavigate={setOverviewDestination}
+        digest={{
+          digest: null,
+          loaded: true,
+          targetName: "main",
+          error: null,
+          catchingUp: false,
+          onOpenArtifact: noop,
+        }}
       />
       <output aria-label="Overview destination">{overviewDestination}</output>
       <button
