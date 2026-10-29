@@ -77,6 +77,28 @@ def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
     assert LoginKey("codex", "", "") not in selected
 
 
+def test_readiness_authentication_follows_the_viewer_login(manifest, tmp_path):
+    store = AppStore(tmp_path / "app.sqlite3")
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
+    )
+    own = store.add_provider_login("codex", "", member_id="viewer", added_by="viewer")
+    store.mark_provider_login_verified(
+        LoginKey("codex", "", own.login_id), member_id="viewer", detail="verified"
+    )
+    store.set_provider_login_setting("viewer", "codex", "", "own")
+    store.set_provider_login_setting("other", "codex", "", "shared")
+    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False}}}}
+
+    def authenticated(viewer):
+        snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, viewer)
+        return snapshot["provider_readiness"]["laptop"]["codex"]["authenticated"]
+
+    assert authenticated("viewer") is True
+    assert authenticated("other") is False
+
+
 def test_report_admission_uses_episode_authorizer_login(tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)

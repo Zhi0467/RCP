@@ -281,12 +281,21 @@ def cached_project(
 @router.get("/api/projects/{project_id}/readiness")
 def project_readiness(
     project_id: str,
+    request: Request,
     refresh: bool = False,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
 ) -> dict[str, object]:
     try:
-        return catalog.readiness_snapshot(project_id, refresh=refresh)
+        snapshot = catalog.readiness_snapshot(project_id, refresh=refresh)
+        record = store.project(catalog.resolve_project_id(project_id))
+        if record is None:
+            raise KeyError(project_id)
+        service = catalog.loaded_service(record.project_id)
+        manifest = service.manifest if service is not None else load_manifest(record.locator)
+        viewer = get_identity_access(request).acting_user(request)
+        return ProjectService.viewer_readiness(snapshot, manifest, catalog.launcher, viewer.user_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:

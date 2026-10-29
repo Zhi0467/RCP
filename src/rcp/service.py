@@ -1968,6 +1968,47 @@ class ProjectService:
         return rows
 
     @staticmethod
+    def viewer_readiness(
+        snapshot: dict[str, object],
+        manifest: Manifest,
+        launcher: AgentLauncher,
+        viewer_id: str,
+    ) -> dict[str, object]:
+        """Readiness is cached per project; whether a launch has a login is the viewer's.
+
+        For a provider RCP signs in, `authenticated` says whether the viewer's
+        setting resolves a usable login on that machine, not whether the machine
+        sign-in alone is healthy.
+        """
+        machines = snapshot.get("provider_readiness")
+        if launcher.accounts is None or not isinstance(machines, dict):
+            return snapshot
+        resolved: dict[str, dict[str, object]] = {}
+        for alias, providers in machines.items():
+            machine = manifest.machine_map.get(alias)
+            if machine is None or not isinstance(providers, dict):
+                resolved[alias] = providers
+                continue
+            resolved[alias] = {
+                provider: (
+                    {
+                        **readiness,
+                        "authenticated": isinstance(
+                            launcher.accounts.resolve_login(
+                                provider, machine.host or "", viewer_id
+                            )[0],
+                            LoginKey,
+                        ),
+                    }
+                    if isinstance(readiness, dict)
+                    and profile_for(provider).authentication.manages_login
+                    else readiness
+                )
+                for provider, readiness in providers.items()
+            }
+        return {**snapshot, "provider_readiness": resolved}
+
+    @staticmethod
     def readiness_for(
         manifest: Manifest,
         launcher: AgentLauncher,
