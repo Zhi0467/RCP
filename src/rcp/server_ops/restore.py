@@ -36,6 +36,7 @@ from rcp.server_ops.backup_integrity import (
     database_schema_sha256,
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
+from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
 
@@ -46,6 +47,8 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-member provider logins (v65): fresh schema.
+        "119e8c9ebba8c690d01bc1b329f4e061026ef463fe40959d3b480b48d2f136fd",
         # Per-target consolidation (v64): fresh, immutable fixtures, and in-place upgrades.
         "8e5862b1bfafe8a9e5556405639b6ec8a615a15532d7eee9d6a0c68f1e1806d1",
         "562caa199e8c92719449de5201884e41d3a4d41686b3faddd8c412af5e757adc",
@@ -1523,10 +1526,14 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             or store.space_name != manifest.space_name
         ):
             raise RestoreRefused("Archived SQLite identity differs from its protected manifest.")
+        provider_cleanup_unreached: tuple[str, ...] = ()
         if request.remove_stale_member:
             preview = store.member_removal_preview(request.remove_stale_member)
             store.begin_member_removal(
                 request.remove_stale_member, expected_boundary_sha256=preview.boundary_sha256
+            )
+            provider_cleanup_unreached = cleanup_member_provider_logins(
+                store, request.remove_stale_member
             )
             store.complete_member_removal(request.remove_stale_member)
         members = tuple(
@@ -1780,6 +1787,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         return {
             "version": 1,
             "status": "prepared",
+            "provider_cleanup_unreached": list(provider_cleanup_unreached),
             "boundary_sha256": boundary,
             "roots": roots,
             "extra_previous_roots": extra_previous,

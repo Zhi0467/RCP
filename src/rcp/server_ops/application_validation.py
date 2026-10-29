@@ -983,7 +983,13 @@ async def _verify_candidate(
     users = opened.space_users()
     if opened.space_kind != "team":
         raise CandidateRehearsalRefused("The copied database is not one team space.")
-    users_by_id = {user.user_id: user for user in users if user.identity_kind == "team_member"}
+    users_by_id = {
+        user.user_id: user
+        for user in users
+        if user.identity_kind == "team_member"
+        and user.removal_started_at is None
+        and user.removed_at is None
+    }
     project_principals = _project_principals(overlay, opened, users_by_id)
     default_user_id = next(iter(users_by_id), None)
 
