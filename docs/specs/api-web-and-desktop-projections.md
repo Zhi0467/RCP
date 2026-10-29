@@ -664,7 +664,8 @@ this refresh loop. Explicit probes and mutations publish or invalidate resources
 A staged node stays committable if its canonical revision did not move; otherwise
 it is behind and excluded from Sync until edited or an incoming field is
 reversibly swapped in. Paper uses its whole-document equivalent. Display caches
-are never canonical input.
+are never canonical input. When a graph-capable turn closes, RCP rebuilds the main
+display cache from canonical state, replacing a missing or invalid one too.
 
 ## Project index and identity
 
