@@ -1556,3 +1556,49 @@ def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_pat
     request, state, _ = captured
     _seed_experiment_run_with_old_display_cache(request, state)
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+@pytest.mark.parametrize("copied", ["queued_by_0_4_35", "due_later"])
+def test_rehearsal_launches_due_consolidation_through_real_validation(
+    captured, monkeypatch, tmp_path, copied
+):
+    # 0.4.35 queued every nightly consolidation with a request field no model
+    # carries, so each launch failed its roundtrip check and retried forever.
+    from datetime import datetime, timedelta
+
+    from rcp.consolidation import ConsolidationPoller
+    from rcp.core.authority import AuthorizedHuman
+
+    request, state, _ = captured
+    app = create_app(data_dir=Path(request.data_dir))
+    store = app.state.catalog.store
+    try:
+        now = datetime.fromisoformat(store.now())
+        store.put_consolidation_schedule(
+            state["project_id"],
+            local_time="02:00",
+            timezone="UTC",
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"],
+                user_id=state["member_id"],
+                display_name="Qualification researcher",
+            ),
+            next_due_at=(now + timedelta(hours=1)).isoformat(),
+        )
+        if copied == "queued_by_0_4_35":
+            # Admit the run as the live poller does, but leave it queued.
+            poller = ConsolidationPoller(
+                store, app.state.background_tasks, service_for=app.state.catalog.open
+            )
+            monkeypatch.setattr(poller, "_launch", lambda _operation_id: None)
+            poller.dispatch_due(now + timedelta(hours=1))
+            (run,) = store.consolidation_runs()
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target',"
+                    ' json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+                    (run.operation_id,),
+                )
+    finally:
+        store.close()
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}

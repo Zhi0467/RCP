@@ -230,6 +230,16 @@ class StartupRecoveryPlan:
         }
 
 
+@dataclass(frozen=True)
+class AdmittedLaunch:
+    """A queued task that passed every check `launch_admitted` makes before spawning."""
+
+    record: AgentTaskRecord
+    request: AgentTaskRequest
+    continuation: AgentTaskContinuation
+    parent: AgentTaskRecord | None
+
+
 class TaskCommandMailbox(Protocol):
     """The concrete turn owner transfers this resource across worker lifetimes."""
 
@@ -1765,6 +1775,28 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task launch")
+        try:
+            launch = self.validate_admitted_launch(operation_id)
+        except AdmissionRefused:
+            return self._require_operation(operation_id)
+        if isinstance(launch, AgentTaskRecord):
+            return launch
+        return self._spawn_record(
+            launch.record,
+            launch.request,
+            continuation=launch.continuation,
+            parent=launch.parent,
+        )
+
+    def validate_admitted_launch(self, operation_id: str) -> AgentTaskRecord | AdmittedLaunch:
+        """Everything `launch_admitted` proves before it spawns.
+
+        Returns the current row when there is nothing to launch, and raises
+        `AdmissionRefused` when provider sign-in or machine programs defer it.
+        The update rehearsal calls this with its startup fence closed, so the
+        copied queue meets the same checks as a live launch.
+        """
+
         record = self._require_operation(operation_id)
         with self._controls_lock:
             if self._shutdown_requested or operation_id in self._workers:
@@ -1790,14 +1822,11 @@ class BackgroundAgentTasks:
             self.store.fail_agent_task(record.operation_id, str(exc))
             return self._require_operation(record.operation_id)
 
-        try:
-            self.admit_provider_task(
-                record.project_id,
-                request,
-                execution_host=(record.stage_host or "") if record.stage_root else None,
-            )
-        except AdmissionRefused:
-            return record
+        self.admit_provider_task(
+            record.project_id,
+            request,
+            execution_host=(record.stage_host or "") if record.stage_root else None,
+        )
 
         intent = self.store.agent_task_admission_intent(operation_id)
         if intent is None:
@@ -1839,12 +1868,7 @@ class BackgroundAgentTasks:
                 "The admitted task has an ambiguous or already-started dispatch attempt."
             )
 
-        return self._spawn_record(
-            record,
-            request,
-            continuation=continuation,
-            parent=parent,
-        )
+        return AdmittedLaunch(record, request, continuation, parent)
 
     def _validate_launch_admission(
         self,
