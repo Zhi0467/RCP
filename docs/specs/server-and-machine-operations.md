@@ -668,8 +668,9 @@ boundaries. Retry accepts only that request's exact one-Patch identity prefix;
 stale digest, changed inputs, unsafe paths or conflicting identity refuse.
 Completed confirmation returns the same request/project.
 
-Settings can request one added GitHub repository on the base machine or connect
-one server-only repository
+Settings can request one added repository on the base machine, cloned from
+GitHub or adopted in place from an existing Git folder, or connect one RCP-created
+server-only repository
 to GitHub through the same command/review, without provider setup. Add prepares
 a new checkout and publishes the reviewed descriptor/truth choice through a
 human approval transition. Connect preserves checkout/manifest, adds the reviewed
@@ -944,6 +945,10 @@ GitHub checkouts retain origin/commit checks. Server-only checkouts have no remo
 backup names each as **code not backed up**, even if research capture is complete.
 Restore initializes missing server-only destinations with `git init -b main` and
 empty `Start RCP project` as `RCP <rcp@rcp.invalid>`, then publishes research.
+An adopted folder is server-only code at its own path; its descriptor is marked
+`adopted`, so backup checks its recorded commit but not its remotes, which belong
+to its owner. Restore re-adopts it at that path and refuses when the folder or
+the commit is gone; it never creates one.
 Private `checkout-recovery/<project-id>.json` records replacement commit and public
 key evidence, bound to repository/machine; a later connect supersedes its proof.
 Backup embeds the resolved proof, not the raw receipt, and restore reconstructs

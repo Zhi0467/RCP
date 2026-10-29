@@ -714,6 +714,17 @@ class _InitialCheckouts(_Checkouts):
             retained_research=RetainedResearchState(False, False, None, None),
         )
 
+    def adopt_existing(self, machine, *, repository_alias, repository_path, expected_commit):
+        return ProjectCheckoutResult(
+            machine_alias=machine.alias,
+            repository_alias=repository_alias,
+            central_root=machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root),
+            repository_path=repository_path,
+            checkout_disposition="reused_existing",
+            commit="b" * 40,
+            retained_research=RetainedResearchState(False, False, None, None),
+        )
+
 
 def test_empty_repository_records_first_commit_before_push_and_reuses_after_failure(
     tmp_path: Path,
@@ -1369,6 +1380,10 @@ def test_existing_project_coordinator_prepares_add_and_connect(tmp_path, monkeyp
                 "alias": "paper",
                 "source": "https://github.com/example/paper.git",
             },
+            {
+                "kind": "add_repository",
+                "repository": {"alias": "notes", "path": str(tmp_path / "notes")},
+            },
         ):
             response = client.post(
                 f"/api/projects/{creation.proposed_project_id}/repository-requests",
@@ -1386,6 +1401,9 @@ def test_existing_project_coordinator_prepares_add_and_connect(tmp_path, monkeyp
             ready = store.project_provisioning_request(request_id)
             Path(ready.repositories[0].resolved_path).mkdir(parents=True, exist_ok=True)
             assert _complete_ready_request(client, ready).status_code == 200
+            if body.get("repository", {}).get("path"):
+                assert ready.repositories[0].resolved_path == body["repository"]["path"]
+                assert ready.repositories[0].git_check.commit == "b" * 40
             if body["kind"] == "connect_repository":
                 assert credentials.probe_calls == 0
                 assert ready.repositories[0].git_check.write_verified

@@ -854,6 +854,8 @@ class BackupRecoveryRepository(_StrictBackupModel):
     git_commit: str
     deploy_key_label: str | None
     public_key_fingerprint: str | None
+    # A Git folder adopted in place: kept at its own path, its remotes left alone.
+    adopted: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @field_validator("resolved_path")
     @classmethod
@@ -947,7 +949,10 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
                 / "repositories"
                 / alias
             )
-            if repository.resolved_path != str(expected):
+            if repository.adopted:
+                if repository.repository is not None:
+                    raise ValueError("an adopted recovery folder cannot carry a GitHub source")
+            elif repository.resolved_path != str(expected):
                 raise ValueError("backup recovery checkout is not derived from its central root")
             expected_label = f"rcp:{self.home_space_id}:{self.project_id}:{alias}"
             if repository.repository is None:

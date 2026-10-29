@@ -426,7 +426,8 @@ not log in to a GitHub user. Each project keeps its own write-enabled key.
 For an empty GitHub repository, setup announces and creates the empty
 `Start RCP project` commit as `RCP <rcp@rcp.invalid>`, then pushes `main` with the
 deploy key. Server-only setup makes that commit without a remote or deploy key.
-Later **Add repository** (a GitHub URL, cloned onto the base machine) and
+Later **Add repository** (a GitHub URL cloned onto the base machine, or an
+existing Git folder there, adopted in place and not backed up) and
 **Connect to GitHub** use this same provisioning and review flow; divergent GitHub history needs a human merge before retry.
 
 After the CLI reaches **ready for review**, return to the project wizard, review

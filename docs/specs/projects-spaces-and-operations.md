@@ -314,7 +314,10 @@ null (server only). Requests can create a team project, receive a transfer, add
 one repository, or connect one existing repository to GitHub. Add and connect
 name `target_project_id`; they share its checkout namespace without consuming
 the unique project reservation held by create/transfer requests. An add clones a
-GitHub source onto the project's base machine and retains the human's
+GitHub source onto the project's base machine, or adopts an `existing_path` there
+in place: a Git work tree owned by the machine's account with at least one commit,
+whose intended and resolved paths are that folder and whose code, like any
+server-only code, is not backed up. It retains the human's
 `count_as_project_truth` choice, defaulting to false;
 persisting this choice does not itself change canonical truth membership. Creation
 captures an immutable hash of the current canonical manifest and graph head,

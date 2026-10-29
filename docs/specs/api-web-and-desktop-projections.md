@@ -831,9 +831,11 @@ provisioning requests and central paths. Repositories take optional GitHub
 `source` (blank/null means server-only) and `count_as_project_truth` (default true).
 Responses expose `source_kind`, nullable repository/GitHub identity, and truth
 choice. `POST /api/projects/{id}/repository-requests` accepts `add_repository`
-(alias, required GitHub source, truth choice defaulting to false) or
-`connect_repository` (alias, source). An add always lands on the project's base
-machine, so it names none; Settings offers no empty server-only add. Existing project membership gates reads and requester confirmation.
+(alias, exactly one of a GitHub `source` or an existing folder `path`, truth
+choice defaulting to false) or `connect_repository` (alias, source). An add always
+lands on the project's base machine, so it names none; Settings offers no empty
+server-only add. A folder must not overlap another project repository; Connect
+refuses an adopted folder and its Settings row has no `can_connect`. Existing project membership gates reads and requester confirmation.
 Add commits membership/truth through a human transition bound to the reviewed
 manifest/head; Connect preserves the manifest.
 

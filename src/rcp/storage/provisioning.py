@@ -3049,7 +3049,9 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
             intended_path = (
-                None
+                repository.existing_path
+                if repository.existing_path is not None
+                else None
                 if machine.central_root is None
                 else str(
                     PurePosixPath(machine.central_root)

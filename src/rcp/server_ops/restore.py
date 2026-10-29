@@ -986,6 +986,42 @@ def _recovery_machine(archived):
     )
 
 
+def _recover_adopted(checkouts, machine, repository, saved):
+    """Re-adopt a Git folder at its recorded path; restore never creates one."""
+    import json
+
+    from rcp.server_ops.backup_checkout import _remote_checkout_source
+
+    recorded = saved.checkout_commit if saved is not None else repository.git_commit
+    result = checkouts._target(
+        machine,
+        (
+            "python3",
+            "-c",
+            _remote_checkout_source(),
+            "inspect-adopted",
+            machine.os_account,
+            repository.resolved_path,
+            recorded,
+        ),
+    )
+    if result.returncode != 0:
+        raise RestoreRefused(
+            f"The adopted folder {repository.resolved_path} is missing or lost its recorded commit."
+        )
+    payload = json.loads(result.stdout)
+    commit = payload.get("head")
+    if payload != {
+        "account": machine.os_account,
+        "repository_path": repository.resolved_path,
+        "origin": "",
+        "head": commit,
+        "recorded_commit": recorded,
+    } or not re.fullmatch(r"[0-9a-f]{40}", str(commit)):
+        raise RestoreRefused("The adopted folder proof changed.")
+    return recorded
+
+
 def _recover_server_only(checkouts, machine, repository, saved, archived_research):
     import json
 
@@ -1054,6 +1090,7 @@ def _record_restored_checkout_proofs(store, data_dir, capture, progress):
                     git_commit=r.git_check.commit,
                     deploy_key_label=r.git_check.deploy_key_label,
                     public_key_fingerprint=r.git_check.public_key_fingerprint,
+                    adopted=r.existing_path is not None,
                 )
                 for r in repositories
                 if r.resolved_path is not None and r.git_check.commit is not None
@@ -1147,7 +1184,11 @@ def _recover_repositories(request, manifest, previous_store, members):
             if repository.repository is None:
                 if saved is not None and saved.source != "server_only":
                     raise RestoreRefused("Server-only restore progress carries GitHub authority.")
-                commit = _recover_server_only(checkouts, machine, repository, saved, archived)
+                commit = (
+                    _recover_adopted(checkouts, machine, repository, saved)
+                    if repository.adopted
+                    else _recover_server_only(checkouts, machine, repository, saved, archived)
+                )
                 if saved is None:
                     progress.append(
                         RestoreRepositoryRecovery(
@@ -1158,7 +1199,9 @@ def _recover_repositories(request, manifest, previous_store, members):
                             state="checkout_ready",
                             central_root=machine.central_root,
                             repository_path=repository.resolved_path,
-                            checkout_disposition="request_created",
+                            checkout_disposition=(
+                                "reused_existing" if repository.adopted else "request_created"
+                            ),
                             checkout_commit=commit,
                         )
                     )

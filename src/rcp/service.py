@@ -1151,7 +1151,7 @@ def project_repository_descriptors(
                 **repository,
                 "source": "github" if source is not None else "server_only",
                 "github_identity": source.identity if source is not None else None,
-                "can_connect": source is None,
+                "can_connect": source is None and record.existing_path is None,
             }
         )
     return result

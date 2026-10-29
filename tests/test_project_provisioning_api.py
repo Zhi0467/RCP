@@ -726,3 +726,39 @@ def test_repository_confirmation_rejects_changed_review_boundary(tmp_path, monke
             )
         assert _complete_ready_request(client, ready).status_code == 409
         assert "code" not in service.manifest.repository_map
+
+
+def test_folder_add_adopts_in_place_and_cannot_be_connected(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from tests.test_team_project_provisioning import _complete_ready_request, _ready_team_app
+
+    app, creation, _, _, _ = _ready_team_app(tmp_path, monkeypatch)
+    folder = str(tmp_path / "existing" / "notes")
+    with TestClient(app) as client:
+        assert _complete_ready_request(client, creation).status_code == 200
+        project_id = creation.proposed_project_id
+        url = f"/api/projects/{project_id}/repository-requests"
+        service = app.state.catalog.open(project_id)
+        state_path = service.manifest.repository_map["paper"].path
+
+        def add(**repository):
+            return client.post(
+                url, json={"kind": "add_repository", "repository": {"alias": "notes", **repository}}
+            )
+
+        assert add(path=folder, source="https://github.com/example/notes.git").status_code == 422
+        assert add(path=f"{state_path}/notes").status_code == 409
+        response = add(path=folder)
+        assert response.status_code == 201, response.text
+        store = app.state.background_tasks.store
+        request = store.project_provisioning_request(response.json()["request_id"])
+        assert request.repositories[0].existing_path == folder
+        assert request.repositories[0].intended_path == folder
+        ready = _ready_repository_change(store, request.request_id)
+        assert _complete_ready_request(client, ready).status_code == 200
+
+        assert service.manifest.repository_map["notes"].path == folder
+        assert "notes" not in service.history.state().project_truth_scope
+        connect = {"kind": "connect_repository", "alias": "notes", "source": "https://github.com/example/notes.git"}  # fmt: skip
+        assert client.post(url, json=connect).status_code == 409

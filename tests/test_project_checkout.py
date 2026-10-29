@@ -1764,3 +1764,32 @@ def test_first_push_reconciles_lost_receipt_and_refuses_divergence(
             expected_commit=resumed.commit,
             request_kind="connect_repository",
         ).ready
+
+
+def test_adopt_existing_needs_an_owned_git_work_tree_with_a_commit(tmp_path: Path) -> None:
+    manager, _layout_value, machine, _key, _runner = _manager(tmp_path, tmp_path / "unused")
+    folder = tmp_path / "existing" / "notes"
+    folder.mkdir(parents=True, mode=0o700)
+    adopt = dict(repository_alias="notes", repository_path=str(folder))
+    with pytest.raises(ProjectCheckoutRefused):
+        manager.adopt_existing(machine, **adopt)
+    _git_command("init", "-b", "main", str(folder))
+    with pytest.raises(ProjectCheckoutRefused):
+        manager.adopt_existing(machine, **adopt)
+    _git_command(
+        "-c", "user.name=Human", "-c", "user.email=h@example.invalid",
+        "commit", "--allow-empty", "-m", "Existing work", cwd=folder,
+    )  # fmt: skip
+    _git_command("remote", "add", "origin", "git@github.com:example/notes.git", cwd=folder)
+    head = _git_command("rev-parse", "HEAD", cwd=folder)
+
+    result = manager.adopt_existing(machine, **adopt)
+
+    assert (result.repository_path, result.checkout_disposition, result.commit) == (
+        str(folder),
+        "reused_existing",
+        head,
+    )
+    assert _git_command("rev-parse", "HEAD", cwd=folder) == head
+    with pytest.raises(ProjectCheckoutRefused):
+        manager.adopt_existing(machine, **adopt, expected_commit="0" * 40)
