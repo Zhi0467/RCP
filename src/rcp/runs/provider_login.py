@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.config import Manifest, load_manifest
+from rcp.providers import profile_for
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
 from rcp.storage.models import LoginKey
 
@@ -158,7 +159,7 @@ def resume_provider_account(
             )
         if member_id is not None and authorizer != member_id:
             return False
-        if authorizer is None or key.provider == "opencode":
+        if authorizer is None or not profile_for(key.provider).authentication.manages_login:
             return not key.login_id
         setting = store.provider_login_setting(authorizer, key.provider, key.host).setting
         return (verified.member_id == authorizer and "own" in setting) or (

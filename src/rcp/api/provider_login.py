@@ -368,7 +368,13 @@ def provider_login_settings(
         store.member_project_ids(member.user_id),
         member.user_id,
     )
-    pairs = sorted({(row.provider, row.host) for row in rows if row.provider != "opencode"})
+    pairs = sorted(
+        {
+            (row.provider, row.host)
+            for row in rows
+            if profile_for(row.provider).authentication.manages_login
+        }
+    )
     return {
         "settings": [
             _setting_item(store, member.user_id, provider, host) for provider, host in pairs

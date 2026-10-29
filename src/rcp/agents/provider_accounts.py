@@ -267,7 +267,7 @@ class ProviderAccounts:
         # has no RCP-managed added logins, independent of a member's setting.
         fixed = (
             machine
-            if provider == "opencode" or member_id is None
+            if not profile_for(provider).authentication.manages_login or member_id is None
             else (lineage_login or (bound_login if provider == "codex" else None))
         )
         if fixed is not None:
