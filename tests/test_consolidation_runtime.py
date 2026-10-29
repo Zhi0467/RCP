@@ -304,6 +304,12 @@ def test_next_night_skips_own_successful_commits_but_retries_failed_run(
 
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
+    with runtime.store.connection() as connection:
+        # An earlier night covered everything, so only this run's commit is new.
+        connection.execute(
+            "UPDATE consolidation_targets SET covered_head = ?",
+            (runtime.service.history.state().revision,),
+        )
     execution = AgentTaskExecution(run.operation_id, runtime.store, AgentProcessControl())
     scope = runtime.store.agent_task(run.operation_id).request["run_truth_scope"]
     applied, failure = _apply_work_patch(
