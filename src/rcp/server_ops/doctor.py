@@ -159,6 +159,7 @@ class ServerDoctorReport(_StrictModel):
     last_backup_protected_projects: int | None = None
     last_backup_uncaptured_projects: int | None = None
     last_backup_failure: str | None = None
+    last_backup_warnings: tuple[str, ...] = ()
     followed_release: str = "stable"
     release_pin: str | None = None
     team_access_url: str | None = None
@@ -310,6 +311,9 @@ class ServerDoctorReport(_StrictModel):
                 value=_shown(self.last_backup_uncaptured_projects),
             ),
             NonsecretField(name="last_backup_failure", value=_shown(self.last_backup_failure)),
+            NonsecretField(
+                name="last_backup_warnings", value=_problem_text(self.last_backup_warnings)
+            ),
             NonsecretField(name="update_operation_state", value=self.update_operation_state),
             NonsecretField(
                 name="update_candidate_commit",
@@ -414,6 +418,7 @@ class _BackupDoctorSummary:
     protected_projects: int | None = None
     uncaptured_projects: int | None = None
     failure: str | None = None
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -797,6 +802,7 @@ class LinuxServerDoctorMachine:
             last_backup_protected_projects=backup.protected_projects,
             last_backup_uncaptured_projects=backup.uncaptured_projects,
             last_backup_failure=backup.failure,
+            last_backup_warnings=backup.warnings,
             update_operation_state=update.state,
             update_candidate_commit=update.candidate_commit,
             update_restored_commit=update.restored_commit,
@@ -1380,6 +1386,7 @@ class LinuxServerDoctorMachine:
             protected_projects=protected_projects,
             uncaptured_projects=uncaptured_projects,
             failure=outcome.failure,
+            warnings=outcome.warnings,
             **common,
         )
 

@@ -445,7 +445,8 @@ Write proof creates, reads and removes a request-scoped ref to existing history.
 An empty source instead uses the announced initial `Start RCP project` commit
 and reads back the non-forced push. Retry reuses the recorded commit.
 Conflicting pushes need human repair. Server-only setup creates the same initial
-history without a remote, key or push. Its code is explicitly not backed up.
+history without a remote, key or push. Its code is explicitly not backed up;
+backup and doctor list it as a warning, not a problem.
 **Why:** Git-backed research can start without GitHub, while research archives
 remain separate from source code. Restore recreates empty server-only checkouts.
 Adopted folders must already exist at their recorded path and commit.

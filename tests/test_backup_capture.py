@@ -519,9 +519,13 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         assert category in receipt.projects[0].unavailable_reason
         assert expected in receipt.projects[0].unavailable_reason
     problems = backup.project_capture_problems(receipt.projects)
-    assert inventory.project_id in problems[0]
+    warnings = backup.project_capture_warnings(receipt.projects)
+    # Server-only code is a supported setup: a warning, never a doctor problem.
+    reported, field = (warnings, "warnings") if failure == "server_only" else (problems, "problems")
+    assert len(problems + warnings) == 1
+    assert inventory.project_id in reported[0]
     assert all(
-        private not in problems[0] for private in (str(tmp_path), "private-secret", "private-host")
+        private not in reported[0] for private in (str(tmp_path), "private-secret", "private-host")
     )
     destination = tmp_path / "backups"
     archive = _archive_receipt(destination).model_copy(
@@ -541,12 +545,13 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         archive=archive,
         archive_receipt_sha256="c" * 64,
         problems=problems,
+        warnings=warnings,
     )
     layout = SimpleNamespace(server_root=tmp_path)
     backup.write_backup_outcome(outcome, layout)
     assert "problems" not in json.loads((tmp_path / "backup-status.json").read_text())
     restored = backup.read_backup_outcome(layout)
-    assert restored.problems == problems
+    assert (restored.problems, restored.warnings) == (problems, warnings)
     args = build_parser().parse_args(("server", "backup", "run", "--machine-readable"))
     output = StringIO()
     assert (
@@ -564,10 +569,10 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         field["name"]: field["value"]
         for field in json.loads(output.getvalue().splitlines()[-1])["step"]["fields"]
     }
-    assert fields["problems"] == problems[0]
+    assert fields[field] == reported[0]
     monkeypatch.setattr(backup, "read_backup_archive_receipt", lambda *_args, **_kwargs: archive)
     doctor_problems: list[str] = []
-    LinuxServerDoctorMachine(
+    summary = LinuxServerDoctorMachine(
         layout,
         runner=lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv, 0, "active" if "--property=ActiveState" in argv else "enabled", ""
@@ -575,7 +580,8 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     )._inspect_backup(
         _installed(destination), service_uid=os.geteuid(), add_problem=doctor_problems.append
     )
-    assert problems[0] in doctor_problems
+    assert (reported[0] in doctor_problems) == (failure != "server_only")
+    assert summary.warnings == warnings
     diagnostics_path = tmp_path / "backup-diagnostics.json"
     diagnostics = json.loads(diagnostics_path.read_text())
     diagnostics["operation_id"] = str(uuid.uuid4())
