@@ -342,7 +342,11 @@ hidden. A hidden literal that does not exist yet is hidden the same way under it
 existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
-mid-session never appears to it. A changed mask set restarts the daemon at its
+mid-session never appears to it. One window is accepted: a credential whose
+folder is missing directly under the home, created while a single shell command
+runs, is readable by that command only, and the launch still reports `enforced`.
+Masking it would write a stand-in into the home, and flagging it would mark every
+launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
 on the execution host, outside every write root and inside the hidden set. A
 launch already resolved unhidden runs its commands silently; if hiding was

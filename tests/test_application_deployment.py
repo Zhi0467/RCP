@@ -367,7 +367,15 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         "output_dir": str(tmp_path / "candidate-check"),
     }
     outcome = subprocess.run(
-        [sys.executable, "-m", "rcp.server_ops.deployment", "validate", "-"],
+        [
+            sys.executable,
+            "-W",
+            "error::UserWarning",
+            "-m",
+            "rcp.server_ops.deployment",
+            "validate",
+            "-",
+        ],
         input=json.dumps(worker_request),
         env={**os.environ, "PYTHONPATH": str(candidate)},
         capture_output=True,
