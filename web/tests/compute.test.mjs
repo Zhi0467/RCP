@@ -34,7 +34,7 @@ test("compute controls introduce no sub-10px primary or status text", () => {
   );
   const settings = styles.slice(
     styles.indexOf(".machine-compute {"),
-    styles.indexOf(".agent-machine-fixed"),
+    styles.indexOf(".agent-runtime-fixed"),
   );
 
   assert.doesNotMatch(composer, /font(?:-size)?\s*:[^;\n]*\b[0-9]px/);

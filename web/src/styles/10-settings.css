@@ -2285,13 +2285,13 @@ button.agent-provider-label {
   font-size: var(--type-xs);
   padding: 9px 16px;
 }
-.agent-machine-fixed > span {
+.agent-runtime-fixed > span {
   align-items: center;
   color: var(--oxblood-dark);
   display: flex;
   gap: 5px;
 }
-.agent-machine-fixed select:disabled {
+.agent-runtime-fixed select:disabled {
   background: var(--rose-paper);
   border-color: color-mix(in srgb, var(--oxblood) 34%, var(--rule));
   color: var(--oxblood-dark);
