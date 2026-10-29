@@ -148,14 +148,38 @@ export function isNewestOfTurnClass(task: AgentTask, tasks: readonly AgentTask[]
   return newest?.operation_id === task.operation_id;
 }
 
-export function relatedCoachTasks(tasks: AgentTask[], sessionId: string | null): AgentTask[] {
-  const candidates = tasks.filter((task) => task.kind === "paper_coach").sort(compareTaskTime);
-  if (sessionId) {
-    return candidates.filter(
-      (task) => task.native_session_id === sessionId || task.request.session_id === sessionId,
-    );
-  }
-  return [];
+/** A coach conversation: the session it opened on, plus the turns started in it since,
+ *  which a provider switch moves to a fresh native session. Like a chat, it resumes its
+ *  newest turn's session, and it keeps showing the turns of every session it moved through. */
+export function coachConversation(
+  tasks: AgentTask[],
+  openedSession: string | null,
+  startedIds: readonly string[],
+): { tasks: AgentTask[]; sessionId: string | null } {
+  const coach = tasks.filter((task) => task.kind === "paper_coach");
+  const started = new Set(startedIds);
+  const sessions = new Set(
+    [
+      openedSession,
+      ...coach
+        .filter((task) => started.has(task.operation_id))
+        .map((task) => task.native_session_id),
+    ].filter(Boolean),
+  );
+  const shown = coach
+    .filter(
+      (task) =>
+        started.has(task.operation_id) ||
+        sessions.has(task.native_session_id ?? null) ||
+        sessions.has(textValue(task.request.session_id) || null),
+    )
+    .sort(compareTaskTime);
+  const newest = shown.at(-1);
+  return {
+    tasks: shown,
+    sessionId:
+      newest?.native_session_id ?? (textValue(newest?.request.session_id) || openedSession),
+  };
 }
 
 export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {

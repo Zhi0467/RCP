@@ -967,7 +967,7 @@ and agents that were not told a machine's route guessed a raw address and
 failed. Giving every agent every machine keeps one source of truth.
 
 Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
-Auto-research orchestrators and their children (each from its own `run_on`),
+Auto-research orchestrators and their children (each from the base),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
 Paper coach and the branch-merge agent receive no compute-machine context;
 they retain their protected graph-history client. The coach's provider-specific

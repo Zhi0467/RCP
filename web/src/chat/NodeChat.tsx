@@ -1,20 +1,14 @@
 import { ChatOriginLink } from "./ChatBranchPicker";
-import { ProviderSwitchHint } from "./ProviderSwitchHint";
+import { ChatComposer } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ReferenceChip } from "../core/ReferenceChip";
-import {
-  ComposerAddPicker,
-  ComposerAttachmentChips,
-  formatBytes,
-  useComposerAttachments,
-  type InsertReferenceText,
-} from "./composerAttachments";
+import { formatBytes, useComposerAttachments } from "./composerAttachments";
 import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
-import { referenceDraftKey, sourceReference, type DraftReference } from "../core/projectReferences";
+import { referenceDraftKey, sourceReference } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen, questionTranscript } from "./questions";
@@ -71,7 +65,6 @@ import {
   originRunConfig,
   latestPersistedConversationMode,
   parseConversationMode,
-  providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
   type ConversationTurnSubmission,
@@ -91,12 +84,7 @@ import {
 } from "../artifacts/InlineArtifact";
 import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import {
-  AnswerCommentButton,
-  AnswerCommentLayers,
-  StagedAnswerComments,
-  useAnswerComments,
-} from "./answerComments";
+import { AnswerCommentButton, AnswerCommentLayers, useAnswerComments } from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -165,7 +153,7 @@ import {
   launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
-import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useSkillPicker } from "../core/SkillPicker";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
@@ -470,7 +458,7 @@ export function NodeChat({
     message: textareaRef,
     onError: setSubmitError,
   });
-  const { annotations, setAnnotations } = comments;
+  const { annotations } = comments;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
   // A read-only chat composes only artifact comments, and those edit in Discuss.
@@ -509,13 +497,19 @@ export function NodeChat({
     project,
     scopeId: chatId,
     referencesKey,
+    input: textareaRef,
+    message: {
+      get: () => draft.get(),
+      set: (next) => {
+        if (dictating) stopDictation(true);
+        updateMessage(next);
+      },
+    },
+    filesDisabled: readOnly,
+    referencesDisabled: submitting || commentOnly,
     onError: setSubmitError,
   });
-  const { attachments, references, attachmentSetId } = composer;
   const readyAttachments = composer.ready;
-  // Another chat starts with its Add menu closed.
-  const { setAddMenuOpen } = composer;
-  useEffect(() => setAddMenuOpen(false), [chatId, setAddMenuOpen]);
   const [dictationState, setDictationState] = useState<
     "idle" | "starting" | "preparing" | "recording" | "stopping" | "transcribing" | "error"
   >("idle");
@@ -642,11 +636,6 @@ export function NodeChat({
   }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const sessionId = resolvedChatSessionId(relatedTasks);
-  const freshProviderSession = providerSwitchStartsFreshSession(
-    relatedTasks,
-    sessionId,
-    config.provider,
-  );
   // A follow-up joins the running turn, so the composer shows that turn's mode.
   const steeringMode = steeringTask ? parseConversationMode(steeringTask.request.mode) : null;
   const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
@@ -654,7 +643,6 @@ export function NodeChat({
   // A Work turn also needs the provider's Work probe; Discuss does not.
   const providerReady = launchProviderReady(project, config, mode === "work");
   const chatTitle = node?.title || conversationTitle || project.name;
-  const attachmentClientId = composer.clientId;
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
   const annotationsComplete = comments.complete;
@@ -1215,33 +1203,6 @@ export function NodeChat({
     }
   };
 
-  const addFiles = (incoming: File[]) => {
-    if (readOnly) return;
-    void composer.addFiles(incoming);
-  };
-
-  const addReference = (item: DraftReference) => {
-    if (submitting || commentOnly) return;
-    composer.addReference(item);
-  };
-  const insertReferenceText: InsertReferenceText = (
-    text,
-    fileCount = attachments.length,
-    insertPlainText = false,
-  ) => {
-    if (submitting || commentOnly) return false;
-    return composer.insertReferenceText(text, {
-      fileCount,
-      insertPlainText,
-      input: textareaRef.current,
-      current: draft.get(),
-      update: (next) => {
-        if (dictating) stopDictation(true);
-        updateMessage(next);
-      },
-    });
-  };
-
   const toggleHumanMessage = (messageId: string) => {
     setExpandedHumanMessageIds((current) => {
       const next = new Set(current);
@@ -1353,7 +1314,7 @@ export function NodeChat({
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
     );
     if (!stale.length) return;
-    setAnnotations((current) => current.filter((annotation) => !stale.includes(annotation)));
+    comments.discard(stale);
     setSubmitError(
       `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
     );
@@ -1365,15 +1326,7 @@ export function NodeChat({
     const text = assembleChatTurn(draftMessage, annotations);
     if (!comments.requireComplete()) return;
     // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (
-      !text ||
-      attachments.length ||
-      references.length ||
-      artifactContext ||
-      submitting ||
-      !task.steer_turn_id
-    )
-      return;
+    if (!text || composer.staged || artifactContext || submitting || !task.steer_turn_id) return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     restoreTopRef.current = null;
@@ -1402,8 +1355,7 @@ export function NodeChat({
       // the delivered draft is exactly what is consumed. Artifact comments can
       // still arrive from another view meanwhile, and they survive.
       draft.set((current) => (current === draftMessage ? "" : current));
-      setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      comments.setOpen(false);
+      comments.clear(draftAnnotations);
       skills.reset();
     } catch (error) {
       setSubmitError(
@@ -1421,9 +1373,7 @@ export function NodeChat({
       config,
       scope,
       artifactContext,
-      references.map((item) => item.selector),
-      attachments.map((item) => `${item.localId}:${item.status}`),
-      attachmentSetId,
+      composer.turnFields(),
       skills.selection,
       mode === "work" && worktree.chosen,
     ]);
@@ -1464,7 +1414,7 @@ export function NodeChat({
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = crypto.randomUUID();
     draft.set("");
-    setAddMenuOpen(false);
+    composer.closeMenu();
     await submitTurn({
       clientId: `pending-${requestId}`,
       requestId,
@@ -1483,9 +1433,7 @@ export function NodeChat({
         sessionId,
         mode,
         artifactContext,
-        references: references.map((item) => item.selector),
-        attachmentSetId: readyAttachments.length ? attachmentSetId : null,
-        attachmentClientId: readyAttachments.length ? attachmentClientId : null,
+        attachments: composer.turnFields(),
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,
@@ -2404,53 +2352,47 @@ export function NodeChat({
       </div>
       {!canCompose && readOnlyNotice}
       {canCompose && (
-        <div
-          className={`chat-composer${composer.dragging ? " is-dragging-files" : ""}`}
-          data-mode={mode}
-          {...composer.dropTarget(addFiles, insertReferenceText)}
-        >
-          <SkillPicker {...skills.props} />
-          {freshProviderSession && (
-            <ProviderSwitchHint provider={readiness?.label || config.provider} />
-          )}
-          <StagedAnswerComments comments={comments} />
-          <ComposerAttachmentChips composer={composer} />
-          <ComposerTextarea
-            draft={draft}
-            ref={textareaRef}
-            aria-label="Message"
-            aria-keyshortcuts="Shift+Tab"
-            disabled={awaitingSteerReceipt}
-            onChange={(event) => {
-              setSendAfterDictation(null);
-              if (dictating) stopDictation(true);
-              updateMessage(event.target.value);
-            }}
-            onPaste={(event) => composer.paste(event, addFiles, insertReferenceText)}
-            onKeyDown={(event) => {
-              if (skills.handleKeyDown(event)) return;
-              if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
-                if (presentation !== "workspace") {
-                  event.preventDefault();
-                  toggleMode();
+        <ChatComposer
+          project={project}
+          config={config}
+          tasks={relatedTasks}
+          sessionId={sessionId}
+          mode={mode}
+          composer={composer}
+          comments={comments}
+          skills={skills.props}
+          addDisabled={attachDisabled}
+          field={
+            <ComposerTextarea
+              draft={draft}
+              ref={textareaRef}
+              aria-label="Message"
+              aria-keyshortcuts="Shift+Tab"
+              disabled={awaitingSteerReceipt}
+              onChange={(event) => {
+                setSendAfterDictation(null);
+                if (dictating) stopDictation(true);
+                updateMessage(event.target.value);
+              }}
+              onPaste={composer.paste}
+              onKeyDown={(event) => {
+                if (skills.handleKeyDown(event)) return;
+                if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
+                  if (presentation !== "workspace") {
+                    event.preventDefault();
+                    toggleMode();
+                  }
+                  return;
                 }
-                return;
-              }
-              if (returnSends(event)) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <div className="chat-send">
-            <div className="chat-composer-tools">
-              <ComposerAddPicker
-                composer={composer}
-                disabled={attachDisabled}
-                referencesDisabled={commentOnly}
-                onAttach={addFiles}
-                onPickReference={addReference}
-              />
+                if (returnSends(event)) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          }
+          tools={
+            <>
               {!commentOnly && (
                 <>
                   <div
@@ -2533,8 +2475,10 @@ export function NodeChat({
                   )}
                 </fieldset>
               </div>
-            </div>
-            <div className="chat-send-actions">
+            </>
+          }
+          actions={
+            <>
               <button
                 className={`icon-button chat-dictation-button${
                   dictating && dictationState !== "transcribing" ? " recording" : ""
@@ -2582,7 +2526,7 @@ export function NodeChat({
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
-                    ? attachments.length > 0 || references.length > 0 || artifactContext !== null
+                    ? composer.staged || artifactContext !== null
                     : attachmentsUnready ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||
@@ -2598,8 +2542,10 @@ export function NodeChat({
               >
                 <Send size={16} />
               </button>
-            </div>
-            {discardPrompt ? (
+            </>
+          }
+          notice={
+            discardPrompt ? (
               <span className="chat-dictation-error" role="alert">
                 Discard the kept dictation?
                 <button
@@ -2650,9 +2596,9 @@ export function NodeChat({
               <span className="chat-dictation-status" role="status">
                 {dictationStatus ?? dictationNote}
               </span>
-            ) : null}
-          </div>
-        </div>
+            ) : null
+          }
+        />
       )}
       <AnswerCommentLayers comments={comments} mode={mode} />
     </div>

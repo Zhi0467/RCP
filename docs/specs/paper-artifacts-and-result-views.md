@@ -144,8 +144,12 @@ refer to base-side paths. The native session reuses its stage workspace, and
 only its changes folder is writable. After each completed round, bounded,
 symlink- and hardlink-refusing read-back supplies the same local card collection.
 Each remote round uses the shared supervised provider pass: durable process receipts
-and a quiescence check prevent overlapping providers in the session workspace. Checkpointed
-recovery on the base retains its stage; finished stages remain for session
+and a quiescence check prevent overlapping providers in the session workspace.
+Collection writes a task-and-round receipt in the same transaction as its cards,
+so replaying a recorded result neither duplicates cards nor repeats a refresh.
+A detached turn retains its history-command mailbox; the shared mailbox lifecycle
+restores its captured graph read scope after restart and cleans up at settlement.
+Checkpointed recovery on the base retains its stage; finished stages remain for session
 continuations until the normal stage sweeper removes them. Continuing, refreshing
 cards from, or resuming a session recorded on another machine starts a fresh
 native session on the base, preserving visible chat history but losing native

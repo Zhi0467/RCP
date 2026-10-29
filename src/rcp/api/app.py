@@ -941,7 +941,6 @@ def create_app(
             provider=request.provider,
             model=request.model,
             reasoning=request.reasoning,
-            run_on=request.run_on,
         )
         execution.runtime_id = configured_runtime_id(profile.provider, profile.runtime)
         execution.git_access = provider_git_access(
