@@ -7,7 +7,7 @@ import io
 import zipfile
 from pathlib import PurePosixPath
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -17,10 +17,18 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
 from rcp.api.paper_live import get_paper_live, paper_mutation
+from rcp.artifact_comments import selection_frame_addon
+from rcp.artifact_theme import artifact_color_mode, artifact_theme
+from rcp.artifact_views import (
+    InlineAppearance,
+    ViewerPresentation,
+    artifact_content,
+    inline_viewer_document,
+)
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
 from rcp.paper.live import text_replacement
-from rcp.paper.models import Receipt, paper_file_kind
+from rcp.paper.models import Receipt, file_format, paper_file_kind
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -272,6 +280,69 @@ async def raw_file(
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(PurePosixPath(file.path).name)}",
             "Content-Security-Policy": "sandbox; default-src 'none'",
         },
+    )
+
+
+async def _html_file(request: Request, project_id: str, file_id: str, revision: int | None):
+    try:
+        file, data = await get_paper_live(request).raw_file(project_id, file_id, revision)
+    except KeyError as exc:
+        raise HTTPException(404, "Paper file or revision not found") from exc
+    if file_format(file.path, file.kind) != "html":
+        raise HTTPException(404, "Paper file has no HTML preview")
+    return file, data
+
+
+_PREVIEW_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+@router.get(_PREFIX + "/files/{file_id}/preview")
+async def html_preview(
+    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+):
+    """The inline artifact shell around a Paper HTML file; invariant 10e holds one frame in."""
+    file, _ = await _html_file(request, project_id, file_id, revision)
+    query = urlencode({"revision": revision} if revision is not None else {})
+    content_url = (
+        f"{_PREFIX.format(project_id=quote(project_id, safe=''))}"
+        f"/files/{quote(file_id, safe='')}/preview/content" + (f"?{query}" if query else "")
+    )
+    document, csp = inline_viewer_document(
+        PurePosixPath(file.path).name, "html", content_url=content_url, live=None, selectable=True
+    )
+    return Response(
+        document,
+        media_type="text/html",
+        headers={**_PREVIEW_HEADERS, "Content-Security-Policy": csp},
+    )
+
+
+@router.get(_PREFIX + "/files/{file_id}/preview/content")
+async def html_preview_content(
+    file_id: str,
+    request: Request,
+    revision: int | None = None,
+    presentation: ViewerPresentation = "panel",
+    theme: str | None = None,
+    color_mode: str | None = None,
+    project_id: str = _member,
+):
+    file, data = await _html_file(request, project_id, file_id, revision)
+    inline = (
+        InlineAppearance(artifact_theme(theme), artifact_color_mode(color_mode))
+        if presentation == "inline"
+        else None
+    )
+    try:
+        document, media_type, csp = artifact_content(
+            file.path, "text/html", data, frame_addon=selection_frame_addon(), inline=inline
+        )
+    except ValueError as exc:
+        raise HTTPException(404, "Paper file has no HTML preview") from exc
+    return Response(
+        document,
+        media_type=media_type,
+        headers={**_PREVIEW_HEADERS, "Content-Security-Policy": csp},
     )
 
 

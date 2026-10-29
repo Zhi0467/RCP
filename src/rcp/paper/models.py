@@ -114,6 +114,8 @@ def digest(data: bytes) -> str:
 
 def file_format(path: str, kind: str) -> str:
     extension = PurePosixPath(path).suffix.lower()
+    if extension in {".html", ".htm"}:
+        return "html" if kind == "text" else "other"
     return {
         ".md": "markdown",
         ".tex": "latex",

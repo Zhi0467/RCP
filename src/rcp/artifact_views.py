@@ -185,8 +185,12 @@ def artifact_viewer_document(
     if kind in {"pdf", "file"}:
         raise ValueError("Artifact has no viewer")
     if presentation == "inline":
-        return _inline_viewer_document(
-            descriptor, kind, content_url=content_url, live_url=live_url, selectable=selectable
+        return inline_viewer_document(
+            descriptor.name,
+            kind,
+            content_url=content_url,
+            live=(live_url, descriptor.artifact_id) if live_url else None,
+            selectable=selectable,
         )
     error_channel = secrets.token_hex(16)
     if kind == "html":
@@ -250,24 +254,25 @@ iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:bloc
     return document, csp
 
 
-def _inline_viewer_document(
-    descriptor: AgentArtifactDescriptor,
+def inline_viewer_document(
+    name: str,
     kind: str,
     *,
     content_url: str,
-    live_url: str | None,
+    live: tuple[str, str] | None,
     selectable: bool,
 ) -> tuple[str, str]:
     """The same shell inside a reply: no chrome, transparent, filling its fixed frame.
 
     The chat owns the artifact's actions around it. Agent HTML keeps its unchanged
     opaque sandbox one frame further in; this shell adds no capability to it.
+    `live` is the stored artifact's `(live_url, artifact_id)`; Paper previews have none.
     """
 
     error_channel = secrets.token_hex(16)
     if kind == "html":
         content_url = _error_content_url(content_url, error_channel)
-    title = html.escape(descriptor.name, quote=True)
+    title = html.escape(name, quote=True)
     url = html.escape(content_url, quote=True)
     preview = (
         f'<img id="previewImage" src="{url}" alt="{title}">'
@@ -292,13 +297,14 @@ def _inline_viewer_document(
     ]
     if kind == "video":
         scripts.append(_video_script(content_url))
-    if live_url and kind == "html":
+    if live and kind == "html":
+        live_url, artifact_id = live
         scripts.append(
             "const liveUrl="
             + json.dumps(live_url).replace("<", "\\u003c")
             + ";\n"
             + "const liveArtifactId="
-            + json.dumps(descriptor.artifact_id)
+            + json.dumps(artifact_id)
             + ";\n"
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
             + f"const liveMessageMaxBytes={LIVE_ARTIFACT_MESSAGE_MAX_BYTES};\n"
@@ -319,7 +325,7 @@ body:has(#previewImage){{display:flex;align-items:center;justify-content:center}
         "frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; "
         "object-src 'none'; frame-ancestors 'self'"
     )
-    if live_url and kind == "html":
+    if live and kind == "html":
         csp += "; connect-src 'self'"
     if kind == "video":
         csp += "; media-src blob:; connect-src 'self'"
