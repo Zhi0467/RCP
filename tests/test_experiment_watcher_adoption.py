@@ -14,6 +14,7 @@ from rcp.storage import AppStore, WatcherStopRequest
 from rcp.watchers import WatcherBinding
 
 from .helpers import create_named_app as create_app
+from .helpers import fake_launch_admitted
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
 
 
@@ -136,9 +137,9 @@ def test_adopted_completions_wake_current_episode_once_with_current_authority(
             ),
         )
     launched = []
-    monkeypatch.setattr(
+    fake_launch_admitted(
+        monkeypatch,
         loop.app.state.background_tasks,
-        "launch_admitted",
         lambda operation_id: launched.append(operation_id) or loop.store.agent_task(operation_id),
     )
     origin = loop.store.watcher("old-watcher")

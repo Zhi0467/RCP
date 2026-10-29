@@ -11,9 +11,14 @@ from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_a
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
-from rcp.storage.request_compat import persisted_request_roundtrips
 
-from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
+from .helpers import (
+    append_fixture_patch,
+    authorized_human,
+    create_named_app,
+    fake_launch_admitted,
+    seed_patch,
+)
 
 
 @pytest.fixture
@@ -31,17 +36,13 @@ def runtime(manifest, tmp_path, monkeypatch):
         next_due_at=(now - timedelta(days=3)).isoformat(),
     )
     dispatched = []
-    tasks = app.state.background_tasks
 
     def dispatch(operation_id):
-        # The real launch refuses a request that does not survive its roundtrip.
-        task = store.agent_task(operation_id)
-        assert persisted_request_roundtrips(tasks._request_from_record(task), task.request)
         if store.mark_agent_task_running(operation_id):
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", dispatch)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks, dispatch)
     monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
     poller = ConsolidationPoller(
         store, app.state.background_tasks, service_for=app.state.catalog.open
@@ -70,6 +71,43 @@ def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, m
         )
     runtime.poller._launch(run.operation_id)
     assert runtime.dispatched == [run.operation_id]
+
+
+def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
+        runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.mode', 'not-a-mode') "
+            "WHERE operation_id=?",
+            (run.operation_id,),
+        )
+    tasks = runtime.app.state.background_tasks
+    monkeypatch.setattr(tasks, "launch_admitted", type(tasks).launch_admitted.__get__(tasks))
+
+    runtime.poller.poll_once()
+    runtime.poller.poll_once()
+
+    assert runtime.store.agent_task(run.operation_id).status == "failed"
+    settled = runtime.store.consolidation_run(run.run_id)
+    assert settled.outcome_settled_at is not None and settled.kind == "failure"
+    assert settled.error_message
+
+
+def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runtime, monkeypatch):
+    def unavailable(_operation_id):
+        raise OSError("dispatch unavailable")
+
+    monkeypatch.setattr(runtime.app.state.background_tasks, "launch_admitted", unavailable)
+    runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+
+    assert runtime.store.agent_task(run.operation_id).status == "queued"
+    assert [event.level for event in runtime.store.agent_task_events(run.operation_id)] == [
+        "warning"
+    ]
 
 
 def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
@@ -449,7 +487,7 @@ def test_unavailable_history_is_retried_without_changing_settled_outcome(
 
 
 def test_prelaunch_refusal_has_verified_empty_history_without_reading_project(runtime, monkeypatch):
-    monkeypatch.setattr(runtime.app.state.background_tasks, "launch_admitted", lambda _: None)
+    fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, lambda _: None)
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
     runtime.store.fail_agent_task(run.operation_id, "consolidation_authorization_revoked")

@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import sqlite3
 import stat
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, cast, get_args
 
 import httpx
 import tomlkit
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from rcp.api import create_app
-from rcp.background import BackgroundAgentTasks, StartupEffectFence
+from rcp.api.resource_watermarks import ResourceName
+from rcp.background import AdmittedLaunch, BackgroundAgentTasks, StartupEffectFence
 from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
+from rcp.consolidation import ConsolidationPoller
 from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
 from rcp.limits import (
@@ -46,6 +50,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     normalized_absolute_path as _absolute_path,
 )
+from rcp.server_ops.application_snapshot import copy_live_research_tree
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
 )
@@ -60,7 +65,9 @@ from rcp.sources.imported import (
 )
 
 if TYPE_CHECKING:
-    from rcp.storage import AppStore
+    from fastapi import FastAPI
+
+    from rcp.storage import AgentTaskRecord, AppStore
 
 REHEARSAL_OVERLAY_SCHEMA_VERSION = 1
 CANDIDATE_REHEARSAL_RESULT_SCHEMA_VERSION = 1
@@ -171,6 +178,8 @@ class RehearsalOverlay(_StrictModel):
     projects: tuple[RehearsalProjectOverlay, ...]
     transfer_inbox_entries: tuple[str, ...]
     excluded_project_ids: tuple[str, ...] = ()
+    # Whether the live display caches were carried; a restored archive has none.
+    display_caches: bool = False
 
     @field_validator("root", "data_dir", "database_path")
     @classmethod
@@ -288,6 +297,7 @@ def build_rehearsal_overlay(
     project_receipt_sha256: str,
     capture_root: Path,
     candidate_migrator: CandidateDatabaseMigrator | None = None,
+    display_cache_root: Path | None = None,
     excluded_project_ids: tuple[str, ...] = (),
 ) -> RehearsalOverlay:
     root = operation_root.resolve() / "overlay"
@@ -296,6 +306,9 @@ def build_rehearsal_overlay(
     absent_root = root / "known-absent"
     for path in (root, data_dir, projects_root, absent_root):
         path.mkdir(mode=_DIRECTORY_MODE)
+    if display_cache_root is not None:
+        # Cached display bytes an older release wrote, read as the live server reads them.
+        copy_live_research_tree(display_cache_root, data_dir / "project-snapshots")
     database_path = data_dir / "rcp.sqlite3"
     _copy_verified_file(
         Path(sqlite_receipt.snapshot_path),
@@ -419,6 +432,7 @@ def build_rehearsal_overlay(
         projects=tuple(projects),
         transfer_inbox_entries=transfer_paths,
         excluded_project_ids=excluded_project_ids,
+        display_caches=display_cache_root is not None,
     )
     for path in overlay.transfer_inbox_entries:
         if Path(path).exists() or Path(path).is_symlink():
@@ -939,8 +953,9 @@ async def _run_candidate_child(overlay_path: Path, result_path: Path) -> int:
         _write_private_json(result_path, result)
         return 0
     except BaseException as exc:
+        failed = _failed_candidate_result(exc, fence)
         with suppress(OSError, ValueError):
-            _write_private_json(result_path, _failed_candidate_result(exc, fence))
+            _write_private_json(result_path, failed)
         return 1
     finally:
         if opened is not None:
@@ -978,44 +993,61 @@ async def _verify_candidate(
             return None
         return store.space_user(requested)
 
-    app = create_app(
-        data_dir=Path(overlay.data_dir),
-        trusted_principal_resolver=rehearsal_principal,
-        startup_effect_fence=fence,
-    )
-    # Own the in-process transport rather than importing a test-only client:
-    # dependency warnings must not leak into the operator's CLI status line.
-    # ASGITransport does not run lifespan; enter it explicitly for the proof.
-    reads: list[str] = []
-    results: list[CandidateProjectVerification] = []
-    async with (
-        app.router.lifespan_context(app),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
-            follow_redirects=True,
-        ) as client,
-    ):
-        await _verify_candidate_health(client, opened)
-        reads.append("/api/health")
-        cards = await _candidate_project_cards(client, sorted(users_by_id))
-        if set(cards) != (
-            {project.project_id for project in overlay.projects} | set(overlay.excluded_project_ids)
-        ):
-            raise CandidateRehearsalRefused(
-                "Candidate project inventory omitted or substituted a project."
-            )
-        reads.append("/api/projects")
-        for project in overlay.projects:
-            headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
-            if project.capture_status == "captured":
-                results.append(await _verify_captured_project(client, project, headers, reads))
-            else:
-                results.append(_verify_unavailable_project(cards[project.project_id], project))
-    if fence.attempted_effects:
-        raise CandidateRehearsalRefused(
-            "Candidate startup attempted an effect while its fence was closed."
+    with _phase_log() as log:
+        app = create_app(
+            data_dir=Path(overlay.data_dir),
+            trusted_principal_resolver=rehearsal_principal,
+            startup_effect_fence=fence,
         )
+        # Own the in-process transport rather than importing a test-only client:
+        # dependency warnings must not leak into the operator's CLI status line.
+        # ASGITransport does not run lifespan; enter it explicitly for the proof.
+        reads: list[str] = []
+        results: list[CandidateProjectVerification] = []
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+                follow_redirects=True,
+            ) as client,
+        ):
+            log.phase = "health and inventory reads"
+            await _verify_candidate_health(client, opened)
+            reads.append("/api/health")
+            cards = await _candidate_project_cards(client, sorted(users_by_id))
+            if set(cards) != (
+                {project.project_id for project in overlay.projects}
+                | set(overlay.excluded_project_ids)
+            ):
+                raise CandidateRehearsalRefused(
+                    "Candidate project inventory omitted or substituted a project."
+                )
+            reads.append("/api/projects")
+            # Space-wide reads first serve copied caches and rows that no project open
+            # has rebuilt, then the state that opening every project leaves behind.
+            if overlay.display_caches:
+                log.phase = "space reads before projects open"
+                await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+            log.phase = "project reads"
+            for project in overlay.projects:
+                headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
+                if project.capture_status == "captured":
+                    results.append(await _verify_captured_project(client, project, headers, reads))
+                else:
+                    results.append(_verify_unavailable_project(cards[project.project_id], project))
+            log.phase = "space reads after projects open"
+            await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+            log.phase = "due consolidation"
+            await asyncio.to_thread(_verify_due_consolidation, app, overlay)
+            log.phase = "shutdown"
+        refusal = log.refusal(_captured_project_ids(overlay))
+        if refusal is not None:
+            raise CandidateRehearsalRefused(refusal)
+        if fence.attempted_effects:
+            raise CandidateRehearsalRefused(
+                "Candidate startup attempted an effect while its fence was closed."
+            )
     return CandidateRehearsalResult(
         status="verified",
         space_id=opened.space_id,
@@ -1025,6 +1057,69 @@ async def _verify_candidate(
         reads=tuple(reads),
         attempted_effects=fence.attempted_effects,
     )
+
+
+# Warnings a candidate check may log on copied data, as (logger, message
+# template). Each passes only while it names no copied project; the same
+# warning about copied state fails the check. Keep this list short.
+_EXPECTED_WARNINGS = frozenset(
+    {
+        # An uncopied project's Experiment target cannot be read on the copy.
+        ("rcp.api.index", "Unavailable %s Experiment target %s in project %s: %s"),
+    }
+)
+
+
+@contextmanager
+def _phase_log() -> Iterator[_PhaseLog]:
+    """Capture the candidate check's application records, at WARNING and worse."""
+    log = _PhaseLog()
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(log)
+    if previous > logging.WARNING:
+        root.setLevel(logging.WARNING)
+    try:
+        yield log
+    finally:
+        root.removeHandler(log)
+        root.setLevel(previous)
+
+
+class _PhaseLog(logging.Handler):
+    """Every WARNING or worse record the candidate check logs, tagged with its phase."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.phase = "startup"
+        self.records: list[tuple[str, logging.LogRecord]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append((self.phase, record))
+
+    def refusal(self, captured: set[str]) -> str | None:
+        """Name the first record that is not an expected warning about uncopied state."""
+        for phase, record in self.records:
+            message = record.getMessage()
+            if (
+                record.levelno == logging.WARNING
+                and record.exc_info is None
+                and (record.name, record.msg) in _EXPECTED_WARNINGS
+                and not any(project_id in message for project_id in captured)
+            ):
+                continue
+            error = record.exc_info[0] if record.exc_info else None
+            return (
+                f"Candidate logged {record.levelname} from {record.name} during {phase}: "
+                f"{message[:300]}" + (f" ({error.__name__})" if error is not None else "")
+            )
+        return None
+
+
+def _captured_project_ids(overlay: RehearsalOverlay) -> set[str]:
+    return {
+        project.project_id for project in overlay.projects if project.capture_status == "captured"
+    }
 
 
 def _project_principals(
@@ -1088,6 +1183,161 @@ async def _candidate_project_cards(
                 )
             cards[project_id] = card
     return cards
+
+
+# Project-level resources a member page subscribes to, plus main's graph.
+_WATERMARK_RESOURCES = (
+    *(
+        {"name": name}
+        for name in get_args(ResourceName)
+        if name not in {"graph", "chat", "task", "episode"}
+    ),
+    {"name": "graph", "ref": "main"},
+)
+
+
+async def _verify_aggregate_reads(
+    client: httpx.AsyncClient,
+    overlay: RehearsalOverlay,
+    opened: AppStore,
+    members: list[str],
+) -> None:
+    """Every member's space-wide reads: Runs, Experiment indexes, watermarks, Inbox.
+
+    Kept out of `reads`, like Paper: the previous release's baseline names only
+    the reads it served.
+    """
+
+    captured = _captured_project_ids(overlay)
+    for member in members:
+        headers = {"x-rcp-rehearsal-user": member}
+        visible = sorted(opened.member_project_ids(member))
+        experiment_index = {"mode": "experiment_loop"}
+        responses = [
+            await client.get("/api/space/runs", headers=headers),
+            await client.get("/api/episodes", params=experiment_index, headers=headers),
+            await client.post(
+                "/api/resource-watermarks",
+                headers=headers,
+                json={
+                    "client_id": "update-rehearsal",
+                    "open": [
+                        {"project_id": project_id, "resources": list(_WATERMARK_RESOURCES)}
+                        for project_id in visible
+                        if project_id in captured
+                    ],
+                    "due": visible,
+                },
+            ),
+        ]
+        for project_id in visible:
+            base = f"/api/projects/{project_id}"
+            responses.append(
+                await client.get(
+                    f"{base}/experiment-episodes", params=experiment_index, headers=headers
+                )
+            )
+            responses.append(await client.get(f"{base}/consolidation", headers=headers))
+        for response in responses:
+            path = response.request.url.path
+            if response.status_code != 200:
+                raise CandidateRehearsalRefused(
+                    f"Candidate read {response.request.method} {path} "
+                    f"returned {response.status_code}."
+                )
+            # The indexes degrade an unreadable live loop to one row rather than
+            # fail; on copied local state that row is the candidate's failure.
+            if path.endswith(("/api/episodes", "/experiment-episodes")) and any(
+                row["project_id"] in captured for row in response.json()["unavailable"]
+            ):
+                raise CandidateRehearsalRefused(
+                    f"Candidate read GET {path} could not read a copied Experiment."
+                )
+
+
+class _RehearsalLaunches:
+    """The task engine as the consolidation poller sees it, minus the provider.
+
+    Each launch runs the engine's own pre-spawn validation on the copied row
+    and stops where a live launch would start the provider.
+    """
+
+    def __init__(self, tasks: BackgroundAgentTasks, captured: set[str]) -> None:
+        self._tasks = tasks
+        self._captured = captured
+        self.dispatch_authority_resolver = tasks.dispatch_authority_resolver
+        self.validated: set[str] = set()
+        self.refusals: dict[str, str] = {}
+
+    def launch_admitted(self, operation_id: str) -> AgentTaskRecord:
+        from rcp.runs.provider_login import AdmissionRefused
+
+        record = self._tasks.store.agent_task(operation_id)
+        if record is None or record.project_id not in self._captured:
+            raise KeyError(operation_id)
+        try:
+            launch = self._tasks.validate_admitted_launch(operation_id)
+        except AdmissionRefused:
+            # Provider sign-in and machine programs stay outside the copy; a live
+            # launch defers on them and retries.
+            launch = record
+        except Exception as exc:
+            self.refusals[operation_id] = str(exc)
+            raise
+        self.validated.add(operation_id)
+        return launch.record if isinstance(launch, AdmittedLaunch) else launch
+
+
+def _verify_due_consolidation(app: FastAPI, overlay: RehearsalOverlay) -> None:
+    """Launch copied queued consolidations, then admit each schedule at its due time.
+
+    Real admission writes the copied rows; the engine's own launch validation
+    reads them back. Only the provider process is left out.
+    """
+
+    captured = _captured_project_ids(overlay)
+    tasks: BackgroundAgentTasks = app.state.background_tasks
+    store = tasks.store
+
+    def service_for(project_id: str):
+        if project_id not in captured:
+            raise KeyError(project_id)  # Not copied; the proof never opens it.
+        return app.state.catalog.open(project_id)
+
+    launches = _RehearsalLaunches(tasks, captured)
+    poller = ConsolidationPoller(
+        store, cast(BackgroundAgentTasks, launches), service_for=service_for
+    )
+    before = {run.run_id for run in store.consolidation_runs()}
+    now = datetime.fromisoformat(store.now())
+    for instant in sorted(
+        {
+            now,
+            *(
+                max(now, datetime.fromisoformat(s.next_due_at))
+                for s in store.consolidation_schedules()
+            ),
+        }
+    ):
+        poller.dispatch_due(instant)
+    if launches.refusals:
+        operation_id, reason = next(iter(launches.refusals.items()))
+        raise CandidateRehearsalRefused(
+            f"Candidate refused consolidation {operation_id} before launch: {reason}"
+        )
+    for run in store.consolidation_runs():
+        if run.project_id not in captured:
+            continue
+        task = store.agent_task(run.operation_id) if run.operation_id else None
+        due = run.run_id not in before or (task is not None and task.status == "queued")
+        if due and run.operation_id is not None and run.operation_id not in launches.validated:
+            raise CandidateRehearsalRefused(
+                f"Candidate consolidation {run.operation_id} never reached launch validation."
+            )
+        if run.run_id not in before and run.error_code is not None:
+            raise CandidateRehearsalRefused(
+                f"Candidate consolidation admission failed with {run.error_code}."
+            )
 
 
 async def _verify_captured_project(
