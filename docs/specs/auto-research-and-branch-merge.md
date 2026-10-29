@@ -225,8 +225,10 @@ This neither cancels jobs nor widens human retire controls.
 The RCP-authored prefix exposes the resolved closed vocabulary from
 [Auto-research commands](../../src/rcp/runs/auto_research.py). It includes validation,
 keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
-merge and archive, inbox harvest and clear, Bulletin while enabled, root ask, and
-guarded finish. Spawn and kickoff may choose the provider, model, and effort.
+merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
+guarded finish, lesson actions when the project has them, a one-time self-name,
+and the graph history reads. Workers get validation, status, message, and the
+same lesson, Bulletin, and history verbs. Spawn and kickoff may choose the provider, model, and effort.
 The root has no helper verbs. Child Work uses ordinary generic launch or direct
 scheduler submission.
 
@@ -347,8 +349,9 @@ The plan and `git merge-tree --write-tree` decide whether judgment is needed.
 Deterministic landing builds from the tested tree. It fast-forwards a clean,
 checked-out target or moves an unchecked-out target by compare-and-swap. Both
 paths first recheck the source, target, and checkout identity. Code lands and
-verifies before graph commit. A code conflict or graph answers starts one task
-in chat Integrate's local-merge scope. The landing must contain both recorded
+verifies before graph commit. A code conflict, graph answers, or confirmed
+unfinished jobs start one task in chat Integrate's local-merge scope; the task
+stops the confirmed jobs first. The landing must contain both recorded
 commits. Code-only delivery targets main without a graph side. If there are no
 graph answers, subsequent graph delivery runs without an agent. A missing landing
 fails, and the next Merge starts fresh. Later graph failure never undoes landed code.
@@ -360,7 +363,9 @@ ancestry or the recorded squash. Code and graph delivery records are separate.
 its leftovers, and shared files and the index must remain intact.
 
 Cleanup independently retries worktree removal, code-branch deletion, and graph
-archive. Branch deletion requires a removed worktree and verified delivery or
+archive. Merge keeps the worktree while a confirmed job still reads unfinished,
+skips branch deletion while the worktree is kept, and skips graph archive after
+any kept worktree or failed step, so a later Merge finishes them. Branch deletion requires a removed worktree and verified delivery or
 squash. Keep branch open skips cleanup. Discard or archive before delivery needs
 confirmation. Live turns block removal. Live or unobservable jobs need human
 confirmation. Cleanup failure does not turn delivery into failure.
