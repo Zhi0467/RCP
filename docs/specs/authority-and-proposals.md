@@ -70,8 +70,9 @@ those contracts.
 Contest and Agree are independent staged controls. Clearing or replacing one
 updates the corresponding staged standing. Sync commits it. A Blocker's standing
 is independent of its `open`, `resolved`, or `superseded` lifecycle.
-Authorized graph agents may change that lifecycle. Editing judged node content
-returns accepted or contested standing to asserted.
+Authorized graph agents may change that lifecycle. Any non-approval update or
+retirement, lifecycle-only changes included, returns accepted or contested
+standing to asserted.
 
 ## Decision authority
 
@@ -132,8 +133,8 @@ Two constant code profiles grant semantic permission:
 
 - The **ordinary** profile applies to Work, Seed and Refresh within ingestion,
   Experiment loops, and Auto-research child Work.
-- The **orchestrator** profile applies to an Auto-research root and a
-  human-dispatched graph merge.
+- The **orchestrator** profile applies to an Auto-research root, the merges it
+  dispatches of forks its lineage owns, and a human-dispatched graph merge.
 
 Manifests cannot edit these profiles. Surface contracts narrow them.
 Discuss and Paper expose no Patch. Experiment work has its focused policy.
@@ -145,7 +146,9 @@ the episode worktree and shared checkout.
 
 Typed operations map to named create, update, remove, supersede, merge, edge,
 standing, Proposal, truth-scope, and ontology actions. Special human paths must
-name `human_action`. A Decision choice is never inferred from `update_nodes`.
+name `human_action`. An orchestrator Patch that records a Decision outcome must
+name `agent_action="decision_choice"`, and only such a Patch may name it. A
+Decision choice is never inferred from `update_nodes`.
 
 Both profiles may create ResearchQuestions and Hypotheses. They may connect nodes
 created earlier in the same outer Patch. Existing protected nodes require a
@@ -214,15 +217,17 @@ Multiple judgments evaluate in order and commit atomically.
 
 Attention uses the same stale check and drops a previously staged Approve.
 Human Refresh from main starts ordinary node Work with the node-chat provider and
-model at the lowest probed effort. It also adds Evidence triage when Evidence
-caused the Proposal. Context names only the Proposal and moved dependencies.
+model at the lowest probed effort (the configured effort when no model catalog is
+cached). It also adds Evidence triage when Evidence caused the Proposal and the
+project enables that skill. Context names only the Proposal and moved dependencies.
 The agent withdraws the old Proposal and refiles it if it is still valid.
 A new filing still waits for a human.
 
 Replay-only and merge-only forms are not refreshable. These include multi-intent,
 standing, human-caused status, and accepted ordinary-node removal forms.
 Proposals whose nodes are all gone are not refreshable either.
-Reject or the next Sync withdraws stale Proposals in these cases.
+Reject, or a Sync that stages a judgment on one, withdraws stale Proposals in these
+cases; an unstaged stale Proposal stays pending.
 
 ## Guarded removal
 
@@ -247,6 +252,6 @@ chain stay in operational receipts.
 
 [Auto-research](auto-research-and-branch-merge.md#staged-command-client) owns the
 closed command vocabulary and its audit path. Ordinary workers have narrower
-contracts. Humans own root and merge dispatch, reauthorization, and protected
-controls. Commands do not grant graph authority. Changes still require typed
+contracts. Humans own root dispatch, merges outside the orchestrator's owned
+forks, reauthorization, and protected controls. Commands do not grant graph authority. Changes still require typed
 Patches through the transition manager and Apply gate.

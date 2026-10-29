@@ -276,10 +276,7 @@ class ConsolidationPoller:
             graph_target=graph_target,
             kind="project_chat",
             status="queued",
-            request={
-                **request.model_dump(mode="json"),
-                "graph_target": graph_target.model_dump(mode="json"),
-            },
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Waiting for nightly graph consolidation.",
@@ -292,6 +289,7 @@ class ConsolidationPoller:
             run = self.store.consolidation_run_for_operation(operation_id)
             if run is None:
                 raise ValueError("consolidation_binding_required")
+            self.store.drop_consolidation_request_target(operation_id)
             self.tasks.launch_admitted(operation_id)
         except Exception:
             # Admission is already durable. A later pass retries exactly this task.

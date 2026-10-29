@@ -772,9 +772,9 @@ export function ChatsWorkspace({
           !narrow && <strong>{selected.title}</strong>
         )}
         {selected.conversationKind === "auto_research_child" && (
-          <span className="conversation-header-meta">
-            Managed by the orchestrator in <a href={orchestratorHref}>Runs</a>.
-          </span>
+          <a className="button compact conversation-header-orchestrator" href={orchestratorHref}>
+            Orchestrator
+          </a>
         )}
         {turnBanner && selectedLatest && (
           <Banner

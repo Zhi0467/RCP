@@ -11,13 +11,14 @@ import stat
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, get_args
 
 import httpx
 import tomlkit
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from rcp.api import create_app
+from rcp.api.resource_watermarks import ResourceName
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
 from rcp.core.authority import WriteAuthority
@@ -46,6 +47,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     normalized_absolute_path as _absolute_path,
 )
+from rcp.server_ops.application_snapshot import copy_live_research_tree
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
 )
@@ -58,6 +60,9 @@ from rcp.sources.imported import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
 )
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 REHEARSAL_OVERLAY_SCHEMA_VERSION = 1
 CANDIDATE_REHEARSAL_RESULT_SCHEMA_VERSION = 1
@@ -168,6 +173,8 @@ class RehearsalOverlay(_StrictModel):
     projects: tuple[RehearsalProjectOverlay, ...]
     transfer_inbox_entries: tuple[str, ...]
     excluded_project_ids: tuple[str, ...] = ()
+    # Whether the live display caches were carried; a restored archive has none.
+    display_caches: bool = False
 
     @field_validator("root", "data_dir", "database_path")
     @classmethod
@@ -285,6 +292,7 @@ def build_rehearsal_overlay(
     project_receipt_sha256: str,
     capture_root: Path,
     candidate_migrator: CandidateDatabaseMigrator | None = None,
+    display_cache_root: Path | None = None,
     excluded_project_ids: tuple[str, ...] = (),
 ) -> RehearsalOverlay:
     root = operation_root.resolve() / "overlay"
@@ -293,6 +301,9 @@ def build_rehearsal_overlay(
     absent_root = root / "known-absent"
     for path in (root, data_dir, projects_root, absent_root):
         path.mkdir(mode=_DIRECTORY_MODE)
+    if display_cache_root is not None:
+        # Cached display bytes an older release wrote, read as the live server reads them.
+        copy_live_research_tree(display_cache_root, data_dir / "project-snapshots")
     database_path = data_dir / "rcp.sqlite3"
     _copy_verified_file(
         Path(sqlite_receipt.snapshot_path),
@@ -416,6 +427,7 @@ def build_rehearsal_overlay(
         projects=tuple(projects),
         transfer_inbox_entries=transfer_paths,
         excluded_project_ids=excluded_project_ids,
+        display_caches=display_cache_root is not None,
     )
     for path in overlay.transfer_inbox_entries:
         if Path(path).exists() or Path(path).is_symlink():
@@ -932,203 +944,11 @@ async def _run_candidate_child(overlay_path: Path, result_path: Path) -> int:
         lock_context.__enter__()
         lock_acquired = True
         opened = AppStore(Path(overlay.database_path))
-        users = opened.space_users()
-        if opened.space_kind != "team":
-            raise CandidateRehearsalRefused("The copied database is not one team space.")
-        users_by_id = {user.user_id: user for user in users if user.identity_kind == "team_member"}
-        project_principals: dict[str, str] = {}
-        for project in overlay.projects:
-            principal = next(
-                (
-                    membership.user_id
-                    for membership in opened.project_members(project.project_id)
-                    if membership.user_id in users_by_id
-                ),
-                None,
-            )
-            if principal is None:
-                raise CandidateRehearsalRefused(
-                    f"Copied project {project.project_id} has no enrolled member."
-                )
-            project_principals[project.project_id] = principal
-        default_user_id = next(iter(users_by_id), None)
-
-        def rehearsal_principal(request, store):
-            requested = request.headers.get("x-rcp-rehearsal-user", default_user_id)
-            if requested is None or requested not in users_by_id:
-                return None
-            return store.space_user(requested)
-
-        app = create_app(
-            data_dir=Path(overlay.data_dir),
-            trusted_principal_resolver=rehearsal_principal,
-            startup_effect_fence=fence,
-        )
-        # Own the in-process transport rather than importing a test-only client:
-        # dependency warnings must not leak into the operator's CLI status line.
-        # ASGITransport does not run lifespan; enter it explicitly for the proof.
-        reads: list[str] = []
-        results: list[CandidateProjectVerification] = []
-        async with (
-            app.router.lifespan_context(app),
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
-                follow_redirects=True,
-            ) as client,
-        ):
-            health = await client.get("/api/health")
-            if health.status_code != 200:
-                raise CandidateRehearsalRefused("Candidate health read failed.")
-            health_payload = health.json()
-            if (
-                health_payload.get("space_id") != opened.space_id
-                or health_payload.get("space_kind") != "team"
-            ):
-                raise CandidateRehearsalRefused("Candidate health changed copied space identity.")
-            reads.append("/api/health")
-            cards: dict[str, dict[str, object]] = {}
-            if users_by_id:
-                for principal in sorted(users_by_id):
-                    listing = await client.get(
-                        "/api/projects",
-                        headers={"x-rcp-rehearsal-user": principal},
-                    )
-                    if listing.status_code != 200:
-                        raise CandidateRehearsalRefused("Candidate project inventory read failed.")
-                    for raw_card in listing.json():
-                        card = dict(raw_card)
-                        # The unread digest count is per member; the catalog card is not.
-                        card.pop("digest_count", None)
-                        project_id = str(card["id"])
-                        existing = cards.get(project_id)
-                        if existing is not None and existing != card:
-                            raise CandidateRehearsalRefused(
-                                "Candidate project inventory changed between member reads."
-                            )
-                        cards[project_id] = card
-            else:
-                listing = await client.get("/api/projects")
-                if listing.status_code != 403:
-                    raise CandidateRehearsalRefused(
-                        "Candidate pre-enrollment project inventory did not stay protected."
-                    )
-            if set(cards) != (
-                {project.project_id for project in overlay.projects}
-                | set(overlay.excluded_project_ids)
-            ):
-                raise CandidateRehearsalRefused(
-                    "Candidate project inventory omitted or substituted a project."
-                )
-            reads.append("/api/projects")
-            for project in overlay.projects:
-                headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
-                if project.capture_status == "captured":
-                    response = await client.get(
-                        f"/api/projects/{project.project_id}",
-                        headers=headers,
-                    )
-                    if response.status_code != 200:
-                        raise CandidateRehearsalRefused(
-                            f"Candidate replay failed for project {project.project_id}."
-                        )
-                    payload = response.json()
-                    graph = payload.get("graph")
-                    revision = graph.get("revision") if isinstance(graph, dict) else None
-                    if (
-                        payload.get("id") != project.project_id
-                        or revision != project.expected_revision
-                    ):
-                        raise CandidateRehearsalRefused(
-                            f"Candidate replay changed project {project.project_id}."
-                        )
-                    tasks = await client.get(
-                        f"/api/projects/{project.project_id}/tasks",
-                        headers=headers,
-                    )
-                    watchers = await client.get(
-                        f"/api/projects/{project.project_id}/watchers",
-                        headers=headers,
-                    )
-                    if tasks.status_code != 200 or watchers.status_code != 200:
-                        raise CandidateRehearsalRefused(
-                            f"Candidate operational reads failed for project {project.project_id}."
-                        )
-                    reads.extend(
-                        (
-                            f"/api/projects/{project.project_id}",
-                            f"/api/projects/{project.project_id}/tasks",
-                            f"/api/projects/{project.project_id}/watchers",
-                        )
-                    )
-                    # Paper reads are proven stable here but kept out of `reads`: the
-                    # previous release's baseline names only the reads it served.
-                    paper_proof = await _paper_read_proof(
-                        client, project.project_id, headers=headers
-                    )
-                    if await _paper_read_proof(client, project.project_id, headers=headers) != (
-                        paper_proof
-                    ):
-                        raise CandidateRehearsalRefused(
-                            f"Candidate Paper reads changed project {project.project_id}."
-                        )
-                    results.append(
-                        CandidateProjectVerification(
-                            project_id=project.project_id,
-                            status="verified",
-                            revision=revision,
-                            projection_sha256=_canonical_sha256(graph),
-                        )
-                    )
-                else:
-                    # Compare durable identities, not this rehearsal's copied paths.
-                    card = dict(cards[project.project_id])
-                    card.update(
-                        locator=project.original_locator,
-                        state_location=project.original_state_location,
-                    )
-                    projection_sha256 = unavailable_card_projection_sha256(
-                        card,
-                        project.expected_card_sha256,
-                        team_space=opened.space_kind == "team",
-                    )
-                    if projection_sha256 != project.expected_card_sha256:
-                        raise CandidateRehearsalRefused(
-                            f"Candidate changed unavailable projection {project.project_id}."
-                        )
-                    results.append(
-                        CandidateProjectVerification(
-                            project_id=project.project_id,
-                            status="not_replay_verified",
-                            revision=None,
-                            projection_sha256=projection_sha256,
-                        )
-                    )
-        if fence.attempted_effects:
-            raise CandidateRehearsalRefused(
-                "Candidate startup attempted an effect while its fence was closed."
-            )
-        startup = app.state.startup_recovery_plan
-        result = CandidateRehearsalResult(
-            status="verified",
-            space_id=opened.space_id,
-            space_kind="team",
-            startup_recovery=StartupRecoveryReadModel.model_validate(startup),
-            projects=tuple(sorted(results, key=lambda item: item.project_id)),
-            reads=tuple(reads),
-            attempted_effects=fence.attempted_effects,
-        )
+        result = await _verify_candidate(overlay, opened, fence)
         _write_private_json(result_path, result)
         return 0
     except BaseException as exc:
-        diagnostic = redact_server_text(str(exc)).strip()
-        if not diagnostic or len(diagnostic) > BACKUP_DIAGNOSTIC_MAX_CHARS:
-            diagnostic = "Candidate copied-state verification failed."
-        failed = CandidateRehearsalResult(
-            status="failed",
-            attempted_effects=fence.attempted_effects,
-            diagnostic=diagnostic,
-        )
+        failed = _failed_candidate_result(exc, fence)
         with suppress(OSError, ValueError):
             _write_private_json(result_path, failed)
         return 1
@@ -1137,6 +957,284 @@ async def _run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             opened.close()
         if lock_context is not None and lock_acquired:
             lock_context.__exit__(None, None, None)
+
+
+def _failed_candidate_result(
+    exc: BaseException, fence: StartupEffectFence
+) -> CandidateRehearsalResult:
+    diagnostic = redact_server_text(str(exc)).strip()
+    if not diagnostic or len(diagnostic) > BACKUP_DIAGNOSTIC_MAX_CHARS:
+        diagnostic = "Candidate copied-state verification failed."
+    return CandidateRehearsalResult(
+        status="failed",
+        attempted_effects=fence.attempted_effects,
+        diagnostic=diagnostic,
+    )
+
+
+async def _verify_candidate(
+    overlay: RehearsalOverlay, opened: AppStore, fence: StartupEffectFence
+) -> CandidateRehearsalResult:
+    users = opened.space_users()
+    if opened.space_kind != "team":
+        raise CandidateRehearsalRefused("The copied database is not one team space.")
+    users_by_id = {user.user_id: user for user in users if user.identity_kind == "team_member"}
+    project_principals = _project_principals(overlay, opened, users_by_id)
+    default_user_id = next(iter(users_by_id), None)
+
+    def rehearsal_principal(request, store):
+        requested = request.headers.get("x-rcp-rehearsal-user", default_user_id)
+        if requested is None or requested not in users_by_id:
+            return None
+        return store.space_user(requested)
+
+    app = create_app(
+        data_dir=Path(overlay.data_dir),
+        trusted_principal_resolver=rehearsal_principal,
+        startup_effect_fence=fence,
+    )
+    # Own the in-process transport rather than importing a test-only client:
+    # dependency warnings must not leak into the operator's CLI status line.
+    # ASGITransport does not run lifespan; enter it explicitly for the proof.
+    reads: list[str] = []
+    results: list[CandidateProjectVerification] = []
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            follow_redirects=True,
+        ) as client,
+    ):
+        await _verify_candidate_health(client, opened)
+        reads.append("/api/health")
+        cards = await _candidate_project_cards(client, sorted(users_by_id))
+        if set(cards) != (
+            {project.project_id for project in overlay.projects} | set(overlay.excluded_project_ids)
+        ):
+            raise CandidateRehearsalRefused(
+                "Candidate project inventory omitted or substituted a project."
+            )
+        reads.append("/api/projects")
+        # Space-wide reads first serve copied caches and rows that no project open
+        # has rebuilt, then the state that opening every project leaves behind.
+        if overlay.display_caches:
+            await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+        for project in overlay.projects:
+            headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
+            if project.capture_status == "captured":
+                results.append(await _verify_captured_project(client, project, headers, reads))
+            else:
+                results.append(_verify_unavailable_project(cards[project.project_id], project))
+        await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+    if fence.attempted_effects:
+        raise CandidateRehearsalRefused(
+            "Candidate startup attempted an effect while its fence was closed."
+        )
+    return CandidateRehearsalResult(
+        status="verified",
+        space_id=opened.space_id,
+        space_kind="team",
+        startup_recovery=StartupRecoveryReadModel.model_validate(app.state.startup_recovery_plan),
+        projects=tuple(sorted(results, key=lambda item: item.project_id)),
+        reads=tuple(reads),
+        attempted_effects=fence.attempted_effects,
+    )
+
+
+def _project_principals(
+    overlay: RehearsalOverlay, opened: AppStore, users_by_id: Mapping[str, object]
+) -> dict[str, str]:
+    """The enrolled member each copied project is read as."""
+
+    principals: dict[str, str] = {}
+    for project in overlay.projects:
+        principal = next(
+            (
+                membership.user_id
+                for membership in opened.project_members(project.project_id)
+                if membership.user_id in users_by_id
+            ),
+            None,
+        )
+        if principal is None:
+            raise CandidateRehearsalRefused(
+                f"Copied project {project.project_id} has no enrolled member."
+            )
+        principals[project.project_id] = principal
+    return principals
+
+
+async def _verify_candidate_health(client: httpx.AsyncClient, opened: AppStore) -> None:
+    health = await client.get("/api/health")
+    if health.status_code != 200:
+        raise CandidateRehearsalRefused("Candidate health read failed.")
+    payload = health.json()
+    if payload.get("space_id") != opened.space_id or payload.get("space_kind") != "team":
+        raise CandidateRehearsalRefused("Candidate health changed copied space identity.")
+
+
+async def _candidate_project_cards(
+    client: httpx.AsyncClient, principals: list[str]
+) -> dict[str, dict[str, object]]:
+    """Every member's project inventory, which must agree; protected before enrollment."""
+
+    if not principals:
+        listing = await client.get("/api/projects")
+        if listing.status_code != 403:
+            raise CandidateRehearsalRefused(
+                "Candidate pre-enrollment project inventory did not stay protected."
+            )
+        return {}
+    cards: dict[str, dict[str, object]] = {}
+    for principal in principals:
+        listing = await client.get("/api/projects", headers={"x-rcp-rehearsal-user": principal})
+        if listing.status_code != 200:
+            raise CandidateRehearsalRefused("Candidate project inventory read failed.")
+        for raw_card in listing.json():
+            card = dict(raw_card)
+            # The unread digest count is per member; the catalog card is not.
+            card.pop("digest_count", None)
+            project_id = str(card["id"])
+            existing = cards.get(project_id)
+            if existing is not None and existing != card:
+                raise CandidateRehearsalRefused(
+                    "Candidate project inventory changed between member reads."
+                )
+            cards[project_id] = card
+    return cards
+
+
+# Project-level resources a member page subscribes to, plus main's graph.
+_WATERMARK_RESOURCES = (
+    *(
+        {"name": name}
+        for name in get_args(ResourceName)
+        if name not in {"graph", "chat", "task", "episode"}
+    ),
+    {"name": "graph", "ref": "main"},
+)
+
+
+async def _verify_aggregate_reads(
+    client: httpx.AsyncClient,
+    overlay: RehearsalOverlay,
+    opened: AppStore,
+    members: list[str],
+) -> None:
+    """Every member's space-wide reads: Runs, Experiment indexes, watermarks, Inbox.
+
+    Kept out of `reads`, like Paper: the previous release's baseline names only
+    the reads it served.
+    """
+
+    captured = {
+        project.project_id for project in overlay.projects if project.capture_status == "captured"
+    }
+    for member in members:
+        headers = {"x-rcp-rehearsal-user": member}
+        visible = sorted(opened.member_project_ids(member))
+        experiment_index = {"mode": "experiment_loop"}
+        responses = [
+            await client.get("/api/space/runs", headers=headers),
+            await client.get("/api/episodes", params=experiment_index, headers=headers),
+            await client.post(
+                "/api/resource-watermarks",
+                headers=headers,
+                json={
+                    "client_id": "update-rehearsal",
+                    "open": [
+                        {"project_id": project_id, "resources": list(_WATERMARK_RESOURCES)}
+                        for project_id in visible
+                        if project_id in captured
+                    ],
+                    "due": visible,
+                },
+            ),
+        ]
+        for project_id in visible:
+            base = f"/api/projects/{project_id}"
+            responses.append(
+                await client.get(
+                    f"{base}/experiment-episodes", params=experiment_index, headers=headers
+                )
+            )
+            responses.append(await client.get(f"{base}/consolidation", headers=headers))
+        for response in responses:
+            path = response.request.url.path
+            if response.status_code != 200:
+                raise CandidateRehearsalRefused(
+                    f"Candidate read {response.request.method} {path} "
+                    f"returned {response.status_code}."
+                )
+            # The indexes degrade an unreadable live loop to one row rather than
+            # fail; on copied local state that row is the candidate's failure.
+            if path.endswith(("/api/episodes", "/experiment-episodes")) and any(
+                row["project_id"] in captured for row in response.json()["unavailable"]
+            ):
+                raise CandidateRehearsalRefused(
+                    f"Candidate read GET {path} could not read a copied Experiment."
+                )
+
+
+async def _verify_captured_project(
+    client: httpx.AsyncClient,
+    project: RehearsalProjectOverlay,
+    headers: dict[str, str],
+    reads: list[str],
+) -> CandidateProjectVerification:
+    base = f"/api/projects/{project.project_id}"
+    response = await client.get(base, headers=headers)
+    if response.status_code != 200:
+        raise CandidateRehearsalRefused(
+            f"Candidate replay failed for project {project.project_id}."
+        )
+    payload = response.json()
+    graph = payload.get("graph")
+    revision = graph.get("revision") if isinstance(graph, dict) else None
+    if payload.get("id") != project.project_id or revision != project.expected_revision:
+        raise CandidateRehearsalRefused(f"Candidate replay changed project {project.project_id}.")
+    tasks = await client.get(f"{base}/tasks", headers=headers)
+    watchers = await client.get(f"{base}/watchers", headers=headers)
+    if tasks.status_code != 200 or watchers.status_code != 200:
+        raise CandidateRehearsalRefused(
+            f"Candidate operational reads failed for project {project.project_id}."
+        )
+    reads.extend((base, f"{base}/tasks", f"{base}/watchers"))
+    # Paper reads are proven stable here but kept out of `reads`: the
+    # previous release's baseline names only the reads it served.
+    paper_proof = await _paper_read_proof(client, project.project_id, headers=headers)
+    if await _paper_read_proof(client, project.project_id, headers=headers) != paper_proof:
+        raise CandidateRehearsalRefused(
+            f"Candidate Paper reads changed project {project.project_id}."
+        )
+    return CandidateProjectVerification(
+        project_id=project.project_id,
+        status="verified",
+        revision=revision,
+        projection_sha256=_canonical_sha256(graph),
+    )
+
+
+def _verify_unavailable_project(
+    listed: dict[str, object], project: RehearsalProjectOverlay
+) -> CandidateProjectVerification:
+    # Compare durable identities, not this rehearsal's copied paths.
+    card = dict(listed)
+    card.update(locator=project.original_locator, state_location=project.original_state_location)
+    projection_sha256 = unavailable_card_projection_sha256(
+        card, project.expected_card_sha256, team_space=True
+    )
+    if projection_sha256 != project.expected_card_sha256:
+        raise CandidateRehearsalRefused(
+            f"Candidate changed unavailable projection {project.project_id}."
+        )
+    return CandidateProjectVerification(
+        project_id=project.project_id,
+        status="not_replay_verified",
+        revision=None,
+        projection_sha256=projection_sha256,
+    )
 
 
 async def _paper_read_proof(

@@ -34,11 +34,15 @@ shared-contract changes, or integration uncertainty.
   All-file hooks see tracked files only.
 - Pre-commit runs `basedpyright` against `.basedpyright/baseline.json`. Fix new
   errors. Never use `--writebaseline`. The baseline only shrinks.
+- Before a push, read `uv run python scripts/quality_delta.py origin/main`. It never gates.
+- Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view
   changes need the affected served-app journey. Inspect network, console, and server
   logs. Report any verification gap.
 - Check every UI change at 390px against the
-  [phone layout and no-commentary rules](docs/specs/interface-and-visual-design.md).
+  [phone layout, no-commentary, and smooth-motion rules](docs/specs/interface-and-visual-design.md).
+  Avoid unnecessary secondary labels and descriptions; let the layout do the
+  explaining. A truly needed note goes on hover. Motion never jumps or flickers.
 - Remote behavior needs a reachable host. Migration and recovery checks use copies of
   real records, never the human's live data directory.
 - Native changes require a Tauri rebuild and the [desktop checks](docs/desktop.md).
@@ -59,7 +63,7 @@ spec, and executable test, not this registry.
 
 1. **Canonical Patch logs are append-only; materialized graph files are outputs.** Never
    edit or delete main or branch Patch history, and never hand-edit `graph.json`,
-   `research.md`, glossary, Proposal, or control projections. Replay rebuilds the
+   `research.md`, glossary, Proposal, cursor, or scope-base files. Replay rebuilds the
    outputs and would change the past.
 3. **Humans retain protected authority.** Only humans approve Proposals, change project
    truth membership, authorize episodes, or dispatch branch merges. A member's own page,
@@ -109,7 +113,7 @@ Invariant 9 belongs to `AppStore.complete_agent_task` for Patch text and the
 `if applied` stage removal in `stream_graph_run` for scratch.
 Invariant 10 belongs to `prepare_agent_patch`. An agent Patch carries no cursor
 or coverage operation, so chat never advances ingestion.
-Invariant 10f belongs to the watermark comment in `materialize.apply_patch`.
+Invariant 10f belongs to the watermark comment in `materialize._apply_patch`.
 Invariant 10c belongs to `clear_turn_handoff_files`.
 Invariant 10d belongs to the native chat context rule in the conversations spec.
 Invariant 11 belongs to `ProviderStreamEvent`.

@@ -1957,8 +1957,8 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
 
 
 def test_a_request_persisted_before_isolation_fields_still_roundtrips():
-    from rcp.background import persisted_request_roundtrips
     from rcp.service import AutoResearchRunRequest
+    from rcp.storage.request_compat import persisted_request_roundtrips
 
     request = AutoResearchRunRequest(
         episode_id="e", role="orchestrator", actor_operation_id="a", provider="codex", run_on="m"
@@ -1971,6 +1971,23 @@ def test_a_request_persisted_before_isolation_fields_still_roundtrips():
     assert not persisted_request_roundtrips(
         request.model_copy(update={"code_worktree": True}), stored
     )
+
+
+def test_a_nested_request_roundtrips_only_across_omitted_defaults():
+    from rcp.service import RunRequest
+    from rcp.storage.request_compat import persisted_request_roundtrips
+
+    attachment = {"attachment_id": "a", "name": "n", "media_type": "text/plain", "size": 1}
+    attachment["expires_at"] = "2026-01-01T00:00:00Z"
+    # Attachments written before ``reference`` existed omit it.
+    stored = RunRequest().model_dump(mode="json") | {"attachments": [attachment]}
+    request = RunRequest.model_validate(stored)
+    assert persisted_request_roundtrips(request, stored)
+    # A key the model drops, a changed nested value, or a lost nested object fails.
+    assert not persisted_request_roundtrips(request, stored | {"retired_key": 1})
+    changed = [attachment | {"name": "other"}]
+    assert not persisted_request_roundtrips(request, stored | {"attachments": changed})
+    assert not persisted_request_roundtrips(request, stored | {"attachments": [None]})
 
 
 @pytest.mark.parametrize("name", ["a", "main", "Main", "-ab", "ab-", "a_b", "a" * 33, " ab", " "])

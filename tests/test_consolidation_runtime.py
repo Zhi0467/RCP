@@ -11,6 +11,7 @@ from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_a
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
+from rcp.storage.request_compat import persisted_request_roundtrips
 
 from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
 
@@ -30,8 +31,12 @@ def runtime(manifest, tmp_path, monkeypatch):
         next_due_at=(now - timedelta(days=3)).isoformat(),
     )
     dispatched = []
+    tasks = app.state.background_tasks
 
     def dispatch(operation_id):
+        # The real launch refuses a request that does not survive its roundtrip.
+        task = store.agent_task(operation_id)
+        assert persisted_request_roundtrips(tasks._request_from_record(task), task.request)
         if store.mark_agent_task_running(operation_id):
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
@@ -50,6 +55,21 @@ def runtime(manifest, tmp_path, monkeypatch):
         dispatched=dispatched,
         now=now,
     )
+
+
+def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
+        runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target', "
+            'json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+            (run.operation_id,),
+        )
+    runtime.poller._launch(run.operation_id)
+    assert runtime.dispatched == [run.operation_id]
 
 
 def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
@@ -672,10 +692,8 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("unreadable", ["state", "receipts"])
+@pytest.mark.parametrize("unreadable", ["service", "patches"])
 def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch, unreadable):
-    import hashlib
-
     from rcp.core.models import Patch
     from rcp.transport import StateUnavailable
 
@@ -695,27 +713,21 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch,
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=[{"op": "create_nodes", "nodes": [evidence]}],
+        source_operation_id=run.operation_id,
     )
+    # The launched turn committed its Patch; the process died before the hold.
+    runtime.store.record_agent_task_receipt(run.operation_id, "agent_launch", {})
     append_fixture_patch(runtime.service, patch)
-    # The apply committed and recorded its receipt; the process died before the hold.
-    text = patch.model_dump_json()
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    runtime.store.reserve_consolidation_apply(run.operation_id, "add", digest, text, "effect")
-    runtime.store.finish_consolidation_apply(
-        run.operation_id,
-        "add",
-        {"status": "ok", "result": {"disposition": "applied", "revision": 2}},
-    )
     runtime.store.fail_agent_task(run.operation_id, "Provider failed after Apply")
 
     def unavailable(*_args):
-        raise StateUnavailable("state host dropped") if unreadable == "state" else OSError
+        raise StateUnavailable("state host dropped")
 
     with monkeypatch.context() as broken:
-        if unreadable == "state":
+        if unreadable == "service":
             broken.setattr(runtime.poller, "service_for", unavailable)
         else:
-            broken.setattr(runtime.store, "list_consolidation_apply_receipts", unavailable)
+            broken.setattr(type(runtime.service.history), "load_patches", unavailable)
         runtime.poller.reconcile_outcomes()
     assert runtime.store.consolidation_run(run.run_id).kind is None
     assert runtime.store.list_evidence_flags(run.project_id) == []
@@ -773,7 +785,6 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
     assert set(runs) == {"main", changed.branch_id}
     task = runtime.store.agent_task(runs[changed.branch_id].operation_id)
     assert task.graph_target == changed.graph_target
-    assert task.request["graph_target"] == changed.graph_target.model_dump(mode="json")
     assert (
         task.request["chat_id"]
         != runtime.store.agent_task(runs["main"].operation_id).request["chat_id"]

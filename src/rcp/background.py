@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast, get_args
 
-from pydantic import BaseModel
-
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -108,6 +106,7 @@ from rcp.storage import (
 )
 from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.models import AgentTaskAlreadyContinued
+from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
@@ -2001,7 +2000,6 @@ class BackgroundAgentTasks:
             or current.graph_target != record.graph_target
             or current.kind != record.kind
             or current.request != record.request
-            or current.request != request.model_dump(mode="json")
             or current.attempt != record.attempt
             or current.parent_operation_id != record.parent_operation_id
             or current.runtime_id != record.runtime_id
@@ -2617,33 +2615,49 @@ class BackgroundAgentTasks:
                 continue
             if decision.action == "settled" or not waiting.actionable:
                 continue
+            operation_id = waiting.record.operation_id
+            pid_file = decision.pid_file
+            assert pid_file is not None
             with self._remote_result_lock:
-                if not self.store.claim_recorded_finalization(waiting.record.operation_id):
+                if not self.store.claim_recorded_finalization(operation_id):
                     continue
 
             try:
-                record = self._require_operation(waiting.record.operation_id)
-                request = self._request_from_record(record)
+                record = self._require_operation(operation_id)
+                try:
+                    request = self._request_from_record(record)
+                except (TypeError, ValueError) as exc:
+                    # A saved request that cannot decode never will. Settle what
+                    # needs no request and fail the task for a human to see.
+                    self._settle_detached_mailbox(operation_id)
+                    finish_recorded_browser(self.store, operation_id)
+                    self.store.fail_agent_task(operation_id, str(exc), remote_pid_file=pid_file)
+                    continue
                 with self._controls_lock:
-                    mailbox = self._detached_mailboxes.get(record.operation_id)
+                    mailbox = self._detached_mailboxes.get(operation_id)
                 execution = (
                     mailbox.execution if mailbox is not None else self._recorded_execution(record)
                 )
                 assert execution is not None
                 # No admission or handler may race Apply or watcher settlement.
-                self._settle_detached_mailbox(record.operation_id)
-                finish_recorded_browser(self.store, record.operation_id)
-                pid_file = decision.pid_file
-                assert pid_file is not None
+                self._settle_detached_mailbox(operation_id)
+                finish_recorded_browser(self.store, operation_id)
                 if decision.action == "fail":
                     self.store.fail_agent_task(
-                        record.operation_id,
+                        operation_id,
                         decision.reason,
                         remote_pid_file=pid_file,
                     )
-            except Exception:
-                self.store.release_recorded_finalization(waiting.record.operation_id)
-                raise
+            except Exception as exc:
+                # This task waits for the next pass with its error on its row;
+                # the rest of this pass still runs.
+                logger.warning("Could not settle recorded task %s: %s", operation_id, exc)
+                self.store.release_recorded_finalization(operation_id)
+                self.store.update_agent_task_message(
+                    operation_id, f"Settling the recorded result failed: {exc}"
+                )
+                retry = True
+                continue
             if decision.action == "fail":
                 self._task_settled(record, request, execution)
                 continue
@@ -3359,21 +3373,6 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
-
-
-def persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
-    """A row written before a field existed omits it; its default is the legacy meaning."""
-    dumped = request.model_dump(mode="json")
-    fields = type(request).model_fields
-    added = {
-        key
-        for key, value in dumped.items()
-        if key not in stored
-        and key in fields
-        and not fields[key].is_required()
-        and value == fields[key].get_default(call_default_factory=True)
-    }
-    return {key: value for key, value in dumped.items() if key not in added} == stored
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:
