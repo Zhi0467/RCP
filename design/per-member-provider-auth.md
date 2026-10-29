@@ -59,7 +59,8 @@ from one account to another.
 | Setting | Per `(member, provider, host)`: `mine`, `pool`, `mine_first` or `pool_first` (UI: "Mine", "Pool", "Mine first", "Pool first"). |
 | Healthy | The credential is present, the row is `signed_in`, and the login is not removed. |
 | Bound | A Codex session stays on the login it started with, because the session lives in that login's home folder. |
-| Turn boundary | The start of a new agent task. A Patch correction or transport reattempt continues the same task, so it is not one. |
+| Turn boundary | The start of a new agent task, except a transport reattempt (`retry` admitted by the transport timer) or a `graph_repair` correction, which inherit their parent's login. |
+| Previous login | For a continued session: the `login_id` of the latest task row with the same provider, host and `native_session_id` that reached provider start, other than the current task. A fresh session has none. |
 | Park | Work waits, without failing, until its login is healthy again. |
 | Fence, generation | As in the providers spec, [Login state and failure](../docs/specs/providers-and-containment.md#login-state-and-failure). |
 
@@ -73,12 +74,20 @@ One storage schema migration, numbered after `consolidation_targets_v1`:
   - `member_id TEXT` (`NULL` for pool logins), with a unique index on
     `(provider, host, member_id)` where it is set;
   - `added_by`, `added_at`;
-  - `last_assigned_at`, the pool's least-recently-used clock;
+  - `draining_since`, set when a member removes a pool login that still has
+    bound work (section 3);
   - `removed_at`, which keeps a removed login's row for usage history.
+- New `provider_login_assignments(provider, host, login_id, last_assigned_at)`,
+  the pool's least-recently-used clock. It is a separate table so that writing
+  it on every launch does not fire the resource-version triggers that make
+  Settings refetch.
 - `provider_readiness_snapshots`: a cache. Drop it and recreate it keyed
   `(provider, host, login_id, binary)`.
 - New `provider_login_settings(user_id, provider, host, setting, changed_at)`.
-  `setting` is a TEXT enum of the four values. No row means the default.
+  `setting` is a TEXT enum of the four values. `host = '*'` is a member's
+  fallback for any host without its own row. Only the migration writes `*` rows
+  (below). Lookup order: the host's row, then the member's `*` row, then the
+  default (`mine` in a team space, `pool` in a personal one).
 - `graph_runs` (task rows): add `login_id TEXT`. `NULL` means "not resolved yet".
   `''` means the machine's own login.
 
@@ -89,9 +98,10 @@ The migration also:
 
 - sets `login_id = ''` on every existing task row, so all work from before the
   upgrade reads as machine work, and `NULL` keeps one meaning;
-- writes `mine_first` for every current team member (`identity_kind =
-  'team_member'`, `removal_started_at IS NULL`) on every host that has a login
-  row;
+- writes a `*` row with `mine_first` for every current team member
+  (`identity_kind = 'team_member'`, `removal_started_at IS NULL`) and every
+  provider. This covers hosts that never had a login row and machines added
+  later, so nothing changes for existing members anywhere;
 - reinstalls the resource-version triggers on the rebuilt tables and registers
   the new one (`storage/resource_versions.py`);
 - reinstalls the readiness deadline trigger with `login_id` in its owner key and
@@ -100,6 +110,10 @@ The migration also:
 `ProviderLoginStateRecord` gains the new fields. A missing row for a machine's
 own login still reads as `signed_in`, generation 0, exactly as today. Other logins
 always have a row, because adding one writes it.
+
+Readers of `provider_login_states` skip removed rows: the Settings list, release,
+and the resolver. `mark_provider_login_verified` and the sign-in runner refuse a
+removed login, so a late verify or token paste cannot revive it.
 
 **Credentials and homes on disk.** `ProviderCredentialStore.account_dir` gains
 `login_id`.
@@ -147,27 +161,32 @@ always have a row, because adding one writes it.
 the host, the member, the continued session's login if any, and the session's
 previous login if any. Rules, first match wins:
 
-1. **Same task.** A Patch correction or transport reattempt keeps its task's
-   login. If that login is not healthy, the task waits for it.
+1. **Same lineage.** A transport reattempt or a `graph_repair` correction keeps
+   its parent row's login. If that login is not healthy, the task waits for it.
 2. **Bound session (Codex).** A task that continues a Codex session uses that
    session's login: the `login_id` of the earliest task row with the same
-   provider and `native_session_id`. Forks, watcher wakes and Paper coach
-   sessions inherit it the same way. If that login is unhealthy, the task waits.
-   If it was removed, the task fails with `session_refused` and the reason
-   "start a new chat".
+   provider and `native_session_id` that reached provider start. A fork has no
+   session id until the provider names it, so it uses its fork source session's
+   login. Watcher wakes and Paper coach sessions inherit it the same way. If that
+   login is unhealthy, the task waits. If it was removed, the task fails with
+   `session_refused` and the reason "start a new chat".
 3. **Source.** Walk the member's setting over the two sources, mine and pool.
    Take the first source that has a healthy login.
 4. **Login within the source.**
    - Mine: the member's login.
-   - Pool: the session's previous login, if it is in the pool and healthy.
-     Otherwise the healthy pool login with the oldest `last_assigned_at`. Ties go
-     to the machine's own login, then the oldest `added_at`.
+   - Pool: the session's previous login, if it is in the pool, healthy and not
+     draining. Otherwise the healthy, non-draining pool login with the oldest
+     `last_assigned_at`. Ties go to the machine's own login, then the oldest
+     `added_at`.
 5. **Refuse.** The refusal names the first source in the setting.
 
 OpenCode has no added logins. Its pool is only the machine's own login (section 4).
 
-A new pool assignment, one that is not a sticky reuse, sets `last_assigned_at` in
-the same transaction that writes the task's `login_id`.
+Rule 4 runs inside the `BEGIN IMMEDIATE` transaction of "When" step 2. That
+transaction picks the login, writes the task's `login_id` and updates
+`last_assigned_at`, so two simultaneous new sessions land on different logins.
+A sticky reuse also updates the clock, so a login carrying a busy session does
+not look idle. The first assignment of a machine's own login inserts its rows.
 
 `account_login_refusal` becomes a check on one resolved `LoginKey`. Every caller
 goes through the resolver first. The launcher's `stream`, `_login_refusal`,
@@ -181,7 +200,8 @@ take the `LoginKey` instead of `(provider, host)`.
    If nothing is usable, it refuses with `ProviderSignedOut`, as today.
    `admit_provider_task` gains the authorizer, so `_start` substitutes the
    episode's `authorized_by` before admission instead of after.
-2. The launch resolves again and writes `login_id` to the task row. If that login
+2. The launch resolves again in one transaction (above) and writes `login_id` to
+   the task row. If that login
    differs from the session's previous login, it also writes a
    `provider_login_switched` receipt with `from`, `to` and a reason:
    `unhealthy`, `setting_changed` or `preferred_source_available`.
@@ -256,14 +276,23 @@ Three events release work:
 - **Changing a setting** releases that member's parked work that is not bound, for
   each source the new setting makes usable.
 
-**Removing a pool login.**
+**Removing a pool login.** Any member may remove a pool login. The machine's own
+login cannot be removed. Removal never cuts off running Codex work:
 
-- It records `signed_out` (new generation) and sets `removed_at`.
-- It deletes only the credential: the Claude token or the Codex `auth.json`.
-- Codex sessions and state stay, so ingestion still reads them.
-- Codex work bound to it fails with `session_refused` ("start a new chat").
-- Claude work moves at its next turn, as above.
-- The machine's own login cannot be removed.
+1. Remove takes the login's credential gate (`hold_blocking`), cancels any pending
+   sign-in on it, and sets `draining_since`. From then on no new session is
+   assigned to it, and Claude sessions move at their next turn.
+2. While a running task or a non-terminal episode is bound to it, the login stays
+   in use for that bound Codex work. It can still be verified if it fails.
+   The confirm dialog for Remove shows how many are bound.
+3. When nothing bound is left, a `reconcile_recovery` pass finishes the removal:
+   - it records `signed_out` (new generation) and sets `removed_at`;
+   - it deletes only the credential, the Claude token or the Codex `auth.json`.
+     Codex sessions and state stay, so ingestion still reads them;
+   - deletion on a remote host is best effort. A host it cannot reach is retried
+     on later passes and shows on the login's row until the deletion succeeds.
+4. A Codex chat bound to a removed login fails its next turn with
+   `session_refused` ("start a new chat").
 
 **Credential gate.** `ProviderCredentialGate` keys by `(provider, host,
 login_id)`, so Codex startups on different logins no longer wait for each other.
@@ -367,14 +396,27 @@ These are human HTTP routes. No agent command verb reaches them
   `added_by_display_name` and `added_at`. The row is built field by field, not by
   spreading the storage record.
 - `POST /api/providers/{provider}/logins/add` with `{host, kind}` creates a pool
-  login (`kind: "pool"`) or the caller's own (`kind: "member"`), then starts its
-  sign-in. `kind: "member"` refuses when the caller already has one on that host.
+  login (`kind: "pool"`) or the caller's own (`kind: "member"`).
+  - The new row starts `signed_out`, and the response returns its `login_id`.
+  - Where the provider supports device sign-in (Codex), it also starts one.
+    Otherwise (Claude) the client follows with `…/token`.
+  - An add that is never finished stays as a `signed_out` pool row that anyone
+    may remove.
+  - `kind: "member"` refuses when the caller already has a login on that host.
 - The `sign-in`, `token`, `verify` and `sign-out` bodies gain `login_id`.
-  New `POST …/logins/remove` with `{host, login_id}` removes a pool login.
-- Device sign-in status gains `login_id`. The runner's running sign-ins,
-  recovered generations and resume counts key by it, so nobody joins another
-  person's pending sign-in. `GET …/sign-in/{login_id}` and `…/cancel` return 404
-  unless the caller started that sign-in.
+  New `POST …/logins/remove` with `{host, login_id}` removes a pool login
+  (section 3).
+- The device sign-in attempt id, today called `login_id`, is renamed
+  `attempt_id`, so that `login_id` always names a login. The routes become
+  `…/sign-in/{attempt_id}` and `…/sign-in/{attempt_id}/cancel`.
+- The status object gains `login_id`. The runner's running sign-ins, recovered
+  generations and resume counts key by `login_id`.
+- A second start on a login that already has a pending sign-in returns 409 and
+  names who started it. This replaces the spec rule "Concurrent device sign-ins
+  join one operation". Status and cancel return 404 unless the caller started
+  the attempt.
+- List rows include the running sign-in's `user_code` and `verification_url`
+  only for the member who started it. Everyone else sees only who is signing in.
 - New `GET /api/providers/logins/settings` returns the caller's settings. New
   `PUT /api/providers/{provider}/logins/setting` with
   `{"host": "", "setting": "mine_first"}`.
@@ -412,6 +454,9 @@ has no action.
   bounded and hidden read is cooperative. This matches the lab stance that RCP
   puts no walls between members.
 - Git transport, SSH and machine access stay shared, as today.
+- RCP assumes pool logins can run the same models. A login whose plan lacks the
+  requested model fails that turn as today. RCP does not infer plan limits from
+  provider prose, so it cannot route around them.
 - What members do get:
   - more than one account per machine, so a team can spread quota and rate
     limits;
@@ -447,10 +492,23 @@ asked for the work. Removed logins keep their rows, so history still names them.
   own login moves their Claude chat at the next turn, with reason
   `preferred_source_available`. Their parked unbound work is released.
 - Fence isolation: a failure on one login fences no other login.
-- Removing a pool login keeps its row and Codex sessions, fails bound Codex work
-  with "start a new chat", and moves Claude work at its next turn.
-- Privacy: nobody can read or cancel another person's device sign-in, or see the
-  `detail` of another member's own login.
+- Removing a pool login with a running bound Codex episode drains it: no new
+  assignments, the episode keeps running, and the removal finishes after the
+  episode ends. The row and Codex sessions stay. A later turn in a bound Codex
+  chat fails with "start a new chat". Claude work moves at its next turn. A late
+  verify of a removed login is refused.
+- Concurrency:
+  - two simultaneous new sessions with two healthy pool logins land on
+    different logins;
+  - a second sign-in start on one login gets 409.
+- Previous login: a launch that failed before the provider started is not the
+  previous login and writes no switch receipt.
+- Lineage: a transport reattempt and a `graph_repair` correction keep their
+  parent's login; a Codex fork uses its source session's login.
+- Defaults: an existing member on a host that never had a login row, and on a
+  machine added after the upgrade, still uses the pool.
+- Privacy: nobody can read or cancel another person's device sign-in, see its
+  code in the list, or see the `detail` of another member's own login.
 - Member removal fences their own logins and keeps the pool logins they added. An
   unreachable host is listed and retried.
 - A remote Codex launch on a reachable host with an added `CODEX_HOME`. It checks
