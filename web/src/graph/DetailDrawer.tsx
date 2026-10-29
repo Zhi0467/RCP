@@ -739,12 +739,9 @@ export function DetailDrawer({
               {isControlNode(node.type) && experimentControl && onRunExperiment && (
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
+                  // Run stays disabled while other live loops are checked; no row is inserted.
+                  aria-busy={projectId && experimentEntriesStatus === "loading" ? true : undefined}
                 >
-                  {projectId && experimentEntriesStatus === "loading" && (
-                    <p className="experiment-overlap-loading" role="status" aria-busy="true">
-                      Checking other live loops…
-                    </p>
-                  )}
                   {projectId && experimentEntriesStatus === "unavailable" && (
                     <p className="experiment-overlap-unavailable" role="status">
                       Couldn't check other live loops.
@@ -1008,11 +1005,13 @@ export function DetailDrawer({
               )}
 
               <section>
-                <div className="relations-control-heading">
-                  <strong>Relations</strong>
-                  <small>{relations.length}</small>
-                </div>
                 <RelationMap
+                  heading={
+                    <>
+                      <strong>Relations</strong>
+                      <small>{relations.length}</small>
+                    </>
+                  }
                   focusedNode={node}
                   allNodes={allNodes}
                   incidentEdges={relations.filter((edge) => typeof edge.relation === "string")}
@@ -1035,12 +1034,10 @@ export function DetailDrawer({
                 </section>
               )}
 
-              <section>
-                <h3>Conversation evidence</h3>
-                {node.source_refs.length === 0 ? (
-                  <p className="muted">No source excerpts attached.</p>
-                ) : (
-                  node.source_refs.map((source) => (
+              {node.source_refs.length > 0 && (
+                <section>
+                  <h3>Conversation evidence</h3>
+                  {node.source_refs.map((source) => (
                     <blockquote key={`${source.session_id}-${source.record_uuid}`}>
                       <p>{source.excerpt}</p>
                       <footer className="mono">
@@ -1048,9 +1045,9 @@ export function DetailDrawer({
                         {new Date(source.timestamp).toLocaleString()}
                       </footer>
                     </blockquote>
-                  ))
-                )}
-              </section>
+                  ))}
+                </section>
+              )}
             </>
           )}
         </div>

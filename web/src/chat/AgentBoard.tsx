@@ -238,7 +238,6 @@ export function AgentBoard<C extends AgentBoardCard>({
                 </Fragment>
               ))}
               {here && activeDrop && target?.beforeId === null && line}
-              {cards.length === 0 && <p className="agent-board-empty">Nothing here.</p>}
             </div>
           </section>
         );
