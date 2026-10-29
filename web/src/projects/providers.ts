@@ -132,5 +132,18 @@ export function mergeProviderLogins(
   live: ProviderLoginState[] | null,
 ): ProjectLoginNotice[] {
   if (!live) return projectLogins;
-  return projectLogins.map((entry) => live.find((state) => sameLogin(state, entry)) ?? entry);
+  // A missing own sign-in has no id yet; once added, it is the owner's own row.
+  const added = (entry: ProjectLoginNotice) =>
+    entry.login_id === null
+      ? live.find(
+          (state) =>
+            state.provider === entry.provider &&
+            state.host === entry.host &&
+            state.kind === "own" &&
+            state.owner_user_id === entry.owner_user_id,
+        )
+      : undefined;
+  return projectLogins.map(
+    (entry) => live.find((state) => sameLogin(state, entry)) ?? added(entry) ?? entry,
+  );
 }

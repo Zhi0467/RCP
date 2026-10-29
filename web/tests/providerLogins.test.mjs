@@ -116,13 +116,18 @@ test("live login states replace project rows matched by provider, host and login
   const project = [
     loginRow({ state: "signed_out" }),
     loginRow({ login_id: "ana", state: "signed_out" }),
+    loginRow({ login_id: null, kind: "own", owner_user_id: "me", state: "signed_out" }),
   ];
-  const live = [loginRow({ login_id: "ana", state: "signed_in", generation: 4 })];
+  const live = [
+    loginRow({ login_id: "ana", state: "signed_in", generation: 4 }),
+    loginRow({ login_id: "mine", kind: "own", owner_user_id: "me", state: "signed_in" }),
+  ];
   assert.deepEqual(
     mergeProviderLogins(project, live).map((row) => [row.login_id, row.state]),
     [
       ["", "signed_out"],
       ["ana", "signed_in"],
+      ["mine", "signed_in"],
     ],
   );
 });
