@@ -300,7 +300,11 @@ export async function createPaperViteServer(plugins = []) {
     root: new URL("..", import.meta.url).pathname,
     cacheDir,
     logLevel: "error",
-    optimizeDeps: { entries: ["tests/fixtures/paperResource.html"] },
+    // Dependencies the entry crawl misses would be found mid-test, and Vite reloads the page.
+    optimizeDeps: {
+      entries: ["tests/fixtures/paperResource.html"],
+      include: ["@tauri-apps/api/core", "qrcode-generator"],
+    },
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {
