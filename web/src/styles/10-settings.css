@@ -749,9 +749,16 @@ details[open] > .view-disclosure-summary > svg:last-child {
   gap: 8px;
   min-width: 0;
 }
-.agent-config-options .code-worktree-choice select {
-  font-size: var(--type-xs);
+/* Same specificity as the agent field selects, so a theme styles both alike. */
+.code-worktree-choice select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: inherit;
+  font-size: var(--type-2xs);
+  height: 26px;
   min-width: 0;
+  padding: 0 7px;
   width: auto;
 }
 .agent-config-options input[type="checkbox"] {
