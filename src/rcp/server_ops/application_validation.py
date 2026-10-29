@@ -948,8 +948,9 @@ async def _run_candidate_child(overlay_path: Path, result_path: Path) -> int:
         _write_private_json(result_path, result)
         return 0
     except BaseException as exc:
+        failed = _failed_candidate_result(exc, fence)
         with suppress(OSError, ValueError):
-            _write_private_json(result_path, _failed_candidate_result(exc, fence))
+            _write_private_json(result_path, failed)
         return 1
     finally:
         if opened is not None:

@@ -406,15 +406,17 @@ export function useComposerAttachments({
       if (next.status === "preparing") prepared.push(next);
       setAttachments((current) => replaceAttachment(current, item.localId, () => next));
     }
-    await uploadPrepared(prepared, {
-      apiBase,
-      scope,
-      clientId,
-      setIdRef: attachmentSetIdRef,
-      cancelledIds: cancelledIdsRef.current,
-      setAttachmentSetId,
-      setAttachments,
-    });
+    if (prepared.length > 0) {
+      await uploadPrepared(prepared, {
+        apiBase,
+        scope,
+        clientId,
+        setIdRef: attachmentSetIdRef,
+        cancelledIds: cancelledIdsRef.current,
+        setAttachmentSetId,
+        setAttachments,
+      });
+    }
     uploadBusyRef.current = false;
   };
 

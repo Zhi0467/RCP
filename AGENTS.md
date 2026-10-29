@@ -40,7 +40,9 @@ shared-contract changes, or integration uncertainty.
   changes need the affected served-app journey. Inspect network, console, and server
   logs. Report any verification gap.
 - Check every UI change at 390px against the
-  [phone layout and no-commentary rules](docs/specs/interface-and-visual-design.md).
+  [phone layout, no-commentary, and smooth-motion rules](docs/specs/interface-and-visual-design.md).
+  Avoid unnecessary secondary labels and descriptions; let the layout do the
+  explaining. A truly needed note goes on hover. Motion never jumps or flickers.
 - Remote behavior needs a reachable host. Migration and recovery checks use copies of
   real records, never the human's live data directory.
 - Native changes require a Tauri rebuild and the [desktop checks](docs/desktop.md).
