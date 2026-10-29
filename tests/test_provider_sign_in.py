@@ -588,7 +588,7 @@ def test_device_credential_change_interrupted_before_verification_stays_fenced(
     state = runner.store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
     assert state.state == "signed_out" and state.generation > previous.generation
     assert state.changed_by == "other"
-    assert runner.refusal("codex", "") is not None
+    assert runner.accounts.refusal(LoginKey("codex", "", MACHINE_LOGIN_ID)) is not None
     assert _argv_log(tmp_path) == [["app-server"]]
 
 

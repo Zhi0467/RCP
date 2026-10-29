@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import LoginRefusal
 from rcp.background import BackgroundAgentTasks
 from rcp.runs.provider_login import (
     bound_running_count,
@@ -17,19 +16,25 @@ from rcp.runs.provider_login import (
     resolved_task_login,
     settle_provider_login,
 )
-from rcp.storage import AppStore
+from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.models import EpisodeMode, EpisodeRecord, LoginKey
 
 from .helpers import fabricated_authorizer, fake_launch_admitted
 from .test_provider_login_resolver import _login, _task
+from .test_provider_login_resolver import accounts as accounts
 
 
-@pytest.fixture
-def accounts(tmp_path, monkeypatch):
-    store = AppStore(tmp_path / "state.sqlite3")
-    now = datetime(2026, 10, 29, 12, tzinfo=UTC)
-    monkeypatch.setattr(store, "now", lambda: now.isoformat())
-    return ProviderAccounts(store, ProviderCredentialStore.for_data_dir(tmp_path))
+def _project(store):
+    store.upsert_project(
+        ProjectRecord(
+            project_id="project",
+            locator="unused",
+            name="project",
+            state_location="unused",
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
 
 
 def _turn(accounts, key, *, status="failed", episode_id=None, operation_id="turn"):
@@ -123,7 +128,7 @@ def test_remote_credential_deletion_retries_after_restart(accounts, monkeypatch)
         calls.append(args)
         return subprocess.CompletedProcess(args, 255, "", "unreachable")
 
-    monkeypatch.setattr("rcp.runs.provider_login.subprocess.run", fail)
+    monkeypatch.setattr("rcp.server_ops.provider_cleanup.subprocess.run", fail)
     remove_shared_login(store, AgentLauncher(), key, cancel_sign_in=lambda _: None)
     assert store.provider_login_state(key).removed_at is not None
     assert len(calls) == 1
@@ -132,7 +137,7 @@ def test_remote_credential_deletion_retries_after_restart(accounts, monkeypatch)
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("rcp.runs.provider_login.subprocess.run", succeed)
+    monkeypatch.setattr("rcp.server_ops.provider_cleanup.subprocess.run", succeed)
     reopened = AppStore(store.path)
     reconcile_login_removals(reopened, AgentLauncher())
     reconcile_login_removals(reopened, AgentLauncher())
@@ -149,14 +154,9 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     accounts, monkeypatch, provider, alternative_lapsed
 ):
     store = accounts.store
-    own = _login(accounts, provider, own=True)
-    shared = _login(accounts, provider, machine=True)
     authorizer = fabricated_authorizer()
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE provider_login_states SET member_id=? WHERE login_id=?",
-            (authorizer.user_id, own.login_id),
-        )
+    own = _login(accounts, provider, own=True, member=authorizer.user_id)
+    shared = _login(accounts, provider, machine=True)
     store.set_provider_login_setting(authorizer.user_id, provider, "", "own_then_shared")
     _episode(store, mode="experiment_loop")
     record = _turn(accounts, own, episode_id="episode")
@@ -210,26 +210,11 @@ def test_completed_turn_clears_limit_only_when_started_after_mark(accounts):
 def test_settlement_releases_parked_recovery_only_when_session_can_move(
     accounts, monkeypatch, provider
 ):
-    from rcp.storage import ProjectRecord
-
     store = accounts.store
-    store.upsert_project(
-        ProjectRecord(
-            project_id="project",
-            locator="unused",
-            name="project",
-            state_location="unused",
-            state_remote=False,
-            added_at=store.now(),
-        )
-    )
-    own = _login(accounts, provider, own=True)
-    _login(accounts, provider, machine=True)
+    _project(store)
     member = fabricated_authorizer().user_id
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE provider_login_states SET member_id=? WHERE login_id=?", (member, own.login_id)
-        )
+    own = _login(accounts, provider, own=True, member=member)
+    _login(accounts, provider, machine=True)
     store.set_provider_login_setting(member, provider, "", "own_then_shared")
     _episode(store)
     record = _turn(accounts, own, episode_id="episode")
@@ -256,26 +241,12 @@ def test_settlement_releases_parked_recovery_only_when_session_can_move(
 
 def test_verify_shared_releases_unbound_work_even_when_resolver_prefers_own(accounts, monkeypatch):
     from rcp.runs.provider_login import resume_provider_account
-    from rcp.storage import ProjectRecord
 
     store = accounts.store
-    store.upsert_project(
-        ProjectRecord(
-            project_id="project",
-            locator="unused",
-            name="project",
-            state_location="unused",
-            state_remote=False,
-            added_at=store.now(),
-        )
-    )
-    own = _login(accounts, "claude", own=True)
-    shared = _login(accounts, "claude", machine=True)
+    _project(store)
     member = fabricated_authorizer().user_id
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE provider_login_states SET member_id=? WHERE login_id=?", (member, own.login_id)
-        )
+    own = _login(accounts, "claude", own=True, member=member)
+    shared = _login(accounts, "claude", machine=True)
     store.set_provider_login_setting(member, "claude", "", "own_then_shared")
     record = _turn(accounts, own, status="queued")
     with store.connection() as connection:
@@ -301,22 +272,13 @@ def test_unhealthy_bound_login_stays_discoverable_for_release(accounts):
 @pytest.mark.parametrize("event", ["setting", "verify_own", "verify_shared"])
 def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, event):
     from rcp.runs.provider_login import provider_login_changed
-    from rcp.storage import AgentTaskRecord, ProjectRecord
+    from rcp.storage import AgentTaskRecord
     from rcp.watchers import WatcherDelivery
 
     watcher_delivery = Mock(spec=WatcherDelivery)
     store = accounts.store
     member = fabricated_authorizer()
-    store.upsert_project(
-        ProjectRecord(
-            project_id="project",
-            locator="unused",
-            name="project",
-            state_location="unused",
-            state_remote=False,
-            added_at=store.now(),
-        )
-    )
+    _project(store)
     store.set_provider_login_setting(member.user_id, "codex", "", "own")
     task = AgentTaskRecord(
         operation_id="parked",
