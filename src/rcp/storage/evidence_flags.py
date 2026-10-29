@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS, EVIDENCE_FLAG_SOURCE_MAX_CHARS
+from rcp.storage.consolidation import target_ref
 from rcp.storage.lessons import LessonError, _require_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -144,7 +145,7 @@ def record_evidence_flag_address(
         or task.kind != ("node_chat" if len(flags) == 1 else "project_chat")
         or task.request.get("mode") != "work"
         or (len(flags) == 1 and task.request.get("node_id") != flags[0]["evidence_id"])
-        or any((task.graph_target.branch_id or "main") != flag["target"] for flag in flags)
+        or any(task.graph_target != target_ref(flag["target"]) for flag in flags)
         or task.authorized_by is None
         or task.authorized_by.user_id != user_id
         or not isinstance(chat_id, str)

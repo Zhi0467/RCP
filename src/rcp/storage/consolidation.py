@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from typing import Literal, TypeVar, overload
@@ -79,11 +80,16 @@ class ConsolidationRun(BaseModel):
 
     @property
     def graph_target(self) -> GraphTargetRef:
-        return _target_ref(self.target)
+        return target_ref(self.target)
 
 
-def _target_ref(target: str) -> GraphTargetRef:
+def target_ref(target: str) -> GraphTargetRef:
     return GraphTargetRef() if target == "main" else GraphTargetRef(kind="branch", branch_id=target)
+
+
+def target_label(target: str, names: Mapping[str, str]) -> str:
+    """Display a stored target, retaining the short id for an unavailable branch."""
+    return "main" if target == "main" else names.get(target, target[:8])
 
 
 def migrate_consolidation(connection: sqlite3.Connection) -> None:
@@ -377,8 +383,6 @@ class ConsolidationStoreMixin(StoreMixinBase):
         next_due_at: str,
         input_head: int,
         target: str = "main",
-        initial_covered_head: int | None = None,
-        advance_schedule: bool = True,
         task: AgentTaskRecord | None = None,
         execution_host: str = "",
         error_code: str | None = None,
@@ -386,7 +390,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
         skipped: bool = False,
         now: str | None = None,
     ) -> ConsolidationRun | None:
-        """The due CAS, owner row, and ordinary task insertion are one commit."""
+        """Claim an initialized target: due CAS, owner row, and task commit together."""
         now = now or self.now()
         run_id = uuid.uuid4().hex
         with self.connection() as conn:
@@ -401,14 +405,12 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 or datetime.fromisoformat(current["next_due_at"]) > datetime.fromisoformat(now)
             ):
                 return None
-            conn.execute(
-                "INSERT OR IGNORE INTO consolidation_targets(project_id,target,next_due_at,covered_head) VALUES(?,?,?,?)",
-                (schedule.project_id, target, schedule.next_due_at, initial_covered_head),
-            )
             target_state = conn.execute(
                 "SELECT * FROM consolidation_targets WHERE project_id=? AND target=?",
                 (schedule.project_id, target),
             ).fetchone()
+            if target_state is None:
+                raise ValueError("Consolidation target must be initialized before claiming it.")
             if datetime.fromisoformat(target_state["next_due_at"]) > datetime.fromisoformat(now):
                 return None
             if conn.execute(
@@ -436,7 +438,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 if (
                     task.project_id != schedule.project_id
                     or task.authorized_by != schedule.authorized_by
-                    or task.graph_target != _target_ref(target)
+                    or task.graph_target != target_ref(target)
                 ):
                     raise ValueError(
                         "consolidation task does not match its authorization or target"
@@ -480,14 +482,14 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         project_id=schedule.project_id,
                         kind="consolidation_failed",
                         item_id=run_id,
-                        target="main" if target == "main" else f"branch:{target}",
+                        target=target_ref(target).key,
                         created_at=now,
                         payload={
                             "title": "Nightly consolidation",
                             "status": "failed",
                             "deep_link": digest_link(
                                 schedule.project_id,
-                                _target_ref(target).model_dump(),
+                                target_ref(target).model_dump(),
                                 "consolidation",
                                 run_id,
                             ),
@@ -510,10 +512,8 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 ),
             )
             conn.execute(
-                "UPDATE consolidation_schedules SET next_due_at=CASE WHEN ? THEN ? ELSE next_due_at END,last_run_at=?,last_outcome=?,last_occurrence_date=?,skipped_dates_json=CASE WHEN ?='main' THEN ? ELSE skipped_dates_json END WHERE project_id=?",
+                "UPDATE consolidation_schedules SET last_run_at=?,last_outcome=?,last_occurrence_date=?,skipped_dates_json=CASE WHEN ?='main' THEN ? ELSE skipped_dates_json END WHERE project_id=?",
                 (
-                    advance_schedule,
-                    next_due_at,
                     now,
                     "skipped" if skipped else ("failed" if task is None else None),
                     occurrence_date,
@@ -618,7 +618,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 project_id=row["project_id"],
                 kind="consolidation_report" if kind == "report" else "consolidation_failed",
                 item_id=run_id,
-                target=_target_ref(row["target"]).key,
+                target=target_ref(row["target"]).key,
                 created_at=now,
                 payload={
                     "title": report_title or "Nightly consolidation",
@@ -626,7 +626,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                     "status": "succeeded" if kind == "report" else "failed",
                     "deep_link": digest_link(
                         row["project_id"],
-                        _target_ref(row["target"]).model_dump(),
+                        target_ref(row["target"]).model_dump(),
                         "consolidation",
                         run_id,
                     ),
@@ -807,14 +807,14 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 project_id=row["project_id"],
                 kind="consolidation_failed",
                 item_id=row["run_id"],
-                target=_target_ref(row["target"]).key,
+                target=target_ref(row["target"]).key,
                 created_at=now,
                 payload={
                     "title": "Nightly consolidation",
                     "status": "failed",
                     "deep_link": digest_link(
                         row["project_id"],
-                        _target_ref(row["target"]).model_dump(),
+                        target_ref(row["target"]).model_dump(),
                         "consolidation",
                         row["run_id"],
                     ),

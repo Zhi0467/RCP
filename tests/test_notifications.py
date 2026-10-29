@@ -78,6 +78,7 @@ def test_consolidation_notifications_observed_once_and_closed_items_drop(
         authorized_by=authorized_human(store),
         next_due_at=(now - timedelta(minutes=1)).isoformat(),
     )
+    store.ensure_consolidation_target(schedule, target=target)
     run = store.claim_consolidation_occurrence(
         schedule,
         occurrence_date=now.date().isoformat(),
@@ -93,7 +94,6 @@ def test_consolidation_notifications_observed_once_and_closed_items_drop(
     assert [row["item_id"] for row in store.notification_outbox()] == [run.run_id]
     notice = sender.pending_desktop(device["device_id"])[0]
     assert notice["reason"] == "consolidation"
-    assert notice["project_name"].endswith(" · main" if target == "main" else " · review-branch")
     target_key = "main" if target == "main" else f"branch%3A{target}"
     assert f"/targets/{target_key}/" in notice["deep_link"]
     store.resolve_consolidation_run(

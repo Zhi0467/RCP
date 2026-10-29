@@ -365,7 +365,10 @@ def parse_team_access_config(text: str) -> ServerTeamConfig:
 def render_team_access_config(config: ServerTeamConfig) -> str:
     document = tomlkit.document()
     document.add(
-        tomlkit.comment("The https origin members' own devices open; see docs/device-pairing.md.")
+        tomlkit.comment(
+            "The https origin members' own devices open; "
+            "see docs/server.md#reach-the-team-space-from-a-phone."
+        )
     )
     document.add("access_url", config.access_url)
     return tomlkit.dumps(document)
