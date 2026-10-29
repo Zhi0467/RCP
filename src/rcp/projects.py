@@ -2364,6 +2364,17 @@ class ProjectCatalog:
         self,
         project_id: str,
     ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
+        try:
+            return self._decode_cached_snapshot_locked(project_id)
+        except (TypeError, AttributeError):
+            # The file is outside data: a value of the wrong JSON type is a corrupt
+            # cache that its readers degrade and rebuild, not a failed read.
+            return "invalid", None
+
+    def _decode_cached_snapshot_locked(
+        self,
+        project_id: str,
+    ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
         project_id = self._canonical_project_id(project_id)
         self._cached_snapshot_patch_heads.pop(project_id, None)
         path = self._cached_snapshot_path(project_id)

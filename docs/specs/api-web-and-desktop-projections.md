@@ -1341,10 +1341,11 @@ outside recent/space windows. Storage refreshes archive metadata on cached contr
 Both `/api/episodes?mode=experiment_loop` and project
 `/api/projects/{id}/experiment-episodes?mode=experiment_loop` return `{entries, unavailable}` with
 non-null current episodes. Main entries use completed controls; branches use
-exact branch read models. Unreadable live loops yield identity/target/node/episode/
-diagnostic rows without hiding healthy loops; historical failures log and skip.
-A project whose required cache is invalid or missing makes only its main loops
-unreadable. `/api/space/runs` lists each unreadable live loop as a degraded
+exact branch read models. Unreadable live or needs-action loops yield
+identity/target/node/episode/diagnostic rows without hiding healthy loops; other
+historical failures log and skip. A project whose required cache is invalid,
+missing, or of the wrong JSON shape makes only its main loops unreadable.
+`/api/space/runs` lists each such unreadable loop as a degraded
 "Unavailable" row beside the healthy runs, so one project never empties the
 space ledger. Task rows publish role/depth rather than client parsing.
 Project lists paint cached data, share in-flight reads, and refresh while Runs
