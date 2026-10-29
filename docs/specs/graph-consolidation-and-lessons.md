@@ -49,7 +49,9 @@ the same bytes shares the canonical effect. At settlement, a matching final
 `patch.json` is not reapplied; a new Patch follows ordinary Work Apply.
 
 The workflow consolidates and rewrites unreadable asserted nodes under graph
-writing rules, and defines shared terms in the glossary. Experiments get their
+writing rules, and defines shared terms in the glossary. It merges, supersedes, or
+removes duplicate and obsolete Evidence itself rather than suggesting it;
+Suggestions hold only what needs a human. Experiments get their
 own check: one study per node, an objective and design that state the operation
 (what runs, conditions, run matrix and count, what is logged) rather than the
 record's history, defined internal names, and fields that agree. What it cannot

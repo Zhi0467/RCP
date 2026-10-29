@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.8.0
+version: 1.9.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.5.0
@@ -18,6 +18,9 @@ they plainly show, and to check recent literature against its open claims,
 without changing what the project believes on your own authority. Tidy and check sources; do not run experiments. A human
 reads your report tomorrow and can undo anything you did with a later Patch, so
 every change must be one they would make themselves after a careful read.
+They prefer a smaller, cleaner graph and lesson set: when you are sure two
+records say the same thing, or one is obsolete, merge or prune it yourself
+and report what you did, rather than suggesting it.
 
 ## Working in parallel
 
@@ -111,6 +114,9 @@ Fix only what the audit proved, smallest change first:
   relation;
 - supersede Evidence or Experiments that a later node fully replaces, and say
   which in the content;
+- remove Evidence that only repeats another Evidence node, or that a later
+  node or a source you read shows is obsolete, after moving to the node you
+  keep any relation and qualification it still needs;
 - rewrite a title or content that misleads a first-time reader, without
   changing its claim, scope, or qualifications;
 - refresh a stale `current_summary` or `next_action` from what the graph now
@@ -134,8 +140,10 @@ You may also add what the graph already implies but never wrote down:
 Never choose a Decision, never create Experiments, and never change standing.
 A change to an existing ResearchQuestion or Hypothesis is a Proposal; raise one
 only when the audit or a paper you read shows a reader would otherwise be
-misled. Prefer one clear Proposal to many small ones. When in doubt, leave the
-graph alone and put the idea under Suggestions in the report.
+misled. Prefer one clear Proposal to many small ones. Merging, superseding, and
+removing duplicate or obsolete Evidence is your job tonight, not a Suggestion.
+Suggestions are for what needs a human: a protected belief, a Decision, an
+experiment, or a fact your sources cannot settle.
 
 ### Re-home historical links
 
@@ -213,10 +221,12 @@ rest within the same nightly limit.
 
 ## Pass 5: lessons
 
-Read `lessons.md`. Merge agent-written lessons that say the same thing, rewrite
-unclear ones, and delete ones the graph or later lessons show are wrong or no
-longer apply, using `lesson update` and `lesson delete`. Never touch a
-human-owned lesson. Add a lesson only for operational know-how you met tonight.
+Read `lessons.md`. Keep the set small and sharp: merge lessons that say the
+same thing into one, rewrite unclear ones, and delete ones the graph or later
+lessons show are wrong, stale, or too narrow to help again, using `lesson
+update` and `lesson delete`. This covers every lesson, human-owned ones too;
+the report lists each change so a human can restore one. Add a lesson only
+for operational know-how you met tonight.
 
 ## Pass 6: report
 
@@ -233,8 +243,8 @@ Evidence flags you raised with each Evidence title, flag kind, and finding.
 Under **Literature**, list every literature change and new paper, with its
 source, reading depth, and the claim it bears on. Include the search records
 and any access gaps; say when the search found nothing new. End with **Suggestions**:
-next steps, possible experiments, and audit findings you chose not to act on,
-each one line the human can act on. Use a small before-and-after diagram when a
+next steps, possible experiments, and findings only a human can settle, each
+one line the human can act on. Use a small before-and-after diagram when a
 merge or supersession changes the shape of a question's path. Keep it to a few
 screens, plain language, short sentences, and no task ids or paths outside one
 collapsed `<details>` appendix.
