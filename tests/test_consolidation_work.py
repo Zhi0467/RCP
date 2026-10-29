@@ -134,6 +134,7 @@ def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(mani
             execution,
             text,
             run_truth_scope=["repo-a"],
+            read_scope=None,
             source_effect_id=settlement_source_effect_id(execution, text),
         )
         assert failure is None
@@ -247,6 +248,7 @@ def test_consolidation_apply_live_membership_is_required_by_transition(
         execution,
         agent_patch_json(refresh_patch()),
         run_truth_scope=["repo-a"],
+        read_scope=None,
         source_effect_id=str(uuid.uuid4()),
     )
     assert applied is None

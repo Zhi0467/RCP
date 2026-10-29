@@ -145,6 +145,7 @@ def apply_work_graph_update_again(
                 run_truth_scope=list(
                     request.run_truth_scope or write_repositories(service.history.state())
                 ),
+                read_scope=None,
                 source_operation_id=operation_id,
                 cancelled=lambda: time.monotonic() > deadline,
                 under_lock=recheck_chat_order,

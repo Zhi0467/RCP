@@ -178,6 +178,8 @@ def consolidation_apply_handler(
                     execution,
                     text,
                     run_truth_scope=run_truth_scope,
+                    # Consolidation runs without a group, so it reads only this project.
+                    read_scope=None,
                     source_operation_id=execution.operation_id,
                     source_effect_id=receipt["source_effect_id"],
                 )

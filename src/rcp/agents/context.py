@@ -7,7 +7,12 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from rcp.agents.group_context import GroupContext
-from rcp.agents.project_repositories import readable_repositories, write_repositories
+from rcp.agents.project_repositories import (
+    RepositoryReadScope,
+    readable_repositories,
+    resolve_read_scope,
+    write_repositories,
+)
 from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import SetCoverageOperation
@@ -109,6 +114,13 @@ class ChatContext(BaseModel):
     graph_revision: int
     node: dict[str, Any] | None
     relations: list[ChatRelation]
+
+    @property
+    def read_scope(self) -> RepositoryReadScope:
+        """What this turn may read: its repositories as shown, plus available siblings'."""
+
+        project_id = self.group_context.project_id if self.group_context is not None else None
+        return resolve_read_scope(project_id, self.repositories, self.group_context)
 
 
 class ContextAssembler:

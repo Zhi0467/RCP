@@ -30,6 +30,7 @@ from rcp.agents.command_protocol import (
 )
 from rcp.agents.continuation_prompt import LaunchPhase, classify
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     _invoked_package_section,
@@ -706,6 +707,7 @@ def _start_auto_research_child_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope,
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     # Resolved once: the mailbox enforces it and the prompt renders it from the lifecycle.
@@ -718,6 +720,7 @@ def _start_auto_research_child_validator_mailbox(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=execution.operation_id,
         ),
         serve=partial(
@@ -730,7 +733,10 @@ def _start_auto_research_child_validator_mailbox(
         ),
         resume_context=_ChildMailboxContext(
             **_work_mailbox_context(
-                run_truth_scope, compute_commands, graph_read_scope=graph_read_scope
+                run_truth_scope,
+                compute_commands,
+                graph_read_scope=graph_read_scope,
+                read_scope=read_scope,
             ).model_dump(),
             route=route,
         ).model_dump(mode="json"),
@@ -767,6 +773,7 @@ def resume_child_work_command_mailbox(
             service(),
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             source_operation_id=execution.operation_id,
         ),
         serve=partial(

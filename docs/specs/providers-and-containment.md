@@ -685,9 +685,15 @@ on another machine. These are pointers to live files, never staged copies.
 Each of these runs renders the section every turn, and its master values keep
 the group name and readable project ids, so a continued chat or episode learns
 when its project leaves the group. A Patch correction reuses its launch's group.
-Sibling repositories never become write roots, admitted repositories, run truth
-scope, or Patch repository declarations, and a Patch still validates against
-the run's own graph only (invariant 4b).
+Sibling repositories never become write roots, admitted repositories, or run
+truth scope. A run may declare a sibling repository it read by its ref, which
+the section lists; the refs come from the same resolver that builds the read
+scope RCP stamps on the run's Patch. A Work or Experiment turn resolves that
+scope from its launch context and retains it for recovery. An Auto-research
+command apply resolves it when its dispatcher is built. A recorded Auto-research
+settlement with no live group, Apply again, a fork seed, and consolidation stamp
+this project's repositories only. A Patch still validates against the run's own
+graph only (invariant 4b).
 
 ## Graph rules in task contracts
 

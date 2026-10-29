@@ -114,7 +114,8 @@ async def stage_work_turn(
     its worktree. ``compute_episode_id`` is the episode compute commands bill.
     ``prepare_handoffs`` clears or stages the owner's handoff files and its
     result is returned third. ``start_validator_mailbox`` is called as
-    ``(service, staged, *, execution, budget, compute_commands, run_truth_scope)``.
+    ``(service, staged, *, execution, budget, compute_commands, run_truth_scope,
+    read_scope, graph_read_scope)``.
     Without ``stage_patch_inputs`` the turn gets one brokered Patch mailbox;
     without ``select_skills`` the request's own skill selection is staged.
     """
@@ -293,6 +294,7 @@ async def stage_work_turn(
             budget=validator_budget,
             compute_commands=compute_commands,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             graph_read_scope=graph_read_scope,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]

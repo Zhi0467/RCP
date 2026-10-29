@@ -1817,6 +1817,10 @@ class Patch(BaseModel):
     ops: list[GraphOperation]
     run_truth_scope: list[str] = Field(default_factory=list)
     repositories_read: list[str] = Field(default_factory=list)
+    # The repositories this run could read, as refs (`rcp.agents.project_repositories`).
+    # RCP stamps it at collection, as it does `run_truth_scope`. Older Patches carry none
+    # and keep their exact serialized bytes.
+    run_read_scope: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
     processed_cursors: dict[str, str] = Field(default_factory=dict)
     change_summary: list[str] = Field(default_factory=list)
     source_operation_id: str | None = None

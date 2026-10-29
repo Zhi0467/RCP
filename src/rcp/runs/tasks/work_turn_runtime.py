@@ -23,6 +23,7 @@ from rcp.agents.command_protocol import CommandResponse
 from rcp.agents.context import ChatContext
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
@@ -203,6 +204,10 @@ class WorkTurn:
         return self.context.run_truth_scope
 
     @property
+    def read_scope(self) -> RepositoryReadScope:
+        return self.context.read_scope
+
+    @property
     def continuation(self) -> AgentTaskContinuation:
         return self.execution.continuation if self.execution is not None else "fresh"
 
@@ -277,6 +282,8 @@ class WorkFinalizationContext:
     request: RunRequest
     execution: AgentTaskExecution | None
     run_truth_scope: list[str]
+    # None only for a turn retained before reads were stamped.
+    read_scope: RepositoryReadScope | None
     workspace: Path
     local_stage: Path | None
     remote_stage: RemoteRunStage | None

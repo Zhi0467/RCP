@@ -317,11 +317,15 @@ human types a name. A project with one repository shows no name field in the
 setup wizard, so its name is always derived; the field appears once a second
 repository makes the names need to differ. Existing aliases never change.
 
-A Patch declares the repositories its run read. Task contracts name repositories
-by path while scope is a list of aliases, so RCP accepts either spelling and
-records each read by its manifest alias, resolving a path at or under a
-registered root to that root. A Patch may read, and cite as `source_refs`, any
-project repository; one outside the project is rejected.
+A Patch declares the repositories its run read in `repositories_read`, each by
+ref: a bare alias names this project's repository and `<project_id>:<alias>` a
+group sibling's (`agents/project_repositories.py` owns the encoding). Task
+contracts name repositories by path, so RCP accepts a ref, this project's id with
+an alias, or a path at or under a repository root shown to the run, and records
+the ref. RCP stamps the run's resolved read scope on the collected Patch
+([Patch provenance](graph-history-and-transitions.md#patch-provenance)); a read
+outside it is rejected. A Patch may cite any project repository as
+`source_refs`.
 
 Every graph-capable run, the Paper coach and group-context siblings receive
 pointers to every project repository. Work-like write containment separately

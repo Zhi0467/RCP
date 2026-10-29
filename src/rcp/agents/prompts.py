@@ -22,6 +22,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import GroupContext
+from rcp.agents.project_repositories import sibling_repository_paths
 from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
@@ -87,11 +88,29 @@ def render_group_context(context: GroupContext | None) -> str:
         "You can read the available other projects as you read your own: their graph and research.md "
         "files, repositories, and graph history including branches (pass --project with the project id). "
         "You cannot write to them.\n"
+        + _group_read_refs_line(context)
         + "```json\n"
         + json.dumps({"group_context": context.model_dump(mode="json")}, ensure_ascii=False)
         + "\n```"
     )
 
+
+def _group_read_refs_line(context: GroupContext) -> str:
+    # The same refs RCP stamps as this run's read scope.
+    refs = sorted(sibling_repository_paths(context))
+    if not refs:
+        return ""
+    return (
+        "Name another project's repository you read in `repositories_read` by its ref: "
+        + ", ".join(f"`{ref}`" for ref in refs)
+        + ".\n"
+    )
+
+
+REPOSITORIES_READ_RULE = (
+    "Record in `repositories_read` each repository you read: this project's by alias, another "
+    "project's by the ref the Project group section lists."
+)
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
 RCP maintains one project-global research graph — questions, hypotheses, experiments, evidence,
@@ -914,7 +933,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v12"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v18"
+WORK_POLICY_VERSION = "work-v19"
 
 
 class PromptFactory:
@@ -1165,7 +1184,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v5"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v6"
 
     @staticmethod
     def graph_task_contract(
@@ -1284,7 +1303,8 @@ Output contract:
   intents in the authority contract, using that intent's matching operation shape. Only
   `status_change` carries an `evidence_edge` cause. `card.decision_needed` names the exact change in
   plain prose, never only "Approve or reject".
-- Record `repositories_read` honestly; RCP supplies the authorized run truth scope.
+- Record in `repositories_read` each listed repository you read, by its alias. RCP supplies the
+  run's write and read scopes.
 - Your final response should briefly confirm that the patch file was written and plainly name any
   needed ontology vocabulary or Hypothesis scope left empty for lack of a cited boundary.
 
@@ -1537,7 +1557,7 @@ Operational authority:
 Graph Patch (optional):
 - Write one only when the work changes research state; no Patch is a normal result.
 - Write one semantic Patch to `{patch_path}` using only the fields in `{output_schema_path}`. It is
-  the only graph-change channel RCP reads. Record `repositories_read` honestly.
+  the only graph-change channel RCP reads. {REPOSITORIES_READ_RULE}
 - Write `change_summary` as one plain sentence per graph change, naming concepts by title (never ids,
   operation names, or counts) and stating only what the Patch records.
 - Describe the graph change in the reply. RCP shows whether it applied beside the reply, so do not

@@ -38,6 +38,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
+from rcp.agents.project_repositories import RepositoryReadScope, resolve_read_scope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
@@ -255,6 +256,8 @@ class _StoredWorkFinalizationContext(BaseModel):
     stage_root: str
     workspace: str
     run_truth_scope: list[str]
+    # Absent in snapshots written before reads were stamped.
+    read_scope: RepositoryReadScope | None = None
     write_scope: ProjectWriteScope
     artifact_scope_id: str
     artifact_directory: str
@@ -549,6 +552,7 @@ def _work_finalization_context(
         request=turn.request,
         execution=turn.execution,
         run_truth_scope=list(turn.context.run_truth_scope),
+        read_scope=turn.context.read_scope,
         workspace=turn.workspace,
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
@@ -591,6 +595,7 @@ def _record_work_finalization_context(
         stage_root=execution.stage_root,
         workspace=str(turn.workspace),
         run_truth_scope=list(turn.context.run_truth_scope),
+        read_scope=turn.context.read_scope,
         write_scope=turn.write_scope,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=str(staged.artifact_directory),
@@ -679,6 +684,7 @@ def _load_work_finalization_context(
         request=stored.request,
         execution=execution,
         run_truth_scope=list(stored.run_truth_scope),
+        read_scope=stored.read_scope,
         workspace=workspace,
         local_stage=local_stage,
         remote_stage=remote_stage,
@@ -1391,6 +1397,7 @@ async def _validate_patch_deliverable(
             turn.execution,
             patch_text,
             run_truth_scope=turn.run_truth_scope,
+            read_scope=turn.read_scope,
             source_effect_id=(
                 settlement_source_effect_id(turn.execution, patch_text)
                 if is_consolidation(turn.execution)
@@ -1804,6 +1811,7 @@ async def _settle_patch_deliverable(
                 budget=launch_turn.validator_budget,
                 compute_commands=launch_turn.compute_commands,
                 run_truth_scope=turn.run_truth_scope,
+                read_scope=turn.read_scope,
                 graph_read_scope=launch_turn.graph_read_scope,
             )
             correction_prompt, correction_path = _compose_work_correction_prompt(
@@ -2028,6 +2036,7 @@ async def _settle_watch_deliverable(
             budget=launch_turn.validator_budget,
             compute_commands=launch_turn.compute_commands,
             run_truth_scope=turn.run_truth_scope,
+            read_scope=turn.read_scope,
             graph_read_scope=launch_turn.graph_read_scope,
         )
         primary_error: BaseException | None = None
@@ -2870,6 +2879,7 @@ async def _stream_work_graph_repair(
             execution=execution,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             graph_read_scope=graph_read_scope,
         )
         read_dirs = _chat_read_dirs(
@@ -3043,6 +3053,7 @@ async def _stream_work_graph_repair(
             execution,
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
         ),
         bounded_messages=_bounded_graph_messages,
         record_rejection=lambda update: _record_work_graph_rejection(execution, update),
@@ -3090,6 +3101,7 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     command_handler = _work_command_handler(
@@ -3116,11 +3128,13 @@ def _start_work_validator_mailbox(
             compute_commands,
             ask_allowed="ask" in command_handler.allowed_verbs,
             graph_read_scope=graph_read_scope,
+            read_scope=read_scope,
         ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
@@ -3132,6 +3146,8 @@ class _WorkMailboxContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_truth_scope: list[str]
+    # Absent in mailboxes retained before reads were stamped.
+    read_scope: RepositoryReadScope | None = None
     ask_allowed: bool = False
     graph_read_scope: GraphReadScope | None = None
     write_scope: ProjectWriteScope | None = None
@@ -3145,9 +3161,11 @@ def _work_mailbox_context(
     *,
     ask_allowed: bool = False,
     graph_read_scope: GraphReadScope | None = None,
+    read_scope: RepositoryReadScope | None = None,
 ) -> _WorkMailboxContext:
     return _WorkMailboxContext(
         run_truth_scope=run_truth_scope,
+        read_scope=read_scope,
         ask_allowed=ask_allowed,
         graph_read_scope=graph_read_scope,
         write_scope=compute_commands.write_scope if compute_commands is not None else None,
@@ -3233,6 +3251,7 @@ def resume_work_command_mailbox(
             service(),
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
@@ -3243,6 +3262,7 @@ def _prepare_work_patch_candidate(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
@@ -3256,7 +3276,9 @@ def _prepare_work_patch_candidate(
         draft,
         kind="work",
         run_truth_scope=run_truth_scope,
-        repository_paths=service.manifest.repository_paths,
+        # A turn retained before reads were stamped read this project's repositories.
+        read_scope=read_scope
+        or resolve_read_scope(service._project_id, service.manifest.repositories, None),
         source_operation_id=source_operation_id,
         source_effect_id=source_effect_id,
         source_effect_sha256=(
@@ -3279,6 +3301,7 @@ def _validate_work_patch_live(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
@@ -3290,6 +3313,7 @@ def _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
@@ -3304,6 +3328,7 @@ def _apply_work_patch(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     profile: AgentProfile = "ordinary",
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
@@ -3322,6 +3347,7 @@ def _apply_work_patch(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,

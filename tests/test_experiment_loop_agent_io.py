@@ -1997,6 +1997,7 @@ def test_experiment_apply_attributes_retry_patch_to_its_root(
             }
         ),
         run_truth_scope=["repo-a"],
+        read_scope=None,
         control_node_id=_EXPERIMENT_ID,
         control_decision_bundle=[],
     )

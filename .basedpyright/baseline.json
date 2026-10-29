@@ -962,14 +962,6 @@
                     "endColumn": 7,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 5,
-                    "lineCount": 18
-                }
             }
         ],
         "./src/rcp/agents/staged_command_broker.py": [

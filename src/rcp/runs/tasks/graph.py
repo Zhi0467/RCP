@@ -33,7 +33,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.project_repositories import write_repositories
+from rcp.agents.project_repositories import resolve_read_scope, write_repositories
 from rcp.agents.prompts import graph_read_contract
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -1740,7 +1740,8 @@ def _prepare_graph_patch_candidate(
         draft,
         kind=kind,
         run_truth_scope=run_truth_scope,
-        repository_paths=service.manifest.repository_paths,
+        # Seed and refresh have no group; they read this project's repositories.
+        read_scope=resolve_read_scope(service._project_id, service.manifest.repositories, None),
         source_operation_id=source_operation_id,
     )
 

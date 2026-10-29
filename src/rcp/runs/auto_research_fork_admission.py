@@ -73,6 +73,7 @@ def validate_child_seed(
         service,
         text,
         run_truth_scope=list(context.request.run_truth_scope or ()),
+        read_scope=None,
         source_operation_id=context.task.operation_id,
         profile="orchestrator",
     )
@@ -194,6 +195,7 @@ def ensure_child_fork(
             None,
             snapshot.content,
             run_truth_scope=list(context.request.run_truth_scope or ()),
+            read_scope=None,
             source_operation_id=command.operation_id,
             source_effect_id=effect_id,
             profile="orchestrator",

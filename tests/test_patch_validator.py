@@ -167,7 +167,7 @@ async def test_validator_client_receives_nonblocking_quality_advice(
             staged=staged,
             execution=None,
             validate=lambda text: _validate_work_patch_live(
-                service, text, run_truth_scope=["repo-a"]
+                service, text, run_truth_scope=["repo-a"], read_scope=None
             ),
             stop=stop,
             budget=PatchValidationBudget(),
@@ -298,6 +298,7 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
         service,
         semantic_patch,
         run_truth_scope=["repo-a"],
+        read_scope=None,
     )
     assert checked.status == "valid"
     assert checked.live_revision == 1
@@ -308,6 +309,7 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
         service,
         semantic_patch,
         run_truth_scope=["repo-a"],
+        read_scope=None,
     )
     assert rechecked.status == "invalid"
     assert rechecked.live_revision == 2
@@ -318,6 +320,7 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
         None,
         semantic_patch,
         run_truth_scope=["repo-a"],
+        read_scope=None,
     )
     assert applied is None
     assert failure is not None

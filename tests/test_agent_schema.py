@@ -11,6 +11,7 @@ from rcp.agents import (
     prepare_agent_patch,
     validate_agent_patch_shape,
 )
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.agents.schema import AgentProposal, parse_agent_patch_json
 from rcp.core.models import (
     PROPOSAL_FILING_STAMPS,
@@ -19,7 +20,7 @@ from rcp.core.models import (
     Proposal,
 )
 from rcp.core.operations import graph_operations_from_proposal
-from tests.helpers import graph_operation, seed_patch
+from tests.helpers import graph_operation, read_scope_of, seed_patch
 
 
 def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
@@ -323,7 +324,9 @@ def test_agent_schema_advertises_thin_project_glossary_writes(profile) -> None:
     draft = parse_agent_patch_json(
         json.dumps({"summary": "Defined a project term.", "ops": [operation]}), profile=profile
     )
-    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+    patch = prepare_agent_patch(
+        draft, kind="work", run_truth_scope=["repo-a"], read_scope=read_scope_of("repo-a")
+    )
     validate_agent_patch_shape(patch, profile=profile)
     assert patch.ops[0].terms[0].plain_definition == "Research Control Panel"
     assert '"upsert_glossary"' in json.dumps(agent_output_schema(profile=profile))
@@ -359,7 +362,9 @@ def test_agent_patch_keeps_experiment_proxies_and_produces_expectation() -> None
     ]
     draft = parse_agent_patch_json(json.dumps({"summary": "Recorded a survey.", "ops": operations}))
 
-    patch = prepare_agent_patch(draft, kind="work", run_truth_scope=["repo-a"])
+    patch = prepare_agent_patch(
+        draft, kind="work", run_truth_scope=["repo-a"], read_scope=read_scope_of("repo-a")
+    )
 
     assert patch.ops[0].nodes[0].proxies[0].model_dump() == proxy
     assert patch.ops[1].edges[0].expectation == "matched"
@@ -563,7 +568,9 @@ def test_agent_schema_accepts_each_declared_proposal_intent(operation) -> None:
         }
     )
 
-    prepared = prepare_agent_patch(patch, kind="work", run_truth_scope=["repo-a"])
+    prepared = prepare_agent_patch(
+        patch, kind="work", run_truth_scope=["repo-a"], read_scope=read_scope_of("repo-a")
+    )
 
     assert prepared.ops[0].proposals[0].ops[0].intent == operation["intent"]
 
@@ -1051,6 +1058,7 @@ def test_rcp_prepares_canonical_metadata() -> None:
         draft,
         kind="work",
         run_truth_scope=["repo-a"],
+        read_scope=read_scope_of("repo-a"),
         source_operation_id="task-create-proposal",
     )
     assert isinstance(patch, Patch)
@@ -1063,35 +1071,37 @@ def test_rcp_prepares_canonical_metadata() -> None:
     assert patch.change_summary == ["Raised a belief transition for review."]
 
 
-def test_a_repository_read_is_named_by_alias_whether_declared_as_alias_or_path() -> None:
-    """A task contract hands out paths while run truth scope holds aliases.
+def test_a_repository_read_is_named_by_its_ref_whether_declared_as_ref_or_path() -> None:
+    """A task contract hands out paths while the stamped read scope holds refs.
 
     Both spellings name the same repository, so an honest declaration must not
     depend on which namespace the agent happened to copy.
     """
 
-    repository_paths = {
-        "vista": "/home/zhiwang/vista-followup",
-        "vista-docs": "/home/zhiwang/vista-followup/docs",
-        "sibling": "/home/zhiwang/vista",
-    }
+    sibling = "11111111-1111-4111-8111-111111111111"
+    read_scope = RepositoryReadScope(
+        project_id="project",
+        paths={
+            "vista": "/srv/vista-followup",
+            "vista-docs": "/srv/vista-followup/docs",
+            f"{sibling}:baseline": "/srv/vista",
+        },
+    )
     declared = [
         "vista",
-        "/home/zhiwang/vista-followup",
-        "/home/zhiwang/vista-followup/experiments/probe/",
-        "/home/zhiwang/vista-followup/docs/plan.md",
-        "/home/zhiwang/vista",
-        "/home/zhiwang/unregistered",
+        "project:vista",
+        "/srv/vista-followup/experiments/probe/",
+        "/srv/vista-followup/docs/plan.md",
+        "/srv/vista/README.md",
+        f"{sibling}:baseline",
+        "/srv/unregistered",
     ]
     draft = AgentPatch.model_validate(
         {"summary": "Record what this run read.", "ops": [], "repositories_read": declared}
     )
 
     prepared = prepare_agent_patch(
-        draft,
-        kind="work",
-        run_truth_scope=["vista"],
-        repository_paths=repository_paths,
+        draft, kind="work", run_truth_scope=["vista"], read_scope=read_scope
     )
 
     # The nested repository wins over its parent, a shared path prefix is not
@@ -1099,8 +1109,7 @@ def test_a_repository_read_is_named_by_alias_whether_declared_as_alias_or_path()
     assert prepared.repositories_read == [
         "vista",
         "vista-docs",
-        "sibling",
-        "/home/zhiwang/unregistered",
+        f"{sibling}:baseline",
+        "/srv/unregistered",
     ]
-    unmapped = prepare_agent_patch(draft, kind="work", run_truth_scope=["vista"])
-    assert unmapped.repositories_read == declared
+    assert prepared.run_read_scope == read_scope.refs

@@ -58,7 +58,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
-from rcp.agents.project_repositories import write_repositories
+from rcp.agents.project_repositories import resolve_read_scope, write_repositories
 from rcp.agents.prompts import render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
@@ -2167,6 +2167,12 @@ async def _settle_worker_patch(
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
                     or write_repositories(service.history.state()),
+                    # A recorded pass has no live group; it reads only this project.
+                    read_scope=resolve_read_scope(
+                        service._project_id,
+                        service.manifest.repositories,
+                        correction.group_context if correction is not None else None,
+                    ),
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )
