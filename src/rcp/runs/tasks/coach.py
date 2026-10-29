@@ -46,8 +46,6 @@ from rcp.paper.changes import InvalidChanges, PaperChanges, get_paper_changes
 from rcp.providers import ProviderSkillReference, configured_runtime_id
 from rcp.runs.chat import _validated_remote_chat_resume_stage
 from rcp.runs.patch_validator import (
-    cleanup_patch_validation_mailbox,
-    serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
 from rcp.runs.recorded_settlement import (
@@ -87,6 +85,12 @@ from rcp.runs.shared import (
     _task_token,
     note_link_lost_before_provider,
 )
+from rcp.runs.tasks.work_turn_runtime import (
+    WorkValidatorMailboxLifecycle,
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
+    start_work_validator_mailbox,
+)
 from rcp.service import CoachRequest, ProjectService
 from rcp.skills.staging import stage_skill_selection
 from rcp.storage.agent_tasks import native_session_profile_reason
@@ -95,6 +99,15 @@ from rcp.transport import RemoteRunStage, StateUnavailable
 if TYPE_CHECKING:
     from rcp.runs.recorded_turn import RecordedProviderTurn
     from rcp.storage import AppStore
+
+
+def _coach_request_on_base(service: ProjectService, request: CoachRequest) -> CoachRequest:
+    """Old task requests on another machine start fresh on the current base."""
+
+    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    if request.run_on is not None and request.run_on != base_machine:
+        return request.model_copy(update={"run_on": base_machine, "session_id": None})
+    return request
 
 
 def _resolved_coach_request(
@@ -325,6 +338,9 @@ async def _collect_round(
             mode=mode,
             replace_group_ids=replace_group_ids,
             replace_source_task_id=replace_source_task_id,
+            receipt_key=f"paper:{token}:collect:{changes_path.relative_to(workspace).as_posix()}"
+            if remote_stage is not None
+            else None,
         )
 
 
@@ -370,6 +386,25 @@ async def _record_writing_session(
             graph_revision_examined=graph_revision,
             research_md_hash_examined=research_hash,
         )
+    )
+
+
+def resume_coach_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> WorkValidatorMailboxLifecycle | None:
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    from rcp.runs.graph_history_queries import handle_graph_history_command
+
+    scope = GraphReadScope.model_validate(saved["graph_read_scope"])
+    reader = service()
+    return restore_work_validator_mailbox(
+        execution,
+        validate=None,
+        command_handler=lambda command, _identity: handle_graph_history_command(
+            reader, scope, command
+        ),
     )
 
 
@@ -544,9 +579,13 @@ async def _stream_coach(
     snapshots: list[Path],
 ) -> AsyncGenerator[str, None]:
     continuation = execution.continuation if execution is not None else "fresh"
+    base_request = _coach_request_on_base(service, request)
+    fresh_on_base = base_request is not request
+    request = base_request
     reusing_checkpoint = bool(
         execution is not None
         and execution.reuses_native_checkpoint
+        and not fresh_on_base
         and not (continuation == "retry" and not request.session_id)
     )
     resuming = continuation == "resume"
@@ -558,15 +597,6 @@ async def _stream_coach(
             (item for item in paper.sessions() if item.native_session_id == request.session_id),
             None,
         )
-    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
-    if (
-        reusing_checkpoint
-        and existing is None
-        and request.run_on
-        and request.run_on != base_machine
-    ):
-        request = request.model_copy(update={"session_id": None, "run_on": base_machine})
-        reusing_checkpoint = False
     try:
         if not (reusing_checkpoint and existing is None):
             request = _resolved_coach_request(service, request)
@@ -931,21 +961,17 @@ async def _stream_coach(
     )
     from rcp.runs.graph_history_queries import handle_graph_history_command
 
-    history_stop = asyncio.Event()
-    history_task = asyncio.create_task(
-        serve_patch_validation_mailbox(
-            staged=history_staged,
-            execution=execution,
-            validate=None,
-            budget=None,
-            stop=history_stop,
-            command_handler=lambda command, _identity: handle_graph_history_command(
-                service,
-                graph_read_scope,
-                command,
-            ),
-        )
+    history_lifecycle = start_work_validator_mailbox(
+        history_staged,
+        execution=execution,
+        validate=None,
+        budget=None,
+        command_handler=lambda command, _identity: handle_graph_history_command(
+            service, graph_read_scope, command
+        ),
+        resume_context={"graph_read_scope": graph_read_scope.model_dump(mode="json")},
     )
+    remote_result_pending = False
 
     async def _record_coach_session() -> None:
         assert native_session_id is not None
@@ -1019,6 +1045,7 @@ async def _stream_coach(
             completed = provider_outcome.completed
             provider_failed = provider_outcome.failed
             if provider_outcome.remote_result_pending:
+                remote_result_pending = True
                 return
             if not completed or provider_failed or _coach_stopped(execution):
                 break
@@ -1126,13 +1153,10 @@ async def _stream_coach(
         note_link_lost_before_provider(execution, exc)
         yield _sse(AgentEvent(event="error", text=str(exc)))
     finally:
-        history_stop.set()
-        await history_task
-        await asyncio.to_thread(
-            cleanup_patch_validation_mailbox,
-            staged=history_staged,
-            execution=execution,
-        )
+        if remote_result_pending:
+            history_lifecycle.detach()
+        else:
+            await history_lifecycle.close()
         # A stopped or failed turn still created its session; the chat continues in it.
         if native_session_id:
             await _record_coach_session()
