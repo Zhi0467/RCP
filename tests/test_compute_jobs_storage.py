@@ -173,6 +173,10 @@ def test_probe_route_migration_retains_backend_readiness(tmp_path, backend_id, r
     reopened = AppStore(path)
     assert reopened.compute_backend_probe("project", "local", route) == probe
     assert reopened.compute_backend_probe("project", "local", other_route) == failed
+    reopened.delete_compute_backend_probe("project", "local", route=other_route)
+    assert reopened.compute_backend_probe("project", "local", route) == probe
+    assert reopened.compute_backend_probe("project", "local", other_route) is None
+    reopened.record_compute_backend_probe("project", failed, other_route)
     reopened.delete_compute_backend_probe("project", "local")
     assert reopened.compute_backend_probe("project", "local", route) is None
     assert reopened.compute_backend_probe("project", "local", other_route) is None

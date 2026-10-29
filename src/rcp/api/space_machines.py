@@ -334,6 +334,8 @@ def _machine_view(
             if value is not None
         },
         "compute_probes": _compute_probes(store, projects),
+        # Agents run on each project's base machine; only there does the helper launch.
+        "agents_run_here": machine.host in usage.agent_hosts,
         "reach": _REACH.get((str(store.path), machine.machine_id), []),
         "hidden_read": _hidden_read_projection(machine, store.path.parent).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.

@@ -2888,14 +2888,6 @@
                     "endColumn": 71,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 83,
-                    "endColumn": 96,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/provider_skills.py": [

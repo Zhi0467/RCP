@@ -370,20 +370,22 @@ function ComputeFold(props: MachineFoldProps) {
           {checking ? <LoaderCircle className="spin" size={14} /> : <RotateCw size={14} />}
         </button>
       </div>
-      <div className="compute-route" data-compute-row="helper">
-        <strong>Helper</strong>
-        {probeLine("helper")}
-        {record.host && (
-          <input
-            {...jobsRoot.inputProps}
-            {...failedProps(failure, "jobs_root")}
-            aria-label="Job output folder"
-            placeholder="Job folder (~/.rcp/jobs)"
-            data-machine-setting="jobs_root"
-            disabled={writesDisabled || jobsRoot.saving}
-          />
-        )}
-      </div>
+      {record.agents_run_here && (
+        <div className="compute-route" data-compute-row="helper">
+          <strong>Helper</strong>
+          {probeLine("helper")}
+          {record.host && (
+            <input
+              {...jobsRoot.inputProps}
+              {...failedProps(failure, "jobs_root")}
+              aria-label="Job output folder"
+              placeholder="Job folder (~/.rcp/jobs)"
+              data-machine-setting="jobs_root"
+              disabled={writesDisabled || jobsRoot.saving}
+            />
+          )}
+        </div>
+      )}
       {record.reach.map(({ from, probe }) => {
         const presentation = computeProbePresentation(probe);
         return (
