@@ -160,8 +160,7 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
     from urllib.parse import parse_qs, urlsplit
 
     from rcp.artifact_comments import selection_frame_addon
-    from rcp.artifact_theme import artifact_color_mode, artifact_theme
-    from rcp.artifact_views import InlineAppearance, artifact_content
+    from rcp.artifact_views import artifact_content
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     with signed_in_client(app) as client:
@@ -199,19 +198,13 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
             r'<iframe id="artifact" sandbox="allow-scripts" srcdoc="([^"]*)"', content.text
         )
         assert framed and 'id="mark">hello' in html.unescape(framed.group(1))
-        # Inside the Paper pane the page paints with the app's theme, as an inline artifact does.
+        # The page is the author's own document: it renders as written, never
+        # repainted with the app's theme, which would hide text on its own backgrounds.
         inline = client.get(
             file_url + "/preview/content",
             params={"revision": revision, "presentation": "inline", "color_mode": "dark"},
         )
-        themed, _, _ = artifact_content(
-            "page.html",
-            "text/html",
-            page,
-            frame_addon=selection_frame_addon(),
-            inline=InlineAppearance(artifact_theme(None), artifact_color_mode("dark")),
-        )
-        assert inline.text == themed != content.text
+        assert inline.text == content.text
 
         for missing in (
             client.get(file_url + "/preview/content", params={"revision": revision + 99}),

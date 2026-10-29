@@ -107,8 +107,9 @@ A text `.html` or `.htm` file previews its saved revision through the inline
 artifact shell, one frame inside the same opaque sandbox and CSP as agent HTML
 ([Live HTML pages](#live-html-pages)). It never runs as the top document, and
 relative images and Paper links do not load, so the page must be self-contained.
-A save reloads it; unsaved typing does not. Making Paper previews artifacts was
-rejected: artifacts are versioned deliverables with their own chat, while a
+It renders as written, without the app's theme, since it is the author's own
+page. A save reloads it; unsaved typing does not. Making Paper previews artifacts
+was rejected: artifacts are versioned deliverables with their own chat, while a
 preview changes on every save and needs SyncTeX, Paper links, and tree images.
 
 ### Commenting on the preview

@@ -18,10 +18,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
-from rcp.artifact_theme import artifact_color_mode, artifact_theme
 from rcp.artifact_views import (
-    InlineAppearance,
-    ViewerPresentation,
     artifact_content,
     inline_viewer_document,
 )
@@ -319,23 +316,13 @@ async def html_preview(
 
 @router.get(_PREFIX + "/files/{file_id}/preview/content")
 async def html_preview_content(
-    file_id: str,
-    request: Request,
-    revision: int | None = None,
-    presentation: ViewerPresentation = "panel",
-    theme: str | None = None,
-    color_mode: str | None = None,
-    project_id: str = _member,
+    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
 ):
+    """The page as its author wrote it: unlike a reply's artifact, it takes no app theme."""
     file, data = await _html_file(request, project_id, file_id, revision)
-    inline = (
-        InlineAppearance(artifact_theme(theme), artifact_color_mode(color_mode))
-        if presentation == "inline"
-        else None
-    )
     try:
         document, media_type, csp = artifact_content(
-            file.path, "text/html", data, frame_addon=selection_frame_addon(), inline=inline
+            file.path, "text/html", data, frame_addon=selection_frame_addon()
         )
     except ValueError as exc:
         raise HTTPException(404, "Paper file has no HTML preview") from exc
