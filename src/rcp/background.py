@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast, get_args
 
-from pydantic import BaseModel
-
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -108,6 +106,7 @@ from rcp.storage import (
 )
 from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.models import AgentTaskAlreadyContinued
+from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
@@ -2001,7 +2000,6 @@ class BackgroundAgentTasks:
             or current.graph_target != record.graph_target
             or current.kind != record.kind
             or current.request != record.request
-            or current.request != request.model_dump(mode="json")
             or current.attempt != record.attempt
             or current.parent_operation_id != record.parent_operation_id
             or current.runtime_id != record.runtime_id
@@ -3359,21 +3357,6 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
-
-
-def persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
-    """A row written before a field existed omits it; its default is the legacy meaning."""
-    dumped = request.model_dump(mode="json")
-    fields = type(request).model_fields
-    added = {
-        key
-        for key, value in dumped.items()
-        if key not in stored
-        and key in fields
-        and not fields[key].is_required()
-        and value == fields[key].get_default(call_default_factory=True)
-    }
-    return {key: value for key, value in dumped.items() if key not in added} == stored
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:
