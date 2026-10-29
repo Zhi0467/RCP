@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   History,
   ListChecks,
@@ -67,6 +68,7 @@ export function PaperCoach({
   onChangeAction,
   onUndoAll,
   onLocate,
+  toolbar,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
@@ -76,6 +78,8 @@ export function PaperCoach({
   onChangeAction: (groupId: string, action: PaperChangeAction) => Promise<void>;
   onUndoAll: (taskId: string) => Promise<void>;
   onLocate: (change: PaperChange) => void;
+  /** Where History and New chat sit: the Paper view row, while the coach shows. */
+  toolbar: HTMLElement | null;
 }) {
   const [sessions, setSessions] = useState<WritingSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -316,43 +320,47 @@ export function PaperCoach({
     />
   );
   return (
-    <div className="paper-coach">
-      <div className={`paper-bar paper-coach-toolbar${sessionError ? " paper-failure" : ""}`}>
-        <button
-          ref={historyButton}
-          className="icon-button compact"
-          aria-label="Coach chat history"
-          aria-expanded={historyOpen && sessions.length > 0}
-          disabled={!sessions.length}
-          onClick={() => setHistoryOpen(!historyOpen)}
-        >
-          <History size={15} />
-        </button>
-        <button
-          className="icon-button compact"
-          aria-label="New coach chat"
-          onClick={() => {
-            setSessionId(null);
-            setFresh(true);
-            setPendingTask(null);
-            setConfig(profileRunConfig(project.agent_profiles.paper_coach));
-            skills.reset();
-            setError(null);
-          }}
-        >
-          <MessageCirclePlus size={15} />
-        </button>
-        {sessionError && (
-          <button
-            className="icon-button compact"
-            aria-label="Retry chat history"
-            title={sessionError}
-            onClick={() => setSessionRefresh((value) => value + 1)}
-          >
-            <RotateCcw size={15} />
-          </button>
+    <div className="chat-dock paper-coach" data-mode="discuss">
+      {toolbar &&
+        createPortal(
+          <div className={`paper-coach-toolbar${sessionError ? " paper-failure" : ""}`}>
+            <button
+              ref={historyButton}
+              className="icon-button compact"
+              aria-label="Coach chat history"
+              aria-expanded={historyOpen && sessions.length > 0}
+              disabled={!sessions.length}
+              onClick={() => setHistoryOpen(!historyOpen)}
+            >
+              <History size={15} />
+            </button>
+            <button
+              className="icon-button compact"
+              aria-label="New coach chat"
+              onClick={() => {
+                setSessionId(null);
+                setFresh(true);
+                setPendingTask(null);
+                setConfig(profileRunConfig(project.agent_profiles.paper_coach));
+                skills.reset();
+                setError(null);
+              }}
+            >
+              <MessageCirclePlus size={15} />
+            </button>
+            {sessionError && (
+              <button
+                className="icon-button compact"
+                aria-label="Retry chat history"
+                title={sessionError}
+                onClick={() => setSessionRefresh((value) => value + 1)}
+              >
+                <RotateCcw size={15} />
+              </button>
+            )}
+          </div>,
+          toolbar,
         )}
-      </div>
       {historyOpen && sessions.length > 0 && (
         <div className="paper-session-list" ref={historyList}>
           {sessions.map((session) => (
@@ -366,7 +374,11 @@ export function PaperCoach({
           ))}
         </div>
       )}
-      <div className="paper-coach-transcript" aria-live="polite" ref={transcriptRef}>
+      <div
+        className="node-chat-lines paper-coach-transcript"
+        aria-live="polite"
+        ref={transcriptRef}
+      >
         {transcript
           // The red edge and its icon carry failures and pauses; a continuation repeats
           // its parent's message, which already shows once.
@@ -389,18 +401,20 @@ export function PaperCoach({
             if (lastAnswer) renderedTasks.add(line.taskId);
             return (
               <div
-                className={`paper-coach-message ${line.role}${lastAnswer && stuck(task) ? " paper-failure" : ""}`}
+                className={`node-chat-line ${line.role}${lastAnswer && stuck(task) ? " paper-failure" : ""}`}
                 key={line.lineId}
               >
                 {line.role === "agent" ? (
                   <>
-                    <div className="chat-annotatable-answer">
+                    <div className="chat-markdown chat-annotatable-answer">
                       <MarkdownAnswer text={line.text} />
                     </div>
                     <AnswerCommentButton comments={comments} />
                   </>
                 ) : (
-                  <MarkdownAnswer text={line.text} />
+                  <div className="chat-human-message">
+                    <span className="node-chat-text">{line.text}</span>
+                  </div>
                 )}
                 {lastAnswer && stuck(task) && retryButton(task)}
                 {lastAnswer && cards(line.taskId)}
@@ -412,7 +426,7 @@ export function PaperCoach({
           .map((task) => (
             <div
               key={task.operation_id}
-              className={`paper-coach-message agent${stuck(task) ? " paper-failure bare" : ""}`}
+              className={`node-chat-line agent${stuck(task) ? " paper-failure bare" : ""}`}
             >
               {stuck(task) && retryButton(task)}
               {cards(task.operation_id)}
@@ -430,7 +444,7 @@ export function PaperCoach({
         {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
       </div>
       <div
-        className={`paper-coach-composer${error ? " paper-failure" : ""}${composer.dragging ? " is-dragging-files" : ""}`}
+        className={`chat-composer${error ? " paper-failure" : ""}${composer.dragging ? " is-dragging-files" : ""}`}
         {...composer.dropTarget(composer.addFiles, insertReferenceText)}
       >
         <SkillPicker {...skills.props} />
@@ -457,69 +471,73 @@ export function PaperCoach({
             }
           }}
         />
-        <div className="paper-composer-actions">
-          <ComposerAddPicker
-            composer={composer}
-            disabled={composer.full || composer.preparing || submitting}
-            onAttach={composer.addFiles}
-            onPickReference={composer.addReference}
-          />
-          <AgentConfigChip
-            project={project}
-            value={config}
-            label="Coach agent"
-            open={configOpen}
-            disabled={Boolean(activeTask) || submitting}
-            onToggle={() => setConfigOpen(!configOpen)}
-          />
-          <div className="paper-segments" role="group" aria-label="Coach changes">
-            {([false, true] as const).map((apply) => (
-              <button
-                key={String(apply)}
-                aria-label={apply ? "Accept edits" : "Review edits"}
-                title={apply ? "Accept edits" : "Review edits"}
-                aria-pressed={applyDirectly === apply}
-                onClick={() => {
-                  setApplyDirectly(apply);
-                  try {
-                    localStorage.setItem(
-                      `rcp:paper-coach-mode:${apiBase}`,
-                      apply ? "apply" : "review",
-                    );
-                  } catch {}
-                }}
-              >
-                {apply ? <Zap size={15} /> : <ListChecks size={15} />}
-              </button>
-            ))}
+        <div className="chat-send">
+          <div className="chat-composer-tools">
+            <ComposerAddPicker
+              composer={composer}
+              disabled={composer.full || composer.preparing || submitting}
+              onAttach={composer.addFiles}
+              onPickReference={composer.addReference}
+            />
+            <AgentConfigChip
+              project={project}
+              value={config}
+              label="Coach agent"
+              open={configOpen}
+              disabled={Boolean(activeTask) || submitting}
+              onToggle={() => setConfigOpen(!configOpen)}
+            />
+            <div className="segmented" role="group" aria-label="Coach changes">
+              {([false, true] as const).map((apply) => (
+                <button
+                  key={String(apply)}
+                  aria-label={apply ? "Accept edits" : "Review edits"}
+                  title={apply ? "Accept edits" : "Review edits"}
+                  aria-pressed={applyDirectly === apply}
+                  onClick={() => {
+                    setApplyDirectly(apply);
+                    try {
+                      localStorage.setItem(
+                        `rcp:paper-coach-mode:${apiBase}`,
+                        apply ? "apply" : "review",
+                      );
+                    } catch {}
+                  }}
+                >
+                  {apply ? <Zap size={15} /> : <ListChecks size={15} />}
+                </button>
+              ))}
+            </div>
           </div>
-          {activeTask?.can_pause ? (
-            <button
-              className="icon-button primary"
-              aria-label="Stop coach"
-              title={error || undefined}
-              onClick={() => void stop(activeTask)}
-            >
-              <Square size={14} />
-            </button>
-          ) : (
-            <button
-              className="icon-button primary"
-              aria-label={error ? "Retry message" : "Send coach message"}
-              title={error || undefined}
-              disabled={
-                !text ||
-                !comments.complete ||
-                composer.unready ||
-                Boolean(activeTask) ||
-                submitting ||
-                !launchProviderReady(project, config)
-              }
-              onClick={() => void send()}
-            >
-              {error ? <RotateCcw size={16} /> : <Send size={16} />}
-            </button>
-          )}
+          <div className="chat-send-actions">
+            {activeTask?.can_pause ? (
+              <button
+                className="icon-button primary chat-send-button"
+                aria-label="Stop coach"
+                title={error || undefined}
+                onClick={() => void stop(activeTask)}
+              >
+                <Square size={14} />
+              </button>
+            ) : (
+              <button
+                className="icon-button primary chat-send-button"
+                aria-label={error ? "Retry message" : "Send coach message"}
+                title={error || undefined}
+                disabled={
+                  !text ||
+                  !comments.complete ||
+                  composer.unready ||
+                  Boolean(activeTask) ||
+                  submitting ||
+                  !launchProviderReady(project, config)
+                }
+                onClick={() => void send()}
+              >
+                {error ? <RotateCcw size={16} /> : <Send size={16} />}
+              </button>
+            )}
+          </div>
         </div>
       </div>
       {configOpen && (

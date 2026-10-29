@@ -201,6 +201,9 @@ comments behave, and keep or clear their drafts, as in
 attachment scope, named in the turn as `attachment_scope_id`. The agent picker
 stays editable inside a session; a provider change shows chat's fresh-session
 notice, and the turn still names the session for the backend to resolve.
+The coach renders chat's transcript and composer layout at every width; its
+History and New chat sit at the end of the row that switches the Paper view, so
+the phone coach adds no row of its own.
 
 The coach cannot write the paper directly, emit a Patch, approve Proposals, or
 promote paper text to graph state. Prior transcripts and skills cannot widen its

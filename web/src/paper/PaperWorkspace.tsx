@@ -113,6 +113,8 @@ export function PaperWorkspace({
     return () => media.removeEventListener("change", changed);
   }, []);
   const writingPane = useRef<HTMLDivElement>(null);
+  // The coach's History and New chat join the row that switches the Paper view.
+  const [coachBar, setCoachBar] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState(false);
   const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
   const [actionError, setActionError] = useState<{
@@ -468,12 +470,15 @@ export function PaperWorkspace({
             <Copy size={16} />
           </button>
         </header>
-        <div className="paper-phone-segments paper-segments" aria-label="Paper view">
-          {(["write", "preview", "coach"] as const).map((panel) => (
-            <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
-              {panel[0].toUpperCase() + panel.slice(1)}
-            </button>
-          ))}
+        <div className="paper-phone-segments">
+          <div className="segmented" role="group" aria-label="Paper view">
+            {(["write", "preview", "coach"] as const).map((panel) => (
+              <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
+                {panel[0].toUpperCase() + panel.slice(1)}
+              </button>
+            ))}
+          </div>
+          {phone && <span className="paper-coach-bar" ref={setCoachBar} />}
         </div>
         <div className="paper-writing-pane" ref={writingPane}>
           {document ? (
@@ -516,6 +521,7 @@ export function PaperWorkspace({
               </button>
             ))}
           </div>
+          {!phone && <span className="paper-coach-bar" ref={setCoachBar} />}
         </header>
         <div className="paper-right-pane" hidden={right !== "preview"}>
           {previewShown &&
@@ -557,6 +563,7 @@ export function PaperWorkspace({
               }
             }}
             onLocate={locate}
+            toolbar={(phone ? view : right) === "coach" ? coachBar : null}
           />
         </div>
       </aside>
