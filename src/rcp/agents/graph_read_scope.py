@@ -31,7 +31,6 @@ class ReadableBranch(BaseModel):
     name: str
     id: str
     parent: str
-    head_revision: int
 
 
 class GraphReadScope(BaseModel):
@@ -68,30 +67,23 @@ class GraphReadScope(BaseModel):
                     ceilings.append(parent)
                     metadata = generations[parent.target.key].source.metadata
                 scope = scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
+        # Identity only: a head revision here would change with every commit and
+        # resend the list to every session; agents read heads through graph_log.
         records = store.graph_branches(project_id)
         names = {branch.branch_id: branch.name for branch in records}
-        identities = [
-            (branch.branch_id, branch.owner_episode_id, project_id)
+        branches = [
+            ReadableBranch(
+                name=branch.name,
+                id=branch.branch_id,
+                parent="main"
+                if branch.parent_head.target.kind == "main"
+                else names.get(
+                    branch.parent_head.target.branch_id or "", branch.parent_head.target.key
+                ),
+            )
             for branch in records
             if scope.readable(project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id))
         ]
-        snapshots = history.history_engine.manager.branch_read_snapshots(identities)
-        branches = []
-        for branch_id, snapshot in snapshots.items():
-            if snapshot is None:
-                continue
-            metadata = snapshot.metadata
-            parent = metadata.effective_parent_head.target
-            branches.append(
-                ReadableBranch(
-                    name=names[branch_id],
-                    id=branch_id,
-                    parent="main"
-                    if parent.kind == "main"
-                    else names.get(parent.branch_id or "", parent.key),
-                    head_revision=metadata.head.revision,
-                )
-            )
         return scope.model_copy(update={"branches": tuple(branches)})
 
     @model_validator(mode="after")
