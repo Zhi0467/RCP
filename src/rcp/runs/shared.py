@@ -859,6 +859,7 @@ async def _stream_agent_events(
     invocation_gate: ProviderInvocationGate | None = None,
     shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
+    forward_labelled_events: bool = False,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
@@ -1105,8 +1106,11 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.session_id = event.session_id
-                if execution_host and execution is None:
+                if execution_host and execution is None and not forward_labelled_events:
                     continue
+            if forward_labelled_events and event.event in {"answer", "message"}:
+                yield _sse(event)
+                continue
             if event.event == "answer":
                 if fork and not outcome.session_id:
                     outcome.failed = True

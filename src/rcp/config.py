@@ -24,16 +24,9 @@ DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 LEGACY_COMPUTE_CONNECTIONS_KEY = "compute_connections"
 
 
-def normalize_agent_machine(
-    run_on: str,
-    base_machine: str,
-    *,
-    legacy: bool = False,
-    label: str = "agent.run_on",
-) -> str:
-    """Require the base, or drop an explicitly supported legacy machine choice."""
-
-    if run_on != base_machine and not legacy:
+def require_base_machine(run_on: str, base_machine: str, *, label: str = "agent.run_on") -> str:
+    """Refuse an agent machine other than the base; every agent runs beside .research/."""
+    if run_on != base_machine:
         raise ValueError(
             f"{label} must be the canonical state machine {base_machine!r}; "
             "every agent runs beside .research/"
@@ -373,13 +366,13 @@ class Manifest(BaseModel):
         assert coach is not None
         # The coach once chose its own machine. Every agent now runs on the base,
         # the canonical state machine, so an older choice is dropped on load.
-        coach.run_on = normalize_agent_machine(coach.run_on, state_machine, legacy=True)
+        coach.run_on = state_machine
         for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
             if profile.run_on not in machines:
                 raise ValueError(f"agent.{surface}.run_on must name a registered machine")
-            profile.run_on = normalize_agent_machine(
+            profile.run_on = require_base_machine(
                 profile.run_on, state_machine, label=f"agent.{surface}.run_on"
             )
             expected = permissions_for(surface)
@@ -724,7 +717,7 @@ def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
     state_machine = manifest.base_machine
     for table in document.get("agent", {}).values():
         if isinstance(table, dict) and table.get("run_on") == alias:
-            table["run_on"] = normalize_agent_machine(table["run_on"], state_machine, legacy=True)
+            table["run_on"] = state_machine
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

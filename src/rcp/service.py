@@ -41,7 +41,7 @@ from rcp.config import (
     Manifest,
     launches_work_like,
     load_manifest,
-    normalize_agent_machine,
+    require_base_machine,
 )
 from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
@@ -2613,7 +2613,7 @@ class ProjectService:
         if run_on is not None:
             if run_on not in self.manifest.machine_map:
                 raise ValueError(f"unknown execution machine: {run_on}")
-            updates["run_on"] = normalize_agent_machine(
+            updates["run_on"] = require_base_machine(
                 run_on, self.manifest.base_machine, label=surface.replace("_", " ")
             )
         return self._with_catalog_head(

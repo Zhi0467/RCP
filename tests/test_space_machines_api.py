@@ -148,6 +148,8 @@ def test_failed_detachment_keeps_card_and_surfaces_error(app, manifest, monkeypa
     monkeypatch.setattr(ProjectDisplayCache, "remove_machine", fail_second)
     response = client.delete(f"/api/space/machines/{machine['machine_id']}")
     assert response.status_code == 422
+    # The first alias detached before the second failed; the card stays for a retry.
+    assert len({"gpu", "gpu-two"} & set(load_manifest(manifest.path).machine_map)) == 1
     assert _store(app).space_machine(str(machine["machine_id"]))
 
 

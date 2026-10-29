@@ -337,45 +337,37 @@ async def _collect_round(
     )
 
 
-async def _settle_coach_outcome(
-    service: ProjectService,
-    request: CoachRequest,
+async def _collect_coach_round(
     execution: AgentTaskExecution | None,
     outcome: _ProviderOutcome,
-    token: str,
-    *,
-    collection: Awaitable[None] | None = None,
-    finish: bool = True,
+    collection: Awaitable[None],
 ) -> AgentEvent | None:
-    """Collect each completed round; apply and finish only after the final round."""
-    if collection is not None:
-        try:
-            await collection
-        except (InvalidChanges, ValueError) as exc:
-            outcome.failed = True
-            if execution is not None:
-                execution.store.record_agent_task_receipt(
-                    execution.operation_id,
-                    "paper_changes_invalid",
-                    {
-                        "diagnostics": exc.diagnostics
-                        if isinstance(exc, InvalidChanges)
-                        else [str(exc)]
-                    },
-                )
-            return AgentEvent(event="error", text=str(exc))
-    if finish:
-        if request.mode == "apply_directly":
-            # PaperChanges holds the live write-admission fence around each apply.
-            await asyncio.to_thread(
-                get_paper_changes(service).accept_all,
-                service.paper.project_id,
-                token,
-                "Coach, applied directly",
-                directly=True,
+    """Collect one completed round; invalid changes fail the turn with their diagnostics."""
+    try:
+        await collection
+    except (InvalidChanges, ValueError) as exc:
+        outcome.failed = True
+        if execution is not None:
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "paper_changes_invalid",
+                {"diagnostics": exc.diagnostics if isinstance(exc, InvalidChanges) else [str(exc)]},
             )
-        return AgentEvent(event="done")
+        return AgentEvent(event="error", text=str(exc))
     return None
+
+
+async def _finish_coach_turn(service: ProjectService, request: CoachRequest, token: str) -> None:
+    """After the final round, apply directly when the turn asked for it."""
+    if request.mode == "apply_directly":
+        # PaperChanges holds the live write-admission fence around each apply.
+        await asyncio.to_thread(
+            get_paper_changes(service).accept_all,
+            service.paper.project_id,
+            token,
+            "Coach, applied directly",
+            directly=True,
+        )
 
 
 async def _record_writing_session(
@@ -500,13 +492,10 @@ async def finalize_recorded_coach_result(
         await service.paper_live.snapshot(project_id, last.revision), set(last.file_ids)
     )
     try:
-        event = await _settle_coach_outcome(
-            service,
-            request,
+        event = await _collect_coach_round(
             execution,
             outcome,
-            token,
-            collection=_collect_round(
+            _collect_round(
                 changes,
                 project_id,
                 token,
@@ -524,6 +513,9 @@ async def finalize_recorded_coach_result(
     except StateUnavailable as exc:
         note_stage_unreachable(execution, exc)
         raise
+    if event is None:
+        await _finish_coach_turn(service, request, token)
+        event = AgentEvent(event="done")
     if not outcome.failed:
         commit_prepared_graph_observation(execution, service, native_session_id=outcome.session_id)
     if event is not None:
@@ -989,6 +981,7 @@ async def _stream_coach(
                     invocation_gate=history_staged.invocation_gate,
                     hidden_read_scope=hidden_read_scope,
                     binary=provider_binary,
+                    forward_labelled_events=True,
                     outcome=provider_outcome,
                 )
             ) as stream:
@@ -996,8 +989,6 @@ async def _stream_coach(
                     yield frame
             native_session_id = provider_outcome.session_id
             actual_runtime_id = provider_outcome.runtime_id or actual_runtime_id
-            for answer in provider_outcome.answers:
-                yield _sse(AgentEvent(event="answer", text=answer))
             completed = provider_outcome.completed
             provider_failed = provider_outcome.failed
             if provider_outcome.remote_result_pending:
@@ -1006,13 +997,10 @@ async def _stream_coach(
             if not completed or provider_failed or _coach_stopped(execution):
                 break
             try:
-                event = await _settle_coach_outcome(
-                    service,
-                    request,
+                event = await _collect_coach_round(
                     execution,
                     provider_outcome,
-                    token,
-                    collection=_collect_round(
+                    _collect_round(
                         changes,
                         paper.project_id,
                         token,
@@ -1024,7 +1012,6 @@ async def _stream_coach(
                         replace_group_ids=replace_group_ids,
                         replace_source_task_id=replace_source_task_id,
                     ),
-                    finish=False,
                 )
             except StateUnavailable as exc:
                 note_link_lost_before_provider(execution, exc)
@@ -1104,11 +1091,8 @@ async def _stream_coach(
         if completed and _coach_stopped(execution):
             yield _sse(AgentEvent(event="paused", text="Paper coaching stopped before collection."))
         if completed and not provider_failed and not _coach_stopped(execution):
-            event = await _settle_coach_outcome(
-                service, request, execution, provider_outcome, token
-            )
-            assert event is not None
-            yield _sse(event)
+            await _finish_coach_turn(service, request, token)
+            yield _sse(AgentEvent(event="done"))
     except StateUnavailable as exc:
         completed = False
         note_link_lost_before_provider(execution, exc)

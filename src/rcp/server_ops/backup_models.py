@@ -18,7 +18,6 @@ from rcp.config import (
     AgentPermissions,
     MachineConfig,
     Manifest,
-    normalize_agent_machine,
 )
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import (
@@ -786,12 +785,7 @@ class BackupManifestConfiguration(_StrictBackupModel):
         return self.model_copy(
             update={
                 "agent_profiles": tuple(
-                    profile.model_copy(
-                        update={
-                            "run_on": normalize_agent_machine(profile.run_on, base, legacy=True)
-                        }
-                    )
-                    for profile in self.agent_profiles
+                    profile.model_copy(update={"run_on": base}) for profile in self.agent_profiles
                 )
             }
         )
