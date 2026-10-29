@@ -523,3 +523,64 @@ def test_a_waiting_pass_that_never_started_fails_and_can_be_paused(tmp_path, mon
 
     manager = BackgroundAgentTasks(store, None)
     assert manager.pause("second").status == "paused"
+
+
+def _two_failing_waiters(tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+
+    store = _store(tmp_path)
+    for operation_id in ("first", "second"):
+        store.mark_agent_task_running(operation_id)
+        store.begin_remote_provider_pass(
+            operation_id, "remote", f"/stage/{operation_id}", f"/stage/{operation_id}/p.pid"
+        )
+        store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
+    monkeypatch.setattr(
+        "rcp.runs.remote_finalization.plan_remote_reconciliation",
+        lambda _: [
+            WaitingTask(
+                store.agent_task(name),
+                Reconciliation("fail", "Stopped", f"/stage/{name}/p.pid"),
+                None,
+            )
+            for name in ("first", "second")
+        ],
+    )
+    return store, BackgroundAgentTasks(store, None)
+
+
+def test_an_undecodable_saved_request_fails_its_task_and_the_pass_goes_on(tmp_path, monkeypatch):
+    store, manager = _two_failing_waiters(tmp_path, monkeypatch)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'first'",
+            (json.dumps({"mode": "not-a-mode"}),),
+        )
+
+    assert not manager._reconcile_remote_results()
+
+    first = store.agent_task("first")
+    assert first is not None and first.status == "failed" and first.error
+    assert store.agent_task("second").status == "failed"
+
+
+def test_a_settlement_step_that_fails_keeps_its_error_and_spares_the_others(tmp_path, monkeypatch):
+    store, manager = _two_failing_waiters(tmp_path, monkeypatch)
+    original = manager._settle_detached_mailbox
+
+    def settle(operation_id):
+        if operation_id == "first":
+            raise OSError("mailbox host unreachable")
+        original(operation_id)
+
+    monkeypatch.setattr(manager, "_settle_detached_mailbox", settle)
+
+    assert manager._reconcile_remote_results()
+
+    first = store.agent_task("first")
+    assert first is not None and first.status == "running"
+    assert first.phase == "awaiting_remote_result"
+    assert first.status_message != "Detached"
+    assert store.agent_task("second").status == "failed"

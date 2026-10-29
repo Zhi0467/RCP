@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isMutationRequest } from "../src/core/api.ts";
+import { api, isMutationRequest, registerTransportFailureHandler } from "../src/core/api.ts";
 import {
   advanceDesktopProjectTransfer,
   desktopDownloadPath,
@@ -15,11 +15,13 @@ import {
   finishDesktopProjectTransfer,
   identityMismatch,
   loadDesktopProjectTransfer,
+  navigateDesktopToTeam,
   needsDesktopFolderAccessAcknowledgement,
   openDesktopProjectTransferTerminal,
   prepareDesktopProjectTransfer,
   recoverTeamTransport,
   readDesktopTargetProjectProvisioningOptions,
+  returnDesktopToPersonal,
   reverifyBackendIdentity,
   runDesktopIncomingProjectProvision,
   runDesktopProjectTransfer,
@@ -84,6 +86,55 @@ test("prepare-show bootstraps after the frontend outruns the desktop host", asyn
     assert.equal((await establishBackendIdentity()).ok, false);
     assert.equal((await reverifyBackendIdentity("prepare-show")).ok, true);
   } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("a space switch holds the reads it cancels until the page is known to stay", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  let transportFailures = 0;
+  registerTransportFailureHandler(() => {
+    transportFailures += 1;
+  });
+  // WebKit rejects the leaving page's in-flight reads as network failures.
+  globalThis.fetch = async () => {
+    throw new TypeError("Load failed");
+  };
+  let cancelledRead;
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    invoke: async (command) => {
+      if (command === "desktop_navigate_team") {
+        cancelledRead = api("/api/space/runs");
+        cancelledRead.catch(() => {});
+        return null;
+      }
+      assert.equal(command, "desktop_return_to_personal");
+      throw new Error("navigation refused");
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    await navigateDesktopToTeam("connection-a");
+    const settled = await Promise.race([
+      cancelledRead.then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("held"), 20)),
+    ]);
+    assert.equal(settled, "held");
+    assert.equal(transportFailures, 0);
+
+    // A refused navigation leaves the page in place, so the held failure is real.
+    await assert.rejects(returnDesktopToPersonal(), /navigation refused/);
+    await assert.rejects(cancelledRead, TypeError);
+    assert.equal(transportFailures, 1);
+  } finally {
+    registerTransportFailureHandler(null);
     globalThis.fetch = originalFetch;
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

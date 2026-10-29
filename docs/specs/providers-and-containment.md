@@ -1180,6 +1180,11 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
   ssh's stderr, the only record of why the link ended.
 - Already consumed/settled pass: do nothing.
 
+Each pass settles its tasks one at a time. A task whose saved request cannot be
+decoded fails with that reason, since no retry can fix it. Any other error while
+preparing a task's settlement hands its claim back, puts the error on the task's
+status message, and leaves it for the next pass; the other tasks still settle.
+
 Normal shutdown detaches a supervised remote turn after prompt delivery: it ends
 the local SSH stream without signalling the remote process or recording Pause.
 Its unresolved pass follows the same restart reconciliation as a lost link, and
