@@ -44,8 +44,7 @@ class _Cursor(BaseModel):
 
 def _binding(scope: GraphReadScope, request: CommandRequest) -> str:
     content = {
-        # Branch identities are prompt context, not read authority.
-        "scope": scope.model_dump(mode="json", exclude={"branches"}),
+        "scope": scope.model_dump(mode="json"),
         "verb": request.verb,
         "arguments": request.arguments.model_dump(mode="json", exclude={"cursor"}),
     }

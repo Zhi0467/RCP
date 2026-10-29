@@ -605,9 +605,7 @@ def _experiment_values(
         execution["helper_owner"] = backend.id if backend is not None else None
     return {
         **values,
-        "branches": turn.graph_read_scope.branch_values()
-        if turn.graph_read_scope is not None
-        else [],
+        **turn.graph_read_prompt.values,
         "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
         "compute": {"active": turn.compute_profiles},
@@ -1181,7 +1179,9 @@ def _experiment_start_contract(
         ),
     )
     contract = graph_read_contract(
-        contract, turn.graph_read_scope, turn.patch_inputs.command_client
+        contract,
+        turn.graph_read_prompt,
+        turn.patch_inputs.command_client,
     )
     if invoked:
         contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
@@ -2873,7 +2873,6 @@ async def _stream_work_graph_repair(
             task_record.project_id,
             service.history,
             context.group_context,
-            store=service.paper.store,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,

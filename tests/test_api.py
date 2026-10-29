@@ -118,7 +118,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
-from .paper_helpers import wire_saved_paper
+from .paper_helpers import coach_execution, wire_saved_paper
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
@@ -5373,6 +5373,7 @@ async def test_paper_resume_launches_with_changed_model(manifest, tmp_path) -> N
                 model="different-model",
             ),
             tmp_path / "data",
+            execution=coach_execution(service),
         )
     ]
 
@@ -5408,6 +5409,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
             paper,
             CoachRequest(message="Review the argument."),
             tmp_path / "data",
+            execution=coach_execution(service),
         )
     ]
 
@@ -8490,7 +8492,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_pat
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
 
-    selection = _validate_stored_task_request(service, "seed", stored_request)
+    _request, selection = _validate_stored_task_request(service, "seed", stored_request)
 
     assert [(item.id, item.version) for item in selection.resolved_skill_packages] == [
         ("graph-audit", official_registry().package("skill", "graph-audit").version)

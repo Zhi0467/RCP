@@ -448,6 +448,8 @@ def test_archive_with_a_coach_off_the_base_keeps_its_digest_and_restores(tmp_pat
     )
     base = restored.repository_map[restored.state.repository].machine
     assert restored.agent_profile("paper_coach").run_on == base
+    assert archived.matches_configuration(BackupManifestConfiguration.from_manifest(restored))
+    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(

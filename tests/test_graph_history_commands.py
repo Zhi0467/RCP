@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents.command_protocol import validate_command_request
-from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.group_context import GroupContext, GroupProjectContext
+from rcp.agents.prompts import GraphReadPrompt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.history.queries import GraphDiffPage
@@ -156,28 +157,22 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
     parent_head = branch.head_ref()
     fork = service.history.create_branch(fork_metadata(service.history, parent_head))
     nested = service.history.create_branch(fork_metadata(service.history, fork.head_ref()))
-    scope = GraphReadScope.resolve("project", nested, store=service.paper.store)
+    scope = GraphReadScope.resolve("project", nested)
     assert scope.ancestry_ceilings == (
         fork.head_ref(),
         parent_head,
         branch.branch_metadata().base_head,
     )
-    assert (
-        GraphReadScope.resolve("project", branch, store=service.paper.store).ancestry_ceilings
-        is None
-    )
+    assert GraphReadScope.resolve("project", branch).ancestry_ceilings is None
     episode_root = service.history.create_branch(
         fork_metadata(service.history, service.history.head_ref()).model_copy(
             update={"kind": "auto_research"}
         )
     )
-    assert (
-        GraphReadScope.resolve("project", episode_root, store=service.paper.store).ancestry_ceilings
-        is None
-    )
+    assert GraphReadScope.resolve("project", episode_root).ancestry_ceilings is None
     # Saved pre-change grants retain their project-wide semantics.
     assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
-        GraphReadScope.resolve("project", service.history, store=service.paper.store)
+        GraphReadScope.resolve("project", service.history)
     )
     with monkeypatch.context() as guard:
         guard.setattr(
@@ -355,12 +350,30 @@ def test_branch_inventory_respects_fork_read_scope(history_query):
             created_by="human:test",
             name=names[branch.branch_id],
         )
-    scope = GraphReadScope.resolve("project", fork, store=service.paper.store)
-    assert {item.id for item in scope.branches} == {parent.branch_id, fork.branch_id}
-    assert (
-        next(item for item in scope.branches if item.id == fork.branch_id).parent == "parent-branch"
-    )
+    scope = GraphReadScope.resolve("project", fork)
+    branches = readable_branches(scope, service.paper.store)
+    assert {item.id for item in branches} == {parent.branch_id, fork.branch_id}
+    assert next(item for item in branches if item.id == fork.branch_id).parent == "parent-branch"
     denied = handle_graph_history_command(
         service, scope, request("graph_log", id="hyp/main", at="branch:sibling@head")
     )
     assert denied.result["code"] == "graph_history_scope_refused"
+
+
+def test_legacy_prompt_branches_do_not_change_history_cursor_binding(history_query):
+    from rcp.runs.graph_history_queries import _binding
+
+    service, scope, _branch = history_query
+    legacy = {
+        **scope.model_dump(mode="json"),
+        "branches": [{"id": "old", "name": "old", "parent": "main"}],
+    }
+    restored = GraphReadScope.model_validate(legacy)
+    query = request("graph_log", id="ev/long")
+    assert restored == scope
+    assert "branches" not in restored.model_dump()
+    assert _binding(restored, query) == _binding(scope, query)
+    assert (
+        GraphReadPrompt(restored, service.paper.store).values
+        == GraphReadPrompt(scope, service.paper.store).values
+    )

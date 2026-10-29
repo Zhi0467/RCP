@@ -1106,11 +1106,9 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.session_id = event.session_id
-                if execution_host and execution is None and not forward_labelled_events:
+                # An unowned remote session cannot be resumed by its local caller.
+                if execution_host and execution is None:
                     continue
-            if forward_labelled_events and event.event in {"answer", "message"}:
-                yield _sse(event)
-                continue
             if event.event == "answer":
                 if fork and not outcome.session_id:
                     outcome.failed = True
@@ -1121,23 +1119,14 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.answers.append(event.text)
-                if event.usage is not None:
-                    # A provider's final result is both its answer and its
-                    # accounting boundary. The answer text is withheld from the
-                    # wire, so without forwarding the usage on its own a
-                    # succeeding turn records none at all — only a failing one,
-                    # whose error event is forwarded, was ever counted. A queued
-                    # follow-up makes this two results, each counted once.
-                    yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
-                elif event.status is not None:
-                    yield _sse(AgentEvent(event="raw", status=event.status))
-                continue
-            if event.event == "message":
-                if event.text.strip() and len(outcome.trace_messages) < 16:
-                    outcome.trace_messages.append(event.text.strip()[:16_000])
-                if event.usage is not None or event.status is not None:
-                    # The text stays off the wire; the live display still
-                    # needs what the provider observed alongside it.
+            if event.event == "message" and event.text.strip() and len(outcome.trace_messages) < 16:
+                outcome.trace_messages.append(event.text.strip()[:16_000])
+            if event.event in {"answer", "message"}:
+                # Capture above is unconditional. Forward accounting exactly once:
+                # on the labelled frame when displayed, otherwise without its text.
+                if forward_labelled_events:
+                    yield _sse(event)
+                elif event.usage is not None or event.status is not None:
                     yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
                 continue
             if event.event == "error":

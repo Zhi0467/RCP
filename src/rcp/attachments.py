@@ -651,10 +651,8 @@ def stage_turn_attachments(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
-    read_dirs: list[Path],
-    additional: list[dict[str, object]] | None = None,
-) -> list[dict[str, object]]:
-    """Stage the admitted batch and grant reads of all turn attachment folders."""
+) -> tuple[list[dict[str, object]], list[Path]]:
+    """Return the admitted batch's pointers and attachment read directories."""
     if bool(batch_id) != bool(attachments):
         raise ValueError("The chat task has incomplete attachment batch metadata.")
     pointers = (
@@ -664,13 +662,7 @@ def stage_turn_attachments(
         if batch_id
         else []
     )
-    pointers.extend(additional or [])
-    read_dirs.extend(
-        path
-        for path in dict.fromkeys(Path(str(item["path"])).parent for item in pointers)
-        if path not in read_dirs
-    )
-    return pointers
+    return pointers, list(dict.fromkeys(Path(str(item["path"])).parent for item in pointers))
 
 
 def _canonical_uuid(value: str, label: str) -> str:
