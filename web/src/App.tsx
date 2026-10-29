@@ -957,8 +957,19 @@ function MemberApp({
   }, []);
   const [textScale, setTextScale] = useState(readTextScale);
   const [spaceSettingsOpen, setSpaceSettingsOpen] = useState(false);
+  // A login notice opens Space settings at that login's machine card "Sign-ins" fold.
+  const [signInsTarget, setSignInsTarget] = useState<{ provider: string; host: string } | null>(
+    null,
+  );
+  const openSignIns = useCallback((state: { provider: string; host: string }) => {
+    setSignInsTarget({ provider: state.provider, host: state.host });
+    setSpaceSettingsOpen(true);
+  }, []);
   // Space settings is a page over the current route; any navigation leaves it.
   useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
+  useEffect(() => {
+    if (!spaceSettingsOpen) setSignInsTarget(null);
+  }, [spaceSettingsOpen]);
   useEffect(() => closeArtifactViewer(), [projectId]);
   const dockedArtifact = useDockedArtifact();
   // The viewer belongs to the project; a space-level page covers both.
@@ -4258,7 +4269,12 @@ function MemberApp({
               current ? { ...current, cache_metrics: cacheMetrics } : current,
             );
           }}
-          onLoginChanged={() => void refreshReadiness().catch(() => {})}
+          onLoginChanged={() => {
+            void refreshReadiness().catch(() => {});
+            void refreshProviderLogins();
+          }}
+          viewerUserId={actorIdentity?.user.user_id ?? null}
+          focusSignIns={signInsTarget}
           onClose={() => setSpaceSettingsOpen(false)}
         />
         {updateSurface}
@@ -4301,6 +4317,7 @@ function MemberApp({
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          onOpenSignIns={openSignIns}
           voiceControl={<VoiceButton voice={voice} className="landing-space-settings" />}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
@@ -5243,7 +5260,8 @@ function MemberApp({
                 graphTarget={graphTarget}
                 graphRefs={projectGraphRefs ?? null}
                 providerLogins={runsProviderLogins}
-                onProviderLoginVerified={() => void refreshProviderLogins()}
+                viewerUserId={actorIdentity?.user.user_id ?? null}
+                onOpenSignIns={openSignIns}
                 machines={project.machines}
                 computeApiBase={apiBase}
                 onOpenSettings={() => changeView("settings")}

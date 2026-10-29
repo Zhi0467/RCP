@@ -809,39 +809,37 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
   const html = renderEpisodes([wrapping]);
 });
 
-test("the login notice names each signed-out account once and offers verification", async () => {
+test("the login notice shows each signed-out login once, as one row with one action", async () => {
   const { ProviderLoginNotice } = await server.ssrLoadModule(
     "/src/projects/ProviderLoginNotice.tsx",
   );
+  const row = {
+    provider: "codex",
+    host: "",
+    login_id: "",
+    kind: "shared",
+    owner_user_id: null,
+    state: "signed_out",
+    generation: 0,
+    changed_at: "2026-09-14T00:00:00Z",
+    detail: "Please sign in again",
+  };
   const states = [
-    {
-      provider: "codex",
-      host: "",
-      state: "signed_out",
-      generation: 0,
-      changed_at: "2026-09-14T00:00:00Z",
-      detail: "Please sign in again",
-    },
-    {
-      provider: "claude",
-      host: "remote.example",
-      state: "signed_in",
-      generation: 1,
-      changed_at: "2026-09-14T00:00:00Z",
-      detail: null,
-    },
+    row,
+    row,
+    { ...row, provider: "claude", host: "remote.example", state: "signed_in", generation: 1 },
   ];
-  const html = renderMarkup(React.createElement(ProviderLoginNotice, { states }));
+  const html = renderMarkup(
+    React.createElement(ProviderLoginNotice, { states, onOpenSignIns() {} }),
+  );
 
   assert.doesNotMatch(html, /remote.example/);
-
-  // One phone disclosure, the check, and Dismiss; the full explanation stays in the DOM.
-  assert.equal((html.match(/<button/g) ?? []).length, 3);
+  assert.equal((html.match(/data-login-notice=/g) ?? []).length, 1);
+  // The open action and Dismiss; no explanation paragraphs.
+  assert.equal((html.match(/<button/g) ?? []).length, 2);
   assert.match(html, /aria-label="Dismiss"/);
-  assert.match(html, /class="compact-notice-toggle"[^>]*aria-expanded="false"/);
-  assert.match(html, /<span>Codex is signed out<\/span>/);
-  assert.match(html, /Sign it in from Settings, Provider logins/);
-  assert.match(html, /Already signed in\? Check again/);
+  assert.match(html, /data-login-notice-action="open-sign-ins"/);
+  assert.doesNotMatch(html, /<p[ >]|compact-notice/);
 });
 
 test("merge controls render the server offer; an in-flight action disables them", () => {

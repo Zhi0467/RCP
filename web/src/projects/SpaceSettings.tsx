@@ -19,7 +19,7 @@ import {
 import { useMachinePower } from "./useMachinePower";
 import { showMachinePowerCard } from "./machinePower";
 import { MachineCard, NewMachineForm } from "./MachineCard";
-import { ProviderLogins } from "./ProviderLogins";
+import { SignInsFold, useProviderSignIns } from "./ProviderLogins";
 import { ServerSettings } from "./ServerSettings";
 import { TranscriptionSettings } from "../voice/TranscriptionSettings";
 import { ReleaseCheckRow } from "../desktop/UpdateNotice";
@@ -38,6 +38,10 @@ interface Props {
   cacheClearDisabled: boolean;
   onAllCachesCleared: (projectId: string, metrics: ProjectCacheMetrics) => void;
   onLoginChanged?: () => void;
+  /** The signed-in member; their own logins fill each "Yours" tray. */
+  viewerUserId?: string | null;
+  /** Open this login's "Sign-ins" fold, as a login notice asks. */
+  focusSignIns?: { provider: string; host: string } | null;
   onClose: () => void;
 }
 
@@ -56,6 +60,8 @@ export function SpaceSettings({
   cacheClearDisabled,
   onAllCachesCleared,
   onLoginChanged,
+  viewerUserId = null,
+  focusSignIns = null,
   onClose,
 }: Props) {
   return (
@@ -75,10 +81,11 @@ export function SpaceSettings({
           </section>
         )}
         <ThisMac spaceKind={spaceKind} writesDisabled={writesDisabled} />
-        <SpaceMachineList spaceKind={spaceKind} writesDisabled={writesDisabled} />
-        <ProviderLogins
+        <SpaceMachineList
           spaceKind={spaceKind}
           writesDisabled={writesDisabled}
+          viewerUserId={viewerUserId}
+          focusSignIns={focusSignIns}
           onLoginChanged={onLoginChanged}
         />
         <TranscriptionSettings writesDisabled={writesDisabled} />
@@ -97,12 +104,23 @@ export function SpaceSettings({
 function SpaceMachineList({
   spaceKind,
   writesDisabled,
+  viewerUserId,
+  focusSignIns,
+  onLoginChanged,
 }: {
   spaceKind: "personal" | "team";
   writesDisabled: boolean;
+  viewerUserId: string | null;
+  focusSignIns: { provider: string; host: string } | null;
+  onLoginChanged?: () => void;
 }) {
   const { machines, error, replace, remove } = useSpaceMachines();
+  const signIns = useProviderSignIns(viewerUserId);
   const [adding, setAdding] = useState(false);
+  // Two cards on one host share its logins; a notice opens the first.
+  const focusedMachine = focusSignIns
+    ? machines?.find((machine) => machine.host === focusSignIns.host)?.machine_id
+    : undefined;
   return (
     <section className="settings-section provider-path-settings space-machine-settings">
       <header>
@@ -125,6 +143,19 @@ function SpaceMachineList({
             record={machine}
             writesDisabled={writesDisabled}
             onRecordChange={replace}
+            signIns={
+              <SignInsFold
+                machineName={machine.name}
+                host={machine.host}
+                data={signIns}
+                viewerUserId={viewerUserId}
+                writesDisabled={writesDisabled}
+                focusProvider={
+                  focusedMachine === machine.machine_id ? (focusSignIns?.provider ?? null) : null
+                }
+                onLoginChanged={onLoginChanged}
+              />
+            }
             onDelete={
               machine.deletable
                 ? async () => {
