@@ -1,5 +1,6 @@
 import type { ModelChoice, ProviderReadiness } from "../core/types";
 import type { ProviderLoginState } from "../core/types";
+import { sameLogin } from "./providerLoginsModel.ts";
 
 /**
  * Turning the backend provider registry into select options.
@@ -122,16 +123,14 @@ export function modelChange(
 
 /**
  * Overlay the live account states on the project's own account list. The
- * project snapshot says which accounts this project uses; the live list says
- * what each is now. Nothing outside the project's accounts is shown.
+ * project snapshot says which logins this project uses; the live list says
+ * what each is now, matched by provider, host and login. Nothing outside the
+ * project's logins is shown.
  */
 export function mergeProviderLogins(
   projectLogins: ProviderLoginState[],
   live: ProviderLoginState[] | null,
 ): ProviderLoginState[] {
   if (!live) return projectLogins;
-  return projectLogins.map(
-    (entry) =>
-      live.find((state) => state.provider === entry.provider && state.host === entry.host) ?? entry,
-  );
+  return projectLogins.map((entry) => live.find((state) => sameLogin(state, entry)) ?? entry);
 }

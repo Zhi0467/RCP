@@ -257,7 +257,7 @@ export const INSPECT_NODE_TOOL: WebMcpToolSpec = {
 export const PROVIDER_LOGINS_TOOL: WebMcpToolSpec = {
   name: "rcp_get_provider_logins",
   description:
-    "Read whether each agent provider, such as Codex or Claude, is signed in for this RCP space, as Settings shows it. This is RCP's record, not a live check of the credential.",
+    "Read whether each agent provider login, such as Codex or Claude, is signed in for this RCP space, as Settings shows it: one row per machine sign-in, shared login, and member's own login. This is RCP's record, not a live check of the credential.",
   inputSchema: { type: "object", additionalProperties: false },
   annotations: { readOnlyHint: true },
   confirm: NEVER_CONFIRM,
@@ -270,8 +270,13 @@ export function providerLoginsForWebMcp(accounts: ProviderLoginAccount[]): Recor
       provider: account.provider,
       label: account.label,
       host: account.host || null,
+      login_id: account.login_id,
+      kind: account.kind,
+      owner: account.owner_display_name,
       machines: account.machines,
       state: account.state,
+      limited: Boolean(account.limited_at),
+      being_removed: Boolean(account.draining_since),
       detail: account.detail ? compactText(account.detail, 240) : null,
     })),
   };

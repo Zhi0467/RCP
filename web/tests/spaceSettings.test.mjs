@@ -278,7 +278,6 @@ const sectionClasses = (html) =>
   [
     "server-settings",
     "space-machine-settings",
-    "provider-login-settings",
     "transcription-settings",
     "space-cache-settings",
     "display-settings",
@@ -303,13 +302,11 @@ test("space-wide sections render on space Settings and project sections on proje
   assert.deepEqual(sectionClasses(space("team")), [
     "server-settings",
     "space-machine-settings",
-    "provider-login-settings",
     "transcription-settings",
     "provider-path-settings",
   ]);
   assert.deepEqual(sectionClasses(space("personal")), [
     "space-machine-settings",
-    "provider-login-settings",
     "transcription-settings",
     "space-cache-settings",
     "provider-path-settings",

@@ -12,7 +12,7 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   checkSpaceMachineCompute,
@@ -57,6 +57,8 @@ interface Props {
   onDelete?: () => Promise<void>;
   /** Offered on a project's card when nothing in the project uses the machine. */
   onRemoveFromProject?: () => Promise<void>;
+  /** The space page's "Sign-ins" fold for this machine's host. */
+  signIns?: ReactNode;
 }
 
 /** Runs one card's requests in order; a later answer never lands under an earlier one. */
@@ -72,6 +74,7 @@ export function MachineCard({
   onRecordChange,
   onDelete,
   onRemoveFromProject,
+  signIns,
 }: Props) {
   const [busy, setBusy] = useState<"delete" | "unlink" | null>(null);
   // Every write on this card queues here, so no earlier answer lands after a newer one.
@@ -166,6 +169,7 @@ export function MachineCard({
             run={writes.run}
             onRecordChange={onRecordChange}
           />
+          {signIns}
           <Fold
             className="machine-writable-paths"
             title="Provider limits"

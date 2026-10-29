@@ -3610,16 +3610,55 @@ export interface ProjectArtifact {
   can_delete: boolean;
 }
 
+/**
+ * One login: a provider sign-in on one host, keyed `(provider, host, login_id)`.
+ * `login_id` "" is the machine sign-in. `detail` and `source` are null on another
+ * member's own login.
+ */
 export interface ProviderLoginState {
   provider: string;
   label?: string;
   host: string;
+  login_id: string;
+  kind: "shared" | "own";
+  /** Set on own logins. */
+  owner_user_id: string | null;
+  owner_display_name: string | null;
+  /** Null for the machine sign-in. */
+  added_by_display_name: string | null;
+  added_at: string | null;
+  /** Set only while the usage-limit mark is active. */
+  limited_at: string | null;
+  /** Set while the login is being removed. */
+  draining_since: string | null;
+  /** Work still bound to a draining login; 0 otherwise. */
+  bound_running: number;
   state: "signed_in" | "signed_out";
   generation: number;
   detail: string | null;
   source: string | null;
   changed_at: string;
   changed_by: string | null;
+}
+
+/** Which groups a member's work tries, and in what order. "Both off" has no value. */
+export type ProviderLoginSettingValue = "own" | "own_then_shared" | "shared_then_own" | "shared";
+
+/** The caller's effective setting for one `(provider, host)`. */
+export interface ProviderLoginSetting {
+  provider: string;
+  host: string;
+  setting: ProviderLoginSettingValue;
+  changed_at: string | null;
+  /** False for the built-in default. */
+  stored: boolean;
+}
+
+export interface ProviderLoginSettings {
+  settings: ProviderLoginSetting[];
+  /** Other current members of the space. */
+  other_member_count: number;
+  personal: boolean;
 }
 
 /** What the UI may know about a stored credential: never the token. */
@@ -3632,20 +3671,24 @@ export interface ProviderCredentialSummary {
 
 /** One device-code sign-in as it runs. */
 export interface ProviderSignInStatus {
+  attempt_id: string;
+  /** The login this attempt signs in. */
   login_id: string;
   provider: string;
   host: string;
   state: "pending" | "succeeded" | "failed";
+  /** Present only for the member who started the attempt. */
   user_code: string | null;
   verification_url: string | null;
   detail: string | null;
   started_at: string;
   started_by: string;
+  started_by_display_name: string | null;
   finished_at: string | null;
   resumed: ProviderResumeSummary | null;
 }
 
-/** One `(provider, execution account)` pair every project on this server may launch on. */
+/** One login every project on this server may launch on, as Settings lists it. */
 export interface ProviderLoginAccount extends ProviderLoginState {
   label: string;
   /** Some visible project's agents launch on, or have work parked on, this account. */
