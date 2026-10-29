@@ -668,7 +668,8 @@ boundaries. Retry accepts only that request's exact one-Patch identity prefix;
 stale digest, changed inputs, unsafe paths or conflicting identity refuse.
 Completed confirmation returns the same request/project.
 
-Settings can request one added repository or connect one server-only repository
+Settings can request one added GitHub repository on the base machine or connect
+one server-only repository
 to GitHub through the same command/review, without provider setup. Add prepares
 a new checkout and publishes the reviewed descriptor/truth choice through a
 human approval transition. Connect preserves checkout/manifest, adds the reviewed

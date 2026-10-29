@@ -581,7 +581,7 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
 
     from tests.test_team_project_provisioning import _complete_ready_request, _ready_team_app
 
-    app, creation, _, member, _ = _ready_team_app(tmp_path, monkeypatch)
+    app, creation, _, member, _ = _ready_team_app(tmp_path, monkeypatch, server_only=True)
     with TestClient(app) as client:
         assert _complete_ready_request(client, creation).status_code == 200
         store = app.state.background_tasks.store
@@ -596,8 +596,8 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
                     "kind": "add_repository",
                     "repository": {
                         "alias": alias,
-                        "machine_alias": "server",
-                        "count_as_project_truth": count_as_truth,
+                        "source": f"https://github.com/example/{alias}.git",
+                        **({"count_as_project_truth": True} if count_as_truth else {}),
                     },
                 },
             )
@@ -636,7 +636,10 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
                 f"/api/projects/{project_id}/repository-requests",
                 json={
                     "kind": "add_repository",
-                    "repository": {"alias": alias, "machine_alias": "server"},
+                    "repository": {
+                        "alias": alias,
+                        "source": "https://github.com/example/another.git",
+                    },
                 },
             )
             assert duplicate.status_code == 409
@@ -645,8 +648,8 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
             f"/api/projects/{project_id}/repository-requests",
             json={
                 "kind": "connect_repository",
-                "alias": "context",
-                "source": "https://github.com/example/context.git",
+                "alias": "paper",
+                "source": "https://github.com/example/paper.git",
             },
         )
         assert connected.status_code == 201, connected.text
@@ -658,7 +661,7 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
         inventory = effective_repositories(
             store.project(project_id), store.completed_project_provisioning_requests(project_id)
         )
-        assert inventory[1].repository.identity == "example/context"
+        assert inventory[0].repository.identity == "example/paper"
         outsider = store.preprovision_team_member("Outsider")
         app.state.services.identity_access._trusted_principal_resolver = lambda _request, _store: (
             outsider
@@ -668,7 +671,10 @@ def test_repository_requests_approve_membership_truth_and_connect(tmp_path, monk
                 f"/api/projects/{project_id}/repository-requests",
                 json={
                     "kind": "add_repository",
-                    "repository": {"alias": "other", "machine_alias": "server"},
+                    "repository": {
+                        "alias": "other",
+                        "source": "https://github.com/example/other.git",
+                    },
                 },
             ).status_code
             == 404
@@ -690,7 +696,7 @@ def test_repository_confirmation_rejects_changed_review_boundary(tmp_path, monke
             f"/api/projects/{project_id}/repository-requests",
             json={
                 "kind": "add_repository",
-                "repository": {"alias": "code", "machine_alias": "server"},
+                "repository": {"alias": "code", "source": "https://github.com/example/code.git"},
             },
         )
         assert response.status_code == 201, response.text

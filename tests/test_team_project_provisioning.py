@@ -1360,7 +1360,10 @@ def test_existing_project_coordinator_prepares_add_and_connect(tmp_path, monkeyp
         assert _complete_ready_request(client, creation).status_code == 200
         store = app.state.services.store
         for body in (
-            {"kind": "add_repository", "repository": {"alias": "code", "machine_alias": "server"}},
+            {
+                "kind": "add_repository",
+                "repository": {"alias": "code", "source": "https://github.com/example/code.git"},
+            },
             {
                 "kind": "connect_repository",
                 "alias": "paper",

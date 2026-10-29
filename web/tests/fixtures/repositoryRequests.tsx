@@ -6,7 +6,6 @@ import "../../src/styles.css";
 const project = {
   id: "project",
   name: "Plasticity",
-  machines: [{ alias: "server" }],
   repositories: [{ alias: "state" }],
 };
 const root = createRoot(document.getElementById("root")!);
@@ -17,6 +16,7 @@ function render() {
     ) : (
       <RepositoryRequests
         project={project}
+        baseMachineId="base"
         disabled={false}
         connectAlias={location.search === "?connect" ? "state" : null}
         onCloseConnect={() => {}}

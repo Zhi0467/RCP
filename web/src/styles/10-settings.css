@@ -4022,3 +4022,59 @@ button.agent-provider-label {
   padding: 0;
   min-width: 0;
 }
+.repository-requests input:not([type="checkbox"]) {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  height: 38px;
+  min-width: 0;
+  padding: 0 11px;
+  width: 100%;
+}
+.repository-requests input::placeholder {
+  color: var(--faint);
+}
+.repository-requests input[readonly] {
+  background: var(--paper-deep);
+}
+.repository-requests [role="alert"] {
+  color: var(--red);
+  margin: 0;
+}
+.repository-add-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+.repository-add-modes {
+  background: var(--paper-deep);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+}
+.repository-add-modes button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--type-sm);
+  padding: 5px 14px;
+}
+.repository-add-modes button[aria-pressed="true"] {
+  background: var(--sheet);
+  border-color: var(--rule);
+  color: var(--oxblood);
+  font-weight: 700;
+}
+.repository-add-path {
+  display: flex;
+  gap: 8px;
+}
+.repository-add-path .button {
+  flex: 0 0 auto;
+}

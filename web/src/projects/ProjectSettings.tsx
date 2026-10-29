@@ -546,6 +546,13 @@ export function ProjectSettings({
           <RepositoryRequests
             key={project.id}
             project={project}
+            baseMachineId={
+              spaceMachines.machines
+                ? (spaceMachineForProject(spaceMachines.machines, project.id, {
+                    alias: baseMachine(project),
+                  })?.machine_id ?? null)
+                : null
+            }
             disabled={writesDisabled}
             connectAlias={connectAlias}
             onCloseConnect={() => setConnectAlias(null)}

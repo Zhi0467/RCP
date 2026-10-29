@@ -313,8 +313,9 @@ Provisioning storage represents a repository source as a GitHub reference or
 null (server only). Requests can create a team project, receive a transfer, add
 one repository, or connect one existing repository to GitHub. Add and connect
 name `target_project_id`; they share its checkout namespace without consuming
-the unique project reservation held by create/transfer requests. An add retains
-the human's per-repository `count_as_project_truth` choice, defaulting to true;
+the unique project reservation held by create/transfer requests. An add clones a
+GitHub source onto the project's base machine and retains the human's
+`count_as_project_truth` choice, defaulting to false;
 persisting this choice does not itself change canonical truth membership. Creation
 captures an immutable hash of the current canonical manifest and graph head,
 keyed by the request identity bound into the final review digest. The requesting

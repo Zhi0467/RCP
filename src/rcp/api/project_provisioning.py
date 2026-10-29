@@ -217,9 +217,31 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         return self
 
 
+class ProjectRepositoryAddition(_StrictModel):
+    """One repository added on the project's base machine, read-only unless chosen."""
+
+    alias: str
+    source: str
+    count_as_project_truth: bool = False
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        parse_github_repository_ref(value)
+        return value
+
+    def intent(self, machine_alias: str) -> ProjectProvisioningRepositoryIntent:
+        return ProjectProvisioningRepositoryIntent(
+            alias=self.alias,
+            repository=parse_github_repository_ref(self.source),
+            machine_alias=machine_alias,
+            count_as_project_truth=self.count_as_project_truth,
+        )
+
+
 class ProjectRepositoryAddRequest(_StrictModel):
     kind: Literal["add_repository"]
-    repository: ProjectProvisioningRepositoryRequest
+    repository: ProjectRepositoryAddition
 
 
 class ProjectRepositoryConnectRequest(_StrictModel):
@@ -1232,7 +1254,7 @@ def create_project_repository_request(
                 completed = store.completed_project_provisioning_requests(project_id)
                 inventory = effective_repositories(project, completed)
                 if body.kind == "add_repository":
-                    intent = body.repository.intent()
+                    intent = body.repository.intent(service.history.manifest.base_machine)
                     if intent.alias in service.history.manifest.repository_map:
                         raise ValueError("The repository alias already belongs to this project.")
                 else:
