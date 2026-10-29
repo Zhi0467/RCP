@@ -3,13 +3,13 @@
 `RCP_TEST_SHARD=<index>/<total>` (1-based) keeps one shard. Whole files stay
 together, so a module fixture is built in one shard only and `--dist loadfile`
 sees the same files it would without sharding. Files go largest first to the
-shard with the fewest tests; every shard computes the same assignment from the
-same collection, so each test runs in exactly one shard.
+lightest shard. A file's size in bytes predicts its run time far better than its
+test count, whose split left one shard almost twice as long on CI. Every shard
+computes the same assignment from the same checkout and collection, so each test
+runs in exactly one shard.
 """
 
 from __future__ import annotations
-
-from collections import Counter
 
 import pytest
 
@@ -29,7 +29,7 @@ def shard_items(
 ) -> tuple[list[pytest.Item], list[pytest.Item]]:
     """Return the items this shard keeps and the ones it deselects."""
 
-    sizes = Counter(item.nodeid.split("::", 1)[0] for item in items)
+    sizes = {item.nodeid.split("::", 1)[0]: item.path.stat().st_size for item in items}
     loads = [0] * count
     owner: dict[str, int] = {}
     for path, size in sorted(sizes.items(), key=lambda entry: (-entry[1], entry[0])):
