@@ -16,6 +16,24 @@ Find task-specific guidance in the [design spec index](docs/design.md#module-spe
 4. Read the complete diff and inspect check results yourself.
 5. Update current behavior docs with semantic changes in the same commit.
 
+## Design phase
+
+Anything beyond a small fix is designed before it is built.
+
+1. Investigate with agents in parallel: source, specs, and prior art. Start from the
+   existing sibling and frame the design as "extend X to Y".
+2. Ask the human each open decision through the blocking question tool. Explain the
+   mechanism first, recommend one option, and ask at most two questions per round.
+3. Show every changed UI surface as a rendered mockup in the app's own styling before
+   writing UI code. Let the human judge the real layout, not a sketch.
+4. Write the design on the feature branch, never in a design-only PR. Review it with
+   egm (`design`, `implementation-readiness`, `zoom-out`) and fix Blockers and Majors.
+5. Wait for the human's explicit start. Answered questions are not a start.
+6. Build in ub-mode: make it work test-first, then make it right with crapper,
+   dryer, and mutator scoped to the change.
+7. Ship design, code, and docs in one PR. Move the design's rules into their owning
+   specs and delete the design file before merge.
+
 Integrate concurrent changes through a real three-way Git merge, never a whole
 patch piped into `git apply`. Use short-lived branches, PR CI, and explicit human
 merge. Servers consume only merged `main`.
