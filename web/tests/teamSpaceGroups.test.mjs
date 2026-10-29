@@ -75,6 +75,20 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
   assert.match(html, /<header>[^]*?<button/);
 });
 
+test("a checking team group holds its header action in place, inert", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamConnectionGroup, {
+      view: { connection, state: "checking", error: null },
+      onReconnect() {},
+      onOpenSpace() {},
+      onOpenProject() {},
+    }),
+  );
+
+  const header = html.match(/<header>[^]*?<\/header>/)[0];
+  assert.match(header, /<button[^>]*disabled=""/);
+});
+
 test("connection updates preserve saved registry order", () => {
   const second = {
     ...connection,
