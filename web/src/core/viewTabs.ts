@@ -28,3 +28,25 @@ export function tabEntryView(projectId: string, tab: AppView): AppView {
   }
   return tab;
 }
+
+// Agents' sub-view is the chat open there.
+const openChatKey = (projectId: string) => `${subviewKey(projectId, "chats")}:chat`;
+
+/** Records the chat open in Agents, or null for its board, so Agents reopens it here. */
+export function rememberOpenChat(projectId: string, chatId: string | null): void {
+  try {
+    if (chatId) localStorage.setItem(openChatKey(projectId), chatId);
+    else localStorage.removeItem(openChatKey(projectId));
+  } catch {
+    /* A remembered chat is a convenience. */
+  }
+}
+
+/** The chat Agents last had open in this project, if any. */
+export function rememberedChat(projectId: string): string | null {
+  try {
+    return localStorage.getItem(openChatKey(projectId));
+  } catch {
+    return null;
+  }
+}

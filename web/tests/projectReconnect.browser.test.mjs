@@ -807,6 +807,40 @@ const chat = {
   last_message_preview: "",
 };
 
+test("the Agents tab reopens the chat it was left on, per project", async (t) => {
+  const { page, errors } = await openedShell(t, { chats: [chat] });
+  const agents = page.getByRole("button", { name: "Agents", exact: true });
+  const chatMenu = page.getByRole("button", { name: "Chat menu", exact: true });
+  const routeChat = () =>
+    page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("chat"));
+  await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
+  await chatMenu.waitFor();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await chatMenu.waitFor({ state: "detached" });
+  await agents.click();
+  await chatMenu.waitFor();
+  assert.equal(await routeChat(), "held-chat");
+  // Inside Agents the tab still opens the board.
+  await agents.click();
+  await page.locator("[data-board-column]").first().waitFor();
+  assert.equal(await routeChat(), null);
+
+  // Another project has no chat left open there, so its Agents tab opens the board.
+  await page.evaluate(() => (location.hash = "#/projects/second"));
+  await page
+    .locator(".project-dock-tab.active .project-dock-select")
+    .filter({ hasText: "(second)" })
+    .waitFor();
+  await agents.click();
+  await page.locator("[data-board-column]").first().waitFor();
+  assert.equal(await chatMenu.count(), 0);
+  assert.equal(await routeChat(), null);
+  assert.deepEqual(
+    errors.filter((message) => !message.includes("Failed to load resource")),
+    [],
+  );
+});
+
 test(
   "following an origin link loads the source chat a bounded number of times and archive stays on its graph",
   { timeout: 25000 },
