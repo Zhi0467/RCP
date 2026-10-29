@@ -357,6 +357,7 @@ def test_branch_inventory_respects_fork_read_scope(history_query, monkeypatch):
                 branch_id=branch.branch_id,
                 name=names[branch.branch_id],
                 owner_episode_id=branch.branch_metadata().episode_id,
+                parent_head=branch.branch_metadata().effective_parent_head,
             )
             for branch in (parent, fork, sibling)
         ],

@@ -3532,12 +3532,19 @@ button.agent-provider-label {
   grid-row: auto;
 }
 .machine-tile > strong {
+  align-items: center;
+  display: flex;
   font-size: var(--type-sm);
+  min-width: 0;
+}
+/* The name truncates; the Base tag never does. */
+.machine-tile-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .machine-tile-base {
+  flex-shrink: 0;
   background: var(--cobalt-soft);
   border-radius: 4px;
   color: var(--cobalt-dark);
@@ -3548,7 +3555,6 @@ button.agent-provider-label {
   margin-left: 7px;
   padding: 2px 5px;
   text-transform: uppercase;
-  vertical-align: 1px;
 }
 .machine-tile-host {
   color: var(--muted);

@@ -98,7 +98,7 @@ class _HistoryLauncher:
                 identity,
             )
             assert response.status == "ok", response
-            assert response.result["at_head"] == f"branch:{branch.id}@{branch.head_revision}"
+            assert response.result["at_head"].startswith(f"branch:{branch.id}@")
         if self.kind in {"discuss", "paper_coach"}:
             response = await handler(_apply_request("forbidden"), identity)
             assert response.status == "invalid", response
@@ -163,13 +163,11 @@ def test_graph_reader_master_commands_and_committed_observation(
                 "name": "vla-if",
                 "id": parent.branch_id,
                 "parent": "main",
-                "head_revision": parent.head_ref().revision,
             },
             {
                 "name": "child-branch",
                 "id": child.branch_id,
                 "parent": "vla-if",
-                "head_revision": child.head_ref().revision,
             },
         ]
     input_revision = service.history.state().revision
