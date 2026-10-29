@@ -14,6 +14,10 @@ the agent, and then admits recovery launches; shutdown drains workers before
 stopping it. The user's `SSH_AUTH_SOCK` remains separate. Provisioning, restore,
 and rotation load deploy keys immediately after writing them when the local
 account agent is running; the next launch can hide them without a restart.
+When another backend holds the account lock, startup still loads this backend's
+deploy keys into the shared agent. Repeated loads are idempotent. Only the lock
+owner manages the agent's lifetime; stopping a contender leaves the agent and
+its keys available for launch confirmation.
 
 Repository `core.sshCommand` retains its transport and adds the stable
 `IdentityAgent` socket. A deploy key is hidden only after fingerprint identity

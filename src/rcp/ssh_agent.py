@@ -146,7 +146,15 @@ class BackendSSHAgent:
             if len(os.fsencode(self.socket)) >= AGENT_SOCKET_PATH_MAX_BYTES:
                 raise RuntimeError("account SSH agent socket path is too long")
             self._lock = os.open(self.socket.parent / "owner.lock", os.O_CREAT | os.O_RDWR, 0o600)
-            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                # The owner manages the daemon; each backend contributes its keys.
+                # Retain no ownership, so stopping a contender cannot stop the agent.
+                os.close(self._lock)
+                self._lock = None
+                self.load_keys()
+                return
             receipt = self.socket.parent / "owner.json"
             if receipt.exists():
                 old = json.loads(receipt.read_text())
