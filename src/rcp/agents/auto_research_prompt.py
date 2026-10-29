@@ -26,6 +26,7 @@ from rcp.agents.staged_command_client import (
     bulletin_usages,
     child_target_usage,
     experiment_kickoff_usage,
+    lesson_usages,
     merge_usage,
     name_usage,
     spawn_seat_usage,
@@ -146,7 +147,7 @@ def _command_invocations(
         "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
-        "lesson": ("lesson add --key <key> --text <text>",),
+        "lesson": lesson_usages(("add",)),
         "bulletin": bulletin_usages(turn_artifacts=False),
         "name": (name_usage(),),
     }

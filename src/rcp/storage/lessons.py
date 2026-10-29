@@ -17,12 +17,11 @@ class LessonError(ValueError):
     def __init__(self, code: str):
         self.code = code
         messages = {
-            "lesson_edit_not_authorized": "Only the consolidation owner can list, update, or delete lessons.",
+            "lesson_edit_not_authorized": "Only a member's ordinary chat or consolidation may list, update, or delete lessons.",
             "lesson_forbidden": "This turn or member is not authorized to manage these lessons.",
             "lesson_text_invalid": f"Enter a nonblank lesson of at most {LESSON_TEXT_MAX_CHARS} characters.",
             "lessons_limit": f"This project has reached its limit of {LESSONS_PER_PROJECT_MAX} lessons.",
             "lesson_not_found": "This lesson no longer exists. Refresh the lesson list.",
-            "lesson_human_owned": "Only a project member may change a human-owned lesson.",
             "lesson_command_invalid": "The requested lesson command is not supported.",
             "lesson_key_invalid": "Provide a valid idempotency key for this lesson command.",
             "lesson_key_conflict": "This key was already used with different lesson arguments.",
@@ -52,19 +51,57 @@ def migrate_operational_lessons(connection: sqlite3.Connection) -> None:
     )
 
 
-def _edit_authorized(connection: sqlite3.Connection, operation_id: str) -> bool:
-    return (
-        connection.execute(
-            "SELECT 1 FROM consolidation_runs WHERE operation_id=?", (operation_id,)
-        ).fetchone()
-        is not None
+def _lesson_permissions(
+    connection: sqlite3.Connection, task: sqlite3.Row
+) -> tuple[tuple[str, ...], bool]:
+    """Resolve the launching owner's actions and whether it acts as its human.
+
+    Question answers and watcher wakes keep the same chat authority. Episode
+    and child Work turns never inherit it from their authorizing human.
+    """
+    if task["kind"] not in {"node_chat", "project_chat", "auto_research"}:
+        return (), False
+    authority = json.loads(task["dispatch_authority_json"] or "{}")
+    contract = authority.get("task_contract")
+    if contract not in {"work_auto", "orchestrate", "discuss"}:
+        return (), False
+    member = task["authorized_user_id"] and live_project_member(
+        connection, task["project_id"], task["authorized_user_id"]
     )
+    if not member:
+        return (), False
+    consolidation = connection.execute(
+        "SELECT 1 FROM consolidation_runs WHERE operation_id=?",
+        (task["operation_id"],),
+    ).fetchone()
+    if consolidation is not None:
+        return ("add", "list", "update", "delete"), False
+    scope = authority.get("scope", {})
+    human_chat = (
+        task["kind"] in {"node_chat", "project_chat"}
+        and task["episode_id"] is None
+        and contract in {"work_auto", "discuss"}
+        and authority.get("profile") == "ordinary"
+        and bool(scope.get("chat_id"))
+        and scope.get("patch_kind") == (None if contract == "discuss" else "work")
+        and connection.execute(
+            "SELECT 1 FROM auto_research_child_work_attempts WHERE operation_id=?",
+            (task["operation_id"],),
+        ).fetchone()
+        is None
+    )
+    if human_chat:
+        return ("add", "list", "update", "delete"), True
+    return (("add",) if contract in {"work_auto", "orchestrate"} else ()), False
 
 
-def lesson_edit_authorized(store: Any, operation_id: str) -> bool:
-    """Only a server-owned consolidation binding grants lesson maintenance."""
+def lesson_command_actions(store: Any, operation_id: str) -> tuple[str, ...]:
+    """The handler and its prompt share this launch-time action set."""
     with store.connection() as connection:
-        return _edit_authorized(connection, operation_id)
+        task = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone()
+        return _lesson_permissions(connection, task)[0] if task is not None else ()
 
 
 def _record(row: sqlite3.Row) -> dict[str, Any]:
@@ -126,24 +163,20 @@ def _mutate(
         )
     else:
         row = connection.execute(
-            "SELECT human_owned FROM operational_lessons WHERE project_id=? AND lesson_id=?",
+            "SELECT 1 FROM operational_lessons WHERE project_id=? AND lesson_id=?",
             (project_id, lesson_id),
         ).fetchone()
         if row is None:
             raise LessonError("lesson_not_found")
-        if row["human_owned"] and not human:
-            raise LessonError("lesson_human_owned")
         if subcommand == "delete":
             connection.execute(
-                "DELETE FROM operational_lessons WHERE project_id=? AND lesson_id=? "
-                "AND (? OR human_owned=0)",
-                (project_id, lesson_id, human),
+                "DELETE FROM operational_lessons WHERE project_id=? AND lesson_id=?",
+                (project_id, lesson_id),
             )
             return {}
         connection.execute(
             "UPDATE operational_lessons SET text=?,updated_at=?,author_kind=?,operation_id=?,"
-            "user_id=?,display_name=?,human_owned=? WHERE project_id=? AND lesson_id=? "
-            "AND (? OR human_owned=0)",
+            "user_id=?,display_name=?,human_owned=? WHERE project_id=? AND lesson_id=?",
             (
                 text,
                 now,
@@ -154,7 +187,6 @@ def _mutate(
                 int(human),
                 project_id,
                 lesson_id,
-                human,
             ),
         )
     return {
@@ -241,18 +273,17 @@ class LessonStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
-                "SELECT authorized_user_id,dispatch_authority_json FROM graph_runs "
-                "WHERE operation_id=? AND project_id=?",
+                "SELECT * FROM graph_runs WHERE operation_id=? AND project_id=?",
                 (operation_id, project_id),
             ).fetchone()
             if task is None or not task["authorized_user_id"]:
                 raise LessonError("lesson_forbidden")
-            authority = json.loads(task["dispatch_authority_json"] or "{}")
-            if authority.get("task_contract") not in {"work_auto", "orchestrate"}:
-                raise LessonError("lesson_forbidden")
             _require_member(connection, project_id, task["authorized_user_id"])
             self._require_project_accepts_new_work(connection, project_id)
-            if subcommand != "add" and not _edit_authorized(connection, operation_id):
+            actions, human_chat = _lesson_permissions(connection, task)
+            if not actions:
+                raise LessonError("lesson_forbidden")
+            if subcommand not in actions:
                 raise LessonError("lesson_edit_not_authorized")
             if subcommand == "list":
                 rows = connection.execute(
@@ -295,7 +326,9 @@ class LessonStoreMixin(StoreMixinBase):
                             now=self.now(),
                             text=text,
                             lesson_id=lesson_id,
-                            operation_id=operation_id,
+                            operation_id=None if human_chat else operation_id,
+                            user_id=task["authorized_user_id"] if human_chat else None,
+                            display_name=task["authorized_display_name"] if human_chat else None,
                         )
                     }
                 except LessonError as exc:

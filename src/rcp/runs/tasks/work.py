@@ -213,7 +213,6 @@ from rcp.storage import (
     ExperimentWatcherResourceRecord,
     WatcherContinuation,
 )
-from rcp.storage.lessons import lesson_edit_authorized
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
 from rcp.watchers import (
@@ -386,9 +385,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     if "lesson" in handler.allowed_verbs:
         instructions.append(
             lesson_command_usage(
-                edit_authorized=lesson_edit_authorized(
-                    turn.execution.store, turn.execution.operation_id
-                ),
+                actions=handler.lesson_actions,
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
