@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import stat
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -18,6 +16,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from rcp.limits import (
     PAPER_CHANGES_DIFF_MAX_LINE_PAIRS,
+    PAPER_CHANGES_MAX_ENTRIES,
     PAPER_CHANGES_MAX_FILE_BYTES,
     PAPER_CHANGES_MAX_FILES,
     PAPER_CHANGES_MAX_MOVES_BYTES,
@@ -26,6 +25,7 @@ from rcp.limits import (
 )
 from rcp.paper import PaperFile, PaperLive, PaperOp, PaperSnapshot
 from rcp.paper.models import PaperPrecondition, digest, paper_file_kind, paper_path
+from rcp.regular_tree_reader import RegularTree, read_regular_tree
 from rcp.storage import AppStore
 
 if TYPE_CHECKING:
@@ -110,70 +110,28 @@ def _path(value: str) -> str:
         raise InvalidChanges([f"Invalid paper-relative path: {value!r}"]) from exc
 
 
-def _read_output(root: Path) -> dict[str, bytes]:
-    """Descriptor-relative bounded walk: never follow a link, including the root."""
-    result: dict[str, bytes] = {}
-    total = 0
-    entries = 0
-
-    def visit(fd: int, prefix: str) -> None:
-        nonlocal total, entries
-        for name in sorted(os.listdir(fd)):
-            entries += 1
-            if entries > PAPER_CHANGES_MAX_FILES * 4:
-                raise InvalidChanges(["Changes folder has too many entries"])
-            relative = _path(f"{prefix}/{name}" if prefix else name)
-            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            if stat.S_ISDIR(info.st_mode):
-                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-                try:
-                    visit(child, relative)
-                finally:
-                    os.close(child)
-                continue
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise InvalidChanges([f"Not a regular unlinked file: {relative}"])
-            cap = (
-                PAPER_CHANGES_MAX_MOVES_BYTES
-                if relative == "moves.json"
-                else PAPER_CHANGES_MAX_FILE_BYTES
-            )
-            if info.st_size > cap or total + info.st_size > PAPER_CHANGES_MAX_TOTAL_BYTES:
-                raise InvalidChanges([f"Changes byte limit exceeded: {relative}"])
-            if len(result) >= PAPER_CHANGES_MAX_FILES + 1:
-                raise InvalidChanges(["Too many changed files"])
-            child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-            try:
-                opened = os.fstat(child)
-                if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
-                    info.st_dev,
-                    info.st_ino,
-                ):
-                    raise InvalidChanges([f"Changed during collection: {relative}"])
-                with os.fdopen(child, "rb", closefd=False) as stream:
-                    content = stream.read(cap + 1)
-            finally:
-                os.close(child)
-            total += len(content)
-            if len(content) > cap or total > PAPER_CHANGES_MAX_TOTAL_BYTES:
-                raise InvalidChanges([f"Changes byte limit exceeded: {relative}"])
-            result[relative] = content
-
+def _read_output(root: Path) -> RegularTree:
     try:
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            visit(fd, "")
-        finally:
-            os.close(fd)
-    except OSError as exc:
-        raise InvalidChanges([f"Cannot collect changes: {exc.strerror}"]) from exc
-    return result
+        return read_regular_tree(
+            root,
+            max_entries=PAPER_CHANGES_MAX_ENTRIES,
+            max_files=PAPER_CHANGES_MAX_FILES + 1,
+            max_file_bytes=PAPER_CHANGES_MAX_FILE_BYTES,
+            max_total_bytes=PAPER_CHANGES_MAX_TOTAL_BYTES,
+        )
+    except (OSError, ValueError) as exc:
+        raise InvalidChanges([f"Cannot collect changes: {exc}"]) from exc
 
 
 def validate_output(
-    root: Path, snapshot: PaperSnapshot
+    root: Path | RegularTree, snapshot: PaperSnapshot
 ) -> tuple[dict[str, bytes], list[tuple[str, str]], list[str]]:
-    output = _read_output(root)
+    tree = _read_output(root) if isinstance(root, Path) else root
+    output = tree.files
+    for name in [*tree.directories, *output]:
+        _path(name)
+    if len(output.get("moves.json", b"")) > PAPER_CHANGES_MAX_MOVES_BYTES:
+        raise InvalidChanges(["Changes byte limit exceeded: moves.json"])
     unknown = [name for name in output if name != "moves.json" and not name.startswith("files/")]
     if unknown:
         raise InvalidChanges([f"Unexpected output: {name}" for name in unknown])
@@ -457,7 +415,7 @@ def _utf16_length(text: str) -> int:
 def build_changes(
     task_id: str,
     snapshot: PaperSnapshot,
-    root: Path,
+    root: Path | RegularTree,
     live: PaperLive,
     tree: PaperSnapshot | None = None,
 ) -> tuple[list[list[Change]], dict[str, bytes]]:
@@ -633,7 +591,7 @@ class PaperChanges:
         project_id: str,
         task_id: str,
         snapshot: PaperSnapshot,
-        changes_dir: Path,
+        changes_dir: Path | RegularTree,
         *,
         mode: Literal["review", "apply_directly"] = "review",
         replace_group_ids: set[str] | None = None,

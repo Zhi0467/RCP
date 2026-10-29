@@ -28,6 +28,7 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
+from rcp.agents.context import CoachContext
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import machine_compute_context
@@ -40,6 +41,7 @@ from rcp.config import (
     Manifest,
     launches_work_like,
     load_manifest,
+    require_base_machine,
 )
 from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
@@ -2611,13 +2613,9 @@ class ProjectService:
         if run_on is not None:
             if run_on not in self.manifest.machine_map:
                 raise ValueError(f"unknown execution machine: {run_on}")
-            state_machine = self.manifest.repository_map[self.manifest.state.repository].machine
-            if run_on != state_machine:
-                raise ValueError(
-                    f"{surface.replace('_', ' ')} must run on canonical state machine "
-                    f"{state_machine!r}"
-                )
-            updates["run_on"] = run_on
+            updates["run_on"] = require_base_machine(
+                run_on, self.manifest.base_machine, label=surface.replace("_", " ")
+            )
         return self._with_catalog_head(
             self.manifest, self.launcher, base.model_copy(update=updates)
         )
@@ -2909,17 +2907,7 @@ class ProjectService:
             }
         )
 
-    def coach_context(
-        self, request: CoachRequest, paper_path: Path | None = None
-    ) -> tuple[dict[str, object], list[Path]]:
-        # Resolved for its validation of the requested provider/model/run_on.
-        self.resolve_agent_profile(
-            "paper_coach",
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
+    def coach_context(self, paper_path: Path | None = None) -> CoachContext:
         repository_access = {
             alias: build_repository_access(
                 self.manifest.repository_map[alias],
@@ -2927,13 +2915,7 @@ class ProjectService:
             )
             for alias in self.manifest.project.truth_scope
         }
-        pointers = ContextAssembler(self.manifest).paper_pointers(paper_path, repository_access)
-        read_dirs = [
-            Path(access.path)
-            for access in repository_access.values()
-            if not access.host and Path(access.path).exists()
-        ]
-        return pointers, read_dirs
+        return ContextAssembler(self.manifest).paper_pointers(paper_path, repository_access)
 
     def pointer_hashes(self) -> tuple[str, int, str]:
         snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))

@@ -385,17 +385,19 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
             target.mkdir(parents=True, exist_ok=reuse)
             return target
 
-        def read_workspace_directory(self, name, destination, **_limits):
+        def read_workspace_directory(self, name, **limits):
+            from rcp.regular_tree_reader import read_regular_tree
+
             source = self.workspace / name
             collected.append(source)
-            shutil.copytree(source, destination, dirs_exist_ok=True)
+            return read_regular_tree(source, **limits)
 
     async def hidden_scope(_service, _request, **kwargs):
         assert kwargs["remote_stage"] is stages[-1]
         assert kwargs["workspace"] == stages[-1].workspace
         return unhidden_read_scope(execution_machine=base_machine, host="base.example")
 
-    monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RemoteStage)
     monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: False)
     execution = execution_for(service)
@@ -483,7 +485,6 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
 async def test_remote_coach_stage_failure_classifies_transport_loss(
     coach, monkeypatch, tmp_path, failure_at, link_lost
 ):
-    from rcp.runs.tasks import coach as coach_module
     from rcp.transport import StateUnavailable, StateUnreachable
 
     from .test_auto_research_stream import _LocalBackedRemoteStage
@@ -511,7 +512,7 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
         def stream(self, *_args, **_kwargs):
             raise AssertionError("provider must not launch after a failed stage transfer")
 
-    monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RemoteStage)
     execution = execution_for(service)
     events = await run_coach(service, Launcher(), data, execution=execution)
 
@@ -556,8 +557,10 @@ def detached_coach(coach, monkeypatch, tmp_path):
             target.mkdir(parents=True, exist_ok=reuse)
             return target
 
-        def read_workspace_directory(self, name, destination, **_limits):
-            shutil.copytree(self.workspace / name, destination, dirs_exist_ok=True)
+        def read_workspace_directory(self, name, **limits):
+            from rcp.regular_tree_reader import read_regular_tree
+
+            return read_regular_tree(self.workspace / name, **limits)
 
     async def hidden_scope(_service, _request, **_kwargs):
         return unhidden_read_scope(execution_machine=base_machine, host="base.example")
@@ -572,7 +575,7 @@ def detached_coach(coach, monkeypatch, tmp_path):
         return
         yield
 
-    monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RemoteStage)
     monkeypatch.setattr(recorded_settlement, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr(work_turn_runtime, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr("rcp.agents.command_mailbox.COMMAND_MAILBOX_REMOTE_POLL_SECONDS", 0.02)

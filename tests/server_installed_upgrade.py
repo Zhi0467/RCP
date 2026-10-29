@@ -141,7 +141,7 @@ def assert_serves(fixture: dict, version: str) -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     cookie = session(fixture)
-    if fixture.get("paper"):
+    if fixture["paper"]["writer"] == "legacy":
         with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
             live = database.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_files'"
@@ -686,7 +686,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     ) as response:
         assert response.status == 200
     assert_serves(fixture, selected["version_string"])
-    if fixture["paper"] is None:
+    if fixture["paper"]["writer"] == "tree":
         from tests.server_upgrade_paper import seed_tree_paper
 
         # A baseline that already keeps the Paper file tree writes one through its own API.
@@ -855,7 +855,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "base_maintenance_kept_project_uncaptured": base_kept_project_uncaptured,
             "backup_after_candidate_keep": "protected",
             "question_followup": followup,
-            "paper": {"legacy": fixture["paper"], "current": current_paper},
+            "paper": {"baseline": fixture["paper"], "current": current_paper},
             "dry_run": rehearsal,
             "injected_backup_rejection": {
                 "project_id": rejected,

@@ -109,7 +109,7 @@ def validate_episode_admission(
         raise ValueError("episode_isolation_requires_one_repository")
     repository = manifest.repository_map[aliases[0]]
     # Graph-writing profiles default to the canonical state machine.
-    run_on = request.run_on or manifest.repository_map[manifest.state.repository].machine
+    run_on = request.run_on or manifest.base_machine
     host = manifest.machine_map[run_on].host
     if repository.machine != run_on:
         raise ValueError("episode_isolation_host_mismatch")

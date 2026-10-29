@@ -605,7 +605,7 @@ def _experiment_values(
         execution["helper_owner"] = backend.id if backend is not None else None
     return {
         **values,
-        "branches": [item.model_dump(mode="json") for item in turn.graph_read_scope.branches]
+        "branches": turn.graph_read_scope.branch_values()
         if turn.graph_read_scope is not None
         else [],
         "group": group_prompt_value(turn.context.group_context),

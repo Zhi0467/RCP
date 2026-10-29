@@ -22,11 +22,11 @@ Repository and provider side effects remain real operational effects; canonical
 graph history records their research meaning only through an admitted Patch.
 
 RCP schedules autonomous work only inside a human-authorized Auto-research
-episode with a fixed operational invocation budget, or as the one nightly
-consolidation turn a member authorized for a project. Every such episode writes
-research-graph changes to its persistent graph branch. The consolidation turn
-is ordinary Work on main under an expiring member authorization; it reports
-every change in the Inbox. Humans can inspect
+episode with a fixed operational invocation budget, or as the nightly
+consolidation a member authorized for a project. Every such episode writes
+research-graph changes to its persistent graph branch. Consolidation runs one
+ordinary Work turn per changed graph, main and each active branch, under an
+expiring member authorization; each reports every change in the Inbox. Humans can inspect
 and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
 during and after the episode. Those conversations have their own sessions and
 authority. Main stays editable,
@@ -237,7 +237,7 @@ winner by timestamp or silently implement around it.
   orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
 - [Graph consolidation and lessons](specs/graph-consolidation-and-lessons.md) —
-  the authorized nightly consolidation turn, its Inbox rows, and per-project
+  the authorized nightly consolidation turns, their Inbox rows, and per-project
   operational lessons.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) —
   durable identity, team enrollment, membership, project homes, setup, caches,

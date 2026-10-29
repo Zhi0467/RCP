@@ -1,14 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Trash2 } from "lucide-react";
 import { api } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { resourceKeyId } from "../core/resourceStore";
+import { useArmedConfirm } from "../core/useArmedConfirm";
 import { useRefreshRuntime } from "../core/useResource";
 import { artifactsProfile } from "./artifactResources";
 import { closeArtifactIfOpen } from "./artifactViewerModel";
-
-/** A first click arms Delete; this long without a second click disarms it. */
-const CONFIRM_MS = 4000;
 
 /**
  * Two-click Delete: the first click arms it, the second sends the request. A
@@ -28,21 +26,16 @@ export function DeleteArtifactButton({
   iconSize: number;
 }) {
   const { store } = useRefreshRuntime();
-  const [confirming, setConfirming] = useState(false);
+  const { armed: confirming, arm, disarm } = useArmedConfirm();
   const [deleting, setDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  useEffect(() => {
-    if (!confirming) return;
-    const timer = window.setTimeout(() => setConfirming(false), CONFIRM_MS);
-    return () => window.clearTimeout(timer);
-  }, [confirming]);
 
   const click = async () => {
     if (!confirming) {
-      setConfirming(true);
+      arm();
       return;
     }
-    setConfirming(false);
+    disarm();
     setFailure(null);
     setDeleting(true);
     try {
@@ -61,7 +54,7 @@ export function DeleteArtifactButton({
   };
 
   const name = confirming ? "Confirm delete" : label;
-  const state = confirming ? " artifact-delete-confirm" : failure ? " artifact-action-failed" : "";
+  const state = confirming ? " armed-delete" : failure ? " artifact-action-failed" : "";
   return (
     <button
       type="button"
@@ -69,7 +62,7 @@ export function DeleteArtifactButton({
       aria-label={name}
       title={!confirming && failure ? failure : name}
       disabled={deleting}
-      onBlur={() => setConfirming(false)}
+      onBlur={disarm}
       onClick={() => void click()}
     >
       <Trash2 size={iconSize} aria-hidden="true" />

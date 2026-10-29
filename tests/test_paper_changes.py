@@ -85,6 +85,14 @@ def test_paths_utf8_symlink_and_size_limits(setup, monkeypatch):
         validate_output(output, snapshot)
 
 
+@pytest.mark.parametrize("collected", [False, True])
+def test_empty_forbidden_directory_is_invalid(setup, collected):
+    snapshot, _live, _changes, output = setup
+    (output / "files/.git").mkdir()
+    with pytest.raises(InvalidChanges):
+        validate_output(changes_module._read_output(output) if collected else output, snapshot)
+
+
 def test_delete_write_conflict_and_moves_filename(setup):
     snapshot, _live, _changes, output = setup
     (output / "files/section.md").write_text("replacement")

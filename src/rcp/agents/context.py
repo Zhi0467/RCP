@@ -23,6 +23,13 @@ class RepositoryPointer(BaseModel):
     path: str
 
 
+class CoachContext(BaseModel):
+    paper: str
+    graph_path: str
+    research_md_path: str
+    repositories: list[RepositoryPointer]
+
+
 class RunContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -228,28 +235,27 @@ class ContextAssembler:
         self,
         paper_override: Path | None = None,
         repository_access: dict[str, RepositoryAccess] | None = None,
-    ) -> dict[str, object]:
+    ) -> CoachContext:
         root = self.manifest.research_dir
-        paper = paper_override or root / "paper"
-        return {
-            "paper": str(paper),
-            "graph": str(root / "graph.json"),
-            "research_md": str(root / "research.md"),
-            "truth_repositories": [
-                {
-                    "alias": item.alias,
-                    "machine": item.machine,
-                    "host": (
+        return CoachContext(
+            paper=str(paper_override or root / "paper"),
+            graph_path=str(root / "graph.json"),
+            research_md_path=str(root / "research.md"),
+            repositories=[
+                RepositoryPointer(
+                    alias=item.alias,
+                    machine=item.machine,
+                    host=(
                         repository_access[item.alias].host
                         if repository_access and item.alias in repository_access
                         else self.manifest.machine_map[item.machine].host
                     ),
-                    "path": item.path,
-                }
+                    path=item.path,
+                )
                 for item in self.manifest.repositories
                 if item.alias in self.manifest.project.truth_scope
             ],
-        }
+        )
 
 
 def validate_work_patch(patch: Patch) -> None:

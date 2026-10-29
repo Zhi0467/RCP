@@ -76,6 +76,7 @@ from rcp.runs.session_master import (
     stage_session_master,
 )
 from rcp.runs.shared import (
+    _protected_run_stage_roots,
     _read_local_workspace_file,
     _remove_local_tree,
     _safe_stage_name,
@@ -1341,6 +1342,33 @@ def _chat_stage_name(
         project_identity = f"canonical-workspace\0{service.history.workspace.location}"
     project_key = hashlib.sha256(project_identity.encode()).hexdigest()[:16]
     return _safe_stage_name(f"chat-{project_key}-{request.chat_id}")
+
+
+def open_remote_conversation_stage(
+    execution_host: str,
+    stage_name: str,
+    execution: AgentTaskExecution | None,
+    *,
+    saved_stage: bool,
+) -> RemoteRunStage:
+    """Open or attach the conversation's exact stage and checkpoint its binding."""
+    if saved_stage:
+        root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
+        stage = RemoteRunStage(execution_host).attach(root)
+    else:
+        stage = RemoteRunStage(execution_host).open(
+            stage_name,
+            reuse=True,
+            protected_roots=_protected_run_stage_roots(
+                execution.store if execution is not None else None,
+                execution_host,
+            ),
+        )
+    stage.touch()
+    assert stage.root is not None
+    if execution is not None:
+        execution.checkpoint_stage(execution_host, str(stage.root))
+    return stage
 
 
 def _validated_remote_chat_resume_stage(

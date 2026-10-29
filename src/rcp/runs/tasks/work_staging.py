@@ -19,7 +19,7 @@ from typing import TypeVar
 from rcp.agents.context import ChatContext
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
-from rcp.attachments import ChatAttachmentStore
+from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.runs.chat import (
@@ -315,26 +315,16 @@ async def stage_work_turn(
             label=skill_bundle_label(skill_selection),
             reuse_existing=True,
         )
-        if bool(request.attachment_batch_id) != bool(request.attachments):
-            raise ValueError("The chat task has incomplete attachment batch metadata.")
-        attachment_pointers = (
-            ChatAttachmentStore(data_dir / "chat-attachments").stage(
-                request.attachment_batch_id,
-                request.attachments,
-                local_stage=local_stage,
-                remote_stage=remote_stage,
-            )
-            if request.attachment_batch_id
-            else []
-        )
-        if artifacts is not None and artifacts.pointer is not None:
-            attachment_pointers.append(artifacts.pointer)
-        read_dirs.extend(
-            path
-            for path in dict.fromkeys(
-                Path(str(item["path"])).parent for item in attachment_pointers
-            )
-            if path not in read_dirs
+        attachment_pointers = stage_turn_attachments(
+            data_dir,
+            request.attachment_batch_id,
+            request.attachments,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            read_dirs=read_dirs,
+            additional=[artifacts.pointer]
+            if artifacts is not None and artifacts.pointer is not None
+            else None,
         )
         repositories: list[dict[str, object]] = [
             {"alias": item.alias, "host": item.host, "path": item.path}

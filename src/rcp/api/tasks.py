@@ -1378,11 +1378,6 @@ def _validated_task_request(
     client_request.pop("attachment_batch_id", None)
     if kind == "paper_coach":
         coach_request = CoachRequest.model_validate(client_request)
-        if coach_request.attachment_scope_id is not None:
-            try:
-                uuid.UUID(coach_request.attachment_scope_id)
-            except ValueError as exc:
-                raise ValueError("attachment_scope_id must be a UUID") from exc
         return _resolved_coach_request(service, coach_request)
 
     # Resolved compute metadata is a server-owned admission snapshot. A client

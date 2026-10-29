@@ -5302,7 +5302,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_artifact_files(self, _scope_id):
             return []
 
-    monkeypatch.setattr("rcp.runs.tasks.discuss.RemoteRunStage", RecordingRemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RecordingRemoteStage)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="Remote continuation."), AgentEvent(event="done")]
     )

@@ -3913,6 +3913,8 @@ export interface ConsolidationSchedule {
 
 export interface ConsolidationInboxItem {
   run_id: string;
+  graph_target: GraphTargetRef;
+  graph_branch_name: string;
   kind: "report" | "failure";
   occurrence_date: string;
   created_at: string;
@@ -3936,6 +3938,7 @@ export type EvidenceFlagKind =
 
 export interface EvidenceFlag {
   flag_id: string;
+  target: string;
   run_id: string | null;
   occurrence_date: string | null;
   evidence_id: string;

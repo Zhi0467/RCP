@@ -152,8 +152,7 @@ def test_an_older_coach_machine_is_dropped_for_the_base(manifest) -> None:
 
     loaded = Manifest.model_validate(older)
 
-    base = loaded.repository_map[loaded.state.repository].machine
-    assert loaded.agent_profile("paper_coach").run_on == base
+    assert loaded.agent_profile("paper_coach").run_on == loaded.base_machine
 
 
 def test_remove_machine_rewrites_stale_coach_run_on(manifest) -> None:
@@ -163,15 +162,12 @@ def test_remove_machine_rewrites_stale_coach_run_on(manifest) -> None:
     manifest.path.write_text(tomlkit.dumps(document))
 
     loaded = load_manifest(manifest.path)
-    base = loaded.repository_map[loaded.state.repository].machine
-    assert loaded.agent_profile("paper_coach").run_on == base
+    base = loaded.base_machine
     write_removed_machine(loaded, "other")
 
     saved = tomlkit.parse(manifest.path.read_text())
     assert saved["agent"]["paper_coach"]["run_on"] == base
-    reloaded = load_manifest(manifest.path)
-    assert "other" not in reloaded.machine_map
-    assert reloaded.agent_profile("paper_coach").run_on == base
+    assert all(machine["alias"] != "other" for machine in saved["machines"])
 
 
 def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:

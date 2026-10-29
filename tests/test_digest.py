@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 
 from rcp.core.models import Decision, Edge, GatedCard, GraphState, Patch, Proposal
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import DigestProjector, _merged_revision, assemble_digest, attribution, graph_event
 from rcp.history.delta import semantic_delta
 from rcp.history.engine import ProjectHistoryEngine
@@ -274,9 +274,14 @@ def test_attribution_precedence_and_missing_task(tmp_path):
     chat = attribution(store, "p", _patch(task_id="task"))
     assert (chat["source_kind"], chat["actor_user_id"]) == ("chat", human.user_id)
     store.consolidation_run_for_operation = lambda _: SimpleNamespace(
-        operation_id="task", run_id="run", report_artifact_id="report"
+        operation_id="task",
+        run_id="run",
+        report_artifact_id="report",
+        graph_target=GraphTargetRef(kind="branch", branch_id="branch"),
     )
-    assert attribution(store, "p", _patch(task_id="task"))["source_kind"] == "consolidation"
+    consolidated = attribution(store, "p", _patch(task_id="task"))
+    assert consolidated["source_kind"] == "consolidation"
+    assert "/targets/branch%3Abranch/" in consolidated["deep_link"]
     merge = SimpleNamespace(episode_id="episode")
     assert (
         attribution(store, "p", _patch(task_id="task").model_copy(update={"branch_merge": merge}))[

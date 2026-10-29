@@ -147,7 +147,7 @@ async def _folder_ops(request: Request, project_id: str, folder: str, op) -> Rec
     holds exactly those files at those paths; a concurrent move or addition refuses it."""
     live = get_paper_live(request)
     tree = await live.snapshot(project_id)
-    files = [file for file in tree.files if file.path.startswith(f"{folder}/")]
+    files = tree.files_under(folder)
     if not files:
         raise HTTPException(404, "Paper folder not found")
     checks = [
@@ -278,7 +278,7 @@ async def raw_file(
 @router.get(_PREFIX + "/folders/archive")
 async def folder_archive(path: str, request: Request, project_id: str = _member):
     tree = await get_paper_live(request).snapshot(project_id)
-    files = [file for file in tree.files if file.path.startswith(f"{path}/")]
+    files = tree.files_under(path)
     if not files:
         raise HTTPException(404, "Paper folder not found")
     name = PurePosixPath(path).name
@@ -289,9 +289,7 @@ async def folder_archive(path: str, request: Request, project_id: str = _member)
             for file in files:
                 archive.writestr(
                     f"{name}/{file.path[len(path) + 1 :]}",
-                    (file.text or "").encode()
-                    if file.kind == "text"
-                    else tree._blobs[file.blob_sha256 or ""],
+                    tree.file_bytes(file),
                 )
         return buffer.getvalue()
 

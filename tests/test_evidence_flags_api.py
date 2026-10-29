@@ -80,8 +80,25 @@ def test_flags_get_and_dismiss_disposition(flagged):
     assert client.post(f"{base}/evidence-flags/missing/dismiss", json={}).status_code == 404
 
 
-def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
+@pytest.mark.parametrize("on_branch", [False, True])
+def test_address_admits_one_ordinary_work_turn_and_replays(flagged, on_branch):
     app, client, store, project, flag = flagged
+    branch_id = str(uuid.uuid4()) if on_branch else None
+    if branch_id:
+        fork = client.post(
+            f"/api/projects/{project}/graph-refs",
+            json={
+                "request_id": branch_id,
+                "at": f"main@{app.state.service.history.state().revision}",
+                "name": "flag-review",
+            },
+        )
+        assert fork.status_code == 201, fork.text
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE evidence_flags SET target=? WHERE flag_id=?",
+                (branch_id, flag["flag_id"]),
+            )
     launches = []
     # The turn settles the flag; hold it until both requests answered so the
     # replay sees the same flag state as the admission.
@@ -101,7 +118,9 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
             pool.map(lambda _: client.post(url, json={"request_id": request_id}), range(2))
         )
     answered.set()
-    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.status_code for response in responses] == [200, 200], [
+        r.text for r in responses
+    ]
     result = responses[0].json()
     assert responses[1].json() == result
     task = wait_for_task(store, result["operation_id"], expect="succeeded")
@@ -115,7 +134,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     assert task.request["chat_id"] == result["chat_id"]
     assert task.authorized_by.user_id == store.local_owner.user_id
     assert task.dispatch_authority.task_contract == "work_auto"
-    assert task.graph_target.branch_id is None
+    assert task.graph_target.branch_id == branch_id
     assert len(launches) == 1
     # The finished turn closed the flag; only the original request still replays.
     assert client.get(base).json()["evidence_flags"] == []
@@ -490,7 +509,17 @@ def test_batch_one_turn_atomic_binding_settlement_and_replay(flagged, outcome):
 
 
 @pytest.mark.parametrize(
-    "invalid", ["empty", "duplicate", "over_cap", "dismissed", "notice", "missing", "retired"]
+    "invalid",
+    [
+        "empty",
+        "duplicate",
+        "over_cap",
+        "dismissed",
+        "notice",
+        "missing",
+        "retired",
+        "mixed_targets",
+    ],
 )
 def test_batch_refuses_invalid_selection_without_partial_admission(flagged, invalid):
     from rcp.limits import EVIDENCE_FLAG_ADDRESS_BATCH_MAX
@@ -509,6 +538,10 @@ def test_batch_refuses_invalid_selection_without_partial_admission(flagged, inva
             if invalid == "dismissed":
                 connection.execute(
                     "UPDATE evidence_flags SET state='dismissed' WHERE flag_id=?", (ids[1],)
+                )
+            elif invalid == "mixed_targets":
+                connection.execute(
+                    "UPDATE evidence_flags SET target='another-branch' WHERE flag_id=?", (ids[1],)
                 )
             elif invalid == "notice":
                 connection.execute(

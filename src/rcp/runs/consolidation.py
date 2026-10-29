@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import ApplyCommandRequest, CommandResponse
 from rcp.core.authority import AgentAuthorizerDeparted
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history.queries import HeadSpec
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
 from rcp.runs.evidence_flag_commands import hold_consolidation_additions
@@ -33,6 +33,7 @@ CONSOLIDATION_PRELAUNCH_ERRORS = frozenset(
         "consolidation_authorizer_departed",
         "consolidation_project_unavailable",
         "consolidation_launch_binding_invalid",
+        "consolidation_target_unavailable",
     }
 )
 
@@ -54,12 +55,12 @@ def consolidation_covered_head(
     run = execution.store.consolidation_run_for_operation(execution.operation_id)
     if run is None:
         return None
-    schedule = execution.store.consolidation_schedule(run.project_id)
-    if schedule is None or schedule.covered_head is None:
+    coverage = execution.store.consolidation_target(run.project_id, run.target)
+    if coverage is None or coverage.covered_head is None:
         return None
     return service.history_engine.resolve(
-        HeadSpec(target=GraphTargetRef(), revision=schedule.covered_head),
-        default_target=GraphTargetRef(),
+        HeadSpec(target=run.graph_target, revision=coverage.covered_head),
+        default_target=run.graph_target,
     )
 
 
@@ -86,11 +87,15 @@ def require_consolidation_launch(store: AppStore, task: AgentTaskRecord) -> None
         store.require_project_accepts_new_work(task.project_id)
     except ValueError as exc:
         raise ValueError("consolidation_project_unavailable") from exc
+    if run.graph_target.kind == "branch":
+        branch = store.graph_branch(task.project_id, run.target)
+        if branch is None or branch.archived:
+            raise ValueError("consolidation_target_unavailable")
     if (
         task.kind != "project_chat"
         or task.request.get("mode") != "work"
         or task.request.get("trigger") != "schedule"
-        or task.graph_target.kind != "main"
+        or task.graph_target != run.graph_target
         or task.native_session_id is not None
         or task.dispatch_authority is None
         or task.dispatch_authority.task_contract != "work_auto"

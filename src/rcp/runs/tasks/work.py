@@ -500,9 +500,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         work=_work_launch_values(turn),
     )
     if turn.graph_read_scope is not None:
-        values["branches"] = [
-            item.model_dump(mode="json") for item in turn.graph_read_scope.branches
-        ]
+        values["branches"] = turn.graph_read_scope.branch_values()
     return values
 
 

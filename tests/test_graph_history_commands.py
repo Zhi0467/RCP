@@ -335,7 +335,7 @@ def test_branch_names_resolve_at_command_time(history_query, monkeypatch, verb):
         assert refused.result["code"] == "graph_history_query_invalid"
 
 
-def test_branch_inventory_respects_fork_read_scope(history_query, monkeypatch):
+def test_branch_inventory_respects_fork_read_scope(history_query):
     from .test_history_forks import fork_metadata
 
     service, _, parent = history_query
@@ -346,22 +346,15 @@ def test_branch_inventory_respects_fork_read_scope(history_query, monkeypatch):
         fork.branch_id: "my-fork",
         sibling.branch_id: "sibling",
     }
-    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: names)
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(
-        service.paper.store,
-        "graph_branches",
-        lambda project: [
-            SimpleNamespace(
-                branch_id=branch.branch_id,
-                name=names[branch.branch_id],
-                owner_episode_id=branch.branch_metadata().episode_id,
-                parent_head=branch.branch_metadata().effective_parent_head,
-            )
-            for branch in (parent, fork, sibling)
-        ],
-    )
+    for branch in (parent, fork, sibling):
+        service.paper.store.create_graph_branch(
+            project_id=service._project_id,
+            branch_id=branch.branch_id,
+            owner_episode_id=None,
+            parent_head=branch.branch_metadata().effective_parent_head,
+            created_by="human:test",
+            name=names[branch.branch_id],
+        )
     scope = GraphReadScope.resolve("project", fork, store=service.paper.store)
     assert {item.id for item in scope.branches} == {parent.branch_id, fork.branch_id}
     assert (

@@ -393,9 +393,17 @@ def remove_project_machine(
 ) -> dict[str, object]:
     """Drop a machine no repository or agent profile uses; its space card stays."""
 
+    with MACHINE_ATTACHMENT_LOCK:
+        return detach_project_machine(project_display_cache, project_id, machine_alias)
+
+
+def detach_project_machine(
+    project_display_cache: ProjectDisplayCache, project_id: str, machine_alias: str
+) -> dict[str, object]:
+    """Detach under the caller's write fence and machine attachment lock."""
+
     try:
-        with MACHINE_ATTACHMENT_LOCK:
-            return project_display_cache.remove_machine(project_id, machine_alias)
+        return project_display_cache.remove_machine(project_id, machine_alias)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:

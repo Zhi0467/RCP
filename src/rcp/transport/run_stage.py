@@ -26,6 +26,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.rcp_home import rcp_temp_dir
+from rcp.regular_tree_reader import RegularTree
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport import remote_stage_root, state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
@@ -1049,17 +1050,13 @@ finally:
     def read_workspace_directory(
         self,
         name: str,
-        destination: Path,
         *,
+        max_entries: int,
         max_files: int,
         max_file_bytes: int,
         max_total_bytes: int,
-    ) -> None:
-        """Copy a bounded regular-file tree into an empty local directory.
-
-        Refuse symlinks at every remote component. Directory count is also
-        bounded by four times max_files, matching nested changes-tree traversal.
-        """
+    ) -> RegularTree:
+        """Read a bounded regular-file tree with the same traversal as local reads."""
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         relative_directory = PurePosixPath(name)
@@ -1069,17 +1066,17 @@ finally:
             or ".." in relative_directory.parts
         ):
             raise ValueError("workspace tree name must be a safe relative directory")
-        if min(max_files, max_file_bytes, max_total_bytes) < 0:
-            raise ValueError("workspace tree limits must not be negative")
-        if destination.is_symlink() or (destination.exists() and any(destination.iterdir())):
-            raise ValueError("workspace tree destination must be an empty directory")
+        script = (Path(__file__).parent.parent / "regular_tree_reader.py").read_text(
+            encoding="utf-8"
+        )
         result = self._ssh_bytes(
             [
                 "python3",
                 "-c",
-                _remote_script("remote_workspace_tree.py"),
+                script,
                 str(self.root),
-                str(relative_directory),
+                str(PurePosixPath("workspace") / relative_directory),
+                str(max_entries),
                 str(max_files),
                 str(max_file_bytes),
                 str(max_total_bytes),
@@ -1089,25 +1086,17 @@ finally:
             raise ValueError(result.stderr.decode("utf-8", errors="replace").strip())
         if result.returncode:
             raise _ssh_failure(result, "could not read remote workspace tree")
-        files: dict[PurePosixPath, bytes] = {}
-        total = 0
         try:
-            for relative, encoded in json.loads(result.stdout):
-                path = PurePosixPath(relative)
-                if path.is_absolute() or not path.parts or ".." in path.parts or path in files:
-                    raise ValueError("invalid workspace tree path")
-                data = base64.b64decode(encoded, validate=True)
-                total += len(data)
-                if len(files) >= max_files or len(data) > max_file_bytes or total > max_total_bytes:
-                    raise ValueError("workspace tree exceeds limit")
-                files[path] = data
-        except (TypeError, ValueError) as exc:
+            values = json.loads(result.stdout)
+            return RegularTree(
+                files={
+                    relative: base64.b64decode(encoded, validate=True)
+                    for relative, encoded in values["files"]
+                },
+                directories=values["directories"],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
             raise StateUnavailable("remote workspace tree returned invalid data") from exc
-        destination.mkdir(parents=True, exist_ok=True)
-        for relative, data in files.items():
-            target = destination / str(relative)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
 
     def read_live_file(self, path: str, *, max_bytes: int, tail: bool = False) -> bytes:
         """Use the same bounded, symlink-refusing reader as local artifact reads."""

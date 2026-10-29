@@ -18,6 +18,36 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     ).fetchall()
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
+    if any(
+        row[1] == "target" for row in connection.execute("PRAGMA table_info(consolidation_runs)")
+    ):
+        from rcp.storage.consolidation import migrate_consolidation
+
+        columns = [
+            row[1]
+            for row in connection.execute("PRAGMA table_info(consolidation_runs)")
+            if row[1] != "target"
+        ]
+        names = ",".join(columns)
+        connection.execute(
+            f"CREATE TEMP TABLE old_consolidation_runs AS SELECT {names} FROM consolidation_runs WHERE target='main'"
+        )
+        connection.execute("DROP TABLE consolidation_runs")
+        migrate_consolidation(connection)
+        connection.execute(
+            f"INSERT INTO consolidation_runs ({names}) SELECT * FROM old_consolidation_runs"
+        )
+        connection.execute("DROP TABLE old_consolidation_runs")
+        connection.execute("ALTER TABLE consolidation_schedules ADD COLUMN covered_head INTEGER")
+        connection.execute(
+            "UPDATE consolidation_schedules SET covered_head=(SELECT covered_head FROM consolidation_targets t WHERE t.project_id=consolidation_schedules.project_id AND t.target='main')"
+        )
+        connection.execute("DROP TABLE consolidation_targets")
+        connection.execute("DROP INDEX evidence_flags_live")
+        connection.execute("ALTER TABLE evidence_flags DROP COLUMN target")
+        connection.execute(
+            "CREATE UNIQUE INDEX evidence_flags_live ON evidence_flags(project_id,evidence_id,kind) WHERE state IN ('open','addressing')"
+        )
     if any(row[1] == "self_named" for row in connection.execute("PRAGMA table_info(chat_display)")):
         connection.execute("ALTER TABLE chat_display DROP COLUMN self_named")
     connection.execute("DROP TABLE IF EXISTS research_view_pins")

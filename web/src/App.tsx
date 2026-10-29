@@ -4322,16 +4322,14 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
-  // Flags are project-wide Inbox rows; only main's graph carries their node marks.
+  // Evidence findings and node marks belong to the graph being viewed.
   const flagRows = evidenceFlagRows(
     consolidation?.evidence_flags ?? [],
     graph.nodes,
     project.repositories,
-    graphTarget.kind === "main",
+    graphTarget.kind === "main" ? "main" : graphTarget.branch_id,
   );
-  const flaggedNodeIds = new Set(
-    graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],
-  );
+  const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =

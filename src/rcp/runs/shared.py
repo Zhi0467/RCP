@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.context import RepositoryPointer
+from rcp.agents.context import CoachContext
+from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -770,6 +771,7 @@ class _ProviderOutcome:
     """
 
     session_id: str | None = None
+    runtime_id: str | None = None
     completed: bool = False
     failed: bool = False
     paused: bool = False
@@ -1073,6 +1075,8 @@ async def _stream_agent_events(
                 # Background consumes these. It durably checkpoints the runtime
                 # before the launcher writes the prompt, and records why an
                 # earlier candidate was passed over rather than showing it.
+                if event.event == "runtime":
+                    outcome.runtime_id = event.text
                 if event.event == "remote_result_pending":
                     outcome.remote_result_pending = True
                 yield _sse(event)
@@ -1266,7 +1270,7 @@ def stage_branch_read_context(
     parent_ref = (
         "main"
         if parent.target.kind == "main"
-        else f"branch:{names.get(parent.target.branch_id or '', parent.target.branch_id)}"
+        else f"branch:{branch_label(parent.target.branch_id, names)}"
     )
     content = (
         service.history_engine.state_at(parent).model_dump_json(indent=2)
@@ -1279,7 +1283,7 @@ def stage_branch_read_context(
     )
     return {
         "parent_graph_path": path,
-        "branch_name": names.get(metadata.branch_id, metadata.branch_id),
+        "branch_name": branch_label(metadata.branch_id, names),
         "branch_parent": f"{parent_ref}@{parent.revision}",
         "shared_repositories": [
             item.model_copy(update={"path": service.manifest.repository_map[item.alias].path})
@@ -1288,14 +1292,17 @@ def stage_branch_read_context(
     }
 
 
-def _execution_host_repositories(
-    repositories: list[RepositoryPointer], execution_machine: str
-) -> list[RepositoryPointer]:
-    """Resolve repository access from the execution machine."""
-    resolved = []
-    for repository in repositories:
+def _stage_context_paths(
+    context: RunContext | ChatContext | CoachContext,
+    service: ProjectService,
+    stage: RemoteRunStage,
+    execution_machine: str,
+) -> dict[str, object]:
+    """Repository and materialized-state pointers a remote agent can open."""
+    repositories = []
+    for repository in context.repositories:
         if repository.machine == execution_machine:
-            resolved.append(repository.model_copy(update={"host": ""}))
+            repositories.append(repository.model_copy(update={"host": ""}))
         elif not repository.host:
             raise StateUnavailable(
                 f"Repository {repository.alias!r} is on {repository.machine!r}, which has no "
@@ -1303,38 +1310,19 @@ def _execution_host_repositories(
                 "agent on that repository's machine or configure a reachable host."
             )
         else:
-            resolved.append(repository)
-    return resolved
-
-
-def _execution_host_state_path(
-    service: ProjectService, local_path: str | Path, execution_machine: str
-) -> str:
-    """Map a materialized state pointer to its canonical execution-host path."""
+            repositories.append(repository)
+    updates: dict[str, object] = {"repositories": repositories}
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     if state_repository.machine != execution_machine:
         raise StateUnavailable(
             "Graph-writing agents must run on the canonical state machine; "
             "cross-machine state staging is forbidden."
         )
-    relative_path = Path(local_path).relative_to(service.manifest.research_dir)
-    return str(PurePosixPath(state_repository.path) / ".research" / relative_path)
-
-
-def _stage_context_paths(
-    context: RunContext | ChatContext,
-    service: ProjectService,
-    stage: RemoteRunStage,
-    execution_machine: str,
-) -> dict[str, object]:
-    """Repository and materialized-state pointers a remote agent can open."""
-    updates: dict[str, object] = {
-        "repositories": _execution_host_repositories(context.repositories, execution_machine)
-    }
     for field in _STATE_PATH_FIELDS:
-        raw_path = getattr(context, field)
+        raw_path = getattr(context, field, None)
         if raw_path:
-            updates[field] = _execution_host_state_path(service, raw_path, execution_machine)
+            relative_path = Path(raw_path).relative_to(service.manifest.research_dir)
+            updates[field] = str(PurePosixPath(state_repository.path) / ".research" / relative_path)
     return updates
 
 

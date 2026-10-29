@@ -9,7 +9,8 @@ grants no graph authority: writes stay pinned to the run's one target
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -23,6 +24,10 @@ if TYPE_CHECKING:
 
 GraphHistoryVerb = Literal["graph_diff", "graph_log"]
 GRAPH_HISTORY_VERBS: frozenset[GraphHistoryVerb] = frozenset(("graph_diff", "graph_log"))
+
+
+def branch_label(branch_id: str | None, names: Mapping[str, str]) -> str:
+    return "main" if branch_id is None else names.get(branch_id, branch_id)
 
 
 class ReadableBranch(BaseModel):
@@ -75,16 +80,15 @@ class GraphReadScope(BaseModel):
             ReadableBranch(
                 name=branch.name,
                 id=branch.branch_id,
-                parent="main"
-                if branch.parent_head.target.kind == "main"
-                else names.get(
-                    branch.parent_head.target.branch_id or "", branch.parent_head.target.key
-                ),
+                parent=branch_label(branch.parent_head.target.branch_id, names),
             )
             for branch in records
             if scope.readable(project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id))
         ]
         return scope.model_copy(update={"branches": tuple(branches)})
+
+    def branch_values(self) -> list[dict[str, Any]]:
+        return [branch.model_dump(mode="json") for branch in self.branches]
 
     @model_validator(mode="after")
     def validate_group_project(self) -> GraphReadScope:

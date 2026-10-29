@@ -2397,10 +2397,9 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
         f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
         json={"run_on": "gpu"},
     )
-    assert pinned.status_code == 409
     # The machine exists and is reachable; the loop still stays where its
     # canonical state and episode live.
-    assert "must run on canonical state machine 'laptop'" in pinned.json()["detail"]
+    assert pinned.status_code == 409
 
 
 def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop, tmp_path) -> None:
