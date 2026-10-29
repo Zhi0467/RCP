@@ -142,7 +142,7 @@ def work_ask_authorized(execution: AgentTaskExecution | None) -> bool:
                 return False
             episode_id = episode.continues_episode_id
         return episode_id is None
-    return authority.scope.patch_kind == "work" and bool(authority.scope.chat_id)
+    return authority.is_work_chat
 
 
 def discuss_ask_authorized(execution: AgentTaskExecution | None) -> bool:
@@ -155,10 +155,7 @@ def discuss_ask_authorized(execution: AgentTaskExecution | None) -> bool:
     authority = task.dispatch_authority
     return bool(
         authority is not None
-        and authority.profile == "ordinary"
-        and authority.task_contract == "discuss"
-        and authority.scope.patch_kind is None
-        and authority.scope.chat_id
+        and authority.is_discuss_chat
         and task.request.get("mode") == "discuss"
         and task.authorized_by is not None
         and task.episode_id is None
@@ -570,7 +567,8 @@ def work_command_handler(
         return WorkCommandHandler(
             execution,
             None,
-            frozenset({"validate", "apply", "lesson", "flag", "bulletin"})
+            frozenset({"validate", "apply", "flag", "bulletin"})
+            | ({"lesson"} if lesson_actions else set())
             | (graph_read_scope.verbs if graph_read_scope else frozenset()),
             consolidation_apply,
             service,
@@ -581,6 +579,8 @@ def work_command_handler(
     from rcp.runs.agent_names import resolve_agent_name_state
 
     verbs = {"validate"}
+    if lesson_actions:
+        verbs.add("lesson")
     if resolve_agent_name_state(execution).get("can_self_name"):
         verbs.add("name")
     if graph_read_scope is not None:
@@ -593,10 +593,9 @@ def work_command_handler(
             task is not None
             and task.dispatch_authority is not None
             and task.dispatch_authority.task_contract == "work_auto"
+            and execution.store.bulletin_enabled_for_task(execution.operation_id)
         ):
-            verbs.add("lesson")
-            if execution.store.bulletin_enabled_for_task(execution.operation_id):
-                verbs.add("bulletin")
+            verbs.add("bulletin")
     if work_ask_authorized(execution):
         verbs.add("ask")
     if work_experiment_allowed(execution):

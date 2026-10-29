@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
 
@@ -300,7 +301,7 @@ def test_paused_run_settles_commits_and_releases_chat_and_next_occurrence(runtim
     assert [entry["revision"] for entry in outcome.applied_revisions] == [applied.applied_revision]
     assert runtime.store.consolidation_schedule(run.project_id).covered_head == covered_head
 
-    ordinary = runtime.poller._task(runtime.schedule, runtime.service)
+    ordinary = runtime.poller._task(runtime.schedule, runtime.service, "main", "main")
     ordinary = ordinary.model_copy(update={"request": {**ordinary.request, "trigger": "human"}})
     ordinary = runtime.store.create_agent_task(ordinary)
     assert ordinary.request["chat_id"] == task.request["chat_id"]
@@ -470,7 +471,10 @@ def test_restore_detachment_cannot_be_reclassified_as_report(runtime):
 
 def test_scheduled_chat_overlap_keeps_occurrence_owed(runtime):
     pending = runtime.poller._task(
-        runtime.schedule, runtime.app.state.catalog.open(runtime.schedule.project_id)
+        runtime.schedule,
+        runtime.app.state.catalog.open(runtime.schedule.project_id),
+        "main",
+        "main",
     )
     pending = pending.model_copy(update={"request": {**pending.request, "trigger": "human"}})
     runtime.store.create_agent_task(pending)
@@ -484,7 +488,7 @@ def test_scheduled_chat_overlap_keeps_occurrence_owed(runtime):
 
 
 def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
-    pending = runtime.poller._task(runtime.schedule, runtime.service)
+    pending = runtime.poller._task(runtime.schedule, runtime.service, "main", "main")
     pending = pending.model_copy(update={"request": {**pending.request, "trigger": "human"}})
     runtime.store.create_agent_task(pending)
     runtime.store.mark_agent_task_running(pending.operation_id)
@@ -638,7 +642,7 @@ def test_keyed_apply_failure_requires_canonical_commit_before_success(
 
 def test_consolidation_query_baseline_is_coverage_not_session_observation():
     from rcp.background import AgentTaskExecution
-    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+    from rcp.core.transition_models import GraphHeadRef
     from rcp.runs.consolidation import consolidation_covered_head
     from rcp.service import ProjectService
 
@@ -753,6 +757,11 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
     changed = _active_branch(runtime, "changed")
     fresh = _active_branch(runtime, "fresh", changed=False)
     unchanged = _active_branch(runtime, "unchanged")
+    archived = _active_branch(runtime, "archived")
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_branches SET archived=1 WHERE branch_id=?", (archived.branch_id,)
+        )
     runtime.store.ensure_consolidation_target(
         runtime.schedule, target=unchanged.branch_id, covered_head=unchanged.state().revision
     )
@@ -771,14 +780,9 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
         assert coverage.covered_head == branch.state().revision
         assert coverage.skipped_dates
 
-
-def test_archived_branch_never_runs(runtime):
-    branch = _active_branch(runtime, "archived")
-    with runtime.store.connection() as conn:
-        conn.execute("UPDATE graph_branches SET archived=1 WHERE branch_id=?", (branch.branch_id,))
-    runtime.poller.poll_once()
-    assert [run.target for run in runtime.store.consolidation_runs()] == ["main"]
-    assert runtime.store.consolidation_target(runtime.schedule.project_id, branch.branch_id) is None
+    assert (
+        runtime.store.consolidation_target(runtime.schedule.project_id, archived.branch_id) is None
+    )
 
 
 def test_target_coverage_settles_independently(runtime):

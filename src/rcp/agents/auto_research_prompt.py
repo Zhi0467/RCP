@@ -115,6 +115,7 @@ def _command_invocations(
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
     role: Literal["orchestrator", "worker"] = "orchestrator",
+    lesson_actions: tuple[str, ...] = (),
 ) -> str:
     """Refresh the complete callable surface and its turn-bound command prefix."""
 
@@ -147,7 +148,7 @@ def _command_invocations(
         "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
-        "lesson": lesson_usages(("add",)),
+        "lesson": lesson_usages(lesson_actions),
         "bulletin": bulletin_usages(turn_artifacts=False),
         "name": (name_usage(),),
     }
@@ -259,10 +260,11 @@ def _auto_research_commands(
     command_client: str,
     child_profiles: dict[str, dict[str, dict[str, list[str]]]],
     allowed_verbs: tuple[CommandVerb, ...],
+    lesson_actions: tuple[str, ...] = (),
 ) -> str:
     """Explain operational semantics once when the native session starts."""
 
-    return f"""{_command_invocations(command_client, allowed_verbs)}
+    return f"""{_command_invocations(command_client, allowed_verbs, lesson_actions=lesson_actions)}
 - `patch.json`, setup seeds, worker instructions, and optional Experiment goals must be direct
   regular UTF-8 files in this run workspace, never a nested path or symlink. Write one concise executable worker
   assignment or Experiment goal, then pass its filename. A supplied goal becomes the child
@@ -522,6 +524,7 @@ def auto_research_orchestrator_task_contract(
     allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
+    lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
     instruction_path: str | None = None,
@@ -591,7 +594,7 @@ Worker coordination:
 - There is no blocking primitive. Continue useful independent work, send a message, or register a
   graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
 
-{_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
+{_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs, lesson_actions)}
 {_orchestrator_ask_contract(allowed_verbs)}
 {_orchestrator_stale_guidance(allowed_verbs)}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
@@ -621,6 +624,7 @@ def auto_research_worker_task_contract(
     reply_key: str,
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
+    lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     messages_path: str | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
@@ -661,7 +665,7 @@ Worker operational boundary:
   `.research` state directly, and never repeat a completed external side effect merely to improve
   graph reflection.
 
-{_command_invocations(command_client, allowed_verbs, "worker")}
+{_command_invocations(command_client, allowed_verbs, "worker", lesson_actions)}
 
 Coordination:
 - You cannot spawn, pause, resume, stop, or direct another worker, or start an episode. There is
@@ -697,6 +701,7 @@ def auto_research_orchestrator_continuation_contract(
     allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
     graph_read_scope: GraphReadScope | None = None,
+    lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
     messages_path: str | None = None,
@@ -743,7 +748,7 @@ for this continuation.
 {_decision_disposition()}
 {REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
-{_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs)}
+{_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs, lesson_actions=lesson_actions)}
 {_orchestrator_ask_contract(allowed_verbs)}
 {_orchestrator_stale_guidance(allowed_verbs)}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation. If RCP returns `resume_unavailable` for a worker, use fresh `spawn`. For a
