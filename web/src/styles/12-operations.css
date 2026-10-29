@@ -1362,6 +1362,13 @@
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+/* The select shrinks at phone width so its label never wraps mid-word. */
+.project-consolidation .project-member-actions select {
+  min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .project-consolidation::after,
