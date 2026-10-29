@@ -411,7 +411,7 @@ Every launch and finalization check uses the one roundtrip rule in the same
 module. Dumping the parsed request must reproduce the stored row. A field the
 row predates may be absent, at any depth, when it parses to its default.
 
-The [backend ownership rationale](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+The [backend ownership rationale](../../AGENTS.md#cross-cutting-implementation-rules)
 explains why named engine/owner calls do not require a plugin architecture.
 
 ## Add project and retained research
