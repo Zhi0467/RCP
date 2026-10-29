@@ -275,3 +275,33 @@ def test_setting_lookup_prefers_host_then_fallback_then_space_default(tmp_path, 
     assert store.provider_login_setting("member", "claude", "worker").setting == "shared_then_own"
     with pytest.raises(ValueError):
         store.set_provider_login_setting("member", "claude", "*", "own")
+
+
+def test_removed_own_login_can_be_replaced_without_losing_history(tmp_path):
+    store = AppStore(tmp_path / "state.sqlite3")
+    original = store.add_provider_login("claude", "worker", member_id="member", added_by="member")
+    key = LoginKey(original.provider, original.host, original.login_id)
+    store.set_provider_login_draining(key)
+    with pytest.raises(ValueError, match="already has an own login"):
+        store.add_provider_login("claude", "worker", member_id="member", added_by="member")
+    removed = store.finish_provider_login_removal(key, member_id="member")
+
+    replacement = store.add_provider_login(
+        "claude", "worker", member_id="member", added_by="member"
+    )
+
+    assert replacement.login_id != original.login_id
+    assert replacement.member_id == removed.member_id == "member"
+    assert removed.removed_at is not None
+    assert store.provider_login_state(key) == removed
+    assert store.provider_logins("claude", "worker") == [
+        store.provider_login_state(LoginKey("claude", "worker", MACHINE_LOGIN_ID)),
+        replacement,
+    ]
+    with pytest.raises(ValueError, match="already has an own login"):
+        store.add_provider_login("claude", "worker", member_id="member", added_by="member")
+    with store.connection() as connection, pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE provider_login_states SET removed_at=NULL WHERE login_id=?",
+            (original.login_id,),
+        )

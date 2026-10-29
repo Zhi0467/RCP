@@ -1061,8 +1061,13 @@ refuse explicitly; status GET is read-only. Sign-out records a new generation,
 
 ### Login state and failure
 
-One durable `(provider, host)` login row stores `signed_in`/`signed_out` and a
-generation. Provider-owned revoked-login evidence classifies `provider_auth`
+Durable `(provider, host, login_id)` login rows store `signed_in`/`signed_out` and a
+generation. The empty login id identifies the machine sign-in. An own login is
+unique per provider, host and member while `removed_at IS NULL`; removal retains
+the historical row and its member attribution, and permits a new own login.
+Assignment clocks do not publish resource versions; member login settings do.
+
+Provider-owned revoked-login evidence classifies `provider_auth`
 across turns, wakes, workers, reports, recovery and probes. Only the generation
 captured at launch can revoke the account; late failures cannot revoke a repaired
 login. Claude recognizes its remote missing-token fence and declares no unobserved

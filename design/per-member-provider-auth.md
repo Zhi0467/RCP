@@ -146,7 +146,7 @@ One storage schema migration, numbered after `consolidation_targets_v1`:
   `login_id TEXT NOT NULL DEFAULT ''`. Old rows keep `login_id = ''` and become
   each machine sign-in. New columns:
   - `member_id TEXT` (`NULL` for shared logins), with a unique index on
-    `(provider, host, member_id)` where it is set;
+    `(provider, host, member_id)` where it is set and `removed_at IS NULL`;
   - `added_by`, `added_at`;
   - `draining_since`, set when a member removes a shared login that still has
     bound work (section 3);

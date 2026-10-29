@@ -1,0 +1,70 @@
+{
+  "ambiguities": {},
+  "belief_transitions": [],
+  "config_revisions": {},
+  "edges": {},
+  "glossary": {},
+  "last_refresh_at": null,
+  "nodes": {
+    "ev/legacy-branch": {
+      "artifact_refs": [],
+      "created_rev": 2,
+      "extension_fields": {},
+      "extension_type": null,
+      "id": "ev/legacy-branch",
+      "interpretation": "",
+      "legacy_strength": null,
+      "observation": "Stored before branch records existed.",
+      "origin": "internal_run",
+      "role": "result",
+      "source_refs": [],
+      "standing": "asserted",
+      "title": "Legacy branch evidence",
+      "type": "evidence",
+      "updated_rev": 2,
+      "validity": "valid"
+    }
+  },
+  "ontology": {
+    "fields": [],
+    "relations": [],
+    "types": []
+  },
+  "project_truth_scope": [
+    "repo"
+  ],
+  "proposals": {},
+  "replay_failure": null,
+  "replay_status": "complete",
+  "revision": 2,
+  "validation_messages": [
+    {
+      "cause_chain": [],
+      "code": "internal-evidence-without-experiment",
+      "failed_invariant": null,
+      "level": "flag",
+      "message": "Evidence ev/legacy-branch has origin internal_run but no producing Experiment; review which Experiment produced this result.",
+      "operation_index": null,
+      "patch_revision": 2,
+      "related_edge_ids": [],
+      "related_node_ids": [
+        "ev/legacy-branch"
+      ],
+      "rule_id": null
+    },
+    {
+      "cause_chain": [],
+      "code": "isolated-node",
+      "failed_invariant": null,
+      "level": "flag",
+      "message": "ev/legacy-branch has no graph connections; double-check whether it relates to another node. Leaving it unconnected is fine when no real relation exists.",
+      "operation_index": null,
+      "patch_revision": 2,
+      "related_edge_ids": [],
+      "related_node_ids": [
+        "ev/legacy-branch"
+      ],
+      "rule_id": null
+    }
+  ]
+}
