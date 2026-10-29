@@ -295,8 +295,9 @@ without rebuilding. Historical complete asset sets remain promotable. A partial
 supervisor pair causes refusal. Installation requires supervisor assets.
 Promotion also refuses without a passing qualification receipt. Each receipt
 entry is one [update rehearsal](#application-boundary-and-local-checkpoint) on
-copied team data. It must report `ready` and name the SHA-256 of this build's
-`manifest.sha256`. The receipt names the desktop candidate run, which must be
+copied team data. It holds only its status, which must be `ready`, and the
+SHA-256 of this build's `manifest.sha256`. The receipt is public, so any other
+field refuses. It names the desktop candidate run, which must be
 the run promotion publishes. The CI gates, including the browser journey, are
 already implied: a `build/<N>` exists only after they pass. **Why:** 0.4.35
 passed CI but broke on real records.

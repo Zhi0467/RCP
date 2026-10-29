@@ -141,7 +141,16 @@ def test_promotion_refuses_invalid_tag() -> None:
 
 @pytest.mark.parametrize(
     "change",
-    [None, "another build", "refused", "no rehearsal", "untested app", "no app"],
+    [
+        None,
+        "another build",
+        "refused",
+        "warnings",
+        "extra key",
+        "no rehearsal",
+        "untested app",
+        "no app",
+    ],
 )
 def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
     tmp_path: Path, change: str | None
@@ -149,13 +158,21 @@ def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
     (tmp_path / "a.whl").write_bytes(b"wheel")
     manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
     digest = release_build._digest(manifest)
-    rehearsal = {"manifest_sha256": digest, "result": {"version": 1, "status": "ready"}}
-    receipt = {"version": 1, "desktop_candidate_run": "77", "rehearsals": [rehearsal, rehearsal]}
+    rehearsal = {"manifest_sha256": digest, "status": "ready"}
+    receipt: dict[str, object] = {
+        "version": 1,
+        "desktop_candidate_run": "77",
+        "rehearsals": [rehearsal, rehearsal],
+    }
     run = "77"
     if change == "another build":
         receipt["rehearsals"] = [rehearsal, {**rehearsal, "manifest_sha256": "0" * 64}]
     elif change == "refused":
-        receipt["rehearsals"] = [rehearsal, {**rehearsal, "result": {"status": "refused"}}]
+        receipt["rehearsals"] = [rehearsal, {**rehearsal, "status": "refused"}]
+    elif change == "warnings":
+        receipt["rehearsals"] = [rehearsal, {**rehearsal, "warnings": ["Project p omitted."]}]
+    elif change == "extra key":
+        receipt["notes"] = "Project p omitted."
     elif change == "no rehearsal":
         receipt["rehearsals"] = []
     elif change == "untested app":
