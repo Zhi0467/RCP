@@ -144,6 +144,8 @@ from rcp.runs.tasks.work import (
     _read_correction_patch,
     _record_work_graph_rejection,
     _WorkPatchFailure,
+    record_work_read_scope,
+    recorded_work_read_scope,
 )
 from rcp.runs.tasks.work_turn_runtime import (
     WorkValidatorMailboxLifecycle,
@@ -314,6 +316,12 @@ async def stream_auto_research_orchestrator_run(
         context = _orchestrator_launch_context(service, turn.request, stage)
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
+        )
+        record_work_read_scope(
+            execution,
+            resolve_read_scope(
+                service._project_id, service.manifest.repositories, context.group_context
+            ),
         )
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
@@ -588,6 +596,12 @@ async def stream_auto_research_worker_run(
         context = _auto_research_context(service, turn.request, stage)
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
+        )
+        record_work_read_scope(
+            execution,
+            resolve_read_scope(
+                service._project_id, service.manifest.repositories, context.group_context
+            ),
         )
         _prepare_turn_handoffs(execution, turn, stage)
 
@@ -2183,11 +2197,18 @@ async def _settle_worker_patch(
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
                     or write_repositories(service.history.state()),
-                    # A recorded pass has no live group; it reads only this project.
-                    read_scope=resolve_read_scope(
-                        service._project_id,
-                        service.manifest.repositories,
-                        correction.group_context if correction is not None else None,
+                    # A recorded pass has no live group; it reuses its launch's scope.
+                    read_scope=(
+                        resolve_read_scope(
+                            service._project_id,
+                            service.manifest.repositories,
+                            correction.group_context,
+                        )
+                        if correction is not None
+                        else recorded_work_read_scope(execution.store, execution.operation_id)
+                        or resolve_read_scope(
+                            service._project_id, service.manifest.repositories, None
+                        )
                     ),
                     profile=_profile,
                     source_effect_id=source_effect_id,

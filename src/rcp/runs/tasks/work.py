@@ -232,7 +232,7 @@ _WorkPatchFailure = _DeliverableFailure
 
 WORK_FINALIZATION_CONTEXT_ROLE = "work_finalization_context"
 _WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
-# The read scope a turn's Patch was stamped with, kept so Apply again stamps the same.
+# The read scope a turn launched or first applied with, so later passes stamp the same.
 _WORK_READ_SCOPE_ROLE = "work_read_scope"
 
 
@@ -639,8 +639,22 @@ def _record_work_finalization_context(
     )
 
 
+def record_work_read_scope(execution: AgentTaskExecution, read_scope: RepositoryReadScope) -> None:
+    """Keep a turn's first read scope; a later pass of the same turn reuses it."""
+
+    if recorded_work_read_scope(execution.store, execution.operation_id) is not None:
+        return
+    content = read_scope.model_dump_json()
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        _WORK_READ_SCOPE_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+
 def recorded_work_read_scope(store: AppStore, operation_id: str) -> RepositoryReadScope | None:
-    """The read scope a Work turn applied with; None when it recorded none."""
+    """The read scope a turn recorded first; None when it recorded none."""
 
     content = store.agent_task_contract(operation_id, _WORK_READ_SCOPE_ROLE)
     if content is None:
@@ -3367,13 +3381,7 @@ def _apply_work_patch(
 
     source_operation_id = source_operation_id or _work_patch_source_operation_id(execution)
     if execution is not None and read_scope is not None:
-        content = read_scope.model_dump_json()
-        execution.store.record_agent_task_contract(
-            execution.operation_id,
-            _WORK_READ_SCOPE_ROLE,
-            content,
-            hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        )
+        record_work_read_scope(execution, read_scope)
     return apply_work_patch(
         service,
         execution,
