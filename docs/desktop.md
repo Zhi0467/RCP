@@ -161,10 +161,8 @@ npm --prefix web run desktop:build
 ```
 
 Use `web/src-tauri/target/release/bundle/macos/RCP.app`. Its backend is one
-directory in `Contents/Resources/backend`. A one-file backend unpacked into a new
-temporary folder at every launch, and macOS scanned each copy, so the app and
-every terminal took 10 s or more to start. In `MacOS`, PyInstaller's bootloader
-would look for its libraries in `Contents/Frameworks`. Smoke-test its exact backend:
+directory in `Contents/Resources/backend`; `packaging/rcp_backend.spec` says why.
+Smoke-test its exact backend:
 
 ```bash
 uv run python packaging/smoke-backend.py \

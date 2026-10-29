@@ -2215,8 +2215,8 @@ def create_app(
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
                     await asyncio.to_thread(machine_power.stop)
-            # A PyInstaller one-file backend runs under a bootloader supervisor
-            # whose signal exit can skip the CLI context manager's ``finally``.
+            # A frozen backend never runs reload workers, so it removes its own
+            # metadata here in case a signal exit skips the CLI's ``finally``.
             # Source reload workers share metadata owned by the outer supervisor,
             # so they must leave it in place across worker restarts.
             if getattr(sys, "frozen", False):
