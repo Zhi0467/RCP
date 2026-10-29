@@ -65,6 +65,14 @@ TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH = 32
 # before an operator can confirm them safely.
 MEMBER_REMOVAL_PREVIEW_MAX_ITEMS = 32
 
+# Client error events written to the server log (see api/client_events.py).
+# The message is cut, never refused, so the line still lands; the per-member
+# window keeps a toast loop from flooding the log.
+CLIENT_EVENT_MESSAGE_MAX_CHARS = 500
+CLIENT_EVENT_VIEW_MAX_CHARS = 40
+CLIENT_EVENT_RATE_WINDOW_SECONDS = 60.0
+CLIENT_EVENT_RATE_MAX_EVENTS = 20
+
 # Durable canonical chat history queries and summary labels.
 CHAT_PAGE_DEFAULT_LIMIT = 50
 CHAT_PAGE_MAX_LIMIT = 200
