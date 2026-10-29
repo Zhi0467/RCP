@@ -18,6 +18,7 @@ from rcp.service import RunRequest
 from rcp.storage import AutoResearchLifecycleNoticeRecord
 from rcp.storage.models import _required_timestamp
 
+from .helpers import fake_launch_admitted
 from .test_auto_research_child_work_watchers import _deliver, _waiting_child
 from .test_auto_research_delivery import (
     _arm_completed_graph_condition,
@@ -302,7 +303,7 @@ def test_committed_task_waits_for_verify_without_poll_writes(
         )
     )
     with monkeypatch.context() as admission:
-        admission.setattr(tasks, "launch_admitted", store.agent_task)
+        fake_launch_admitted(admission, tasks)
         queued = tasks.start("project", "node_chat", request, authorized_by=fabricated_authorizer())
     _signed_out(store)
     before = store.agent_task_receipts(queued.operation_id)
@@ -348,7 +349,7 @@ def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, mon
     after_grace = _required_timestamp(store.now()) + timedelta(minutes=1)
     monkeypatch.setattr(store, "now", lambda: after_grace.isoformat())
     with monkeypatch.context() as admission:
-        admission.setattr(tasks, "launch_admitted", store.agent_task)
+        fake_launch_admitted(admission, tasks)
         operation_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
     assert operation_id is not None
     queued = store.agent_task(operation_id)

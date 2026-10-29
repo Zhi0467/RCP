@@ -4,6 +4,7 @@ import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
 import { errorMessage } from "./core/errors";
+import { reportClientEvent } from "./core/clientEvents";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
@@ -749,6 +750,9 @@ function MemberApp({
     loops: LoopOverlap;
   } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  useEffect(() => {
+    if (notice?.kind === "error") reportClientEvent("notice", notice.text);
+  }, [notice]);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
   >(null);

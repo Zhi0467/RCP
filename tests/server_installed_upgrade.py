@@ -21,6 +21,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 from datetime import datetime, timedelta
@@ -353,8 +354,29 @@ def assert_followup(fixture: dict, followup: dict) -> None:
         return
     path = f"/api/projects/{fixture['project_id']}/tasks/{followup['operation_id']}"
     with request(path, cookie=session(fixture)) as response:
-        assert json.load(response)["operation_id"] == followup["operation_id"]
+        task = json.load(response)
+    # The seed settled it; an update that re-queued or failed it did not serve it.
+    assert task["operation_id"] == followup["operation_id"], task
+    assert task["status"] == "succeeded", task
     followup["served_after_update"] = True
+
+
+def assert_quiet_service(since: float, phase: str, output: Path) -> None:
+    """Fail on an application ERROR or traceback the service journal holds for one phase.
+
+    The service logs `LEVEL logger: message` to stderr, and uvicorn logs
+    `ERROR:` lines. The phase's lines stay in the evidence either way.
+    """
+    lines = run(
+        ["journalctl", "-u", "rcp.service", "--no-pager", "-o", "cat", f"--since=@{int(since)}"]
+    ).stdout.splitlines()
+    (output / f"service-{phase}.log").write_text("\n".join(lines) + "\n")
+    unexpected = [
+        line
+        for line in lines
+        if line.startswith(("ERROR", "CRITICAL")) or line.startswith("Traceback (most recent")
+    ]
+    assert not unexpected, (phase, unexpected[:20])
 
 
 def backup() -> None:
@@ -755,6 +777,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     rejected = fixture["project_id"] if rehearses else None
     select(candidate, observe=True, reject_project=rejected)
     committed = operator("update", "--confirm-target", confirmation)
+    candidate_serving = time.time()
     update_warnings = [
         field["value"] for field in step_fields(committed) if field["name"] == "update_warning"
     ]
@@ -837,6 +860,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     )
     for _ in range(3):
         backup()
+    assert_quiet_service(candidate_serving, "candidate-serving", output)
     archives = list(destination.glob("*.tar.age"))
     receipts = list(destination.glob("*.tar.age.receipt.json"))
     assert len(archives) == 2, archives

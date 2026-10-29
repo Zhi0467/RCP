@@ -324,6 +324,7 @@ curl --fail --silent http://127.0.0.1:8421/api/health
 sudo systemctl stop rcp.service
 sudo systemctl start rcp.service
 sudo journalctl --unit=rcp.service --no-pager | grep 'operation=<operation-id>'
+sudo journalctl --unit=rcp.service --no-pager | grep 'rcp.client'
 ```
 
 When doctor reports a `recurring error` problem or a `service_log_warnings`

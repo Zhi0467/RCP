@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import sqlite3
 import stat
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Literal, Protocol, cast, get_args
@@ -992,50 +993,61 @@ async def _verify_candidate(
             return None
         return store.space_user(requested)
 
-    app = create_app(
-        data_dir=Path(overlay.data_dir),
-        trusted_principal_resolver=rehearsal_principal,
-        startup_effect_fence=fence,
-    )
-    # Own the in-process transport rather than importing a test-only client:
-    # dependency warnings must not leak into the operator's CLI status line.
-    # ASGITransport does not run lifespan; enter it explicitly for the proof.
-    reads: list[str] = []
-    results: list[CandidateProjectVerification] = []
-    async with (
-        app.router.lifespan_context(app),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://testserver",
-            follow_redirects=True,
-        ) as client,
-    ):
-        await _verify_candidate_health(client, opened)
-        reads.append("/api/health")
-        cards = await _candidate_project_cards(client, sorted(users_by_id))
-        if set(cards) != (
-            {project.project_id for project in overlay.projects} | set(overlay.excluded_project_ids)
-        ):
-            raise CandidateRehearsalRefused(
-                "Candidate project inventory omitted or substituted a project."
-            )
-        reads.append("/api/projects")
-        # Space-wide reads first serve copied caches and rows that no project open
-        # has rebuilt, then the state that opening every project leaves behind.
-        if overlay.display_caches:
-            await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
-        for project in overlay.projects:
-            headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
-            if project.capture_status == "captured":
-                results.append(await _verify_captured_project(client, project, headers, reads))
-            else:
-                results.append(_verify_unavailable_project(cards[project.project_id], project))
-        await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
-        await asyncio.to_thread(_verify_due_consolidation, app, overlay)
-    if fence.attempted_effects:
-        raise CandidateRehearsalRefused(
-            "Candidate startup attempted an effect while its fence was closed."
+    with _phase_log() as log:
+        app = create_app(
+            data_dir=Path(overlay.data_dir),
+            trusted_principal_resolver=rehearsal_principal,
+            startup_effect_fence=fence,
         )
+        # Own the in-process transport rather than importing a test-only client:
+        # dependency warnings must not leak into the operator's CLI status line.
+        # ASGITransport does not run lifespan; enter it explicitly for the proof.
+        reads: list[str] = []
+        results: list[CandidateProjectVerification] = []
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+                follow_redirects=True,
+            ) as client,
+        ):
+            log.phase = "health and inventory reads"
+            await _verify_candidate_health(client, opened)
+            reads.append("/api/health")
+            cards = await _candidate_project_cards(client, sorted(users_by_id))
+            if set(cards) != (
+                {project.project_id for project in overlay.projects}
+                | set(overlay.excluded_project_ids)
+            ):
+                raise CandidateRehearsalRefused(
+                    "Candidate project inventory omitted or substituted a project."
+                )
+            reads.append("/api/projects")
+            # Space-wide reads first serve copied caches and rows that no project open
+            # has rebuilt, then the state that opening every project leaves behind.
+            if overlay.display_caches:
+                log.phase = "space reads before projects open"
+                await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+            log.phase = "project reads"
+            for project in overlay.projects:
+                headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
+                if project.capture_status == "captured":
+                    results.append(await _verify_captured_project(client, project, headers, reads))
+                else:
+                    results.append(_verify_unavailable_project(cards[project.project_id], project))
+            log.phase = "space reads after projects open"
+            await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+            log.phase = "due consolidation"
+            await asyncio.to_thread(_verify_due_consolidation, app, overlay)
+            log.phase = "shutdown"
+        refusal = log.refusal(_captured_project_ids(overlay))
+        if refusal is not None:
+            raise CandidateRehearsalRefused(refusal)
+        if fence.attempted_effects:
+            raise CandidateRehearsalRefused(
+                "Candidate startup attempted an effect while its fence was closed."
+            )
     return CandidateRehearsalResult(
         status="verified",
         space_id=opened.space_id,
@@ -1045,6 +1057,69 @@ async def _verify_candidate(
         reads=tuple(reads),
         attempted_effects=fence.attempted_effects,
     )
+
+
+# Warnings a candidate check may log on copied data, as (logger, message
+# template). Each passes only while it names no copied project; the same
+# warning about copied state fails the check. Keep this list short.
+_EXPECTED_WARNINGS = frozenset(
+    {
+        # An uncopied project's Experiment target cannot be read on the copy.
+        ("rcp.api.index", "Unavailable %s Experiment target %s in project %s: %s"),
+    }
+)
+
+
+@contextmanager
+def _phase_log() -> Iterator[_PhaseLog]:
+    """Capture the candidate check's application records, at WARNING and worse."""
+    log = _PhaseLog()
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(log)
+    if previous > logging.WARNING:
+        root.setLevel(logging.WARNING)
+    try:
+        yield log
+    finally:
+        root.removeHandler(log)
+        root.setLevel(previous)
+
+
+class _PhaseLog(logging.Handler):
+    """Every WARNING or worse record the candidate check logs, tagged with its phase."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.phase = "startup"
+        self.records: list[tuple[str, logging.LogRecord]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append((self.phase, record))
+
+    def refusal(self, captured: set[str]) -> str | None:
+        """Name the first record that is not an expected warning about uncopied state."""
+        for phase, record in self.records:
+            message = record.getMessage()
+            if (
+                record.levelno == logging.WARNING
+                and record.exc_info is None
+                and (record.name, record.msg) in _EXPECTED_WARNINGS
+                and not any(project_id in message for project_id in captured)
+            ):
+                continue
+            error = record.exc_info[0] if record.exc_info else None
+            return (
+                f"Candidate logged {record.levelname} from {record.name} during {phase}: "
+                f"{message[:300]}" + (f" ({error.__name__})" if error is not None else "")
+            )
+        return None
+
+
+def _captured_project_ids(overlay: RehearsalOverlay) -> set[str]:
+    return {
+        project.project_id for project in overlay.projects if project.capture_status == "captured"
+    }
 
 
 def _project_principals(
@@ -1133,9 +1208,7 @@ async def _verify_aggregate_reads(
     the reads it served.
     """
 
-    captured = {
-        project.project_id for project in overlay.projects if project.capture_status == "captured"
-    }
+    captured = _captured_project_ids(overlay)
     for member in members:
         headers = {"x-rcp-rehearsal-user": member}
         visible = sorted(opened.member_project_ids(member))
@@ -1222,9 +1295,7 @@ def _verify_due_consolidation(app: FastAPI, overlay: RehearsalOverlay) -> None:
     reads them back. Only the provider process is left out.
     """
 
-    captured = {
-        project.project_id for project in overlay.projects if project.capture_status == "captured"
-    }
+    captured = _captured_project_ids(overlay)
     tasks: BackgroundAgentTasks = app.state.background_tasks
     store = tasks.store
 

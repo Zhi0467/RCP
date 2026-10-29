@@ -18,7 +18,7 @@ from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.storage import WatcherContinuation
 
-from .helpers import record_launched_experiment_turn
+from .helpers import fake_launch_admitted, record_launched_experiment_turn
 from .test_auto_research_children_storage import _experiment_route, _experiment_task
 from .test_auto_research_wrapup import _episode
 from .test_watchers import _record
@@ -208,9 +208,7 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
 
     tasks = BackgroundAgentTasks(store, forbidden_stream)
     launches = []
-    monkeypatch.setattr(
-        tasks, "launch_admitted", lambda operation_id: launches.append(operation_id)
-    )
+    fake_launch_admitted(monkeypatch, tasks, launches.append)
     reconciler = EpisodeReconciler(store, tasks, logger=logging.getLogger(__name__))
 
     def reconcile():

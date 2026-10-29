@@ -2857,7 +2857,6 @@ class ProjectDisplayCache:
             }
             for machine in manifest_machines
         ]
-        payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         _stamp_display_signals(payload)
         return payload
 

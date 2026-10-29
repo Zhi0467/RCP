@@ -49,6 +49,8 @@ test("external job Cancel uses one watcher and the machine card saves compute on
       providers: [],
       provider_readiness: {},
       compute_probes: idle,
+      // Each card is some project's base, so its Helper row and job folder show.
+      agents_run_here: true,
       reach: [],
     });
     const machines = {
