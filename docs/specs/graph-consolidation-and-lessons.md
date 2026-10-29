@@ -216,12 +216,21 @@ does not fence a transition that lands while the chat is being admitted.
 ## Operational lessons
 
 Lessons are short operational notes in RCP's data directory, never graph state or
-authority. They cannot widen capability, roots, target, or budget. Served mutating
-mailbox owners may `lesson add`: human Work, child Work, Experiment turns,
-Auto-research root/workers, and consolidation. Validation-only Discuss, Seed,
-Refresh, and branch merge clients cannot. Consolidation may also page `lesson list`
-and update/delete agent-written notes. Member-written or edited notes are human-owned
-and agents cannot revise/delete them; members manage all lessons in Settings.
+authority. They cannot widen capability, roots, target, or budget. A member's
+ordinary Work or Discuss chat (`node_chat` / `project_chat`), including question
+answers and watcher follow-ups, may add, list, update, and delete every lesson in
+its project. Each command checks the authorizing human's live project membership.
+Chat additions and edits are human-owned, attributed to that human's captured
+user id and display name. Members also manage all lessons in Settings.
+
+Child Work, Experiment turns, and Auto-research root/workers remain add-only.
+Consolidation may add, list, update, and delete every note, human-owned included,
+and lists each change in its report. Seed, Refresh, and branch merge have no lesson
+commands. Discuss gains no graph or Apply authority. The handler's resolved
+lesson actions also render its usage from the command parser's option records.
+
+**Why:** a member's ordinary chat acts for that member on operational notes, and
+the human prefers a small, current lesson set that the nightly run keeps pruned.
 
 Agent mutations key by operation/subcommand/key, check live authorizer membership,
 and commit with their durable result, so retries replay even after deletion.
@@ -231,7 +240,7 @@ by `LESSONS_RENDER_MAX_BYTES`, human-owned first, newest first within each group
 with an omitted count. Text/count caps are `LESSON_TEXT_MAX_CHARS` and
 `LESSONS_PER_PROJECT_MAX`.
 
-**Why:** operational know-how is not research meaning for replay, merge, or paper,
+Operational know-how is not research meaning for replay, merge, or paper,
 and repository instruction files belong to the human. The turn encountering a
 problem records it while it has context; nightly work prunes it. A bounded file
 pointer avoids spending prompt tokens on every lesson at every launch.
