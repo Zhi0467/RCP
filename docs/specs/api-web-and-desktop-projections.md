@@ -833,6 +833,15 @@ and Reconnect reopens the chat the route names. Ordinary browsers can use a
 reachable team UI but cannot own tunnels, credentials, multi-space routing, or
 native commands, and do not offer Add team space.
 
+A page leaving through a space switch does not report the reads the switch
+cancels. The switch commands mark the exit before navigating. If the page is still
+shown when the exit window closes, the held failures surface as usual and count as
+transport failures.
+
+**Why:** WebKit rejects a leaving page's in-flight reads as network failures while
+that page is still on screen. Reporting them flashed error notices on every space
+switch and started tunnel recovery for a tunnel that was fine.
+
 One project wizard offers **Use an existing checkout personally**, **Create a
 shared team project**, and **Move an existing personal project to a team**.
 Project cards and Settings can preselect Move. Each backend publishes its own

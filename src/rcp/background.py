@@ -1804,15 +1804,7 @@ class BackgroundAgentTasks:
         if record.status != "queued":
             return record
 
-        try:
-            request = self._request_from_record(record)
-            self._validate_request_type(record.kind, request)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "The admitted task has no valid persisted request for its kind."
-            ) from exc
-        if not persisted_request_roundtrips(request, record.request):
-            raise ValueError("The admitted task request failed its persisted roundtrip.")
+        request = self._launchable_request(record)
 
         from rcp.runs.consolidation import require_consolidation_launch
 
@@ -1959,7 +1951,7 @@ class BackgroundAgentTasks:
             # snapshot. Late admissions stay queued for startup recovery.
             if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
-            current = self._validated_spawn_record(record, request, parent=parent)
+            current = self._validated_spawn_record(record, parent=parent)
             if current.status != "queued":
                 return current
             control = AgentProcessControl()
@@ -2013,7 +2005,6 @@ class BackgroundAgentTasks:
     def _validated_spawn_record(
         self,
         record: AgentTaskRecord,
-        request: AgentTaskRequest,
         *,
         parent: AgentTaskRecord | None,
     ) -> AgentTaskRecord:
@@ -2037,13 +2028,7 @@ class BackgroundAgentTasks:
             or current.dispatch_authority != record.dispatch_authority
         ):
             raise ValueError("The committed task changed before background dispatch.")
-        try:
-            current_request = self._request_from_record(current)
-            self._validate_request_type(current.kind, current_request)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("The committed task lost its persisted request contract.") from exc
-        if not persisted_request_roundtrips(current_request, current.request):
-            raise ValueError("The committed task request failed its persisted roundtrip.")
+        self._launchable_request(current)
         return current
 
     def _record_spawn_dispatch(
@@ -2639,33 +2624,49 @@ class BackgroundAgentTasks:
                 continue
             if decision.action == "settled" or not waiting.actionable:
                 continue
+            operation_id = waiting.record.operation_id
+            pid_file = decision.pid_file
+            assert pid_file is not None
             with self._remote_result_lock:
-                if not self.store.claim_recorded_finalization(waiting.record.operation_id):
+                if not self.store.claim_recorded_finalization(operation_id):
                     continue
 
             try:
-                record = self._require_operation(waiting.record.operation_id)
-                request = self._request_from_record(record)
+                record = self._require_operation(operation_id)
+                try:
+                    request = self._request_from_record(record)
+                except (TypeError, ValueError) as exc:
+                    # A saved request that cannot decode never will. Settle what
+                    # needs no request and fail the task for a human to see.
+                    self._settle_detached_mailbox(operation_id)
+                    finish_recorded_browser(self.store, operation_id)
+                    self.store.fail_agent_task(operation_id, str(exc), remote_pid_file=pid_file)
+                    continue
                 with self._controls_lock:
-                    mailbox = self._detached_mailboxes.get(record.operation_id)
+                    mailbox = self._detached_mailboxes.get(operation_id)
                 execution = (
                     mailbox.execution if mailbox is not None else self._recorded_execution(record)
                 )
                 assert execution is not None
                 # No admission or handler may race Apply or watcher settlement.
-                self._settle_detached_mailbox(record.operation_id)
-                finish_recorded_browser(self.store, record.operation_id)
-                pid_file = decision.pid_file
-                assert pid_file is not None
+                self._settle_detached_mailbox(operation_id)
+                finish_recorded_browser(self.store, operation_id)
                 if decision.action == "fail":
                     self.store.fail_agent_task(
-                        record.operation_id,
+                        operation_id,
                         decision.reason,
                         remote_pid_file=pid_file,
                     )
-            except Exception:
-                self.store.release_recorded_finalization(waiting.record.operation_id)
-                raise
+            except Exception as exc:
+                # This task waits for the next pass with its error on its row;
+                # the rest of this pass still runs.
+                logger.warning("Could not settle recorded task %s: %s", operation_id, exc)
+                self.store.release_recorded_finalization(operation_id)
+                self.store.update_agent_task_message(
+                    operation_id, f"Settling the recorded result failed: {exc}"
+                )
+                retry = True
+                continue
             if decision.action == "fail":
                 self._task_settled(record, request, execution)
                 continue
@@ -3348,6 +3349,20 @@ class BackgroundAgentTasks:
             and receipt.payload.get("retry_required") is True
             for receipt in self.store.agent_task_receipts(record.operation_id)
         )
+
+    def _launchable_request(self, record: AgentTaskRecord) -> AgentTaskRequest:
+        """Parse a durable request exactly as launch requires; test launch fakes call it too."""
+
+        try:
+            request = self._request_from_record(record)
+            self._validate_request_type(record.kind, request)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "The admitted task has no valid persisted request for its kind."
+            ) from exc
+        if not persisted_request_roundtrips(request, record.request):
+            raise ValueError("The admitted task request failed its persisted roundtrip.")
+        return request
 
     @staticmethod
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:

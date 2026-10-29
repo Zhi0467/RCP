@@ -11,9 +11,14 @@ from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_a
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.storage.artifact_models import Artifact
-from rcp.storage.request_compat import persisted_request_roundtrips
 
-from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
+from .helpers import (
+    append_fixture_patch,
+    authorized_human,
+    create_named_app,
+    fake_launch_admitted,
+    seed_patch,
+)
 
 
 @pytest.fixture
@@ -31,17 +36,13 @@ def runtime(manifest, tmp_path, monkeypatch):
         next_due_at=(now - timedelta(days=3)).isoformat(),
     )
     dispatched = []
-    tasks = app.state.background_tasks
 
     def dispatch(operation_id):
-        # The real launch refuses a request that does not survive its roundtrip.
-        task = store.agent_task(operation_id)
-        assert persisted_request_roundtrips(tasks._request_from_record(task), task.request)
         if store.mark_agent_task_running(operation_id):
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", dispatch)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks, dispatch)
     monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
     poller = ConsolidationPoller(
         store, app.state.background_tasks, service_for=app.state.catalog.open
@@ -449,7 +450,7 @@ def test_unavailable_history_is_retried_without_changing_settled_outcome(
 
 
 def test_prelaunch_refusal_has_verified_empty_history_without_reading_project(runtime, monkeypatch):
-    monkeypatch.setattr(runtime.app.state.background_tasks, "launch_admitted", lambda _: None)
+    fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, lambda _: None)
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
     runtime.store.fail_agent_task(run.operation_id, "consolidation_authorization_revoked")

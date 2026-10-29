@@ -67,6 +67,7 @@ import type {
   VoiceSettings,
   GraphTargetRef,
 } from "./types";
+import { pageStays } from "./pageExit.ts";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
@@ -137,6 +138,7 @@ export async function api<T>(
   try {
     response = await request();
   } catch (error) {
+    await pageStays(error);
     notifyTransportFailure(error);
     if (mutation) await notifyMutationFailure(path);
     throw error;
@@ -163,6 +165,7 @@ export async function api<T>(
       try {
         response = await request();
       } catch (error) {
+        await pageStays(error);
         notifyTransportFailure(error);
         await notifyMutationFailure(path);
         throw error;
@@ -184,6 +187,7 @@ async function readJson<T>(response: Response): Promise<T> {
   try {
     return (await response.json()) as T;
   } catch (error) {
+    await pageStays(error);
     if (error instanceof TypeError) notifyTransportFailure(error);
     throw error;
   }
