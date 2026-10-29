@@ -886,6 +886,16 @@ async def _prepare_coach_launch(
                 update=_stage_context_paths(context, service, remote_stage, profile.run_on)
             )
         read_dirs = _coach_repository_dirs(context, remote=remote_stage is not None)
+        retry_diagnostics_path = (
+            _stage_json_task_input(
+                input_stage,
+                remote_stage,
+                f"task-{token}-retry-diagnostics.json",
+                {"diagnostics": _paper_retry_diagnostics(execution)},
+            )
+            if retry_attempt
+            else None
+        )
         repositories = [
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories
@@ -905,14 +915,7 @@ async def _prepare_coach_launch(
                 f"task-{token}-human-request.txt",
                 request.message,
             ),
-            retry_diagnostics_path=_stage_json_task_input(
-                input_stage,
-                remote_stage,
-                f"task-{token}-retry-diagnostics.json",
-                {"diagnostics": _paper_retry_diagnostics(execution)},
-            )
-            if retry_attempt
-            else None,
+            retry_diagnostics_path=retry_diagnostics_path,
             attachment_pointers=attachment_pointers,
             skill_pointers=skill_pointers,
             invoked_skill_pointers=invoked_package_pointers(
