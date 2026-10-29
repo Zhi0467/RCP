@@ -13,7 +13,7 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
   try {
     const { evidenceFlagRows } = await server.ssrLoadModule("/src/projects/evidenceFlags.ts");
     const node = { id: "e1", type: "evidence", validity: "valid" };
-    const base = { evidence_id: "e1", state: "open", source: null };
+    const base = { evidence_id: "e1", target: "main", state: "open", source: null };
     const repositories = [{ alias: "repo", path: "/work/repo" }];
     const rows = evidenceFlagRows(
       [
@@ -49,9 +49,20 @@ test("flag rows keep open records, mark only current Evidence, and offer resolva
         ["retired", null, ["dismiss"]],
       ],
     );
-    // Off main the open graph cannot rule out Address; main's endpoint decides.
-    const branch = evidenceFlagRows([{ ...base, flag_id: "new-on-main" }], {}, repositories, false);
-    assert.deepEqual(branch[0].actions, ["address", "dismiss"]);
+    const flags = [
+      { ...base, flag_id: "main" },
+      { ...base, flag_id: "branch", target: "branch" },
+    ];
+    assert.deepEqual(
+      evidenceFlagRows(flags, { e1: node }, repositories).map((r) => r.flag.flag_id),
+      ["main"],
+    );
+    const branch = evidenceFlagRows(flags, { e1: node }, repositories, "branch");
+    assert.deepEqual(
+      branch.map((r) => r.flag.flag_id),
+      ["branch"],
+    );
+    assert.deepEqual(branch[0].actions, ["address", "open_evidence", "dismiss"]);
     assert.deepEqual(rows[1].source, { kind: "url", href: "https://example.org/paper" });
     assert.deepEqual(rows[2].source, { kind: "file", target: { path: "/work/repo/log", line: 4 } });
   } finally {
@@ -77,6 +88,7 @@ test("Address all selects the oldest eligible findings and shares the server cap
     const flags = Array.from({ length: 12 }, (_, i) => ({
       flag_id: `f-${i}`,
       evidence_id: "e",
+      target: "main",
       kind: "overclaim",
       state: "open",
       created_at: new Date(Date.UTC(2026, 9, 17, 0, 12 - i)).toISOString(),

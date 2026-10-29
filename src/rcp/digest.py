@@ -102,7 +102,9 @@ def attribution(store, project_id: str, patch: Patch) -> dict:
         if consolidation is not None:
             kind, key, label = "consolidation", consolidation.run_id, "Nightly consolidation"
             result["report_artifact_id"] = consolidation.report_artifact_id
-            result["deep_link"] = deep_link(project_id, "main", "consolidation", key)
+            result["deep_link"] = deep_link(
+                project_id, consolidation.graph_target.key, "consolidation", key
+            )
         elif patch.producer == "human":
             if patch.authorized_by is None:
                 kind, key, label = "unattributed", "human", "Unattributed"

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from rcp.storage import AppStore
-from rcp.storage.evidence_flags import EvidenceFlagError
+from rcp.storage.evidence_flags import (
+    EvidenceFlagError,
+    migrate_evidence_flag_targets,
+    migrate_evidence_flags,
+)
 from rcp.transfer import TRANSFER_EXCLUDED_PROJECT_TABLES
 
 from .test_lessons_store import consolidate
@@ -98,7 +102,8 @@ def test_flag_migration_preserves_existing_store_and_space_records(store):
     with store.connection() as connection:
         for table in tables:
             connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=51")
+        migrate_evidence_flags(connection)
+        migrate_evidence_flag_targets(connection)
     path = store.path
     store.close()
     reopened = AppStore(path)

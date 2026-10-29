@@ -11,22 +11,28 @@ The schedule captures member, choice time, and a fresh authorization id expiring
 member, even with unchanged settings. Unlaunched runs under the old id fail.
 Any member may disable it; expiry stays visible until renewal or disablement.
 
-Each local date is one occurrence. A nonexistent DST time uses the first valid
-minute afterward; an ambiguous time uses its first instance. Polling uses
+Each local date is one occurrence per target: main and every non-archived graph
+branch, including branches owned by running Auto-research orchestrators. One
+project schedule and authorization cover them all. A nonexistent DST time uses
+the first valid minute afterward; an ambiguous time uses its first instance. Polling uses
 `CONSOLIDATION_POLL_SECONDS` after the machine's automatic-launch wake delay.
-Occurrence handling, next due time, and run creation commit together. The next
-occurrence is after handling time, collapsing missed dates into one run.
+Target occurrence handling, its next due time, and run creation commit together.
+Each target keeps its own due time and coverage. Its next occurrence is after
+handling time, collapsing missed dates into one run for that target.
 
-A due occurrence stays owed while an earlier run is unresolved and starts nothing
-if authorization expired. Departed authorizers or projects refusing new work
+A target’s due occurrence stays owed while its earlier run is unresolved, without
+holding back other targets, and starts nothing if authorization expired. Departed authorizers or projects refusing new work
 produce failure rows. Paused resumable chat, unavailable history, and unresolved
 launch configuration fail without tasks as `consolidation_chat_paused`,
 `history_unavailable`, and `consolidation_launch_unavailable`; they advance the
-occurrence, not coverage. No new main revision outside consolidation since the
-covered head records `skipped` for recent nights. Otherwise one run/turn is admitted.
+occurrence, not coverage. No new revision on that target outside consolidation
+since its covered head records `skipped` for recent nights. A branch’s initial
+covered head is its immutable fork revision, so an untouched branch skips even
+when it inherits main’s work. Otherwise one run/turn is admitted for that target.
+A failure on one target does not prevent the others from being handled.
 
-Only success advances the covered head: its input head plus subsequent revisions
-from that run's operation, never concurrent work by others. Failure leaves it for
+Only success advances that target’s covered head: its input head plus subsequent
+revisions from that run's operation, never concurrent work by others. Failure leaves it for
 the next night. Immediately before first provider launch, including sign-in release
 or startup recovery, RCP rechecks authorization id, expiry, membership, and write
 admission. Failure launches nothing. Already-started turns settle under captured
@@ -34,10 +40,12 @@ authority; Apply still checks live membership.
 
 ## The consolidation turn
 
-One ordinary Work turn on main uses `work_auto`, trigger `schedule`, and the
-schedule authorizer. Its server-owned run binding grants consolidation behavior;
-a chat id, workflow, or request field cannot. It uses the dedicated chat with no
-native session from earlier nights, retaining normal scratch/artifact folders.
+Each target gets one ordinary Work turn using its `graph_target`, `work_auto`,
+trigger `schedule`, and the schedule authorizer. Its server-owned run binding
+grants consolidation behavior; a chat id, workflow, or request field cannot.
+Each target uses its own dedicated chat with no native session from earlier
+nights, retaining normal scratch/artifact folders. Main keeps its existing chat
+identity. Branch ownership does not change this ordinary Work authority.
 The official `graph-consolidation` workflow and dependencies resolve through the
 skill registry regardless of project defaults and appear in the launch receipt.
 
@@ -107,23 +115,24 @@ every literature change, new paper, search record, and access gap, and says
 when nothing new was found.
 
 **Why:** expiring standing authorization makes routine maintenance possible while
-bounding each night to one invocation. Ordinary Work on main avoids a new episode
-kind and daily merge obligation; existing authority and semantic merge rules
-already handle protected changes and open-branch conflicts. In-turn Apply lets
+bounding each night to one invocation per active target. Ordinary Work on the
+selected graph avoids a new episode kind or a consolidation-specific merge;
+existing authority and semantic merge rules already handle protected changes and open-branch conflicts. In-turn Apply lets
 the report describe committed changes rather than intended ones.
 
 ## Outcomes and Inbox rows
 
 Run outcome is separate from task verdict. Settlement uses run id, ended task,
-canonical commits for its operation, and captured artifact. Startup and scheduler
-passes retry until recorded. Success requires a succeeded task, no rejected or
+canonical commits for its operation on its own target, and captured artifact.
+Startup and scheduler passes retry until recorded. Success requires a succeeded task, no rejected or
 unavailable graph update, and a viewable HTML report. Settled outcomes are final:
 later history recovery can verify revisions/Proposal counts but cannot convert
 failure to report or advance coverage.
 
 Paused, stopped, abandoned, or irrecoverably interrupted runs fail without coverage
 and never resume/retry/continue as scheduled runs. Humans may start separate Work
-in that chat. Each run produces one **Consolidation** Inbox row:
+in that chat. Each run produces one **Consolidation** Inbox row labelled with
+main or the branch’s display name:
 
 - **Report:** opens in the viewer, offers Keep into Artifacts or Dismiss. Open
   rows protect temporary artifacts from expiry; Dismiss starts ordinary retention.
@@ -137,8 +146,8 @@ in that chat. Each run produces one **Consolidation** Inbox row:
 Both show created Proposal counts. Keep/Dismiss close the row for all members,
 using projected `can_write` independently of graph availability. Artifact Keep
 uses `kept_at`, separate from expiry protection. Proposals use the ordinary Inbox;
-report rows grant no authority. Each row emits one `consolidation` notification,
-as does authorization first observed within `CONSOLIDATION_EXPIRY_NOTICE_DAYS` of
+report rows grant no authority. Each row emits one `consolidation` notification
+naming the same target, as does authorization first observed within `CONSOLIDATION_EXPIRY_NOTICE_DAYS` of
 expiry or already expired. Closed rows and renewed/deleted grants invalidate notices.
 
 ## Evidence to check
@@ -147,8 +156,8 @@ Evidence flags are SQLite attention records, never graph state. Only the
 consolidation run's mailbox offers and accepts
 `flag --key K --evidence ID --kind overclaim|underclaim|no_source|unverified
 --finding TEXT [--source PATH[:LINE]|URL]`. Prompt and handler share the owner's resolved verb set.
-The id must name a current, non-retired Evidence node on main. The finding is
-non-blank, single-line, and at most 400 characters; an optional source is at most
+The id must name a current, non-retired Evidence node on the run’s target graph.
+The finding is non-blank, single-line, and at most 400 characters; an optional source is at most
 1000 characters and must name an absolute host path or `<alias>/<relative path>`,
 optionally followed by `:LINE`, or an `http(s)` URL; anything else is refused.
 Keys starting with `rcp:` are reserved for RCP.
@@ -165,17 +174,17 @@ failure to record it is a task warning; the applied Patch stands.
 
 Flag creation checks live authorizer membership and records its keyed receipt
 transactionally. The same key and arguments replay; changed arguments refuse.
-There is at most one open or addressing flag per project, Evidence id, and kind;
-another creation returns that flag with `code: flag_exists`. Each flag captures
-the main revision, consolidation run and occurrence, and creation time.
+There is at most one open or addressing flag per project, target, Evidence id,
+and kind; another creation returns that flag with `code: flag_exists`. Each flag captures
+the target revision, consolidation run and occurrence, and creation time.
 
-Inbox's **Evidence to check** section lists open and addressing flags with kind,
-Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
+Inbox’s **Evidence to check** section lists the selected graph’s open and
+addressing flags with kind, Evidence title, and one-line finding. A `consolidation_added` flag is a notice,
 not a finding, and an `unverified` flag names a source no agent could read, so
 both are flagged only: their rows have no **Address**, **Address all** skips
 them, and the endpoint refuses them with `flag_not_addressable`. **Address** on
 any other kind, `no_source` included, starts an ordinary member-authorized node
-Work chat on that Evidence, with the default node-chat
+Work chat on that Evidence and its target graph, with the default node-chat
 provider profile and ordinary admission and prompt construction. Its first human
 message combines the flag context with backend-authored instructions to read the
 source, correct the Evidence only as far as the source supports, and use `ask`
@@ -186,9 +195,9 @@ leaves the member in the Inbox; the chat opens only from **Open chat**.
 When at least two findings offer Address, the header offers **Address all**.
 It sends one request for the ten oldest addressable findings, ordered by creation
 time. The server caps each batch at ten and refuses empty or duplicate ids,
-non-open flags, flag-only kinds, and absent or retired Evidence on main. One finding uses
-the same node Work path as Address; two or more start one ordinary project Work
-turn on main in one new chat. Its message labels every finding as context.
+non-open flags, flag-only kinds, mixed-target batches, and absent or retired
+Evidence on the selected target. One finding uses the same node Work path as Address; two or more start one ordinary project Work
+turn on that target in one new chat. Its message labels every finding as context.
 Sorted flag locks serialize admission, and every flag binds to that turn and
 chat in the task's transaction or none do. Each addressing strip opens the shared
 chat. The request key and exact ids survive a failed Web attempt; replay returns
@@ -211,7 +220,7 @@ Evidence**, **Open source** only when the source is a URL (opened in a new tab) 
 resolves to a configured repository file, and icon-only **Dismiss**, which closes
 it for all members. Open or addressing flags give the Evidence node a red
 left edge and one icon-only flag action opening Inbox. Dismissed flags cannot be
-addressed. Address also refuses when main's authoritative state, read at
+addressed. Address also refuses when the target’s authoritative state, read at
 admission, holds no current Evidence node with that id. Like any node chat, it
 does not fence a transition that lands while the chat is being admitted.
 
@@ -240,6 +249,7 @@ pointer avoids spending prompt tokens on every lesson at every launch.
 
 ## Transfer, backup, and restore
 
-Lessons, Evidence flags, schedules, runs, and receipts stay with the space,
-outside project transfer. Backup captures them in SQLite. Restore retains lessons/closed rows,
-fails unresolved runs, and disables schedules until a member enables them again.
+Lessons, Evidence flags, schedules, per-target coverage, runs, and receipts stay
+with the space, outside project transfer. Backup captures them in SQLite. Restore
+retains lessons, coverage, and closed rows, fails unresolved runs on every target,
+and disables schedules until a member enables them again.

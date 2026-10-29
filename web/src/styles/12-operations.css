@@ -1397,6 +1397,11 @@
   margin: 0 0 12px;
   padding: 14px 16px;
 }
+.consolidation-row .proposal-topline {
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  overflow-wrap: anywhere;
+}
 .consolidation-row h3 {
   overflow-wrap: anywhere;
   margin: 6px 0 8px;

@@ -2,8 +2,8 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.9.0
-description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
+version: 1.9.1
+description: Consolidate the run's target research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.5.0
 - experiment-causality@1.5.0
@@ -33,13 +33,13 @@ report.
 
 ## Pass 1: audit
 
-Apply Graph audit to main, reading `research.md` before `graph.json`. Use
+Apply Graph audit to the target graph, reading `research.md` before `graph.json`. Use
 Experiment causality and Evidence triage only on the nodes the audit flags.
 Keep the findings as working notes; they feed passes 2, 3, 4, and 6.
 
 ## Pass 2: fact-check and literature
 
-Check Evidence created or changed on main since the covered head supplied for
+Check Evidence created or changed on the target graph since the covered head supplied for
 this run; if there is no covered head yet, check all current Evidence. Read
 the cited sources themselves: artifact refs, producing Experiment job logs, and
 repository files on the execution host, and papers, web pages, or datasets

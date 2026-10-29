@@ -11,7 +11,12 @@ import pytest
 
 from rcp.agents import AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
-from rcp.agents.command_protocol import ApplyArguments, ApplyCommandRequest
+from rcp.agents.command_protocol import (
+    ApplyArguments,
+    ApplyCommandRequest,
+    FlagArguments,
+    FlagCommandRequest,
+)
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import Patch
@@ -30,11 +35,13 @@ from .helpers import (
     create_named_app,
     refresh_patch,
     seed_patch,
+    wait_for_task,
 )
 from .test_api import ScriptedLauncher, _named_test_authorizer
 
 
-def _admit(app, *, chat_id=None):
+def _admit(app, *, chat_id=None, target=None):
+    target = target or GraphTargetRef()
     store = app.state.background_tasks.store
     now = datetime.fromisoformat(store.now())
     project_id = app.state.default_project_id
@@ -46,7 +53,12 @@ def _admit(app, *, chat_id=None):
         authorized_by=authorizer,
         next_due_at=(now - timedelta(minutes=1)).isoformat(),
     )
+    profile = app.state.service.resolve_agent_profile("project_chat")
     request = RunRequest(
+        provider=profile.provider,
+        model=profile.model,
+        reasoning=profile.reasoning,
+        run_on=profile.run_on,
         chat_scope="project",
         chat_id=chat_id or str(uuid.uuid4()),
         mode="work",
@@ -58,6 +70,7 @@ def _admit(app, *, chat_id=None):
         operation_id=str(uuid.uuid4()),
         project_id=project_id,
         kind="project_chat",
+        graph_target=target,
         status="queued",
         status_message="queued",
         request=request.model_dump(mode="json"),
@@ -70,7 +83,8 @@ def _admit(app, *, chat_id=None):
         schedule,
         occurrence_date=now.date().isoformat(),
         next_due_at=(now + timedelta(days=1)).isoformat(),
-        input_head=app.state.service.history.state().revision,
+        input_head=app.state.service.for_graph_target(target).history.state().revision,
+        target=target.branch_id or "main",
         task=task,
     )
     assert run is not None
@@ -243,12 +257,21 @@ def test_consolidation_apply_live_membership_is_required_by_transition(
     assert (tmp_path / "patch.json").exists()
 
 
-@pytest.mark.parametrize("change", ["delete", "renew", "expire", "leave"])
+@pytest.mark.parametrize("change", ["delete", "renew", "expire", "leave", "archive"])
 def test_consolidation_queued_launch_rechecks_authorization(
     manifest, tmp_path, monkeypatch, change
 ):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, execution = _admit(app)
+    if change == "archive":
+        from .test_branch_chats import _app_branch
+
+        app, _, episode, _ = _app_branch(manifest, tmp_path)
+        _, execution = _admit(app, target=episode.graph_target)
+        execution.store.set_branch_archived(
+            app.state.default_project_id, episode.graph_target.branch_id, archived=True
+        )
+    else:
+        app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+        _, execution = _admit(app)
     store = execution.store
     task = store.agent_task(execution.operation_id)
     if change == "delete":
@@ -268,7 +291,7 @@ def test_consolidation_queued_launch_rechecks_authorization(
                 "UPDATE consolidation_schedules SET expires_at=?",
                 ((datetime.fromisoformat(store.now()) - timedelta(seconds=1)).isoformat(),),
             )
-    else:
+    elif change == "leave":
         with store.connection() as conn:
             conn.execute(
                 "DELETE FROM project_members WHERE project_id=? AND user_id=?",
@@ -282,10 +305,10 @@ def test_consolidation_queued_launch_rechecks_authorization(
     )
     refused = manager.launch_admitted(task.operation_id)
     assert refused.status == "failed"
-    assert (
-        refused.error.startswith("consolidation_authorization_")
-        or refused.error == "consolidation_authorizer_departed"
-    )
+    assert refused.error.startswith("consolidation_authorization_") or refused.error in {
+        "consolidation_authorizer_departed",
+        "consolidation_target_unavailable",
+    }
 
 
 @pytest.mark.asyncio
@@ -562,3 +585,76 @@ def test_consolidation_unavailable_apply_retains_unresolved_failure(
     assert receipt["last_failure"]["status"] == "unavailable"
     assert receipt["result"] is None
     assert mailbox.read_text("patch.json")
+
+
+def test_branch_consolidation_work_applies_and_holds_evidence_on_its_target(
+    manifest, tmp_path, monkeypatch
+):
+    import rcp.runs.tasks.work as work
+    from rcp.agents import hidden_read
+
+    from .test_branch_chats import _app_branch
+    from .test_branch_history import _branch_patch
+
+    host_facts = hidden_read.host_facts
+    monkeypatch.setattr(
+        hidden_read,
+        "host_facts",
+        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
+    )
+    app, main, episode, root = _app_branch(manifest, tmp_path)
+    _, execution = _admit(app, target=episode.graph_target)
+    handlers = []
+    original = work._start_work_validator_mailbox
+
+    def capture(*args, **kwargs):
+        lifecycle = original(*args, **kwargs)
+        handlers.append(lifecycle.command_handler)
+        return lifecycle
+
+    monkeypatch.setattr(work, "_start_work_validator_mailbox", capture)
+    text = agent_patch_json(_branch_patch("ev/branch-consolidation"))
+
+    class ApplyingLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if event.event == "answer":
+                    identity = CommandTurnIdentity(None, execution.operation_id, "turn", "broker")
+                    first = handlers[-1](_apply_request("branch"), identity)
+                    assert first.status == "ok", first.message
+                    assert handlers[-1](_apply_request("branch"), identity).result == first.result
+                    flag = handlers[-1](
+                        FlagCommandRequest(
+                            mailbox_id="a" * 32,
+                            request_id=uuid.uuid4().hex,
+                            credential="b" * 64,
+                            verb="flag",
+                            idempotency_key="verify",
+                            arguments=FlagArguments(
+                                evidence_id="ev/branch-consolidation",
+                                kind="unverified",
+                                finding="The source could not be read.",
+                            ),
+                        ),
+                        identity,
+                    )
+                    assert flag.status == "ok", flag.message
+                yield event
+
+    launcher = ApplyingLauncher([{"patch.json": text}], message="Applied branch changes")
+    monkeypatch.setattr(app.state.launcher, "stream", launcher.stream)
+    app.state.background_tasks.launch_admitted(execution.operation_id)
+    task = wait_for_task(execution.store, execution.operation_id)
+    assert task.status == "succeeded", task.error
+    assert task.episode_id is None
+    assert task.dispatch_authority.profile == "ordinary"
+    assert not execution.store.agent_task(root.operation_id).finished
+    branch = main.for_graph_target(episode.graph_target)
+    assert "ev/branch-consolidation" in branch.history.state().nodes
+    assert "ev/branch-consolidation" not in main.history.state().nodes
+    flags = execution.store.list_evidence_flags(task.project_id)
+    assert {(flag["target"], flag["kind"]) for flag in flags} == {
+        (episode.graph_target.branch_id, "consolidation_added"),
+        (episode.graph_target.branch_id, "unverified"),
+    }
+    assert len(branch.history.load_patches()) == 1

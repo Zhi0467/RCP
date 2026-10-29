@@ -386,14 +386,18 @@ class NotificationSender:
         for event, item_id in self.store.unobserved_consolidation_notifications(
             project.project_id, cutoff
         ):
+            run = self.store.consolidation_run(item_id) if event == "run" else None
             notification = _notification(
                 project,
-                target="main",
+                target=run.graph_target.key if run else "main",
                 kind="consolidation",
                 item_id=item_id,
                 occurrence=event,
                 reason="consolidation",
             )
+            if run is not None:
+                name = self.store.branch_names(project.project_id).get(run.target, run.target[:8])
+                notification["project_name"] = f"{project.name} · {name}"
             notification["observed_blocked_reason"] = event
             self.store.observe_consolidation_notification(event, notification)
 
