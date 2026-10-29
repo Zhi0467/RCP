@@ -198,10 +198,12 @@ class ConsolidationPoller:
             service = self.service_for(schedule.project_id)
             failure_code = "history_unavailable"
             input_head, steps = _target_steps(service, graph_target)
+            # Only a reported run checked its own commits; a failed run's edits
+            # still need the next night.
             consolidation_operations = {
                 run.operation_id
                 for run in self.store.consolidation_runs(schedule.project_id)
-                if run.operation_id is not None
+                if run.operation_id is not None and run.kind == "report"
             }
             covered = coverage.covered_head
             changed = covered is None or any(
