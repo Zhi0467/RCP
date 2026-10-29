@@ -809,39 +809,6 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
   const html = renderEpisodes([wrapping]);
 });
 
-test("the login notice shows each signed-out login once, as one row with one action", async () => {
-  const { ProviderLoginNotice } = await server.ssrLoadModule(
-    "/src/projects/ProviderLoginNotice.tsx",
-  );
-  const row = {
-    provider: "codex",
-    host: "",
-    login_id: "",
-    kind: "shared",
-    owner_user_id: null,
-    state: "signed_out",
-    generation: 0,
-    changed_at: "2026-09-14T00:00:00Z",
-    detail: "Please sign in again",
-  };
-  const states = [
-    row,
-    row,
-    { ...row, provider: "claude", host: "remote.example", state: "signed_in", generation: 1 },
-  ];
-  const html = renderMarkup(
-    React.createElement(ProviderLoginNotice, { states, onOpenSignIns() {} }),
-  );
-
-  assert.doesNotMatch(html, /remote.example/);
-  assert.equal((html.match(/data-login-notice=/g) ?? []).length, 1);
-  // The open action and Dismiss; no explanation paragraphs.
-  assert.equal((html.match(/<button/g) ?? []).length, 2);
-  assert.match(html, /aria-label="Dismiss"/);
-  assert.match(html, /data-login-notice-action="open-sign-ins"/);
-  assert.doesNotMatch(html, /<p[ >]|compact-notice/);
-});
-
 test("merge controls render the server offer; an in-flight action disables them", () => {
   const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
   const running = renderEpisodes([

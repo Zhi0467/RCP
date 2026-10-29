@@ -186,7 +186,7 @@ test("card actions sit behind ⋯; removing from shared confirms with the bound 
   await bo.locator('[data-sign-in-action="cancel-token"]').click();
   await bo.locator(".sign-in-token").waitFor({ state: "detached" });
 
-  await bo.locator('[data-sign-in-action="more"]').click();
+  await bo.locator(".sign-in-more > button").click();
   assert.deepEqual(
     await bo
       .locator('[role="menuitem"]')
@@ -200,14 +200,14 @@ test("card actions sit behind ⋯; removing from shared confirms with the bound 
   await page.waitForFunction(() => window.loginChanges === 1);
 
   // The machine sign-in cannot be removed, and a draining login offers nothing.
-  await card(page, "claude", "").locator('[data-sign-in-action="more"]').click();
+  await card(page, "claude", "").locator(".sign-in-more > button").click();
   assert.deepEqual(
     await card(page, "claude", "")
       .locator('[role="menuitem"]')
       .evaluateAll((items) => items.map((item) => item.dataset.signInAction)),
     ["verify", "sign-out"],
   );
-  assert.equal(await card(page, "claude", "cy").locator('[data-sign-in-action="more"]').count(), 0);
+  assert.equal(await card(page, "claude", "cy").locator(".sign-in-more > button").count(), 0);
   // Another member's own login is read-only.
   assert.equal(await card(page, "claude", "own-dee").locator("[data-sign-in-action]").count(), 0);
   assert.deepEqual(
@@ -265,7 +265,7 @@ test("a failed card action re-reads the list, so a login removed elsewhere leave
     },
   });
   const bo = card(page, "claude", "bo");
-  await bo.locator('[data-sign-in-action="more"]').click();
+  await bo.locator(".sign-in-more > button").click();
   await bo.locator('[data-sign-in-action="remove"]').click();
   await bo.locator('[data-sign-in-action="confirm-remove"]').click();
   await bo.waitFor({ state: "detached", timeout: 3000 });
@@ -329,7 +329,7 @@ test("a cancelled sign-in marks its card until the login is signed in again", as
   assert.ok(calls.some((call) => call.path === "codex/logins/sign-in/attempt-1/cancel"));
   state.rows = codexRows(null).map((row) => ({ ...row, state: "signed_in", generation: 2 }));
   // The next list read shows the login signed in; the failed attempt is history.
-  await machine.locator('[data-sign-in-action="more"]').click();
+  await machine.locator(".sign-in-more > button").click();
   await machine.locator('[data-sign-in-action="verify"]').click();
   await page.waitForFunction(
     () =>
