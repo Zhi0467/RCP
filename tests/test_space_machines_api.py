@@ -67,7 +67,10 @@ def test_repository_machine_cannot_be_deleted(app, manifest) -> None:
     assert [machine.name for machine in store.space_machines()] == ["laptop"]
 
 
-def test_delete_detaches_a_listed_machine_without_repositories(app, manifest) -> None:
+@pytest.mark.parametrize("fenced", [False, True])
+def test_delete_detaches_a_listed_machine_without_repositories(
+    app, manifest, monkeypatch, fenced
+) -> None:
     client = signed_in_client(app)
     machine = client.post(
         "/api/space/machines",
@@ -80,6 +83,17 @@ def test_delete_detaches_a_listed_machine_without_repositories(app, manifest) ->
     assert response.status_code == 200, response.text
     listed = _machine(client, "GPU")
     assert listed["in_use"] is True and listed["deletable"] is True
+    if fenced:
+        # A project that takes no new work, such as one mid-transfer, keeps the card.
+        def refuse(_project_id):
+            raise ValueError("transfer in progress")
+
+        monkeypatch.setattr(_store(app), "require_project_accepts_new_work", refuse)
+        before = manifest.path.read_bytes()
+        assert client.delete(f"/api/space/machines/{machine['machine_id']}").status_code == 409
+        assert manifest.path.read_bytes() == before
+        assert _store(app).space_machine(machine["machine_id"])
+        return
 
     deleted = client.delete(f"/api/space/machines/{machine['machine_id']}")
     assert deleted.status_code == 200, deleted.text
