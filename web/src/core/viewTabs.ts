@@ -4,11 +4,13 @@ import type { AppView } from "./types";
 const PARENT_TAB: Partial<Record<AppView, AppView>> = { dag: "scientific", paper: "artifacts" };
 
 export const topTab = (view: AppView): AppView => PARENT_TAB[view] ?? view;
+const TABS_WITH_SUBVIEWS = new Set(Object.values(PARENT_TAB));
 
 const subviewKey = (projectId: string, tab: AppView) => `rcp:project-subview:${projectId}:${tab}`;
 
-/** Records the view this viewer has open, so its top tab reopens it in this project. */
+/** Records the view open in a tab that has sub-views, so the tab reopens it in this project. */
 export function rememberSubview(projectId: string, view: AppView): void {
+  if (!TABS_WITH_SUBVIEWS.has(topTab(view))) return;
   try {
     localStorage.setItem(subviewKey(projectId, topTab(view)), view);
   } catch {

@@ -1,3 +1,5 @@
+const KEY_STEP = 16;
+
 /** A vertical splitter: dragging or Left/Right/Home/End sets a width within its bounds.
  * `widthAt` turns a pointer's clientX into the width it asks for. */
 export function ResizeHandle({
@@ -7,7 +9,6 @@ export function ResizeHandle({
   width,
   minimum,
   maximum,
-  step = 16,
   widthAt,
   onResize,
 }: {
@@ -17,7 +18,6 @@ export function ResizeHandle({
   width: number;
   minimum: number;
   maximum: number;
-  step?: number;
   widthAt: (clientX: number) => number | null;
   onResize: (width: number) => void;
 }) {
@@ -38,7 +38,7 @@ export function ResizeHandle({
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
           event.preventDefault();
-          resize(width + (event.key === "ArrowLeft" ? -step : step));
+          resize(width + (event.key === "ArrowLeft" ? -KEY_STEP : KEY_STEP));
         }
         if (event.key === "Home" || event.key === "End") {
           event.preventDefault();

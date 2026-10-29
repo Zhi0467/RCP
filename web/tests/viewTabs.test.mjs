@@ -15,6 +15,10 @@ test("each top tab reopens the sub-view last open there, per project", () => {
     assert.equal(tabEntryView("a", "artifacts"), "paper");
     assert.equal(tabEntryView("a", "scientific"), "dag");
     assert.equal(tabEntryView("b", "artifacts"), "artifacts");
+    assert.deepEqual(
+      [...values.keys()].map((key) => key.split(":").at(-1)),
+      ["artifacts", "scientific"],
+    );
     rememberSubview("a", "artifacts");
     assert.equal(tabEntryView("a", "artifacts"), "artifacts");
     assert.equal(topTab("paper"), "artifacts");
