@@ -66,6 +66,22 @@ and stop that process explicitly before relaunching. Do not treat an adopted
 old backend as evidence for new source. Open the actual app bundle, drive the
 affected workflow and inspect its logs.
 
+## Backend log
+
+The desktop app writes the output of the backend it started to
+`~/Library/Logs/<bundle identifier>/backend.log`; the released and candidate
+builds use `app.researchcontrolpanel.rcp` and `RCP Dev.app` uses
+`app.researchcontrolpanel.rcp.dev`. Rotated files are `backend.log.1` to
+`backend.log.3`. [The desktop shell spec](specs/api-web-and-desktop-projections.md#desktop-shell)
+owns its contents and caps. To follow a run, or find what the web client reported:
+
+```bash
+tail -f ~/Library/Logs/app.researchcontrolpanel.rcp/backend.log
+grep rcp.client ~/Library/Logs/app.researchcontrolpanel.rcp/backend.log*
+```
+
+A backend started from a terminal and adopted by the app logs to that terminal.
+
 ## Keep-awake checks
 
 Use a Mac you can leave on a desk. Disposable data does not isolate machine-wide
@@ -148,6 +164,11 @@ and launch with disposable data:
 if curl -fsS -m 3 http://127.0.0.1:8421/api/health >/dev/null; then echo "another RCP is running; quit it first"; else open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"; fi
 ```
 
+`RCP_PORT` moves a build's backend and window to another loopback port; unset,
+it is 8421. Pair it with a throwaway `RCP_DATA_DIR`. It does not separate the
+bundle identifier, so a build with the released identifier still focuses a
+running RCP and shares its settings.
+
 For a local candidate, verify the intended revision and version. Check that the
 scope is clean and the baseline and native checks pass. Then build:
 
@@ -155,11 +176,13 @@ scope is clean and the baseline and native checks pass. Then build:
 npm --prefix web run desktop:build
 ```
 
-Use `web/src-tauri/target/release/bundle/macos/RCP.app`. Smoke-test its exact backend:
+Use `web/src-tauri/target/release/bundle/macos/RCP.app`. Its backend is one
+directory in `Contents/Resources/backend`; `packaging/rcp_backend.spec` says why.
+Smoke-test its exact backend:
 
 ```bash
 uv run python packaging/smoke-backend.py \
-  web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
+  web/src-tauri/target/release/bundle/macos/RCP.app/Contents/Resources/backend/rcp-backend
 ```
 
 Repeat with `--terminal-only` to check frozen terminal commands, job control,

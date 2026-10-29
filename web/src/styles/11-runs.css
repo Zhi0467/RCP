@@ -301,13 +301,6 @@
   font-weight: 550;
   margin: 0;
 }
-.provider-login-intro {
-  color: var(--muted);
-  font-size: var(--type-sm);
-  line-height: 1.5;
-  margin: 0;
-  padding: 12px 20px 0;
-}
 .provider-login-list {
   display: grid;
   gap: 12px;

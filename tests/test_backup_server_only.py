@@ -17,7 +17,7 @@ from rcp.projects import (
     restored_project_owners,
 )
 from rcp.server_ops import restore
-from rcp.server_ops.backup import project_capture_problems
+from rcp.server_ops.backup import project_capture_problems, project_capture_warnings
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.setup import render_prepared_team_manifest
@@ -149,7 +149,8 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
 
     sqlite, files, capture = backup(store, data)
     assert {r.alias for r in capture.recovery.repositories} == {"paper", "notes"}
-    assert len(project_capture_problems((capture,))) == 1
+    assert project_capture_problems((capture,)) == ()
+    assert len(project_capture_warnings((capture,))) == 1
     assert all(e.source_relative_path.startswith(".research/") for e in capture.files)
     restored = tmp_path / "restored"
     restored.mkdir()
@@ -259,7 +260,7 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     _git(server, "remote", "add", "origin", source.ssh_clone_url)
     _, _, connected_capture = backup(restored_store, restored)
     assert connected_capture.recovery.repositories[1].repository == source
-    assert project_capture_problems((connected_capture,)) == ()
+    assert project_capture_warnings((connected_capture,)) == ()
 
 
 def test_server_only_capture_refuses_an_origin(tmp_path):

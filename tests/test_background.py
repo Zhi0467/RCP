@@ -39,7 +39,7 @@ from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_reconciliation import Reconciliation
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskAlreadyContinued,
     AgentTaskRecord,
@@ -338,6 +338,97 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
         "operation_created",
         "operation_dispatch_started",
     ]
+
+
+def _v0433_coach_row():
+    # v0.4.33 CoachRequest predates mode, refresh and attachment fields.
+    request = CoachRequest(message="Tighten the abstract.", provider="codex", run_on="laptop")
+    added = {"mode", "refresh_source_task_id", "refresh_group_ids", "attachment_scope_id"}
+    added |= {"attachment_set_id", "attachment_client_id", "attachment_batch_id"}
+    added |= {"attachments", "references"}
+    stored = {k: v for k, v in request.model_dump(mode="json").items() if k not in added}
+    return {
+        "kind": "paper_coach",
+        "request": stored,
+        "dispatch_authority": resolve_dispatch_authority("paper_coach", request),
+    }
+
+
+def _v0429_compute_chat_row():
+    # v0.4.29 froze the turn's compute selection into every RunRequest.
+    stored = _work_request("legacy-compute").model_dump(mode="json")
+    stored["active_compute_ids"] = ["gpu"]
+    profile = {"id": "gpu", "name": "GPU", "kind": "ssh", "ssh_target": "a@gpu", "access_hint": ""}
+    stored["resolved_compute_context"] = {"active": [profile]}
+    return {"request": stored}
+
+
+def _v0417_artifact_edit_row():
+    # v0.4.17 artifact edits predate the nested origin_bound flag.
+    edit = {
+        "artifact_id": "artifact",
+        "base_version": "v1",
+        "source_name": "plot.html",
+        "media_type": "text/html",
+        "operation_id": "legacy-row",
+        "staged_scope_id": "scope",
+        "origin_operation_id": "origin",
+        "launch_kind": "discuss",
+        "master_operation_id": None,
+        "master_sha256": None,
+        "master_path": None,
+        "stage_host": None,
+        "stage_root": None,
+        "reply_episode_id": None,
+        "episode_id": None,
+        "fresh_session": False,
+    }
+    stored = _work_request("legacy-edit").model_copy(update={"mode": "discuss"})
+    return {
+        "request": stored.model_dump(mode="json") | {"artifact_edit": edit},
+        "dispatch_authority": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "legacy_row",
+    [_v0433_coach_row, _v0429_compute_chat_row, _v0417_artifact_edit_row],
+    ids=["v0.4.33-paper-coach", "v0.4.29-compute-chat", "v0.4.17-artifact-edit"],
+)
+def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="legacy-row", record_updates=legacy_row())
+
+    wait_for_task(store, tasks.launch_admitted(task.operation_id).operation_id, expect="succeeded")
+
+
+@pytest.mark.parametrize("rebound", [False, True])
+def test_a_retry_of_an_older_artifact_edit_keeps_its_binding(tmp_path: Path, rebound) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    legacy = _v0417_artifact_edit_row()
+    parent = _admitted_launch_task(
+        store, operation_id="legacy-row", record_updates=legacy | {"status": "failed"}
+    )
+    # Retry re-dumps the parsed request, so the child carries origin_bound.
+    retried = RunRequest.model_validate(parent.request).model_dump(mode="json")
+    if rebound:
+        retried["artifact_edit"]["artifact_id"] = "another-artifact"
+    child = _admitted_launch_task(
+        store,
+        operation_id="legacy-retry",
+        parent_operation_id=parent.operation_id,
+        record_updates=legacy | {"request": retried},
+        continuation_cause="retry",
+    )
+
+    if rebound:
+        with pytest.raises(ValueError):
+            tasks.launch_admitted(child.operation_id)
+    else:
+        launched = tasks.launch_admitted(child.operation_id)
+        wait_for_task(store, launched.operation_id, expect="succeeded")
 
 
 def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> None:
@@ -680,7 +771,6 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
         parent_operation_id=parent.operation_id,
     )
     tasks = BackgroundAgentTasks(store, _done_stream)
-    request = BackgroundAgentTasks._request_from_record(child)
 
     monkeypatch.setattr(
         store,
@@ -693,7 +783,7 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
     )
     with pytest.raises(ValueError, match="changed before background dispatch"):
         tasks._validated_spawn_record(
-            child.model_copy(update={"parent_operation_id": None}), request, parent=None
+            child.model_copy(update={"parent_operation_id": None}), parent=None
         )
 
     monkeypatch.setattr(
@@ -706,7 +796,7 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
         ),
     )
     with pytest.raises(ValueError, match="changed before background dispatch"):
-        tasks._validated_spawn_record(child, request, parent=parent)
+        tasks._validated_spawn_record(child, parent=parent)
 
 
 def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_path: Path) -> None:
@@ -2583,39 +2673,6 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
     assert seen == [waiting.operation_id]
     assert store.unresolved_remote_provider_passes("remote", "/stage") == []
     assert len(store.agent_tasks("project", include_hidden=True)) == 1
-
-
-def test_recorded_finalization_releases_its_claim_if_setup_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rcp.runs import remote_finalization
-
-    store = _store(tmp_path)
-    waiting = _waiting_remote_work(store, "recorded-setup-failure")
-    pid_file = "/stage/recorded-setup-failure.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize",
-            "The provider finished.",
-            pid_file,
-            _recorded_turn(pid_file),
-        ),
-    )
-    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=_done_stream)
-
-    def fail_request(_record):
-        raise RuntimeError("bad retained request")
-
-    monkeypatch.setattr(tasks, "_request_from_record", fail_request)
-
-    with pytest.raises(RuntimeError, match="bad retained request"):
-        tasks._reconcile_remote_results()
-
-    released = store.agent_task(waiting.operation_id)
-    assert released is not None and released.phase == "awaiting_remote_result"
 
 
 def test_pause_of_detached_turn_requires_reachable_exact_process(

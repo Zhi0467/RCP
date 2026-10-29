@@ -16,7 +16,7 @@ from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeRecord
 from tests.helpers import signed_in_client
 
-from .helpers import create_named_app
+from .helpers import create_named_app, fake_launch_admitted
 from .test_artifact_viewer_state import _task
 from .test_unified_artifacts import _stored_artifact
 
@@ -493,7 +493,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
 def test_a_comment_and_project_references_share_one_turn(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/tasks/project_chat",
         json={
@@ -636,7 +636,7 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
             (json.dumps({**task.request, "patch_kind": patch_kind}), task.operation_id),
         )
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     client = signed_in_client(app)
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
     response = client.post(url, json={"comments": [{"text": "Rerun with seed 2"}]})
@@ -674,7 +674,7 @@ def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, mo
     # While the chain runs, Send keeps the origin-bound orchestrator edit.
     assert artifact_send_chat_turn(store, artifact, context, "Rerun") is None
     _end_orchestrator(app, root, tmp_path / "stage")
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     response = signed_in_client(app).post(
         f"/api/projects/{episode.project_id}/artifacts/{artifact.artifact_id}/comments",
         json={"comments": [{"text": "Rerun with seed 2"}]},
@@ -702,7 +702,7 @@ def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, p
         stage_root=origin.stage_root,
     )
     # Exercise real task admission/session binding without launching a provider.
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     client = signed_in_client(app)
     url = f"/api/projects/{origin.project_id}/tasks/project_chat"
     body = {

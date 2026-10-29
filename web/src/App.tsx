@@ -4,6 +4,7 @@ import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
 import { errorMessage } from "./core/errors";
+import { reportClientEvent } from "./core/clientEvents";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
 import { useProjectTabResources } from "./projects/projectTabResources";
@@ -749,6 +750,9 @@ function MemberApp({
     loops: LoopOverlap;
   } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  useEffect(() => {
+    if (notice?.kind === "error") reportClientEvent("notice", notice.text);
+  }, [notice]);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
   >(null);
@@ -1163,6 +1167,7 @@ function MemberApp({
   const authoritativeProjectId = useRef<string | null>(null);
   // The last open the project effect ran, and whether a backend reverification
   // has interrupted it since. Recovery on the same backend reconciles that open.
+  const projectIndexLoaded = useRef(false);
   const lastProjectOpen = useRef<{
     backendKey: string | null;
     projectId: string | null;
@@ -1750,7 +1755,13 @@ function MemberApp({
   useLayoutEffect(() => {
     if (!backendSessionReady || setupOpen) return;
     if (!projectId) {
-      void loadProjectIndex().finally(() => setLoading(false));
+      // A loaded index stays on screen while it refreshes; only the first read waits.
+      if (projectIndexLoaded.current) setLoading(false);
+      void loadProjectIndex()
+        .then(() => {
+          projectIndexLoaded.current = true;
+        })
+        .finally(() => setLoading(false));
       void refreshProjectInvitations();
       return;
     }
@@ -1924,6 +1935,7 @@ function MemberApp({
   }, [loadProjectIndex]);
   const {
     digest: projectDigest,
+    loaded: projectDigestLoaded,
     error: projectDigestError,
     catchingUp: projectDigestCatchingUp,
     catchUp: catchUpProjectDigest,
@@ -5065,6 +5077,7 @@ function MemberApp({
               onNavigate={changeView}
               digest={{
                 digest: projectDigest,
+                loaded: projectDigestLoaded,
                 targetName: branchName(projectGraphRefs, graphTarget),
                 error: projectDigestError,
                 catchingUp: projectDigestCatchingUp,

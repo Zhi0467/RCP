@@ -103,9 +103,10 @@ def test_consolidation_revises_and_prunes_human_owned_lessons(store):
     human_edit(store, second)
     command(store, "update", key="u", lesson_id=first, text="merged")
     command(store, "delete", key="d", lesson_id=second)
-    assert [(item["text"], item["human_owned"]) for item in store.list_lessons("project")] == [
-        ("merged", False)
-    ]
+    assert [
+        (item["text"], item["human_owned"], item["author"]["kind"])
+        for item in store.list_lessons("project")
+    ] == [("merged", True, "agent")]
 
 
 def test_consolidation_can_page_and_prune_beyond_render_cutoff(store):

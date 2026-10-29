@@ -34,7 +34,7 @@ def _arguments() -> argparse.Namespace:
         "backend",
         nargs="?",
         type=Path,
-        default=Path(__file__).resolve().parent / "dist" / "rcp-backend",
+        default=Path(__file__).resolve().parent / "dist" / "rcp-backend" / "rcp-backend",
     )
     return parser.parse_args()
 
@@ -262,9 +262,8 @@ def main() -> None:
 
             smoke_agent.verify(base_url, Path(temporary))
 
-            # A PyInstaller one-file executable has a supervising bootloader
-            # process. The lock metadata names the Python server process, which
-            # is the authority that the desktop Quit path must signal.
+            # The lock metadata names the Python server process, which is the
+            # authority that the desktop Quit path must signal.
             os.kill(owner_pid, signal.SIGTERM)
             try:
                 return_code = owner.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)

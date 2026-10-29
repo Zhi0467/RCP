@@ -51,6 +51,7 @@ from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
 from tests.helpers import isolated_template_build, reset_from_template, signed_in_client
+from tests.release_upgrade_browser_data import seed_experiment_on_old_display_cache
 from tests.server_installed_upgrade import seed_turn_artifact
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
@@ -1487,3 +1488,64 @@ def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
                 version=1, data_dir=request.data_dir, output_dir=str(artifacts / "rehearsal")
             )
         )
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path, live):
+    # 0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal
+    # carries the live caches and reads Runs before any project open rebuilds them.
+    # An ended loop on such a cache is only logged, so the log check catches it.
+    request, state, _ = captured
+    seed_experiment_on_old_display_cache(request, state, live=live)
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+@pytest.mark.parametrize("copied", ["queued_by_0_4_35", "queued_for_omitted_project", "due_later"])
+def test_rehearsal_launches_due_consolidation_through_real_validation(
+    captured, monkeypatch, tmp_path, copied
+):
+    # 0.4.35 queued every nightly consolidation with a request field no model
+    # carries, so each launch failed its roundtrip check and retried forever.
+    from datetime import datetime, timedelta
+
+    from rcp.consolidation import ConsolidationPoller
+    from rcp.core.authority import AuthorizedHuman
+
+    request, state, _ = captured
+    app = create_app(data_dir=Path(request.data_dir))
+    store = app.state.catalog.store
+    try:
+        now = datetime.fromisoformat(store.now())
+        store.put_consolidation_schedule(
+            state["project_id"],
+            local_time="02:00",
+            timezone="UTC",
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"],
+                user_id=state["member_id"],
+                display_name="Qualification researcher",
+            ),
+            next_due_at=(now + timedelta(hours=1)).isoformat(),
+        )
+        if copied != "due_later":
+            # Admit the run as the live poller does, but leave it queued.
+            poller = ConsolidationPoller(
+                store, app.state.background_tasks, service_for=app.state.catalog.open
+            )
+            monkeypatch.setattr(poller, "_launch", lambda _operation_id: None)
+            poller.dispatch_due(now + timedelta(hours=1))
+            (run,) = store.consolidation_runs()
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target',"
+                    ' json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+                    (run.operation_id,),
+                )
+    finally:
+        store.close()
+    if copied == "queued_for_omitted_project":
+        # An omitted project's queued run is left alone, not logged as a failure.
+        import rcp.server_ops.application_validation as validation
+
+        monkeypatch.setattr(validation, "_captured_project_ids", lambda _overlay: set())
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}

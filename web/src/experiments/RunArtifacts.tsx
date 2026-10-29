@@ -2,6 +2,7 @@ import { MAIN_GRAPH } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef } from "../core/types";
 import { useState } from "react";
+import { RotateCw } from "lucide-react";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { errorMessage } from "../core/errors";
 import { openArtifact } from "../artifacts/artifactViewerModel";
@@ -27,19 +28,24 @@ export function RunArtifacts({
   const [openError, setOpenError] = useState<string | null>(null);
   if (!artifacts.length && !error && !loading) return null;
   return (
-    <div className="run-artifacts">
+    <div className="run-artifacts" aria-busy={loading || undefined}>
       {openError && <div role="alert">{openError}</div>}
-      {loading && <span role="status">Loading artifacts…</span>}
-      {error && (
+      {/* A failed read is one red retry mark; its reason is the hover. */}
+      {error && onRetry ? (
+        <button
+          type="button"
+          className="icon-button run-artifacts-retry"
+          aria-label={`Run artifacts failed: ${error}. Retry`}
+          title={error}
+          onClick={onRetry}
+        >
+          <RotateCw size={14} />
+        </button>
+      ) : error ? (
         <div className="campaign-run-error" role="alert">
-          {error}{" "}
-          {onRetry && (
-            <button type="button" className="button compact" onClick={onRetry}>
-              Retry
-            </button>
-          )}
+          {error}
         </div>
-      )}
+      ) : null}
       {artifacts.length > 0 && (
         <ul aria-label="Run artifacts">
           {artifacts.map((artifact) => (

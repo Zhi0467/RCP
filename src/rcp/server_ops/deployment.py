@@ -63,6 +63,8 @@ from rcp.storage import AppStore
 UPDATE_SOURCE_FLOOR = "0.4.5"
 
 _MAX_REQUEST_BYTES = 4 * 1024 * 1024
+# Live display caches, beside the update proof and outside its capture and payload.
+_DISPLAY_CACHES = "display-caches"
 
 
 class _Model(BaseModel):
@@ -240,6 +242,7 @@ def _check_copy(
     projects: BackupProjectFileCaptureReceipt,
     project_digest: str,
     capture: Path,
+    display_caches: Path | None,
     warnings: tuple[UpdateWarning, ...] = (),
 ) -> CandidateRehearsalResult:
     output.mkdir(mode=0o700)
@@ -252,6 +255,7 @@ def _check_copy(
         project_receipt=projects,
         project_receipt_sha256=project_digest,
         capture_root=capture,
+        display_cache_root=display_caches,
         excluded_project_ids=tuple(w.project_id for w in warnings),
     )
     overlay_path = output / "overlay.json"
@@ -297,6 +301,10 @@ def prepare(
             coordinator._validate_capture_boundary(receipt_path, sqlite)
         sqlite = reinspect_uncaptured_projects(sqlite)
         _new_output(output)
+        # Backup omits display caches, but old cached bytes still feed the space-wide
+        # reads, so both copied-state checks start from them.
+        copy_live_research_tree(data_dir / "project-snapshots", output / _DISPLAY_CACHES)
+        (output / _DISPLAY_CACHES).mkdir(mode=0o700, exist_ok=True)
         capture = output / f"backup-{sqlite.capture_id}"
         copy_proof_tree(receipt_path.parent, capture)
         # Preserve the outgoing evidence; every downstream consumer uses the
@@ -355,6 +363,7 @@ def prepare(
             projects,
             publication.receipt_sha256,
             capture,
+            output / _DISPLAY_CACHES,
             warnings,
         )
         proof = ApplicationProof(
@@ -447,6 +456,7 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         proof.project_receipt,
         proof.project_receipt_sha256,
         Path(proof.capture_root),
+        _carried_display_caches(Path(request.proof_path)),
         proof.warnings,
     )
     expected = _upgrade_previous_projection(Path(request.proof_path), proof, observed)
@@ -466,6 +476,12 @@ def validate(request: ValidateRequest) -> dict[str, object]:
         "proof_sha256": digest,
         "verification_sha256": _read_model_digest(observed),
     }
+
+
+def _carried_display_caches(proof_path: Path) -> Path | None:
+    """Update preparation always carries this folder; restore preparation never does."""
+    caches = proof_path.parent / _DISPLAY_CACHES
+    return caches if caches.is_dir() else None
 
 
 def _upgrade_previous_projection(

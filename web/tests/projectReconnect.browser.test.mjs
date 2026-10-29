@@ -53,6 +53,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     member: "human",
     admitted: true,
     projectGate: null,
+    indexGate: null,
     projectStatus: 200,
     projectName: null,
     identityGate: null,
@@ -196,9 +197,10 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       if (state.graphRefs === null)
         return route.fulfill({ status: 503, json: { detail: "unavailable" } });
       json = state.graphRefs;
-    } else if (path === "/api/projects")
+    } else if (path === "/api/projects") {
+      if (state.indexGate) await state.indexGate.promise;
       json = ["demo", "second"].map((id) => ({ id, name: project(id).name, revision: 1 }));
-    else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
+    } else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
       if (state.connected) {
         state.reconnectLoads++;
         state.reconnectRequested.resolve();
@@ -264,7 +266,10 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         archived: state.archivedChats,
       };
     else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
-    else if (path.endsWith("/digest"))
+    else if (path.endsWith("/digest") && options.digest) {
+      await options.digest.gate;
+      json = options.digest.value;
+    } else if (path.endsWith("/digest"))
       json = {
         cursor: 0,
         mark: null,
@@ -299,6 +304,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
             : null,
       };
     }, state.health);
+  if (options.initScript) await page.addInitScript(options.initScript);
   await page.goto(`${origin}/#/projects/demo?view=overview`);
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
@@ -333,6 +339,45 @@ for (const initialFreshness of ["stale", "fresh"]) {
     },
   );
 }
+
+test("Overview rows first show where they stay when the digest arrives late", async (t) => {
+  const digest = Promise.withResolvers();
+  const { page, errors } = await openDemoProject(t, "fresh", {
+    digest: {
+      gate: digest.promise,
+      value: {
+        cursor: 2,
+        mark: null,
+        target: "main",
+        needs_you: [],
+        changed: [{ source_key: "k", label: "Changed node", edits: 1, node_ids: [] }],
+        reports: [],
+        changed_node_ids: [],
+        count: 1,
+      },
+    },
+    initScript: () => {
+      // Every distinct top at which the rows were visible, frame by frame.
+      window.__rowTops = [];
+      const tick = () => {
+        const rows = document.querySelector(".overview-questions");
+        if (rows?.checkVisibility({ visibilityProperty: true })) {
+          const top = Math.round(rows.getBoundingClientRect().top);
+          if (window.__rowTops.at(-1) !== top) window.__rowTops.push(top);
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    },
+  });
+  await page.locator(".overview-questions").waitFor({ state: "attached" });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  digest.resolve();
+  await page.locator(".digest-card").waitFor();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal((await page.evaluate(() => window.__rowTops)).length, 1);
+  assert.deepEqual(errors, []);
+});
 
 // Drives the page's own identity module, as a failed request or poll would.
 const reverify = (page) =>
@@ -636,6 +681,41 @@ test("a desktop refresh revalidates the shown project without holding it inert",
   assert.equal(await page.evaluate(() => window.__sawInert), false);
   // Nothing changed, so nothing is downloaded again.
   assert.equal(projectReads(), readsBefore);
+});
+
+test("a loaded index stays on screen while a quick return refreshes it", async (t) => {
+  const useCheckout = {
+    intent: "use_existing_checkout_personally",
+    eligible: true,
+    preselected: true,
+    primary_action_label: "Use existing checkout",
+    required_fields: [],
+    pinned_source_project_id: null,
+    unavailable_reason: null,
+  };
+  const { page, state, authoritativeLoaded } = await openDemoProject(t, "fresh", {
+    health: { ...HEALTH, project_creation: { intents: [useCheckout] } },
+  });
+  await authoritativeLoaded;
+  await page.evaluate(() => {
+    location.hash = "";
+  });
+  await page.locator(".project-shelf").waitFor();
+  // Leave for a project whose snapshot is still loading, then come straight back.
+  state.projectGate = Promise.withResolvers();
+  await page.evaluate(() => {
+    location.hash = "#/projects/second";
+  });
+  await page.locator(".app-loading").waitFor();
+  state.indexGate = Promise.withResolvers();
+  await page.evaluate(() => {
+    location.hash = "";
+  });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await page.locator(".project-shelf").count(), 1);
+  assert.equal(await page.locator(".app-loading").count(), 0);
+  state.indexGate.resolve();
+  state.projectGate.resolve();
 });
 
 test("switching project tabs returns to the panel each project was left on", async (t) => {

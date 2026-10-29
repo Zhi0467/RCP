@@ -959,7 +959,6 @@
   line-height: 1;
   margin: 0;
 }
-.space-runs-header > span,
 .space-runs-section > header,
 .space-runs-completed > header,
 .space-runs-group > summary {
@@ -1149,13 +1148,6 @@
 }
 .space-runs-group[open] .space-runs-fold {
   transform: rotate(90deg);
-}
-.space-runs-empty {
-  border-top: 1px solid var(--landing-rule);
-  color: var(--landing-muted);
-  font: var(--type-xs)/1.5 var(--ui);
-  margin: 0;
-  padding: 14px 2px;
 }
 
 .run-route-history {

@@ -90,6 +90,9 @@ from rcp.transport import StateUnavailable
 
 logger = logging.getLogger(__name__)
 
+# Loops a person still has to see: live ones, and exhausted or paused ones waiting on them.
+_UNAVAILABLE_ROW_STATUSES = (*_LIVE_EPISODE_STATUSES, "needs_action")
+
 router = APIRouter()
 membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -347,11 +350,10 @@ def _experiment_episode_entries(
         )
 
         cache_status, cached = catalog.cached_snapshot_status(record.project_id)
-        if cache_status == "invalid" or (cache_status == "missing" and record.revision is not None):
-            raise HTTPException(
-                status_code=503,
-                detail=f"Cached project snapshot is unavailable for {record.project_id}.",
-            )
+        # An unusable cache makes this project's main loops unreadable, not the index.
+        main_cache_unusable = cache_status == "invalid" or (
+            cache_status == "missing" and record.revision is not None
+        )
         grouped: dict[
             str,
             list[
@@ -389,15 +391,19 @@ def _experiment_episode_entries(
         for group in grouped.values():
             target = group[0][0].episode.graph_target
             graph_head = None
-            if target.kind == "main":
-                # ProjectDisplayCache is deliberately a main-only display snapshot.
-                # Preserve its graph/runtime publication fence for ordinary loops;
-                # branch state is always read through its exact history service.
-                state = _cached_graph_state(completed_cached)
-                if state is None:
-                    continue
-            else:
-                try:
+            try:
+                if target.kind == "main":
+                    # ProjectDisplayCache is deliberately a main-only display snapshot.
+                    # Preserve its graph/runtime publication fence for ordinary loops;
+                    # branch state is always read through its exact history service.
+                    if main_cache_unusable:
+                        raise StateUnavailable(
+                            f"Cached project snapshot is unavailable for {record.project_id}."
+                        )
+                    state = _cached_graph_state(completed_cached)
+                    if state is None:
+                        continue
+                else:
                     if main_service is None:
                         main_service = get_project_service(catalog, record.project_id)
                     target_service = (
@@ -418,32 +424,32 @@ def _experiment_episode_entries(
                         raise ValueError(
                             "Experiment graph projection returned a different target head."
                         )
-                except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
-                    live_episodes = [
-                        item[0].episode
-                        for item in group
-                        if item[0].episode.status in _LIVE_EPISODE_STATUSES
-                    ]
-                    for episode in live_episodes:
-                        assert episode.control_node_id is not None
-                        unavailable.append(
-                            UnavailableExperimentLoopResponse(
-                                project_id=record.project_id,
-                                project_name=record.name,
-                                graph_target=target,
-                                control_node_id=episode.control_node_id,
-                                episode_id=episode.episode_id,
-                                detail=str(exc),
-                            )
+            except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+                live_episodes = [
+                    item[0].episode
+                    for item in group
+                    if item[0].episode.status in _UNAVAILABLE_ROW_STATUSES
+                ]
+                for episode in live_episodes:
+                    assert episode.control_node_id is not None
+                    unavailable.append(
+                        UnavailableExperimentLoopResponse(
+                            project_id=record.project_id,
+                            project_name=record.name,
+                            graph_target=target,
+                            control_node_id=episode.control_node_id,
+                            episode_id=episode.episode_id,
+                            detail=str(exc),
                         )
-                    logger.warning(
-                        "Unavailable %s Experiment branch %s in project %s: %s",
-                        "live" if live_episodes else "historical",
-                        target.key,
-                        record.project_id,
-                        exc,
                     )
-                    continue
+                logger.warning(
+                    "Unavailable %s Experiment target %s in project %s: %s",
+                    "live" if live_episodes else "historical",
+                    target.key,
+                    record.project_id,
+                    exc,
+                )
+                continue
 
             for episode_snapshot, runtime, read_model in group:
                 episode = episode_snapshot.episode
@@ -516,7 +522,7 @@ def _experiment_episode_entries(
                             latest_report_episode_id=read_model.latest_report_episode_id,
                         )
                     except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
-                        if episode.status in _LIVE_EPISODE_STATUSES:
+                        if episode.status in _UNAVAILABLE_ROW_STATUSES:
                             unavailable.append(
                                 UnavailableExperimentLoopResponse(
                                     project_id=record.project_id,
@@ -529,7 +535,7 @@ def _experiment_episode_entries(
                             )
                         logger.warning(
                             "Unavailable %s Experiment episode %s on %s: %s",
-                            "live" if episode.status in _LIVE_EPISODE_STATUSES else "historical",
+                            "live" if episode.status in _UNAVAILABLE_ROW_STATUSES else "historical",
                             episode.episode_id,
                             target.key,
                             exc,
@@ -579,9 +585,32 @@ def space_runs(
         visible=visible,
         archive_states_by_project=archive_states_by_project,
     )
-    if experiment_index.unavailable:
-        raise HTTPException(status_code=503, detail=experiment_index.unavailable[0].detail)
     entries = [_space_experiment_run(entry) for entry in experiment_index.entries]
+    # One unreadable loop is one degraded row; the rest of the space stays listed.
+    unavailable_episodes = [
+        episode
+        for item in experiment_index.unavailable
+        if (episode := store.episode(item.episode_id)) is not None
+    ]
+    unavailable_metadata = (
+        store.episode_loop_metadata_snapshots(unavailable_episodes) if unavailable_episodes else {}
+    )
+    for episode in unavailable_episodes:
+        record = records[episode.project_id]
+        route = store.auto_research_child_experiment(episode.episode_id)
+        entries.append(
+            _space_unavailable_run(
+                episode,
+                metadata=episode_loop_metadata_from_snapshot(
+                    episode, unavailable_metadata[episode.episode_id]
+                ),
+                project_name=record.name,
+                project_reachable=record.reachable,
+                # The index read this project's archive states after its loops.
+                archive_state=archive_states_by_project[episode.project_id][episode.episode_id],
+                parent_episode_id=route.auto_research_episode_id if route else None,
+            )
+        )
     for project_id in records:
         if project_id not in archive_states_by_project:
             archive_states_by_project[project_id] = store.episode_archive_states(project_id)
@@ -846,6 +875,42 @@ def _space_archived_run(
         run_section="completed",
         archived=True,
         can_archive=True,
+        authorized_by=episode.authorized_by,
+        started_by=metadata.started_by,
+        auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,
+        checkout=metadata.checkout,
+    )
+
+
+def _space_unavailable_run(
+    episode: EpisodeRecord,
+    *,
+    metadata: EpisodeLoopMetadata,
+    project_name: str,
+    project_reachable: bool | None,
+    archive_state: EpisodeArchiveState,
+    parent_episode_id: str | None,
+) -> SpaceRunIndexEntryResponse:
+    """A live loop whose graph could not be read; the Experiment index logs why."""
+
+    assert episode.control_node_id is not None
+    return SpaceRunIndexEntryResponse(
+        episode_id=episode.episode_id,
+        project_id=episode.project_id,
+        project_name=project_name,
+        project_reachable=project_reachable,
+        mode="experiment_loop",
+        title=episode.control_node_id,
+        graph_target=episode.graph_target,
+        parent_episode_id=parent_episode_id,
+        experiment_id=episode.control_node_id,
+        started_at=episode.created_at,
+        last_activity_at=episode.updated_at,
+        health_label="Unavailable",
+        health_tone="degraded",
+        run_section="running",
+        archived=archive_state.archived,
+        can_archive=archive_state.can_archive,
         authorized_by=episode.authorized_by,
         started_by=metadata.started_by,
         auto_research_parent_episode_id=metadata.auto_research_parent_episode_id,

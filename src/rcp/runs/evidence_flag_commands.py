@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 
 from rcp.agents.command_protocol import CommandResponse, FlagCommandRequest
 from rcp.core.models import GraphState
+from rcp.core.operations import CreateNodesOperation
 from rcp.core.project_types import project_type_of
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS
 from rcp.service import ProjectService
@@ -15,6 +15,7 @@ from rcp.storage.evidence_flags import EvidenceFlagError
 from rcp.transport import StateUnavailable
 
 RCP_FLAG_KEY_PREFIX = "rcp:"
+_ADDED_FINDING = "Consolidation added this Evidence."
 
 
 def is_current_evidence(state: GraphState, node_id: str) -> bool:
@@ -92,37 +93,33 @@ def flag_command_usage(client: str) -> str:
 def hold_consolidation_additions(
     service: Callable[[], ProjectService], store: AppStore, operation_id: str
 ) -> bool:
-    """Hold every Evidence node this consolidation run's applied Patches created.
+    """Hold every Evidence node this consolidation run's committed Patches created.
 
     RCP raises these, not the agent, so new Evidence never reaches the graph unseen.
-    The created ids come from each applied Patch receipt, never a graph diff, and the
-    keyed flags replay, so rerunning after any apply or at run settlement recovers a
-    hold an interrupted process missed. A failure is recorded on the task; the Patch
-    stands. Returns False when the receipts, or canonical state needed to check
-    applied Patches, could not be read.
+    The created ids come from the target's canonical Patches bound to this operation,
+    keyed Applies and the final ``patch.json`` alike, never a graph diff. The keyed
+    flags replay, so rerunning after any apply or at run settlement recovers a hold
+    an interrupted process missed. A failure is recorded on the task; the Patch
+    stands. A run that never launched committed nothing, so its settlement needs no
+    canonical read. Returns False when canonical state could not be read.
     """
     task = store.agent_task(operation_id)
-    if task is None:
+    if task is None or not store.agent_task_has_receipt(operation_id, "agent_launch"):
         return True
-    created: list[tuple[str, str]] = []
     try:
-        for receipt in store.list_consolidation_apply_receipts(operation_id):
-            result = receipt["result"] or {}
-            if result.get("status") != "ok" or result["result"].get("disposition") != "applied":
-                continue
-            patch = json.loads(receipt["patch_text"])
-            summary = patch.get("summary") if isinstance(patch.get("summary"), str) else ""
-            finding = (summary.strip().splitlines() or ["Consolidation added this Evidence."])[0]
-            created += [
-                (node["id"], finding)
-                for operation in patch.get("ops", [])
-                if operation.get("op") == "create_nodes"
-                for node in operation.get("nodes", [])
-            ]
+        history = service().for_graph_target(task.graph_target).history
+        created = [
+            (node.id, (patch.summary.strip().splitlines() or [_ADDED_FINDING])[0])
+            for patch in history.load_patches()
+            if patch.source_operation_id == operation_id and patch.admission == "accepted"
+            for operation in patch.ops
+            if isinstance(operation, CreateNodesOperation)
+            for node in operation.nodes
+        ]
         if not created:
             return True
-        state = service().for_graph_target(task.graph_target).history.state()
-    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        state = history.state()
+    except (OSError, StateUnavailable, ValueError) as exc:
         store.record_agent_task_event(
             operation_id,
             f"Added Evidence could not be held for review yet: {exc}",

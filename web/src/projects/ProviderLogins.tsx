@@ -75,11 +75,10 @@ export function ProviderLogins({ spaceKind, writesDisabled = false, onLoginChang
           </button>
         ) : null}
       </header>
-      {accounts === null && !loadError ? <p className="provider-login-intro">Loading…</p> : null}
-      {accounts?.length === 0 ? (
-        <p className="provider-login-intro">No provider accounts are configured yet.</p>
-      ) : null}
-      <div className="provider-login-list">
+      <div
+        className="provider-login-list"
+        aria-busy={accounts === null && !loadError ? true : undefined}
+      >
         {accounts?.map((account) => (
           <ProviderLoginRow
             key={`${account.provider}:${account.host}`}

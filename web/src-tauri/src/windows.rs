@@ -40,7 +40,6 @@ const HANDSHAKE_SHOW_TIMEOUT: Duration = Duration::from_secs(8);
 /// backend. It is never the resting state: `finish_startup` navigates away from
 /// it, and the handshake timeout still reveals the window if that never happens.
 const BLANK_URL: &str = "about:blank";
-const BACKEND_URL: &str = "http://127.0.0.1:8421";
 const FRONTEND_URL_VARIABLE: &str = "RCP_DESKTOP_FRONTEND_URL";
 
 #[derive(Debug, PartialEq)]
@@ -62,7 +61,11 @@ pub fn create_main(
     local_https_identity: &LocalHttpsIdentity,
 ) -> Result<(), String> {
     let configured_url = std::env::var(FRONTEND_URL_VARIABLE).ok();
-    let initial_navigation = initial_navigation(uses_vite_dev_server(), configured_url.as_deref())?;
+    let initial_navigation = initial_navigation(
+        uses_vite_dev_server(),
+        configured_url.as_deref(),
+        &crate::backend::backend_url()?,
+    )?;
     let start_url = match initial_navigation {
         InitialNavigation::Eager(url) => {
             eprintln!("[rcp] main window loading {url}");
@@ -117,9 +120,14 @@ pub fn create_main(
                     Vec::new()
                 }
             };
+            let Some(current_base) =
+                current_base.or_else(|| crate::backend::backend_url().ok())
+            else {
+                return false;
+            };
             if navigation::is_main_window_url(
                 url,
-                current_base.as_deref(),
+                &current_base,
                 &team_origins,
                 uses_vite_dev_server(),
             )
@@ -513,19 +521,20 @@ fn show_request_is_current(generation: u64) -> bool {
 fn initial_navigation(
     uses_vite_dev_server: bool,
     configured_url: Option<&str>,
+    backend_url: &str,
 ) -> Result<InitialNavigation, String> {
     let default = if uses_vite_dev_server {
         "http://127.0.0.1:5173"
     } else {
-        BACKEND_URL
+        backend_url
     };
     let raw = configured_url.unwrap_or(default);
     let url =
         Url::parse(raw).map_err(|error| format!("invalid {FRONTEND_URL_VARIABLE}: {error}"))?;
-    if !navigation::is_loopback_rcp_url(&url, BACKEND_URL, cfg!(debug_assertions)) {
+    if !navigation::is_loopback_rcp_url(&url, backend_url, cfg!(debug_assertions)) {
         return Err("RCP_DESKTOP_FRONTEND_URL must be an approved loopback RCP origin".into());
     }
-    let backend = Url::parse(BACKEND_URL).expect("the built-in backend URL must be valid");
+    let backend = Url::parse(backend_url).expect("the built-in backend URL must be valid");
     if url.origin() == backend.origin() {
         Ok(InitialNavigation::AfterBackendReady(url))
     } else {
@@ -544,19 +553,25 @@ mod tests {
     #[test]
     fn initial_navigation_defers_only_the_backend_origin() {
         assert_eq!(
-            initial_navigation(false, None).unwrap(),
+            initial_navigation(false, None, "http://127.0.0.1:8421").unwrap(),
             InitialNavigation::AfterBackendReady(url("http://127.0.0.1:8421")),
         );
         assert_eq!(
-            initial_navigation(true, None).unwrap(),
+            initial_navigation(true, None, "http://127.0.0.1:8421").unwrap(),
             InitialNavigation::Eager(url("http://127.0.0.1:5173")),
         );
         assert_eq!(
-            initial_navigation(false, Some("http://127.0.0.1:5173")).unwrap(),
+            initial_navigation(
+                false,
+                Some("http://127.0.0.1:5173"),
+                "http://127.0.0.1:8421"
+            )
+            .unwrap(),
             InitialNavigation::Eager(url("http://127.0.0.1:5173")),
         );
         assert_eq!(
-            initial_navigation(true, Some("http://127.0.0.1:8421")).unwrap(),
+            initial_navigation(true, Some("http://127.0.0.1:8421"), "http://127.0.0.1:8421")
+                .unwrap(),
             InitialNavigation::AfterBackendReady(url("http://127.0.0.1:8421")),
         );
     }

@@ -1735,6 +1735,54 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
     assert failure.payload["exception_type"] == "OSError"
 
 
+@pytest.mark.parametrize("cache", ["missing", "invalid"])
+def test_completed_graph_turn_rebuilds_an_unusable_display_cache(
+    manifest, tmp_path: Path, monkeypatch, cache: str
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    client = signed_in_client(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    if cache == "missing":
+        cache_path.unlink()
+    else:
+        cache_path.write_text("{", encoding="utf-8")
+
+    async def finish_work(_service, _launcher, _request, _data_dir, *, execution):
+        del execution
+        yield _event_frame(AgentEvent(event="answer", text="Work completed."))
+        yield _event_frame(AgentEvent(event="done"))
+
+    monkeypatch.setattr(api_app_module, "stream_work_run", finish_work)
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Complete graph-capable work.",
+        mode="work",
+        patch_kind="work",
+    )
+    task = app.state.background_tasks.start(
+        project_id,
+        "project_chat",
+        request,
+        authorized_by=authorized_human(app),
+    )
+    assert wait_for_task(app.state.background_tasks.store, task.operation_id).status == "succeeded"
+
+    wait_until(
+        lambda: app.state.catalog.cached_snapshot_status(project_id)[0] == "valid",
+        timeout=2,
+        detail="the completed turn did not rebuild the display cache",
+    )
+    index = client.get("/api/episodes?mode=experiment_loop").json()
+    assert [row["episode"]["episode_id"] for row in index["entries"]] == [current_episode]
+    assert index["unavailable"] == []
+
+
 def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
@@ -2045,19 +2093,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     assert indexed["node"]["current_summary"] == f"Graph before {terminal_event}."
 
 
-def test_experiment_index_fails_for_malformed_existing_cache(manifest, tmp_path: Path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id, _current_episode = _seed_indexed_project(app)
-    client = signed_in_client(app)
-    assert client.get(f"/api/projects/{project_id}").status_code == 200
-    app.state.catalog._cached_snapshot_path(project_id).write_text("{", encoding="utf-8")
-
-    response = client.get("/api/episodes?mode=experiment_loop")
-
-    assert response.status_code == 503
-
-
-def test_scoped_experiment_index_ignores_another_projects_missing_cache(
+def test_experiment_indexes_list_healthy_projects_beside_another_projects_missing_cache(
     manifest, tmp_path: Path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2082,15 +2118,17 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
     owner = store.local_owner
     assert owner is not None
     store.seat_project_member(unavailable_project_id, owner.user_id)
+    unavailable_episode = str(uuid.uuid4())
     _record_loop(
         store,
         unavailable_project_id,
-        episode_id=str(uuid.uuid4()),
+        episode_id=unavailable_episode,
         operation_id="unavailable-project-loop",
         created_at="2026-08-10T00:00:00+00:00",
     )
 
     unscoped = client.get("/api/episodes?mode=experiment_loop")
+    runs = client.get("/api/space/runs")
     scoped = client.get(
         f"/api/projects/{healthy_project_id}/experiment-episodes",
         params={"mode": "experiment_loop"},
@@ -2100,7 +2138,11 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
         params={"mode": "experiment_loop"},
     )
 
-    assert unscoped.status_code == 503
+    assert unscoped.status_code == 200
+    assert [row["episode"]["episode_id"] for row in unscoped.json()["entries"]] == [current_episode]
+    assert [row["episode_id"] for row in unscoped.json()["unavailable"]] == [unavailable_episode]
+    assert runs.status_code == 200
+    assert {current_episode, unavailable_episode} <= {row["episode_id"] for row in runs.json()}
     assert scoped.status_code == 200, scoped.text
     assert [entry["project_id"] for entry in scoped.json()["entries"]] == [healthy_project_id]
     assert scoped.json()["entries"][0]["episode"]["episode_id"] == current_episode
@@ -2148,18 +2190,41 @@ def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path
     assert response.json()["entries"][0]["control"]["episode_id"] == current_episode
 
 
-def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
-    manifest, tmp_path: Path
+@pytest.mark.parametrize(
+    ("cache", "status"),
+    [("missing", "running"), ("invalid", "running"), ("wrong_shape", "needs_action")],
+)
+def test_unusable_project_cache_degrades_its_live_loops_to_unavailable_rows(
+    manifest, tmp_path: Path, cache: str, status: str
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id, _current_episode = _seed_indexed_project(app)
+    project_id, current_episode = _seed_indexed_project(app)
     client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
-    app.state.catalog._cached_snapshot_path(project_id).unlink()
+    with app.state.background_tasks.store.connection() as connection:
+        # An exhausted or human-paused loop still waits on a person.
+        connection.execute(
+            "UPDATE episodes SET status = ? WHERE episode_id = ?", (status, current_episode)
+        )
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    if cache == "missing":
+        cache_path.unlink()
+    elif cache == "invalid":
+        cache_path.write_text("{", encoding="utf-8")
+    else:
+        cache_path.write_text('{"schema_version": []}', encoding="utf-8")
 
-    response = client.get("/api/episodes?mode=experiment_loop")
+    index = client.get("/api/episodes?mode=experiment_loop")
+    runs = client.get("/api/space/runs")
 
-    assert response.status_code == 503
+    assert index.status_code == 200
+    assert index.json()["entries"] == []
+    assert [row["episode_id"] for row in index.json()["unavailable"]] == [current_episode]
+    assert runs.status_code == 200
+    row = next(row for row in runs.json() if row["episode_id"] == current_episode)
+    assert row["health_tone"] == "degraded"
+    assert status != "running" or row["run_section"] == "running"
+    assert row["experiment_id"] == "exp/launched"
 
 
 @pytest.mark.parametrize("failure", ["load", "binding", "summary"])
@@ -2212,10 +2277,9 @@ def test_index_reports_live_branch_failures_and_skips_historical_failures(
                 assert unavailable["detail"]
             else:
                 assert index["unavailable"] == []
-        if live:
-            runs = client.get("/api/space/runs")
-            assert runs.status_code == 503
-            assert runs.json()["detail"] == index["unavailable"][0]["detail"]
+        runs = client.get("/api/space/runs")
+        assert runs.status_code == 200
+        assert main_id in {row["episode_id"] for row in runs.json()}
     assert any(
         record.name == "rcp.api.index"
         and record.levelname == "WARNING"

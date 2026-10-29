@@ -21,6 +21,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 import uuid
 from datetime import datetime, timedelta
@@ -160,10 +161,14 @@ def assert_serves(fixture: dict, version: str) -> None:
         assert json.load(response)["space_name"] == "Installed update retained HTTP work"
     pid = int(run(["systemctl", "show", "rcp.service", "--property=MainPID", "--value"]).stdout)
     assert pid > 0 and Path(f"/proc/{pid}").stat().st_uid == pwd.getpwnam("rcp").pw_uid
-    assert {
+    assert canonical_patches(fixture) == fixture["canonical_patches"]
+
+
+def canonical_patches(fixture: dict) -> dict[str, str]:
+    return {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for path in (Path(fixture["research"]) / "patches").iterdir()
-    } == fixture["canonical_patches"]
+    }
 
 
 def install_hook() -> None:
@@ -353,8 +358,54 @@ def assert_followup(fixture: dict, followup: dict) -> None:
         return
     path = f"/api/projects/{fixture['project_id']}/tasks/{followup['operation_id']}"
     with request(path, cookie=session(fixture)) as response:
-        assert json.load(response)["operation_id"] == followup["operation_id"]
+        task = json.load(response)
+    # The seed settled it; an update that re-queued or failed it did not serve it.
+    assert task["operation_id"] == followup["operation_id"], task
+    assert task["status"] == "succeeded", task
     followup["served_after_update"] = True
+
+
+def check_upgraded_state(fixture: dict, current: dict) -> dict:
+    """The candidate's first reads and launches of what the previous release left.
+
+    Space-wide reads come first, before any project opens. Then, with the service
+    stopped, every queued turn meets launch validation and the schedule runs once.
+    """
+    from tests.server_upgrade_state import assert_space_reads
+
+    seeded = fixture["upgrade_state"]
+    assert_space_reads(request, fixture, seeded, session(fixture))
+    candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
+    run(["systemctl", "stop", "rcp.service"])
+    service([candidate_python, "-I", str(SCRIPT), "check-launches"])
+    run(["systemctl", "start", "rcp.service"])
+    wait_health()
+    launches = json.loads((ROOT / "state/launches.json").read_text())
+    # Each check must have had its seeded row to judge.
+    queued = json.loads((ROOT / "state/consolidation.json").read_text())["queued_operation_id"]
+    if queued is not None:
+        assert queued in launches["consolidation_queued"], launches
+    if seeded["branch_id"] is not None:
+        assert launches["admitted"], launches
+    return launches
+
+
+def assert_quiet_service(since: float, phase: str, output: Path) -> None:
+    """Fail on an application ERROR or traceback the service journal holds for one phase.
+
+    The service logs `LEVEL logger: message` to stderr, and uvicorn logs
+    `ERROR:` lines. The phase's lines stay in the evidence either way.
+    """
+    lines = run(
+        ["journalctl", "-u", "rcp.service", "--no-pager", "-o", "cat", f"--since=@{int(since)}"]
+    ).stdout.splitlines()
+    (output / f"service-{phase}.log").write_text("\n".join(lines) + "\n")
+    unexpected = [
+        line
+        for line in lines
+        if line.startswith(("ERROR", "CRITICAL")) or line.startswith("Traceback (most recent")
+    ]
+    assert not unexpected, (phase, unexpected[:20])
 
 
 def backup() -> None:
@@ -612,6 +663,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         "server_installed_upgrade.py",
         "server_installed_upgrade_hook.py",
         "server_upgrade_paper.py",
+        "server_upgrade_state.py",
         "server_upgrade_scratch.py",
         "supervisor_reboot_guest.py",
         "supervisor_reboot_data.py",
@@ -692,6 +744,12 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         # A baseline that already keeps the Paper file tree writes one through its own API.
         fixture["paper"] = seed_tree_paper(request, fixture, cookie)
         write_json(ROOT / "state/fixture.json", fixture, service_owned=True)
+    from tests.server_upgrade_state import seed_edited_branch, seed_space_state
+
+    fixture["upgrade_state"] = seed_space_state(request, fixture, cookie)
+    # The seed Syncs main and runs an Experiment there; this history must survive.
+    fixture["canonical_patches"] = canonical_patches(fixture)
+    write_json(ROOT / "state/fixture.json", fixture, service_owned=True)
     destination = Path("/var/backups/rcp-installed-upgrade")
     destination.mkdir(mode=0o700)
     account = pwd.getpwnam("rcp")
@@ -745,8 +803,10 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     # Written after the last outgoing backup: historical backups rejected its identity.
     run(["systemctl", "stop", "rcp.service"])
     service([old_python, "-I", str(SCRIPT), "seed-question-followup"])
+    service([old_python, "-I", str(SCRIPT), "admit-consolidation"])
     run(["systemctl", "start", "rcp.service"])
     wait_health()
+    fixture["upgrade_state"]["branch_id"] = seed_edited_branch(request, fixture, session(fixture))
     followup = json.loads((ROOT / "state/question-followup.json").read_text())
     rehearses = candidate_rehearses()
     select(candidate)
@@ -755,6 +815,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     rejected = fixture["project_id"] if rehearses else None
     select(candidate, observe=True, reject_project=rejected)
     committed = operator("update", "--confirm-target", confirmation)
+    candidate_serving = time.time()
     update_warnings = [
         field["value"] for field in step_fields(committed) if field["name"] == "update_warning"
     ]
@@ -792,6 +853,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert leftovers == [], leftovers
     assert not list((DATA / "run-stage").glob("backup-*"))
     assert not list(Path("/etc/rcp/supervisor/logs").glob("*.log"))
+    # After the cleanup checks: its service restart runs the startup guard, which
+    # keeps its own diagnostic logs. Before assert_serves, which opens the project.
+    launches = check_upgraded_state(fixture, current)
     from zipfile import ZipFile
 
     (wheel,) = candidate.glob("rcp-*.whl")
@@ -837,6 +901,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     )
     for _ in range(3):
         backup()
+    assert_quiet_service(candidate_serving, "candidate-serving", output)
     archives = list(destination.glob("*.tar.age"))
     receipts = list(destination.glob("*.tar.age.receipt.json"))
     assert len(archives) == 2, archives
@@ -855,6 +920,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             "base_maintenance_kept_project_uncaptured": base_kept_project_uncaptured,
             "backup_after_candidate_keep": "protected",
             "question_followup": followup,
+            "upgrade_state": {**fixture["upgrade_state"], "launches": launches},
             "paper": {"baseline": fixture["paper"], "current": current_paper},
             "dry_run": rehearsal,
             "injected_backup_rejection": {
@@ -877,6 +943,8 @@ def main() -> None:
         "seed-base-artifact",
         "seed-candidate-artifact",
         "seed-question-followup",
+        "admit-consolidation",
+        "check-launches",
     }:
         if (
             sys.platform != "linux"
@@ -891,6 +959,16 @@ def main() -> None:
             seed()
         elif sys.argv[1] == "seed-question-followup":
             seed_followup()
+        elif sys.argv[1] == "admit-consolidation":
+            from tests.server_upgrade_state import admit_due_consolidation
+
+            fixture = json.loads((ROOT / "state/fixture.json").read_text())
+            queued = admit_due_consolidation(DATA) if fixture["upgrade_state"]["schedule"] else None
+            write_json(ROOT / "state/consolidation.json", {"queued_operation_id": queued})
+        elif sys.argv[1] == "check-launches":
+            from tests.server_upgrade_state import check_queued_launches
+
+            write_json(ROOT / "state/launches.json", check_queued_launches(DATA))
         elif sys.argv[1] in {"seed-base-artifact", "seed-candidate-artifact"}:
             seed_artifact(sys.argv[1].removeprefix("seed-").removesuffix("-artifact"))
         else:

@@ -215,6 +215,13 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         path="/usr/sbin/ioreg",
     ),
     Dependency(
+        "journalctl",
+        "Let doctor count the service's recurring errors in its own journal.",
+        required_on=frozenset({"server"}),
+        platforms=LINUX,
+        apt="systemd",
+    ),
+    Dependency(
         "launchctl",
         "Own helper jobs, the browser, and keep-awake through launchd on macOS.",
         optional_on=frozenset({"local"}),

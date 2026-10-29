@@ -31,8 +31,11 @@ The unified logo contains RCP once, without a redundant initial tile.
 
 ## No commentary lines
 
-Do not put muted explanatory subtitles beneath buttons, titles, labels, or
-headings. Wording, hierarchy, shape, color, motion, and control state carry meaning.
+Avoid unnecessary secondary labels and descriptions. Let the layout do the
+explaining. Do not put muted explanatory subtitles beneath buttons, titles,
+labels, or headings. Wording, hierarchy, shape, color, motion, and control state
+carry meaning. A note that is truly needed appears on hover (a tooltip), not as
+text on the page.
 Errors, conflicts, required warnings, and accessibility labels stay explicit.
 A failure recoverable with one action uses a visual mark and one icon-only action.
 It does not use a stacked box or caption. An unsent turn has a red edge and
@@ -40,6 +43,12 @@ Resend at the top right.
 More detail belongs in an explicit read-only inspector.
 Chat and coaching have no sample prompts, slogans, instructional empty states,
 or textarea placeholders. Empty conversations are empty.
+
+## Smooth motion
+
+State changes are smooth, never choppy. Loading, polling, and switching keep
+their layout: no content jumps, no flicker between states, and no row that
+resizes when its data arrives. Transitions are short and honor reduced motion.
 
 ## Phone layout
 
@@ -69,9 +78,10 @@ Unpin has its own icon button. The destination order ends with Terminals, Agents
 and Settings.
 
 At widths <=560px, one top bar holds Back, project name (opens the project dock),
-Sync only for staged changes, and a labelled-row ⋯ menu. Bottom tabs show Overview,
+Sync only for staged changes, the branch picker with Retry graph or Retry tasks
+when stale, and a labelled-row ⋯ menu. Bottom tabs show Overview,
 Inbox, Research, Runs, and More. More is active for its destinations.
-Ask floats above the bar except in Agents. Status banners and the Overview
+Ask floats above the bar except in Agents and Paper. Status banners and the Overview
 revision use one line. Provider and compute notices expand from a summary while
 keeping failures visible. Inbox counts share a row.
 
@@ -202,9 +212,9 @@ Controls wrap with phone-sized targets at 390px.
 ## DAG controls
 
 One floating toolbar inside the canvas holds every control.
-It contains + Node, Undo, Redo, Layout, View, Fit, and full screen.
+It contains + Node, Undo, Redo, Layout, Lens, Fit, and full screen.
 The Layout menu holds layout mode, repulsion, Release all pins, and Reset layout.
-The View menu holds projection, per-type brightness and hiding, and controls to
+The Lens menu holds projection, per-type brightness and hiding, and controls to
 brighten or dim all nodes. A graph opens dim. Each node's bulb lights that node
 and its own
 edges, never its neighbours. A hidden type hides its edges too. Lit nodes and
@@ -253,7 +263,7 @@ and a hairline divider. It has no title band or row for metadata or mode.
 
 Cards have fixed size, one-line title, and secondary metadata. Their menus remove
 unsent drafts or rename, pin, or archive chats. Rename is inline.
-A blank name restores the derived name.
+A blank name keeps the current name.
 Archived counts include unloaded chats and offer Restore.
 An archived composer shows only Restore. Revisits retain loaded rows until refresh.
 Display ownership and admission follow
@@ -273,7 +283,7 @@ Unread cards have a tint, an accent edge, a bold title, and New.
 Failed or stopped unread cards retain their group.
 Retry or Resume remains visible. Working rows show phase and elapsed time.
 Search matches every word against loaded card and turn content.
-The filters are All and Working.
+The filters are All and Working, plus Archived while any chat is archived.
 
 Recovery uses the backend-labelled banner, except plain Retry is one icon action
 on the failed turn's error row. Only the latest eligible turn offers recovery.
@@ -284,7 +294,8 @@ or role. User tags remain. Children in the active lineage show Working or Done.
 Attention belongs to the orchestrator. Posting and ownership follow the API spec.
 
 Entry opens the board unless a link selects a chat. Its icon returns to the board.
-Leaving Agents resets it. The columns are Needs you, Working, Done, and Archived.
+Leaving Agents resets it. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
+folding is per viewer.
 Cards show a logo or spinner, title, provider, model, effort, type, state, age,
 and offered recovery. Branch cards also show their source chat.
 Setup uses the newer of the loaded turns and the chat summary's newest task or
@@ -313,7 +324,8 @@ Seed and Refresh have launch controls. Raw truth inputs choose the context.
 The + menu holds Upload file and From RCP.
 Start episode's picker takes an optional starting message.
 
-Machine tiles show the name, host, provider and job status, and writable-path count.
+Machine tiles show the name, host, provider status, writable-path count, and
+job status where a jobs route exists: Slurm on any machine, the helper on the base.
 Aliases for one machine account share a tile and card.
 One card opens below the tiles. Dashed Add machine selects another space machine,
 derives its alias, and opens it. Setup uses the same tiles and New machine control.
@@ -325,7 +337,8 @@ Folder pickers have breadcrumbs, filtering and paging within one level, protecte
 entries, and Use this folder.
 
 Compute has no launch picker or resource form. Its Slurm and Helper rows show
-status and route checks. The remote Helper job folder and nonsecret Access hint
+status and route checks. The Helper row appears only on a machine agents run on.
+The remote Helper job folder and nonsecret Access hint
 use placeholders, not labels above. Fields save independently. Reach checks
 distinguish reachability, authentication, and host-key failures.
 They name the machine needing repair. Reads use stored results.

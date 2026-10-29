@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -10,9 +11,16 @@ import pytest
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
+from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.storage.artifact_models import Artifact
 
-from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
+from .helpers import (
+    append_fixture_patch,
+    authorized_human,
+    create_named_app,
+    fake_launch_admitted,
+    seed_patch,
+)
 
 
 @pytest.fixture
@@ -36,7 +44,7 @@ def runtime(manifest, tmp_path, monkeypatch):
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", dispatch)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks, dispatch)
     monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
     poller = ConsolidationPoller(
         store, app.state.background_tasks, service_for=app.state.catalog.open
@@ -50,6 +58,73 @@ def runtime(manifest, tmp_path, monkeypatch):
         dispatched=dispatched,
         now=now,
     )
+
+
+def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
+        runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target', "
+            'json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+            (run.operation_id,),
+        )
+    runtime.poller._launch(run.operation_id)
+    assert runtime.dispatched == [run.operation_id]
+
+
+def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
+        runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.mode', 'not-a-mode') "
+            "WHERE operation_id=?",
+            (run.operation_id,),
+        )
+    # Restore the real launch the fixture faked.
+    monkeypatch.delattr(runtime.app.state.background_tasks, "launch_admitted")
+
+    runtime.poller.poll_once()
+    runtime.poller.poll_once()
+
+    assert runtime.store.agent_task(run.operation_id).status == "failed"
+    settled = runtime.store.consolidation_run(run.run_id)
+    assert settled.outcome_settled_at is not None and settled.kind == "failure"
+    assert settled.error_message
+
+
+def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runtime, monkeypatch):
+    def unavailable(_operation_id):
+        raise OSError("dispatch unavailable")
+
+    fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, unavailable)
+    record_event = runtime.store.record_agent_task_event
+    warnings: list[str] = []
+
+    def locked_once(operation_id, message, **kwargs):
+        if kwargs.get("level") == "warning":
+            warnings.append(message)
+            if len(warnings) == 1:
+                raise sqlite3.OperationalError("database is locked")
+        return record_event(operation_id, message, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "record_agent_task_event", locked_once)
+    runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    # Every later poll retries; a lost write is retried, then the same error is
+    # recorded once, not once a minute.
+    runtime.poller._launch(run.operation_id)
+    runtime.poller._launch(run.operation_id)
+
+    assert runtime.store.agent_task(run.operation_id).status == "queued"
+    assert [event.level for event in runtime.store.agent_task_events(run.operation_id)] == [
+        "warning"
+    ]
 
 
 def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
@@ -229,6 +304,12 @@ def test_next_night_skips_own_successful_commits_but_retries_failed_run(
 
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
+    with runtime.store.connection() as connection:
+        # An earlier night covered everything, so only this run's commit is new.
+        connection.execute(
+            "UPDATE consolidation_targets SET covered_head = ?",
+            (runtime.service.history.state().revision,),
+        )
     execution = AgentTaskExecution(run.operation_id, runtime.store, AgentProcessControl())
     scope = runtime.store.agent_task(run.operation_id).request["run_truth_scope"]
     applied, failure = _apply_work_patch(
@@ -429,7 +510,7 @@ def test_unavailable_history_is_retried_without_changing_settled_outcome(
 
 
 def test_prelaunch_refusal_has_verified_empty_history_without_reading_project(runtime, monkeypatch):
-    monkeypatch.setattr(runtime.app.state.background_tasks, "launch_admitted", lambda _: None)
+    fake_launch_admitted(monkeypatch, runtime.app.state.background_tasks, lambda _: None)
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
     runtime.store.fail_agent_task(run.operation_id, "consolidation_authorization_revoked")
@@ -672,10 +753,8 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("unreadable", ["state", "receipts"])
+@pytest.mark.parametrize("unreadable", ["service", "patches"])
 def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch, unreadable):
-    import hashlib
-
     from rcp.core.models import Patch
     from rcp.transport import StateUnavailable
 
@@ -695,27 +774,24 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch,
         run_truth_scope=["repo-a"],
         repositories_read=["repo-a"],
         ops=[{"op": "create_nodes", "nodes": [evidence]}],
+        source_operation_id=run.operation_id,
     )
+    # The launched turn committed its Patch; the process died before the hold.
+    runtime.store.record_agent_task_receipt(run.operation_id, "agent_launch", {})
+    # A long turn's later receipts must not make it read as never launched.
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
+        runtime.store.record_agent_task_receipt(run.operation_id, f"pressure-{index}", {})
     append_fixture_patch(runtime.service, patch)
-    # The apply committed and recorded its receipt; the process died before the hold.
-    text = patch.model_dump_json()
-    digest = hashlib.sha256(text.encode()).hexdigest()
-    runtime.store.reserve_consolidation_apply(run.operation_id, "add", digest, text, "effect")
-    runtime.store.finish_consolidation_apply(
-        run.operation_id,
-        "add",
-        {"status": "ok", "result": {"disposition": "applied", "revision": 2}},
-    )
     runtime.store.fail_agent_task(run.operation_id, "Provider failed after Apply")
 
     def unavailable(*_args):
-        raise StateUnavailable("state host dropped") if unreadable == "state" else OSError
+        raise StateUnavailable("state host dropped")
 
     with monkeypatch.context() as broken:
-        if unreadable == "state":
+        if unreadable == "service":
             broken.setattr(runtime.poller, "service_for", unavailable)
         else:
-            broken.setattr(runtime.store, "list_consolidation_apply_receipts", unavailable)
+            broken.setattr(type(runtime.service.history), "load_patches", unavailable)
         runtime.poller.reconcile_outcomes()
     assert runtime.store.consolidation_run(run.run_id).kind is None
     assert runtime.store.list_evidence_flags(run.project_id) == []
@@ -773,7 +849,6 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
     assert set(runs) == {"main", changed.branch_id}
     task = runtime.store.agent_task(runs[changed.branch_id].operation_id)
     assert task.graph_target == changed.graph_target
-    assert task.request["graph_target"] == changed.graph_target.model_dump(mode="json")
     assert (
         task.request["chat_id"]
         != runtime.store.agent_task(runs["main"].operation_id).request["chat_id"]

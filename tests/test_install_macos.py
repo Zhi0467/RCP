@@ -20,7 +20,8 @@ SHIMS = {
     "uname": "echo Darwin",
     "sysctl": 'echo "$FAKE_ARM64"',
     "sw_vers": "echo 14.5",
-    "pgrep": 'exit "$FAKE_PGREP"',
+    # `pgrep -f PATTERN` against one fake process command line.
+    "pgrep": 'printf "%s\\n" "$FAKE_PROCESS" | grep -Eq -- "$2"',
     "ditto": 'exec python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$3" "$4"',
     "codesign": "exit 0",
     # Fails only the rename that puts the new app in place, when asked to.
@@ -72,7 +73,7 @@ def install(tmp_path):
             "RCP_RELEASES_URL": f"http://127.0.0.1:{server.server_port}",
             "RCP_APPLICATIONS_DIR": str(applications),
             "FAKE_ARM64": "1",
-            "FAKE_PGREP": "1",
+            "FAKE_PROCESS": "",
             "FAKE_FAIL_SWAP": "0",
             **fake,
         }
@@ -105,7 +106,8 @@ def test_refusal_leaves_the_existing_app_untouched(install, reason):
     if reason == "intel":
         fake["FAKE_ARM64"] = ""
     elif reason == "running":
-        fake["FAKE_PGREP"] = "0"
+        # The backend can outlive the app window; it runs from Resources.
+        fake["FAKE_PROCESS"] = "/Applications/RCP.app/Contents/Resources/backend/rcp-backend serve"
     elif reason == "unwritable":
         applications.chmod(0o555)
     elif reason == "swap":

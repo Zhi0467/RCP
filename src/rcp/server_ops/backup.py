@@ -92,6 +92,8 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ARCHIVE_MODE = 0o600
 _STATUS_NAME = "backup-status.json"
 _DIAGNOSTICS_NAME = "backup-diagnostics.json"
+# Its own sidecar: older releases parse the diagnostics file with exact keys.
+_WARNINGS_NAME = "backup-warnings.json"
 _LOCK_NAME = ".backup-run.lock"
 _PUBLICATION_INTENT_NAME = re.compile(
     r"\.rcp-backup-publication-"
@@ -257,8 +259,9 @@ class BackupRunOutcome(_StrictModel):
     retention_deleted_archives: tuple[str, ...] = ()
     # Persist separately: old releases strictly parse the version-1 outcome.
     problems: tuple[str, ...] = Field(default=(), exclude=True)
+    warnings: tuple[str, ...] = Field(default=(), exclude=True)
 
-    @field_validator("problems")
+    @field_validator("problems", "warnings")
     @classmethod
     def validate_problems(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for problem in value:
@@ -429,15 +432,21 @@ def prepare_backup_run_command(
     return PreparedServerCommand(plan=plan, execute=execute)
 
 
+def project_capture_warnings(projects: tuple[BackupProjectCapture, ...]) -> tuple[str, ...]:
+    """Server-only repositories: a supported setup whose code is explicitly not backed up."""
+
+    return tuple(
+        f"{project.project_id}/{repository.alias}: code not backed up"
+        for project in projects
+        if project.recovery is not None
+        for repository in project.recovery.repositories
+        if repository.repository is None
+    )
+
+
 def project_capture_problems(projects: tuple[BackupProjectCapture, ...]) -> tuple[str, ...]:
     problems = []
     for project in projects:
-        if project.recovery is not None:
-            problems.extend(
-                f"{project.project_id}/{repository.alias}: code not backed up"
-                for repository in project.recovery.repositories
-                if repository.repository is None
-            )
         if project.status != "uncaptured":
             continue
         reason = project.unavailable_reason or project.unavailable_kind
@@ -455,6 +464,10 @@ def _outcome_fields(outcome: BackupRunOutcome) -> tuple[NonsecretField, ...]:
         NonsecretField(
             name="problems",
             value="; ".join(outcome.problems)[:SERVER_CLI_MAX_FIELD_CHARS] or "none",
+        ),
+        NonsecretField(
+            name="warnings",
+            value="; ".join(outcome.warnings)[:SERVER_CLI_MAX_FIELD_CHARS] or "none",
         ),
         NonsecretField(
             name="archive_path", value=str(Path(outcome.destination) / archive.archive_name)
@@ -559,6 +572,7 @@ class LinuxBackupRunMachine:
                     archive_receipt_sha256=protected.receipt_sha256,
                     retention_deleted_archives=deleted,
                     problems=project_capture_problems(manifest.projects),
+                    warnings=project_capture_warnings(manifest.projects),
                 )
                 write_backup_outcome(outcome, self.layout)
                 return outcome
@@ -1345,6 +1359,10 @@ def write_backup_outcome(
     payload = _model_bytes(outcome)
     # Publish diagnostics first; operation identity prevents stale attribution if interrupted.
     _atomic_replace_private(
+        layout.server_root / _WARNINGS_NAME,
+        canonical_json_line({"operation_id": outcome.operation_id, "warnings": outcome.warnings}),
+    )
+    _atomic_replace_private(
         layout.server_root / _DIAGNOSTICS_NAME,
         canonical_json_line({"operation_id": outcome.operation_id, "problems": outcome.problems}),
     )
@@ -1365,27 +1383,45 @@ def read_backup_outcome(
         outcome = BackupRunOutcome.model_validate_json(payload)
     except ValueError as exc:
         raise ValueError("backup status is invalid") from exc
-    diagnostics_path = layout.server_root / _DIAGNOSTICS_NAME
+    return BackupRunOutcome.model_validate(
+        {
+            **outcome.model_dump(),
+            "problems": _read_run_sidecar(
+                layout.server_root / _DIAGNOSTICS_NAME,
+                "problems",
+                outcome.operation_id,
+                expected_uid,
+            ),
+            "warnings": _read_run_sidecar(
+                layout.server_root / _WARNINGS_NAME, "warnings", outcome.operation_id, expected_uid
+            ),
+        }
+    )
+
+
+def _read_run_sidecar(
+    path: Path, key: str, operation_id: str, expected_uid: int | None
+) -> tuple[str, ...]:
+    """Read one list a run wrote beside its status; empty for another run or an older release."""
+
     try:
-        diagnostics_path.lstat()
+        path.lstat()
     except FileNotFoundError:
-        return outcome  # Old sources have no diagnostic sidecar.
-    diagnostics = json.loads(
+        return ()
+    payload = json.loads(
         _read_private_file(
-            diagnostics_path,
+            path,
             expected_uid=os.geteuid() if expected_uid is None else expected_uid,
             maximum=BACKUP_RECEIPT_MAX_BYTES,
         )
     )
-    if not isinstance(diagnostics, dict) or set(diagnostics) != {"operation_id", "problems"}:
-        raise ValueError("backup diagnostics are invalid")
-    if diagnostics["operation_id"] != outcome.operation_id:
-        return outcome
-    if not isinstance(diagnostics["problems"], list):
-        raise ValueError("backup diagnostics are invalid")
-    return BackupRunOutcome.model_validate(
-        {**outcome.model_dump(), "problems": tuple(diagnostics["problems"])}
-    )
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"operation_id", key}
+        or not isinstance(payload[key], list)
+    ):
+        raise ValueError(f"{path.name} is invalid")
+    return tuple(payload[key]) if payload["operation_id"] == operation_id else ()
 
 
 @contextmanager

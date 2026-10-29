@@ -10,18 +10,6 @@ if [ "$target_triple" != "aarch64-apple-darwin" ]; then
   exit 1
 fi
 
+# tauri.release.conf.json copies the one-directory backend this builds into
+# the app's Resources/backend.
 sh "$repo_root/packaging/build-backend.sh"
-
-source_binary="$repo_root/packaging/dist/rcp-backend"
-target_directory="$repo_root/web/src-tauri/binaries"
-target_binary="$target_directory/rcp-backend-$target_triple"
-
-if [ ! -x "$source_binary" ]; then
-  echo "Packaged backend is missing or not executable: $source_binary" >&2
-  exit 1
-fi
-
-mkdir -p "$target_directory"
-cp "$source_binary" "$target_binary"
-chmod 755 "$target_binary"
-echo "$target_binary"

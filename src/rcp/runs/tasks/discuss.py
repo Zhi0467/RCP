@@ -33,7 +33,7 @@ from rcp.agents.prompts import (
     render_chat_read_context,
 )
 from rcp.attachments import stage_turn_attachments
-from rcp.background import AgentTaskExecution, persisted_request_roundtrips
+from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
@@ -125,6 +125,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
+from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 
