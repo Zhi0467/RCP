@@ -4788,14 +4788,6 @@
                     "endColumn": 51,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 58,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/server_ops/backup.py": [

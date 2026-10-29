@@ -14,7 +14,8 @@ OWNER_SESSION_COOKIE = "rcp_owner_session"
 TEAM_SESSION_COOKIE = "__Host-rcp_session"
 TEAM_SESSION_COOKIE_MAX_AGE = TEAM_SESSION_IDLE_DAYS * 24 * 60 * 60
 
-TrustedPrincipalResolver = Callable[[Request, AppStore], SpaceUserRecord | str]
+# None names no principal; the request is then refused.
+TrustedPrincipalResolver = Callable[[Request, AppStore], SpaceUserRecord | str | None]
 
 
 class IdentityAccess:
