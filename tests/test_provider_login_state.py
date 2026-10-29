@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import shutil
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -174,23 +176,12 @@ def test_removed_login_cannot_be_revived_and_restore_keeps_ownership(tmp_path):
 
 
 def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
-    import subprocess
-    import types
-
     from rcp.providers import PROVIDER_IDS
 
-    # Load the release's schema writer; fixture rows never pass through current models.
-    source = subprocess.run(
-        ["git", "show", "v0.4.35:src/rcp/storage/base.py"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    old = types.ModuleType("rcp.storage.release_0435_base")
-    exec(compile(source, "release_0435_base.py", "exec"), old.__dict__)
+    # Captured from the release's schema writer, without current-model rows.
+    fixture = Path(__file__).parent / "fixtures/restore_schema/provider-logins-v0.4.35.sqlite3.gz"
     path = tmp_path / "old.sqlite3"
-    old_store = type("ReleaseStore", (*AppStore.__bases__[:-1], old.AppStoreBase), {})
-    old_store(path, space_kind="team")
+    path.write_bytes(gzip.decompress(fixture.read_bytes()))
     with sqlite3.connect(path) as connection:
         connection.execute(
             "INSERT INTO space_users(user_id,identity_kind,display_name,created_at,updated_at) VALUES('member','team_member','Member','2026-01-01','2026-01-01')"

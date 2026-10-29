@@ -33,3 +33,12 @@ matching the already registered pre-notifications fresh schema. The migration
 test verifies this historical fingerprint before opening a disposable copy,
 then verifies migration 28 and the current restore fingerprint. Do not regenerate
 this boundary with a later schema.
+
+`provider-logins-v0.4.35.sqlite3.gz` is an empty team database created by
+`AppStoreBase` from `v0.4.35:src/rcp/storage/base.py`. It was generated with the
+same `ReleaseStore` composition used by the original migration test: current
+`AppStore.__bases__[:-1]` plus the release's `AppStoreBase`. No current models
+wrote its rows. `test_old_0435_writer_migrates_login_and_session_rows` copies it,
+inserts legacy login, readiness, member and session rows through SQL, then opens
+it with the current store. Keeping the gzip fixture makes the regression work
+in shallow CI checkouts without release tags.

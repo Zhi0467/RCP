@@ -27,6 +27,7 @@ from .helpers import (
     create_named_app,
     gated_patch,
     seed_patch,
+    store_test_claude_token,
     wait_for_entry,
     wait_until,
 )
@@ -873,6 +874,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
+    store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     monkeypatch.setattr(
@@ -885,7 +887,14 @@ def test_project_readiness_does_not_open_or_materialize_project(
     calls: list[tuple[str, bool]] = []
     inventory_waits: list[tuple[str, str, str | None]] = []
 
-    def readiness(provider: str, *, host: str = "", refresh: bool = False):
+    def readiness(
+        provider: str,
+        *,
+        host: str = "",
+        binary: str | None = None,
+        refresh: bool = False,
+        login_id: str = "",
+    ):
         calls.append((provider, refresh))
         return ProviderReadiness(
             provider=provider,

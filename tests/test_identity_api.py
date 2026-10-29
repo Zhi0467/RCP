@@ -570,6 +570,8 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     setup_store = AppStore(data_dir / "rcp.sqlite3", space_kind="team")
     alice = setup_store.preprovision_team_member("Alice")
     bob = setup_store.preprovision_team_member("Bob")
+    for member in (alice, bob):
+        setup_store.set_provider_login_setting(member.user_id, "codex", "", "shared")
     selected = [alice.user_id]
     app = create_app(
         str(manifest.path),

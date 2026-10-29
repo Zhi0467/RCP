@@ -151,7 +151,7 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
         )
         assert forced_entered.wait(timeout=1)
         with launcher._readiness_lock:
-            forced_probe = launcher._readiness_probes[("codex", "", binary, True)]
+            forced_probe = launcher._readiness_probes[("codex", "", binary, "", True)]
         follower_waiting = threading.Event()
         wait_for_forced = forced_probe.completed.wait
 

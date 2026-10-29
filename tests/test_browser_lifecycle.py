@@ -20,6 +20,7 @@ from rcp.runs.browser_lifecycle import (
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.storage import AppStore
 
+from .helpers import store_test_claude_token
 from .test_browser_host import host as host
 from .test_discuss_recorded_finalization import _discuss_app
 
@@ -82,6 +83,7 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
 ):
     _service, request, execution = _discuss_app(tmp_path)
     store = execution.store
+    store_test_claude_token(store)
     task = store.agent_task(execution.operation_id)
     request.browser_requested = True
     request.provider = "claude"
@@ -517,6 +519,7 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
     monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
     _, request, execution = _discuss_app(tmp_path / "app")
     store = execution.store
+    store_test_claude_token(store, host="remote")
     task = store.agent_task(execution.operation_id)
     request.browser_requested = True
     request.provider = "claude"
