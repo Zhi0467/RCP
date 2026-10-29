@@ -1313,8 +1313,10 @@ Both `/api/episodes?mode=experiment_loop` and project
 non-null current episodes. Main entries use completed controls; branches use
 exact branch read models. Unreadable live loops yield identity/target/node/episode/
 diagnostic rows without hiding healthy loops; historical failures log and skip.
-Required invalid project caches return 503; `/api/space/runs` returns 503 on the
-first unavailable detail. Task rows publish role/depth rather than client parsing.
+A project whose required cache is invalid or missing makes only its main loops
+unreadable. `/api/space/runs` lists each unreadable live loop as a degraded
+"Unavailable" row beside the healthy runs, so one project never empties the
+space ledger. Task rows publish role/depth rather than client parsing.
 Project lists paint cached data, share in-flight reads, and refresh while Runs
 is visible. A child Experiment appears as one subordinate navigation actor on
 its orchestrator's timeline, never a second budget/lifecycle; it gets a Runs card
