@@ -56,6 +56,7 @@ export function MachineProviderSettingRow({
           maxLength={16}
           placeholder={placeholder}
           aria-label={label}
+          title={hint}
           data-provider-setting={setting}
           data-provider={provider}
           disabled={writesDisabled || saving}
@@ -75,7 +76,6 @@ export function MachineProviderSettingRow({
           Save
         </button>
       </div>
-      <p>{hint}</p>
       {error && <p role="alert">{error}</p>}
     </section>
   );

@@ -183,6 +183,19 @@ export function AgentConfigControls({
     workLikeCapable &&
     (readiness?.work_like_available === false || Boolean(readiness?.work_like_reason));
   const workReason = workBlocked ? readiness?.work_like_reason : null;
+  const where = machine?.host || "this machine";
+  const readinessMessage =
+    readiness === undefined
+      ? readinessPending
+        ? `Checking ${value.provider} on ${where}…`
+        : readinessError || `${value.provider} status is unavailable on ${where}. Re-check it.`
+      : workReason ||
+        (readiness.authenticated
+          ? `${readiness.version || value.provider} ready on ${where}`
+          : readiness.reason || `${value.provider} is not ready on ${where}`);
+  // A ready or pending provider is a mark with its sentence on hover; a fault stays written.
+  const readinessQuiet =
+    readiness === undefined ? readinessPending : readiness.authenticated && !workBlocked;
   const update = (patch: Partial<AgentRunConfig>) => onChange({ ...value, ...patch });
   const className = compact ? "agent-config compact" : "agent-config";
   const providerName = readiness?.label || value.provider;
@@ -287,6 +300,7 @@ export function AgentConfigControls({
                   ? "agent-readiness ready"
                   : "agent-readiness warning"
             }
+            title={readinessQuiet ? readinessMessage : undefined}
           >
             {readiness === undefined ? (
               readinessPending ? (
@@ -299,17 +313,8 @@ export function AgentConfigControls({
             ) : (
               <TriangleAlert size={14} />
             )}
-            <span>
-              {readiness === undefined
-                ? readinessPending
-                  ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
-                  : readinessError ||
-                    `${value.provider} status is unavailable on ${machine?.host || "this machine"}. Re-check it.`
-                : workReason ||
-                  (readiness.authenticated
-                    ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
-                    : readiness.reason ||
-                      `${value.provider} is not ready on ${machine?.host || "this machine"}`)}
+            <span className={readinessQuiet ? "visually-hidden" : undefined}>
+              {readinessMessage}
             </span>
             {onRefreshReadiness && (
               <button

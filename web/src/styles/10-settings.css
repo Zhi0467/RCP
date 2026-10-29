@@ -2230,12 +2230,6 @@ button.agent-provider-label {
 .compute-probe em {
   font-style: normal;
 }
-.settings-empty {
-  color: var(--muted);
-  font: var(--type-xs) var(--mono);
-  padding: 12px;
-  text-align: center;
-}
 .settings-error {
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
   color: var(--red);
@@ -3333,9 +3327,6 @@ button.agent-provider-label {
 }
 .machine-writable-paths > p[role="alert"] {
   color: var(--red);
-}
-.machine-writable-note {
-  color: var(--muted);
 }
 /* A temporary picker, tinted so it reads apart from the project's own tiles. */
 .add-project-machine {

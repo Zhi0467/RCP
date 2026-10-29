@@ -594,9 +594,7 @@ export function WritablePaths({
             </li>
           ))}
         </ul>
-      ) : (
-        <p className="machine-writable-note">No extra writable paths.</p>
-      )}
+      ) : null}
       {error && <p role="alert">{error}</p>}
       {picking && (
         <PathPicker
