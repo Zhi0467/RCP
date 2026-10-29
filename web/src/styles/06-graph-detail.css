@@ -117,9 +117,6 @@
   display: block;
   margin: 0;
 }
-.quiet-empty.compact {
-  padding: 11px 13px;
-}
 
 .drawer-scrim {
   align-items: stretch;

@@ -66,6 +66,22 @@ and stop that process explicitly before relaunching. Do not treat an adopted
 old backend as evidence for new source. Open the actual app bundle, drive the
 affected workflow and inspect its logs.
 
+## Backend log
+
+The desktop app writes the output of the backend it started to
+`~/Library/Logs/<bundle identifier>/backend.log`; the released and candidate
+builds use `app.researchcontrolpanel.rcp` and `RCP Dev.app` uses
+`app.researchcontrolpanel.rcp.dev`. Rotated files are `backend.log.1` to
+`backend.log.3`. [The desktop shell spec](specs/api-web-and-desktop-projections.md#desktop-shell)
+owns its contents and caps. To follow a run, or find what the web client reported:
+
+```bash
+tail -f ~/Library/Logs/app.researchcontrolpanel.rcp/backend.log
+grep rcp.client ~/Library/Logs/app.researchcontrolpanel.rcp/backend.log*
+```
+
+A backend started from a terminal and adopted by the app logs to that terminal.
+
 ## Keep-awake checks
 
 Use a Mac you can leave on a desk. Disposable data does not isolate machine-wide

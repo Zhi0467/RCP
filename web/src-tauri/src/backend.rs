@@ -13,6 +13,7 @@ use tauri_plugin_shell::{
 };
 use tokio::{sync::Notify, time};
 
+use crate::backend_log::{BackendLog, Stream};
 use crate::lifecycle::{DesktopStatus, Health, LaunchOutcome};
 use crate::owner_session;
 use zeroize::Zeroizing;
@@ -635,18 +636,40 @@ async fn start(app: &AppHandle, force: bool) -> Result<StartedBackend, StartFail
 
     let (startup_tx, mut startup_rx) = tokio::sync::mpsc::unbounded_channel();
     let exit = process.exit.clone();
+    // Startup stops reading `startup_rx` once the launch is decided; the log
+    // keeps the rest of the run.
+    let mut log = app
+        .path()
+        .app_log_dir()
+        .ok()
+        .map(|dir| BackendLog::new(&dir));
+    if let Some(log) = log.as_mut() {
+        log.note(&format!("backend pid {} started", process.pid()));
+    }
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Terminated(payload) => {
+                    if let Some(log) = log.as_mut() {
+                        log.finish(&format!(
+                            "backend exited (code {:?}, signal {:?})",
+                            payload.code, payload.signal
+                        ));
+                    }
                     exit.record_termination(payload);
                     break;
                 }
                 CommandEvent::Stdout(bytes) => {
+                    if let Some(log) = log.as_mut() {
+                        log.record(Stream::Stdout, &bytes);
+                    }
                     let _ = startup_tx.send(CommandEvent::Stdout(bytes));
                 }
                 CommandEvent::Stderr(bytes) => {
                     exit.observe_output(&bytes);
+                    if let Some(log) = log.as_mut() {
+                        log.record(Stream::Stderr, &bytes);
+                    }
                     let _ = startup_tx.send(CommandEvent::Stderr(bytes));
                 }
                 event => {
@@ -868,7 +891,7 @@ fn parse_launch_stdout(
     None
 }
 
-fn redact_owner_code(bytes: &[u8]) -> String {
+pub(crate) fn redact_owner_code(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .lines()
         .map(|line| {

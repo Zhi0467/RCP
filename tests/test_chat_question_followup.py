@@ -397,10 +397,11 @@ def test_restart_reconciliation_requires_client_acknowledgement(tmp_path, monkey
 
     from rcp.agents import AgentProcessControl
     from rcp.agents.command_mailbox import CommandTurnIdentity
-    from rcp.background import AgentTaskExecution
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
     from rcp.runs.chat import reconcile_chat_question_answers
     from rcp.runs.questions import work_command_handler
 
+    from .helpers import fake_launch_admitted
     from .test_ask_protocol import ask_request
 
     store = AppStore(tmp_path / "store.sqlite3")
@@ -432,12 +433,13 @@ def test_restart_reconciliation_requires_client_acknowledgement(tmp_path, monkey
         lambda service, store, question: projections.append(question.question_id),
     )
     launches = []
+    restarted = AppStore(store.path)
+    tasks = BackgroundAgentTasks(restarted, lambda *_args: pytest.fail("no provider starts"))
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *_args, **_kwargs: None)
+    fake_launch_admitted(monkeypatch, tasks, launches.append)
     statuses = reconcile_chat_question_answers(
-        AppStore(store.path),
-        SimpleNamespace(
-            launch_admitted=launches.append,
-            admit_provider_task=lambda *_args, **_kwargs: None,
-        ),
+        restarted,
+        tasks,
         lambda _: SimpleNamespace(for_graph_target=lambda target: None),
     )
     assert statuses == {question.question_id: "received" if delivered else "admitted"}

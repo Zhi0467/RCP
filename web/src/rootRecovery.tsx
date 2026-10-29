@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { reportClientEvent } from "./core/clientEvents";
 
 export const PRELOAD_RECOVERY_KEY = "rcp:preload-recovery-at";
 export const PRELOAD_RECOVERY_WINDOW_MS = 30_000;
@@ -38,6 +39,7 @@ export class RootErrorBoundary extends Component<{ children: ReactNode }, { erro
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("RCP could not render the window", error, info.componentStack);
+    reportClientEvent("render_failure", `${error.name}: ${error.message}`);
   }
 
   render() {

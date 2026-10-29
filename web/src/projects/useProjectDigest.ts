@@ -40,6 +40,7 @@ export function useProjectDigest(
   }, [projectId, digest, target.kind, store, id, onCaughtUp]);
   return {
     digest,
+    loaded: profile === null || !resource.loading || resource.error != null,
     error:
       failure?.id === id ? failure.message : resource.error ? errorMessage(resource.error) : null,
     catchingUp: resource.pending.length > 0,

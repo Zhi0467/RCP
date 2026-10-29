@@ -1452,11 +1452,6 @@ export function ExecutionView({
           ))}
         </div>
       )}
-      {!experimentEntriesLoaded && (
-        <div className="run-route-loading" role="status" aria-busy="true">
-          Loading Experiment loops…
-        </div>
-      )}
       {staleMainRoute ? (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
@@ -1466,15 +1461,16 @@ export function ExecutionView({
           {showArchived && requestedEpisode?.archived && renderEpisodeCard(requestedEpisode, false)}
         </div>
       ) : (
-        <div className="operating-sections episode-ledger-sections">
+        <div
+          className="operating-sections episode-ledger-sections"
+          aria-busy={experimentEntriesLoaded ? undefined : true}
+        >
           <section className="operating-section episode-ledger-section needs-action">
             <header>
               <h2>Needs action</h2>
               <span>{needsAction.length}</span>
             </header>
-            {needsAction.length === 0 ? (
-              <p className="episode-ledger-empty">Nothing needs you right now.</p>
-            ) : (
+            {needsAction.length > 0 && (
               <div className="campaign-run-list">
                 {needsAction.map((episode) =>
                   renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
@@ -1487,9 +1483,7 @@ export function ExecutionView({
               <h2>In progress</h2>
               <span>{inProgress.length}</span>
             </header>
-            {inProgress.length === 0 ? (
-              <p className="episode-ledger-empty">No run is in flight.</p>
-            ) : (
+            {inProgress.length > 0 && (
               <div className="campaign-run-list">
                 {inProgress.map((episode) =>
                   renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
@@ -1537,9 +1531,7 @@ export function ExecutionView({
                 <h2>Archived</h2>
                 <span>{archivedEpisodes.length}</span>
               </header>
-              {archivedEpisodes.length === 0 ? (
-                <p className="episode-ledger-empty">No archived runs.</p>
-              ) : (
+              {archivedEpisodes.length > 0 && (
                 <div className="campaign-run-list">
                   {archivedEpisodes.map((episode) => renderEpisodeCard(episode, false))}
                 </div>
@@ -1955,7 +1947,9 @@ export function AttentionOverview({
         <OverviewCard label="Decisions awaiting choice" value={decisions.length} />
         <OverviewCard label="Blockers awaiting judgment" value={blockers.length} />
       </div>
-      <h3 className="section-label">Recommended next action</h3>
+      {(proposals[0] || decisions[0] || blockers[0]) && (
+        <h3 className="section-label">Recommended next action</h3>
+      )}
       {proposals[0] ? (
         <div className="recommended-action">
           <CircleDot size={16} />
@@ -1971,12 +1965,7 @@ export function AttentionOverview({
           <CircleDot size={16} />
           <strong>Inspect “{blockers[0].title}”</strong>
         </button>
-      ) : (
-        <div className="quiet-empty compact">
-          <CircleDot size={16} />
-          <strong>No judgment queued</strong>
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }

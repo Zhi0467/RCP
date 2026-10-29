@@ -335,13 +335,6 @@ export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRa
         <span className="count-badge">{total}</span>
       </header>
 
-      {total === 0 && (
-        <div className="quiet-empty">
-          <Check size={16} />
-          <strong>No other judgment queued</strong>
-        </div>
-      )}
-
       {decisions.map((decision) => (
         <button
           className={`attention-item decision${decision.draft_touched ? " draft-touched" : ""}`}

@@ -53,7 +53,10 @@ export function closeProjectTab(
   projectId: string,
 ): ProjectTabCloseResult {
   const closingIndex = tabs.findIndex((tab) => tab.id === projectId);
-  if (closingIndex === -1) return { tabs, activeProjectId };
+  // A routed project is open before its first snapshot adds its tab, and one
+  // that never loads has none: closing it still leaves its route.
+  if (closingIndex === -1)
+    return { tabs, activeProjectId: activeProjectId === projectId ? null : activeProjectId };
   const nextTabs = tabs.filter((tab) => tab.id !== projectId);
   if (activeProjectId !== projectId) return { tabs: nextTabs, activeProjectId };
   return {
