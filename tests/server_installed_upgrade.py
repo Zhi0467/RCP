@@ -825,7 +825,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     (site,) = (Path(current["release_directory"]) / ".venv/lib").glob("python*/site-packages")
     for path in site.glob("rcp_installed_upgrade_inject.*"):
         path.unlink()
-    launches = check_upgraded_state(fixture, current)
     maintenance_receipt = ROOT / "maintenance-capture.json"
     base_kept_project_uncaptured = "unknown"
     if maintenance_receipt.is_file():
@@ -854,6 +853,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert leftovers == [], leftovers
     assert not list((DATA / "run-stage").glob("backup-*"))
     assert not list(Path("/etc/rcp/supervisor/logs").glob("*.log"))
+    # After the cleanup checks: its service restart runs the startup guard, which
+    # keeps its own diagnostic logs. Before assert_serves, which opens the project.
+    launches = check_upgraded_state(fixture, current)
     from zipfile import ZipFile
 
     (wheel,) = candidate.glob("rcp-*.whl")
