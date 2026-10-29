@@ -11,6 +11,7 @@ import pytest
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 _WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
 
@@ -235,7 +236,10 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     binary = _claude_binary(tmp_path, work_ready=True)
     assert launcher.readiness("claude", binary=str(binary)).authenticated
     store.mark_provider_login_failed(
-        "claude", "", generation=0, detail="observed provider failure", source="turn"
+        LoginKey("claude", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="observed provider failure",
+        source="turn",
     )
     readiness = launcher.readiness("claude", binary=str(binary))
     assert not readiness.authenticated
@@ -272,7 +276,9 @@ def test_probe_failure_updates_account_only_for_provider_auth(
     monkeypatch.setattr(profile, "models", lambda result: [])
 
     def probe(host, command, **kwargs):
-        assert not launcher.credential_gate._lock_for("codex", "").acquire(False)
+        assert not launcher.credential_gate._lock_for(
+            LoginKey("codex", "", MACHINE_LOGIN_ID)
+        ).acquire(False)
         return subprocess.CompletedProcess(
             command,
             1 if command[-1] == path else 0,
@@ -282,7 +288,12 @@ def test_probe_failure_updates_account_only_for_provider_auth(
 
     monkeypatch.setattr(launcher, "_probe", probe)
     readiness = launcher.readiness("codex", binary=str(binary), refresh=True)
-    assert (store.provider_login_state("codex", "").state == "signed_out") is blocked
+    assert (
+        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+    ) is blocked
     if blocked:
         assert not readiness.authenticated
-        assert store.provider_readiness_snapshot("codex", "", str(binary)) is None
+        assert (
+            store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), str(binary))
+            is None
+        )

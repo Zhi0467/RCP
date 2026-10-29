@@ -34,6 +34,7 @@ from rcp.limits import (
 )
 from rcp.machine_power_macos import InstallError, MacOSProfile
 from rcp.runs.provider_login import provider_login_host
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 logger = logging.getLogger(__name__)
 # Profiles own platform commands and optional lid-mode capabilities.
@@ -111,7 +112,10 @@ def demand_snapshot(store, background) -> list[str]:
                     )
                 if (
                     not provider
-                    or account_login_refusal(store, credentials, provider, host) is None
+                    or account_login_refusal(
+                        store, credentials, LoginKey(provider, host, MACHINE_LOGIN_ID)
+                    )
+                    is None
                 ):
                     reasons.append("task")
                     break

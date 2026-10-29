@@ -40,6 +40,7 @@ from rcp.storage import (
     EpisodeReportRecord,
     EpisodeWrapupRecord,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 if TYPE_CHECKING:
@@ -177,8 +178,7 @@ async def stream_episode_report_run(
             if reason := account_login_refusal(
                 execution.store,
                 ProviderCredentialStore.for_data_dir(execution.store.path.parent),
-                request.provider,
-                stage.execution_host,
+                LoginKey(request.provider, stage.execution_host, MACHINE_LOGIN_ID),
             ):
                 # The hidden allocation is durable; a credential block spends no
                 # new report attempt and leaves its existing wrap-up for recovery.
@@ -857,8 +857,7 @@ def _settle_provider_auth_failure(
         return None
     record_provider_failure(
         execution.store,
-        request.provider,
-        execution_host,
+        LoginKey(request.provider, execution_host, MACHINE_LOGIN_ID),
         generation=execution.login_generation,
         evidence=auth_error,
         source="report",

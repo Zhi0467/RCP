@@ -136,6 +136,7 @@ from rcp.sources import (
 from rcp.storage import AppStore
 from rcp.storage.chat_display import chat_agent_setup
 from rcp.storage.chat_forks import ChatForkOrigin
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
 
@@ -1879,10 +1880,22 @@ class ProjectService:
         return [
             {
                 **(
-                    launcher.accounts.account_state(provider, host)
+                    launcher.accounts.account_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
                     if launcher.accounts is not None
-                    else login_state(provider, host)
-                ).model_dump(mode="json"),
+                    else login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
+                ).model_dump(
+                    mode="json",
+                    include={
+                        "provider",
+                        "host",
+                        "state",
+                        "generation",
+                        "detail",
+                        "source",
+                        "changed_at",
+                        "changed_by",
+                    },
+                ),
                 "label": profile_for(provider).label,
             }
             for provider, host in sorted(accounts)

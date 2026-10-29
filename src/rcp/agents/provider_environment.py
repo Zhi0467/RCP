@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import quote
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -123,6 +124,18 @@ def account_directory_name(host: str) -> str:
     return "remote-" + hashlib.sha256(host.encode()).hexdigest()
 
 
+def validate_login_id(login_id: str) -> None:
+    """Accept the machine login or canonical, path-safe UUID4 text."""
+    if login_id == "":
+        return
+    try:
+        parsed = UUID(login_id)
+    except ValueError as exc:
+        raise ValueError("Login id must be UUID4 text.") from exc
+    if parsed.version != 4 or str(parsed) != login_id:
+        raise ValueError("Login id must be UUID4 text.")
+
+
 class ProviderCredentialStore:
     """Secrets RCP keeps for provider logins, under `<data dir>/providers`.
 
@@ -139,56 +152,60 @@ class ProviderCredentialStore:
 
         return cls(data_dir / "providers")
 
-    def account_dir(self, provider: str, host: str) -> Path:
+    def account_dir(self, provider: str, host: str, login_id: str = "") -> Path:
         if provider in {"", ".", ".."}:
             raise ValueError("Invalid credential namespace.")
-        return self.root / quote(provider, safe="") / account_directory_name(host)
+        validate_login_id(login_id)
+        directory = self.root / quote(provider, safe="") / account_directory_name(host)
+        return directory / "logins" / login_id if login_id else directory
 
-    def token_path(self, provider: str, host: str) -> Path:
-        return self.account_dir(provider, host) / "setup-token"
+    def token_path(self, provider: str, host: str, login_id: str = "") -> Path:
+        return self.account_dir(provider, host, login_id) / "setup-token"
 
-    def token_record(self, provider: str, host: str) -> CredentialRecord | None:
-        path = self.account_dir(provider, host) / "setup-token.json"
+    def token_record(self, provider: str, host: str, login_id: str = "") -> CredentialRecord | None:
+        path = self.account_dir(provider, host, login_id) / "setup-token.json"
         try:
             return CredentialRecord.model_validate(json.loads(path.read_text()))
         except (OSError, ValueError):
             return None
 
-    def token(self, provider: str, host: str) -> str | None:
+    def token(self, provider: str, host: str, login_id: str = "") -> str | None:
         try:
-            token = self.token_path(provider, host).read_text().strip()
+            token = self.token_path(provider, host, login_id).read_text().strip()
         except OSError:
             return None
         return token or None
 
     def store_token(
-        self, provider: str, host: str, token: str, *, member_id: str, now: str
+        self, provider: str, host: str, token: str, *, member_id: str, now: str, login_id: str = ""
     ) -> CredentialRecord:
-        directory = self.account_dir(provider, host)
+        directory = self.account_dir(provider, host, login_id)
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-        _write_private(self.token_path(provider, host), token + "\n")
+        _write_private(self.token_path(provider, host, login_id), token + "\n")
         record = CredentialRecord(pasted_at=now, pasted_by=member_id)
         _write_private(directory / "setup-token.json", record.model_dump_json(indent=2) + "\n")
         return record
 
-    def mark_token_verified(self, provider: str, host: str, *, now: str) -> CredentialRecord | None:
-        record = self.token_record(provider, host)
+    def mark_token_verified(
+        self, provider: str, host: str, login_id: str = "", *, now: str
+    ) -> CredentialRecord | None:
+        record = self.token_record(provider, host, login_id)
         if record is None:
             return None
         record = record.model_copy(update={"verified_at": now})
         _write_private(
-            self.account_dir(provider, host) / "setup-token.json",
+            self.account_dir(provider, host, login_id) / "setup-token.json",
             record.model_dump_json(indent=2) + "\n",
         )
         return record
 
-    def delete_token(self, provider: str, host: str) -> bool:
+    def delete_token(self, provider: str, host: str, login_id: str = "") -> bool:
         """Remove the token and its record; True when a token was stored."""
 
-        existed = self.token_path(provider, host).exists()
+        existed = self.token_path(provider, host, login_id).exists()
         for name in ("setup-token", "setup-token.json"):
-            (self.account_dir(provider, host) / name).unlink(missing_ok=True)
+            (self.account_dir(provider, host, login_id) / name).unlink(missing_ok=True)
         return existed
 
 

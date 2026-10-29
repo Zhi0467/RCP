@@ -23,6 +23,7 @@ from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderSkill, ProviderSkillProbe, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport.ssh import ssh_arguments
 
 _REFRESH_COMPLETION_GRACE_SECONDS = 5.0
@@ -100,7 +101,7 @@ class ProviderSkillInventoryManager:
         *,
         timeout: float = 30.0,
         credential_gate: ProviderCredentialGate | None = None,
-        process_environment: Callable[[str, str], ProviderProcessEnvironment] | None = None,
+        process_environment: Callable[[LoginKey], ProviderProcessEnvironment] | None = None,
         accounts: ProviderAccounts | None = None,
     ) -> None:
         self.store = store
@@ -113,7 +114,7 @@ class ProviderSkillInventoryManager:
         # The launcher's environment builder, so a Claude skill probe runs on
         # the same stored token as a turn.
         self.process_environment = process_environment or (
-            lambda _provider, _host: ProviderProcessEnvironment()
+            lambda _key: ProviderProcessEnvironment()
         )
         self._lock = threading.Lock()
         self._pending_refreshes: dict[tuple[str, str, str], _PendingRefresh] = {}
@@ -349,11 +350,15 @@ class ProviderSkillInventoryManager:
         *,
         provider: str,
     ) -> object:
-        with self.credential_gate.hold_blocking(provider, host):
-            if self.accounts is not None and (reason := self.accounts.refusal(provider, host)):
+        with self.credential_gate.hold_blocking(LoginKey(provider, host, MACHINE_LOGIN_ID)):
+            if self.accounts is not None and (
+                reason := self.accounts.refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
+            ):
                 raise ValueError(reason)
-            generation = self.store.provider_login_state(provider, host).generation
-            environment = self.process_environment(provider, host)
+            generation = self.store.provider_login_state(
+                LoginKey(provider, host, MACHINE_LOGIN_ID)
+            ).generation
+            environment = self.process_environment(LoginKey(provider, host, MACHINE_LOGIN_ID))
             env = environment.local_env if not host else None
             command = probe.command
             if probe.protocol == "jsonl":
@@ -390,13 +395,15 @@ class ProviderSkillInventoryManager:
     def _observe_failure(self, provider: str, host: str, generation: int, evidence: str) -> None:
         if self.accounts is not None:
             failed = self.accounts.observe_failure(
-                provider, host, generation=generation, evidence=evidence, source="probe"
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
+                generation=generation,
+                evidence=evidence,
+                source="probe",
             )
         else:
             failed = record_provider_failure(
                 self.store,
-                provider,
-                host,
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
                 generation=generation,
                 evidence=evidence,
                 source="probe",

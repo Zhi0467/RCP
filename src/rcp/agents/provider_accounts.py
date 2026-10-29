@@ -1,29 +1,53 @@
-"""The one owner of provider account facts: the login rows and the credential store.
-
-The launcher, the sign-in runner, and the skill inventory each need the same
-three answers about an account, whether a launch is refused, what state the
-account is in once the credential is taken into account, and whether a piece
-of provider output means the login died. They share one instance of this class
-by constructor injection; nothing wires it into a collaborator after the fact.
-"""
+"""Provider login facts and the single per-turn login resolver."""
 
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import dataclass
 from typing import Literal
 
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.providers import profile_for
 from rcp.storage import AppStore
-from rcp.storage.models import ProviderLoginStateRecord
+from rcp.storage.models import (
+    MACHINE_LOGIN_ID,
+    LoginKey,
+    ProviderLoginStateRecord,
+    _required_timestamp,
+)
+
+LoginSwitchReason = Literal[
+    "unhealthy", "limited", "sender_setting", "setting_changed", "preferred_source_available"
+]
+LoginSource = Literal["own", "shared"]
+
+
+@dataclass(frozen=True)
+class LoginRefusal:
+    source: LoginSource
+    detail: str
+    login: LoginKey | None = None
+    failure_kind: Literal["provider_auth", "session_refused"] = "provider_auth"
+
+
+@dataclass(frozen=True)
+class PreviousProviderLogin:
+    login: LoginKey
+    provider_started_at: str
+    authorized_by: str | None
 
 
 def account_login_refusal(
-    store: AppStore, credentials: ProviderCredentialStore, provider: str, host: str
+    store: AppStore, credentials: ProviderCredentialStore, key: LoginKey
 ) -> str | None:
-    profile = profile_for(provider)
-    if not profile.authentication.credential_available(credentials, host):
+    profile = profile_for(key.provider)
+    state = store.provider_login_state(key)
+    if state.removed_at:
+        return "This sign-in was removed. Start a new chat."
+    if not profile.authentication.credential_available(
+        credentials, key.host, key.login_id, login_state=state
+    ):
         return profile.authentication.missing_credential_detail
-    state = store.provider_login_state(provider, host)
     if state.state == "signed_out":
         return f"{profile.label} is signed out. Sign in in Settings, Provider logins."
     return None
@@ -31,22 +55,18 @@ def account_login_refusal(
 
 def record_provider_failure(
     store: AppStore,
-    provider: str,
-    host: str,
+    key: LoginKey,
     *,
     generation: int,
     evidence: str,
     source: Literal["turn", "report", "probe"],
 ) -> bool:
     """Normalize provider evidence and durably fence only its captured generation."""
-    if not profile_for(provider).credential_failure(evidence):
+    if not profile_for(key.provider).credential_failure(evidence):
         return False
     store.mark_provider_login_failed(
-        provider,
-        host,
+        key,
         generation=generation,
-        # Storage folds whitespace and bounds the text; the provider's own words
-        # (for example `refresh_token_reused`) stay visible on the Settings card.
         detail=f"Provider authentication failed: {evidence}",
         source=source,
     )
@@ -59,11 +79,12 @@ def reset_logins_without_credentials(
     reset = []
     for state in store.provider_login_states():
         auth = profile_for(state.provider).authentication
-        if state.state == "signed_in" and not auth.credential_available(credentials, state.host):
+        if state.state == "signed_in" and not auth.credential_available(
+            credentials, state.host, state.login_id, login_state=state
+        ):
             reset.append(
                 store.mark_provider_login_signed_out(
-                    state.provider,
-                    state.host,
+                    LoginKey(state.provider, state.host, state.login_id),
                     member_id=None,
                     source="restore",
                     detail=auth.missing_credential_detail,
@@ -83,13 +104,15 @@ class ProviderAccounts:
     def for_store(cls, store: AppStore) -> ProviderAccounts:
         return cls(store, ProviderCredentialStore.for_data_dir(store.path.parent))
 
-    def refusal(self, provider: str, host: str) -> str | None:
-        return account_login_refusal(self.store, self.credentials, provider, host)
+    def refusal(self, key: LoginKey) -> str | None:
+        return account_login_refusal(self.store, self.credentials, key)
 
-    def account_state(self, provider: str, host: str) -> ProviderLoginStateRecord:
-        state = self.store.provider_login_state(provider, host)
-        auth = profile_for(provider).authentication
-        if not auth.credential_available(self.credentials, host):
+    def account_state(self, key: LoginKey) -> ProviderLoginStateRecord:
+        state = self.store.provider_login_state(key)
+        auth = profile_for(key.provider).authentication
+        if not auth.credential_available(
+            self.credentials, key.host, key.login_id, login_state=state
+        ):
             return state.model_copy(
                 update={"state": "signed_out", "detail": auth.missing_credential_detail}
             )
@@ -97,16 +120,244 @@ class ProviderAccounts:
 
     def observe_failure(
         self,
-        provider: str,
-        host: str,
+        key: LoginKey,
         *,
         generation: int,
         evidence: str,
         source: Literal["turn", "report", "probe"],
     ) -> bool:
         return record_provider_failure(
-            self.store, provider, host, generation=generation, evidence=evidence, source=source
+            self.store, key, generation=generation, evidence=evidence, source=source
         )
 
     def reset_logins_without_credentials(self) -> list[ProviderLoginStateRecord]:
         return reset_logins_without_credentials(self.store, self.credentials)
+
+    def bound_login(self, provider: str, host: str, native_session_id: str) -> LoginKey | None:
+        """Earliest provider-started task owns the session, including fork-source lookups."""
+        previous = self._session_login(provider, host, native_session_id, latest=False)
+        return previous.login if previous else None
+
+    def previous_login(
+        self, provider: str, host: str, native_session_id: str, *, exclude_operation_id: str
+    ) -> PreviousProviderLogin | None:
+        """Latest provider-started turn, excluding the task about to launch."""
+        return self._session_login(
+            provider,
+            host,
+            native_session_id,
+            latest=True,
+            exclude_operation_id=exclude_operation_id,
+        )
+
+    def _session_login(
+        self,
+        provider: str,
+        host: str,
+        native_session_id: str,
+        *,
+        latest: bool,
+        exclude_operation_id: str = "",
+    ) -> PreviousProviderLogin | None:
+        order = "DESC" if latest else "ASC"
+        with self.store.connection() as connection:
+            row = connection.execute(
+                "SELECT task.login_id, task.authorized_user_id, MIN(start.created_at) AS started "
+                "FROM graph_runs AS task JOIN graph_run_receipts AS start "
+                "ON start.operation_id = task.operation_id "
+                "AND start.category = 'provider_runtime_selected' "
+                "WHERE json_extract(task.request_json, '$.provider') = ? "
+                "AND COALESCE(task.stage_host, '') = ? AND task.native_session_id = ? "
+                "AND task.operation_id != ? AND task.login_id IS NOT NULL "
+                "GROUP BY task.operation_id "
+                f"ORDER BY started {order}, task.rowid {order} LIMIT 1",
+                (provider, host, native_session_id, exclude_operation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return PreviousProviderLogin(
+            LoginKey(provider, host, row["login_id"]), row["started"], row["authorized_user_id"]
+        )
+
+    def resolve_login(
+        self,
+        provider: str,
+        host: str,
+        member_id: str | None,
+        *,
+        lineage_login: LoginKey | None = None,
+        bound_login: LoginKey | None = None,
+        previous_login: LoginKey | None = None,
+        previous_provider_started_at: str | None = None,
+        previous_authorized_by: str | None = None,
+        dry_run: bool = True,
+        operation_id: str | None = None,
+    ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
+        """Resolve without writes, or atomically assign and advance the shared LRU clock.
+
+        Callers supply a lineage login only for transport reattempts and the
+        initial graph-repair correction. Codex forks supply their source's bound
+        login. Human Resume and Retry are ordinary turn boundaries.
+        """
+        for key in (lineage_login, bound_login, previous_login):
+            if key is not None and (key.provider, key.host) != (provider, host):
+                raise ValueError("Session login does not match the launch provider and host.")
+        result: tuple[LoginKey | LoginRefusal, LoginSwitchReason | None] | None = None
+
+        def select(connection: sqlite3.Connection) -> LoginKey | None:
+            nonlocal result
+            result = self._resolve_login(
+                connection,
+                provider,
+                host,
+                member_id,
+                lineage_login=lineage_login,
+                bound_login=bound_login,
+                previous_login=previous_login,
+                previous_provider_started_at=previous_provider_started_at,
+                previous_authorized_by=previous_authorized_by,
+            )
+            return result[0] if isinstance(result[0], LoginKey) else None
+
+        if dry_run:
+            with self.store.connection() as connection:
+                select(connection)
+        else:
+            if operation_id is None:
+                raise ValueError("Assigning a login requires a task operation_id.")
+            self.store.assign_provider_login(operation_id, select)
+        assert result is not None
+        return result
+
+    def _resolve_login(
+        self,
+        connection: sqlite3.Connection,
+        provider: str,
+        host: str,
+        member_id: str | None,
+        *,
+        lineage_login: LoginKey | None,
+        bound_login: LoginKey | None,
+        previous_login: LoginKey | None,
+        previous_provider_started_at: str | None,
+        previous_authorized_by: str | None,
+    ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
+        machine = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        setting = self.store.provider_login_setting(
+            member_id or "", provider, host, connection=connection
+        )
+        sources: tuple[LoginSource, ...] = {
+            "own": ("own",),
+            "own_then_shared": ("own", "shared"),
+            "shared_then_own": ("shared", "own"),
+            "shared": ("shared",),
+        }[setting.setting]
+        auth = profile_for(provider).authentication
+
+        def usable(state: ProviderLoginStateRecord) -> bool:
+            return (
+                state.state == "signed_in"
+                and not state.removed_at
+                and auth.credential_available(
+                    self.credentials, host, state.login_id, login_state=state
+                )
+            )
+
+        # Legacy tasks without an authorizer retain the machine login. OpenCode
+        # has no RCP-managed added logins, independent of a member's setting.
+        fixed = (
+            machine
+            if provider == "opencode" or member_id is None
+            else (lineage_login or (bound_login if provider == "codex" else None))
+        )
+        if fixed is not None:
+            state = self.store.provider_login_state(fixed, connection=connection)
+            if usable(state):
+                return fixed, None
+            source: LoginSource = "own" if state.member_id is not None else "shared"
+            removed_bound_session = state.removed_at is not None and lineage_login is None
+            return LoginRefusal(
+                source,
+                "This sign-in was removed. Start a new chat."
+                if removed_bound_session
+                else f"{profile_for(provider).label} sign-in is unavailable. Sign in in Settings, Provider logins.",
+                fixed,
+                "session_refused" if removed_bound_session else "provider_auth",
+            ), None
+
+        rows = self.store.provider_logins(provider, host, connection=connection)
+        assignable = [row for row in rows if not row.draining_since and usable(row)]
+        allowed = [
+            row
+            for row in assignable
+            if (
+                (row.member_id == member_id and "own" in sources)
+                or (row.member_id is None and "shared" in sources)
+            )
+        ]
+
+        def key_for(row: ProviderLoginStateRecord) -> LoginKey:
+            return LoginKey(provider, host, row.login_id)
+
+        def limited(row: ProviderLoginStateRecord) -> bool:
+            return self.store.provider_login_limited(
+                key_for(row),
+                continued=previous_login is not None and key_for(row) != previous_login,
+                connection=connection,
+            )
+
+        def oldest(row: ProviderLoginStateRecord) -> tuple[str, bool, str, str]:
+            clock = self.store.provider_login_assignment(key_for(row), connection=connection)
+            return (
+                clock.last_assigned_at or "",
+                row.login_id != MACHINE_LOGIN_ID,
+                row.added_at or "",
+                row.login_id,
+            )
+
+        previous = next((row for row in allowed if key_for(row) == previous_login), None)
+        free = [row for row in allowed if not limited(row)]
+        if not free and previous is not None:
+            return key_for(previous), None
+        candidates = free or allowed
+        chosen = None
+        for source in sources:
+            group = [
+                row
+                for row in candidates
+                if (row.member_id == member_id if source == "own" else row.member_id is None)
+            ]
+            if group:
+                chosen = (
+                    previous
+                    if previous in group and not limited(previous)
+                    else min(group, key=oldest)
+                )
+                break
+        if chosen is None:
+            label = "your sign-in" if sources[0] == "own" else "the shared sign-ins"
+            return LoginRefusal(
+                sources[0], f"No usable login in {label}. Open Settings, Provider logins."
+            ), None
+        selected = key_for(chosen)
+        if previous_login is None or selected == previous_login:
+            return selected, None
+        prior = self.store.provider_login_state(previous_login, connection=connection)
+        if prior.draining_since or not usable(prior):
+            reason: LoginSwitchReason = "unhealthy"
+        elif self.store.provider_login_assignment(previous_login, connection=connection).limited_at:
+            reason = "limited"
+        elif previous_authorized_by != member_id:
+            reason = "sender_setting"
+        elif (
+            setting.changed_at
+            and previous_provider_started_at
+            and (
+                _required_timestamp(setting.changed_at)
+                > _required_timestamp(previous_provider_started_at)
+            )
+        ):
+            reason = "setting_changed"
+        else:
+            reason = "preferred_source_available"
+        return selected, reason

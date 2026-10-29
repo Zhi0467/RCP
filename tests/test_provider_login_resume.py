@@ -26,6 +26,7 @@ from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import agent_login_accounts
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .helpers import fabricated_authorizer, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_recovery import (
@@ -106,7 +107,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         retry_mode="blocked",
         diagnostic="signed out",
     )
-    store.mark_provider_login_failed("claude", "", generation=0, detail="signed out", source="turn")
+    store.mark_provider_login_failed(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), generation=0, detail="signed out", source="turn"
+    )
     blocked_other = store.auto_research_recovery("task:root-other")
     assert blocked_other.status == "blocked"
     assert store.auto_research_recovery("task:root-project").status == "blocked"
@@ -144,7 +147,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     assert child.parent_operation_id == roots[0].operation_id
     assert store.episode(child.episode_id).invocations_used == 1
     assert store.auto_research_recovery("task:root-other") == blocked_other
-    assert store.provider_login_state("claude", "").state == "signed_out"
+    assert (
+        store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID)).state == "signed_out"
+    )
     assert reconcile_due_auto_research_recoveries(background) == 0
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert again.status_code == 200, again.text
@@ -232,7 +237,10 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
         wait_until(lambda root=root: root.operation_id not in background._workers)
     assert {root.graph_target.kind for root in roots} == {"main", "branch"}
     remote = store.mark_provider_login_failed(
-        "codex", "other-machine", generation=0, detail="signed out", source="turn"
+        LoginKey("codex", "other-machine", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="signed out",
+        source="turn",
     )
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
@@ -258,7 +266,9 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
             "fresh",
             "retry",
         ]
-    assert store.provider_login_state("codex", "other-machine") == remote
+    assert (
+        store.provider_login_state(LoginKey("codex", "other-machine", MACHINE_LOGIN_ID)) == remote
+    )
 
 
 def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkeypatch):
@@ -318,7 +328,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
 
     async def stream(_project, _kind, _request, execution):
         # The real launch captures the generation under the credential gate.
-        execution.login_generation = store.provider_login_state("codex", "").generation
+        execution.login_generation = store.provider_login_state(
+            LoginKey("codex", "", MACHINE_LOGIN_ID)
+        ).generation
         if execution.continuation == "fresh":
             stage = tmp_path / execution.operation_id
             stage.mkdir()
@@ -338,7 +350,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     background = BackgroundAgentTasks(store, stream)
     roots = []
     for index in range(2):
-        store.mark_provider_login_verified("codex", "", member_id="member", detail="Verified.")
+        store.mark_provider_login_verified(
+            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
+        )
         request = _experiment_request().model_copy(
             update={
                 "run_on": run_on,

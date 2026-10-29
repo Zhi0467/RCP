@@ -476,6 +476,7 @@ SERVER_SUPERVISOR_CHILD_WAIT_MIN_SECONDS = 0.1
 SERVER_SUPERVISOR_PIPE_CHUNK_BYTES = 64 * 1024
 
 PROVIDER_LOGIN_DETAIL_MAX_CHARS = 500
+PROVIDER_LOGIN_LIMIT_HINT_SECONDS = 5 * 60 * 60
 # A device-code sign-in the human never finishes is abandoned after this long;
 # the provider's own code expires on the same order.
 PROVIDER_SIGN_IN_TIMEOUT_SECONDS = 15 * 60

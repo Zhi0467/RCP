@@ -41,7 +41,7 @@ from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
-from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
+from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES, MACHINE_LOGIN_ID, LoginKey
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
 from rcp.transport.run_stage import run_stage_partition
@@ -962,10 +962,10 @@ async def _stream_agent_events(
             outcome.failed = True
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
+    assert request.provider is not None
+    login_key = LoginKey(request.provider, execution_host, MACHINE_LOGIN_ID)
     if execution is not None:
-        execution.login_generation = execution.store.provider_login_state(
-            request.provider, execution_host
-        ).generation
+        execution.login_generation = execution.store.provider_login_state(login_key).generation
 
     async def capture_login_generation() -> None:
         # Read again under the credential gate: a Verify that landed while this
@@ -973,9 +973,7 @@ async def _stream_agent_events(
         # on the credential it verified, so its failure must count against it.
         if execution is not None:
             execution.login_generation = (
-                await asyncio.to_thread(
-                    execution.store.provider_login_state, request.provider, execution_host
-                )
+                await asyncio.to_thread(execution.store.provider_login_state, login_key)
             ).generation
 
     if browser_grant is None:

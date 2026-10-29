@@ -25,6 +25,7 @@ from rcp.runs.auto_research_recovery import (
     reconcile_due_auto_research_recoveries,
 )
 from rcp.storage import AppStore, ProjectRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .helpers import (
     fabricated_authorizer,
@@ -722,7 +723,9 @@ def test_a_revoked_login_is_parked_until_verified(tmp_path: Path) -> None:
     assert recovery.status == "blocked"
     assert recovery.next_attempt_at is None
     assert reconcile_due_auto_research_recoveries(tasks) == 0
-    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+    store.mark_provider_login_verified(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+    )
     assert store.release_provider_auth_recoveries([(recovery.episode_id, root.operation_id)]) == [
         recovery.recovery_id
     ]
@@ -756,7 +759,9 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     wait_for_task(store, root.operation_id, expect="failed")
     recovery = _wait_for_recovery(store, "task:root")
     assert recovery.status == "pending"
-    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    store.mark_provider_login_failed(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+    )
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
@@ -843,7 +848,9 @@ def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Pat
     settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
 
     # The account is gone, so this Retry never becomes a turn.
-    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    store.mark_provider_login_failed(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+    )
     with pytest.raises(ValueError, match="signed out"):
         tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
 

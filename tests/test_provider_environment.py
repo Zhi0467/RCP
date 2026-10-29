@@ -14,6 +14,7 @@ from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 CLAUDE = ClaudeAuthentication()
 CLAUDE_TOKEN_VARIABLE = CLAUDE.token_variable
@@ -98,17 +99,28 @@ def test_token_is_stored_privately_and_the_record_is_secret_free(
 def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     credentials: ProviderCredentialStore,
 ) -> None:
-    environment = AgentLauncher(credentials=credentials).process_environment("claude", "")
+    environment = AgentLauncher(credentials=credentials).process_environment(
+        LoginKey("claude", "", MACHINE_LOGIN_ID)
+    )
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
     assert environment.local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(environment.local_env)
     assert environment.remote_prefix is None
     # Codex has no RCP-managed credential; it inherits the service environment.
-    assert AgentLauncher(credentials=credentials).process_environment("codex", "").local_env is None
+    assert (
+        AgentLauncher(credentials=credentials)
+        .process_environment(LoginKey("codex", "", MACHINE_LOGIN_ID))
+        .local_env
+        is None
+    )
 
     credentials.delete_token("claude", "")
-    without = AgentLauncher(credentials=credentials).process_environment("claude", "").local_env
+    without = (
+        AgentLauncher(credentials=credentials)
+        .process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID))
+        .local_env
+    )
     assert without is not None
     assert CLAUDE_TOKEN_VARIABLE not in without
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(without)
@@ -119,12 +131,16 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
 ) -> None:
     host = "gpu.example"
     assert (
-        AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
+        AgentLauncher(credentials=credentials)
+        .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
+        .remote_prefix
         == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
     )
     credentials.store_token("claude", host, TOKEN, member_id="member", now="now")
     prefix = (
-        AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
+        AgentLauncher(credentials=credentials)
+        .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
+        .remote_prefix
     )
     assert (
         prefix == CLAUDE.remote_token_prefix() + "; export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
@@ -218,7 +234,9 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     )
     assert upgraded.version == "2.1.271 (Claude Code)"
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
-    snapshot = store.provider_readiness_snapshot("claude", "", str(binary))
+    snapshot = store.provider_readiness_snapshot(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), str(binary)
+    )
     assert snapshot is not None and snapshot.version == "2.1.271 (Claude Code)"
     assert TOKEN not in snapshot.readiness_json
 
@@ -231,7 +249,7 @@ async def test_before_start_runs_once_under_the_credential_gate(
 
     binary = _fake_claude(tmp_path)
     launcher = AgentLauncher(credentials=credentials)
-    lock = launcher.credential_gate._lock_for("claude", "")
+    lock = launcher.credential_gate._lock_for(LoginKey("claude", "", MACHINE_LOGIN_ID))
     observed: list[bool] = []
 
     async def before_start() -> None:
@@ -297,6 +315,7 @@ def test_member_git_default_reaches_launch_and_repository_config_wins(
     from rcp.agents.provider_environment import ProviderProcessEnvironment
     from rcp.git_identity import GitIdentity
 
+    monkeypatch.chdir(tmp_path)
     real_git = shutil.which("git")
     assert real_git is not None
     binary = tmp_path / "git"
@@ -374,10 +393,38 @@ def test_member_git_default_reaches_launch_and_repository_config_wins(
 def test_claude_without_managed_credentials_still_runs_foreground() -> None:
     launcher = AgentLauncher()
     assert (
-        launcher.process_environment("claude", "").local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]
+        launcher.process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID)).local_env[
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+        ]
         == "1"
     )
     assert (
-        launcher.process_environment("claude", "remote").remote_prefix
+        launcher.process_environment(LoginKey("claude", "remote", MACHINE_LOGIN_ID)).remote_prefix
         == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
     )
+
+
+@pytest.mark.parametrize("host", ["", "remote-host"])
+def test_added_claude_token_isolated_from_machine(
+    credentials: ProviderCredentialStore, host: str
+) -> None:
+    from uuid import uuid4
+
+    login_id = str(uuid4())
+    CLAUDE.save_token(
+        credentials,
+        host,
+        login_id,
+        "added-token",
+        member_id="member",
+        now="2026-09-14T10:00:00+00:00",
+    )
+    environment = CLAUDE.process_environment(credentials, host, login_id)
+    assert credentials.token("claude", host, login_id) == "added-token"
+    assert credentials.token("claude", "") == TOKEN
+    if host:
+        assert f"logins/{login_id}/claude-setup-token" in (environment.remote_prefix or "")
+        assert "added-token" not in (environment.remote_prefix or "")
+    else:
+        assert environment.local_env is not None
+        assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == "added-token"

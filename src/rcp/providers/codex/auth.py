@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
+import shlex
 import subprocess
 from typing import TYPE_CHECKING
 
+from rcp.agents.provider_environment import ProviderProcessEnvironment
+from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
 from rcp.provider_auth import DeviceLogin, DeviceLoginStep, ProviderAuthentication
+from rcp.providers.codex.homes import prepare_home
+from rcp.transport.ssh import ssh_arguments
 
 if TYPE_CHECKING:
     from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.storage.models import ProviderLoginStateRecord
 
 
 class CodexDeviceLogin(DeviceLogin):
@@ -146,6 +153,48 @@ class CodexAuthentication(ProviderAuthentication):
     supports_sign_out = True
     methods = ("device_code",)
 
+    def credential_available(
+        self,
+        credentials: ProviderCredentialStore,
+        host: str,
+        login_id: str,
+        *,
+        login_state: ProviderLoginStateRecord | None = None,
+    ) -> bool:
+        credentials.account_dir("codex", host, login_id)
+        return not login_id or (
+            login_state is not None
+            and login_state.state == "signed_in"
+            and login_state.removed_at is None
+        )
+
+    def process_environment(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
+    ) -> ProviderProcessEnvironment:
+        directory = credentials.account_dir("codex", host, login_id)
+        if not login_id:
+            return ProviderProcessEnvironment()
+        if not host:
+            home = prepare_home(directory / "codex-home")
+            return ProviderProcessEnvironment().with_variables(
+                {"CODEX_HOME": str(home)}, remote=False
+            )
+        home = f"~/.rcp/provider-homes/codex/{login_id}"
+        source = importlib.resources.files("rcp.providers.codex").joinpath("homes.py").read_text()
+        command = shlex.join(["python3", "-c", source, home])
+        result = subprocess.run(
+            ssh_arguments(host, shlex.join(["bash", "-lic", command])),
+            capture_output=True,
+            text=True,
+            timeout=PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if result.returncode:
+            raise ValueError(f"Could not prepare Codex home: {result.stderr.strip()}")
+        return ProviderProcessEnvironment(
+            remote_prefix=f'export CODEX_HOME="$HOME"/.rcp/provider-homes/codex/{login_id}'
+        )
+
     def verification_succeeded(self, result: subprocess.CompletedProcess[str]) -> bool:
         from rcp.providers.codex.profile import CodexProfile
 
@@ -158,5 +207,7 @@ class CodexAuthentication(ProviderAuthentication):
     def device_login(self) -> DeviceLogin:
         return CodexDeviceLogin()
 
-    def sign_out(self, credentials: ProviderCredentialStore, host: str, binary: str) -> list[str]:
+    def sign_out(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
+    ) -> list[str]:
         return [binary, "logout"]

@@ -52,6 +52,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .episode_report_helpers import stored_report
 from .helpers import (
@@ -3273,11 +3274,13 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     observed = []
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_generation = store.provider_login_state("codex", "").generation
+        execution.login_generation = store.provider_login_state(
+            LoginKey("codex", "", MACHINE_LOGIN_ID)
+        ).generation
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
     def settled(_project, _kind, _request, _execution):
-        observed.append(store.provider_login_state("codex", "").state)
+        observed.append(store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state)
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     task = _admitted_launch_task(store, operation_id="dead-login")
@@ -3285,7 +3288,7 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     finished = wait_for_task(store, task.operation_id, expect="failed")
     wait_until(lambda: bool(observed))
     assert finished.failure_kind == "provider_auth"
-    assert store.provider_login_state("codex", "").source == "turn"
+    assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).source == "turn"
     assert observed == ["signed_out"]
 
 
@@ -3293,8 +3296,12 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     store = _store(tmp_path)
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_generation = store.provider_login_state("codex", "").generation
-        store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
+        execution.login_generation = store.provider_login_state(
+            LoginKey("codex", "", MACHINE_LOGIN_ID)
+        ).generation
+        store.mark_provider_login_verified(
+            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        )
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -3304,7 +3311,7 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     # The account was repaired after this turn captured its generation, so the
     # stale failure neither fences the login nor parks the task behind sign-in.
     assert finished.failure_kind is None
-    state = store.provider_login_state("codex", "")
+    state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
     assert state.generation == 1
 

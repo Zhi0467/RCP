@@ -105,7 +105,7 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.storage.chat_forks import ChatForkRefused
-from rcp.storage.models import AgentTaskAlreadyContinued
+from rcp.storage.models import MACHINE_LOGIN_ID, AgentTaskAlreadyContinued, LoginKey
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
@@ -513,8 +513,7 @@ class BackgroundAgentTasks:
         if reason := account_login_refusal(
             self.store,
             ProviderCredentialStore.for_data_dir(self.store.path.parent),
-            request.provider,
-            host,
+            LoginKey(request.provider, host, MACHINE_LOGIN_ID),
         ):
             raise ProviderSignedOut(reason)
         if self.dependency_checker is not None and (
@@ -2433,13 +2432,12 @@ class BackgroundAgentTasks:
             host = execution.stage_host or ""
             record_provider_failure(
                 self.store,
-                provider,
-                host,
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
                 generation=execution.login_generation,
                 evidence=error,
                 source="turn",
             )
-            state = self.store.provider_login_state(provider, host)
+            state = self.store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
             if state.state == "signed_in" and state.generation > execution.login_generation:
                 # The startup gate is released once the provider speaks, so a member
                 # can verify the account before this turn reports the old login's

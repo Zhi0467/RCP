@@ -18,6 +18,18 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     ).fetchall()
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
+    if any(row[1] == "login_id" for row in connection.execute("PRAGMA table_info(graph_runs)")):
+        connection.execute("ALTER TABLE graph_runs DROP COLUMN login_id")
+        connection.execute("DROP TABLE provider_login_assignments")
+        connection.execute("DROP TABLE provider_login_settings")
+        connection.execute("ALTER TABLE provider_login_states RENAME TO new_provider_login_states")
+        AppStore._migrate_provider_login_states(connection)
+        connection.execute(
+            "INSERT INTO provider_login_states SELECT provider,host,state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states WHERE login_id=''"
+        )
+        connection.execute("DROP TABLE new_provider_login_states")
+        connection.execute("DROP TABLE provider_readiness_snapshots")
+        AppStore._migrate_provider_readiness_snapshots(connection)
     if any(
         row[1] == "target" for row in connection.execute("PRAGMA table_info(consolidation_runs)")
     ):

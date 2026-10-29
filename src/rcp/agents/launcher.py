@@ -71,6 +71,8 @@ from rcp.providers import (
 from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderStreamEvent
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import (
+    MACHINE_LOGIN_ID,
+    LoginKey,
     ProviderLoginStateRecord,
     ProviderReadinessSnapshotRecord,
     SpaceMachineRecord,
@@ -625,10 +627,12 @@ class ProviderReadinessSnapshots(Protocol):
     """The durable readiness answers the launcher reuses; `AppStore` implements it."""
 
     def provider_readiness_snapshot(
-        self, provider: str, host: str, binary: str
+        self, key: LoginKey, binary: str
     ) -> ProviderReadinessSnapshotRecord | None: ...
 
-    def save_provider_readiness_snapshot(self, record: ProviderReadinessSnapshotRecord) -> None: ...
+    def save_provider_readiness_snapshot(
+        self, key: LoginKey, record: ProviderReadinessSnapshotRecord
+    ) -> None: ...
 
 
 def _utc_now() -> str:
@@ -723,7 +727,7 @@ class AgentLauncher:
 
     def __init__(
         self,
-        login_state: Callable[[str, str], ProviderLoginStateRecord] | None = None,
+        login_state: Callable[[LoginKey], ProviderLoginStateRecord] | None = None,
         *,
         credentials: ProviderCredentialStore | None = None,
         readiness_snapshots: ProviderReadinessSnapshots | None = None,
@@ -751,22 +755,22 @@ class AgentLauncher:
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
 
-    def process_environment(self, provider: str, host: str) -> ProviderProcessEnvironment:
+    def process_environment(self, key: LoginKey) -> ProviderProcessEnvironment:
         """The environment for one provider process; every Claude start goes through it."""
 
-        authentication = profile_for(provider).authentication
+        authentication = profile_for(key.provider).authentication
         if self.credentials is None:
-            return authentication.unmanaged_environment(host)
-        return authentication.process_environment(self.credentials, host)
+            return authentication.unmanaged_environment(key.host)
+        return authentication.process_environment(self.credentials, key.host, key.login_id)
 
-    def _login_refusal(self, provider: str, host: str) -> str | None:
+    def _login_refusal(self, key: LoginKey) -> str | None:
         if self.accounts is not None:
-            return self.accounts.refusal(provider, host)
-        state = self.login_state(provider, host) if self.login_state is not None else None
+            return self.accounts.refusal(key)
+        state = self.login_state(key) if self.login_state is not None else None
         if state is None or state.state != "signed_out":
             return None
         return (
-            f"{profile_for(provider).label} was signed out at {state.changed_at}: "
+            f"{profile_for(key.provider).label} was signed out at {state.changed_at}: "
             f"{state.detail or 'The provider rejected its login'}. "
             "Open Settings, Provider logins to sign in and verify."
         )
@@ -777,12 +781,15 @@ class AgentLauncher:
         evidence = profile_for(provider).probe_failure_evidence(result)
         if self.accounts is not None:
             return self.accounts.observe_failure(
-                provider, host, generation=generation, evidence=evidence, source="probe"
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
+                generation=generation,
+                evidence=evidence,
+                source="probe",
             )
         return profile_for(provider).credential_failure(evidence)
 
     def _with_login_state(self, readiness: ProviderReadiness, host: str) -> ProviderReadiness:
-        reason = self._login_refusal(readiness.provider, host)
+        reason = self._login_refusal(LoginKey(readiness.provider, host, MACHINE_LOGIN_ID))
         if reason is not None:
             return readiness.model_copy(update={"authenticated": False, "reason": reason})
         return readiness
@@ -965,8 +972,10 @@ class AgentLauncher:
             )
         # `--version` needs no model request. Prepare its provider environment
         # under the account gate too, then reuse unchanged credential-touching answers.
-        with self.credential_gate.hold_blocking(provider, host):
-            version_environment = self.process_environment(provider, host)
+        with self.credential_gate.hold_blocking(LoginKey(provider, host, MACHINE_LOGIN_ID)):
+            version_environment = self.process_environment(
+                LoginKey(provider, host, MACHINE_LOGIN_ID)
+            )
             version_result = self._probe(
                 host, [candidate, "--version"], environment=version_environment
             )
@@ -979,7 +988,7 @@ class AgentLauncher:
         path_state: ProviderPathState = "resolved" if configured else "unconfigured"
         if not refresh and version is not None and self.readiness_snapshots is not None:
             snapshot = self.readiness_snapshots.provider_readiness_snapshot(
-                provider, host, candidate
+                LoginKey(provider, host, MACHINE_LOGIN_ID), candidate
             )
             if snapshot is not None and snapshot.version == version:
                 stored = ProviderReadiness.model_validate_json(snapshot.readiness_json)
@@ -989,10 +998,14 @@ class AgentLauncher:
         # Every probe below reads the login and can rotate the same token a turn
         # does. One hold covers the sequence rather than handing the credential
         # back between probes that belong to a single readiness answer.
-        with self.credential_gate.hold_blocking(provider, host):
-            login_reason = self._login_refusal(provider, host)
-            generation = self.login_state(provider, host).generation if self.login_state else 0
-            environment = self.process_environment(provider, host)
+        with self.credential_gate.hold_blocking(LoginKey(provider, host, MACHINE_LOGIN_ID)):
+            login_reason = self._login_refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
+            generation = (
+                self.login_state(LoginKey(provider, host, MACHINE_LOGIN_ID)).generation
+                if self.login_state
+                else 0
+            )
+            environment = self.process_environment(LoginKey(provider, host, MACHINE_LOGIN_ID))
             authenticated = False
             if login_reason is None:
                 auth = self._probe(host, profile.auth_command(candidate), environment=environment)
@@ -1002,7 +1015,8 @@ class AgentLauncher:
                 if self._observe_probe_failure(provider, host, auth, generation):
                     authenticated = False
                     login_reason = (
-                        self._login_refusal(provider, host) or "Provider sign-in is required."
+                        self._login_refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
+                        or "Provider sign-in is required."
                     )
             # Enumerate only once the CLI is known to answer. An unauthenticated
             # catalog probe just costs a subprocess to learn what auth already said.
@@ -1019,7 +1033,8 @@ class AgentLauncher:
             ):
                 authenticated = False
                 login_reason = (
-                    self._login_refusal(provider, host) or "Provider sign-in is required."
+                    self._login_refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
+                    or "Provider sign-in is required."
                 )
             work_like_available = None
             work_like_reason = None
@@ -1034,7 +1049,8 @@ class AgentLauncher:
                     authenticated = False
                     work_like_available = False
                     login_reason = (
-                        self._login_refusal(provider, host) or "Provider sign-in is required."
+                        self._login_refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
+                        or "Provider sign-in is required."
                     )
                     work_like_reason = login_reason
                 elif work_probe.returncode == 255:
@@ -1077,6 +1093,7 @@ class AgentLauncher:
         # the snapshot keeps what the probes themselves said.
         if version is not None and self.readiness_snapshots is not None and login_reason is None:
             self.readiness_snapshots.save_provider_readiness_snapshot(
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
                 ProviderReadinessSnapshotRecord(
                     provider=provider,
                     host=host,
@@ -1084,7 +1101,7 @@ class AgentLauncher:
                     version=version,
                     readiness_json=result.model_dump_json(),
                     probed_at=_utc_now(),
-                )
+                ),
             )
         return result
 
@@ -1449,7 +1466,9 @@ class AgentLauncher:
             return
         # Held until this provider speaks and the minimum stagger passes, so
         # two turns cannot rotate one credential's refresh token together.
-        credential_hold = await self.credential_gate.hold(provider, host)
+        credential_hold = await self.credential_gate.hold(
+            LoginKey(provider, host, MACHINE_LOGIN_ID)
+        )
         if control is not None and control.pause_requested.is_set():
             # The pre-launch check ran before this wait, which can be long.
             credential_hold.release()
@@ -1462,11 +1481,11 @@ class AgentLauncher:
                 credential_hold.release()
                 raise
         try:
-            if reason := self._login_refusal(provider, host):
+            if reason := self._login_refusal(LoginKey(provider, host, MACHINE_LOGIN_ID)):
                 raise ValueError(reason)
-            environment = self.process_environment(provider, host).with_variables(
-                turn.environment, remote=bool(host)
-            )
+            environment = self.process_environment(
+                LoginKey(provider, host, MACHINE_LOGIN_ID)
+            ).with_variables(turn.environment, remote=bool(host))
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")

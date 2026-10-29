@@ -14,6 +14,7 @@ from rcp.api.app import create_app
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task, wait_until
 from .test_provider_sign_in import _fake_codex
@@ -74,7 +75,10 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
             authorized_by=fabricated_authorizer(),
         )
     store.mark_provider_login_failed(
-        "codex", "", generation=0, detail="refresh_token_reused", source="turn"
+        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="refresh_token_reused",
+        source="turn",
     )
     assert background.launch_admitted(queued.operation_id).status == "queued"
     listener = socket.socket()

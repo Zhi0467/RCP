@@ -6,7 +6,7 @@ import pytest
 
 from rcp.api.experiment_controls import _experiment_recommendation
 from rcp.control import ExperimentControlState, ExperimentOperationalState
-from rcp.storage.models import AgentFailureKind
+from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind, LoginKey
 
 
 def _revoked_login(
@@ -141,7 +141,9 @@ def test_signed_out_experiment_retry_creates_no_task_or_budget(tmp_path):
         authorized_by=fabricated_authorizer(),
     )
     root = wait_for_task(store, root.operation_id, expect="failed")
-    store.mark_provider_login_failed("codex", "", generation=0, detail="expired", source="turn")
+    store.mark_provider_login_failed(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+    )
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used

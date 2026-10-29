@@ -27,7 +27,7 @@ from rcp.limits import (
 from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
 from rcp.storage import AppStore
-from rcp.storage.models import ProviderLoginStateRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, ProviderLoginStateRecord
 from rcp.transport.ssh import ssh_arguments
 
 _LOGGER = logging.getLogger(__name__)
@@ -108,10 +108,10 @@ class ProviderSignInRunner:
         self.resume_account: Callable[[str, str], dict[str, int]] | None = None
 
     def refusal(self, provider: str, host: str) -> str | None:
-        return self.accounts.refusal(provider, host)
+        return self.accounts.refusal(LoginKey(provider, host, MACHINE_LOGIN_ID))
 
     def account_state(self, provider: str, host: str) -> ProviderLoginStateRecord:
-        return self.accounts.account_state(provider, host)
+        return self.accounts.account_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
 
     def observe_failure(
         self,
@@ -123,10 +123,16 @@ class ProviderSignInRunner:
         source: Literal["turn", "report", "probe"],
     ) -> bool:
         if not self.accounts.observe_failure(
-            provider, host, generation=generation, evidence=evidence, source=source
+            LoginKey(provider, host, MACHINE_LOGIN_ID),
+            generation=generation,
+            evidence=evidence,
+            source=source,
         ):
             return False
-        if self.store.provider_login_state(provider, host).generation == generation:
+        if (
+            self.store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID)).generation
+            == generation
+        ):
             self.launcher.invalidate_readiness(provider, host=host)
         return True
 
@@ -219,7 +225,9 @@ class ProviderSignInRunner:
 
     def verify(self, provider: str, host: str, *, member_id: str) -> ProviderLoginStateRecord:
         binary, binaries = self.provider_binary(provider, host)
-        with self.launcher.credential_gate.hold_blocking(provider, host):
+        with self.launcher.credential_gate.hold_blocking(
+            LoginKey(provider, host, MACHINE_LOGIN_ID)
+        ):
             state = self._verify_locked(provider, host, binary, binaries, member_id)
         self.reconcile_recovery()
         return state
@@ -229,10 +237,9 @@ class ProviderSignInRunner:
     ) -> ProviderLoginStateRecord:
         profile = profile_for(provider)
         auth = profile.authentication
-        if not auth.credential_available(self.credentials, host):
+        if not auth.credential_available(self.credentials, host, MACHINE_LOGIN_ID):
             self.store.mark_provider_login_signed_out(
-                provider,
-                host,
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
                 member_id=member_id,
                 source="restore",
                 detail=auth.missing_credential_detail,
@@ -242,11 +249,11 @@ class ProviderSignInRunner:
         if command is None:
             raise ProviderLoginRefused("Verification is not supported by this provider.")
         try:
-            auth.prepare_verification(self.credentials, host)
+            auth.prepare_verification(self.credentials, host, MACHINE_LOGIN_ID)
         except ValueError as exc:
             raise ProviderLoginRefused(str(exc)) from exc
-        environment = self.launcher.process_environment(provider, host)
-        current = self.store.provider_login_state(provider, host)
+        environment = self.launcher.process_environment(LoginKey(provider, host, MACHINE_LOGIN_ID))
+        current = self.store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
         result = self.launcher._probe(
             host, command, timeout=PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS, environment=environment
         )
@@ -265,15 +272,17 @@ class ProviderSignInRunner:
                 else "The provider could not complete the verification request."
             )
             raise ProviderLoginRefused(detail)
-        auth.verified(self.credentials, host, now=self.store.now())
+        auth.verified(self.credentials, host, MACHINE_LOGIN_ID, now=self.store.now())
         state = self.store.mark_provider_login_verified(
-            provider, host, member_id=member_id, detail="Authenticated request succeeded."
+            LoginKey(provider, host, MACHINE_LOGIN_ID),
+            member_id=member_id,
+            detail="Authenticated request succeeded.",
         )
         self._forget_readiness(provider, host, binaries)
         return state
 
     def _forget_readiness(self, provider: str, host: str, binaries: set[str]) -> None:
-        self.store.delete_provider_readiness_snapshots(provider, host)
+        self.store.delete_provider_readiness_snapshots(LoginKey(provider, host, MACHINE_LOGIN_ID))
         self.launcher.invalidate_readiness(provider, host=host)
         for binary in binaries:
             self.launcher.invalidate_readiness(provider, host=host, binary=binary)
@@ -320,8 +329,7 @@ class ProviderSignInRunner:
             if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
                 settled.append(
                     self.store.mark_provider_login_signed_out(
-                        state.provider,
-                        state.host,
+                        LoginKey(state.provider, state.host, MACHINE_LOGIN_ID),
                         member_id=None,
                         source="restore",
                         detail=SIGN_IN_INTERRUPTED_DETAIL,
@@ -473,7 +481,9 @@ class ProviderSignInRunner:
         provider, host = status.provider, status.host
         auth = profile_for(provider).authentication
         try:
-            with self.launcher.credential_gate.hold_blocking(provider, host):
+            with self.launcher.credential_gate.hold_blocking(
+                LoginKey(provider, host, MACHINE_LOGIN_ID)
+            ):
                 # A member who cancels while this thread waits for the gate must
                 # stop the attempt, not start one: nothing has been fenced or
                 # launched yet, so the account keeps the state it already had.
@@ -483,14 +493,15 @@ class ProviderSignInRunner:
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(
-                    provider,
-                    host,
+                    LoginKey(provider, host, MACHINE_LOGIN_ID),
                     member_id=status.started_by,
                     source="sign_out",
                     detail=SIGN_IN_IN_PROGRESS_DETAIL,
                 )
                 self._forget_readiness(provider, host, set())
-                environment = self.launcher.process_environment(provider, host)
+                environment = self.launcher.process_environment(
+                    LoginKey(provider, host, MACHINE_LOGIN_ID)
+                )
                 try:
                     self._device_login(status, auth.device_login(), binary, environment)
                     state = self._verify_locked(provider, host, binary, set(), status.started_by)
@@ -507,8 +518,7 @@ class ProviderSignInRunner:
                     # Publishing must not replace the failure being reported.
                     with contextlib.suppress(Exception):
                         self.store.mark_provider_login_signed_out(
-                            provider,
-                            host,
+                            LoginKey(provider, host, MACHINE_LOGIN_ID),
                             member_id=getattr(exc, "member_id", None) or status.started_by,
                             source="sign_out",
                             detail=detail,
@@ -550,7 +560,9 @@ class ProviderSignInRunner:
                 "Token entry is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(provider, host)
-        with self.launcher.credential_gate.hold_blocking(provider, host):
+        with self.launcher.credential_gate.hold_blocking(
+            LoginKey(provider, host, MACHINE_LOGIN_ID)
+        ):
             try:
                 token = auth.validate_token(token)
             except ValueError as exc:
@@ -558,8 +570,7 @@ class ProviderSignInRunner:
             # Publish the fence before touching a file: interruption cannot leave a
             # new, unverified credential attached to the old signed-in generation.
             self.store.mark_provider_login_signed_out(
-                provider,
-                host,
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
                 member_id=member_id,
                 source="sign_out",
                 detail="A replacement credential is awaiting verification.",
@@ -568,7 +579,12 @@ class ProviderSignInRunner:
             try:
                 try:
                     auth.save_token(
-                        self.credentials, host, token, member_id=member_id, now=self.store.now()
+                        self.credentials,
+                        host,
+                        MACHINE_LOGIN_ID,
+                        token,
+                        member_id=member_id,
+                        now=self.store.now(),
                     )
                 except (OSError, ValueError) as exc:
                     raise ProviderLoginRefused("Could not persist the credential.") from exc
@@ -578,8 +594,7 @@ class ProviderSignInRunner:
                 # once it is not, the account must say why rather than keep
                 # describing an attempt that is over.
                 self.store.mark_provider_login_signed_out(
-                    provider,
-                    host,
+                    LoginKey(provider, host, MACHINE_LOGIN_ID),
                     member_id=member_id,
                     source="sign_out",
                     detail=exc.detail,
@@ -594,18 +609,25 @@ class ProviderSignInRunner:
                 "Sign-out is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(provider, host)
-        with self.launcher.credential_gate.hold_blocking(provider, host):
+        with self.launcher.credential_gate.hold_blocking(
+            LoginKey(provider, host, MACHINE_LOGIN_ID)
+        ):
             detail = "Signed out by a member."
             state = self.store.mark_provider_login_signed_out(
-                provider, host, member_id=member_id, source="sign_out", detail=detail
+                LoginKey(provider, host, MACHINE_LOGIN_ID),
+                member_id=member_id,
+                source="sign_out",
+                detail=detail,
             )
             self._forget_readiness(provider, host, binaries)
             try:
                 command = profile_for(provider).authentication.sign_out(
-                    self.credentials, host, binary
+                    self.credentials, host, MACHINE_LOGIN_ID, binary
                 )
                 if command:
-                    environment = self.launcher.process_environment(provider, host)
+                    environment = self.launcher.process_environment(
+                        LoginKey(provider, host, MACHINE_LOGIN_ID)
+                    )
                     result = self.launcher._probe(
                         host,
                         command,
@@ -618,7 +640,10 @@ class ProviderSignInRunner:
                 detail += " The remote credential could not be removed."
             if detail != state.detail:
                 state = self.store.mark_provider_login_signed_out(
-                    provider, host, member_id=member_id, source="sign_out", detail=detail
+                    LoginKey(provider, host, MACHINE_LOGIN_ID),
+                    member_id=member_id,
+                    source="sign_out",
+                    detail=detail,
                 )
         return state
 

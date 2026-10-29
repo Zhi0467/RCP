@@ -16,7 +16,7 @@ from rcp.runs.auto_research_delivery import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AutoResearchLifecycleNoticeRecord
-from rcp.storage.models import _required_timestamp
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, _required_timestamp
 
 from .helpers import fake_launch_admitted
 from .test_auto_research_child_work_watchers import _deliver, _waiting_child
@@ -30,7 +30,10 @@ from .test_auto_research_delivery import (
 
 def _signed_out(store):
     store.mark_provider_login_failed(
-        "codex", "", generation=0, detail="refresh_token_reused", source="turn"
+        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="refresh_token_reused",
+        source="turn",
     )
 
 

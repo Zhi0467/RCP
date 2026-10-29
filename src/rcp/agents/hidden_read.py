@@ -111,6 +111,7 @@ def hidden_read_defaults(
     """Credential roots name provider stores, never a deploy-key parent."""
     directories = list(credential_roots)
     directories.append(home + "/" + HIDDEN_READ_WRAPPER_ROOT)
+    directories.extend((home + "/.config/rcp/logins", home + "/.rcp/provider-homes"))
     files = [*provider_login_files, home + "/.config/rcp/claude-setup-token"]
     globs = []
     for path in WEBKIT_READ_DENY_PATHS:

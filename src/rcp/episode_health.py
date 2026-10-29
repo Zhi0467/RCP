@@ -18,6 +18,7 @@ from rcp.storage import (
     EpisodeStatus,
     EpisodeWrapupState,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 
 class _EpisodeProjectionParent(Protocol):
@@ -331,7 +332,9 @@ def load_episode_health(
             wrapup is not None
             and wrapup.provider is not None
             and account_login_refusal(
-                store, credentials, wrapup.provider, wrapup.execution_host or ""
+                store,
+                credentials,
+                LoginKey(wrapup.provider, wrapup.execution_host or "", MACHINE_LOGIN_ID),
             )
             is not None
         )

@@ -31,6 +31,7 @@ from rcp.core.models import HiddenReadScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
 ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"
@@ -256,7 +257,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return
 
         if before_start is not None:
-            hold = await self.credential_gate.hold(provider, host)
+            hold = await self.credential_gate.hold(LoginKey(provider, host, MACHINE_LOGIN_ID))
             try:
                 await before_start()
             finally:

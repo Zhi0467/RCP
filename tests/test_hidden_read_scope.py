@@ -51,6 +51,8 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         "/provider/auth.json",
         "/control/socket",
         "/home/research/.config/rcp/claude-setup-token",
+        "/home/research/.config/rcp/logins/login/claude-setup-token",
+        "/home/research/.rcp/provider-homes/codex/login/auth.json",
         "/home/research/.rcp/hidden-read/policy/rcp-hidden-read.py.policy.json",
     ):
         assert hidden(path)

@@ -51,6 +51,7 @@ from rcp.storage import (
     ExperimentEpisodeProjectionSnapshot,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 OperationalEpisodeTaskKind = Literal[
     "seed",
@@ -435,8 +436,7 @@ def serialize_episode(
         and account_login_refusal(
             store,
             ProviderCredentialStore.for_data_dir(store.path.parent),
-            wrapup.provider,
-            wrapup.execution_host or "",
+            LoginKey(wrapup.provider, wrapup.execution_host or "", MACHINE_LOGIN_ID),
         )
         is not None
     )

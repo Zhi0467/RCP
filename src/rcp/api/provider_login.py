@@ -29,6 +29,18 @@ from rcp.runs.provider_sign_in import (
 )
 from rcp.service import agent_login_accounts
 from rcp.storage import AppStore
+from rcp.storage.models import MACHINE_LOGIN_ID
+
+_LOGIN_STATE_FIELDS = {
+    "provider",
+    "host",
+    "state",
+    "generation",
+    "detail",
+    "source",
+    "changed_at",
+    "changed_by",
+}
 
 
 class ProviderAccountRoute(APIRoute):
@@ -133,12 +145,12 @@ def provider_login_accounts(
     for provider, host in sorted(pairs):
         state = sign_ins.account_state(provider, host)
         profile = profile_for(provider)
-        metadata = profile.authentication.credential_metadata(credentials, host)
+        metadata = profile.authentication.credential_metadata(credentials, host, MACHINE_LOGIN_ID)
         token = ProviderCredentialSummary(**metadata) if metadata is not None else None
         provider_path = store.provider_binary(provider, host)
         accounts.append(
             ProviderLoginAccount(
-                **state.model_dump(),
+                **state.model_dump(include=_LOGIN_STATE_FIELDS),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
                 managed=profile.authentication.manages_login,
@@ -193,7 +205,13 @@ def verify_provider_login(
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     counts = sign_ins.resume_counts(provider, body.host)
-    return {"state": state.model_dump(mode="json"), "resumed": counts}
+    return {
+        "state": state.model_dump(
+            mode="json",
+            include=_LOGIN_STATE_FIELDS,
+        ),
+        "resumed": counts,
+    }
 
 
 @router.post("/api/providers/{provider}/logins/sign-in")
@@ -254,7 +272,13 @@ def save_provider_token(
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     counts = sign_ins.resume_counts(provider, body.host)
-    return {"state": state.model_dump(mode="json"), "resumed": counts}
+    return {
+        "state": state.model_dump(
+            mode="json",
+            include=_LOGIN_STATE_FIELDS,
+        ),
+        "resumed": counts,
+    }
 
 
 @router.post("/api/providers/{provider}/logins/sign-out")
@@ -269,4 +293,9 @@ def sign_out_provider_login(
         state = sign_ins.sign_out(provider, body.host, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    return {"state": state.model_dump(mode="json")}
+    return {
+        "state": state.model_dump(
+            mode="json",
+            include=_LOGIN_STATE_FIELDS,
+        )
+    }
