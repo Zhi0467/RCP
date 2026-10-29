@@ -268,6 +268,12 @@ using fake SSH/provider executables, verifying packaged staging and a saved answ
 without real credentials/model calls. Candidate CI runs the bundled backend; Linux
 PR freezing checks the same journey but does not replace macOS qualification.
 
+`--terminal-only` instead opens the frozen local terminal helper with its
+scrubbed environment and checks commands, job control, and shell and job
+cleanup through Stop and PTY close. Run it when qualifying a macOS candidate.
+It is not in CI: each terminal re-launches the one-file backend, which can take
+10 s or more.
+
 Then launch that bundle as above, with a throwaway `RCP_DATA_DIR`, and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
 readiness is truthful, desktop-only interactions work, and the app owns or reuses the
