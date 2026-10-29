@@ -704,6 +704,10 @@ def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
         if str(table.get("alias")) == alias:
             del machines[index]
             break
+    state_machine = manifest.repository_map[manifest.state.repository].machine
+    for table in document.get("agent", {}).values():
+        if isinstance(table, dict) and table.get("run_on") == alias:
+            table["run_on"] = state_machine
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

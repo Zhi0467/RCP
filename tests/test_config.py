@@ -4,6 +4,7 @@ import os
 from typing import get_args
 
 import pytest
+import tomlkit
 
 import rcp.config as config_module
 from rcp.config import (
@@ -14,6 +15,7 @@ from rcp.config import (
     load_manifest,
     permissions_for,
     write_agent_settings,
+    write_removed_machine,
 )
 from rcp.providers import AgentCapability
 
@@ -152,6 +154,24 @@ def test_an_older_coach_machine_is_dropped_for_the_base(manifest) -> None:
 
     base = loaded.repository_map[loaded.state.repository].machine
     assert loaded.agent_profile("paper_coach").run_on == base
+
+
+def test_remove_machine_rewrites_stale_coach_run_on(manifest) -> None:
+    document = tomlkit.parse(manifest.path.read_text())
+    document["machines"].append({"alias": "other", "host": "gpu.example"})
+    document["agent"]["paper_coach"] = {"run_on": "other"}
+    manifest.path.write_text(tomlkit.dumps(document))
+
+    loaded = load_manifest(manifest.path)
+    base = loaded.repository_map[loaded.state.repository].machine
+    assert loaded.agent_profile("paper_coach").run_on == base
+    write_removed_machine(loaded, "other")
+
+    saved = tomlkit.parse(manifest.path.read_text())
+    assert saved["agent"]["paper_coach"]["run_on"] == base
+    reloaded = load_manifest(manifest.path)
+    assert "other" not in reloaded.machine_map
+    assert reloaded.agent_profile("paper_coach").run_on == base
 
 
 def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:

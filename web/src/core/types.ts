@@ -3412,6 +3412,7 @@ export interface SpaceMachine {
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;
+  deletable: boolean;
   /** Null until the background probe detects it. */
   job_manager: "slurm" | "none" | null;
   /** Empty uses the default. */
