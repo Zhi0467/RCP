@@ -239,7 +239,9 @@ class ConsolidationPoller:
             model=profile.model,
             reasoning=profile.reasoning,
             run_on=profile.run_on,
-            run_truth_scope=write_repositories(service.history.state()),
+            run_truth_scope=write_repositories(
+                service.for_graph_target(graph_target, initialize=False).history.state()
+            ),
             chat_scope="project",
             chat_id=consolidation_chat_id(schedule.project_id, target),
             session_id=None,
