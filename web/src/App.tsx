@@ -1928,6 +1928,7 @@ function MemberApp({
   }, [loadProjectIndex]);
   const {
     digest: projectDigest,
+    loaded: projectDigestLoaded,
     error: projectDigestError,
     catchingUp: projectDigestCatchingUp,
     catchUp: catchUpProjectDigest,
@@ -5069,6 +5070,7 @@ function MemberApp({
               onNavigate={changeView}
               digest={{
                 digest: projectDigest,
+                loaded: projectDigestLoaded,
                 targetName: branchName(projectGraphRefs, graphTarget),
                 error: projectDigestError,
                 catchingUp: projectDigestCatchingUp,

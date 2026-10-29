@@ -1947,7 +1947,9 @@ export function AttentionOverview({
         <OverviewCard label="Decisions awaiting choice" value={decisions.length} />
         <OverviewCard label="Blockers awaiting judgment" value={blockers.length} />
       </div>
-      <h3 className="section-label">Recommended next action</h3>
+      {(proposals[0] || decisions[0] || blockers[0]) && (
+        <h3 className="section-label">Recommended next action</h3>
+      )}
       {proposals[0] ? (
         <div className="recommended-action">
           <CircleDot size={16} />
@@ -1963,12 +1965,7 @@ export function AttentionOverview({
           <CircleDot size={16} />
           <strong>Inspect “{blockers[0].title}”</strong>
         </button>
-      ) : (
-        <div className="quiet-empty compact">
-          <CircleDot size={16} />
-          <strong>No judgment queued</strong>
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }

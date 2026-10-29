@@ -34,9 +34,10 @@ injection. It is not a separate account or a hostile same-account sandbox.
 
 ## External dependencies
 
-[dependencies.py](../../src/rcp/dependencies.py) owns presence, roles, platforms
-and whether a dependency is required or optional. Installation, doctor and
-machine cards share this registry. Missing required tools cause launch refusal.
+[dependencies.py](../../src/rcp/dependencies.py) owns roles, platforms and
+whether a dependency is required or optional.
+[dependency_check.py](../../src/rcp/dependency_check.py) checks machines against
+it. Installation, doctor and machine cards share this registry. Missing required tools cause launch refusal.
 Optional gaps name their feature and its visible limitation. Feature-specific
 versions stay with their concrete owners.
 
@@ -242,8 +243,8 @@ automatic launches until wake stabilizes.
 
 Demand holds `caffeinate` for the backend lifetime without root or lasting
 state. Display sleep and screen locking do not release it. Lid closure or OS
-emergencies may. Locally owned episodes count when they are active, recovering,
-stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
+emergencies may. Locally owned episodes count when they are starting, active,
+recovering, stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
 retries also count. Human-only waits, ended work, sign-in-blocked tasks and
 armed watchers alone do not. Failed reads retain the hold and log a failure
 rather than infer completion.
