@@ -25,7 +25,10 @@ const BACKEND_HOST: &str = "127.0.0.1";
 const LAUNCH_ERROR_MAX_LINES: usize = 12;
 const LAUNCH_ERROR_MAX_BYTES: usize = 1_500;
 const LAUNCH_OUTPUT_FILENAME: &str = "backend-launch-failure.log";
-const BACKEND_PORT: &str = "8421";
+const DEFAULT_BACKEND_PORT: u16 = 8421;
+// Moves a test build off the released app's port. It needs its own
+// RCP_DATA_DIR too, because one process owns one data directory.
+const BACKEND_PORT_VARIABLE: &str = "RCP_PORT";
 const HEALTH_READY_TIMEOUT: Duration = Duration::from_secs(12);
 // The dev app runs the checkout backend with `--web-assets source`, and that mode
 // rebuilds the frontend unconditionally before the server reports its launch
@@ -881,6 +884,24 @@ fn redact_owner_code(bytes: &[u8]) -> String {
         .join("\n")
 }
 
+pub fn backend_url() -> Result<String, String> {
+    Ok(format!(
+        "http://{BACKEND_HOST}:{}",
+        backend_port(env::var_os(BACKEND_PORT_VARIABLE).as_deref())?
+    ))
+}
+
+fn backend_port(value: Option<&std::ffi::OsStr>) -> Result<u16, String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_BACKEND_PORT);
+    };
+    value
+        .to_str()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| format!("{BACKEND_PORT_VARIABLE} must be a port from 1 to 65535"))
+}
+
 fn backend_command(
     app: &AppHandle,
     force: bool,
@@ -910,6 +931,7 @@ fn backend_command(
         app.shell().command(backend).args(["serve"])
     };
 
+    let port = backend_port(env::var_os(BACKEND_PORT_VARIABLE).as_deref())?.to_string();
     let mut args = vec![
         "--machine-readable",
         "--owner-secret-stdin",
@@ -924,7 +946,7 @@ fn backend_command(
         "--host",
         BACKEND_HOST,
         "--port",
-        BACKEND_PORT,
+        &port,
     ];
     args.push(if force { "--force" } else { "--reuse-existing" });
     Ok(command.args(args).env("PATH", repaired_path()?))
@@ -1589,6 +1611,19 @@ fn save_launch_output(app: &AppHandle, output: &[u8]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rcp_port_moves_the_backend_and_refuses_anything_but_a_port() {
+        use std::ffi::OsStr;
+        assert_eq!(backend_port(None), Ok(8421));
+        assert_eq!(backend_port(Some(OsStr::new("8483"))), Ok(8483));
+        for invalid in ["", "0", "65536", "84x3", " 8483"] {
+            assert!(
+                backend_port(Some(OsStr::new(invalid))).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
 
     #[test]
     fn launch_error_drops_build_noise_and_keeps_the_diagnostic_tail() {

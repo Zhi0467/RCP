@@ -233,6 +233,11 @@ when no other RCP is running, and on its own data:
 if curl -fsS -m 3 http://127.0.0.1:8421/api/health >/dev/null; then echo "another RCP is running; quit it first"; else open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"; fi
 ```
 
+`RCP_PORT` moves a build's backend and window to another loopback port; unset,
+it is 8421. Pair it with a throwaway `RCP_DATA_DIR`, since one process owns one
+data directory. It does not separate the bundle identifier, so a build with the
+released identifier still only focuses a running RCP and shares its settings.
+
 The local steps below build the same app from a checkout; launch that bundle
 the same way.
 

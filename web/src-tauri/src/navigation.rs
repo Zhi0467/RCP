@@ -16,17 +16,15 @@ pub fn is_loopback_rcp_url(url: &Url, base_url: &str, allow_dev: bool) -> bool {
 
 pub fn is_main_window_url(
     url: &Url,
-    current_base_url: Option<&str>,
+    current_base_url: &str,
     saved_team_origins: &[String],
     allow_dev: bool,
 ) -> bool {
-    is_loopback_rcp_url(
-        url,
-        current_base_url.unwrap_or("http://127.0.0.1:8421"),
-        allow_dev,
-    ) || saved_team_origins.iter().any(|origin| {
-        Url::parse(origin).is_ok_and(|saved| same_origin(url, &saved) && saved.scheme() == "https")
-    })
+    is_loopback_rcp_url(url, current_base_url, allow_dev)
+        || saved_team_origins.iter().any(|origin| {
+            Url::parse(origin)
+                .is_ok_and(|saved| same_origin(url, &saved) && saved.scheme() == "https")
+        })
 }
 
 /// Whether `url` is an RCP application root document. Hash routes remain on
@@ -90,23 +88,28 @@ mod tests {
     fn main_window_follows_only_the_verified_reused_port() {
         let reused = "http://127.0.0.1:18421";
         let candidate = Url::parse("http://127.0.0.1:18421/#/projects/a").unwrap();
-        assert!(!is_main_window_url(&candidate, None, &[], false));
-        assert!(is_main_window_url(&candidate, Some(reused), &[], false));
+        assert!(!is_main_window_url(
+            &candidate,
+            "http://127.0.0.1:8421",
+            &[],
+            false
+        ));
+        assert!(is_main_window_url(&candidate, reused, &[], false));
         assert!(!is_main_window_url(
             &Url::parse("http://127.0.0.1:8421").unwrap(),
-            Some(reused),
+            reused,
             &[],
             false,
         ));
         assert!(!is_main_window_url(
             &Url::parse("http://127.0.0.1:19421").unwrap(),
-            Some(reused),
+            reused,
             &[],
             false,
         ));
         assert!(is_main_window_url(
             &Url::parse("http://127.0.0.1:5173").unwrap(),
-            Some(reused),
+            reused,
             &[],
             true,
         ));
@@ -118,7 +121,7 @@ mod tests {
             vec!["https://rcp-11111111111141118111111111111111.rcp.localhost:18421".to_string()];
         assert!(is_main_window_url(
             &Url::parse(&format!("{}/#/projects/a", saved[0])).unwrap(),
-            None,
+            "http://127.0.0.1:8421",
             &saved,
             false,
         ));
@@ -129,7 +132,7 @@ mod tests {
         ] {
             assert!(!is_main_window_url(
                 &Url::parse(rejected).unwrap(),
-                None,
+                "http://127.0.0.1:8421",
                 &saved,
                 false,
             ));
