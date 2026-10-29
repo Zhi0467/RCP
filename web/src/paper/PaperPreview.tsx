@@ -6,6 +6,7 @@ import {
   Suspense,
   memo,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -26,6 +27,7 @@ import {
 
 import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
+import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
@@ -41,6 +43,7 @@ interface CompileResult {
   candidates?: string[];
   log_tail: string;
   pdf_url: string | null;
+  synctex?: SyncTexMap;
 }
 
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
@@ -116,6 +119,7 @@ export function PaperPreview({
   active,
   onOpenFile,
   toolbar,
+  cursorLine,
 }: {
   projectId: string;
   file: PaperFile;
@@ -126,6 +130,8 @@ export function PaperPreview({
   onOpenFile?: (fileId: string) => void;
   /** The header slot the preview's actions render into, while the preview is the shown panel. */
   toolbar: HTMLElement | null;
+  /** The editor's settled cursor line in this file; a LaTeX PDF scrolls to it. */
+  cursorLine: number;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -141,6 +147,11 @@ export function PaperPreview({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [synctex, setSynctex] = useState<SyncTexMap>({});
+  const spot = useMemo(
+    () => synctexSpot(synctex, file.path, cursorLine),
+    [synctex, file.path, cursorLine],
+  );
   const engine = file.format === "latex" || file.format === "typst" ? file.format : null;
   const base = `/api/projects/${encodeURIComponent(projectId)}/paper`;
   const typstText = engine === "typst" ? text : "";
@@ -212,6 +223,7 @@ export function PaperPreview({
           setCandidates(result.candidates ?? []);
           if (result.status === "ok" && result.pdf_url) {
             setPdfRoot(result.root_path);
+            setSynctex(result.synctex ?? {});
             setPdf(result.pdf_url);
           } else if (result.status === "unavailable") {
             setEngines((value) => value && { ...value, latex: "unavailable" });
@@ -258,6 +270,7 @@ export function PaperPreview({
             new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),
           );
           setPdfRoot(root);
+          setSynctex({});
           setPdf(objectUrl);
         }
       })()
@@ -427,6 +440,7 @@ export function PaperPreview({
             scrollKey={`${projectId}:${pdfRoot}`}
             actions={actions}
             toolbar={toolbar}
+            spot={spot}
             url={pdf}
             name={`${(selectedRoot || file.path)
               .split("/")

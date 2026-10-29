@@ -20,6 +20,7 @@ from rcp.runs.tasks.work import (
     _apply_work_patch,
     _bounded_graph_messages,
     record_work_graph_failure,
+    recorded_work_read_scope,
 )
 from rcp.runs.tasks.work_turn_runtime import failed_graph_update
 from rcp.service import ProjectService, RunRequest
@@ -145,7 +146,7 @@ def apply_work_graph_update_again(
                 run_truth_scope=list(
                     request.run_truth_scope or write_repositories(service.history.state())
                 ),
-                read_scope=None,
+                read_scope=recorded_work_read_scope(store, operation_id),
                 source_operation_id=operation_id,
                 cancelled=lambda: time.monotonic() > deadline,
                 under_lock=recheck_chat_order,

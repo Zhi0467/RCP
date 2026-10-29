@@ -214,3 +214,69 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
 });
+
+test("a LaTeX preview opens at the open file's place in the PDF", async (t) => {
+  const { server, close } = await createPaperViteServer([
+    {
+      name: "paper-synctex-test",
+      resolveId(id) {
+        if (id === "/synctex-test.tsx") return id;
+      },
+      load(id) {
+        if (id !== "/synctex-test.tsx") return;
+        return `import React from 'react';
+          import { createRoot } from 'react-dom/client';
+          import { PaperPreview } from '/src/paper/PaperPreview.tsx';
+          const bar = document.createElement('header');
+          document.body.prepend(bar);
+          const files = [
+            {file_id:'main',path:'main.tex',format:'latex',kind:'text',sha256:'a'},
+            {file_id:'results',path:'sections/results.tex',format:'latex',kind:'text',sha256:'b'}
+          ];
+          createRoot(document.getElementById('root')).render(<PaperPreview projectId="p" file={files[1]} tree={{files,saved_revision:1}} text="" active toolbar={bar} cursorLine={1} />);`;
+      },
+    },
+  ]);
+  t.after(close);
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 600, height: 700 } });
+  await page.route("**/synctex-test.html", async (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: await server.transformIndexHtml(
+        "/synctex-test.html",
+        '<!doctype html><html><body><div id="root" style="display:flex;height:600px;width:100%"></div><script type="module" src="/synctex-test.tsx"></script></body></html>',
+      ),
+    }),
+  );
+  await page.route("**/paper/engines", (route) =>
+    route.fulfill({ json: { typst: "ready", latex: "ready", errors: {} } }),
+  );
+  // The compile names main.tex as the root; SyncTeX puts the section on page 20.
+  await page.route("**/paper/compile", (route) =>
+    route.fulfill({
+      json: {
+        status: "ok",
+        root_path: "main.tex",
+        log_tail: "",
+        pdf_url: "/compiled.pdf",
+        synctex: { "main.tex": [[1, 1, 72]], "sections/results.tex": [[1, 20, 100]] },
+      },
+    }),
+  );
+  await page.route("**/compiled.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: pdfBytes(30) }),
+  );
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/synctex-test.html`);
+  await page.waitForFunction(() => {
+    const root = document.querySelector(".paper-pdf");
+    if (!root || !root.scrollTop) return false;
+    const line = root.getBoundingClientRect().top + root.clientHeight / 3;
+    const slot = [...document.querySelectorAll(".paper-pdf-page")].find((element) => {
+      const box = element.getBoundingClientRect();
+      return box.top <= line && line <= box.bottom;
+    });
+    return slot?.dataset.page === "20";
+  });
+});

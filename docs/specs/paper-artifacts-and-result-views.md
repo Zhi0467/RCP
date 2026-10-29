@@ -85,9 +85,15 @@ no state and is available to members. Identical concurrent requests join. A newe
 different request cancels the project's older request and shows Retry. Previous
 PDFs remain readable within retention.
 
-Preview selects the one compile root that reaches the open file. If no root or
-multiple roots qualify, it shows candidates. A chosen root is accepted only while
-it reaches that file. PDF scroll is remembered per root. The preview's actions
+Preview selects the one compile root that reaches the open file. A LaTeX file
+with its own `\documentclass` is its own root, so the file the user is in
+compiles even when another root inputs it. If no root or multiple roots qualify,
+it shows candidates. A chosen root is accepted only while it reaches that file.
+LaTeX compiles with SyncTeX; the backend parses it beside the result into each
+tree file's first PDF page and height per source line, bounded in `limits.py`.
+After each compile and when the cursor settles, the PDF scrolls to the open
+file's line, so a section opens at its own page rather than page 1. Typst and a
+LaTeX file outside the map keep the per-root remembered scroll. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
