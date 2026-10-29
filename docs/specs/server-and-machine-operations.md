@@ -343,6 +343,14 @@ imported history and startup recovery with the application lifespan. A migration
 check alone is insufficient. Rollback runs the old binary's own fenced proof
 without making it parse the candidate's newer schema.
 
+Both copied-state checks start from the live display caches, which backup
+omits. Before any project opens, and again after every project has opened,
+each member reads the Runs list, the space and project Experiment indexes,
+resource watermarks and each project's consolidation Inbox. Any non-200 read
+refuses. **Why:** project opens rebuild caches, so only a cold read finds old
+cached bytes that a space-wide read cannot use. A restore has no caches to
+carry and makes only the second pass.
+
 Projection upgrades verify the baseline digest, remove retired fields and fill
 only proven deterministic defaults. They preserve explicit values, unknown keys,
 edge layers and serializer-owned operations. Display caches upgrade or replay
