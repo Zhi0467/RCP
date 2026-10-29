@@ -2,7 +2,7 @@ import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
-import { topTab } from "./core/viewTabs";
+import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
@@ -2430,7 +2430,13 @@ function MemberApp({
     changeView("chats");
   };
 
-  // Leaving Agents resets it to the board, so only a link that names a chat skips it.
+  /** Returning to Agents reopens the chat left open there; inside Agents the tab is the board. */
+  const reopenAgents = () => {
+    const chatId = view !== "chats" && project ? rememberedChat(project.id) : null;
+    openChats(chatId && conversations.some((item) => item.chatId === chatId) ? chatId : null);
+  };
+
+  // Leaving Agents resets it to the board; the tab and a link that names a chat skip it.
   useEffect(() => {
     if (view !== "chats") setAgentsBoard(true);
   }, [view]);
@@ -2440,6 +2446,7 @@ function MemberApp({
   const pendingChatId = requestedChat.chatId;
   useEffect(() => {
     if (view !== "chats" || !project?.id || pendingChatId) return;
+    rememberOpenChat(project.id, openChatId ?? null);
     const hash = window.location.hash;
     const route = parseProjectHash(hash);
     if (route.projectId !== project.id || (route.chatId ?? undefined) === openChatId) return;
@@ -4652,7 +4659,7 @@ function MemberApp({
         key={item.view}
         className={navItemActive(item.view, view) ? "active" : ""}
         aria-current={navItemActive(item.view, view) ? "page" : undefined}
-        onClick={() => (item.view === "chats" ? openChats() : openTab(item.view))}
+        onClick={() => (item.view === "chats" ? reopenAgents() : openTab(item.view))}
       >
         {item.icon}
         <span>{item.label}</span>

@@ -1,19 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { EditorView } from "@codemirror/view";
-import {
-  Cloud,
-  CloudOff,
-  Copy,
-  Download,
-  FileWarning,
-  History,
-  LoaderCircle,
-  PanelLeft,
-  RotateCcw,
-} from "lucide-react";
+import { Download, FileWarning, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
-import { referenceUrl } from "../core/projectReferences";
 import type {
   AgentTask,
   IdentityResponse,
@@ -451,24 +440,6 @@ export function PaperWorkspace({
           >
             <History size={16} />
           </button>
-          <button
-            className="icon-button paper-copy"
-            aria-label="Copy reference"
-            disabled={!file}
-            onClick={() =>
-              void perform(async () => {
-                await navigator.clipboard.writeText(
-                  referenceUrl(
-                    project.id,
-                    { kind: "main" },
-                    { kind: "paper", file_id: file!.file_id },
-                  ),
-                );
-              })
-            }
-          >
-            <Copy size={16} />
-          </button>
         </header>
         <div className="paper-phone-segments">
           <div className="segmented" role="group" aria-label="Paper view">
@@ -669,10 +640,8 @@ function DocumentStatus({
         data-testid="paper-saved"
         data-saved={state.saved}
         role="status"
-        aria-label={state.saved ? "Saved" : "Saving"}
-        title={state.saved ? "Saved" : "Saving"}
       >
-        {state.connected ? <Cloud size={16} /> : <CloudOff size={16} />}
+        {state.saved ? "Saved" : "Saving"}
       </span>
       {state.closed !== null && !state.saved && !recover && (
         <button

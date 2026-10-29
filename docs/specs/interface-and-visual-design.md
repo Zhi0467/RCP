@@ -284,7 +284,8 @@ and cannot move. Touch scrolls; menus archive. Alt+Up/Down reorders focused card
 Columns become two at <=920px and one at <=560px.
 
 At <=560px, the chat header is one row: agent picker, ring, and menu, with no
-chat name. More → Agents opens the board, which lists every agent.
+chat name. More → Agents opens the board, which lists every agent, unless a
+chat was left open there.
 Wider layouts retain resizable-list preferences; viewport changes never overwrite
 them. Only code, tables, and display math scroll sideways in transcripts; paths
 and URLs wrap. Fenced blocks have icon-only exact-text Copy, with 44px phone targets.

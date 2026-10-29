@@ -20,17 +20,38 @@
   grid-row: 1;
 }
 .paper-split-handle {
+  align-items: center;
+  display: flex;
+  justify-content: center;
   justify-self: start;
   width: 14px;
   margin-left: -14px;
   border-radius: 7px;
   cursor: col-resize;
   touch-action: none;
+  transition: background-color 0.14s ease;
   z-index: 2;
+}
+/* The grip shows the gap can be dragged; it turns teal under the pointer and while held. */
+.paper-split-handle::before {
+  background: var(--line);
+  border-radius: 2px;
+  content: "";
+  height: 36px;
+  transition: background-color 0.14s ease;
+  width: 4px;
 }
 .paper-split-handle:hover,
 .paper-split-handle:focus-visible {
   background: color-mix(in srgb, var(--teal) 22%, transparent);
+}
+.paper-split-handle:active {
+  background: color-mix(in srgb, var(--teal) 16%, transparent);
+}
+.paper-split-handle:hover::before,
+.paper-split-handle:focus-visible::before,
+.paper-split-handle:active::before {
+  background: var(--teal);
 }
 .paper-box {
   display: flex;
@@ -55,6 +76,7 @@
   min-height: 48px;
   flex: none;
 }
+/* A bar's controls share one height: 29px here, the 44px phone target below. */
 @media (min-width: 701px) {
   .paper-bar .icon-button {
     flex: none;
@@ -62,6 +84,13 @@
     height: 29px;
     min-height: 29px;
     padding: 5px;
+  }
+  .paper-bar .paper-segments {
+    height: 29px;
+    padding: 2px;
+  }
+  .paper-bar .paper-segments button {
+    padding: 0 12px;
   }
 }
 .paper-grow {
@@ -103,13 +132,13 @@
   font-size: 9px;
   font-weight: 700;
 }
+/* Save state is announced, not drawn: unsaved text is guarded on leave, and a failure shows its retry. */
 .paper-saved {
-  color: var(--muted);
-  display: flex;
-  flex-shrink: 0;
-}
-.paper-saved.saved {
-  color: var(--forest);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
 }
 .paper-tree {
   margin: 0 10px;
@@ -450,7 +479,6 @@
   }
   .paper-desktop-segments,
   .paper-position,
-  .paper-copy,
   .paper-suggestion-actions {
     display: none;
   }
@@ -466,7 +494,7 @@
   .paper-format {
     display: none;
   }
-  /* Beside the coach the file row keeps its path and save state, as chat keeps its title. */
+  /* Beside the coach the file row keeps only its path, as chat keeps its title. */
   .paper-live-workspace[data-view="coach"] .paper-presence,
   .paper-live-workspace[data-view="coach"] .paper-history-button {
     display: none;
@@ -510,5 +538,15 @@
   .paper-live-workspace .paper-segments button {
     min-width: 44px;
     min-height: 44px;
+  }
+  .paper-phone-segments .segmented {
+    height: 44px;
+  }
+  .paper-phone-segments .segmented button {
+    align-self: stretch;
+    min-height: 0;
+  }
+  .paper-coach .chat-send {
+    --composer-control: 44px;
   }
 }
