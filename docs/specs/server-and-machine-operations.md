@@ -432,7 +432,9 @@ Offline proof exercises API projections, main/branch replay, merge receipts,
 retained tasks/stages, imported history and startup recovery. `migrate --check`
 alone is insufficient. After rollback the old binary runs its own fenced proof,
 without parsing a newer proof schema. The supervisor handles opaque snapshots
-and proof digests.
+and proof digests. The copied-state API proof uses an explicit in-process HTTP
+transport with application lifespan startup and shutdown. It does not import a
+test client, keeping its dependency warnings out of operator output.
 
 `upgrade_graph_projection` verifies the baseline digest, removes retired
 `coverage`, and fills absent deterministic defaults using the real nested graph

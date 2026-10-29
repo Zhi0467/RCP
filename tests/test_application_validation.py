@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -261,6 +262,34 @@ def test_candidate_child_accepts_current_team_deletion_card_projection(tmp_path:
     assert exit_code == 0, result
     assert result["status"] == "verified"
     assert result["projects"][0]["projection_sha256"] == expected_sha256
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_candidate_child_closes_lifespan(tmp_path, monkeypatch, refused):
+    events = []
+
+    def tracked_app(**kwargs):
+        app = create_app(**kwargs)
+        lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def track(current):
+            try:
+                async with lifespan(current):
+                    events.append("started")
+                    yield
+            finally:
+                events.append("closed")
+
+        app.router.lifespan_context = track
+        return app
+
+    monkeypatch.setattr(rehearsal_module, "create_app", tracked_app)
+    code, result, _ = _run_unavailable_project_candidate_child(
+        tmp_path, expected_updates={"revision": 8} if refused else None
+    )
+    assert code == int(refused), result
+    assert events == ["started", "closed"]
 
 
 def test_candidate_child_refuses_changed_team_delete_confirmation(tmp_path: Path) -> None:
@@ -614,7 +643,8 @@ def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_p
                 assert not Path(row[field]).exists()
 
 
-def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
+@pytest.mark.asyncio
+async def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
     import httpx
 
     base = "/api/projects/project/paper"
@@ -636,14 +666,14 @@ def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
         requested.append(str(request.url))
         return responses[request.url.path]
 
-    with httpx.Client(
+    async with httpx.AsyncClient(
         transport=httpx.MockTransport(respond), base_url="https://testserver"
     ) as client:
-        assert rehearsal_module._paper_read_proof(client, "project", headers={})
+        assert await rehearsal_module._paper_read_proof(client, "project", headers={})
         assert requested[-1].endswith("?revision=8")
         responses[base + "/files/figure/raw"] = httpx.Response(200, content=b"published bytes")
         with pytest.raises(CandidateRehearsalRefused):
-            rehearsal_module._paper_read_proof(client, "project", headers={})
+            await rehearsal_module._paper_read_proof(client, "project", headers={})
         responses[base + "/tree"] = httpx.Response(404)
         with pytest.raises(CandidateRehearsalRefused):
-            rehearsal_module._paper_read_proof(client, "project", headers={})
+            await rehearsal_module._paper_read_proof(client, "project", headers={})
