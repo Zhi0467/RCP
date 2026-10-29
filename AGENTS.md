@@ -61,7 +61,7 @@ spec, and executable test, not this registry.
 
 1. **Canonical Patch logs are append-only; materialized graph files are outputs.** Never
    edit or delete main or branch Patch history, and never hand-edit `graph.json`,
-   `research.md`, glossary, Proposal, or control projections. Replay rebuilds the
+   `research.md`, glossary, Proposal, cursor, or scope-base files. Replay rebuilds the
    outputs and would change the past.
 3. **Humans retain protected authority.** Only humans approve Proposals, change project
    truth membership, authorize episodes, or dispatch branch merges. A member's own page,
@@ -111,7 +111,7 @@ Invariant 9 belongs to `AppStore.complete_agent_task` for Patch text and the
 `if applied` stage removal in `stream_graph_run` for scratch.
 Invariant 10 belongs to `prepare_agent_patch`. An agent Patch carries no cursor
 or coverage operation, so chat never advances ingestion.
-Invariant 10f belongs to the watermark comment in `materialize.apply_patch`.
+Invariant 10f belongs to the watermark comment in `materialize._apply_patch`.
 Invariant 10c belongs to `clear_turn_handoff_files`.
 Invariant 10d belongs to the native chat context rule in the conversations spec.
 Invariant 11 belongs to `ProviderStreamEvent`.
