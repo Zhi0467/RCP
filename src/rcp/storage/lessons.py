@@ -9,6 +9,7 @@ import uuid
 from contextlib import nullcontext
 from typing import Any
 
+from rcp.core.authority import AgentDispatchAuthority
 from rcp.limits import LESSON_TEXT_MAX_CHARS, LESSONS_LIST_PAGE_SIZE, LESSONS_PER_PROJECT_MAX
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
@@ -57,6 +58,9 @@ def lesson_command_actions(store: Any, operation_id: str) -> tuple[str, ...]:
     return _lesson_permissions(store, operation_id)[0]
 
 
+_EVERY_LESSON_ACTION = ("add", "list", "update", "delete")
+
+
 def _lesson_permissions(
     store: Any, operation_id: str, *, connection: sqlite3.Connection | None = None
 ) -> tuple[tuple[str, ...], bool]:
@@ -64,6 +68,7 @@ def _lesson_permissions(
 
     Reuse the command's transaction so membership and mutation are atomic.
     Episode and child Work turns never inherit their authorizing human's rights.
+    Returns the allowed actions and whether the turn acts as its human.
     """
     with nullcontext(connection) if connection is not None else store.connection() as conn:
         row = conn.execute(
@@ -72,34 +77,48 @@ def _lesson_permissions(
         if row is None:
             return (), False
         task: AgentTaskRecord = store._agent_task_record(row)
-        authority = task.dispatch_authority
-        if (
-            task.kind not in {"node_chat", "project_chat", "auto_research"}
-            or authority is None
-            or authority.task_contract not in {"work_auto", "orchestrate", "discuss"}
-            or task.authorized_by is None
-            or not live_project_member(conn, task.project_id, task.authorized_by.user_id)
-        ):
+        authority = _lesson_authority(conn, task)
+        if authority is None:
             return (), False
-        if (
-            conn.execute(
-                "SELECT 1 FROM consolidation_runs WHERE operation_id=?", (operation_id,)
-            ).fetchone()
-            is not None
+        if _exists(conn, "consolidation_runs", operation_id):
+            return _EVERY_LESSON_ACTION, False
+        if _is_ordinary_chat(task, authority) and not _exists(
+            conn, "auto_research_child_work_attempts", operation_id
         ):
-            return ("add", "list", "update", "delete"), False
-        if (
-            task.kind in {"node_chat", "project_chat"}
-            and task.episode_id is None
-            and (authority.is_work_chat or authority.is_discuss_chat)
-            and conn.execute(
-                "SELECT 1 FROM auto_research_child_work_attempts WHERE operation_id=?",
-                (operation_id,),
-            ).fetchone()
-            is None
-        ):
-            return ("add", "list", "update", "delete"), True
+            return _EVERY_LESSON_ACTION, True
         return (("add",) if authority.task_contract in {"work_auto", "orchestrate"} else ()), False
+
+
+def _lesson_authority(
+    conn: sqlite3.Connection, task: AgentTaskRecord
+) -> AgentDispatchAuthority | None:
+    """The authority of a lesson-capable turn whose authorizing human is still a member."""
+    authority = task.dispatch_authority
+    if (
+        task.kind not in {"node_chat", "project_chat", "auto_research"}
+        or authority is None
+        or authority.task_contract not in {"work_auto", "orchestrate", "discuss"}
+        or task.authorized_by is None
+        or not live_project_member(conn, task.project_id, task.authorized_by.user_id)
+    ):
+        return None
+    return authority
+
+
+def _is_ordinary_chat(task: AgentTaskRecord, authority: AgentDispatchAuthority) -> bool:
+    """A member's own Work or Discuss chat, outside any episode."""
+    return (
+        task.kind in {"node_chat", "project_chat"}
+        and task.episode_id is None
+        and (authority.is_work_chat or authority.is_discuss_chat)
+    )
+
+
+def _exists(conn: sqlite3.Connection, table: str, operation_id: str) -> bool:
+    return (
+        conn.execute(f"SELECT 1 FROM {table} WHERE operation_id=?", (operation_id,)).fetchone()
+        is not None
+    )
 
 
 def _record(row: sqlite3.Row) -> dict[str, Any]:
@@ -274,13 +293,12 @@ class LessonStoreMixin(StoreMixinBase):
                 "SELECT * FROM graph_runs WHERE operation_id=? AND project_id=?",
                 (operation_id, project_id),
             ).fetchone()
-            if task is None or not task["authorized_user_id"]:
+            if task is None:
                 raise LessonError("lesson_forbidden")
-            _require_member(connection, project_id, task["authorized_user_id"])
-            self._require_project_accepts_new_work(connection, project_id)
             actions, human_chat = _lesson_permissions(self, operation_id, connection=connection)
             if not actions:
                 raise LessonError("lesson_forbidden")
+            self._require_project_accepts_new_work(connection, project_id)
             if subcommand not in actions:
                 raise LessonError("lesson_edit_not_authorized")
             if subcommand == "list":
