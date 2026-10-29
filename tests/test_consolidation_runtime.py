@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from rcp.background import persisted_request_roundtrips
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
@@ -30,8 +31,12 @@ def runtime(manifest, tmp_path, monkeypatch):
         next_due_at=(now - timedelta(days=3)).isoformat(),
     )
     dispatched = []
+    tasks = app.state.background_tasks
 
     def dispatch(operation_id):
+        # The real launch refuses a request that does not survive its roundtrip.
+        task = store.agent_task(operation_id)
+        assert persisted_request_roundtrips(tasks._request_from_record(task), task.request)
         if store.mark_agent_task_running(operation_id):
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
@@ -50,6 +55,21 @@ def runtime(manifest, tmp_path, monkeypatch):
         dispatched=dispatched,
         now=now,
     )
+
+
+def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
+        runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.graph_target', "
+            'json(\'{"kind": "main", "branch_id": null}\')) WHERE operation_id=?',
+            (run.operation_id,),
+        )
+    runtime.poller._launch(run.operation_id)
+    assert runtime.dispatched == [run.operation_id]
 
 
 def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
@@ -773,7 +793,6 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
     assert set(runs) == {"main", changed.branch_id}
     task = runtime.store.agent_task(runs[changed.branch_id].operation_id)
     assert task.graph_target == changed.graph_target
-    assert task.request["graph_target"] == changed.graph_target.model_dump(mode="json")
     assert (
         task.request["chat_id"]
         != runtime.store.agent_task(runs["main"].operation_id).request["chat_id"]

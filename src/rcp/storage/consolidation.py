@@ -338,6 +338,17 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 ).fetchone(),
             )
 
+    def drop_consolidation_request_target(self, operation_id: str) -> None:
+        # 0.4.35 also copied the run's target into its queued request, which no
+        # request model carries, so the launch refused it on every retry.
+        with self.connection() as conn:
+            conn.execute(
+                "UPDATE graph_runs SET request_json=json_remove(request_json, '$.graph_target') "
+                "WHERE operation_id=? AND status='queued' "
+                "AND json_type(request_json, '$.graph_target') IS NOT NULL",
+                (operation_id,),
+            )
+
     def pending_consolidation_operation_ids(self) -> set[str]:
         with self.connection() as conn:
             return {
