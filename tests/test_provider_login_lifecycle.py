@@ -20,7 +20,7 @@ from rcp.runs.provider_login import (
 from rcp.storage import AppStore
 from rcp.storage.models import EpisodeMode, EpisodeRecord, LoginKey
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, fake_launch_admitted
 from .test_provider_login_resolver import _login, _task
 
 
@@ -284,7 +284,7 @@ def test_verify_shared_releases_unbound_work_even_when_resolver_prefers_own(acco
         )
     calls = []
     background = BackgroundAgentTasks(store, _unused_stream)
-    monkeypatch.setattr(background, "launch_admitted", calls.append)
+    fake_launch_admitted(monkeypatch, background, calls.append)
     resume_provider_account(background, shared)
     assert calls == [record.operation_id]
 
@@ -336,7 +336,7 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
     assert resolved_task_login(store, task) is None
     background = BackgroundAgentTasks(store, _unused_stream)
     launched = []
-    monkeypatch.setattr(background, "launch_admitted", launched.append)
+    fake_launch_admitted(monkeypatch, background, launched.append)
     if event == "verify_own":
         row = store.add_provider_login(
             "codex", "", member_id=member.user_id, added_by=member.user_id
