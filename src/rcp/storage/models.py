@@ -395,6 +395,10 @@ def _provisioning_absolute_path(value: str, *, label: str) -> str:
     return value
 
 
+def _optional_provisioning_path(value: str | None, *, label: str) -> str | None:
+    return None if value is None else _provisioning_absolute_path(value, label=label)
+
+
 def _provisioning_resume_matches_request(argv: tuple[str, ...], request_id: str) -> bool:
     command_tails = (
         ("server", "project", "provision", request_id),
@@ -450,9 +454,7 @@ class ProjectProvisioningMachineIntent(_StrictProvisioningModel):
     @field_validator("central_root")
     @classmethod
     def validate_central_root(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _provisioning_absolute_path(value, label="provisioning central root")
+        return _optional_provisioning_path(value, label="provisioning central root")
 
     @model_validator(mode="after")
     def validate_location(self) -> ProjectProvisioningMachineIntent:
@@ -474,9 +476,7 @@ class ProjectProvisioningMachineRecord(ProjectProvisioningMachineIntent):
     @field_validator("resolved_central_root")
     @classmethod
     def validate_resolved_central_root(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _provisioning_absolute_path(value, label="resolved provisioning central root")
+        return _optional_provisioning_path(value, label="resolved provisioning central root")
 
     @model_validator(mode="after")
     def resolved_root_matches_intent(self) -> ProjectProvisioningMachineRecord:
@@ -559,9 +559,7 @@ class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
     @field_validator("existing_path")
     @classmethod
     def validate_existing_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _provisioning_absolute_path(value, label="existing repository path")
+        return _optional_provisioning_path(value, label="existing repository path")
 
     @model_validator(mode="after")
     def validate_existing_source(self) -> ProjectProvisioningRepositoryIntent:
@@ -597,9 +595,7 @@ class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
     @field_validator("intended_path", "resolved_path")
     @classmethod
     def validate_path(cls, value: str | None, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        return _provisioning_absolute_path(value, label=info.field_name.replace("_", " "))
+        return _optional_provisioning_path(value, label=info.field_name.replace("_", " "))
 
 
 class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
@@ -654,9 +650,7 @@ class ProjectProvisioningProviderCheckRecord(ProjectProvisioningProviderIntent):
     @field_validator("binary_path")
     @classmethod
     def validate_binary_path(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _provisioning_absolute_path(value, label="provider executable path")
+        return _optional_provisioning_path(value, label="provider executable path")
 
     @field_validator("version")
     @classmethod
