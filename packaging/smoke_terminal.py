@@ -60,6 +60,11 @@ def verify(backend: Path, directory: Path) -> None:
             # after Ctrl-C before it can accept the next command.
             os.write(master, b"fg\n")
             _read_until(master, rb"(?:\r?\n)sleep 120\r?\n")
+            # Bash echoes the job before it hands it the terminal; a Ctrl-C
+            # sent earlier reaches Bash and leaves the job running.
+            deadline = time.monotonic() + TERMINAL_STOP_TIMEOUT_SECONDS
+            while os.tcgetpgrp(master) != pids[1] and time.monotonic() < deadline:
+                time.sleep(0.05)
             os.write(master, b"\x03")
             # Typed before the prompt returns, the next line can be discarded.
             _read_until(master, rb"\$ $")
