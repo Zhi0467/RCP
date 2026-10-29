@@ -57,11 +57,14 @@ test("coach settings stay within a short phone pane and scroll to the last contr
   await page.getByRole("textbox", { name: "Message", exact: true }).evaluate((textarea) => {
     textarea.style.height = "180px";
   });
-  await page.getByRole("button", { name: /^Coach agent:/ }).click();
+  const chip = page.getByRole("button", { name: /^Coach agent:/ });
+  await chip.click();
   const popover = page.locator(".paper-agent-popover");
   const pane = await page.locator(".paper-coach").boundingBox();
   const bounds = await popover.boundingBox();
   assert.ok(bounds.y >= pane.y && bounds.y + bounds.height <= pane.y + pane.height);
+  // The panel never covers the chip that opened it.
+  assert.ok(bounds.y + bounds.height <= (await chip.boundingBox()).y);
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
   for (const field of await popover
     .locator("button:visible, input:visible, select:visible")
@@ -71,6 +74,10 @@ test("coach settings stay within a short phone pane and scroll to the last contr
     assert.ok(control.y >= bounds.y && control.y + control.height <= bounds.y + bounds.height + 1);
   }
   await page.keyboard.press("Escape");
+  await popover.waitFor({ state: "detached" });
+  await chip.click();
+  await popover.waitFor();
+  await chip.click();
   await popover.waitFor({ state: "detached" });
 });
 

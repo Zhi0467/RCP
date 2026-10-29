@@ -51,10 +51,6 @@
   max-height: min(60dvh, 460px);
   overflow: auto;
 }
-.paper-agent-popover {
-  bottom: 8px;
-  max-height: min(460px, calc(100% - 16px));
-}
 .paper-session-list {
   top: 8px;
   display: flex;
