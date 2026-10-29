@@ -3305,9 +3305,6 @@ class BackgroundAgentTasks:
             parent_id = parent.parent_operation_id
         return tuple(feedback)
 
-    def _failure_is_session_limit(self, record: AgentTaskRecord) -> bool:
-        return self._failure_classified_as(record, "session_limit")
-
     def _failure_is_stale_session(self, record: AgentTaskRecord) -> bool:
         """The provider no longer holds the native session this task would resume."""
 
