@@ -1679,6 +1679,14 @@ chunk is nevertheless unavailable, the client performs one bounded document
 reload; a repeated failure renders an explicit reload action instead of a blank
 window or reload loop.
 
+The shell keeps the stdout and stderr of the backend it owns for the whole
+run, not only until launch, in `backend.log` in the app's log directory. Each
+line carries a UTC time and its stream, and owner sign-in codes are redacted.
+A marker line names each run's start and, when the shell sees it, its exit. The
+file rotates at 5 MiB and keeps three older files, so the set holds at most
+20 MiB. An adopted backend's output belongs to whoever started it. A failed launch still writes its whole capture to
+`backend-launch-failure.log` and names it in the dialog.
+
 App Quit gracefully asks only the backend process this shell owns to pause
 recoverable work and shut down. It never kills a reused backend or unrelated
 process. If graceful timeout is exhausted, the shell reports the forced path
@@ -1926,7 +1934,7 @@ user id and the message. Nothing is stored. Each member gets
 `CLIENT_EVENT_RATE_MAX_EVENTS` per `CLIENT_EVENT_RATE_WINDOW_SECONDS`; the first
 event past that logs one limit line and the rest of the window answers 429
 unlogged. The records reach stderr, which is the service journal on a team
-server.
+server and the [backend log](#desktop-shell) on the desktop.
 
 ## Provider sign-in resume response
 
