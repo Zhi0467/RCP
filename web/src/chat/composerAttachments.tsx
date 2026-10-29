@@ -233,6 +233,11 @@ export function useComposerAttachments({
     attachmentSetIdRef.current = attachmentSetId;
   }, [attachmentSetId]);
   const clientId = useMemo(() => chatAttachmentClientId(), []);
+  // Another chat, or the next draft, starts with its Add menu closed.
+  useEffect(() => {
+    setAddMenuOpen(false);
+    setPickerOpen(false);
+  }, [scope]);
   const ready = attachments.flatMap((item) =>
     item.status === "ready" && item.descriptor ? [item.descriptor] : [],
   );
@@ -468,33 +473,45 @@ export function useComposerAttachments({
     setPickerOpen(false);
     setAttachmentSetId(null);
     attachmentSetIdRef.current = null;
+    setAddMenuOpen(false);
     setDraftScope(crypto.randomUUID());
   }, []);
 
   return {
-    project,
-    attachments,
-    references,
-    setReferences,
-    attachmentSetId,
-    clientId,
+    /** The files ready to travel with the next turn. */
     ready,
+    /** Files or references are staged. */
+    staged: attachments.length + references.length > 0,
     preparing,
     unready: attachments.some((item) => item.status !== "ready"),
     full: attachments.length + references.length >= MAX_CHAT_ATTACHMENTS,
     dragging,
-    addMenuOpen,
-    setAddMenuOpen,
-    pickerOpen,
-    setPickerOpen,
-    addFiles,
-    removeAttachment,
-    addReference,
-    referencesDisabled,
     dropTarget,
     paste,
     turnFields,
     clear,
+    /** A send closes the Add menu. */
+    closeMenu: () => setAddMenuOpen(false),
+    /** What the chips and the Add picker below render and change. */
+    ui: {
+      project,
+      attachments,
+      references,
+      removeReference: (item: DraftReference) =>
+        setReferences((current) =>
+          current.filter(
+            (candidate) => referenceKey(candidate.selector) !== referenceKey(item.selector),
+          ),
+        ),
+      removeAttachment,
+      addMenuOpen,
+      setAddMenuOpen,
+      pickerOpen,
+      setPickerOpen,
+      addFiles,
+      addReference,
+      referencesDisabled,
+    },
   };
 }
 
@@ -502,7 +519,7 @@ export type ComposerAttachments = ReturnType<typeof useComposerAttachments>;
 
 /** The staged references and files, each removable. */
 export function ComposerAttachmentChips({ composer }: { composer: ComposerAttachments }) {
-  const { references, attachments, project } = composer;
+  const { references, attachments, project } = composer.ui;
   return (
     <>
       {references.length > 0 && (
@@ -512,13 +529,7 @@ export function ComposerAttachmentChips({ composer }: { composer: ComposerAttach
               key={referenceKey(item.selector)}
               projectId={project.id}
               reference={item}
-              onRemove={() =>
-                composer.setReferences((current) =>
-                  current.filter(
-                    (candidate) => referenceKey(candidate.selector) !== referenceKey(item.selector),
-                  ),
-                )
-              }
+              onRemove={() => composer.ui.removeReference(item)}
             />
           ))}
         </div>
@@ -545,7 +556,7 @@ export function ComposerAttachmentChips({ composer }: { composer: ComposerAttach
               <button
                 type="button"
                 aria-label={`Remove ${item.file.name}`}
-                onClick={() => composer.removeAttachment(item)}
+                onClick={() => composer.ui.removeAttachment(item)}
               >
                 <X size={12} />
               </button>
@@ -565,7 +576,7 @@ export function ComposerAddPicker({
   composer: ComposerAttachments;
   disabled: boolean;
 }) {
-  const { project, addMenuOpen, setAddMenuOpen, pickerOpen, setPickerOpen } = composer;
+  const { project, addMenuOpen, setAddMenuOpen, pickerOpen, setPickerOpen } = composer.ui;
   const pickerRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -582,7 +593,7 @@ export function ComposerAddPicker({
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? []);
           event.currentTarget.value = "";
-          if (files.length) void composer.addFiles(files);
+          if (files.length) void composer.ui.addFiles(files);
         }}
       />
       <button
@@ -616,7 +627,7 @@ export function ComposerAddPicker({
           <button
             type="button"
             role="menuitem"
-            disabled={disabled || composer.referencesDisabled}
+            disabled={disabled || composer.ui.referencesDisabled}
             onClick={() => {
               setAddMenuOpen(false);
               setPickerOpen(true);
@@ -632,8 +643,8 @@ export function ComposerAddPicker({
           projectId={project.id}
           target={project.graph_target ?? MAIN_GRAPH}
           nodes={project.graph?.nodes ?? {}}
-          selectedKeys={new Set(composer.references.map((item) => referenceKey(item.selector)))}
-          onPick={composer.addReference}
+          selectedKeys={new Set(composer.ui.references.map((item) => referenceKey(item.selector)))}
+          onPick={composer.ui.addReference}
           onClose={() => setPickerOpen(false)}
         />
       )}

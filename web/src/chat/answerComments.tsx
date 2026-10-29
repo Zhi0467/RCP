@@ -395,42 +395,60 @@ export function useAnswerComments({
     return false;
   };
 
-  /** After an admitted turn: the turn carries its comments now. */
-  const clear = () => {
-    setAnnotations([]);
+  /** After an admitted turn: the turn carries its comments now. With `sent`, only
+   * those comments clear; any staged since then stay. */
+  const clear = (sent?: StagedChatAnnotation[]) => {
     setOpen(false);
+    if (sent) {
+      setAnnotations((current) => (current === sent ? [] : current));
+      return;
+    }
+    setAnnotations([]);
     writeStagedAnnotations(storageKey, []);
   };
 
+  /** Drops staged comments that no longer apply. */
+  const discard = (items: StagedChatAnnotation[]) =>
+    setAnnotations((current) => current.filter((annotation) => !items.includes(annotation)));
+
   return {
-    busy,
-    panelId,
     annotations,
-    setAnnotations,
+    complete: stagedChatAnnotationsAreComplete(annotations),
+    /** The open comment editor, if any, and its draft. */
     composer,
     comment,
     setComment,
-    viewport,
-    open,
-    setOpen,
-    offer,
-    setOffer,
-    complete: stagedChatAnnotationsAreComplete(annotations),
-    refs: { comment: commentRef, selection: selectionRef, composer: composerRef, offer: offerRef },
     externalSelectionClear,
     focusComment,
     roomForAnother,
     openComposer,
-    openFromSelection,
-    openFromKeyboard,
-    updateKeyboardSelection,
-    continueKeyboard,
     dismiss,
-    stage,
-    update,
-    remove,
     requireComplete,
     clear,
+    discard,
+    /** What the offer, the editor and the staged list below render and change. */
+    ui: {
+      busy,
+      panelId,
+      open,
+      setOpen,
+      offer,
+      setOffer,
+      viewport,
+      refs: {
+        comment: commentRef,
+        selection: selectionRef,
+        composer: composerRef,
+        offer: offerRef,
+      },
+      openFromSelection,
+      openFromKeyboard,
+      updateKeyboardSelection,
+      continueKeyboard,
+      stage,
+      update,
+      remove,
+    },
   };
 }
 
@@ -443,12 +461,12 @@ export function AnswerCommentButton({ comments }: { comments: AnswerComments }) 
       className="chat-answer-annotation-button"
       type="button"
       aria-label="Comment on this answer"
-      disabled={comments.busy}
+      disabled={comments.ui.busy}
       onClick={(event) => {
         const answer = event.currentTarget.parentElement?.querySelector<HTMLElement>(
           ".chat-annotatable-answer",
         );
-        if (answer) comments.openFromKeyboard(answer, event.currentTarget);
+        if (answer) comments.ui.openFromKeyboard(answer, event.currentTarget);
       }}
     >
       <MessageCirclePlus size={12} /> Comment
@@ -458,7 +476,8 @@ export function AnswerCommentButton({ comments }: { comments: AnswerComments }) 
 
 /** The staged comments' count above the composer, opening an editable list of them. */
 export function StagedAnswerComments({ comments }: { comments: AnswerComments }) {
-  const { annotations, open, setOpen, panelId, busy } = comments;
+  const { annotations } = comments;
+  const { open, setOpen, panelId, busy } = comments.ui;
   if (!annotations.length) return null;
   return (
     <>
@@ -497,13 +516,13 @@ export function StagedAnswerComments({ comments }: { comments: AnswerComments })
                   disabled={busy}
                   maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
                   value={annotation.comment}
-                  onChange={(event) => comments.update(annotation.id, event.target.value)}
+                  onChange={(event) => comments.ui.update(annotation.id, event.target.value)}
                 />
                 <button
                   type="button"
                   aria-label={`Remove annotation ${index + 1}`}
                   disabled={busy}
-                  onClick={() => comments.remove(annotation.id)}
+                  onClick={() => comments.ui.remove(annotation.id)}
                 >
                   <X size={12} /> Remove
                 </button>
@@ -525,11 +544,12 @@ export function AnswerCommentLayers({
   /** The conversation mode whose colours the layers take. */
   mode: string;
 }) {
-  const { offer, composer, viewport, busy, refs } = comments;
+  const { composer } = comments;
+  const { offer, viewport, busy, refs } = comments.ui;
   if (typeof document === "undefined") return null;
   const submit = () => {
-    if (composer?.step === "select") comments.continueKeyboard();
-    else comments.stage();
+    if (composer?.step === "select") comments.ui.continueKeyboard();
+    else comments.ui.stage();
   };
   return (
     <>
@@ -547,8 +567,8 @@ export function AnswerCommentLayers({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
                 const { range } = offer;
-                comments.setOffer(null);
-                comments.openFromSelection(range);
+                comments.ui.setOffer(null);
+                comments.ui.openFromSelection(range);
               }}
             >
               <MessageCirclePlus size={13} /> Comment
@@ -617,7 +637,7 @@ export function AnswerCommentLayers({
                     disabled={busy}
                     readOnly
                     defaultValue={composer.answerText}
-                    onSelect={(event) => comments.updateKeyboardSelection(event.currentTarget)}
+                    onSelect={(event) => comments.ui.updateKeyboardSelection(event.currentTarget)}
                   />
                   {composer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH && (
                     <strong className="chat-annotation-error" role="alert">

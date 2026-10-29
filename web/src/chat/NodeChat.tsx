@@ -469,7 +469,7 @@ export function NodeChat({
     message: textareaRef,
     onError: setSubmitError,
   });
-  const { annotations, setAnnotations } = comments;
+  const { annotations } = comments;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
   // A read-only chat composes only artifact comments, and those edit in Discuss.
@@ -520,11 +520,7 @@ export function NodeChat({
     referencesDisabled: submitting || commentOnly,
     onError: setSubmitError,
   });
-  const { attachments, references, attachmentSetId } = composer;
   const readyAttachments = composer.ready;
-  // Another chat starts with its Add menu closed.
-  const { setAddMenuOpen } = composer;
-  useEffect(() => setAddMenuOpen(false), [chatId, setAddMenuOpen]);
   const [dictationState, setDictationState] = useState<
     "idle" | "starting" | "preparing" | "recording" | "stopping" | "transcribing" | "error"
   >("idle");
@@ -1334,7 +1330,7 @@ export function NodeChat({
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
     );
     if (!stale.length) return;
-    setAnnotations((current) => current.filter((annotation) => !stale.includes(annotation)));
+    comments.discard(stale);
     setSubmitError(
       `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
     );
@@ -1346,15 +1342,7 @@ export function NodeChat({
     const text = assembleChatTurn(draftMessage, annotations);
     if (!comments.requireComplete()) return;
     // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (
-      !text ||
-      attachments.length ||
-      references.length ||
-      artifactContext ||
-      submitting ||
-      !task.steer_turn_id
-    )
-      return;
+    if (!text || composer.staged || artifactContext || submitting || !task.steer_turn_id) return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     restoreTopRef.current = null;
@@ -1383,8 +1371,7 @@ export function NodeChat({
       // the delivered draft is exactly what is consumed. Artifact comments can
       // still arrive from another view meanwhile, and they survive.
       draft.set((current) => (current === draftMessage ? "" : current));
-      setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      comments.setOpen(false);
+      comments.clear(draftAnnotations);
       skills.reset();
     } catch (error) {
       setSubmitError(
@@ -1402,9 +1389,7 @@ export function NodeChat({
       config,
       scope,
       artifactContext,
-      references.map((item) => item.selector),
-      attachments.map((item) => `${item.localId}:${item.status}`),
-      attachmentSetId,
+      composer.turnFields(),
       skills.selection,
       mode === "work" && worktree.chosen,
     ]);
@@ -1445,7 +1430,7 @@ export function NodeChat({
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = crypto.randomUUID();
     draft.set("");
-    setAddMenuOpen(false);
+    composer.closeMenu();
     await submitTurn({
       clientId: `pending-${requestId}`,
       requestId,
@@ -2555,7 +2540,7 @@ export function NodeChat({
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
-                    ? attachments.length > 0 || references.length > 0 || artifactContext !== null
+                    ? composer.staged || artifactContext !== null
                     : attachmentsUnready ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||

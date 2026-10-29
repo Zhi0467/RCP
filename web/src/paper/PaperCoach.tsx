@@ -212,6 +212,7 @@ export function PaperCoach({
   const send = async () => {
     if (!text || composer.unready || activeTask || submitting) return;
     if (!comments.requireComplete()) return;
+    composer.closeMenu();
     setSubmitting(true);
     setError(null);
     try {
