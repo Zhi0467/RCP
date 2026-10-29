@@ -371,7 +371,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     store.checkpoint_agent_task(
         roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
     )
-    assert ("codex", "other-host") in agent_login_accounts(manifest, store, "project")
+    assert LoginKey("codex", "other-host", MACHINE_LOGIN_ID) in agent_login_accounts(
+        manifest, store, "project"
+    )
     if expired:
         expires_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
         with store.connection() as connection:
@@ -383,7 +385,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
                 )
         expired_task = store.agent_task(roots[0].operation_id)
         assert expired_task is not None and not expired_task.can_retry
-        assert ("codex", "other-host") not in agent_login_accounts(manifest, store, "project")
+        assert LoginKey("codex", "other-host", MACHINE_LOGIN_ID) not in agent_login_accounts(
+            manifest, store, "project"
+        )
     client = _verify_client(store, background, monkeypatch)
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text

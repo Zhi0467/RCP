@@ -299,3 +299,140 @@ def test_old_project_invitation_table_is_migrated_to_accept_revocation(tmp_path)
         indexes = {item[1] for item in connection.execute("PRAGMA index_list(project_invitations)")}
     assert row["response"] == "revoked"
     assert {"project_invitations_invitee", "project_invitations_pending"} <= indexes
+
+
+def test_provider_cleanup_fences_own_logins_and_preserves_shared_and_sessions(
+    tmp_path, monkeypatch
+) -> None:
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
+    from rcp.storage.models import LoginKey
+
+    store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
+    credentials = ProviderCredentialStore.for_data_dir(tmp_path)
+    own = store.add_provider_login("claude", "", member_id=bob.user_id, added_by=bob.user_id)
+    shared = store.add_provider_login("claude", "", added_by=bob.user_id)
+    codex = store.add_provider_login("codex", "", member_id=bob.user_id, added_by=bob.user_id)
+    for row in (own, shared, codex):
+        store.mark_provider_login_verified(
+            LoginKey(row.provider, row.host, row.login_id), member_id=bob.user_id, detail="ready"
+        )
+    for row in (own, shared):
+        credentials.store_token(
+            "claude", "", "secret", member_id=bob.user_id, now=store.now(), login_id=row.login_id
+        )
+    home = credentials.account_dir("codex", "", codex.login_id) / "codex-home"
+    home.mkdir(parents=True)
+    (home / "auth.json").write_text("secret")
+    (home / "sessions").mkdir()
+    (home / "sessions" / "session.jsonl").write_text("history")
+    store.set_provider_login_setting(bob.user_id, "claude", "", "shared")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO provider_login_settings VALUES (?, ?, ?, ?, ?)",
+            (bob.user_id, "codex", "*", "own_then_shared", store.now()),
+        )
+
+    assert cleanup_member_provider_logins(store, bob.user_id) == ()
+    for row in (own, codex):
+        removed = store.provider_login_state(LoginKey(row.provider, row.host, row.login_id))
+        assert removed.state == "signed_out"
+        assert removed.removed_at is not None
+        assert removed.generation == 2
+    assert not credentials.token_path("claude", "", own.login_id).exists()
+    assert credentials.token("claude", "", shared.login_id) == "secret"
+    assert store.provider_login_state(LoginKey("claude", "", shared.login_id)).state == "signed_in"
+    assert not (home / "auth.json").exists()
+    assert (home / "sessions" / "session.jsonl").read_text() == "history"
+    with store.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM provider_login_settings WHERE user_id = ?", (bob.user_id,)
+            ).fetchone()[0]
+            == 0
+        )
+    assert cleanup_member_provider_logins(store, bob.user_id) == ()
+    assert store.provider_login_state(LoginKey("claude", "", own.login_id)).generation == 2
+
+
+def test_member_advance_reports_unreached_cleanup_even_on_completion(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    from rcp.server_ops import provider_cleanup
+    from rcp.storage.models import LoginKey
+    from tests.test_server_member_removal import _team
+
+    store, _alice, bob, _, _, coordinator = _team(tmp_path)
+    own = store.add_provider_login(
+        "codex", "worker.example", member_id=bob.user_id, added_by=bob.user_id
+    )
+    key = LoginKey("codex", "worker.example", own.login_id)
+    store.mark_provider_login_verified(key, member_id=bob.user_id, detail="ready")
+    attempts = []
+
+    def unreachable(arguments, **kwargs):
+        attempts.append(arguments)
+        return subprocess.CompletedProcess(arguments, 255)
+
+    monkeypatch.setattr(provider_cleanup.subprocess, "run", unreachable)
+    boundary = coordinator.plan(bob.user_id).snapshot.boundary_sha256
+    result = coordinator.advance(bob.user_id, boundary_sha256=boundary)
+    assert result.provider_cleanup_unreached == ("worker.example",)
+    assert result.snapshot.removed_at is not None
+    assert store.provider_login_state(key).removed_at is not None
+    assert len(attempts) == 1
+    assert coordinator.reconcile_pending() == ()
+    coordinator.advance(bob.user_id, boundary_sha256=boundary)
+    assert len(attempts) == 1
+
+
+def test_pending_member_cleanup_retries_removed_login_credentials(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    from rcp.server_ops import provider_cleanup
+    from rcp.storage.models import LoginKey
+
+    store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
+    own = store.add_provider_login(
+        "claude", "worker.example", member_id=bob.user_id, added_by=bob.user_id
+    )
+    attempts = []
+
+    def remote(arguments, **kwargs):
+        attempts.append(arguments)
+        return subprocess.CompletedProcess(arguments, 255 if len(attempts) == 1 else 0)
+
+    monkeypatch.setattr(provider_cleanup.subprocess, "run", remote)
+    assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == (
+        "worker.example",
+    )
+    assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
+    assert len(attempts) == 2
+    assert (
+        store.provider_login_state(LoginKey("claude", "worker.example", own.login_id)).generation
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("provider", "relative"),
+    [
+        ("claude", ".config/rcp/logins/{}/claude-setup-token"),
+        ("codex", ".rcp/provider-homes/codex/{}/auth.json"),
+    ],
+)
+def test_remote_cleanup_helper_preserves_other_files(tmp_path, monkeypatch, provider, relative):
+    from pathlib import Path
+
+    from rcp.server_ops.provider_cleanup import remove_remote_credential
+
+    login_id = str(uuid.uuid4())
+    credential = tmp_path / relative.format(login_id)
+    credential.parent.mkdir(parents=True)
+    credential.write_text("secret")
+    retained = credential.with_name("session.jsonl")
+    retained.write_text("history")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    remove_remote_credential(provider, login_id)
+    assert not credential.exists()
+    assert retained.read_text() == "history"

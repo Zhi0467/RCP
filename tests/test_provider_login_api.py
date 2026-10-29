@@ -212,19 +212,19 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     route = f"/api/providers/{ThirdProvider.id}/logins"
     started = client.post(f"{route}/sign-in", json={"host": ""})
     assert started.status_code == 200, started.text
-    operation = started.json()["login_id"]
-    assert client.post(f"{route}/sign-in", json={}).json()["login_id"] == operation
+    operation = started.json()["attempt_id"]
+    assert client.post(f"{route}/sign-in", json={}).status_code == 409
     # The page is gone: no status GET or other HTTP request completes the work.
     (tmp_path / "signed-in").write_text("")
     wait_until(lambda: runner.sign_in_status(operation).state == "succeeded" or None, timeout=10)
     runner.reconcile_recovery()
-    assert completions == [(ThirdProvider.id, "")]
+    assert completions == [(LoginKey(ThirdProvider.id, "", ""),)]
     status = client.get(f"{route}/sign-in/{operation}")
     assert status.status_code == 200
     assert status.json()["state"] == "succeeded"
     assert status.json()["resumed"] == {"checked": 1}
     assert client.get(f"{route}/sign-in/{operation}").json() == status.json()
-    assert completions == [(ThirdProvider.id, "")]
+    assert completions == [(LoginKey(ThirdProvider.id, "", ""),)]
     assert client.get(f"/api/providers/codex/logins/sign-in/{operation}").status_code == 404
     assert client.post(f"{route}/token", json={"token": "private-value"}).status_code == 422
     invalid = client.post(f"{route}/sign-in", json={"host": "", "unexpected": True})
@@ -435,3 +435,200 @@ def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monk
     # Settings still lists the compute-only machine; only its agent flag is off.
     assert {a["host"] for a in listed} == {"", "gpu.example"}
     assert used and all(host == "" for _provider, host in used)
+
+
+@pytest.fixture
+def member_login_api(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "member-logins.sqlite3", space_kind="team")
+    accounts = ProviderAccounts(store, ProviderCredentialStore(tmp_path / "credentials"))
+    runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
+    viewer = {"id": "alice"}
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id=viewer["id"])),
+    )
+    monkeypatch.setattr(
+        provider_login.provider_login_actions,
+        "resume_provider_setting",
+        lambda *args: {"checked": 2},
+    )
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+    app.dependency_overrides[get_provider_credentials] = lambda: accounts.credentials
+    app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
+        provider_targets=lambda: [("claude", "", None), ("codex", "", None)]
+    )
+    return TestClient(app), store, runner, viewer
+
+
+def test_member_rows_filter_private_evidence_and_attempt_codes(member_login_api):
+    from rcp.runs.provider_sign_in import ProviderSignInStatus
+
+    client, store, runner, viewer = member_login_api
+    own = store.add_provider_login("claude", "", member_id="alice", added_by="alice")
+    key = LoginKey("claude", "", own.login_id)
+    runner.credentials.store_token(
+        "claude", "", "secret", member_id="alice", now=store.now(), login_id=own.login_id
+    )
+    store.mark_provider_login_failed(
+        key, generation=0, detail="private@example.invalid", source="probe"
+    )
+    shared = store.add_provider_login("codex", "", added_by="alice")
+    runner._sign_ins["attempt"] = ProviderSignInStatus(
+        attempt_id="attempt",
+        login_id=shared.login_id,
+        provider="codex",
+        host="",
+        state="pending",
+        user_code="CODE",
+        verification_url="https://example.invalid/verify",
+        started_at=store.now(),
+        started_by="alice",
+    )
+    rows = {
+        row["login_id"]: row
+        for row in client.get("/api/providers/logins").json()
+        if row["login_id"]
+    }
+    assert rows[own.login_id]["detail"] == "private@example.invalid"
+    assert rows[own.login_id]["token"] is not None
+    assert rows[shared.login_id]["sign_in"]["user_code"] == "CODE"
+    viewer["id"] = "bob"
+    rows = {
+        row["login_id"]: row
+        for row in client.get("/api/providers/logins").json()
+        if row["login_id"]
+    }
+    assert all(rows[own.login_id][field] is None for field in ("detail", "source", "token"))
+    assert rows[shared.login_id]["sign_in"]["user_code"] is None
+    assert rows[shared.login_id]["sign_in"]["verification_url"] is None
+    assert client.get("/api/providers/codex/logins/sign-in/attempt").status_code == 404
+    assert client.post("/api/providers/codex/logins/sign-in/attempt/cancel").status_code == 404
+
+
+def test_add_own_conflict_owner_actions_and_remove_rules(member_login_api):
+    client, store, runner, viewer = member_login_api
+    route = "/api/providers/claude/logins"
+    added = client.post(f"{route}/add", json={"kind": "own"})
+    assert added.status_code == 200
+    login_id = added.json()["login_id"]
+    assert added.json()["sign_in"] is None
+    assert client.post(f"{route}/add", json={"kind": "own"}).status_code == 409
+    assert client.post(f"{route}/remove", json={"login_id": ""}).status_code == 422
+    assert client.post(f"{route}/remove", json={"login_id": login_id}).status_code == 403
+    viewer["id"] = "bob"
+    for action in ("verify", "sign-in", "sign-out", "remove", "token"):
+        body = {"login_id": login_id}
+        if action == "token":
+            body["token"] = "private-token"
+        assert client.post(f"{route}/{action}", json=body).status_code == 403
+    viewer["id"] = "alice"
+    store.finish_provider_login_removal(LoginKey("claude", "", login_id))
+    assert client.post(f"{route}/verify", json={"login_id": login_id}).status_code == 409
+    assert (
+        client.post(
+            f"{route}/token", json={"login_id": login_id, "token": "private-token"}
+        ).status_code
+        == 409
+    )
+    assert runner.credentials.token("claude", "", login_id) is None
+
+
+@pytest.mark.parametrize("setting", ["own", "own_then_shared", "shared_then_own", "shared"])
+def test_setting_round_trip(member_login_api, setting):
+    client, store, runner, viewer = member_login_api
+    saved = client.put("/api/providers/claude/logins/setting", json={"setting": setting})
+    assert saved.status_code == 200
+    assert saved.json()["resumed"] == {"checked": 2}
+    item = next(
+        item
+        for item in client.get("/api/providers/logins/settings").json()["settings"]
+        if item["provider"] == "claude"
+    )
+    assert item["setting"] == setting and item["stored"] is True
+
+
+@pytest.mark.parametrize("setting", ["", "both_off", "OWN", None, False, [], {}])
+def test_setting_invalid_value_is_422(member_login_api, setting):
+    client, *_ = member_login_api
+    assert (
+        client.put("/api/providers/claude/logins/setting", json={"setting": setting}).status_code
+        == 422
+    )
+
+
+def test_settings_get_precedence_and_personal_rules(member_login_api):
+    client, store, runner, viewer = member_login_api
+
+    def current():
+        return next(
+            item
+            for item in client.get("/api/providers/logins/settings").json()["settings"]
+            if item["provider"] == "claude"
+        )
+
+    assert current()["setting"] == "own" and current()["stored"] is False
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO provider_login_settings VALUES(?,?,?,?,?)",
+            ("alice", "claude", "*", "own_then_shared", store.now()),
+        )
+    assert current()["setting"] == "own_then_shared" and current()["stored"] is True
+    store.set_provider_login_setting("alice", "claude", "", "shared_then_own")
+    assert current()["setting"] == "shared_then_own"
+
+
+def test_personal_login_rules(tmp_path, monkeypatch):
+    client_store = AppStore(tmp_path / "personal.sqlite3")
+    accounts = ProviderAccounts.for_store(client_store)
+    runner = ProviderSignInRunner(client_store, AgentLauncher(accounts=accounts), accounts)
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
+    )
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+    client = TestClient(app)
+    assert client_store.provider_login_setting("member", "claude", "").setting == "shared"
+    assert client.post("/api/providers/claude/logins/add", json={"kind": "own"}).status_code == 422
+    assert (
+        client.put("/api/providers/claude/logins/setting", json={"setting": "own"}).status_code
+        == 422
+    )
+    assert (
+        client.post("/api/providers/opencode/logins/add", json={"kind": "shared"}).status_code
+        == 422
+    )
+
+
+def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api, monkeypatch):
+    client, store, runner, _viewer = member_login_api
+    added = client.post("/api/providers/claude/logins/add", json={"kind": "shared"}).json()
+    key = LoginKey("claude", "", added["login_id"])
+    calls = []
+
+    def remove(sign_ins, login, *, member_id):
+        assert sign_ins is runner
+        calls.append((login, member_id))
+        return store.set_provider_login_draining(login)
+
+    monkeypatch.setattr(provider_login.provider_login_actions, "remove_shared_login", remove)
+    monkeypatch.setattr(
+        provider_login.provider_login_actions,
+        "bound_running_count",
+        lambda _store, login: 2 if login == key else 0,
+    )
+    response = client.post("/api/providers/claude/logins/remove", json={"login_id": key.login_id})
+    assert response.status_code == 200
+    assert calls == [(key, "alice")]
+    assert response.json()["bound_running"] == 2
+    assert response.json()["draining_since"] and response.json()["removed_at"] is None
+    row = next(
+        row for row in client.get("/api/providers/logins").json() if row["login_id"] == key.login_id
+    )
+    assert row["bound_running"] == 2

@@ -374,6 +374,7 @@ class ServerControlMemberPlanResult(_StrictModel):
 
 
 class ServerControlMemberAdvanceResult(_StrictModel):
+    provider_cleanup_unreached: tuple[str, ...] = ()
     instance_id: str
     pid: int = Field(gt=0)
     data_dir_id: str

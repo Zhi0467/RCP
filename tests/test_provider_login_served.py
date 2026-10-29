@@ -102,7 +102,7 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
             )
             response = client.post("/api/providers/codex/logins/sign-in", json={"host": ""})
             assert response.status_code == 200, response.text
-            login_id = response.json()["login_id"]
+            login_id = response.json()["attempt_id"]
             wait_until(lambda: services.provider_sign_ins.sign_in_status(login_id).user_code)
             # Navigation away and disconnection happen before device completion.
             page = client.get("/")

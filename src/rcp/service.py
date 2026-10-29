@@ -15,7 +15,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -29,6 +29,7 @@ from rcp.agents import (
     parse_agent_patch_json,
 )
 from rcp.agents.context import CoachContext
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import machine_compute_context
@@ -104,6 +105,7 @@ from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.changes import PaperChanges
 from rcp.paper.projection import publication_badge
+from rcp.provider_login_rows import provider_login_row
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -139,6 +141,9 @@ from rcp.storage.chat_forks import ChatForkOrigin
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
+
+if TYPE_CHECKING:
+    from rcp.runs.provider_sign_in import ProviderSignInRunner
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "seed",
@@ -1159,19 +1164,66 @@ def project_repository_descriptors(
 
 
 def agent_login_accounts(
-    manifest: Manifest, store: AppStore | None, project_id: str | None
-) -> set[tuple[str, str]]:
-    """(provider, host) accounts this project's agents launch on or have work parked on.
-
-    A machine that is only a compute target needs no agent login.
-    """
-    accounts = {
+    manifest: Manifest,
+    store: AppStore | None,
+    project_id: str | None,
+    *,
+    viewer_id: str | None = None,
+) -> set[LoginKey]:
+    """Resolve visible launch targets and retain parked Codex session bindings."""
+    pairs = {
         (profile.provider, provider_login_host(manifest, profile.run_on))
         for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
     }
-    if store is not None and project_id is not None:
-        accounts |= parked_provider_work(store, project_id, lambda: manifest).keys()
-    return accounts
+    if store is None:
+        return {LoginKey(provider, host, MACHINE_LOGIN_ID) for provider, host in pairs}
+    resolver = ProviderAccounts.for_store(store)
+    accounts: set[LoginKey] = set()
+    if project_id is not None:
+        task_ids = {
+            task.operation_id
+            for task in store.agent_tasks(project_id)
+            if task.request.get("provider") == "codex"
+            and task.failure_kind == "provider_auth"
+            and task.can_retry
+        }
+        for work in parked_provider_work(store, project_id, lambda: manifest).values():
+            task_ids.update(task_id for _, task_id in work.recoveries)
+            task_ids.update(work.queued)
+            task_ids.update(work.experiments)
+            task_ids.update(group[0].origin_operation_id for group in work.watcher_groups)
+        for task_id in task_ids:
+            task = store.agent_task(task_id)
+            if task is None or not task.request.get("provider"):
+                continue
+            provider = str(task.request["provider"])
+            host = (
+                task.stage_host or ""
+                if task.stage_host is not None or task.stage_root is not None
+                else provider_login_host(manifest, str(task.request.get("run_on") or "local"))
+            )
+            pairs.add((provider, host))
+            if provider == "codex" and task.native_session_id:
+                bound = resolver.bound_login(provider, host, task.native_session_id)
+                if bound is not None:
+                    accounts.add(bound)
+    for provider, host in pairs:
+        selected, _ = resolver.resolve_login(provider, host, viewer_id)
+        if not isinstance(selected, LoginRefusal):
+            accounts.add(selected)
+        elif selected.login is not None:
+            accounts.add(selected.login)
+        else:
+            accounts.update(
+                LoginKey(provider, host, row.login_id)
+                for row in store.provider_logins(provider, host)
+                if (
+                    row.member_id == viewer_id
+                    if selected.source == "own"
+                    else row.member_id is None
+                )
+            )
+    return {key for key in accounts if not store.provider_login_state(key).removed_at}
 
 
 class ProjectService:
@@ -1865,41 +1917,33 @@ class ProjectService:
 
     @staticmethod
     def provider_logins_for(
-        manifest: Manifest, launcher: AgentLauncher, project_id: str | None
+        manifest: Manifest,
+        launcher: AgentLauncher,
+        project_id: str | None,
+        *,
+        viewer_id: str | None = None,
+        sign_ins: ProviderSignInRunner | None = None,
     ) -> list[dict[str, object]]:
-        """The accounts this project's agents launch on, plus any holding its parked work.
-
-        A machine that is only a compute target has no agent login to need, so
-        it gets no entry; Settings, Provider logins still lists every account.
-        """
-        login_state = launcher.login_state
-        if login_state is None:
+        """Project notices use the same viewer-filtered rows as Settings."""
+        if launcher.accounts is None:
             return []
-        store = launcher.accounts.store if launcher.accounts is not None else None
-        accounts = agent_login_accounts(manifest, store, project_id)
+        store = launcher.accounts.store
+        accounts = agent_login_accounts(manifest, store, project_id, viewer_id=viewer_id)
         return [
-            {
-                **(
-                    launcher.accounts.account_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
-                    if launcher.accounts is not None
-                    else login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
-                ).model_dump(
-                    mode="json",
-                    include={
-                        "provider",
-                        "host",
-                        "state",
-                        "generation",
-                        "detail",
-                        "source",
-                        "changed_at",
-                        "changed_by",
-                    },
+            provider_login_row(
+                store,
+                launcher.accounts.credentials,
+                sign_ins,
+                key,
+                viewer_id=viewer_id,
+                machines=sorted(
+                    machine.name for machine in store.space_machines() if machine.host == key.host
                 ),
-                "label": profile_for(provider).label,
-            }
-            for provider, host in sorted(accounts)
-            if profile_for(provider).authentication.manages_login
+                provider_path=store.provider_binary(key.provider, key.host),
+                agent_used=True,
+            )
+            for key in sorted(accounts)
+            if profile_for(key.provider).authentication.manages_login
         ]
 
     @staticmethod

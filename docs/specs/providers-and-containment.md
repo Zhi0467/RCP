@@ -1020,7 +1020,9 @@ loads with the list ignored, and the next manifest write drops it.
 
 The backend owns team provider calls. Local runs use the service account;
 remote runs use the exact profile's configured SSH account and its provider
-state. No account switching or alternate provider homes are created.
+state. Added Codex sign-ins have separate homes for credentials and sessions;
+their config, rules, skills and AGENTS.md link to the machine home. Sign-in,
+verification and logout use that same home.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
@@ -1045,23 +1047,46 @@ separate processes and unnecessary probes are avoided. Codex mid-turn refresh
 races remain possible; verified sign-in is the recovery.
 
 The account lifecycle owner serializes sign-in, verify and sign-out under the
-gate through durable publication. Concurrent device sign-ins join one operation.
+gate through durable publication, keyed by `(provider, host, login_id)`. A second
+device sign-in on that login returns 409 and names the starter. Attempt status
+and cancellation are visible only to the starter (404 for anyone else).
 Replacement first publishes a signed-out fence, so interruption cannot admit an
 unverified credential. A minimal real request must succeed before sign-in counts;
 provider status only proves credential presence. Successful verification
 invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.
-Any authorized member may sign in/out; durable actions record the member.
+Any authorized member may act on shared logins; only the owner may act on an own
+login. Durable actions record the member. Removed logins cannot be verified or
+receive tokens, including attempts completing after removal.
 
-`GET /api/providers/logins` lists every provider's accounts. Routes under
-`/api/providers/{provider}/logins` provide `sign-in`, status
-`sign-in/{login_id}`, its `cancel`, `token`, `verify` and `sign-out`. Unsupported interactions
-refuse explicitly; status GET is read-only. Sign-out records a new generation,
-`source="sign_out"` and actor and fences admission.
+`GET /api/providers/logins` lists each nonremoved login. The shared row mapper
+also supplies project notices, resolving new launches for the viewer and retaining
+parked Codex session bindings. Other members' own rows redact detail, source and
+token metadata. Device codes and URLs appear only for the attempt starter.
+Project responses attach these rows after reading the shared display cache.
+
+Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
+`sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
+`sign-out`; action bodies name `login_id`. Machine sign-ins cannot be removed,
+and an own login cannot use shared removal. Adding a second own login conflicts.
+Unsupported interactions refuse explicitly; status GET is read-only.
+Sign-out records a new generation, `source="sign_out"` and actor.
+
+`GET /api/providers/logins/settings` returns the viewer's effective settings:
+host row, migration fallback `*`, then the built-in default. PUT
+`/api/providers/{provider}/logins/setting` accepts only `own`, `own_then_shared`,
+`shared_then_own` or `shared`. Personal spaces use shared sign-ins only; OpenCode
+has no added login or setting. No agent command reaches these routes.
+
+Member removal fences and retains own login rows, deletes member settings and
+removes credentials without deleting sessions. Shared logins stay. Pending removal
+retries remote deletion on each advance, returning unreached hosts in
+`provider_cleanup_unreached`, including the completing pass; unreachable hosts do
+not block completion. Restore's stale-member removal uses the same cleanup.
 
 ### Login state and failure
 
-One durable `(provider, host)` login row stores `signed_in`/`signed_out` and a
+One durable `(provider, host, login_id)` login row stores `signed_in`/`signed_out` and a
 generation. Provider-owned revoked-login evidence classifies `provider_auth`
 across turns, wakes, workers, reports, recovery and probes. Only the generation
 captured at launch can revoke the account; late failures cannot revoke a repaired

@@ -16,6 +16,7 @@ from rcp.api.dependencies import (
     get_project_display_cache,
     get_project_service,
     get_project_writer,
+    get_provider_sign_ins,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -39,7 +40,8 @@ from rcp.repository_preview import (
     repository_source_document,
 )
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
-from rcp.service import ProjectSettingsRequest
+from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.service import ProjectService, ProjectSettingsRequest
 from rcp.storage import AgentUsageSnapshot, AppStore
 from rcp.transport import StateUnavailable
 
@@ -52,6 +54,7 @@ DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_disp
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 BackgroundTasksDependency = Annotated[BackgroundAgentTasks, Depends(get_background_tasks)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+SignInsDependency = Annotated[ProviderSignInRunner, Depends(get_provider_sign_ins)]
 
 
 class ProjectInviteRequest(BaseModel):
@@ -129,25 +132,52 @@ def _branch_snapshot(
     return snapshot
 
 
+def _viewer_logins(
+    snapshot: dict[str, object],
+    project_id: str,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    viewer_id: str,
+    sign_ins: ProviderSignInRunner,
+) -> dict[str, object]:
+    """Project caches are shared; attach member-specific notices only to the response."""
+    canonical = catalog.resolve_project_id(project_id)
+    record = store.project(canonical)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    service = catalog.loaded_service(canonical)
+    manifest = service.manifest if service is not None else load_manifest(record.locator)
+    return {
+        **snapshot,
+        "provider_logins": ProjectService.provider_logins_for(
+            manifest, catalog.launcher, canonical, viewer_id=viewer_id, sign_ins=sign_ins
+        ),
+    }
+
+
 @router.get("/api/projects/{project_id}")
 async def project(
     project_id: str,
+    request: Request,
     branch_id: str | None = None,
     *,
     project_display_cache: DisplayCacheDependency,
     catalog: CatalogDependency,
     store: StoreDependency,
+    sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     try:
         if branch_id is not None:
-            return await asyncio.to_thread(
+            snapshot = await asyncio.to_thread(
                 _branch_snapshot, project_id, branch_id, project_display_cache, catalog, store
             )
+        else:
+            snapshot = await asyncio.to_thread(
+                _project_snapshot, project_id, project_display_cache, catalog
+            )
+        viewer = get_identity_access(request).acting_user(request)
         return await asyncio.to_thread(
-            _project_snapshot,
-            project_id,
-            project_display_cache,
-            catalog,
+            _viewer_logins, snapshot, project_id, catalog, store, viewer.user_id, sign_ins
         )
     except _ProjectSnapshotNotFound as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -230,10 +260,13 @@ def leave_project(
 @router.get("/api/projects/{project_id}/cached")
 def cached_project(
     project_id: str,
+    request: Request,
     branch_id: str | None = None,
     *,
     project_display_cache: DisplayCacheDependency,
     catalog: CatalogDependency,
+    store: StoreDependency,
+    sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     if branch_id is not None:
         get_graph_service(catalog, project_id, branch_id, initialize=False)
@@ -241,7 +274,8 @@ def cached_project(
     snapshot = project_display_cache.cached_project_snapshot(project_id)
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Cached project snapshot not found")
-    return snapshot
+    viewer = get_identity_access(request).acting_user(request)
+    return _viewer_logins(snapshot, project_id, catalog, store, viewer.user_id, sign_ins)
 
 
 @router.get("/api/projects/{project_id}/readiness")

@@ -1,0 +1,97 @@
+"""Fence a departing member's own logins and delete only their credentials.
+
+Removed rows remain the retry inventory while member removal is pending. Remote
+cleanup executes this module's credential-only helper; sessions and provider
+configuration are never deleted.
+"""
+
+from __future__ import annotations
+
+import importlib.resources
+import shlex
+import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import UUID
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+    from rcp.storage.models import LoginKey
+
+
+def remove_remote_credential(provider: str, login_id: str) -> None:
+    """Delete one added login's credential on the execution account."""
+    parsed = UUID(login_id)
+    if parsed.version != 4 or str(parsed) != login_id:
+        raise ValueError("Login id must be UUID4 text.")
+    if provider == "claude":
+        path = Path.home() / ".config" / "rcp" / "logins" / login_id / "claude-setup-token"
+    elif provider == "codex":
+        path = Path.home() / ".rcp" / "provider-homes" / "codex" / login_id / "auth.json"
+    else:
+        raise ValueError("Provider has no added credentials.")
+    path.unlink(missing_ok=True)
+
+
+def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
+    """Fence own logins before best-effort remote deletion; return unreached hosts."""
+    from rcp.storage.models import LoginKey
+
+    # Include removed rows: later advance passes must retry their credentials.
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT provider, host, login_id FROM provider_login_states WHERE member_id = ?",
+            (member_id,),
+        ).fetchall()
+    logins = [LoginKey(row["provider"], row["host"], row["login_id"]) for row in rows]
+    for login in logins:
+        store.finish_provider_login_removal(login, member_id=member_id)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM provider_login_settings WHERE user_id = ?", (member_id,))
+
+    return tuple(
+        sorted(
+            {login.host for login in logins if not cleanup_provider_login_credential(store, login)}
+        )
+    )
+
+
+def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
+    """Delete only this added credential; False means its remote host was unreached.
+
+    The caller owns the durable fence. This also cleans a native credential
+    written by a device attempt that completed after its login was removed.
+    """
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
+    from rcp.transport.ssh import ssh_arguments
+
+    if not login.login_id:
+        raise ValueError("The machine sign-in cannot be removed.")
+    credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
+    if login.provider == "claude":
+        credentials.delete_token(*login)
+    elif login.provider == "codex":
+        (credentials.account_dir(*login) / "codex-home" / "auth.json").unlink(missing_ok=True)
+    else:
+        raise ValueError("Provider has no added credentials.")
+    if not login.host:
+        return True
+    source = importlib.resources.files("rcp.server_ops").joinpath("provider_cleanup.py").read_text()
+    command = shlex.join(["python3", "-c", source, login.provider, login.login_id])
+    try:
+        result = subprocess.run(
+            ssh_arguments(login.host, command),
+            capture_output=True,
+            timeout=PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    remove_remote_credential(sys.argv[1], sys.argv[2])

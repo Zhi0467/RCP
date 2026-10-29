@@ -30,6 +30,7 @@ from rcp.server_ops.models import (
     ServerStep,
     redact_server_text,
 )
+from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.service_connections import ServiceConnections, member_connection_lock
 from rcp.storage import AppStore, MemberRemovalPreviewRecord
@@ -202,6 +203,11 @@ class MemberRemovalCoordinator:
             except ValueError as exc:
                 raise MemberRemovalRefused(str(exc)) from exc
         ServiceConnections(self.store, member_id).remove_member_data()
+        provider_cleanup_unreached = (
+            cleanup_member_provider_logins(self.store, member_id)
+            if before.member.removed_at is None
+            else ()
+        )
         errors: list[str] = []
         for operation_id in before.active_task_ids:
             try:
@@ -223,6 +229,7 @@ class MemberRemovalCoordinator:
         return ServerControlMemberAdvanceResult(
             **self._identity_fields(),
             confirmed_boundary_sha256=boundary_sha256,
+            provider_cleanup_unreached=provider_cleanup_unreached,
             snapshot=snapshot,
             step=step,
         )
