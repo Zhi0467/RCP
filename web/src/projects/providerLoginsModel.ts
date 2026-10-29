@@ -147,7 +147,7 @@ export function waitsOnOtherMember(
   return row.kind === "own" && row.owner_user_id !== viewerUserId;
 }
 
-type LoginKey = Pick<ProviderLoginState, "provider" | "host" | "login_id">;
+type LoginKey = Pick<ProviderLoginState, "provider" | "host"> & { login_id: string | null };
 
 export const loginKey = (row: LoginKey) => `${row.provider}:${row.host}:${row.login_id}`;
 

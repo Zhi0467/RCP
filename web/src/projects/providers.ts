@@ -1,5 +1,5 @@
 import type { ModelChoice, ProviderReadiness } from "../core/types";
-import type { ProviderLoginState } from "../core/types";
+import type { ProjectLoginNotice, ProviderLoginState } from "../core/types";
 import { sameLogin } from "./providerLoginsModel.ts";
 
 /**
@@ -128,9 +128,9 @@ export function modelChange(
  * project's logins is shown.
  */
 export function mergeProviderLogins(
-  projectLogins: ProviderLoginState[],
+  projectLogins: ProjectLoginNotice[],
   live: ProviderLoginState[] | null,
-): ProviderLoginState[] {
+): ProjectLoginNotice[] {
   if (!live) return projectLogins;
   return projectLogins.map((entry) => live.find((state) => sameLogin(state, entry)) ?? entry);
 }

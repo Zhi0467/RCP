@@ -6,13 +6,13 @@ import {
   signOutKey,
   waitsOnOtherMember,
 } from "./providerLoginsModel";
-import type { ProviderLoginState } from "../core/types";
+import type { ProjectLoginNotice } from "../core/types";
 
 interface Props {
-  states: ProviderLoginState[];
+  states: ProjectLoginNotice[];
   viewerUserId?: string | null;
   /** Opens Settings at this login's machine card "Sign-ins" fold. */
-  onOpenSignIns?: (state: ProviderLoginState) => void;
+  onOpenSignIns?: (state: ProjectLoginNotice) => void;
 }
 
 /**

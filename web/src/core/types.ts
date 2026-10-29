@@ -3216,7 +3216,7 @@ export interface ProjectSnapshot {
     string,
     Partial<Record<ProviderId, ProviderSkillInventory | null>>
   >;
-  provider_logins?: ProviderLoginState[];
+  provider_logins?: ProjectLoginNotice[];
   provider_readiness: Record<string, Record<ProviderId, ProviderReadiness>>;
   providers: Record<ProviderId, ProviderReadiness>;
   cache_metrics: ProjectCacheMetrics;
@@ -3609,6 +3609,12 @@ export interface ProjectArtifact {
   graph_branch_archived: boolean;
   can_delete: boolean;
 }
+
+/**
+ * A project notice row. `login_id` is null when the viewer's setting needs their
+ * own sign-in and they have none yet.
+ */
+export type ProjectLoginNotice = Omit<ProviderLoginState, "login_id"> & { login_id: string | null };
 
 /**
  * One login: a provider sign-in on one host, keyed `(provider, host, login_id)`.

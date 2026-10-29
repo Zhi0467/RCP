@@ -124,7 +124,7 @@ import {
   type ExperimentRouteIdentity,
 } from "../experiments/experimentBoardModel";
 import type {
-  ProviderLoginState,
+  ProjectLoginNotice,
   Machine,
   AgentRunConfig,
   AgentTask,
@@ -1161,9 +1161,9 @@ interface ExecutionProps {
   providerLabels?: Record<string, string>;
   /** Offers the Experiment agent picker on each Run row. */
   project?: ProjectSnapshot;
-  providerLogins?: ProviderLoginState[];
+  providerLogins?: ProjectLoginNotice[];
   viewerUserId?: string | null;
-  onOpenSignIns?: (state: ProviderLoginState) => void;
+  onOpenSignIns?: (state: ProjectLoginNotice) => void;
   machines?: Machine[];
   computeApiBase?: string;
   onOpenSettings?: () => void;

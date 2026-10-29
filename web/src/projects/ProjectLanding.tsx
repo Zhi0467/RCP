@@ -35,6 +35,7 @@ import type { ProjectTab } from "./projectTabs";
 import type { ResolvedTheme } from "../ui/theme";
 import type {
   MachinePowerStatus,
+  ProjectLoginNotice,
   ProviderLoginState,
   IdentityResponse,
   ProjectCard,
@@ -72,7 +73,7 @@ interface Props extends AppearancePickerProps {
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: () => void;
-  onOpenSignIns?: (state: ProviderLoginState) => void;
+  onOpenSignIns?: (state: ProjectLoginNotice) => void;
   voiceControl?: ReactNode;
   textScale?: TextScaleControl;
 }
