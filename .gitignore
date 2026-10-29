@@ -13,3 +13,5 @@ web/vite.config.js
 web/vite.config.d.ts
 *.egg-info/
 .rcp-serve.lock
+.metrics/
+target/

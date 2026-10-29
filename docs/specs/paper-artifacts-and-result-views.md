@@ -66,7 +66,7 @@ becomes live, and publication waits for a member to choose. The unchosen text
 remains in History.
 
 History checkpoints editing bursts and explicit requests. Before deletion,
-replacement upload, or restore, it also checkpoints current revisions that are
+folder rename, replacement upload, or restore, it also checkpoints current revisions that are
 not yet covered. Restore and text upload change only the differing span to
 preserve peer positions. Identical text is a no-op. Per-file restore is a new
 live edit. Automatic versions form a bounded ring. Named versions have count and
@@ -328,7 +328,7 @@ or forked version. Episode-folder report paths resolve only for publishing turns
 including deletion history. Paths from another chat and unregistered paths never
 navigate. Older turns fetch the exact task before declaring an artifact absent.
 They retain it across list refreshes. HTML, images, video, Markdown, and text embed
-with Comment, Expand, Keep, and Download actions. Surrounding links are dropped.
+with Expand, Keep, and Download actions; HTML and images also offer Comment. Surrounding links are dropped.
 Unembedded video uses the same player. PDF and unknown embeds point to cards.
 `/viewer` is the explicit shell. `/preview` is its compatibility alias, including
 old image byte requests. `/content` renders raw sandboxed content and is not

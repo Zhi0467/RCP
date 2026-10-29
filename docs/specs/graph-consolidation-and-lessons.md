@@ -47,7 +47,9 @@ artifacts. Branch ownership grants no orchestrator authority. The official
 workflow and dependencies resolve through the skill registry independently of
 project defaults and appear in the launch receipt.
 
-The command client offers `validate`, keyed `apply`, `lesson`, and `flag`.
+The command client offers `validate`, keyed `apply`, `flag`, `bulletin` (a run with
+no episode always holds it), `lesson` when lesson actions resolve, and the graph
+history reads when a read scope exists.
 It refuses watcher handoff. Apply persists immutable bytes and their digest under
 the operation and key. It returns the committed revision.
 Identical retries replay. Changed bytes under the same key are refused.
@@ -163,12 +165,13 @@ reject empty or duplicate ids, non-open flags, notice-only kinds, mixed targets,
 and absent or retired Evidence. One finding uses node Work.
 Multiple findings share one project Work turn.
 Sorted locks and one task transaction bind all flags or none.
-The request key and exact ids survive failed Web attempts and replay their own
-turn after settlement. Every still-bound flag follows batch settlement and recovery.
+The request key and exact ids survive a 5xx or network failure and replay their
+own turn after settlement; a refusal lets Retry pick a fresh batch. Every still-bound flag follows batch settlement and recovery.
 
 A succeeded Address turn with outcome `done` closes its flags if no graph update
 was rejected or unavailable. A partial or could-not outcome, failure, interruption,
-or Stop reopens the flags and retains the chat. Another Address starts a new turn.
+or Stop reopens the flags and retains the chat. Another Address starts a new turn
+in a new chat and replaces the flag's chat link.
 Resume or Retry returns the flags to addressing unless they were dismissed or
 rebound. Startup follows the latest recovery bindings and settles ended turns.
 It adapts older request receipts. Dismiss closes flags for all members.
