@@ -434,11 +434,15 @@ export function ProjectSettings({
       );
       return { label: provider.label || provider.provider, tone: state.kind };
     });
-    const probe = machine.compute_probes?.[machine.compute?.job_manager ? "scheduler" : "helper"];
-    signals.push({
-      label: machine.compute?.job_manager === "slurm" ? "Slurm" : "Jobs",
-      tone: probe ? computeProbePresentation(probe).tone : "warning",
-    });
+    // Slurm is checked on its machine; the helper launches only on the base.
+    const slurm = machine.compute?.job_manager === "slurm";
+    if (slurm || machine.alias === baseMachine(project)) {
+      const probe = machine.compute_probes?.[slurm ? "scheduler" : "helper"];
+      signals.push({
+        label: slurm ? "Slurm" : "Jobs",
+        tone: probe ? computeProbePresentation(probe).tone : "warning",
+      });
+    }
     const grants = record?.writable_paths.length ?? 0;
     if (grants) signals.push({ label: `${grants} writable`, tone: "ready" });
     return signals;

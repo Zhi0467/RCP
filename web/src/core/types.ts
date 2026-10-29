@@ -3179,8 +3179,6 @@ export interface ProjectSnapshot {
   revision: number;
   snapshot_freshness: "fresh" | "reconciling" | "stale";
   last_remote_sync_at: string | null;
-  /** Latest stored compute probe; absent from snapshots cached by older versions. */
-  compute_probes_probed_at?: string | null;
   /** Digests of settings and Experiment lifecycle; a change means a teammate acted. */
   settings_signal?: string;
   experiment_signal?: string;
@@ -3429,6 +3427,8 @@ export interface SpaceMachine {
   /** Cached readiness only; a provider may be missing. */
   provider_readiness: Partial<Record<ProviderId, ProviderReadiness>>;
   compute_probes: { scheduler: ComputeBackendProbe | null; helper: ComputeBackendProbe | null };
+  /** Some project's agents run here, so this is where its helper jobs launch. */
+  agents_run_here: boolean;
   /** One reach row per machine that reaches this one. */
   reach: { from: string; probe: ComputeConnectionProbe | null }[];
 }

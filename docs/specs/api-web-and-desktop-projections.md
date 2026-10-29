@@ -1550,8 +1550,9 @@ discovery of a personal checkout's Git remotes.
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
 card view carries its settings (`job_manager` of `slurm`, `none`, or null while
 undecided; `jobs_root`; `access_hint`; `provider_paths`), the provider rows with
-cached readiness, the route probes of any project using it, and `reach`: the
-last on-demand check from each machine an agent runs on.
+cached readiness, the route probes of any project using it, `agents_run_here`
+(some project's agents run on it, so its helper jobs launch there), and `reach`:
+the last on-demand check from each machine an agent runs on.
 `PATCH /api/space/machines/{machine_id}` changes only the fields given; an empty
 provider path forgets it, and a compute change clears the card's probes and
 re-checks them before it returns, so the returned card shows the new routes.

@@ -315,7 +315,8 @@ Seed and Refresh have launch controls. Raw truth inputs choose the context.
 The + menu holds Upload file and From RCP.
 Start episode's picker takes an optional starting message.
 
-Machine tiles show the name, host, provider and job status, and writable-path count.
+Machine tiles show the name, host, provider status, writable-path count, and
+job status where a jobs route exists: Slurm on any machine, the helper on the base.
 Aliases for one machine account share a tile and card.
 One card opens below the tiles. Dashed Add machine selects another space machine,
 derives its alias, and opens it. Setup uses the same tiles and New machine control.
@@ -327,7 +328,8 @@ Folder pickers have breadcrumbs, filtering and paging within one level, protecte
 entries, and Use this folder.
 
 Compute has no launch picker or resource form. Its Slurm and Helper rows show
-status and route checks. The remote Helper job folder and nonsecret Access hint
+status and route checks. The Helper row appears only on a machine agents run on.
+The remote Helper job folder and nonsecret Access hint
 use placeholders, not labels above. Fields save independently. Reach checks
 distinguish reachability, authentication, and host-key failures.
 They name the machine needing repair. Reads use stored results.
