@@ -143,13 +143,16 @@ async def _folder_ops(request: Request, project_id: str, folder: str, op) -> Rec
     """Apply one operation per file under `folder` as a single revision, or refuse."""
     live = get_paper_live(request)
     tree = await live.snapshot(project_id)
-    ops = [op(file) for file in tree.files if file.path.startswith(f"{folder}/")]
-    if not ops:
+    members = [file for file in tree.files if file.path.startswith(f"{folder}/")]
+    if not members:
         raise HTTPException(404, "Paper folder not found")
+    ops = [op(file) for file in members]
+    # Membership was read outside the write lock: refuse if any member moved or vanished.
+    checks = [{"file_id": file.file_id, "path": file.path} for file in members]
     return await paper_mutation(
         request,
         project_id,
-        lambda: live.apply(project_id, ops, _actor(request), {}, checkpoint=True),
+        lambda: live.apply(project_id, ops, _actor(request), {"checks": checks}, checkpoint=True),
     )
 
 
