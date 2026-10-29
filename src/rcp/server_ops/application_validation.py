@@ -1160,10 +1160,19 @@ async def _verify_aggregate_reads(
             )
             responses.append(await client.get(f"{base}/consolidation", headers=headers))
         for response in responses:
+            path = response.request.url.path
             if response.status_code != 200:
                 raise CandidateRehearsalRefused(
-                    f"Candidate read {response.request.method} {response.request.url.path} "
+                    f"Candidate read {response.request.method} {path} "
                     f"returned {response.status_code}."
+                )
+            # The indexes degrade an unreadable live loop to one row rather than
+            # fail; on copied local state that row is the candidate's failure.
+            if path.endswith(("/api/episodes", "/experiment-episodes")) and any(
+                row["project_id"] in captured for row in response.json()["unavailable"]
+            ):
+                raise CandidateRehearsalRefused(
+                    f"Candidate read GET {path} could not read a copied Experiment."
                 )
 
 
