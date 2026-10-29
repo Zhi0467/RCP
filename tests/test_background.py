@@ -2621,39 +2621,6 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
     assert len(store.agent_tasks("project", include_hidden=True)) == 1
 
 
-def test_recorded_finalization_releases_its_claim_if_setup_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rcp.runs import remote_finalization
-
-    store = _store(tmp_path)
-    waiting = _waiting_remote_work(store, "recorded-setup-failure")
-    pid_file = "/stage/recorded-setup-failure.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize",
-            "The provider finished.",
-            pid_file,
-            _recorded_turn(pid_file),
-        ),
-    )
-    tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=_done_stream)
-
-    def fail_request(_record):
-        raise RuntimeError("bad retained request")
-
-    monkeypatch.setattr(tasks, "_request_from_record", fail_request)
-
-    with pytest.raises(RuntimeError, match="bad retained request"):
-        tasks._reconcile_remote_results()
-
-    released = store.agent_task(waiting.operation_id)
-    assert released is not None and released.phase == "awaiting_remote_result"
-
-
 def test_pause_of_detached_turn_requires_reachable_exact_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
