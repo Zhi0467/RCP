@@ -1500,7 +1500,7 @@ def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_pat
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
 
 
-@pytest.mark.parametrize("copied", ["queued_by_0_4_35", "due_later"])
+@pytest.mark.parametrize("copied", ["queued_by_0_4_35", "queued_for_omitted_project", "due_later"])
 def test_rehearsal_launches_due_consolidation_through_real_validation(
     captured, monkeypatch, tmp_path, copied
 ):
@@ -1527,7 +1527,7 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
             ),
             next_due_at=(now + timedelta(hours=1)).isoformat(),
         )
-        if copied == "queued_by_0_4_35":
+        if copied != "due_later":
             # Admit the run as the live poller does, but leave it queued.
             poller = ConsolidationPoller(
                 store, app.state.background_tasks, service_for=app.state.catalog.open
@@ -1543,4 +1543,9 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
                 )
     finally:
         store.close()
+    if copied == "queued_for_omitted_project":
+        # An omitted project's queued run is left alone, not logged as a failure.
+        import rcp.server_ops.application_validation as validation
+
+        monkeypatch.setattr(validation, "_captured_project_ids", lambda _overlay: set())
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
