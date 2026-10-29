@@ -394,6 +394,16 @@ still read as succeeded. The aggregate gate promotes those same bytes. It does n
 prove arbitrary installations, provider authentication, remote-root behavior or
 reboot recovery.
 
+The web suite's
+[release-upgrade browser journey](../../web/tests/releaseUpgrade.browser.test.mjs)
+serves the data the update rehearsal just passed, beside a fresh personal space.
+A member signs in to both, then opens the team Runs list before any project,
+the project, Runs, Inbox, a chat and the saved artifacts, and returns to the
+personal space. The cold Runs list must list the Experiment on the old cache.
+Any failed response other than the signed-out identity probe, failed request,
+console error or page error fails it. A failure keeps `evidence.json` with both
+server logs.
+
 The privileged checkpoint copier preserves metadata, links, special nodes and
 cross-root hardlinks on each filesystem. Process connections do not survive.
 Payloads live outside captured roots. Copy and filesystem synchronization finish
