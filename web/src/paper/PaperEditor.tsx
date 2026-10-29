@@ -72,6 +72,19 @@ export function carryPaperSelection(
   places.set(paperDocumentKey(key), { carried: selection });
 }
 
+/**
+ * Typing and arrowing settle before the preview moves. The timer lives outside the
+ * component so its closure holds only the line, never the editor's render scope
+ * (which reaches the live document).
+ */
+function settleCursorLine(
+  callback: { current?: ((line: number) => void) | undefined },
+  line: number,
+): () => void {
+  const timer = setTimeout(() => callback.current?.(line), 250);
+  return () => clearTimeout(timer);
+}
+
 export function PaperEditor({
   owner,
   format,
@@ -101,11 +114,7 @@ export function PaperEditor({
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const cursorLine = useRef(onCursorLine);
   cursorLine.current = onCursorLine;
-  useEffect(() => {
-    // Typing and arrowing settle before the preview moves.
-    const timer = setTimeout(() => cursorLine.current?.(position.line), 250);
-    return () => clearTimeout(timer);
-  }, [position.line]);
+  useEffect(() => settleCursorLine(cursorLine, position.line), [position.line]);
   const [step, setStep] = useState(0);
   const report = (state: EditorState) => {
     const head = state.selection.main.head;
