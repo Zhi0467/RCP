@@ -16,6 +16,7 @@ export type {
   ProjectTransferTargetProvisioningIntent,
   TargetProviderSetupProjection,
 } from "./types";
+import { beginPageExit, endPageExit } from "./pageExit.ts";
 
 export const BACKEND_IDENTITY_EVENT = "rcp:backend-identity";
 export const DESKTOP_FOLDER_ACCESS_ACK_KEY = "rcp:desktop-folder-access-acknowledgement";
@@ -594,12 +595,22 @@ export async function navigateDesktopToTeam(
 ): Promise<void> {
   if (!isDesktopRuntime())
     throw new Error("Team spaces are available in the source-built desktop app.");
-  await invokeDesktop("desktop_navigate_team", { connectionId, projectId });
+  await leaveDesktopPage("desktop_navigate_team", { connectionId, projectId });
 }
 
 export async function returnDesktopToPersonal(): Promise<void> {
   if (!isDesktopRuntime()) return;
-  await invokeDesktop("desktop_return_to_personal");
+  await leaveDesktopPage("desktop_return_to_personal");
+}
+
+async function leaveDesktopPage(command: string, args?: object): Promise<void> {
+  beginPageExit();
+  try {
+    await invokeDesktop(command, args);
+  } catch (error) {
+    endPageExit();
+    throw error;
+  }
 }
 
 export function backendReconnectLabel(desktop: boolean): string {
