@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import UUID4, BaseModel, ConfigDict
 
-from rcp.agents.project_repositories import write_repositories
+from rcp.agents.project_repositories import admitted_write_repositories
 from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
@@ -513,7 +513,7 @@ def start_episode(
             try:
                 body.branch_name = normalize_branch_name(body.branch_name)
                 start_request = _resolved_auto_research_start_request(service, body)
-                if body.code_worktree is None:
+                if body.code_worktree is None and body.worktree_repository is None:
                     start_request = start_request.model_copy(
                         update={
                             "code_worktree": auto_research_code_worktree_eligible(
@@ -1178,11 +1178,14 @@ def _resolved_auto_research_start_request(
         model=body.model,
         reasoning=body.reasoning,
     )
+    worktree = body.worktree_repository is not None
+    if worktree and body.code_worktree is False:
+        raise ValueError("A worktree repository needs the code worktree.")
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
         bulletin_enabled=body.bulletin_enabled,
         browser_requested=body.browser_requested,
-        code_worktree=body.code_worktree if body.code_worktree is not None else False,
+        code_worktree=body.code_worktree if body.code_worktree is not None else worktree,
         graph_isolation=body.graph_isolation,
         branch_name=body.branch_name,
         starting_instruction=body.starting_instruction,
@@ -1190,7 +1193,12 @@ def _resolved_auto_research_start_request(
         model=profile.model,
         reasoning=profile.reasoning,
         run_on=profile.run_on,
-        run_truth_scope=write_repositories(service.history.state()),
+        # A code worktree narrows the run to its repository, as a chat worktree does.
+        run_truth_scope=admitted_write_repositories(
+            service.history.state(),
+            [body.worktree_repository] if body.worktree_repository is not None else None,
+            worktree=worktree,
+        ),
     )
     resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(resolved, AutoResearchStartRequest):

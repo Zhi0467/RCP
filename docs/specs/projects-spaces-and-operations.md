@@ -295,7 +295,9 @@ and the same box when adding one, is that membership: toggling it appends one
 human approval `set_project_truth_scope`, never a manifest edit. There is no
 per-turn repository selection. Admission stamps each task's `run_truth_scope`
 with the whole truth scope, except that a worktree (a chat's, or an Experiment's
-code worktree) names its one writable repository on the run machine. Older
+or Auto-research start's code worktree) names its one writable repository on the
+run machine. An Auto-research start that names `worktree_repository` turns its
+code worktree on for that repository. Older
 tasks and Patches keep the narrower scope they recorded: a resume, retry,
 continuation, Experiment watcher start or Auto-research worker keeps its
 authorized write set, never the current truth scope, while still reading every
