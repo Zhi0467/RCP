@@ -190,7 +190,7 @@ test("Project history reports loading without hiding the already-loaded Agent ta
     }),
   );
 
-  assert.match(html, /role="status"/);
+  assert.match(html, /aria-busy="true"/);
 
   assert.match(html, /data-task-id="active-task"/);
 });
