@@ -1772,15 +1772,7 @@ class BackgroundAgentTasks:
         if record.status != "queued":
             return record
 
-        try:
-            request = self._request_from_record(record)
-            self._validate_request_type(record.kind, request)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "The admitted task has no valid persisted request for its kind."
-            ) from exc
-        if not persisted_request_roundtrips(request, record.request):
-            raise ValueError("The admitted task request failed its persisted roundtrip.")
+        request = self._launchable_request(record)
 
         from rcp.runs.consolidation import require_consolidation_launch
 
@@ -1935,7 +1927,7 @@ class BackgroundAgentTasks:
             # snapshot. Late admissions stay queued for startup recovery.
             if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
-            current = self._validated_spawn_record(record, request, parent=parent)
+            current = self._validated_spawn_record(record, parent=parent)
             if current.status != "queued":
                 return current
             control = AgentProcessControl()
@@ -1989,7 +1981,6 @@ class BackgroundAgentTasks:
     def _validated_spawn_record(
         self,
         record: AgentTaskRecord,
-        request: AgentTaskRequest,
         *,
         parent: AgentTaskRecord | None,
     ) -> AgentTaskRecord:
@@ -2013,13 +2004,7 @@ class BackgroundAgentTasks:
             or current.dispatch_authority != record.dispatch_authority
         ):
             raise ValueError("The committed task changed before background dispatch.")
-        try:
-            current_request = self._request_from_record(current)
-            self._validate_request_type(current.kind, current_request)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("The committed task lost its persisted request contract.") from exc
-        if not persisted_request_roundtrips(current_request, current.request):
-            raise ValueError("The committed task request failed its persisted roundtrip.")
+        self._launchable_request(current)
         return current
 
     def _record_spawn_dispatch(
@@ -3324,6 +3309,20 @@ class BackgroundAgentTasks:
             and receipt.payload.get("retry_required") is True
             for receipt in self.store.agent_task_receipts(record.operation_id)
         )
+
+    def _launchable_request(self, record: AgentTaskRecord) -> AgentTaskRequest:
+        """Parse a durable request exactly as launch requires; test launch fakes call it too."""
+
+        try:
+            request = self._request_from_record(record)
+            self._validate_request_type(record.kind, request)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "The admitted task has no valid persisted request for its kind."
+            ) from exc
+        if not persisted_request_roundtrips(request, record.request):
+            raise ValueError("The admitted task request failed its persisted roundtrip.")
+        return request
 
     @staticmethod
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:
