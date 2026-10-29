@@ -10,7 +10,6 @@ import {
   Pencil,
   RotateCw,
   Send,
-  Trash2,
   Users,
   X,
 } from "lucide-react";
@@ -22,6 +21,7 @@ import { graphTargetUrl, projectViewHash, sameGraphTarget } from "../core/graphT
 import { buildNotificationLink } from "../core/notificationLinks";
 import { resourceKeyId, type ResourceProfile } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
+import { ArmedDeleteButton } from "../ui/ArmedDeleteButton";
 import type { GraphNode, GraphTargetRef } from "../core/types";
 import { projectResourceKey, useProjectResource } from "../projects/projectResources";
 import {
@@ -104,7 +104,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const [editing, setEditing] = useState<{ postId: string; text: string; key: string } | null>(
     null,
   );
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -397,11 +396,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     });
   };
   const remove = (postId: string) => {
-    if (confirmDelete !== postId) {
-      setConfirmDelete(postId);
-      return;
-    }
-    setConfirmDelete(null);
     const target = graphTargetUrl(`${base}/${encodeURIComponent(postId)}`, channel);
     void run(async () => {
       await api(target, { method: "DELETE" });
@@ -417,7 +411,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     setCursor(null);
     setReply(null);
     setEditing(null);
-    setConfirmDelete(null);
     setFailure(null);
     setKey(crypto.randomUUID());
   };
@@ -434,7 +427,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     input.current?.focus();
   };
   const startEdit = (item: BulletinPost) => {
-    setConfirmDelete(null);
     setEditing({
       postId: item.post_id,
       text: bulletinDecodeMentions(item.text, candidates),
@@ -588,13 +580,11 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     const authorActor = agent ? rosterById.get(item.author.actor_id ?? "") : undefined;
     const own = canPost && bulletinIsOwnPost(item, actorId);
     const isEditing = editing?.postId === item.post_id;
-    const confirming = confirmDelete === item.post_id;
     return (
       <article
         className={`bulletin-message${replies === null ? " is-reply" : ""}`}
         key={item.post_id}
         id={`bulletin-${item.post_id}`}
-        onMouseLeave={confirming ? () => setConfirmDelete(null) : undefined}
       >
         {authorActor ? (
           <button
@@ -704,15 +694,11 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
               </button>
             )}
             {own && (
-              <button
-                type="button"
-                className={`bulletin-message-action${confirming ? " is-confirming" : ""}`}
-                aria-label={confirming ? "Confirm delete" : "Delete post"}
-                onClick={() => remove(item.post_id)}
-                onBlur={() => confirming && setConfirmDelete(null)}
-              >
-                <Trash2 size={14} />
-              </button>
+              <ArmedDeleteButton
+                label="Delete post"
+                className="bulletin-message-action"
+                onConfirm={() => remove(item.post_id)}
+              />
             )}
           </div>
         )}
@@ -721,6 +707,8 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   };
 
   const error = failure?.message ?? (page.error ? String(page.error) : null);
+  // The first read draws the panel whole; until then there is nothing to frame.
+  if (!known && !error) return null;
   return (
     <section className={`bulletin-panel${error ? " has-error" : ""}`} aria-label="Bulletin">
       {channels.length > 0 && (

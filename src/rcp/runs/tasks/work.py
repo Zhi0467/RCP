@@ -116,7 +116,11 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.questions import WorkCommandHandler, require_question_origin_binding
+from rcp.runs.questions import (
+    WORK_TURN_ARTIFACTS,
+    WorkCommandHandler,
+    require_question_origin_binding,
+)
 from rcp.runs.questions import work_command_handler as _work_command_handler
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
@@ -379,41 +383,55 @@ def _work_turn_command_handler(
 def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
-    handler = _work_turn_command_handler(turn)
+    lifecycle = getattr(turn, "validator_lifecycle", None)
+    if lifecycle is not None and lifecycle.lesson_actions is not None:
+        verbs, actions, artifacts = (
+            lifecycle.allowed_verbs,
+            lifecycle.lesson_actions,
+            WORK_TURN_ARTIFACTS,
+        )
+    else:
+        handler = _work_turn_command_handler(turn)
+        verbs, actions, artifacts = (
+            handler.allowed_verbs,
+            handler.lesson_actions,
+            handler.turn_artifacts,
+        )
+    assert verbs is not None
     instructions = []
-    if "flag" in handler.allowed_verbs:
+    if "flag" in verbs:
         instructions.append(
             flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
-    if "lesson" in handler.allowed_verbs:
+    if "lesson" in verbs:
         instructions.append(
             lesson_command_usage(
-                actions=handler.lesson_actions,
+                actions=actions,
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
-    if "name" in handler.allowed_verbs:
+    if "name" in verbs:
         from rcp.runs.agent_names import name_command_usage
 
         instructions.append(
             name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
-    if "bulletin" in handler.allowed_verbs:
+    if "bulletin" in verbs:
         instructions.append(
             bulletin_command_usage(
                 client or turn.patch_inputs.validator_staged.client_command(),
-                turn_artifacts=handler.turn_artifacts,
+                turn_artifacts=artifacts,
             )
         )
-    if "ask" in handler.allowed_verbs:
+    if "ask" in verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
-    if "apply" in handler.allowed_verbs:
+    if "apply" in verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
             "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
         )
-    if "episode" in handler.allowed_verbs:
+    if "episode" in verbs:
         instructions.append(
             work_experiment_command_usage(
                 client or turn.patch_inputs.validator_staged.client_command(),
@@ -422,7 +440,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 ),
             )
         )
-    if turn.compute_commands is None or "launch" not in handler.allowed_verbs:
+    if turn.compute_commands is None or "launch" not in verbs:
         return "\n\n".join(instructions)
     arguments = (
         "launch",

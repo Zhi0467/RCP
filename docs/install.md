@@ -1,21 +1,31 @@
-# Install and run RCP from source
+# Install and run RCP
 
-Build order, local runs, the desktop app, and the checks that verify a
-checkout. The [README](../README.md) is the short version.
+Install the released Mac app or run from a checkout. Use [the team server guide](server.md)
+for Ubuntu 22.04 or 24.04 LTS x86-64 and [desktop testing](desktop.md) for native qualification.
+
+## Install the released macOS app
+
+Use macOS 13 or later on Apple Silicon. Quit RCP with Cmd+Q before installing
+or replacing it. From an admin account, install Git if needed and run:
+
+```bash
+xcode-select --install
+curl -fsSL https://raw.githubusercontent.com/Zhi0467/RCP/main/scripts/install-macos.sh | sh
+open /Applications/RCP.app
+```
+
+Use the app's **Update** button for subsequent releases, or rerun the installer.
+For manual installation, download `RCP-vX.Y.Z-macos-arm64.zip` from the matching
+`desktop-vX.Y.Z` [release](https://github.com/Zhi0467/RCP/releases), unzip it and
+move `RCP.app` to Applications. If macOS blocks first launch, open **System
+Settings → Privacy & Security → Open Anyway**.
 
 ## Install from source
 
-Requirements:
-
-- Git;
-- Node.js and npm;
-- [`uv`](https://docs.astral.sh/uv/); and
-- Codex CLI or Claude Code, installed and authenticated separately if you want
-  to run agent tasks.
-
-Open the [latest release](https://github.com/Zhi0467/RCP/releases/latest) and
-copy its `vX.Y.Z` tag. Clone, select that release, and build in this order
-(replace `<tag>` with the copied tag):
+Install Git, Node.js, npm, and [`uv`](https://docs.astral.sh/uv/).
+Install and authenticate a supported provider CLI separately for agent tasks.
+Copy a `vX.Y.Z` tag from the [latest release](https://github.com/Zhi0467/RCP/releases/latest),
+then replace `<tag>` below:
 
 ```bash
 git clone https://github.com/Zhi0467/RCP.git
@@ -27,129 +37,76 @@ npm --prefix web run build
 uv sync
 ```
 
-Playwright installs test Chromium. Build `web/dist` before `uv sync` or `uv run`:
-the editable Python package includes it. Each new checkout/worktree needs its
-own untracked Web dependencies and bundle:
-
-```bash
-npm --prefix web ci && npm --prefix web run build
-```
-
-The `web/dist present` pre-commit hook checks this prerequisite.
+Build `web/dist` before `uv sync` or `uv run`. The Python package includes it.
+Repeat the Web dependency install and build in each new checkout or worktree.
 
 ## Update a source checkout
 
-Quit the desktop app with Cmd+Q and stop every backend using this checkout,
-including backends with other data directories. Commit or move any local changes
-and untracked files before updating. Copy the `vX.Y.Z` tag from the latest
-release, then run from the checkout (replace `<tag>`):
+Quit desktop RCP with Cmd+Q and stop every backend using this checkout.
+Commit or move local changes and untracked files. Replace `<tag>` with a
+promoted release tag, then run one of:
 
 ```bash
 scripts/update-from-source <tag>
-```
-
-For a source-built desktop app, include the desktop build:
-
-```bash
 scripts/update-from-source <tag> --desktop
 ```
 
-The script refuses active backends or missing tools, records the start revision,
-fetches/checks out the tag detached and rebuilds Web/Python. `--desktop` also needs
-Rust/Xcode and builds the dev app. Failure restores the recorded checkout/build;
-if recovery fails it prints remaining commands. No branch reset or `/Applications`
-replacement occurs.
-
-For the Web app, restart with `uv run rcp serve`. For the desktop app, replace
-`/Applications/RCP Dev.app` with `web/src-tauri/target/debug/bundle/macos/RCP Dev.app` and
-reopen it, as described below.
+For `--desktop`, install Rust and Xcode command-line tools first. Follow any
+recovery commands printed on failure. Restart Web with `uv run rcp serve`.
+Replace a copied development app using the commands below.
 
 ## Run the local Web app
 
-For development with backend reload and automatic Web rebuild:
+Run this command to enable backend reload and automatic Web rebuilds.
+Then open the printed sign-in URL:
 
 ```bash
 uv run rcp serve --reload
 ```
 
-Open the sign-in URL printed to the terminal. Its code works once and expires
-after ten minutes. A signed-in browser keeps an owner session. React and CSS
-changes rebuild the bundle; refresh the page to see them.
-
-For a normal non-reloading launch that opens the browser:
+Refresh after React or CSS changes. For a normal launch that opens the browser:
 
 ```bash
 uv run rcp open
-```
-
-Open a checkout at launch:
-
-```bash
 uv run rcp open /absolute/path/to/project
 ```
 
-If a backend is already running, the browser asks you to confirm the project
-locator after sign-in. The CLI does not register it through the API. A fresh
-backend still registers a project supplied at startup.
-
-Serve without opening a browser:
+When attaching to an existing backend, confirm the project locator in the browser.
+To serve without opening a browser:
 
 ```bash
 uv run rcp serve --host 127.0.0.1 --port 8421
 ```
 
-On macOS, local app data defaults to:
-
-```text
-~/Library/Application Support/research-control-panel/
-```
-
-Set `RCP_DATA_DIR` before launch to use another data directory. Canonical
-research history remains in each project's configured state repository.
+Set `RCP_DATA_DIR` before launch to select a different app-data directory.
+See [personal sign-in](specs/projects-spaces-and-operations.md#personal-sign-in)
+for authentication and data ownership.
 
 ## Run the source-built macOS desktop app
 
-Source desktop builds also require Rust and Xcode command-line tools; Command Line Tools for Xcode 26 enable SpeechAnalyzer without full Xcode.
-
-Run directly from the checkout:
+Install Rust and Xcode command-line tools. Run from the checkout or build a
+Finder-launchable development app:
 
 ```bash
 npm --prefix web run desktop:dev
-```
-
-Build a Finder-launchable development app:
-
-```bash
 npm --prefix web run desktop:build-dev
 ```
 
-The app is written to:
-
-```text
-web/src-tauri/target/debug/bundle/macos/RCP Dev.app
-```
-
-Launch that exact bundle. If you keep a Dock/Finder copy at
-`/Applications/RCP Dev.app`, rebuilding does not update it: quit RCP with Cmd+Q,
-then replace the installed copy before reopening it:
+Launch `web/src-tauri/target/debug/bundle/macos/RCP Dev.app`. To refresh a
+separate installed copy, quit RCP with Cmd+Q first, then:
 
 ```bash
 ditto "web/src-tauri/target/debug/bundle/macos/RCP Dev.app" "/Applications/RCP Dev.app"
 open "/Applications/RCP Dev.app"
 ```
 
-`/Applications/RCP.app` is reserved for the released download; see
-[AGENTS.md](../AGENTS.md#three-desktop-builds) for the naming.
-
-Closing the red window hides RCP. Use **Quit RCP** or Cmd+Q to end the
-desktop-owned backend. See [docs/desktop.md](desktop.md) for native build,
-logging, and verification details.
+Follow [the three-build naming convention](desktop.md#three-desktop-builds).
+Use **Quit RCP** or Cmd+Q to stop the desktop-owned backend.
 
 ## Team server
 
-Install promoted artifacts on Ubuntu using the [team server guide](server.md).
-See [device pairing](device-pairing.md) for phones and [release](release.md) for
-maintainer promotion.
+Follow [server installation](server.md), [device pairing](server.md#reach-the-team-space-from-a-phone),
+and [release promotion](release.md) for those procedures.
 
 ## Verify a checkout
 
@@ -164,21 +121,16 @@ uv run pre-commit run --all-files
 
 ### Opt-in test gates
 
-Some tests skip unless a tool is installed or an environment variable is set, so
-a clean run still reports skips. CI installs `age` and runs the exact-base
-upgrade; the rest need real credentials or a reachable host and are opt-in
-locally.
+Enable applicable gates below. Point live checks at throwaway accounts,
+repositories and hosts. Never use a real project's data.
 
-| Gate | Unlocks |
+| Gate | Check enabled |
 | --- | --- |
-| `age` and `age-keygen` on `PATH` | real age encryption of a backup archive, rather than the stub |
-| `systemd-run` on `PATH` | the compute-job backend probe |
-| `RCP_RUN_EXACT_BASE_UPGRADE=1` | upgrade from the exact previous commit's data, and release updates from every supported published stable `v*` release at or above `UPDATE_SOURCE_FLOOR` with current and stale caches, including the switched release's live check (needs authenticated `gh` and every release tag fetched) |
-| `RCP_FROZEN_BACKEND=<path to the built backend binary>` | local unpushed commits through a frozen desktop backend |
-| `RCP_RUN_GIT_CREDENTIALS_LIVE=1` plus `RCP_LIVE_GITHUB_ADMIN_TOKEN` and `RCP_LIVE_GITHUB_REPOSITORY` | live GitHub credential checks |
-| `RCP_RUN_PROJECT_CHECKOUT_LIVE=1` plus `RCP_LIVE_PROJECT_CHECKOUT_SSH_HOST` and `RCP_LIVE_PROJECT_CHECKOUT_SSH_ACCOUNT` | project checkout over real SSH |
-| `RCP_RUN_PROVIDER_READINESS_LIVE=1` | provider readiness against real logins |
-| `RCP_LIVE_TRANSFER_GIT_HOST` | transfer against a real Git host |
-
-Point the live gates at a throwaway account, repository, or host. Never at a
-real project's data.
+| `age` and `age-keygen` on `PATH` | Tests real backup encryption. |
+| `systemd-run` on `PATH` | Probes the compute backend. |
+| `RCP_RUN_EXACT_BASE_UPGRADE=1` | Tests upgrades from the exact previous commit and supported stable releases. It needs authenticated `gh` and fetched release tags. |
+| `RCP_FROZEN_BACKEND=<binary>` | Tests local unpushed commits through a frozen desktop backend. |
+| `RCP_RUN_GIT_CREDENTIALS_LIVE=1`, `RCP_LIVE_GITHUB_ADMIN_TOKEN`, `RCP_LIVE_GITHUB_REPOSITORY` | Tests live GitHub credentials. |
+| `RCP_RUN_PROJECT_CHECKOUT_LIVE=1`, `RCP_LIVE_PROJECT_CHECKOUT_SSH_HOST`, `RCP_LIVE_PROJECT_CHECKOUT_SSH_ACCOUNT` | Tests a real SSH project checkout. |
+| `RCP_RUN_PROVIDER_READINESS_LIVE=1` | Tests real provider logins. |
+| `RCP_LIVE_TRANSFER_GIT_HOST` | Tests transfer against a real Git host. |

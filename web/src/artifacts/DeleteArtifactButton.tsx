@@ -1,17 +1,14 @@
 import { useState } from "react";
-import { Trash2 } from "lucide-react";
 import { api } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { resourceKeyId } from "../core/resourceStore";
-import { useArmedConfirm } from "../core/useArmedConfirm";
 import { useRefreshRuntime } from "../core/useResource";
 import { artifactsProfile } from "./artifactResources";
 import { closeArtifactIfOpen } from "./artifactViewerModel";
+import { ArmedDeleteButton } from "../ui/ArmedDeleteButton";
 
-/**
- * Two-click Delete: the first click arms it, the second sends the request. A
- * finished Delete closes the viewer only while it still shows this artifact.
- */
+/** An artifact's Delete. A finished Delete closes the viewer only while it still shows
+ * this artifact. */
 export function DeleteArtifactButton({
   projectId,
   artifactId,
@@ -26,16 +23,10 @@ export function DeleteArtifactButton({
   iconSize: number;
 }) {
   const { store } = useRefreshRuntime();
-  const { armed: confirming, arm, disarm } = useArmedConfirm();
   const [deleting, setDeleting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
-  const click = async () => {
-    if (!confirming) {
-      arm();
-      return;
-    }
-    disarm();
+  const remove = async () => {
     setFailure(null);
     setDeleting(true);
     try {
@@ -53,20 +44,14 @@ export function DeleteArtifactButton({
     }
   };
 
-  const name = confirming ? "Confirm delete" : label;
-  const state = confirming ? " armed-delete" : failure ? " artifact-action-failed" : "";
   return (
-    <button
-      type="button"
-      className={className + state}
-      aria-label={name}
-      title={!confirming && failure ? failure : name}
-      disabled={deleting}
-      onBlur={disarm}
-      onClick={() => void click()}
-    >
-      <Trash2 size={iconSize} aria-hidden="true" />
-      {confirming && "Delete"}
-    </button>
+    <ArmedDeleteButton
+      label={label}
+      className={className}
+      iconSize={iconSize}
+      busy={deleting}
+      failure={failure}
+      onConfirm={() => void remove()}
+    />
   );
 }

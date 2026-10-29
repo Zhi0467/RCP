@@ -561,7 +561,7 @@ function PersonalProjectSetup({
                     <article className="agent-role-card" key={id}>
                       <header>
                         <strong>{label}</strong>
-                        <span className="role-permission">
+                        <span className="tag">
                           {id === "paper_coach"
                             ? "read-only coach"
                             : id === "orchestrator"

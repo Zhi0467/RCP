@@ -722,7 +722,7 @@ export function ProjectSettings({
                 <span>
                   <strong>{label}</strong>
                 </span>
-                <span>
+                <span className="tag">
                   {id === "paper_coach"
                     ? "read-only coach"
                     : id === "orchestrator"

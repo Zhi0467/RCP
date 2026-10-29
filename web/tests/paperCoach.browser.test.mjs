@@ -302,18 +302,20 @@ test("on a touch phone Return writes a new line and a tap outside closes chat hi
   await page.locator(".paper-session-list").waitFor({ state: "detached" });
 });
 
+// One finished coach turn in session s1, for the tests that continue it.
+const turn = {
+  operation_id: "t1",
+  kind: "paper_coach",
+  native_session_id: "s1",
+  request: { message: "Review the introduction", session_id: null },
+  result: { messages: ["The introduction needs a clearer claim."] },
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  active: false,
+  attempt: 1,
+};
+
 test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
-  const turn = {
-    operation_id: "t1",
-    kind: "paper_coach",
-    native_session_id: "s1",
-    request: { message: "Review the introduction", session_id: null },
-    result: { messages: ["The introduction needs a clearer claim."] },
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    active: false,
-    attempt: 1,
-  };
   const uploads = [];
   const { page } = await open(t, {
     width: 1280,
@@ -381,17 +383,6 @@ test("the coach stages answer comments and files as chat does and sends them wit
 });
 
 test("a coach turn carrying only a project reference names its attachment scope", async (t) => {
-  const turn = {
-    operation_id: "t1",
-    kind: "paper_coach",
-    native_session_id: "s1",
-    request: { message: "Review the introduction", session_id: null },
-    result: { messages: ["Done."] },
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    active: false,
-    attempt: 1,
-  };
   const { page } = await open(t, {
     width: 1280,
     init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,

@@ -380,7 +380,7 @@ export function PaperPreview({
 
   return (
     <div className={`paper-compiled-preview${error ? " paper-failed" : ""}`} aria-busy={loading}>
-      {!pdf && <div className="paper-preview-actions">{actions}</div>}
+      {!pdf && <div className="paper-preview-actions paper-preview-empty">{actions}</div>}
       {showLog && error && (
         <PaperDialog label="Compile log" onClose={() => setShowLog(false)}>
           <header className="paper-bar">

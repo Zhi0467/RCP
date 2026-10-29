@@ -79,6 +79,7 @@ def _admit(app, *, chat_id=None, target=None):
         created_at=now.isoformat(),
         updated_at=now.isoformat(),
     )
+    store.ensure_consolidation_target(schedule, target=target.branch_id or "main")
     run = store.claim_consolidation_occurrence(
         schedule,
         occurrence_date=now.date().isoformat(),

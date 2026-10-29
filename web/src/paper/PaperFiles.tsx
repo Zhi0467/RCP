@@ -1,10 +1,24 @@
-import { PaperDialog } from "./PaperDialog";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, File, Folder, FolderOpen, PanelLeft, RotateCcw, X } from "lucide-react";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import {
+  Check,
+  Download,
+  File,
+  FilePlus,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  PanelLeft,
+  Pencil,
+  RotateCcw,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { api } from "../core/api";
 import type { PaperFile } from "../core/types";
-import { downloadPaper } from "./paperDownload";
-import { PaperTreeMenu, type PaperTreeAction, type PaperTreeTarget } from "./PaperTreeMenu";
+import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
+import { PaperConfirm } from "./PaperConfirm";
+import { downloadPaper, type PaperDownload } from "./paperDownload";
 
 type TreeFolder = { path: string; name: string; children: (TreeFolder | PaperFile)[] };
 /** A new or renamed file (`file` null for new), or a new or renamed folder (`from` null for new). */
@@ -36,6 +50,11 @@ function buildTree(files: PaperFile[], extraFolders: string[]): TreeFolder {
   return root;
 }
 const under = (path: string, folder: string) => path.startsWith(`${folder}/`);
+// A row's full path is its tooltip only while the name is cut short; otherwise it repeats the row.
+const titleWhenTruncated = (path: string) => (event: PointerEvent<HTMLButtonElement>) => {
+  const name = event.currentTarget.querySelector("span");
+  event.currentTarget.title = name && name.scrollWidth > name.clientWidth ? path : "";
+};
 
 export function PaperFiles({
   apiBase,
@@ -70,7 +89,9 @@ export function PaperFiles({
     input?.focus();
     input?.setSelectionRange(input.value.length, input.value.length);
   }, [edit?.mode, editing]);
-  const [deleting, setDeleting] = useState<PaperTreeTarget | null>(null);
+  const [deleting, setDeleting] = useState<{ name: string; remove: () => Promise<void> } | null>(
+    null,
+  );
   type Action = "path" | "upload" | "delete" | "download";
   type Failure = { message: string; retry: () => Promise<void> };
   const [failures, setFailures] = useState<Partial<Record<Action, Failure>>>({});
@@ -160,56 +181,91 @@ export function PaperFiles({
       expand(parentOf(path));
       onSelect(receipt.file_ids[0], receipt.revision);
     });
-  const removeTarget = (target: PaperTreeTarget) =>
-    perform("delete", async () => {
-      if (target.kind === "file")
-        await api(`${apiBase}/paper/files/${encodeURIComponent(target.file.file_id)}`, {
-          method: "DELETE",
-        });
-      else if (target.kind === "folder") {
-        if (!target.empty)
-          await api(`${apiBase}/paper/folders/delete`, {
-            method: "POST",
-            body: JSON.stringify({ path: target.path }),
-          });
-        setNewFolders((current) =>
-          current.filter((folder) => folder !== target.path && !under(folder, target.path)),
-        );
-      }
-      setDeleting(null);
-    });
-  const act = (action: PaperTreeAction, target: PaperTreeTarget) => {
-    const folder = target.kind === "folder" ? target.path : "";
-    const prefix = folder ? `${folder}/` : "";
-    if (action === "new-file" || action === "new-folder") {
-      clearFailure("path");
-      if (folder) expand(folder);
-      setEdit(
-        action === "new-file"
-          ? { mode: "file", file: null, path: prefix }
-          : { mode: "folder", from: null, path: prefix },
-      );
-    } else if (action === "upload") {
-      uploadFolder.current = folder;
-      upload.current?.click();
-    } else if (action === "rename") {
-      clearFailure("path");
-      setEdit(
-        target.kind === "file"
-          ? { mode: "file", file: target.file, path: target.file.path }
-          : { mode: "folder", from: folder, path: folder },
-      );
-    } else if (action === "delete") {
-      clearFailure("delete");
-      setDeleting(target);
-    } else if (target.kind !== "root") {
-      const download =
-        target.kind === "file"
-          ? { fileId: target.file.file_id, name: target.file.path.split("/").at(-1)! }
-          : { folder, name: `${folder.split("/").at(-1)}.zip` };
-      void perform("download", () => downloadPaper(apiBase, projectId, download));
-    }
+  const startEdit = (next: PathEdit, folder = "") => {
+    clearFailure("path");
+    if (folder) expand(folder);
+    setEdit(next);
   };
+  // The root's and a folder's menus start with these; `folder` is "" for the root.
+  const createItems = (folder: string): OverflowMenuItem[] => {
+    const prefix = folder ? `${folder}/` : "";
+    return [
+      {
+        label: "New file",
+        icon: FilePlus,
+        onSelect: () => startEdit({ mode: "file", file: null, path: prefix }, folder),
+      },
+      {
+        label: "New folder",
+        icon: FolderPlus,
+        onSelect: () => startEdit({ mode: "folder", from: null, path: prefix }, folder),
+      },
+      {
+        label: "Upload",
+        icon: Upload,
+        onSelect: () => {
+          uploadFolder.current = folder;
+          upload.current?.click();
+        },
+      },
+    ];
+  };
+  // An empty folder exists only in this browser, so it has nothing to download.
+  const entryItems = (
+    rename: PathEdit,
+    download: PaperDownload | null,
+    name: string,
+    remove: () => Promise<void>,
+  ): OverflowMenuItem[] => [
+    { label: "Rename", icon: Pencil, onSelect: () => startEdit(rename) },
+    {
+      label: "Download",
+      icon: Download,
+      disabled: !download,
+      onSelect: () => {
+        if (download) void perform("download", () => downloadPaper(apiBase, projectId, download));
+      },
+    },
+    {
+      label: "Delete",
+      icon: Trash2,
+      onSelect: () => {
+        clearFailure("delete");
+        setDeleting({ name, remove });
+      },
+    },
+  ];
+  const removeFolder = (path: string, empty: boolean) => async () => {
+    if (!empty)
+      await api(`${apiBase}/paper/folders/delete`, {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+    setNewFolders((current) => current.filter((folder) => folder !== path && !under(folder, path)));
+  };
+  // Cancel, then the action, which turns into its retry after a failure.
+  const confirmButtons = (
+    action: string,
+    failure: Failure | undefined,
+    cancel: () => void,
+    confirm: () => void,
+    retryLabel: string,
+  ) => (
+    <>
+      <button className="button" disabled={busy} onClick={cancel}>
+        Cancel
+      </button>
+      <button
+        className={failure ? "icon-button" : "button"}
+        aria-label={failure ? retryLabel : undefined}
+        title={failure?.message}
+        disabled={busy}
+        onClick={confirm}
+      >
+        {failure ? <RotateCcw size={16} /> : action}
+      </button>
+    </>
+  );
   const tree = buildTree(files, newFolders);
   const rows: ReactNode[] = [];
   const addRows = (folder: TreeFolder, depth: number) => {
@@ -225,29 +281,39 @@ export function PaperFiles({
             <button
               className="paper-file"
               style={indent}
-              title={entry.path}
+              onPointerEnter={titleWhenTruncated(entry.path)}
               aria-pressed={selected === entry.file_id}
               onClick={() => onSelect(entry.file_id)}
             >
               <File size={15} />
               <span>{name}</span>
             </button>
-            <PaperTreeMenu
+            <OverflowMenu
               label={`Actions for ${entry.path}`}
-              target={{ kind: "file", file: entry }}
-              onAction={act}
+              triggerClassName="paper-tree-menu-button"
+              portal
+              items={entryItems(
+                { mode: "file", file: entry, path: entry.path },
+                { fileId: entry.file_id, name: name! },
+                entry.path,
+                () =>
+                  api(`${apiBase}/paper/files/${encodeURIComponent(entry.file_id)}`, {
+                    method: "DELETE",
+                  }),
+              )}
             />
           </div>,
         );
         continue;
       }
       const open = !collapsed.has(entry.path);
+      const empty = !files.some((file) => under(file.path, entry.path));
       rows.push(
         <div key={`folder:${entry.path}`} className="paper-row">
           <button
             className="paper-folder"
             style={indent}
-            title={entry.path}
+            onPointerEnter={titleWhenTruncated(entry.path)}
             aria-expanded={open}
             onClick={() =>
               setCollapsed((current) => {
@@ -261,14 +327,19 @@ export function PaperFiles({
             {open ? <FolderOpen size={15} /> : <Folder size={15} />}
             <span>{entry.name}</span>
           </button>
-          <PaperTreeMenu
+          <OverflowMenu
             label={`Actions for ${entry.path}/`}
-            target={{
-              kind: "folder",
-              path: entry.path,
-              empty: !files.some((file) => under(file.path, entry.path)),
-            }}
-            onAction={act}
+            triggerClassName="paper-tree-menu-button"
+            portal
+            items={[
+              ...createItems(entry.path),
+              ...entryItems(
+                { mode: "folder", from: entry.path, path: entry.path },
+                empty ? null : { folder: entry.path, name: `${entry.name}.zip` },
+                `${entry.path}/`,
+                removeFolder(entry.path, empty),
+              ),
+            ]}
           />
         </div>,
       );
@@ -297,7 +368,7 @@ export function PaperFiles({
         <button className="icon-button" aria-label="Fold files" onClick={onFold}>
           <PanelLeft size={16} />
         </button>
-        <PaperTreeMenu label="File tree actions" target={{ kind: "root" }} onAction={act} />
+        <OverflowMenu label="File tree actions" items={createItems("")} portal />
         <input
           hidden
           type="file"
@@ -324,7 +395,6 @@ export function PaperFiles({
             }}
           >
             <input
-              autoFocus
               ref={pathInput}
               placeholder={edit.mode === "file" ? "folder/name.md" : "folder"}
               onKeyDown={(event) => {
@@ -355,74 +425,50 @@ export function PaperFiles({
         {rows}
       </div>
       {replacing && (
-        <PaperDialog
-          className={`paper-box paper-confirm ${uploadFailure ? "paper-failed" : ""}`}
-          role="alertdialog"
+        <PaperConfirm
           label={`Replace ${replacing.path}?`}
+          failed={Boolean(uploadFailure)}
           onClose={() => {
             setReplacing(null);
             clearFailure("upload");
           }}
         >
-          <strong>Replace {replacing.path}?</strong>
-          <div className="paper-bar">
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => {
-                setReplacing(null);
-                clearFailure("upload");
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              className={uploadFailure ? "icon-button" : "button"}
-              aria-label={uploadFailure ? "Retry upload" : undefined}
-              title={uploadFailure?.message}
-              disabled={busy}
-              onClick={() => void uploadFile(replacing.file, replacing.path, replacing.existing)}
-            >
-              {uploadFailure ? <RotateCcw size={16} /> : "Replace"}
-            </button>
-          </div>
-        </PaperDialog>
+          {confirmButtons(
+            "Replace",
+            uploadFailure,
+            () => {
+              setReplacing(null);
+              clearFailure("upload");
+            },
+            () => void uploadFile(replacing.file, replacing.path, replacing.existing),
+            "Retry upload",
+          )}
+        </PaperConfirm>
       )}
-      {deleting && deleting.kind !== "root" && (
-        <PaperDialog
-          className={`paper-box paper-confirm ${deleteFailure ? "paper-failed" : ""}`}
-          role="alertdialog"
-          label="Delete file"
+      {deleting && (
+        <PaperConfirm
+          label={`Delete ${deleting.name}?`}
+          failed={Boolean(deleteFailure)}
           onClose={() => {
             setDeleting(null);
             clearFailure("delete");
           }}
         >
-          <strong>
-            Delete {deleting.kind === "file" ? deleting.file.path : `${deleting.path}/`}?
-          </strong>
-          <div className="paper-bar">
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() => {
+          {confirmButtons(
+            "Delete",
+            deleteFailure,
+            () => {
+              setDeleting(null);
+              clearFailure("delete");
+            },
+            () =>
+              void perform("delete", async () => {
+                await deleting.remove();
                 setDeleting(null);
-                clearFailure("delete");
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              className={deleteFailure ? "icon-button" : "button"}
-              aria-label={deleteFailure ? "Retry delete" : undefined}
-              title={deleteFailure?.message}
-              disabled={busy}
-              onClick={() => void removeTarget(deleting)}
-            >
-              {deleteFailure ? <RotateCcw size={16} /> : "Delete"}
-            </button>
-          </div>
-        </PaperDialog>
+              }),
+            "Retry delete",
+          )}
+        </PaperConfirm>
       )}
     </aside>
   );

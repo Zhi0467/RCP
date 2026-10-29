@@ -23,6 +23,7 @@ from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.consolidation import target_ref
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
@@ -175,11 +176,7 @@ class ConsolidationPoller:
         due = datetime.fromisoformat(coverage.next_due_at)
         occurrence_date = due.astimezone(ZoneInfo(schedule.timezone)).date().isoformat()
         next_due = next_occurrence(schedule.local_time, schedule.timezone, now).isoformat()
-        graph_target = (
-            GraphTargetRef()
-            if target == "main"
-            else GraphTargetRef(kind="branch", branch_id=target)
-        )
+        graph_target = target_ref(target)
         input_head = 0
         task = None
         execution_host = ""
@@ -205,7 +202,7 @@ class ConsolidationPoller:
             )
             if changed:
                 failure_code = "consolidation_launch_unavailable"
-                task = self._task(schedule, service, graph_target, name)
+                task = self._task(schedule, service, target, name)
                 execution_host = service.manifest.machine_map[task.request["run_on"]].host
             else:
                 skipped = True
@@ -215,7 +212,6 @@ class ConsolidationPoller:
         run = self.store.claim_consolidation_occurrence(
             schedule,
             target=target,
-            advance_schedule=False,
             occurrence_date=occurrence_date,
             next_due_at=next_due,
             input_head=input_head,
@@ -233,10 +229,10 @@ class ConsolidationPoller:
         self,
         schedule: ConsolidationSchedule,
         service: ProjectService,
-        graph_target: GraphTargetRef | None = None,
-        target_name: str = "main",
+        target: str,
+        target_name: str,
     ) -> AgentTaskRecord:
-        graph_target = graph_target or GraphTargetRef()
+        graph_target = target_ref(target)
         profile = service.resolve_agent_profile("project_chat")
         request = RunRequest(
             provider=profile.provider,
@@ -245,7 +241,7 @@ class ConsolidationPoller:
             run_on=profile.run_on,
             run_truth_scope=write_repositories(service.history.state()),
             chat_scope="project",
-            chat_id=consolidation_chat_id(schedule.project_id, graph_target.branch_id or "main"),
+            chat_id=consolidation_chat_id(schedule.project_id, target),
             session_id=None,
             mode="work",
             trigger="schedule",

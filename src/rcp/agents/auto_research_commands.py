@@ -13,12 +13,14 @@ def auto_research_allowed_verbs(
     *,
     graph_read_scope: GraphReadScope | None = None,
     bulletin: bool = True,
+    lesson_actions: tuple[str, ...] = (),
     can_self_name: bool = False,
 ) -> tuple[CommandVerb, ...]:
     history_verbs = tuple(sorted(graph_read_scope.verbs)) if graph_read_scope else ()
     bulletin_verbs: tuple[CommandVerb, ...] = ("bulletin",) if bulletin else ()
+    lesson_verbs: tuple[CommandVerb, ...] = ("lesson",) if lesson_actions else ()
     if role == "worker":
-        return ("validate", "status", "message", "lesson", *bulletin_verbs, *history_verbs)
+        return ("validate", "status", "message", *lesson_verbs, *bulletin_verbs, *history_verbs)
     return (
         "validate",
         "apply",
@@ -35,7 +37,7 @@ def auto_research_allowed_verbs(
         "inbox",
         "finish",
         "ask",
-        "lesson",
+        *lesson_verbs,
         *(("name",) if can_self_name else ()),
         *bulletin_verbs,
         *history_verbs,
