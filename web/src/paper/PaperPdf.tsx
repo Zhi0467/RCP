@@ -3,6 +3,7 @@ import { Download, LoaderCircle, RotateCcw } from "lucide-react";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { panelTools } from "./panelTools";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type LoadedPdf = {
@@ -18,11 +19,13 @@ export default function PaperPdf({
   name = "paper.pdf",
   scrollKey = url,
   actions,
+  toolbar,
 }: {
   url: string;
   name?: string;
   scrollKey?: string;
   actions?: ReactNode;
+  toolbar: HTMLElement | null;
 }) {
   const viewer = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
@@ -231,23 +234,26 @@ export default function PaperPdf({
       }}
       className={`paper-pdf${error ? " paper-failed" : ""}`}
     >
-      <div className="paper-preview-actions">
-        {actions}
-        {loading && <LoaderCircle size={16} className="spin" aria-label="Rendering PDF" />}
-        {error && (
-          <button
-            className="icon-button"
-            aria-label="Retry PDF"
-            title={error}
-            onClick={() => setRetry((value) => value + 1)}
-          >
-            <RotateCcw size={16} />
-          </button>
-        )}
-        <a className="icon-button" href={url} download={name} aria-label="Download PDF">
-          <Download size={16} />
-        </a>
-      </div>
+      {panelTools(
+        toolbar,
+        <>
+          {actions}
+          {loading && <LoaderCircle size={16} className="spin" aria-label="Rendering PDF" />}
+          {error && (
+            <button
+              className="icon-button"
+              aria-label="Retry PDF"
+              title={error}
+              onClick={() => setRetry((value) => value + 1)}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
+          <a className="icon-button" href={url} download={name} aria-label="Download PDF">
+            <Download size={16} />
+          </a>
+        </>,
+      )}
       <div className="paper-pdf-pages" ref={pages} />
     </div>
   );

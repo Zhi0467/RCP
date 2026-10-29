@@ -87,7 +87,9 @@ PDFs remain readable within retention.
 
 Preview selects the one compile root that reaches the open file. If no root or
 multiple roots qualify, it shows candidates. A chosen root is accepted only while
-it reaches that file. PDF scroll is remembered per root. Typst errors identify
+it reaches that file. PDF scroll is remembered per root. The preview's actions
+(engine install, root choice, compile log, Download) sit in the panel header
+beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
 disables shell escape, but absolute inputs may expose any server-user-readable
 file in the member-only PDF, including agent-hidden files. This follows the

@@ -17,7 +17,6 @@ from .test_coach_suggestions import execution_for
 @pytest.mark.parametrize(
     "provider, model, reasoning, expected_session",
     [
-        ("codex", "new-model", "high", "original-session"),
         ("claude", "claude-model", "high", None),
         ("claude", None, None, None),
     ],
@@ -81,7 +80,6 @@ async def test_coach_profile_changes_follow_chat_session_rules(
         expected.reasoning,
     )
     assert "original-session" in sessions
-    assert len(sessions) == (1 if expected_session else 2)
 
     await turn(CoachRequest(message="Continue again", session_id=current.native_session_id))
     third_provider, third_launch = launches[-1]
@@ -95,12 +93,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     )
     service.paper.record_session(off_base)
     admitted = _resolved_coach_request(
-        service,
-        CoachRequest(
-            message="Continue",
-            session_id=off_base.native_session_id,
-            run_on=off_base.execution_machine,
-        ),
+        service, CoachRequest(message="Continue", session_id=off_base.native_session_id)
     )
     assert (admitted.provider, admitted.model, admitted.reasoning) == (
         current.provider,

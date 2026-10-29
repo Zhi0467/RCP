@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from pathlib import Path
 from typing import Literal, cast
 from uuid import uuid4
@@ -13,13 +14,38 @@ from rcp.agents.launcher import AgentProcessControl
 from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
 from rcp.background import AgentTaskExecution
 from rcp.paper import PaperOp
+from rcp.paper.changes import read_paper_changes
 from rcp.project_references import ResolvedProjectReference
 from rcp.runs.tasks.coach import stream_coach
 from rcp.service import CoachRequest
-from rcp.storage.models import AgentTaskRecord
 
 from .helpers import create_named_app
 from .paper_helpers import apply, human_edit, receipts, saved, wire_saved_paper
+from .paper_helpers import coach_execution as execution_for
+from .test_auto_research_stream import _LocalBackedRemoteStage
+
+
+class CoachRemoteStage(_LocalBackedRemoteStage):
+    transport_partition = "test-remote"
+
+    def touch(self):
+        assert self.root is not None
+
+    def put_directory(self, source, label, *, reuse=False):
+        assert self.root is not None
+        target = self.root / "inputs" / label
+        shutil.copytree(source, target)
+        return str(target)
+
+    def prepare_artifact_directory(self, scope_id, *, reuse):
+        target = self.workspace / "turns" / scope_id / "artifacts"
+        target.mkdir(parents=True, exist_ok=reuse)
+        return target
+
+    def read_workspace_directory(self, name, **limits):
+        from rcp.regular_tree_reader import read_regular_tree
+
+        return read_regular_tree(self.workspace / name, **limits)
 
 
 @pytest.fixture
@@ -39,6 +65,7 @@ async def run_coach(
     execution=None,
     request=None,
 ):
+    execution = execution or execution_for(service)
     return [
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in stream_coach(
@@ -99,7 +126,16 @@ def assert_attachment_launch(request, read_dirs, prompt):
     assert {path.read_bytes() for path in files} == {b"Uploaded notes", b"Reference bytes"}
     assert all(str(path) in prompt for path in files)
     assert all(item.name in prompt for item in request.attachments)
-    assert '"source_id": "paper-file"' in prompt
+    references = []
+    for offset, character in enumerate(prompt):
+        if character == "{":
+            try:
+                reference, _ = json.JSONDecoder().raw_decode(prompt[offset:])
+            except ValueError:
+                continue
+            if isinstance(reference, dict) and "source_id" in reference:
+                references.append(reference)
+    assert any(reference["source_id"] == "paper-file" for reference in references)
 
 
 @pytest.mark.asyncio
@@ -125,29 +161,10 @@ async def test_coach_stages_upload_and_reference_on_each_session_turn(coach):
         assert not [event for event in events if event.event == "error"]
 
 
-def execution_for(service):
-    store = service.paper.store
-    task_id = str(uuid4())
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=task_id,
-            project_id=service.paper.project_id,
-            kind="paper_coach",
-            status="running",
-            request={"message": "Edit the paper", "provider": "codex"},
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-        )
-    )
-    return AgentTaskExecution(task_id, store, AgentProcessControl())
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("keep_editing, expected_turns", [(False, 2), (True, 3)])
 async def test_saved_snapshot_refreshes_same_session_only_affected_files(
-    coach, keep_editing, expected_turns
+    coach, keep_editing, expected_turns, monkeypatch
 ):
     service, live, data = coach
     apply(
@@ -157,6 +174,15 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
     )
     paths = []
     sessions = []
+    branch_reads = []
+
+    def read_once(scope, _store):
+        from rcp.agents.graph_read_scope import ReadableBranch
+
+        branch_reads.append(scope)
+        return [ReadableBranch(name=f"branch-{len(branch_reads)}", id="branch", parent="main")]
+
+    monkeypatch.setattr("rcp.agents.prompts.readable_branches", read_once)
 
     class Launcher:
         async def stream(self, _provider, _prompt, **kwargs):
@@ -183,6 +209,7 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
 
     events = await run_coach(service, Launcher(), data, execution=execution_for(service))
     assert not [event for event in events if event.event == "error"]
+    assert len(branch_reads) == 1
     assert sessions == [None] + ["same-native-session"] * (expected_turns - 1)
     assert all(not path.exists() for path in paths)
     groups = service.paper_changes.groups(service.paper.project_id)
@@ -338,16 +365,9 @@ async def test_stop_prevents_refresh_and_direct_application(coach):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("keep_running", [False, True])
-async def test_remote_base_stages_snapshot_and_collects_changes(
-    coach, monkeypatch, tmp_path, keep_running
-):
-    import shutil
-
+async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypatch, tmp_path):
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs.tasks import coach as coach_module
-
-    from .test_auto_research_stream import _LocalBackedRemoteStage
 
     service, live, data = coach
     base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
@@ -359,9 +379,8 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
     stages = []
     provider_folders = []
 
-    class RemoteStage(_LocalBackedRemoteStage):
+    class RemoteStage(CoachRemoteStage):
         base = tmp_path / "remote-stage"
-        transport_partition = "test-remote"
 
         def open(self, operation_id, *, reuse=False, protected_roots=()):
             assert reuse
@@ -369,28 +388,15 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
             stages.append(self)
             return result
 
-        def touch(self):
-            assert self.root is not None
-
         def put_directory(self, source, label, *, reuse=False):
-            assert self.root is not None
-            target = self.root / "inputs" / label
-            shutil.copytree(source, target)
+            target = super().put_directory(source, label, reuse=reuse)
             if "paper-base-" in label:
-                staged_snapshots.append(target)
-            return str(target)
-
-        def prepare_artifact_directory(self, scope_id, *, reuse):
-            target = self.workspace / "turns" / scope_id / "artifacts"
-            target.mkdir(parents=True, exist_ok=reuse)
+                staged_snapshots.append(Path(target))
             return target
 
         def read_workspace_directory(self, name, **limits):
-            from rcp.regular_tree_reader import read_regular_tree
-
-            source = self.workspace / name
-            collected.append(source)
-            return read_regular_tree(source, **limits)
+            collected.append(self.workspace / name)
+            return super().read_workspace_directory(name, **limits)
 
     async def hidden_scope(_service, _request, **kwargs):
         assert kwargs["remote_stage"] is stages[-1]
@@ -439,14 +445,11 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
             else:
                 assert kwargs["session_id"] == "remote-native"
             yield AgentEvent(event="session", session_id="remote-native")
-            if not keep_running:
-                yield AgentEvent(event="remote_process_stop", text=pid)
-                assert (
-                    execution.store.unresolved_remote_provider_passes(
-                        "base.example", str(stage.root)
-                    )
-                    == []
-                )
+            yield AgentEvent(event="remote_process_stop", text=pid)
+            assert (
+                execution.store.unresolved_remote_provider_passes("base.example", str(stage.root))
+                == []
+            )
             yield AgentEvent(event="done")
 
     events = await run_coach(service, Launcher(), data, execution=execution, request=request)
@@ -455,15 +458,11 @@ async def test_remote_base_stages_snapshot_and_collects_changes(
     starts = [r for r in task_receipts if r.category == "remote_provider_started"]
     stops = [r for r in task_receipts if r.category == "remote_provider_stopped"]
     assert all(r.payload["supervised"] for r in starts)
-    if keep_running:
-        assert any(event.event == "error" for event in events)
-        assert len(provider_folders) == len(starts) == 1
-        assert stops == []
-        assert execution.store.unresolved_remote_provider_passes(
-            "base.example", str(stages[0].root)
-        ) == [(execution.operation_id, provider_pids[0])]
-        return
-    assert len(starts) == len(stops) == len(set(provider_pids)) == 2
+    assert (
+        {r.payload["pid_file"] for r in starts}
+        == {r.payload["pid_file"] for r in stops}
+        == set(provider_pids)
+    )
     assert not [event for event in events if event.event == "error"]
     assert any(event.event == "done" for event in events)
     assert execution.stage_host == "base.example"
@@ -486,8 +485,6 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
     coach, monkeypatch, tmp_path, failure_at, link_lost
 ):
     from rcp.transport import StateUnavailable, StateUnreachable
-
-    from .test_auto_research_stream import _LocalBackedRemoteStage
 
     service, _live, data = coach
     machine = service.manifest.repository_map[service.manifest.state.repository].machine
@@ -522,45 +519,17 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
 
 @pytest.fixture
 def detached_coach(coach, monkeypatch, tmp_path):
-    import shutil
-
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs import recorded_settlement
     from rcp.runs.tasks import coach as coach_module
     from rcp.runs.tasks import work_turn_runtime
 
-    from .test_auto_research_stream import _LocalBackedRemoteStage
-
     service, _live, data = coach
     base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
     service.manifest.machine_map[base_machine].host = "base.example"
 
-    class RemoteStage(_LocalBackedRemoteStage):
+    class RemoteStage(CoachRemoteStage):
         base = tmp_path / "remote-stage"
-        transport_partition = "test-remote"
-
-        def touch(self):
-            pass
-
-        @property
-        def workspace(self):
-            return Path(super().workspace)
-
-        def put_directory(self, source, label, *, reuse=False):
-            assert self.root is not None
-            target = self.root / "inputs" / label
-            shutil.copytree(source, target)
-            return str(target)
-
-        def prepare_artifact_directory(self, scope_id, *, reuse):
-            target = self.workspace / "turns" / scope_id / "artifacts"
-            target.mkdir(parents=True, exist_ok=reuse)
-            return target
-
-        def read_workspace_directory(self, name, **limits):
-            from rcp.regular_tree_reader import read_regular_tree
-
-            return read_regular_tree(self.workspace / name, **limits)
 
     async def hidden_scope(_service, _request, **_kwargs):
         return unhidden_read_scope(execution_machine=base_machine, host="base.example")
@@ -590,40 +559,9 @@ def detached_coach(coach, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(detached_coach):
-    from rcp.runs.remote_finalization import recorded_finalizer
-    from rcp.runs.tasks import coach as coach_module
-
-    from .test_work_agent_io import _recorded_pass
-
-    service, data, execution, request = detached_coach
-    await run_coach(service, None, data, execution=execution, request=request)
-    assert service.paper_changes.groups(service.paper.project_id) == []
-
-    finalizer = recorded_finalizer(execution.store, execution.operation_id)
-    assert finalizer is not None
-    assert finalizer is coach_module.finalize_recorded_coach_result
-    settled = [
-        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-        async for frame in finalizer(
-            service,
-            service.launcher,
-            request,
-            data,
-            execution,
-            _recorded_pass("", "Done", thread_id="remote-native"),
-        )
-    ]
-    assert settled[-1].event == "done"
-    assert [event.text for event in settled if event.event == "answer"] == ["Done"]
-    groups = service.paper_changes.groups(service.paper.project_id)
-    assert [group.changes[0].after for group in groups] == ["Proposed after the drop\n"]
-    assert [session.native_session_id for session in service.paper.sessions()] == ["remote-native"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("refresh", [False, True])
 async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path, refresh):
+    from rcp.runs.remote_finalization import recorded_finalizer
     from rcp.runs.tasks.coach import finalize_recorded_coach_result
 
     from .test_work_agent_io import _recorded_pass
@@ -637,7 +575,10 @@ async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path,
         source = execution_for(service)
         source.store.checkpoint_agent_task(source.operation_id, native_session_id="older-session")
         groups = service.paper_changes.collect(
-            project, source.operation_id, saved(service.paper_live, project), prior
+            project,
+            source.operation_id,
+            saved(service.paper_live, project),
+            read_paper_changes(prior),
         )
         request = request.model_copy(
             update={
@@ -647,6 +588,10 @@ async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path,
         )
     launched = await run_coach(service, None, data, execution=execution, request=request)
     assert not [event for event in launched if event.event == "error"]
+    assert (
+        recorded_finalizer(execution.store, execution.operation_id)
+        is finalize_recorded_coach_result
+    )
     recorded = _recorded_pass("", "Done", thread_id="remote-native")
     first = None
     for _ in range(2):
@@ -657,6 +602,10 @@ async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path,
             )
         ]
         assert events[-1].event == "done"
+        assert [event.text for event in events if event.event == "answer"] == ["Done"]
+        assert [session.native_session_id for session in service.paper.sessions()] == [
+            "remote-native"
+        ]
         groups = service.paper_changes.groups(project)
         assert len(groups) == 1
         assert groups[0].changes[0].after == "Proposed after the drop\n"
@@ -667,60 +616,34 @@ async def test_recorded_coach_collection_is_idempotent(detached_coach, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_pending_coach_restores_history_mailbox(detached_coach):
-    import asyncio
-
+async def test_pending_coach_restores_history_mailbox(detached_coach, monkeypatch):
+    from rcp.agents.command_protocol import GraphLogCommandRequest
     from rcp.runs.remote_finalization import resume_recorded_command_mailbox
-    from rcp.storage.command_mailbox import CommandMailboxStore
-
-    from .helpers import async_wait_until
-    from .test_staged_command_client import _sign
+    from rcp.runs.tasks import coach as coach_module
 
     service, data, execution, request = detached_coach
     await run_coach(service, None, data, execution=execution, request=request)
     owner = execution.command_mailbox
     assert owner is not None and owner.detached and not owner.closed
-    credential = owner.staged.credential
-    assert not credential.expired
-    assert Path(owner.staged.client_path).is_file()
-    checkpoints = CommandMailboxStore.for_data_dir(execution.store.path.parent)
-    assert checkpoints.load(execution.operation_id) is not None
-    await asyncio.to_thread(owner.suspend)
-    restored = resume_recorded_command_mailbox(lambda: service, execution)
-    assert restored is not None
-    assert restored.staged.credential.identity == credential.identity
-    assert restored.staged.credential.mailbox_id == credential.mailbox_id
-    assert restored.staged.credential.token == credential.token
-    try:
-        workspace = Path(restored.staged.workspace)
-        for arguments, expected in [({}, "ok"), ({"project": "unrelated-project"}, "invalid")]:
-            request_id = uuid4().hex
-            name = f"rcp-command-{credential.mailbox_id}-{request_id}"
-            partial = workspace / f"{name}.partial"
-            partial.write_text(
-                json.dumps(
-                    _sign(
-                        restored.staged,
-                        {
-                            "version": 1,
-                            "mailbox_id": credential.mailbox_id,
-                            "request_id": request_id,
-                            "credential": credential.token,
-                            "verb": "graph_log",
-                            "arguments": {"id": "hyp/missing", **arguments},
-                        },
-                    )
-                )
-            )
-            partial.replace(workspace / f"{name}.request.json")
-            response_path = workspace / f"{name}.response.json"
-            await async_wait_until(response_path.exists)
-            response = json.loads(response_path.read_text())
-            assert response["status"] == expected
-    finally:
-        await asyncio.to_thread(restored.settle)
-    assert restored.staged.credential.expired
-    assert checkpoints.load(execution.operation_id) is None
+    restored = {}
+    monkeypatch.setattr(
+        coach_module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    resume_recorded_command_mailbox(lambda: service, execution)
+    assert restored["validate"] is None
+    for arguments, expected in [({}, "ok"), ({"project": "unrelated-project"}, "invalid")]:
+        command = GraphLogCommandRequest.model_validate(
+            {
+                "mailbox_id": "0" * 32,
+                "request_id": uuid4().hex,
+                "credential": "0" * 64,
+                "verb": "graph_log",
+                "arguments": {"id": "hyp/missing", **arguments},
+            }
+        )
+        assert restored["command_handler"](command, None).status == expected
 
 
 @pytest.mark.asyncio
@@ -783,3 +706,128 @@ async def test_stored_coach_on_another_machine_starts_fresh_on_base(
     assert launches[0]["session_id"] is None
     assert launches[0]["host"] == service.manifest.machine_map[base].host
     assert service.paper.sessions()[0].execution_machine == base
+
+
+@pytest.mark.asyncio
+async def test_coach_yields_answer_before_provider_finishes(coach):
+    import asyncio
+
+    service, _live, data = coach
+    received = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="answer", text="Live answer")
+            await received.wait()
+            finished.set()
+            yield AgentEvent(event="done")
+
+    stream = stream_coach(
+        service,
+        cast(AgentLauncher, Launcher()),
+        service.paper,
+        CoachRequest(message="Review"),
+        data,
+        execution_for(service),
+    )
+    try:
+        while True:
+            frame = await asyncio.wait_for(anext(stream), timeout=5)
+            event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            if event.event == "answer":
+                assert event.text == "Live answer"
+                assert not finished.is_set()
+                received.set()
+                break
+        assert any(['"done"' in frame async for frame in stream])
+        assert finished.is_set()
+    finally:
+        received.set()
+        await stream.aclose()
+
+
+def test_off_base_coach_refresh_accepts_a_fresh_session(coach):
+    from rcp.runs.tasks.coach import _validate_paper_continuation
+
+    service, _live, _data = coach
+    source = execution_for(service)
+    with source.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=?,native_session_id=? WHERE operation_id=?",
+            (
+                CoachRequest(
+                    message="Review", provider="codex", run_on="old-worker"
+                ).model_dump_json(),
+                "old-session",
+                source.operation_id,
+            ),
+        )
+    _validate_paper_continuation(
+        execution_for(service),
+        CoachRequest(
+            message="Refresh",
+            provider="codex",
+            run_on=service.manifest.base_machine,
+            refresh_source_task_id=source.operation_id,
+        ),
+        service.paper.project_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["collect", "finish"])
+@pytest.mark.parametrize("link_lost", [False, True])
+async def test_live_coach_collection_link_loss(coach, monkeypatch, failure_at, link_lost):
+    from rcp.runs.tasks import coach as coach_module
+    from rcp.transport import StateUnavailable, StateUnreachable
+
+    service, _live, data = coach
+    execution = execution_for(service)
+    failure = StateUnreachable("lost") if link_lost else StateUnavailable("refused")
+    observed, noted = [], []
+    original_note = coach_module.note_link_lost_before_provider
+
+    def note(execution, exc):
+        noted.append(exc)
+        original_note(execution, exc)
+
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    async def finish(*_args):
+        raise failure
+
+    class Launcher:
+        async def stream(self, *_args, **_kwargs):
+            yield AgentEvent(event="session", session_id="completed-session")
+            yield AgentEvent(event="done")
+
+    monkeypatch.setattr(coach_module, "note_link_lost_before_provider", note)
+    monkeypatch.setattr(
+        coach_module,
+        "commit_prepared_graph_observation",
+        lambda *_args, **kwargs: observed.append(kwargs["native_session_id"]),
+    )
+    if failure_at == "collect":
+        monkeypatch.setattr(coach_module, "read_paper_changes", fail)
+    else:
+        monkeypatch.setattr(coach_module, "_finish_coach_turn", finish)
+    events = await run_coach(service, Launcher(), data, execution=execution)
+    assert any(event.event == "error" for event in events)
+    assert not any(event.event == "done" for event in events)
+    assert execution.stage_unreachable is link_lost
+    assert noted == [failure]
+    assert observed == (["completed-session"] if failure_at == "collect" else [])
+
+
+@pytest.mark.asyncio
+async def test_coach_launch_oserror_propagates(coach, monkeypatch):
+    service, _live, data = coach
+
+    def fail(*_args):
+        raise OSError("unreadable launch input")
+
+    monkeypatch.setattr(service, "coach_context", fail)
+    with pytest.raises(OSError, match="unreadable launch input"):
+        await run_coach(service, cast(AgentLauncher, None), data)

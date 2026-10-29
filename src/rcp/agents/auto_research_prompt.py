@@ -14,6 +14,7 @@ from rcp.agents.prompts import (
     BULLETIN_RULES,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
+    GraphReadPrompt,
     ask_contract,
     compute_connection_section,
     graph_read_contract,
@@ -523,7 +524,7 @@ def auto_research_orchestrator_task_contract(
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
@@ -602,7 +603,7 @@ Worker coordination:
 Finish each turn with that reply, including the next useful continuation. Do not claim that RCP
 accepted a Patch until RCP says so.
 """,
-        graph_read_scope,
+        graph_read_prompt,
         command_client,
     )
 
@@ -623,7 +624,7 @@ def auto_research_worker_task_contract(
     allowed_verbs: tuple[CommandVerb, ...],
     reply_key: str,
     write_scope: ProjectWriteScope,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     messages_path: str | None = None,
@@ -683,7 +684,7 @@ Coordination:
 Your final assistant message is read by the orchestrator and the human. Besides the result, say
 what the orchestrator still needs to decide or do.
 """,
-        graph_read_scope,
+        graph_read_prompt,
         command_client,
     )
 
@@ -700,7 +701,7 @@ def auto_research_orchestrator_continuation_contract(
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
     write_scope: ProjectWriteScope,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     lesson_actions: tuple[str, ...] = (),
     ontology_extensions: bool = False,
     skill_pointers: list[dict[str, object]] | None = None,
@@ -768,7 +769,7 @@ file, graph-condition, worker-seating, and no-polling rules still apply.
 Finish with that reply, including the next useful continuation. Do not claim that RCP accepted a
 Patch until RCP says so.
 """,
-        graph_read_scope,
+        graph_read_prompt,
         command_client,
     )
 

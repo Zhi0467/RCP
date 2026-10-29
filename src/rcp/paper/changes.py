@@ -30,6 +30,7 @@ from rcp.storage import AppStore
 
 if TYPE_CHECKING:
     from rcp.service import ProjectService
+    from rcp.transport.run_stage import RemoteRunStage
 
 
 class InvalidChanges(ValueError):
@@ -110,23 +111,27 @@ def _path(value: str) -> str:
         raise InvalidChanges([f"Invalid paper-relative path: {value!r}"]) from exc
 
 
-def _read_output(root: Path) -> RegularTree:
-    try:
-        return read_regular_tree(
-            root,
-            max_entries=PAPER_CHANGES_MAX_ENTRIES,
-            max_files=PAPER_CHANGES_MAX_FILES + 1,
-            max_file_bytes=PAPER_CHANGES_MAX_FILE_BYTES,
-            max_total_bytes=PAPER_CHANGES_MAX_TOTAL_BYTES,
+def read_paper_changes(path: Path, *, remote_stage: RemoteRunStage | None = None) -> RegularTree:
+    """Read one bounded changes tree locally or from its owning remote stage."""
+    limits = {
+        "max_entries": PAPER_CHANGES_MAX_ENTRIES,
+        "max_files": PAPER_CHANGES_MAX_FILES + 1,
+        "max_file_bytes": PAPER_CHANGES_MAX_FILE_BYTES,
+        "max_total_bytes": PAPER_CHANGES_MAX_TOTAL_BYTES,
+    }
+    if remote_stage is not None:
+        return remote_stage.read_workspace_directory(
+            path.relative_to(remote_stage.workspace).as_posix(), **limits
         )
+    try:
+        return read_regular_tree(path, **limits)
     except (OSError, ValueError) as exc:
         raise InvalidChanges([f"Cannot collect changes: {exc}"]) from exc
 
 
 def validate_output(
-    root: Path | RegularTree, snapshot: PaperSnapshot
+    tree: RegularTree, snapshot: PaperSnapshot
 ) -> tuple[dict[str, bytes], list[tuple[str, str]], list[str]]:
-    tree = _read_output(root) if isinstance(root, Path) else root
     output = tree.files
     for name in [*tree.directories, *output]:
         _path(name)
@@ -415,7 +420,7 @@ def _utf16_length(text: str) -> int:
 def build_changes(
     task_id: str,
     snapshot: PaperSnapshot,
-    root: Path | RegularTree,
+    output: RegularTree,
     live: PaperLive,
     tree: PaperSnapshot | None = None,
 ) -> tuple[list[list[Change]], dict[str, bytes]]:
@@ -425,7 +430,7 @@ def build_changes(
     only a refresh round's files; the result is validated against all of it.
     """
     tree = tree or snapshot
-    files, renames, deletes = validate_output(root, snapshot)
+    files, renames, deletes = validate_output(output, snapshot)
     originals = {file.path: file for file in snapshot.files}
     reverse = {new: old for old, new in renames}
     changes: list[Change] = []
@@ -591,7 +596,7 @@ class PaperChanges:
         project_id: str,
         task_id: str,
         snapshot: PaperSnapshot,
-        changes_dir: Path | RegularTree,
+        output: RegularTree,
         *,
         mode: Literal["review", "apply_directly"] = "review",
         replace_group_ids: set[str] | None = None,
@@ -608,7 +613,7 @@ class PaperChanges:
             ):
                 return self.groups(project_id, task_id)
             tree = self.live.run_sync(self.live.snapshot(project_id, snapshot.revision))
-            groups, blobs = build_changes(task_id, snapshot, changes_dir, self.live, tree)
+            groups, blobs = build_changes(task_id, snapshot, output, self.live, tree)
             decided: set[tuple[object, ...]] = set()
             for group_id in replace_group_ids or set():
                 row = connection.execute(

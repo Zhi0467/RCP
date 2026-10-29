@@ -33,7 +33,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.prompts import graph_read_contract
+from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
@@ -830,9 +830,7 @@ async def stream_graph_run(
                 if identity is None:
                     raise ValueError("Graph history reads require a canonical project identity.")
                 project_id = identity.project_id
-            graph_read_scope = GraphReadScope.resolve(
-                project_id, service.history, store=service.paper.store
-            )
+            graph_read_scope = GraphReadScope.resolve(project_id, service.history)
             staged_head = prepare_graph_observation(
                 execution,
                 service,
@@ -904,8 +902,11 @@ async def stream_graph_run(
                 skill_pointers=skill_pointers,
                 compute_profiles=compute_profiles,
             )
+            graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store)
             base_contract_content = graph_read_contract(
-                base_contract_content, graph_read_scope, validator_staged.client_command()
+                base_contract_content,
+                graph_prompt,
+                validator_staged.client_command(),
             )
             refresh_head = next(
                 (
@@ -933,6 +934,7 @@ async def stream_graph_run(
                 human_request_path=human_request_path,
                 skill_pointers=skill_pointers,
             )
+            graph_master_values.update(graph_prompt.values)
             graph_master_values["history_client"] = validator_staged.client_command()
             graph_master_values["compute"] = {"active": compute_profiles}
             graph_master_key = master_key(
