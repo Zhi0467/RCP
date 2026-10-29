@@ -1507,7 +1507,9 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         assert invocation_gate is not None
         master = next((cwd.parent / "inputs").glob("*-branch-merge.md")).read_text()
         await serving.wait()
-        scope = GraphReadScope(project_id=harness.project_id, target=GraphTargetRef())
+        scope = GraphReadScope.resolve(
+            harness.project_id, harness.service.history, store=harness.store
+        )
         assert render_graph_history(scope, handlers[0]["staged"].client_command()) in master
         response = handlers[0]["command_handler"](
             GraphDiffCommandRequest.model_validate(

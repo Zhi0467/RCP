@@ -631,6 +631,20 @@ def test_cooperative_shell_hangs_up_when_server_pty_closes(tmp_path):
             launch.stop_cooperative(process)
 
 
+def test_cooperative_shell_starts_under_a_parent_that_holds_the_session(tmp_path):
+    # The one-file packaged backend's bootloader stays the session leader and
+    # runs Python as its child, then waits for it, like this parent.
+    bootloader = "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))"
+    command = [launch.sys.executable, "-c", bootloader, *launch.cooperative_command({})]
+    process, master = launch.launch(command, None, cwd=tmp_path)
+    try:
+        os.close(master)
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            launch.stop_cooperative(process)
+
+
 def test_cooperative_shell_entry_point_works_in_packaged_backend(monkeypatch):
     monkeypatch.setattr(launch.sys, "frozen", True, raising=False)
     command = launch.cooperative_command({})

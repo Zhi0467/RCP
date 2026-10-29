@@ -83,9 +83,13 @@ def test_flags_get_and_dismiss_disposition(flagged):
 def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
     app, client, store, project, flag = flagged
     launches = []
+    # The turn settles the flag; hold it until both requests answered so the
+    # replay sees the same flag state as the admission.
+    answered = threading.Event()
 
     async def stream(project_id, kind, request, execution):
         launches.append((project_id, kind, request, execution))
+        await asyncio.to_thread(answered.wait, 30)
         yield _turn(execution, "done")
 
     app.state.background_tasks.stream = stream
@@ -96,6 +100,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged):
         responses = list(
             pool.map(lambda _: client.post(url, json={"request_id": request_id}), range(2))
         )
+    answered.set()
     assert [response.status_code for response in responses] == [200, 200]
     result = responses[0].json()
     assert responses[1].json() == result
