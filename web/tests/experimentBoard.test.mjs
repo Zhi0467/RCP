@@ -1633,10 +1633,7 @@ test("a branch view waits for the loop index before classifying a main route as 
       }),
     );
     assert.equal(html.includes('class="run-route-history"'), loaded && entries.length === 0);
-    assert.equal(
-      html.includes('class="run-route-loading" role="status" aria-busy="true"'),
-      !loaded,
-    );
+    assert.equal(html.includes('aria-busy="true"'), !loaded);
     assert.equal(
       html.includes('data-selected-episode="main-episode"'),
       loaded && entries.length > 0,

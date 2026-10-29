@@ -28,6 +28,8 @@ import type {
 
 export interface DigestCardProps {
   digest: ProjectDigest | null;
+  /** False until the first digest read settles; the page holds its layout until then. */
+  loaded: boolean;
   /** The open graph target's display name: `main` or the branch name. */
   targetName: string;
   error: string | null;
@@ -82,7 +84,7 @@ export function ProjectOverview({
     number: string;
     prompt: string;
     answer: string;
-    detail: string;
+    detail: string | null;
     view: AppView;
     node?: GraphNode;
   }> = [
@@ -101,7 +103,7 @@ export function ProjectOverview({
         : !project.last_refresh_at
           ? "The project has not been seeded yet."
           : "Understanding and review",
-      detail: `Project revision ${graph.revision}`,
+      detail: null,
       view: "execution",
     },
     {
@@ -121,7 +123,7 @@ export function ProjectOverview({
       answer: blockers[0]?.title || "No open blocker is recorded.",
       detail: blockers.length
         ? `${blockers.length} open blocker${blockers.length === 1 ? "" : "s"}`
-        : "No open blocker in the graph",
+        : null,
       view: "dag",
     },
     {
@@ -143,13 +145,14 @@ export function ProjectOverview({
             ? "Seed the graph from the selected truth repositories."
             : "Refresh when new research work lands."),
       ),
-      detail: nextExperiment ? nextExperiment.title : "Project-level next action",
+      detail: nextExperiment ? nextExperiment.title : null,
       view: nextExperiment ? "execution" : "attention",
     },
   ];
 
   return (
-    <section className="overview-page">
+    // The digest sits above the rows; showing them before it arrives would push them down.
+    <section className="overview-page" aria-busy={digest.loaded ? undefined : true}>
       <DigestCard {...digest} />
       <header className="overview-heading">
         <div className="overview-revision">
@@ -208,8 +211,13 @@ function DigestCard({
             <Sparkles size={14} />
             Since you last looked
           </span>
-          <h2>{digestSummary(digest)}</h2>
-          {digest.mark && <small>Last caught up {formatDigestTime(digest.mark.marked_at)}</small>}
+          <h2
+            title={
+              digest.mark ? `Last caught up ${formatDigestTime(digest.mark.marked_at)}` : undefined
+            }
+          >
+            {digestSummary(digest)}
+          </h2>
         </div>
         {onCatchUp && (
           <button

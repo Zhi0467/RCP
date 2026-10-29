@@ -34,9 +34,10 @@ injection. It is not a separate account or a hostile same-account sandbox.
 
 ## External dependencies
 
-[dependencies.py](../../src/rcp/dependencies.py) owns presence, roles, platforms
-and whether a dependency is required or optional. Installation, doctor and
-machine cards share this registry. Missing required tools cause launch refusal.
+[dependencies.py](../../src/rcp/dependencies.py) owns roles, platforms and
+whether a dependency is required or optional.
+[dependency_check.py](../../src/rcp/dependency_check.py) checks machines against
+it. Installation, doctor and machine cards share this registry. Missing required tools cause launch refusal.
 Optional gaps name their feature and its visible limitation. Feature-specific
 versions stay with their concrete owners.
 
@@ -188,6 +189,22 @@ provider output and stderr stay on the task row, never in journald, because they
 may contain secrets. [agents/launcher.py](../../src/rcp/agents/launcher.py) owns
 this boundary.
 
+### Recurring service errors
+
+On Linux, doctor reads `rcp.service`'s own journal over a recent window. It uses
+the same account and runner as its `systemctl` reads, and reads no other unit.
+It groups `ERROR` and `CRITICAL` log records by logger, exception type and the
+function of the traceback's final frame. Message text never forms the key or
+leaves doctor, because it can carry ids, paths and secrets. A signature seen
+often enough in the window is a problem with its count and first time seen.
+A rarer one is a `service_log_warnings` entry. An unreadable journal is one
+warning and never fails doctor. The desktop app has no service journal and skips
+the read. [server_ops/service_errors.py](../../src/rcp/server_ops/service_errors.py)
+owns parsing and grouping. `limits.py` owns the window, the count, the entry and
+character caps and the number of signatures shown.
+**Why:** after an update, a background failure that retried every minute
+appeared only in the journal while doctor reported healthy.
+
 ### Compute backend probe
 
 Compute probing is a service-socket operation that persists independent route
@@ -226,8 +243,8 @@ automatic launches until wake stabilizes.
 
 Demand holds `caffeinate` for the backend lifetime without root or lasting
 state. Display sleep and screen locking do not release it. Lid closure or OS
-emergencies may. Locally owned episodes count when they are active, recovering,
-stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
+emergencies may. Locally owned episodes count when they are starting, active,
+recovering, stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
 retries also count. Human-only waits, ended work, sign-in-blocked tasks and
 armed watchers alone do not. Failed reads retain the hold and log a failure
 rather than infer completion.

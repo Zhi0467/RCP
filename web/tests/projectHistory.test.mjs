@@ -101,6 +101,7 @@ test("Overview uses the latest revision prose and preserves every other question
       decisionsAwaitingChoice: [graph.nodes["dec/ready"]],
       latestRevisionSummary: latestSummary,
       onNavigate() {},
+      digest: { digest: null, loaded: true, targetName: "main", error: null, catchingUp: false },
     }),
   );
 
@@ -128,6 +129,7 @@ test("Overview keeps its previous latest-node fallback when no summary is suppli
       pendingProposals: [],
       decisionsAwaitingChoice: [],
       onNavigate() {},
+      digest: { digest: null, loaded: true, targetName: "main", error: null, catchingUp: false },
     }),
   );
 

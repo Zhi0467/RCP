@@ -36,7 +36,8 @@ RCP rechecks the authorization id, expiry, membership, and write admission.
 This includes release after sign-in and startup recovery.
 A queued turn whose stored row fails launch validation fails, so its run settles
 as a failure row and the target's next occurrence is free. Any other launch error
-leaves the turn queued for the next poll and adds a warning event to the turn.
+leaves the turn queued for the next poll and adds a warning event to the turn
+whenever the error changes, not on every poll.
 Started turns settle under their captured authority. Apply still checks live
 membership.
 

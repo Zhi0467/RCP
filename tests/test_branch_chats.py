@@ -20,6 +20,7 @@ from .helpers import (
     append_fixture_patch,
     authorized_human,
     create_named_app,
+    fake_launch_admitted,
     seed_patch,
     shape_invalid_patch,
     wait_for_task,
@@ -299,7 +300,7 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
 ):
     app, _main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     client = signed_in_client(app)
     url = (
         f"/api/projects/{episode.project_id}/tasks/project_chat"
@@ -357,7 +358,7 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
 def test_orchestrator_chat_turn_blocks_chain_continuation(manifest, tmp_path, monkeypatch):
     app, _main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    monkeypatch.setattr(app.state.background_tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
     _end_orchestrator(app, root, tmp_path / "stage")
     response = signed_in_client(app).post(
         f"/api/projects/{episode.project_id}/tasks/project_chat"

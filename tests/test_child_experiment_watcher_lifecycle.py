@@ -13,6 +13,7 @@ from rcp.service import RunRequest
 from rcp.storage import AppStore, WatcherContinuation
 from rcp.watchers import WatcherPoller
 
+from .helpers import fake_launch_admitted
 from .test_auto_research_children_storage import (
     _auto_parent,
     _experiment_route,
@@ -86,7 +87,7 @@ def _waiting_child(tmp_path, monkeypatch, *, child_ceiling=10):
         launches.append(operation_id)
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(tasks, "launch_admitted", record_launch)
+    fake_launch_admitted(monkeypatch, tasks, record_launch)
 
     def deliver(group):
         ids = [item.watcher_id for item in group]
@@ -222,16 +223,24 @@ def test_running_parent_child_experiment_watcher_claims_and_launches_once(tmp_pa
     assert store.episode_budget_meter(child.episode_id).invocations_used == 2
 
 
-def test_unexpected_child_experiment_watcher_error_remains_visible(tmp_path, monkeypatch, caplog):
+def test_unexpected_child_experiment_watcher_error_stays_on_the_watcher_until_delivery(
+    tmp_path, monkeypatch
+):
     store, _parent, _root, _child, watcher, launches, poller = _waiting_child(tmp_path, monkeypatch)
 
     def invalid_binding(*_args, **_kwargs):
         raise ValueError("The watcher wake belongs to another episode.")
 
-    monkeypatch.setattr(store, "create_experiment_watcher_invocation", invalid_binding)
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "create_experiment_watcher_invocation", invalid_binding)
+        poller.poll_once()
+
+    pending = store.watcher(watcher.watcher_id)
+    assert not pending.notified and pending.last_error
+    assert launches == []
+
     poller.poll_once()
 
-    assert any(record.levelname == "ERROR" and record.exc_info for record in caplog.records)
-    assert "The watcher wake belongs to another episode." in caplog.text
-    assert not store.watcher(watcher.watcher_id).notified
-    assert launches == []
+    delivered = store.watcher(watcher.watcher_id)
+    assert delivered.notified and delivered.last_error is None
+    assert len(launches) == 1

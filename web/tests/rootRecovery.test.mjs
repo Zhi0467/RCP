@@ -22,7 +22,8 @@ const {
 after(() => server.close());
 
 test("ordinary source builds preserve assets for already-open windows", () => {
-  assert.equal(viteConfig.build.emptyOutDir, false);
+  const config = viteConfig({ command: "build", mode: "production" });
+  assert.equal(config.build.emptyOutDir, false);
 });
 
 function storageWith(value = null) {
@@ -71,4 +72,26 @@ test("a repeated missing chunk reaches the visible error boundary instead of rel
   assert.match(html, /role="alert"/);
 
   assert.match(html, /<button/);
+});
+
+test("a render failure is reported once to the server log", () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const sent = [];
+  globalThis.fetch = (url, init) => {
+    sent.push({ url, body: JSON.parse(init.body) });
+    return Promise.resolve(new Response(null, { status: 204 }));
+  };
+  console.error = () => {};
+  try {
+    const boundary = new RootErrorBoundary({ children: null });
+    boundary.componentDidCatch(new Error("render broke"), { componentStack: "" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
+  }
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, "/api/client-events");
+  assert.equal(sent[0].body.kind, "render_failure");
+  assert.equal(sent[0].body.message, "Error: render broke");
 });

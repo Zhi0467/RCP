@@ -1017,7 +1017,8 @@ class ExperimentStoreMixin(StoreMixinBase):
         cursor = connection.execute(
             f"""
             UPDATE watchers
-            SET notified = 1, notification_operation_id = ?
+            SET notified = 1, notification_operation_id = ?,
+                last_error = CASE WHEN status = 'completed' THEN NULL ELSE last_error END
             WHERE watcher_id IN ({placeholders})
               AND status IN ('completed', 'degraded') AND notified = 0
             """,

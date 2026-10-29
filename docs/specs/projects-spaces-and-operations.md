@@ -403,8 +403,9 @@ machine in client string branches.
 `AgentTaskRecord`, before any recovery/Retry/watcher/mail policy parses it.
 Only the explicit per-kind retirement allowlist removes fields (currently legacy
 `auto_research.ending`, and the per-turn compute selection that every
-RunRequest kind froze through 0.4.29). Unknown fields remain for strict rejection; mappings
-assembled outside row decoding use the same helper. Live models remain
+RunRequest kind froze through 0.4.29). Mappings assembled outside row decoding use the same helper. `RunRequest` and
+`CoachRequest` drop unknown fields when parsed, so the roundtrip rule below is
+what refuses a stored row that carries one; other live request models are
 `extra="forbid"`. Retire only shipped fields whose removal preserves meaning.
 Every launch and finalization check uses the one roundtrip rule in the same
 module. Dumping the parsed request must reproduce the stored row. A field the

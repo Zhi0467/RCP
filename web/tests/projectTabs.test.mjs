@@ -534,6 +534,13 @@ test("closing the active tab chooses right, then left, then index", () => {
   assert.equal(closeProjectTab([alpha], "alpha", "alpha").activeProjectId, null);
 });
 
+test("closing the routed project that has no tab leaves its route", () => {
+  assert.deepEqual(closeProjectTab([alpha], "missing", "missing"), {
+    tabs: [alpha],
+    activeProjectId: null,
+  });
+});
+
 test("adjacent tab navigation wraps and starts from the index edge", () => {
   const tabs = [alpha, beta, gamma];
   assert.equal(adjacentProjectTabId(tabs, "alpha", -1), "gamma");

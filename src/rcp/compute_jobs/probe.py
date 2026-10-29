@@ -244,11 +244,16 @@ def probe_compute_backend(
     return result
 
 
-def machine_compute_routes(compute: MachineComputeConfig | None) -> tuple[ComputeRoute, ...]:
-    """The helper is always offered; a job manager adds the scheduler route."""
+def machine_compute_routes(
+    compute: MachineComputeConfig | None, *, execution: bool
+) -> tuple[ComputeRoute, ...]:
+    """A job manager offers the scheduler; the helper launches only where agents run."""
+    routes: list[ComputeRoute] = []
     if compute and compute.job_manager:
-        return ("scheduler", "helper")
-    return ("helper",)
+        routes.append("scheduler")
+    if execution:
+        routes.append("helper")
+    return tuple(routes)
 
 
 def detect_slurm(host: str) -> bool | None:
@@ -292,7 +297,12 @@ def refresh_compute_probes(
         host = manifest.machine_map[alias].host
         settle_job_manager(store, host)
         compute = store.machine_compute(host)
-        for route in machine_compute_routes(compute):
+        # Every agent runs on the base machine, so only it launches helper jobs.
+        routes = machine_compute_routes(compute, execution=alias == manifest.base_machine)
+        for route in ("scheduler", "helper"):
+            if route not in routes:
+                store.delete_compute_backend_probe(project_id, alias, route=route)
+        for route in routes:
             probe = probe_compute_backend(
                 manifest, alias, route, data_dir=data_dir, compute=compute
             )

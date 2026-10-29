@@ -248,7 +248,11 @@ export function useProjectTabs<
   const closeDockedProject = useCallback(
     (id: string): boolean => {
       const result = closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id);
-      if (result.tabs === openProjectTabsRef.current) return false;
+      if (
+        result.tabs === openProjectTabsRef.current &&
+        result.activeProjectId === activeProjectId.current
+      )
+        return false;
       for (const [key, state] of projectTabStatesRef.current) {
         if (state.state.projectId === id) projectTabStatesRef.current.delete(key);
       }

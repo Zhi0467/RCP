@@ -1,4 +1,5 @@
 mod backend;
+mod backend_log;
 mod commands;
 mod dictation;
 #[cfg(target_os = "macos")]

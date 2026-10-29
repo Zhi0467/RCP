@@ -192,13 +192,10 @@ test("archived space runs stay out of default cards and attention counts", () =>
   );
   assert.doesNotMatch(html, /Obsolete failure/);
 
-  assert.deepEqual(
-    html
-      .match(/class="space-runs-header">[^]*?<\/header>/)[0]
-      .replace(/<[^>]*>/g, "")
-      .match(/\d+/g),
-    ["0", "0"],
-  );
+  const counts = [
+    ...html.matchAll(/aria-label="(Needs action|In progress)"><header>[^]*?<\/header>/g),
+  ].map((match) => match[0].replace(/<[^>]*>/g, "").match(/\d+/g));
+  assert.deepEqual(counts, [["0"], ["0"]]);
   assert.match(html, /class="show-archived-runs">[^]*?<input type="checkbox"/);
 });
 
