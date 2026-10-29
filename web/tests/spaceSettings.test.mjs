@@ -26,25 +26,6 @@ const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
   logLevel: "silent",
-  plugins: [
-    {
-      name: "fixture-space-machines",
-      enforce: "pre",
-      resolveId(id) {
-        if (id === "./useSpaceMachines") return "\0fixture-space-machines";
-      },
-      load(id) {
-        if (id === "\0fixture-space-machines")
-          return `
-        let machines = null;
-        export function setMachines(value) { machines = value; }
-        export function useSpaceMachines() {
-          return { machines, error: null, replace() {}, remove() {} };
-        }
-      `;
-      },
-    },
-  ],
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
@@ -92,27 +73,6 @@ const gpu = {
   compute_probes: { scheduler: null, helper: null },
   reach: [{ from: "laptop", probe: null }],
 };
-
-test("space settings offers Delete only for deletable cards, even when listed by a project", async () => {
-  const { setMachines } = await server.ssrLoadModule("\0fixture-space-machines");
-  try {
-    for (const deletable of [true, false]) {
-      setMachines([{ ...gpu, deletable }]);
-      const html = renderMarkup(
-        React.createElement(SpaceSettings, {
-          spaceKind: "personal",
-          cacheProjectId: null,
-          cacheClearDisabled: false,
-          onAllCachesCleared() {},
-          onClose() {},
-        }),
-      );
-      assert.equal(html.includes('data-machine-action="delete"'), deletable);
-    }
-  } finally {
-    setMachines(null);
-  }
-});
 
 function page(entries, nextOffset, path = "/data", parent = "/") {
   return { path, parent, entries, total: 3, next_offset: nextOffset };

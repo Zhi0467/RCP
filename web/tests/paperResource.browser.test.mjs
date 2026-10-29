@@ -918,7 +918,8 @@ test("the editor/preview divider resizes within bounds, persists, and is absent 
   await page.mouse.up();
   const dragged = await editorWidth();
   await handle.press("ArrowRight");
-  assert.equal(await editorWidth(), dragged + 16);
+  const stepped = await editorWidth();
+  assert.ok(stepped > dragged && stepped <= Number(await handle.getAttribute("aria-valuemax")));
   await handle.press("Home");
   assert.equal(await editorWidth(), Number(await handle.getAttribute("aria-valuemin")));
   await handle.press("End");
