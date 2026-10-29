@@ -311,8 +311,9 @@ class ConsolidationPoller:
             logger.exception("Consolidation dispatch failed for %s", operation_id)
             message = f"Launch failed and will be retried: {exc}"
             if self._launch_errors.get(operation_id) != message:
-                self._launch_errors[operation_id] = message
+                # Remember only a recorded event, so a failed write is tried again.
                 self.store.record_agent_task_event(operation_id, message, level="warning")
+                self._launch_errors[operation_id] = message
 
     def reconcile_outcomes(self) -> None:
         for run in self.store.consolidation_runs(unsettled_only=True):
