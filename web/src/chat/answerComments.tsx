@@ -5,7 +5,9 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type Dispatch,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
 import { MessageCircle, MessageCirclePlus, X } from "lucide-react";
@@ -67,55 +69,11 @@ function writeStagedAnnotations(key: string | null, annotations: StagedChatAnnot
   } catch {}
 }
 
-export function useAnswerComments({
-  storageKey,
-  enabled,
-  busy,
-  transcript,
-  message,
-  onError,
-}: {
-  /** Where staged comments persist for this tab, or null to keep them in memory. */
-  storageKey: string | null;
-  /** False where the reader cannot comment: no selection offer appears. */
-  enabled: boolean;
-  /** A turn is being sent: staged comments and the composer are fenced. */
-  busy: boolean;
-  /** The transcript whose answers can be selected. */
-  transcript: RefObject<HTMLElement | null>;
-  /** The message field focus returns to. */
-  message: RefObject<HTMLTextAreaElement | null>;
-  onError: (message: string | null) => void;
-}) {
-  const panelId = useId();
-  const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
-    readStagedAnnotations(storageKey),
-  );
-  const [composer, setComposer] = useState<AnswerCommentComposer | null>(null);
-  const [comment, setComment] = useState("");
+/** The visual viewport's size and offset while the composer is open; null when closed. */
+function useVisualViewportMetrics(open: boolean): ChatAnnotationViewportMetrics | null {
   const [viewport, setViewport] = useState<ChatAnnotationViewportMetrics | null>(null);
-  const [open, setOpen] = useState(false);
-  // A finished selection inside an answer offers Comment; the composer opens
-  // only when the reader asks, so the platform's Copy stays usable.
-  const [offer, setOffer] = useState<{
-    range: Range;
-    position: ChatAnnotationComposerPosition;
-  } | null>(null);
-  const commentRef = useRef<HTMLTextAreaElement | null>(null);
-  const selectionRef = useRef<HTMLTextAreaElement | null>(null);
-  const composerRef = useRef<HTMLFormElement | null>(null);
-  const offerRef = useRef<HTMLButtonElement | null>(null);
-  const originRef = useRef<HTMLElement | null>(null);
-  /** Clears a selection made outside the answer text (an inline artifact's) on close. */
-  const externalSelectionClear = useRef<(() => void) | null>(null);
-  const composerOpen = composer !== null;
-  const composerOpenRef = useRef(composerOpen);
-  composerOpenRef.current = composerOpen;
-
-  useEffect(() => writeStagedAnnotations(storageKey, annotations), [annotations, storageKey]);
-
   useEffect(() => {
-    if (!composerOpen) {
+    if (!open) {
       setViewport(null);
       return;
     }
@@ -137,8 +95,21 @@ export function useAnswerComments({
       visual?.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [composerOpen]);
+  }, [open]);
+  return viewport;
+}
 
+/** Places the open composer beside its anchor, then focuses the step's field once shown. */
+function useComposerPlacement(
+  composerRef: RefObject<HTMLFormElement | null>,
+  composer: AnswerCommentComposer | null,
+  viewport: ChatAnnotationViewportMetrics | null,
+  setComposer: Dispatch<SetStateAction<AnswerCommentComposer | null>>,
+  fields: {
+    select: RefObject<HTMLTextAreaElement | null>;
+    comment: RefObject<HTMLTextAreaElement | null>;
+  },
+) {
   useLayoutEffect(() => {
     const form = composerRef.current;
     if (!form || !composer || !viewport) return;
@@ -160,7 +131,7 @@ export function useAnswerComments({
     const observer = new ResizeObserver(update);
     observer.observe(form);
     return () => observer.disconnect();
-  }, [composer, viewport]);
+  }, [composer, viewport, composerRef, setComposer]);
 
   // The composer stays hidden until it is placed, and a hidden field cannot take
   // focus, so the step's field is focused once the composer becomes visible.
@@ -169,45 +140,70 @@ export function useAnswerComments({
   useEffect(() => {
     if (!composerPlaced) return;
     if (composerRef.current?.contains(document.activeElement)) return;
-    const field = composerStep === "select" ? selectionRef.current : commentRef.current;
+    const field = composerStep === "select" ? fields.select.current : fields.comment.current;
     field?.focus();
     if (composerStep === "select") field?.setSelectionRange(0, 0);
-  }, [composerPlaced, composerStep]);
+  }, [composerPlaced, composerStep, composerRef, fields.select, fields.comment]);
+}
 
-  // The pointer often lifts outside the answer that was swept, so the release is
-  // observed on the document and the answer is resolved from the selection itself.
-  // Touch selection (long press, dragged handles) settles without a pointerup, so
-  // a selection change made while no pointer is down refreshes the offer too.
+type SelectionOffer = { range: Range; position: ChatAnnotationComposerPosition };
+
+/** The selection inside an answer, measured for the Comment offer; null when none applies. */
+function measureSelectionOffer(
+  transcript: HTMLElement | null,
+  offerButton: HTMLButtonElement | null,
+): SelectionOffer | null {
+  const range = annotatableAnswerSelectionRange(window.getSelection(), transcript);
+  const rects = range?.getClientRects();
+  const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
+  if (!range || !firstLine) return null;
+  const button = offerButton?.getBoundingClientRect();
+  const metrics = chatAnnotationViewportMetrics(
+    { width: window.innerWidth, height: window.innerHeight },
+    window.visualViewport,
+  );
+  return {
+    range,
+    position: chatSelectionCommentPosition(
+      { firstLine, bottom: range.getBoundingClientRect().bottom },
+      metrics,
+      button?.width ? button : { width: 96, height: 32 },
+    ),
+  };
+}
+
+// The pointer often lifts outside the answer that was swept, so the release is
+// observed on the document and the answer is resolved from the selection itself.
+// Touch selection (long press, dragged handles) settles without a pointerup, so
+// a selection change made while no pointer is down refreshes the offer too.
+function useSelectionOffer({
+  enabled,
+  transcript,
+  composerOpenRef,
+  composerRef,
+  offerRef,
+  setOffer,
+}: {
+  enabled: boolean;
+  transcript: RefObject<HTMLElement | null>;
+  composerOpenRef: RefObject<boolean>;
+  composerRef: RefObject<HTMLFormElement | null>;
+  offerRef: RefObject<HTMLButtonElement | null>;
+  setOffer: (offer: SelectionOffer | null) => void;
+}) {
   useEffect(() => {
     if (!enabled) {
       setOffer(null);
       return;
     }
     let pointerDown = false;
-    const refresh = () => {
-      // The composer re-selects the staged text; that is not a new offer.
-      if (composerOpenRef.current) return setOffer(null);
-      const range = annotatableAnswerSelectionRange(window.getSelection(), transcript.current);
-      const rects = range?.getClientRects();
-      const firstLine = rects?.item(0) ?? range?.getBoundingClientRect();
-      if (!range || !firstLine) {
-        setOffer(null);
-        return;
-      }
-      const button = offerRef.current?.getBoundingClientRect();
-      const metrics = chatAnnotationViewportMetrics(
-        { width: window.innerWidth, height: window.innerHeight },
-        window.visualViewport,
+    // The composer re-selects the staged text; that is not a new offer.
+    const refresh = () =>
+      setOffer(
+        composerOpenRef.current
+          ? null
+          : measureSelectionOffer(transcript.current, offerRef.current),
       );
-      setOffer({
-        range,
-        position: chatSelectionCommentPosition(
-          { firstLine, bottom: range.getBoundingClientRect().bottom },
-          metrics,
-          button?.width ? button : { width: 96, height: 32 },
-        ),
-      });
-    };
     const insideOwnControls = (target: EventTarget | null) =>
       target instanceof Node &&
       Boolean(composerRef.current?.contains(target) || offerRef.current?.contains(target));
@@ -223,36 +219,44 @@ export function useAnswerComments({
     const onPointerCancel = () => {
       pointerDown = false;
     };
-    const onSelectionChange = () => {
-      if (!pointerDown) refresh();
-    };
-    const onViewportChange = () => {
+    const onSettled = () => {
       if (!pointerDown) refresh();
     };
     // Capture phase: a release over a window resize corner stops propagation.
     document.addEventListener("pointerdown", onPointerDown, { capture: true });
     document.addEventListener("pointerup", onPointerUp, { capture: true });
     document.addEventListener("pointercancel", onPointerCancel, { capture: true });
-    document.addEventListener("selectionchange", onSelectionChange);
-    document.addEventListener("scroll", onViewportChange, { capture: true, passive: true });
+    document.addEventListener("selectionchange", onSettled);
+    document.addEventListener("scroll", onSettled, { capture: true, passive: true });
     // A resize, rotation, or soft keyboard moves the selection under a fixed offer.
     const visual = window.visualViewport;
-    window.addEventListener("resize", onViewportChange);
-    visual?.addEventListener("resize", onViewportChange);
-    visual?.addEventListener("scroll", onViewportChange);
+    window.addEventListener("resize", onSettled);
+    visual?.addEventListener("resize", onSettled);
+    visual?.addEventListener("scroll", onSettled);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, { capture: true });
       document.removeEventListener("pointerup", onPointerUp, { capture: true });
       document.removeEventListener("pointercancel", onPointerCancel, { capture: true });
-      document.removeEventListener("selectionchange", onSelectionChange);
-      document.removeEventListener("scroll", onViewportChange, { capture: true });
-      window.removeEventListener("resize", onViewportChange);
-      visual?.removeEventListener("resize", onViewportChange);
-      visual?.removeEventListener("scroll", onViewportChange);
+      document.removeEventListener("selectionchange", onSettled);
+      document.removeEventListener("scroll", onSettled, { capture: true });
+      window.removeEventListener("resize", onSettled);
+      visual?.removeEventListener("resize", onSettled);
+      visual?.removeEventListener("scroll", onSettled);
     };
-  }, [enabled, transcript]);
+  }, [enabled, transcript, composerOpenRef, composerRef, offerRef, setOffer]);
+}
 
-  const focusComment = () => window.requestAnimationFrame(() => commentRef.current?.focus());
+/** The comments staged for the next turn, kept for this tab under `storageKey`. */
+function useStagedAnnotations(
+  storageKey: string | null,
+  busy: boolean,
+  onError: (message: string | null) => void,
+) {
+  const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
+    readStagedAnnotations(storageKey),
+  );
+  const [open, setOpen] = useState(false);
+  useEffect(() => writeStagedAnnotations(storageKey, annotations), [annotations, storageKey]);
 
   /** False, with the reason shown, once a turn holds as many comments as it can. */
   const roomForAnother = () => {
@@ -260,6 +264,123 @@ export function useAnswerComments({
     onError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
     return false;
   };
+
+  const update = (id: string, next: string) => {
+    if (busy) return;
+    setAnnotations((current) =>
+      current.map((annotation) =>
+        annotation.id === id ? { ...annotation, comment: next } : annotation,
+      ),
+    );
+    onError(null);
+  };
+
+  const remove = (id: string) => {
+    if (busy) return;
+    setAnnotations((current) => {
+      const next = current.filter((annotation) => annotation.id !== id);
+      if (next.length === 0) setOpen(false);
+      return next;
+    });
+  };
+
+  /** True when every staged comment has text; otherwise opens them with the reason. */
+  const requireComplete = () => {
+    if (stagedChatAnnotationsAreComplete(annotations)) return true;
+    setOpen(true);
+    onError("Each staged annotation needs a comment.");
+    return false;
+  };
+
+  /** After an admitted turn: the turn carries its comments now. With `sent`, only
+   * those comments clear; any staged since then stay. */
+  const clear = (sent?: StagedChatAnnotation[]) => {
+    setOpen(false);
+    if (sent) {
+      setAnnotations((current) => (current === sent ? [] : current));
+      return;
+    }
+    setAnnotations([]);
+    writeStagedAnnotations(storageKey, []);
+  };
+
+  /** Drops staged comments that no longer apply. */
+  const discard = (items: StagedChatAnnotation[]) =>
+    setAnnotations((current) => current.filter((annotation) => !items.includes(annotation)));
+
+  return {
+    annotations,
+    setAnnotations,
+    open,
+    setOpen,
+    roomForAnother,
+    update,
+    remove,
+    requireComplete,
+    clear,
+    discard,
+  };
+}
+
+export function useAnswerComments({
+  storageKey,
+  enabled,
+  busy,
+  transcript,
+  message,
+  onError,
+}: {
+  /** Where staged comments persist for this tab, or null to keep them in memory. */
+  storageKey: string | null;
+  /** False where the reader cannot comment: no selection offer appears. */
+  enabled: boolean;
+  /** A turn is being sent: staged comments and the composer are fenced. */
+  busy: boolean;
+  /** The transcript whose answers can be selected. */
+  transcript: RefObject<HTMLElement | null>;
+  /** The message field focus returns to. */
+  message: RefObject<HTMLTextAreaElement | null>;
+  onError: (message: string | null) => void;
+}) {
+  const panelId = useId();
+  const {
+    annotations,
+    setAnnotations,
+    open,
+    setOpen,
+    roomForAnother,
+    update,
+    remove,
+    requireComplete,
+    clear,
+    discard,
+  } = useStagedAnnotations(storageKey, busy, onError);
+  const [composer, setComposer] = useState<AnswerCommentComposer | null>(null);
+  const [comment, setComment] = useState("");
+  // A finished selection inside an answer offers Comment; the composer opens
+  // only when the reader asks, so the platform's Copy stays usable.
+  const [offer, setOffer] = useState<SelectionOffer | null>(null);
+  const commentRef = useRef<HTMLTextAreaElement | null>(null);
+  const selectionRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
+  const offerRef = useRef<HTMLButtonElement | null>(null);
+  const originRef = useRef<HTMLElement | null>(null);
+  /** Clears a selection made outside the answer text (an inline artifact's) on close. */
+  const externalSelectionClear = useRef<(() => void) | null>(null);
+  const composerOpen = composer !== null;
+  const composerOpenRef = useRef(composerOpen);
+  composerOpenRef.current = composerOpen;
+
+  const viewport = useVisualViewportMetrics(composerOpen);
+
+  useComposerPlacement(composerRef, composer, viewport, setComposer, {
+    select: selectionRef,
+    comment: commentRef,
+  });
+
+  useSelectionOffer({ enabled, transcript, composerOpenRef, composerRef, offerRef, setOffer });
+
+  const focusComment = () => window.requestAnimationFrame(() => commentRef.current?.focus());
 
   /** Opens the composer on `next`; focus returns to `origin` when it is dismissed. */
   const openComposer = (
@@ -367,49 +488,6 @@ export function useAnswerComments({
     dismiss(false);
     window.requestAnimationFrame(() => message.current?.focus());
   };
-
-  const update = (id: string, next: string) => {
-    if (busy) return;
-    setAnnotations((current) =>
-      current.map((annotation) =>
-        annotation.id === id ? { ...annotation, comment: next } : annotation,
-      ),
-    );
-    onError(null);
-  };
-
-  const remove = (id: string) => {
-    if (busy) return;
-    setAnnotations((current) => {
-      const next = current.filter((annotation) => annotation.id !== id);
-      if (next.length === 0) setOpen(false);
-      return next;
-    });
-  };
-
-  /** True when every staged comment has text; otherwise opens them with the reason. */
-  const requireComplete = () => {
-    if (stagedChatAnnotationsAreComplete(annotations)) return true;
-    setOpen(true);
-    onError("Each staged annotation needs a comment.");
-    return false;
-  };
-
-  /** After an admitted turn: the turn carries its comments now. With `sent`, only
-   * those comments clear; any staged since then stay. */
-  const clear = (sent?: StagedChatAnnotation[]) => {
-    setOpen(false);
-    if (sent) {
-      setAnnotations((current) => (current === sent ? [] : current));
-      return;
-    }
-    setAnnotations([]);
-    writeStagedAnnotations(storageKey, []);
-  };
-
-  /** Drops staged comments that no longer apply. */
-  const discard = (items: StagedChatAnnotation[]) =>
-    setAnnotations((current) => current.filter((annotation) => !items.includes(annotation)));
 
   return {
     annotations,

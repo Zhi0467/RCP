@@ -5,8 +5,10 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type Dispatch,
   type DragEvent,
   type RefObject,
+  type SetStateAction,
 } from "react";
 import { File, FolderOpen, LoaderCircle, Plus, Upload, X } from "lucide-react";
 import { api, removeChatAttachment, uploadChatAttachment } from "../core/api";
@@ -156,6 +158,183 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
 }
 
+function draftReferencesAt(key: string | null): DraftReference[] {
+  return parseReferenceDraft(key ? readPref(key) : null);
+}
+
+/** Unsent references, kept for this viewer under `key`, with artifact names looked up. */
+function useDraftReferences(key: string | null, apiBase: string) {
+  const [references, setReferences] = useState<DraftReference[]>(() => draftReferencesAt(key));
+  const identity = useRef(key);
+  useEffect(() => {
+    if (identity.current !== key) {
+      identity.current = key;
+      setReferences(draftReferencesAt(key));
+      return;
+    }
+    if (key) writePref(key, references.length ? JSON.stringify(references) : null);
+  }, [key, references]);
+  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
+  useEffect(() => {
+    if (!unlabeledArtifacts) return;
+    const controller = new AbortController();
+    api<ProjectArtifact[]>(`${apiBase}/artifacts`, { signal: controller.signal })
+      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
+      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [apiBase, unlabeledArtifacts]);
+  return [references, setReferences] as const;
+}
+
+/** New rows for `incoming`, each preparing or already refused, within the turn's byte budget. */
+function validatedCandidates(
+  incoming: File[],
+  staged: readonly ComposerAttachment[],
+): ComposerAttachment[] {
+  let total = staged.reduce(
+    (sum, item) => (item.status === "error" ? sum : sum + item.file.size),
+    0,
+  );
+  return incoming.map((file) => {
+    const error = validateChatAttachment(file, total);
+    if (error) return { localId: crypto.randomUUID(), file, status: "error", error };
+    total += file.size;
+    return { localId: crypto.randomUUID(), file, status: "preparing" };
+  });
+}
+
+/** A copy of the file's bytes now: a macOS screenshot thumbnail drops a file promise
+ * whose bytes can be gone by upload time, so an unreadable source fails here, named. */
+async function readAttachmentBytes(item: ComposerAttachment): Promise<ComposerAttachment> {
+  try {
+    const bytes = await item.file.arrayBuffer();
+    if (bytes.byteLength !== item.file.size) throw new Error("short read");
+    return {
+      ...item,
+      file: new globalThis.File([bytes], item.file.name, {
+        type: item.file.type,
+        lastModified: item.file.lastModified,
+      }),
+    };
+  } catch {
+    return {
+      ...item,
+      status: "error",
+      error: "Could not read this file. Save it to disk first, then attach it.",
+    };
+  }
+}
+
+function replaceAttachment(
+  list: ComposerAttachment[],
+  localId: string,
+  next: (item: ComposerAttachment) => ComposerAttachment,
+): ComposerAttachment[] {
+  return list.map((item) => (item.localId === localId ? next(item) : item));
+}
+
+/** Uploads read files in order into one attachment set; a failure before the set exists
+ * fails the rest, and a row removed while uploading is deleted again once it lands. */
+async function uploadPrepared(
+  prepared: ComposerAttachment[],
+  context: {
+    apiBase: string;
+    scope: string;
+    clientId: string;
+    setIdRef: { current: string | null };
+    cancelledIds: Set<string>;
+    setAttachmentSetId: (id: string) => void;
+    setAttachments: Dispatch<SetStateAction<ComposerAttachment[]>>;
+  },
+) {
+  const { apiBase, scope, clientId, setIdRef, cancelledIds, setAttachments } = context;
+  for (const [index, item] of prepared.entries()) {
+    try {
+      const result = await uploadChatAttachment(
+        apiBase,
+        scope,
+        item.file,
+        clientId,
+        setIdRef.current,
+      );
+      setIdRef.current = result.attachment_set_id;
+      context.setAttachmentSetId(result.attachment_set_id);
+      if (cancelledIds.delete(item.localId)) {
+        await removeChatAttachment(
+          apiBase,
+          scope,
+          result.attachment_set_id,
+          result.attachment.attachment_id,
+          clientId,
+        );
+        continue;
+      }
+      setAttachments((current) =>
+        replaceAttachment(current, item.localId, (row) => ({
+          ...row,
+          status: "ready",
+          descriptor: result.attachment,
+        })),
+      );
+    } catch (error) {
+      const cancelled = cancelledIds.delete(item.localId);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (!cancelled) {
+        setAttachments((current) =>
+          replaceAttachment(current, item.localId, (row) => ({
+            ...row,
+            status: "error",
+            error: detail,
+          })),
+        );
+      }
+      if (!setIdRef.current) {
+        const remaining = new Set(prepared.slice(index + 1).map((candidate) => candidate.localId));
+        setAttachments((current) =>
+          current.map((candidate) =>
+            remaining.has(candidate.localId)
+              ? { ...candidate, status: "error", error: "Attachment set could not be created" }
+              : candidate,
+          ),
+        );
+        break;
+      }
+    }
+  }
+}
+
+/** A node on the viewed graph shows its title; anything else its fallback label. */
+function referenceLabel(project: ProjectSnapshot, selector: ProjectReferenceSelector): string {
+  const target = project.graph_target ?? MAIN_GRAPH;
+  const viewedBranch = target.kind === "branch" ? target.branch_id : null;
+  if (selector.kind !== "node" || (selector.branch_id ?? null) !== viewedBranch) {
+    return referenceFallbackLabel(selector);
+  }
+  return project.graph?.nodes[selector.node_id]?.title ?? selector.node_id;
+}
+
+function carriesDroppable(event: DragEvent<HTMLElement>): boolean {
+  return event.dataTransfer.types.some((type) => DRAGGED_TYPES.includes(type));
+}
+
+/** The next turn's attachment fields: what is staged, and the scope that holds it. */
+function composerTurnFields(
+  references: readonly DraftReference[],
+  attachmentSetId: string | null,
+  clientId: string,
+  scope: string,
+): ComposerTurnFields {
+  if (!attachmentSetId && !references.length) return {};
+  return {
+    ...(references.length ? { references: references.map((item) => item.selector) } : {}),
+    ...(attachmentSetId
+      ? { attachment_set_id: attachmentSetId, attachment_client_id: clientId }
+      : {}),
+    attachment_scope_id: scope,
+  };
+}
+
 export function useComposerAttachments({
   project,
   scopeId,
@@ -183,29 +362,7 @@ export function useComposerAttachments({
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
   const scope = scopeId ?? draftScope;
-  const [references, setReferences] = useState<DraftReference[]>(() =>
-    parseReferenceDraft(referencesKey ? readPref(referencesKey) : null),
-  );
-  const referencesIdentity = useRef(referencesKey);
-  useEffect(() => {
-    if (referencesIdentity.current !== referencesKey) {
-      referencesIdentity.current = referencesKey;
-      setReferences(parseReferenceDraft(referencesKey ? readPref(referencesKey) : null));
-      return;
-    }
-    if (referencesKey)
-      writePref(referencesKey, references.length ? JSON.stringify(references) : null);
-  }, [referencesKey, references]);
-  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
-  useEffect(() => {
-    if (!unlabeledArtifacts) return;
-    const controller = new AbortController();
-    api<ProjectArtifact[]>(`${apiBase}/artifacts`, { signal: controller.signal })
-      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
-      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [apiBase, unlabeledArtifacts]);
+  const [references, setReferences] = useDraftReferences(referencesKey, apiBase);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -239,110 +396,25 @@ export function useComposerAttachments({
     onError(null);
     const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
     if (incoming.length > available) onError(TOO_MANY);
-    const candidates = incoming.slice(0, available).map<ComposerAttachment>((file) => ({
-      localId: crypto.randomUUID(),
-      file,
-      status: "preparing",
-    }));
-    let total = attachments.reduce(
-      (sum, item) => (item.status === "error" ? sum : sum + item.file.size),
-      0,
-    );
-    for (const item of candidates) {
-      const validation = validateChatAttachment(item.file, total);
-      if (validation) {
-        item.status = "error";
-        item.error = validation;
-      } else {
-        total += item.file.size;
-      }
-    }
+    const candidates = validatedCandidates(incoming.slice(0, available), attachments);
     // Publish the preparing rows first: they block sending while the reads below run.
     setAttachments((current) => [...current, ...candidates]);
-    // A macOS screenshot thumbnail drops a file promise whose bytes can be gone by
-    // upload time. Copy them now, so a source that cannot be read fails here, named.
     const prepared: ComposerAttachment[] = [];
     for (const item of candidates) {
       if (item.status !== "preparing") continue;
-      let next: ComposerAttachment;
-      try {
-        const bytes = await item.file.arrayBuffer();
-        if (bytes.byteLength !== item.file.size) throw new Error("short read");
-        next = {
-          ...item,
-          file: new globalThis.File([bytes], item.file.name, {
-            type: item.file.type,
-            lastModified: item.file.lastModified,
-          }),
-        };
-        prepared.push(next);
-      } catch {
-        next = {
-          ...item,
-          status: "error",
-          error: "Could not read this file. Save it to disk first, then attach it.",
-        };
-      }
-      setAttachments((current) =>
-        current.map((candidate) => (candidate.localId === item.localId ? next : candidate)),
-      );
+      const next = await readAttachmentBytes(item);
+      if (next.status === "preparing") prepared.push(next);
+      setAttachments((current) => replaceAttachment(current, item.localId, () => next));
     }
-
-    for (const [index, item] of prepared.entries()) {
-      try {
-        const result = await uploadChatAttachment(
-          apiBase,
-          scope,
-          item.file,
-          clientId,
-          attachmentSetIdRef.current,
-        );
-        attachmentSetIdRef.current = result.attachment_set_id;
-        setAttachmentSetId(result.attachment_set_id);
-        if (cancelledIdsRef.current.delete(item.localId)) {
-          await removeChatAttachment(
-            apiBase,
-            scope,
-            result.attachment_set_id,
-            result.attachment.attachment_id,
-            clientId,
-          );
-          continue;
-        }
-        setAttachments((current) =>
-          current.map((candidate) =>
-            candidate.localId === item.localId
-              ? { ...candidate, status: "ready", descriptor: result.attachment }
-              : candidate,
-          ),
-        );
-      } catch (error) {
-        const cancelled = cancelledIdsRef.current.delete(item.localId);
-        const detail = error instanceof Error ? error.message : String(error);
-        if (!cancelled) {
-          setAttachments((current) =>
-            current.map((candidate) =>
-              candidate.localId === item.localId
-                ? { ...candidate, status: "error", error: detail }
-                : candidate,
-            ),
-          );
-        }
-        if (!attachmentSetIdRef.current) {
-          const remaining = new Set(
-            prepared.slice(index + 1).map((candidate) => candidate.localId),
-          );
-          setAttachments((current) =>
-            current.map((candidate) =>
-              remaining.has(candidate.localId)
-                ? { ...candidate, status: "error", error: "Attachment set could not be created" }
-                : candidate,
-            ),
-          );
-          break;
-        }
-      }
-    }
+    await uploadPrepared(prepared, {
+      apiBase,
+      scope,
+      clientId,
+      setIdRef: attachmentSetIdRef,
+      cancelledIds: cancelledIdsRef.current,
+      setAttachmentSetId,
+      setAttachments,
+    });
     uploadBusyRef.current = false;
   };
 
@@ -376,12 +448,8 @@ export function useComposerAttachments({
     insertPlainText = false,
   ): boolean => {
     if (!text || referencesDisabled) return false;
-    const target = project.graph_target ?? MAIN_GRAPH;
     const result = extractReferences(text, project.id, references, fileCount, (selector) =>
-      selector.kind === "node" &&
-      (selector.branch_id ?? null) === (target.kind === "branch" ? target.branch_id : null)
-        ? (project.graph?.nodes[selector.node_id]?.title ?? selector.node_id)
-        : referenceFallbackLabel(selector),
+      referenceLabel(project, selector),
     );
     if (result.rejected) onError(TOO_MANY);
     if (result.text === text && !insertPlainText) return false;
@@ -405,10 +473,10 @@ export function useComposerAttachments({
   /** Drag-and-drop props for the composer: files attach, dropped links become references. */
   const dropTarget = () => ({
     onDragEnter: (event: DragEvent<HTMLElement>) => {
-      if (event.dataTransfer.types.some((type) => DRAGGED_TYPES.includes(type))) setDragging(true);
+      if (carriesDroppable(event)) setDragging(true);
     },
     onDragOver: (event: DragEvent<HTMLElement>) => {
-      if (!event.dataTransfer.types.some((type) => DRAGGED_TYPES.includes(type))) return;
+      if (!carriesDroppable(event)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     },
@@ -440,16 +508,8 @@ export function useComposerAttachments({
       event.preventDefault();
   };
 
-  /** The next turn's attachment fields: what is staged, and the scope that holds it. */
-  const turnFields = (): ComposerTurnFields => {
-    const files = ready.length && attachmentSetId;
-    if (!files && !references.length) return {};
-    return {
-      ...(references.length ? { references: references.map((item) => item.selector) } : {}),
-      ...(files ? { attachment_set_id: attachmentSetId, attachment_client_id: clientId } : {}),
-      attachment_scope_id: scope,
-    };
-  };
+  const turnFields = (): ComposerTurnFields =>
+    composerTurnFields(references, ready.length ? attachmentSetId : null, clientId, scope);
 
   /** After an admitted turn: the turn owns its files and references now. */
   const clear = useCallback(() => {
@@ -460,7 +520,7 @@ export function useComposerAttachments({
     attachmentSetIdRef.current = null;
     setAddMenuOpen(false);
     setDraftScope(crypto.randomUUID());
-  }, []);
+  }, [setReferences]);
 
   return {
     /** The files ready to travel with the next turn. */
