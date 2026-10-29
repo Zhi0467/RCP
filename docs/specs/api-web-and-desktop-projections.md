@@ -1535,8 +1535,8 @@ moves forward. Markers are not moved with a transferred project.
 Paper owns the co-edited file tree, LaTeX and Typst preview, and coach change
 cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
-server status (team spaces), machine cards with their names (renamed in place),
-provider logins, and the personal space's clear-all-caches. Project Settings owns
+server status (team spaces), machine cards with their names (renamed in place)
+and their Sign-ins fold, and the personal space's clear-all-caches. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
@@ -1562,6 +1562,29 @@ repositories, and team repositories whose provisioning evidence cannot be
 resolved, omit all three fields: nothing claims a server-only state or offers
 Connect without proof. These fields describe RCP-managed provisioning, not
 discovery of a personal checkout's Git remotes.
+
+Each machine card's **Sign-ins** fold shows one raised panel per provider. Inside
+it, two sunken trays, "Yours" and "Shared on <machine>", hold raised sign-in
+cards; left to right is the order the member's work tries them, and at phone
+width they stack top to bottom. Each tray header has a switch and a round swap
+button sits between the trays; each change writes the setting at once:
+
+| Stored value | Trays in order | Yours switch | Shared switch | Swap |
+| --- | --- | --- | --- | --- |
+| `own_then_shared` | Yours, Shared | on | on | stores `shared_then_own` |
+| `shared_then_own` | Shared, Yours | on | on | stores `own_then_shared` |
+| `own` | Yours, Shared | on, locked | off | disabled |
+| `shared` | Shared, Yours | off | on, locked | disabled |
+
+Turning the other group back on stores "the tray that is on, then the other". A
+card shows, first match wins, Being removed, signing in (device code and link
+only to the starter; others see who), Signed out (flat, dashed, Sign in), Usage
+limit (amber edge), or Ready. Card actions sit behind a ⋯ shown on hover and
+always at phone width. Explanations are hover text only. A personal space shows
+only the shared tray, titled with the machine name; OpenCode shows only its
+machine sign-in card. A collapsed Members row counts other members' signed-in
+own logins. A refused launch's notice is one row whose icon opens this fold;
+work waiting on another member's own login names them and has no action.
 
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
 card view carries its settings (`job_manager` of `slurm`, `none`, or null while

@@ -622,7 +622,7 @@ class ProviderReadinessCoordinator:
                 ExternalAction(
                     instruction=(
                         f"Sign {label} in for OS account {target.os_account} from Settings, "
-                        "Provider logins, as any signed-in member: Codex through its "
+                        "Sign-ins, as any signed-in member: Codex through its "
                         "device code, Claude by saving a setup token. RCP verifies the "
                         "login with one authenticated request and resumes parked work."
                     )

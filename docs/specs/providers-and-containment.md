@@ -550,8 +550,8 @@ profile decides each of these explicitly rather than inheriting them:
    indexing its history.
 2. Turn end: the event its fence reads, or a wrapper line when the CLI prints
    none. Both the local decoder and the remote fence must end on it.
-3. Login: an `auth.py` when RCP manages sign-in. Without one, Provider logins
-   shows a note with the CLI's own login command.
+3. Login: an `auth.py` when RCP manages sign-in. Without one, the Sign-ins
+   fold shows a note with the CLI's own login command.
 4. Models: probed efforts may be empty, and every stored reasoning field must
    accept that.
 5. Version floor: the CLI version whose containment was probed, applied to every
@@ -561,7 +561,7 @@ Containment is proved against the real CLI at that floor: config precedence,
 path bases, and anything that can rewrite the rules, such as plugins. Tests that
 cover every provider iterate `PROVIDER_IDS`; only tests of one provider's
 protocol name it. Before merge, drive the served app through Discuss, Work,
-Provider logins, and the model picker, locally and on an SSH execution machine.
+Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
@@ -1089,6 +1089,73 @@ removes credentials without deleting sessions. Shared logins stay. Pending remov
 retries remote deletion on each advance, returning unreached hosts in
 `provider_cleanup_unreached`, including the completing pass; unreachable hosts do
 not block completion. Restore's stale-member removal uses the same cleanup.
+
+### Member sign-in settings and selection
+
+Each machine keeps a set of shared logins per provider: the machine sign-in
+(`login_id = ""`, the OS account's own CLI login for Codex and OpenCode, the
+stored token for Claude) plus every login a member added as shared. Each member
+may also add one own login per provider and machine. Shared logins belong to the
+machine: any member may add, sign in, verify, sign out or remove them, except
+that the machine sign-in cannot be removed. Only the owner acts on an own login.
+OpenCode has only its machine sign-in, because RCP does not sign it in.
+
+Each member has one setting per `(provider, host)`: `own`, `own_then_shared`,
+`shared_then_own` or `shared`. It names which sources are on and the order they
+are tried; "both off" cannot be stored. Lookup is the host's row, then the
+member's `*` row, then the built-in default: `own` in a team space, `shared` in a
+personal one. The upgrade wrote `*` = `own_then_shared` for every member who
+existed then, so their work kept using the shared logins. There is no team or
+owner default: a new team member must add their own login or turn Shared on.
+
+The member is the task's authorizer: the sender for chats, Work, Discuss and the
+paper coach; the episode's `authorized_by` for Auto-research, Experiment turns
+and reports; the origin task's member for watcher wakes; the schedule's for
+consolidation; the presser for a human Resume or Retry, except episode tasks;
+the original task's member for transport reattempts and automatic recovery.
+
+The resolver in `agents/provider_accounts.py` picks one login, first match wins:
+
+1. A transport reattempt or the initial `graph_repair` correction keeps its
+   parent's login.
+2. A continued Codex session, including a fork, watcher wake or paper coach
+   session, keeps the login of the earliest provider-started task in that
+   session, because the session lives in that login's home.
+3. Otherwise walk the sources the setting turns on, in its order, and take the
+   first with an assignable login (usable and not draining) without the limit
+   mark. For a continued session, a mark on another login that lapsed without
+   evidence still counts, so a running session never moves on a lapse. When every
+   allowed login is limited, a continued session keeps its previous login while
+   it is assignable; otherwise take the first source with any assignable login.
+4. Inside the shared source, keep the session's previous login while it is
+   assignable and not limited; otherwise take the one assigned longest ago,
+   preferring unmarked ones, ties to the machine sign-in, then the oldest add.
+5. Refuse, naming the setting's first source.
+
+A switch receipt names the first applicable reason: `unhealthy`, `limited`,
+`sender_setting` (another member sent the turn), `setting_changed`, or
+`preferred_source_available`. RCP never starts a fresh session on a login change;
+only the human Switch provider does that.
+
+**Why:** Least-recently-used spreads load over shared accounts, and staying put
+keeps the provider's prompt cache. The limit mark only orders choices because RCP
+cannot know when a vendor limit lifts.
+
+| Provider | Machine sign-in | Added login, local | Added login, remote |
+| --- | --- | --- | --- |
+| Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
+| Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<account dir>/logins/<login_id>/codex-home` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
+
+An added Codex home links `config.toml`, `rules`, `skills` and `AGENTS.md` to the
+machine Codex home; `providers/codex/homes.py` creates it (mode 0700) locally and
+over SSH and reports a link that became a regular file instead of overwriting it.
+Sessions are not linked. The session indexer reads added homes; agents'
+`source_roots` do not list them, and hidden read hides them. Only the machine
+sign-in keeps the cross-process credential lock file.
+
+Every member's agents run as the same OS account, so any agent can read any
+token in `providers/` and any added home; hidden read is cooperative. Usage names
+the paying login by joining usage to the task's `login_id`.
 
 ### Login state and failure
 

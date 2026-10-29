@@ -772,7 +772,7 @@ class AgentLauncher:
         return (
             f"{profile_for(key.provider).label} was signed out at {state.changed_at}: "
             f"{state.detail or 'The provider rejected its login'}. "
-            "Open Settings, Provider logins to sign in and verify."
+            "Open Settings, Sign-ins to sign in and verify."
         )
 
     def _observe_probe_failure(

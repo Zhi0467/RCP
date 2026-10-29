@@ -310,7 +310,7 @@ def _success_message(
 ) -> str:
     result = (
         f"{profile_for(provider).label} is updated as rcp. An update does not change its "
-        "login; Settings, Provider logins, shows whether the login is alive."
+        "login; Settings, Sign-ins, shows whether the login is alive."
     )
     if before_path is not None and before_path != after_path:
         return (

@@ -35,7 +35,7 @@ from rcp.transport.ssh import ssh_arguments
 _LOGGER = logging.getLogger(__name__)
 
 #: What the account says while a member is completing a device sign-in.
-SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Provider logins."
+SIGN_IN_IN_PROGRESS_DETAIL = "A sign-in is in progress. Finish it in Settings, Sign-ins."
 SIGN_IN_CANCELED_DETAIL = "The sign-in was canceled before it completed."
 SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to get a new code."
 #: What releases before this one wrote while a device sign-in was running. An
