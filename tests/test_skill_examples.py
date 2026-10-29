@@ -10,6 +10,7 @@ from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import GraphState
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.skill_registry import official_registry
+from tests.helpers import read_scope_of
 
 from .helpers import fabricated_authorizer
 
@@ -29,7 +30,10 @@ def test_causality_examples_plan_then_observe_without_choosing_the_gate() -> Non
 
     for example in (planning, results):
         patch = prepare_agent_patch(
-            parse_agent_patch_json(example), kind="work", run_truth_scope=["repo"]
+            parse_agent_patch_json(example),
+            kind="work",
+            run_truth_scope=["repo"],
+            read_scope=read_scope_of("repo"),
         ).model_copy(update={"revision": state.revision + 1})
         report = validate_patch(state, patch, ValidationContext(["repo"]))
         assert not report.rejected, [message.model_dump() for message in report.messages]
@@ -61,7 +65,10 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
     state = GraphState(project_truth_scope=["repo"])
     for example in (planning, results):
         patch = prepare_agent_patch(
-            parse_agent_patch_json(example), kind="work", run_truth_scope=["repo"]
+            parse_agent_patch_json(example),
+            kind="work",
+            run_truth_scope=["repo"],
+            read_scope=read_scope_of("repo"),
         ).model_copy(update={"revision": state.revision + 1})
         assert not validate_patch(state, patch, ValidationContext(["repo"])).rejected
         state = apply_valid_patch(state, patch)
@@ -73,6 +80,7 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
         parse_agent_patch_json(choice, profile="orchestrator"),
         kind="work",
         run_truth_scope=["repo"],
+        read_scope=read_scope_of("repo"),
         profile="orchestrator",
     ).model_copy(
         update={
@@ -96,6 +104,9 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
     ordinary = json.loads(choice)
     ordinary.pop("agent_action")
     ordinary_patch = prepare_agent_patch(
-        parse_agent_patch_json(json.dumps(ordinary)), kind="work", run_truth_scope=["repo"]
+        parse_agent_patch_json(json.dumps(ordinary)),
+        kind="work",
+        run_truth_scope=["repo"],
+        read_scope=read_scope_of("repo"),
     )
     assert validate_patch(state, ordinary_patch, ValidationContext(["repo"])).rejected

@@ -702,7 +702,7 @@ def test_app_startup_reconciles_the_crash_window(manifest, tmp_path) -> None:
                 author="agent",
                 summary="Added a restart reconciliation seat.",
                 source_operation_id=root_id,
-                run_truth_scope=["repo-a"],
+                run_truth_scope=root.request["run_truth_scope"],
                 repositories_read=["repo-a"],
                 ops=[
                     {
@@ -786,7 +786,7 @@ def test_normal_live_task_settlement_retries_a_deferred_child_admission(
                 author="agent",
                 summary="Added a live child-reconciliation seat.",
                 source_operation_id=root_id,
-                run_truth_scope=["repo-a"],
+                run_truth_scope=root.request["run_truth_scope"],
                 repositories_read=["repo-a"],
                 ops=[
                     {

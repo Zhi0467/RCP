@@ -441,6 +441,9 @@ class ProjectProvisionCoordinator:
                     message=(
                         f"RCP will prepare the central checkout for {repository.alias}."
                         if repository.repository is not None
+                        else f"RCP will check the Git folder {repository.existing_path} in place. "
+                        "Its code is not included in backups."
+                        if repository.existing_path is not None
                         else "RCP will initialize main and create the empty commit "
                         "Start RCP project as RCP <rcp@rcp.invalid>. "
                         "Server-only code is not included in backups."
@@ -813,14 +816,22 @@ class ProjectProvisionCoordinator:
         repository = request.repositories[repository_index]
         machine = self._machine(request, repository.machine_alias)
         try:
-            result = self.checkout_manager.prepare_server_only(
-                machine,
-                request_kind=request.kind,
-                project_id=request.proposed_project_id,
-                repository_alias=repository.alias,
-                state_repository=request.state_repository == repository.alias,
-                expected_commit=repository.git_check.commit,
-            )
+            if repository.existing_path is not None:
+                result = self.checkout_manager.adopt_existing(
+                    machine,
+                    repository_alias=repository.alias,
+                    repository_path=repository.existing_path,
+                    expected_commit=repository.git_check.commit,
+                )
+            else:
+                result = self.checkout_manager.prepare_server_only(
+                    machine,
+                    request_kind=request.kind,
+                    project_id=request.proposed_project_id,
+                    repository_alias=repository.alias,
+                    state_repository=request.state_repository == repository.alias,
+                    expected_commit=repository.git_check.commit,
+                )
         except ProjectCheckoutRefused as exc:
             source = self._checkout_operator_step(request, machine, exc, pending)
             return self._pause(

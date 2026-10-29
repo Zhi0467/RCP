@@ -259,7 +259,10 @@ Missing hiding support never blocks launch: Settings/doctor show the reason,
 prompts state the effective scope, and no per-turn badge or trace is added.
 
 RCP derives `ProjectWriteScope` from manifests, catalog, repository pointers,
-lineage and run scope, never from client/provider requests. It binds project,
+lineage and the admitted write set, never from client/provider requests. The
+admitted aliases must lie inside the graph's truth scope at launch, so a
+repository a human unticked after admission is no longer a write root; every
+other project repository stays readable context only. It binds project,
 execution host/account, capability, exact stage/workspace, admitted aliases and
 canonical roots, protected paths and a stable fingerprint. Prompts render it.
 
@@ -342,7 +345,11 @@ hidden. A hidden literal that does not exist yet is hidden the same way under it
 existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
-mid-session never appears to it. A changed mask set restarts the daemon at its
+mid-session never appears to it. One window is accepted: a credential whose
+folder is missing directly under the home, created while a single shell command
+runs, is readable by that command only, and the launch still reports `enforced`.
+Masking it would write a stand-in into the home, and flagging it would mark every
+launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
 on the execution host, outside every write root and inside the hidden set. A
 launch already resolved unhidden runs its commands silently; if hiding was
@@ -678,9 +685,17 @@ on another machine. These are pointers to live files, never staged copies.
 Each of these runs renders the section every turn, and its master values keep
 the group name and readable project ids, so a continued chat or episode learns
 when its project leaves the group. A Patch correction reuses its launch's group.
-Sibling repositories never become write roots, admitted repositories, run truth
-scope, or Patch repository declarations, and a Patch still validates against
-the run's own graph only (invariant 4b).
+Sibling repositories never become write roots, admitted repositories, or run
+truth scope. A run may declare a sibling repository it read by its ref, which
+the section lists; the refs come from the same resolver that builds the read
+scope RCP stamps on the run's Patch. A Work or Experiment turn resolves that
+scope from its launch context and retains it for recovery. An Auto-research
+worker or orchestrator records its launch scope, and a recorded settlement with
+no live group stamps that scope. Apply again stamps the scope its turn recorded.
+An Auto-research command apply resolves it when its dispatcher is built. A fork
+seed, consolidation, and a turn that recorded no scope stamp this project's
+repositories only. A Patch still validates against the run's own
+graph only (invariant 4b).
 
 ## Graph rules in task contracts
 
@@ -851,10 +866,8 @@ session, since the prior continuation belongs to the binding it left, so the
 rebinding reaches exactly the actors that have a clean-session path: an
 Auto-research worker continues only through the exact session its dispatch bound
 it to, and its recovery is refused rather than admitted as a turn that cannot
-launch. The execution machine moves only where nothing is anchored to it. An
-episode's watchers, stage, and children live on the machine its turn runs on, so
-a recovery inside an episode keeps that machine on every Retry path, while a
-standalone turn owns nothing there and may move to any reachable one. A failed run retains its scratch and Patch text for bounded
+launch. No recovery moves the execution machine: every turn runs on the project's base
+(see [Local and SSH execution](#local-and-ssh-execution)). A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,
@@ -916,8 +929,24 @@ processes do not recover in-flight steering.
 
 ## Local and SSH execution
 
-Providers run on the selected repository execution machine with the same
-capability and scope locally and over SSH. Remote launches use remote canonical
+Every agent runs on the project's **base**: the machine that holds the
+canonical state repository. Chat, Seed, Refresh, Experiments, Auto-research,
+watchers and the Paper coach alike; no profile, request or recovery picks
+another machine, and project Settings tags the base's machine card. A manifest
+whose coach names another machine loads with that choice dropped. A fresh Paper
+turn or standalone retry without a native session ignores a stale request's
+machine choice. Continuing, refreshing cards from, or resuming a Paper session
+recorded on another machine starts a fresh native session on the base. Visible
+chat history remains; native session memory is lost. Sessions already on the
+base retain their native session and stage.
+The coach stages its fixed paper snapshot and reads changes back over the same
+remote-stage transport as other agents; see [Writing coach](paper-artifacts-and-result-views.md#writing-coach).
+
+**Why:** graph-writing agents already had to run beside `.research/`, and a
+per-launch machine made "where does the agent's SSH start" depend on the chat.
+One base means one machine whose SSH settings reach the others.
+
+Providers run with the same capability and scope locally and over SSH. Remote launches use remote canonical
 roots. The remote stage owns validation, wrappers, transfers and recovery;
 resumption proves its saved host and stage. Transport failure is unavailable,
 not semantic correction.
@@ -949,7 +978,7 @@ and agents that were not told a machine's route guessed a raw address and
 failed. Giving every agent every machine keeps one source of truth.
 
 Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
-Auto-research orchestrators and their children (each from its own `run_on`),
+Auto-research orchestrators and their children (each from the base),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
 Paper coach and the branch-merge agent receive no compute-machine context;
 they retain their protected graph-history client. The coach's provider-specific

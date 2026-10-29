@@ -35,7 +35,7 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
         if upgrade:
             for table in PAPER_TABLES:
                 connection.execute(f'DROP TABLE "{table}"')
-            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=63")
+            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=63")
     store.close()
 
     for _ in range(2):

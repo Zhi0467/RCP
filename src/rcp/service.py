@@ -28,6 +28,7 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
+from rcp.agents.context import CoachContext
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import machine_compute_context
@@ -40,6 +41,7 @@ from rcp.config import (
     Manifest,
     launches_work_like,
     load_manifest,
+    require_base_machine,
 )
 from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
@@ -67,7 +69,9 @@ from rcp.core.models import (
 from rcp.core.operations import (
     NewEdge,
     ProposalResolution,
+    RepositoryDescriptor,
     ResolveProposalsOperation,
+    SetProjectTruthScopeOperation,
     UpdateNodesOperation,
 )
 from rcp.core.project_types import project_type_of
@@ -132,7 +136,6 @@ from rcp.sources import (
 from rcp.storage import AppStore
 from rcp.storage.chat_display import chat_agent_setup
 from rcp.storage.chat_forks import ChatForkOrigin
-from rcp.transport import repository_access as build_repository_access
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
 
@@ -988,6 +991,15 @@ class CoachRequest(BaseModel):
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
 
+    attachment_scope_id: str | None = None
+    attachment_set_id: str | None = None
+    attachment_client_id: str | None = None
+    attachment_batch_id: str | None = None
+    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    references: list[ProjectReferenceSelector] = Field(
+        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
+    )
+
     @model_validator(mode="before")
     @classmethod
     def apply_directly_mode(cls, value: object) -> object:
@@ -1080,7 +1092,6 @@ class AgentProfileSettings(BaseModel):
 class ProjectSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    default_run_truth_scope: list[str] = Field(min_length=1)
     default_auto_research_invocation_ceiling: int | None = Field(
         default=None,
         ge=1,
@@ -1140,7 +1151,7 @@ def project_repository_descriptors(
                 **repository,
                 "source": "github" if source is not None else "server_only",
                 "github_identity": source.identity if source is not None else None,
-                "can_connect": source is None,
+                "can_connect": source is None and record.existing_path is None,
             }
         )
     return result
@@ -2015,13 +2026,102 @@ class ProjectService:
             for surface in _SETTINGS_SURFACES
         }
         self.history.update_agent_settings(
-            request.default_run_truth_scope,
+            self.manifest.agent.default_run_truth_scope,
             profiles,
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
         )
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
+
+    def add_existing_repository(
+        self, alias: str, path: str, writable: bool, *, authorized_by: AuthorizedHuman | None
+    ) -> None:
+        """Add a Git folder on the base machine as a repository: one human approval.
+
+        The same approval a team add publishes; the history manager mirrors the
+        descriptor into the manifest.
+        """
+
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,47}", alias) is None:
+            raise ValueError(
+                "repository names must start with a letter and use lowercase letters, "
+                "numbers, or hyphens"
+            )
+        machine = self.manifest.base_machine
+        folder = PurePosixPath(path)
+        if not folder.is_absolute() or ".." in folder.parts or str(folder) != path:
+            raise ValueError("Choose a folder by its full path.")
+        if alias in self.manifest.repository_map:
+            raise ValueError("The repository name already belongs to this project.")
+        for repository in self.manifest.repositories:
+            other = PurePosixPath(repository.path)
+            if repository.machine == machine and (
+                folder == other or folder.is_relative_to(other) or other.is_relative_to(folder)
+            ):
+                raise ValueError("The folder overlaps a repository of this project.")
+        from rcp.setup import require_git_work_tree
+
+        require_git_work_tree(self.manifest.machine_map[machine].host, path)
+
+        def add(state: GraphState) -> list[Patch]:
+            if alias in self.manifest.repository_map:
+                raise ValueError("The repository name already belongs to this project.")
+            scope = [*state.project_truth_scope, *([alias] if writable else [])]
+            return [
+                Patch(
+                    kind="approval",
+                    author="human",
+                    producer="human",
+                    summary=f"Add repository {alias}.",
+                    ops=[
+                        SetProjectTruthScopeOperation(
+                            op="set_project_truth_scope",
+                            truth_scope=scope,
+                            repository=RepositoryDescriptor(
+                                alias=alias, machine=machine, path=path
+                            ),
+                        )
+                    ],
+                    change_summary=[f"Added repository {alias}."],
+                )
+            ]
+
+        self.history.append_batch_from_state(add, authorized_by=authorized_by)
+        self.paper.manifest = self.manifest
+        self.invalidate_source_index()
+
+    def set_repository_writable(
+        self, alias: str, writable: bool, *, authorized_by: AuthorizedHuman | None
+    ) -> None:
+        """Add one repository to, or drop it from, the truth scope: a human approval."""
+
+        if alias not in self.manifest.repository_map:
+            raise KeyError(alias)
+
+        def change(state: GraphState) -> list[Patch]:
+            current = list(state.project_truth_scope)
+            if (alias in current) == writable:
+                return []
+            scope = [*current, alias] if writable else [item for item in current if item != alias]
+            summary = f"Agents may write {alias}." if writable else f"Agents only read {alias}."
+            return [
+                Patch(
+                    kind="approval",
+                    author="human",
+                    producer="human",
+                    summary=summary,
+                    ops=[
+                        SetProjectTruthScopeOperation(
+                            op="set_project_truth_scope", truth_scope=scope
+                        )
+                    ],
+                    change_summary=[summary],
+                )
+            ]
+
+        self.history.append_batch_from_state(change, authorized_by=authorized_by)
+        self.paper.manifest = self.manifest
 
     def add_machine(self, alias: str, host: str, os_account: str) -> None:
         """Append one execution machine, copied from a space machine card."""
@@ -2602,13 +2702,9 @@ class ProjectService:
         if run_on is not None:
             if run_on not in self.manifest.machine_map:
                 raise ValueError(f"unknown execution machine: {run_on}")
-            state_machine = self.manifest.repository_map[self.manifest.state.repository].machine
-            if surface != "paper_coach" and run_on != state_machine:
-                raise ValueError(
-                    f"{surface.replace('_', ' ')} must run on canonical state machine "
-                    f"{state_machine!r}"
-                )
-            updates["run_on"] = run_on
+            updates["run_on"] = require_base_machine(
+                run_on, self.manifest.base_machine, label=surface.replace("_", " ")
+            )
         return self._with_catalog_head(
             self.manifest, self.launcher, base.model_copy(update=updates)
         )
@@ -2687,11 +2783,6 @@ class ProjectService:
     ) -> RunContext:
         materialization = self.history.current_materialization()
         state = self.history.require_writable(materialization.state)
-        selected = request.run_truth_scope or self.manifest.agent.default_run_truth_scope
-        selected_set = set(selected)
-        project_scope = set(state.project_truth_scope or self.manifest.project.truth_scope)
-        if not selected_set or not selected_set.issubset(project_scope):
-            raise ValueError("run truth scope must be a non-empty subset of project truth scope")
         profile = self.resolve_agent_profile(
             surface,
             provider=request.provider,
@@ -2700,14 +2791,6 @@ class ProjectService:
             run_on=request.run_on,
         )
         execution_machine = self.manifest.machine_map[profile.run_on]
-        repository_access = {
-            alias: build_repository_access(
-                self.manifest.repository_map[alias],
-                self.manifest.machine_map[self.manifest.repository_map[alias].machine],
-            )
-            for alias in selected
-            if alias in self.manifest.repository_map
-        }
         assembler = ContextAssembler(self.manifest, graph_root=self.history.root)
         source_roots = assembler.source_roots(execution_machine.alias)
         source_errors = preflight_provider_roots(source_roots, execution_machine)
@@ -2722,8 +2805,7 @@ class ProjectService:
         )
         context = assembler.assemble(
             state,
-            request.run_truth_scope,
-            repository_access=repository_access,
+            writable=request.run_truth_scope,
             refresh_delta=(
                 self.history.refresh_delta(materialization) if surface == "refresh" else None
             ),
@@ -2811,22 +2893,11 @@ class ProjectService:
     def assemble_chat(self, request: RunRequest) -> ChatContext:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
-        state = self.history.state()
-        selected = request.run_truth_scope or self.manifest.agent.default_run_truth_scope
-        repository_access = {
-            alias: build_repository_access(
-                self.manifest.repository_map[alias],
-                self.manifest.machine_map[self.manifest.repository_map[alias].machine],
-            )
-            for alias in selected
-            if alias in self.manifest.repository_map
-        }
         return ContextAssembler(self.manifest, graph_root=self.history.root).chat_context(
-            state,
+            self.history.state(),
             graph_target=self.history.graph_target,
             node_id=request.node_id if request.chat_scope == "node" else None,
-            run_truth_scope=request.run_truth_scope,
-            repository_access=repository_access,
+            writable=request.run_truth_scope,
         )
 
     def resolve_skill_selection(
@@ -2900,31 +2971,8 @@ class ProjectService:
             }
         )
 
-    def coach_context(
-        self, request: CoachRequest, paper_path: Path | None = None
-    ) -> tuple[dict[str, object], list[Path]]:
-        # Resolved for its validation of the requested provider/model/run_on.
-        self.resolve_agent_profile(
-            "paper_coach",
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
-        repository_access = {
-            alias: build_repository_access(
-                self.manifest.repository_map[alias],
-                self.manifest.machine_map[self.manifest.repository_map[alias].machine],
-            )
-            for alias in self.manifest.project.truth_scope
-        }
-        pointers = ContextAssembler(self.manifest).paper_pointers(paper_path, repository_access)
-        read_dirs = [
-            Path(access.path)
-            for access in repository_access.values()
-            if not access.host and Path(access.path).exists()
-        ]
-        return pointers, read_dirs
+    def coach_context(self, paper_path: Path | None = None) -> CoachContext:
+        return ContextAssembler(self.manifest).paper_pointers(paper_path)
 
     def pointer_hashes(self) -> tuple[str, int, str]:
         snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))

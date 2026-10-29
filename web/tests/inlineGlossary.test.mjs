@@ -154,7 +154,6 @@ test("node chat passes the prebuilt index into Markdown answers", () => {
     React.createElement(NodeChat, {
       project,
       glossaryIndex,
-      runScope: ["repo"],
       tasks: [],
       activeTask: null,
       historyMessages: [

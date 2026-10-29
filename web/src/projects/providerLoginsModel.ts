@@ -3,7 +3,6 @@ import type {
   ProviderLoginAccount,
   ProviderLoginState,
   ProviderSignInStatus,
-  ProviderResumeSummary,
 } from "../core/types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -62,12 +61,6 @@ export function signedOutSummary(state: {
   const named = state.label ?? state.provider;
   const provider = named.charAt(0).toUpperCase() + named.slice(1);
   return `${provider} is signed out${state.host ? ` on ${state.host}` : ""}`;
-}
-
-export function resumedNote(resumed: ProviderResumeSummary): string {
-  return resumed.checked
-    ? `Verified. Rechecked ${resumed.checked} ${resumed.checked === 1 ? "item" : "items"} for resumption.`
-    : "Verified.";
 }
 
 type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation">;

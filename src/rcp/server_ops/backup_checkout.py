@@ -41,21 +41,33 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
     machines = {machine.alias: machine for machine in recovery.machines}
     for repository in recovery.repositories:
         machine = machines[repository.machine_alias]
+        origin = (
+            None
+            if repository.adopted
+            else repository.repository.ssh_clone_url
+            if repository.repository is not None
+            else ""
+        )
         arguments = (
             machine.os_account,
             repository.resolved_path,
-            repository.repository.ssh_clone_url if repository.repository is not None else "",
+            "" if origin is None else origin,
             repository.git_commit,
         )
         if machine.location == "local":
             payload = inspect_checkout(
                 os_account=arguments[0],
                 repository_path=arguments[1],
-                expected_origin=arguments[2],
+                expected_origin=origin,
                 recorded_commit=arguments[3],
             )
         else:
-            command = shlex.join(("python3", "-c", _remote_checkout_source(), *arguments))
+            remote = (
+                ("inspect-adopted", arguments[0], arguments[1], arguments[3])
+                if origin is None
+                else arguments
+            )
+            command = shlex.join(("python3", "-c", _remote_checkout_source(), *remote))
             try:
                 result = subprocess.run(
                     ssh_arguments(machine.host, command),

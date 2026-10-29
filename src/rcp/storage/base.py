@@ -134,6 +134,7 @@ class AppStoreBase:
         (61, "machine_settings_v1"),
         (62, "episode_question_versions_v1"),
         (63, "paper_live_v1"),
+        (64, "consolidation_targets_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -958,6 +959,14 @@ class AppStoreBase:
             version=63,
             name="paper_live_v1",
             migration=self._migrate_paper_live,
+        )
+        from rcp.storage.consolidation import migrate_consolidation_targets
+
+        self._run_storage_schema_migration(
+            connection,
+            version=64,
+            name="consolidation_targets_v1",
+            migration=migrate_consolidation_targets,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

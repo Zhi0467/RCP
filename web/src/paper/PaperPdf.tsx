@@ -3,11 +3,15 @@ import { Download, LoaderCircle, RotateCcw } from "lucide-react";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { panelTools } from "./panelTools";
+import type { PdfSpot } from "./synctex";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type LoadedPdf = {
   pdf: PDFDocumentProxy;
   ratios: number[];
+  /** Each page's width in PDF points, to place a SyncTeX y on its slot. */
+  widths: number[];
   generation: number;
   destroy: () => void;
 };
@@ -18,11 +22,16 @@ export default function PaperPdf({
   name = "paper.pdf",
   scrollKey = url,
   actions,
+  toolbar,
+  spot = null,
 }: {
   url: string;
   name?: string;
   scrollKey?: string;
   actions?: ReactNode;
+  toolbar: HTMLElement | null;
+  /** Where the editor's cursor sits; the viewer scrolls there after each render and move. */
+  spot?: PdfSpot | null;
 }) {
   const viewer = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
@@ -38,6 +47,8 @@ export default function PaperPdf({
   const [retry, setRetry] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const shownSlots = useRef<HTMLElement[]>([]);
+  const [shown, setShown] = useState(0);
   useEffect(() => {
     const container = pages.current;
     if (!container) return;
@@ -63,17 +74,19 @@ export default function PaperPdf({
     void (async () => {
       const pdf = await task.promise;
       const ratios: number[] = [];
+      const widths: number[] = [];
       // Page dimensions reserve the complete scroll range without rasterizing it.
       for (let number = 1; number <= pdf.numPages; number++) {
         if (disposed) return;
         const page = await pdf.getPage(number);
         const natural = page.getViewport({ scale: 1 });
         ratios.push(natural.height / natural.width);
+        widths.push(natural.width);
       }
       if (!disposed) {
         loaded = true;
         loadedTasks.current.set(destroy, generation);
-        setDocument({ pdf, ratios, generation, destroy });
+        setDocument({ pdf, ratios, widths, generation, destroy });
       }
     })().catch((reason: unknown) => {
       destroy();
@@ -208,6 +221,8 @@ export default function PaperPdf({
       }
       container.replaceChildren(layer);
       root.scrollTop = position;
+      shownSlots.current = slots;
+      setShown(document.generation);
       slots.forEach((slot) => observer.observe(slot));
       setError(null);
       setLoading(false);
@@ -223,6 +238,18 @@ export default function PaperPdf({
     };
   }, [document, width]);
 
+  useEffect(() => {
+    const root = viewer.current;
+    const slot = spot && shownSlots.current[spot.page - 1];
+    if (!root || !slot || !document || !spot) return;
+    const top =
+      slot.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+    const y = (spot.y * slot.clientWidth) / document.widths[spot.page - 1];
+    // The cursor's line lands a third of the way down, with context above it.
+    root.scrollTop = Math.max(0, top + y - root.clientHeight / 3);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a spot moves the view; a new document only once shown
+  }, [spot?.page, spot?.y, shown]);
+
   return (
     <div
       ref={viewer}
@@ -231,23 +258,26 @@ export default function PaperPdf({
       }}
       className={`paper-pdf${error ? " paper-failed" : ""}`}
     >
-      <div className="paper-preview-actions">
-        {actions}
-        {loading && <LoaderCircle size={16} className="spin" aria-label="Rendering PDF" />}
-        {error && (
-          <button
-            className="icon-button"
-            aria-label="Retry PDF"
-            title={error}
-            onClick={() => setRetry((value) => value + 1)}
-          >
-            <RotateCcw size={16} />
-          </button>
-        )}
-        <a className="icon-button" href={url} download={name} aria-label="Download PDF">
-          <Download size={16} />
-        </a>
-      </div>
+      {panelTools(
+        toolbar,
+        <>
+          {actions}
+          {loading && <LoaderCircle size={16} className="spin" aria-label="Rendering PDF" />}
+          {error && (
+            <button
+              className="icon-button"
+              aria-label="Retry PDF"
+              title={error}
+              onClick={() => setRetry((value) => value + 1)}
+            >
+              <RotateCcw size={16} />
+            </button>
+          )}
+          <a className="icon-button" href={url} download={name} aria-label="Download PDF">
+            <Download size={16} />
+          </a>
+        </>,
+      )}
       <div className="paper-pdf-pages" ref={pages} />
     </div>
   );

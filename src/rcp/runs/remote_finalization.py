@@ -36,6 +36,11 @@ from rcp.runs.tasks.branch_merge import (
     finalize_recorded_branch_merge_result,
     resume_branch_merge_command_mailbox,
 )
+from rcp.runs.tasks.coach import (
+    PAPER_COACH_FINALIZATION_ROLE,
+    finalize_recorded_coach_result,
+    resume_coach_command_mailbox,
+)
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_discuss_result,
@@ -104,6 +109,7 @@ RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     GRAPH_FINALIZATION_ROLE: finalize_recorded_graph_result,
     EPISODE_REPORT_FINALIZATION_ROLE: finalize_recorded_episode_report_result,
     BRANCH_MERGE_FINALIZATION_ROLE: finalize_recorded_branch_merge_result,
+    PAPER_COACH_FINALIZATION_ROLE: finalize_recorded_coach_result,
 }
 
 
@@ -122,6 +128,7 @@ RECORDED_MAILBOX_RESUMERS: dict[
         [Callable[[], ProjectService], AgentTaskExecution], WorkValidatorMailboxLifecycle | None
     ],
 ] = {
+    PAPER_COACH_FINALIZATION_ROLE: resume_coach_command_mailbox,
     WORK_FINALIZATION_CONTEXT_ROLE: resume_work_command_mailbox,
     DISCUSS_FINALIZATION_CONTEXT_ROLE: resume_discuss_command_mailbox,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: resume_child_work_command_mailbox,

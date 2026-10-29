@@ -89,6 +89,7 @@ def test_dispatched_child_reads_and_updates_its_parent_branch_with_child_provena
         None,
         agent_patch_json(_experiment_patch()),
         run_truth_scope=["repo-a"],
+        read_scope=None,
         profile="orchestrator",
         source_operation_id=root.operation_id,
     )

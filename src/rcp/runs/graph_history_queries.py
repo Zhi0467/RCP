@@ -109,15 +109,19 @@ def handle_graph_history_command(
             return refuse("graph_history_scope_refused")
     if service._project_id != project_id:
         return refuse("graph_history_scope_refused")
+    names = service.paper.store.branch_names(project_id)
     if isinstance(request, GraphDiffCommandRequest):
         args = request.arguments
         specs = (
-            [parse_head(f"branch:{args.branch_changes}@head")]
+            [parse_head(f"branch:{args.branch_changes}@head", names)]
             if args.branch_changes is not None
-            else [parse_head(args.from_head or ""), parse_head(args.to_head or "")]
+            else [
+                parse_head(args.from_head or "", names),
+                parse_head(args.to_head or "", names),
+            ]
         )
     else:
-        specs = [parse_head(request.arguments.at)]
+        specs = [parse_head(request.arguments.at, names)]
     if any(
         not scope.readable(
             project_id,
@@ -169,6 +173,11 @@ def handle_graph_history_command(
                 return refuse("graph_history_cursor_invalid")
             page = engine.log(request.arguments.id, heads[0], cursor=cursor)
         result = page.model_dump(mode="json")
+        result["branch_names"] = {
+            head.target.branch_id: names[head.target.branch_id]
+            for head in heads
+            if head.target.branch_id in names
+        }
         if page.cursor is not None:
             result["cursor"] = _encode_cursor(
                 _Cursor(binding=binding, heads=heads, engine_cursor=page.cursor)

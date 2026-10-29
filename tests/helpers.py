@@ -33,6 +33,8 @@ from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
 if TYPE_CHECKING:
     import pytest
 
+    from rcp.agents.project_repositories import RepositoryReadScope
+
 
 # Background tasks run on their own thread, so this bounds a genuine hang rather
 # than the expected duration. The poll returns the moment the task is terminal,
@@ -90,6 +92,17 @@ class _UncheckedWriteAuthority(WriteAuthority):
         self, receipt: BranchMergeReceipt, *, project_id: str | None
     ) -> None:
         pass
+
+
+def read_scope_of(*aliases: str) -> RepositoryReadScope:
+    """A launch read scope naming only this project's repositories."""
+
+    # Local: installed-upgrade seeding imports this module under older releases.
+    from rcp.agents.project_repositories import RepositoryReadScope
+
+    return RepositoryReadScope(
+        project_id="project", paths={alias: f"/{alias}" for alias in aliases}
+    )
 
 
 def unchecked_write_authority() -> WriteAuthority:

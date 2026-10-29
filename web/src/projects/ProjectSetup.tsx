@@ -13,7 +13,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../core/api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../core/desktopRuntime";
@@ -95,13 +95,13 @@ const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }
 
 // The provider is filled from the registry once it answers; the backend lists
 // its default first. Hardcoding one here is what this whole change removes.
-const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
+// Every agent runs where canonical state lives, so the request adds that machine.
+type AgentChoice = Omit<SetupAgentProfile, "location" | "host">;
+const defaultAgentProfile = (model = ""): AgentChoice => ({
   provider: "",
   runtime: "",
   model,
   reasoning: "medium",
-  location: "local",
-  host: "",
 });
 
 export function ProjectSetup({
@@ -208,11 +208,10 @@ function PersonalProjectSetup({
       location: "local",
       path: "",
       host: "",
-      default_read: true,
     },
   ]);
   const [stateRepository, setStateRepository] = useState("research");
-  const [agents, setAgents] = useState<SetupAgents>({
+  const [agents, setAgents] = useState<Record<AgentExecutionProfile, AgentChoice>>({
     seed: defaultAgentProfile(),
     refresh: defaultAgentProfile(),
     node_chat: defaultAgentProfile(),
@@ -251,25 +250,13 @@ function PersonalProjectSetup({
                       runtime: readinessFor(known, fallback)?.default_runtime ?? "",
                     },
               ]),
-            ) as SetupAgents,
+            ) as typeof current,
         );
       })
       .catch(() => setProviders([]));
   }, []);
 
-  const remoteHosts = useMemo(
-    () => [
-      ...new Set(
-        repositories
-          .filter((repo) => repo.location === "ssh")
-          .map((repo) => repo.host.trim())
-          .filter(Boolean),
-      ),
-    ],
-    [repositories],
-  );
   const stateRepo = repositories.find((repo) => repo.alias === stateRepository) ?? repositories[0];
-  const defaultRead = repositories.filter((repo) => repo.default_read);
   const canonicalExecution = {
     location: stateRepo.location,
     host: stateRepo.location === "ssh" ? stateRepo.host.trim() : "",
@@ -286,17 +273,7 @@ function PersonalProjectSetup({
     default_auto_research_invocation_ceiling: defaultAutoResearchInvocationCeiling,
     execution: canonicalExecution,
     agents: Object.fromEntries(
-      agentExecutionProfiles.map(({ id }) => [
-        id,
-        {
-          ...agents[id],
-          ...(id === "paper_coach"
-            ? {
-                host: agents[id].location === "ssh" ? agents[id].host.trim() : "",
-              }
-            : canonicalExecution),
-        },
-      ]),
+      agentExecutionProfiles.map(({ id }) => [id, { ...agents[id], ...canonicalExecution }]),
     ) as SetupAgents,
     confirmed: false,
   });
@@ -333,9 +310,6 @@ function PersonalProjectSetup({
     if (repositories.some((repo) => repo.location === "ssh" && !repo.host.trim())) {
       return "Every SSH repository needs a host.";
     }
-    if (!repositories.some((repo) => repo.default_read)) {
-      return "Select at least one repository for default agent reads.";
-    }
     if (!aliases.includes(stateRepository)) return "Choose a canonical state repository.";
     if (targetStep < 2) return null;
     if (
@@ -344,24 +318,11 @@ function PersonalProjectSetup({
     ) {
       return "Set the default auto-research ceiling to at least 1 operational invocation.";
     }
-    const invalidAgent = agentExecutionProfiles.find(
-      ({ id }) =>
-        id === "paper_coach" &&
-        agents[id].location === "ssh" &&
-        !remoteHosts.includes(agents[id].host),
-    );
-    if (invalidAgent) {
-      return `Choose one of the repository hosts for the ${invalidAgent.label} agent.`;
-    }
     return null;
   };
 
-  const updateAgent = (surface: AgentExecutionProfile, patch: Partial<SetupAgentProfile>) => {
-    setAgents((current) => {
-      const next = { ...current[surface], ...patch };
-      if (patch.location === "local") next.host = "";
-      return { ...current, [surface]: next };
-    });
+  const updateAgent = (surface: AgentExecutionProfile, patch: Partial<AgentChoice>) => {
+    setAgents((current) => ({ ...current, [surface]: { ...current[surface], ...patch } }));
     setError(null);
   };
 
@@ -443,7 +404,6 @@ function PersonalProjectSetup({
         location: "local",
         path: "",
         host: "",
-        default_read: true,
       },
     ]);
   };
@@ -597,14 +557,11 @@ function PersonalProjectSetup({
                   const readiness = readinessFor(providers, profile.provider);
                   const models = readiness?.models ?? [];
                   const runtimes = runtimeOptions(readiness, profile.runtime);
-                  const execution = id === "paper_coach" ? profile : canonicalExecution;
-                  const machineValue =
-                    execution.location === "local" ? "local" : `ssh:${execution.host}`;
                   return (
                     <article className="agent-role-card" key={id}>
                       <header>
                         <strong>{label}</strong>
-                        <span className="role-permission">
+                        <span className="tag">
                           {id === "paper_coach"
                             ? "read-only coach"
                             : id === "orchestrator"
@@ -684,32 +641,6 @@ function PersonalProjectSetup({
                                 </option>
                               ),
                             )}
-                          </select>
-                        </label>
-                        <label className={id === "paper_coach" ? undefined : "agent-machine-fixed"}>
-                          Run on{" "}
-                          {id === "paper_coach" ? null : (
-                            <LockKeyhole size={12} aria-hidden="true" />
-                          )}
-                          <select
-                            value={machineValue}
-                            disabled={id !== "paper_coach"}
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              updateAgent(
-                                id,
-                                value === "local"
-                                  ? { location: "local", host: "" }
-                                  : { location: "ssh", host: value.slice(4) },
-                              );
-                            }}
-                          >
-                            <option value="local">This machine</option>
-                            {remoteHosts.map((host) => (
-                              <option key={host} value={`ssh:${host}`}>
-                                {host}
-                              </option>
-                            ))}
                           </select>
                         </label>
                       </div>
@@ -865,21 +796,9 @@ function PersonalProjectSetup({
           />
           <LedgerItem
             number="C"
-            label="Raw prompt inputs"
-            value={
-              defaultRead.length
-                ? defaultRead.map((repo) => repo.alias || "unnamed").join(", ")
-                : "None selected"
-            }
-          />
-          <LedgerItem
-            number="D"
             label="Agent roles"
             value={agentExecutionProfiles
-              .map(({ id, label }) => {
-                const execution = id === "paper_coach" ? agents[id] : canonicalExecution;
-                return `${label}: ${agents[id].provider} @ ${execution.location === "ssh" ? execution.host || "remote" : "local"}`;
-              })
+              .map(({ id, label }) => `${label}: ${agents[id].provider}`)
               .join(" · ")}
           />
         </aside>
@@ -1333,14 +1252,6 @@ export function RepositoryEditor({
         </div>
       </div>
       <footer>
-        <label className="check-control">
-          <input
-            type="checkbox"
-            checked={repository.default_read}
-            onChange={(event) => onChange({ default_read: event.target.checked })}
-          />
-          <strong>Default raw input</strong>
-        </label>
         <label className="radio-control">
           <input
             type="radio"

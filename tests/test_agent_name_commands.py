@@ -132,14 +132,14 @@ def test_name_prompt_renders_enforced_limit():
 def test_child_work_conversation_has_name_grant(tmp_path):
     from rcp.agents import AgentProcessControl
     from rcp.background import AgentTaskExecution
-    from rcp.runs.tasks.auto_research_child_work import _child_allowed_verbs
+    from rcp.runs.tasks.auto_research_child_work import _child_commands
     from tests.test_auto_research_children_storage import _setup_parent, _work_pair
 
     store, parent, root = _setup_parent(tmp_path)
     work, task = _work_pair(store, parent, root, worker_id="worker")
     store.create_auto_research_child_work(work, task)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
-    assert "name" in _child_allowed_verbs(execution, None, None)
+    assert "name" in _child_commands(execution, None, None)[0]
     assert stage_agent_name_pointer(execution, tmp_path, None)
 
 

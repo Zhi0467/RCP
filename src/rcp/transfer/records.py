@@ -126,6 +126,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "digest_marks",
         "digest_heads",
         "consolidation_schedules",
+        "consolidation_targets",
         "consolidation_runs",
         "consolidation_apply_receipts",
         "project_aliases",

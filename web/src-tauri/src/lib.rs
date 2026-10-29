@@ -109,6 +109,7 @@ pub fn run() {
             commands::desktop_test_notification,
             commands::open_artifact_pdf,
             commands::download_artifact,
+            commands::download_paper_file,
             commands::open_external,
             commands::request_quit,
             commands::check_for_update,

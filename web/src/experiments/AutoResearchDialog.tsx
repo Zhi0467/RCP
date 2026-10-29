@@ -1,3 +1,5 @@
+import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
+import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { BrowserToggle } from "../core/BrowserControls";
 import {
   AgentConfigChip,
@@ -93,7 +95,8 @@ interface Props {
   /** Offers the orchestrator agent picker, defaulting from the Orchestrator profile. */
   project?: ProjectSnapshot;
   onClose: () => void;
-  /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check.
+  /** `codeWorktree` false opts out; with a `worktreeRepository` it checks that one out,
+   * otherwise the server's eligibility check decides.
    * A null `branchName` lets the server assign the date fallback. */
   onAuthorize: (
     invocationCeiling: number,
@@ -103,6 +106,7 @@ interface Props {
     launchConfig: AgentRunConfig | undefined,
     branchName: string | null,
     bulletinEnabled: boolean,
+    worktreeRepository: string | null,
   ) => void;
   /** The server's branch-name refusal code from the last start, if any. */
   branchNameRefusal?: string | null;
@@ -148,6 +152,7 @@ export function AutoResearchDialog({
   const [browserRequested, setBrowserRequested] = useState(false);
   const [bulletinEnabled, setBulletinEnabled] = useState(true);
   const [codeWorktree, setCodeWorktree] = useState(true);
+  const [worktreePick, setWorktreePick] = useState<string | null>(null);
   const [branch, setBranch] = useState("");
   const [addTurns, setAddTurns] = useState("3");
   const [continueError, setContinueError] = useState<string | null>(null);
@@ -164,6 +169,20 @@ export function AutoResearchDialog({
   }, [open, project?.id]);
   const launchConfig =
     pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+  // A code worktree checks out one writable repository on the orchestrator's
+  // machine; the human picks it only when several qualify.
+  const worktreeRepositories =
+    project && launchConfig && !continueBranch
+      ? worktreeRepositoryChoices(project, launchConfig.run_on)
+      : null;
+  const worktreeRepository =
+    worktreeRepositories === null
+      ? null
+      : worktreePick && worktreeRepositories.includes(worktreePick)
+        ? worktreePick
+        : (worktreeRepositories[0] ?? null);
+  const worktreeUnavailable = worktreeRepositories !== null && worktreeRepository === null;
+  const codeWorktreeOn = codeWorktree && !worktreeUnavailable;
   const launchEffectiveModel =
     launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
       ? launchProfile.effective_model
@@ -174,6 +193,7 @@ export function AutoResearchDialog({
     setBudget(String(initialInvocationCeiling));
     setInstruction("");
     setCodeWorktree(true);
+    setWorktreePick(null);
     setBrowserRequested(false);
     setBulletinEnabled(true);
     setBranch("");
@@ -262,11 +282,12 @@ export function AutoResearchDialog({
           onAuthorize(
             invocationCeiling,
             message || null,
-            codeWorktree,
+            codeWorktreeOn,
             browserRequested,
             launchConfig,
             branchNameRequest(branch),
             bulletinEnabled,
+            codeWorktreeOn ? worktreeRepository : null,
           );
         }}
       >
@@ -391,7 +412,6 @@ export function AutoResearchDialog({
               effectiveModel={launchEffectiveModel}
               workLikeCapable={launchProfile.work_like_capable}
               locked={busy}
-              showRunOn={false}
               compact
             >
               <div className="agent-config-options" role="group" aria-label="Launch options">
@@ -410,15 +430,31 @@ export function AutoResearchDialog({
                   disabled={busy}
                   onChange={setBrowserRequested}
                 />
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={codeWorktree}
-                    disabled={busy}
-                    onChange={(event) => setCodeWorktree(event.target.checked)}
-                  />
-                  Code worktree
-                </label>
+                <span className="code-worktree-choice">
+                  <label
+                    title={
+                      worktreeUnavailable
+                        ? `No repository the project's agents can write is on ${launchConfig?.run_on}.`
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={codeWorktreeOn}
+                      disabled={busy || worktreeUnavailable}
+                      onChange={(event) => setCodeWorktree(event.target.checked)}
+                    />
+                    Code worktree
+                  </label>
+                  {codeWorktreeOn && worktreeRepositories && (
+                    <WorktreeRepositoryPicker
+                      repositories={worktreeRepositories}
+                      value={worktreeRepository}
+                      disabled={busy}
+                      onChange={setWorktreePick}
+                    />
+                  )}
+                </span>
               </div>
             </AgentConfigControls>
           )}
@@ -439,7 +475,7 @@ export function AutoResearchDialog({
               disabled={busy}
               label="Orchestrator agent"
               workLike={launchProfile?.work_like_capable}
-              optionCount={Number(browserRequested) + Number(codeWorktree)}
+              optionCount={Number(browserRequested) + Number(codeWorktreeOn)}
               onToggle={() => setLaunchOpen((current) => !current)}
             />
           )}

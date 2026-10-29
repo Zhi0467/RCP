@@ -60,6 +60,7 @@ _TRANSITION_PROVENANCE_FIELDS = (
     "producer",
     "run_truth_scope",
     "repositories_read",
+    "run_read_scope",
     "processed_cursors",
     "source_operation_id",
     "source_effect_id",
@@ -681,11 +682,14 @@ def _transition_id(
     envelopes = []
     for patch in patches:
         document = patch.model_dump(mode="json")
-        envelope = {field: document[field] for field in _TRANSITION_PROVENANCE_FIELDS}
+        envelope = {field: document.get(field) for field in _TRANSITION_PROVENANCE_FIELDS}
         # T1 predates the explicit allowlist and already established this
         # historical omission for its default value.
         if document.get("project_home_transfer") is None:
             envelope.pop("project_home_transfer")
+        # Patches before the read-scope stamp keep their transition identity.
+        if document.get("run_read_scope") is None:
+            envelope.pop("run_read_scope")
         envelopes.append(envelope)
     return _sha256(
         {

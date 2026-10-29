@@ -93,7 +93,6 @@ function Fixture() {
           />
         }
         origin={chat.origin}
-        runScope={["repo"]}
         tasks={[]}
         historyMessages={chat.messages}
         chatId={chat.chat_id}

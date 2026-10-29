@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS, EVIDENCE_FLAG_SOURCE_MAX_CHARS
+from rcp.storage.consolidation import target_ref
 from rcp.storage.lessons import LessonError, _require_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -47,6 +48,7 @@ _FIELDS = (
     "flag_id",
     "run_id",
     "occurrence_date",
+    "target",
     "evidence_id",
     "evidence_revision",
     "kind",
@@ -82,6 +84,19 @@ def migrate_evidence_flags(connection: sqlite3.Connection) -> None:
         "operation_id TEXT NOT NULL, key TEXT NOT NULL, args_digest TEXT NOT NULL, "
         "result_json TEXT NOT NULL, PRIMARY KEY(operation_id,key))"
     )
+    _install(connection, "evidence_flags", [_bump("ROW.project_id", "consolidation")])
+
+
+def migrate_evidence_flag_targets(connection: sqlite3.Connection) -> None:
+    """Old findings belong to main; a target owns each live finding independently."""
+    connection.execute("ALTER TABLE evidence_flags ADD COLUMN target TEXT NOT NULL DEFAULT 'main'")
+    connection.execute("DROP INDEX evidence_flags_live")
+    connection.execute(
+        "CREATE UNIQUE INDEX evidence_flags_live ON "
+        "evidence_flags(project_id,target,evidence_id,kind) WHERE state IN ('open','addressing')"
+    )
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER IF EXISTS resource_evidence_flags_{event}")
     _install(connection, "evidence_flags", [_bump("ROW.project_id", "consolidation")])
 
 
@@ -130,7 +145,7 @@ def record_evidence_flag_address(
         or task.kind != ("node_chat" if len(flags) == 1 else "project_chat")
         or task.request.get("mode") != "work"
         or (len(flags) == 1 and task.request.get("node_id") != flags[0]["evidence_id"])
-        or task.graph_target.kind != "main"
+        or any(task.graph_target != target_ref(flag["target"]) for flag in flags)
         or task.authorized_by is None
         or task.authorized_by.user_id != user_id
         or not isinstance(chat_id, str)
@@ -341,7 +356,7 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             run = connection.execute(
-                "SELECT c.run_id,c.occurrence_date,g.authorized_user_id,g.dispatch_authority_json "
+                "SELECT c.run_id,c.occurrence_date,c.target,g.authorized_user_id,g.dispatch_authority_json "
                 "FROM consolidation_runs c JOIN graph_runs g ON g.operation_id=c.operation_id "
                 "AND g.project_id=c.project_id WHERE c.operation_id=? AND c.project_id=?",
                 (operation_id, project_id),
@@ -398,23 +413,24 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
                         raise EvidenceFlagError("flag_source_invalid")
                     revision = validate_evidence()
                     existing = connection.execute(
-                        "SELECT * FROM evidence_flags WHERE project_id=? AND evidence_id=? "
+                        "SELECT * FROM evidence_flags WHERE project_id=? AND target=? AND evidence_id=? "
                         "AND kind=? AND state IN ('open','addressing')",
-                        (project_id, evidence_id, kind),
+                        (project_id, run["target"], evidence_id, kind),
                     ).fetchone()
                     if existing is not None:
                         result = {"flag": _record(existing), "code": "flag_exists"}
                     else:
                         flag_id = uuid.uuid4().hex
                         connection.execute(
-                            "INSERT INTO evidence_flags(flag_id,project_id,run_id,occurrence_date,"
+                            "INSERT INTO evidence_flags(flag_id,project_id,run_id,occurrence_date,target,"
                             "evidence_id,evidence_revision,kind,finding,source,state,created_at) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,'open',?)",
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,'open',?)",
                             (
                                 flag_id,
                                 project_id,
                                 run["run_id"],
                                 run["occurrence_date"],
+                                run["target"],
                                 evidence_id,
                                 revision,
                                 kind,

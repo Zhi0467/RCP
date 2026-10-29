@@ -98,6 +98,7 @@ PROJECT_LINKED_TABLES = {
     "compute_backend_probes",
     "conversation_worktrees",
     "consolidation_schedules",
+    "consolidation_targets",
     "consolidation_runs",
     "consolidation_apply_receipts",
     "digest_events",

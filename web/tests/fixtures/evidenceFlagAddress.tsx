@@ -13,6 +13,7 @@ Object.assign(window, { opened });
 function Inbox() {
   const initial: EvidenceFlag = {
     flag_id: "flag-1",
+    target: "main",
     run_id: null,
     occurrence_date: "2026-10-17",
     evidence_id: evidence.id,

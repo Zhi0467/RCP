@@ -179,7 +179,6 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
         <h2>Dictation and voice</h2>
         <span className="transcription-owner">Only you</span>
       </header>
-      <p className="provider-login-intro">Your own services and keys, not shared.</p>
       {settings === null && !error ? <p className="provider-login-intro">Loading…</p> : null}
       {settings ? (
         <>
@@ -206,13 +205,15 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                 ))}
             </select>
           </label>
-          {!desktop && settings.dictation === "system" ? (
-            <p className="provider-login-intro">
-              macOS dictation works only in the desktop app. Choose a connection to dictate here.
-            </p>
-          ) : null}
           <h3 className="transcription-group">Standby voice agent</h3>
-          <label className="transcription-picker">
+          <label
+            className="transcription-picker"
+            title={
+              voiceConnection
+                ? "Billed to that OpenAI account at OpenAI's rate for each minute of talk."
+                : undefined
+            }
+          >
             <span>Runs on</span>
             <select
               value={voiceConnection?.id ?? "off"}
@@ -238,12 +239,6 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                 ))}
             </select>
           </label>
-          {voiceConnection ? (
-            <p className="provider-login-detail transcription-note">
-              Billed to that OpenAI account at OpenAI&apos;s rate for each minute of talk. Its
-              models are on the connection below.
-            </p>
-          ) : null}
           {voice && voiceConnection ? (
             <IdleMinutesField
               key={voice.idle_minutes}
@@ -257,7 +252,9 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
             {settings.connections.map((connection) => (
               <article key={connection.id} className="provider-login-account">
                 <header>
-                  <strong>{connection.label}</strong>
+                  <strong title={`Verified ${formatServerTimestamp(connection.verified_at)}`}>
+                    {connection.label}
+                  </strong>
                   <div className="service-connection-uses">
                     {settings.dictation === connection.id ? (
                       <span className="provider-path-state ready">Dictation</span>
@@ -273,12 +270,6 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                     <code>{connection.base_url}</code>
                   </p>
                 ) : null}
-                <p className="provider-login-detail">
-                  Verified{" "}
-                  <time dateTime={connection.verified_at ?? undefined}>
-                    {formatServerTimestamp(connection.verified_at)}
-                  </time>
-                </p>
                 <div className="provider-login-actions">
                   <button
                     className="button secondary compact"
@@ -362,10 +353,9 @@ function ConnectionModels({
     <dl className="service-connection-models">
       {rows.map(({ role, id }) => (
         <div key={role}>
-          <dt>{MODEL_ROLES[role].label}</dt>
+          <dt title={MODEL_ROLES[role].hint}>{MODEL_ROLES[role].label}</dt>
           <dd>
             <code>{id}</code>
-            <span>{MODEL_ROLES[role].hint}</span>
           </dd>
         </div>
       ))}
@@ -408,8 +398,8 @@ function ModelField({
   return (
     <div className="service-model-field">
       <label>
-        <span className="service-model-title">
-          {label} <span>{hint}</span>
+        <span className="service-model-title" title={hint}>
+          {label}
         </span>
         {listed === null ? (
           <input

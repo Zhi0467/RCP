@@ -1084,11 +1084,62 @@ pub async fn download_artifact(
         &artifact_id,
         "download",
     )?;
-    let name = safe_filename(&suggested_name);
+    save_download(
+        &app,
+        &access,
+        url,
+        "Save RCP artifact",
+        safe_filename(&suggested_name, "artifact"),
+        "artifact download",
+    )
+    .await
+}
+
+/// A Paper file (`file_id`) or a zip of one folder (`folder`), saved where the user picks.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn download_paper_file(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    project_id: String,
+    file_id: Option<String>,
+    folder: Option<String>,
+    suggested_name: String,
+) -> Result<DownloadResult, String> {
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
+    let url = paper_download_url(
+        target.base_url(),
+        &project_id,
+        file_id.as_deref(),
+        folder.as_deref(),
+    )?;
+    save_download(
+        &app,
+        &access,
+        url,
+        "Save Paper file",
+        safe_filename(&suggested_name, "paper"),
+        "Paper download",
+    )
+    .await
+}
+
+async fn save_download(
+    app: &AppHandle,
+    access: &ResourceAccess<'_>,
+    url: Url,
+    title: &str,
+    name: &str,
+    label: &str,
+) -> Result<DownloadResult, String> {
     let Some(chosen) = app
         .dialog()
         .file()
-        .set_title("Save RCP artifact")
+        .set_title(title)
         .set_file_name(name)
         .blocking_save_file()
     else {
@@ -1101,19 +1152,14 @@ pub async fn download_artifact(
         .into_path()
         .map_err(|error| format!("selected destination is not a local file: {error}"))?;
     let response = access
-        .response(
-            Method::GET,
-            url,
-            "artifact download",
-            Duration::from_secs(30),
-        )
+        .response(Method::GET, url, label, Duration::from_secs(30))
         .await?
         .error_for_status()
-        .map_err(|error| format!("artifact download failed: {error}"))?;
+        .map_err(|error| format!("{label} failed: {error}"))?;
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| format!("artifact download was interrupted: {error}"))?;
+        .map_err(|error| format!("{label} was interrupted: {error}"))?;
     let parent = path
         .parent()
         .ok_or_else(|| "selected destination has no parent directory".to_string())?;
@@ -1124,10 +1170,10 @@ pub async fn download_artifact(
     temporary
         .write_all(&bytes)
         .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|error| format!("cannot save artifact: {error}"))?;
+        .map_err(|error| format!("cannot save {label}: {error}"))?;
     temporary
         .persist(&path)
-        .map_err(|error| format!("cannot finish artifact download: {}", error.error))?;
+        .map_err(|error| format!("cannot finish {label}: {}", error.error))?;
     Ok(DownloadResult {
         saved: true,
         path: Some(path.display().to_string()),
@@ -1191,12 +1237,39 @@ fn artifact_url(
     Ok(url)
 }
 
-fn safe_filename(suggested: &str) -> &str {
+fn paper_download_url(
+    base_url: &str,
+    project_id: &str,
+    file_id: Option<&str>,
+    folder: Option<&str>,
+) -> Result<Url, String> {
+    let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| "backend URL cannot contain path segments".to_string())?;
+    segments.extend(["api", "projects", project_id, "paper"]);
+    match (file_id, folder) {
+        (Some(file_id), None) => {
+            segments.extend(["files", file_id, "raw"]);
+        }
+        (None, Some(_)) => {
+            segments.extend(["folders", "archive"]);
+        }
+        _ => return Err("a Paper download names one file or one folder".into()),
+    }
+    drop(segments);
+    if let Some(folder) = folder {
+        url.query_pairs_mut().append_pair("path", folder);
+    }
+    Ok(url)
+}
+
+fn safe_filename<'a>(suggested: &'a str, fallback: &'a str) -> &'a str {
     Path::new(suggested)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("artifact")
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
@@ -1225,6 +1298,25 @@ mod tests {
                 .path(),
             "/api/projects/project%2Fone/artifacts/file%3Fx/download",
         );
+    }
+
+    #[test]
+    fn paper_download_routes_name_one_file_or_one_folder() {
+        let base = "http://127.0.0.1:8421";
+        assert_eq!(
+            paper_download_url(base, "project", Some("file/1"), None)
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:8421/api/projects/project/paper/files/file%2F1/raw",
+        );
+        assert_eq!(
+            paper_download_url(base, "project", None, Some("a b/c&d"))
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:8421/api/projects/project/paper/folders/archive?path=a+b%2Fc%26d",
+        );
+        assert!(paper_download_url(base, "project", None, None).is_err());
+        assert!(paper_download_url(base, "project", Some("file"), Some("folder")).is_err());
     }
 
     fn saved_connection(connection_id: &str, port: u16) -> TeamConnectionMetadata {

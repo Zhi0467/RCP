@@ -141,7 +141,6 @@ test("SSH repositories retain manual paths and offer the bounded remote browser"
         location: "ssh",
         path: "/home/alice/paper",
         host: "alice@gpu.example",
-        default_read: true,
       },
       canonical: false,
       only: true,
@@ -164,7 +163,6 @@ test("a lone repository has no name field; a second repository shows one", () =>
           location: "local",
           path: "/Users/example/plasticity",
           host: "",
-          default_read: true,
         },
         canonical: true,
         only,
@@ -197,7 +195,6 @@ test("the repository path label targets only its input while the picker stays a 
           location: "local",
           path: "/Users/example/research",
           host: "",
-          default_read: true,
         },
         canonical: true,
         only: true,
@@ -665,13 +662,11 @@ test("the team request derives truth scopes while preserving machine and provide
         alias: "paper",
         source: "https://github.com/OpenAI/RCP.git",
         machine_alias: "server",
-        default_read: true,
       },
       {
         alias: "private-notes",
         source: "git@github.com:OpenAI/private-notes.git",
         machine_alias: "server",
-        default_read: false,
       },
     ],
     providerChecks: [
@@ -688,9 +683,9 @@ test("the team request derives truth scopes while preserving machine and provide
 
   assert.equal(request.name, "Shared project");
   assert.deepEqual(request.project_truth_scope, ["paper", "private-notes"]);
-  assert.deepEqual(request.default_run_truth_scope, ["paper"]);
+  // Agents read every repository, so the create API's default is the whole scope.
+  assert.deepEqual(request.default_run_truth_scope, ["paper", "private-notes"]);
   assert.equal(request.repositories[0].source, "https://github.com/OpenAI/RCP.git");
-  assert.equal("default_read" in request.repositories[0], false);
   assert.equal(request.provider_checks[0].machine_alias, "server");
 });
 

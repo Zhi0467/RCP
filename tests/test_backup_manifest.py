@@ -427,6 +427,31 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
     assert "token" not in payload
 
 
+def test_archive_with_a_coach_off_the_base_keeps_its_digest_and_restores(tmp_path: Path) -> None:
+    from rcp.projects import _render_restored_manifest
+
+    record, _ = _completed_registration(tmp_path)
+    manifest = load_manifest(record.locator)
+    payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
+    payload["machines"].append({**payload["machines"][0], "alias": "gpu", "host": "gpu.example"})
+    for profile in payload["agent_profiles"]:
+        if profile["profile"] == "paper_coach":
+            profile["run_on"] = "gpu"
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    archived = BackupManifestConfiguration.model_validate_json(encoded)
+
+    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    paths = {repository.alias: repository.path for repository in archived.repositories}
+    restored = Manifest.model_validate(
+        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
+    )
+    base = restored.repository_map[restored.state.repository].machine
+    assert restored.agent_profile("paper_coach").run_on == base
+    assert archived.matches_configuration(BackupManifestConfiguration.from_manifest(restored))
+    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(
     tmp_path: Path,
 ) -> None:

@@ -10,8 +10,9 @@ import logging
 import os
 import shlex
 import threading
+from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -20,7 +21,13 @@ from rcp.agents import AgentLauncher
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
 from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
-from rcp.api.dependencies import get_catalog, get_identity_access, get_store
+from rcp.api.dependencies import (
+    get_catalog,
+    get_identity_access,
+    get_project_display_cache,
+    get_store,
+    project_write_admission,
+)
 from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
 from rcp.compute import probe_machine_reach
@@ -38,7 +45,7 @@ from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
-from rcp.projects import ProjectCatalog
+from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
@@ -52,6 +59,7 @@ router = APIRouter()
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_display_cache)]
 
 #: Held across "is this card used?" and delete, and across adding a card to a
 #: project, so a delete cannot slip between an add's read and its manifest write.
@@ -181,14 +189,23 @@ class MachineDirectoriesRequest(BaseModel):
         return str(path)
 
 
-def _machine_usage(
-    store: AppStore,
-) -> tuple[dict[str, list[dict[str, str]]], bool, set[str]]:
+class MachineUsage(NamedTuple):
+    projects: dict[str, list[dict[str, str]]]
+    complete: bool
+    agent_hosts: set[str]
+    repository_hosts: set[str]
+
+    def deletable(self, machine: SpaceMachineRecord) -> bool:
+        return self.complete and machine.host not in self.repository_hosts
+
+
+def _machine_usage(store: AppStore) -> MachineUsage:
     """Which registered projects name each machine account, whether every manifest
-    read, and the hosts any project's agents run on."""
+    read, and the hosts with agents or repositories."""
 
     usage: dict[str, list[dict[str, str]]] = {}
     agent_hosts: set[str] = set()
+    repository_hosts: set[str] = set()
     complete = True
     for project in store.projects():
         try:
@@ -209,7 +226,10 @@ def _machine_usage(
             manifest.machine_map[manifest.agent_profile(profile).run_on].host
             for profile in AGENT_EXECUTION_PROFILES
         )
-    return usage, complete, agent_hosts
+        repository_hosts.update(
+            manifest.machine_map[repository.machine].host for repository in manifest.repositories
+        )
+    return MachineUsage(usage, complete, agent_hosts, repository_hosts)
 
 
 def _hidden_read_projection(
@@ -265,13 +285,12 @@ def _compute_probes(
 
 def _machine_view(
     machine: SpaceMachineRecord,
-    usage: dict[str, list[dict[str, str]]],
-    complete: bool,
+    usage: MachineUsage,
     visible: set[str],
     store: AppStore,
     launcher: AgentLauncher | None,
 ) -> dict[str, object]:
-    projects = usage.get(machine.host, [])
+    projects = usage.projects.get(machine.host, [])
     readiness = {
         provider: launcher.cached_readiness(
             provider, host=machine.host, binary=machine.provider_paths.get(provider)
@@ -319,7 +338,8 @@ def _machine_view(
         "hidden_read": _hidden_read_projection(machine, store.path.parent).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
-        "in_use": True if projects else (False if complete else None),
+        "in_use": True if projects else (False if usage.complete else None),
+        "deletable": usage.deletable(machine),
     }
 
 
@@ -329,8 +349,8 @@ def _one_machine_view(
     visible: set[str],
     launcher: AgentLauncher | None = None,
 ) -> dict[str, object]:
-    usage, complete, _ = _machine_usage(store)
-    return _machine_view(machine, usage, complete, visible, store, launcher)
+    usage = _machine_usage(store)
+    return _machine_view(machine, usage, visible, store, launcher)
 
 
 def _visible_project_ids(
@@ -506,10 +526,10 @@ def list_space_machines(
     catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
-    usage, complete, _ = _machine_usage(store)
+    usage = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible, store, catalog.launcher)
+            _machine_view(machine, usage, visible, store, catalog.launcher)
             for machine in store.space_machines()
         ]
     }
@@ -636,10 +656,10 @@ def update_space_machine(
     compute_changed = (
         body.job_manager is not None and body.job_manager != machine.job_manager
     ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
-    usage, _, _ = _machine_usage(store)
+    usage = _machine_usage(store)
     if compute_changed:
         # Fail closed: no project keeps a route check made under the old settings.
-        for project in usage.get(machine.host, []):
+        for project in usage.projects.get(machine.host, []):
             store.delete_compute_backend_probe(project["project_id"], project["alias"])
     # A human edit makes the card the owner: no later start refills a field
     # this edit cleared from an older manifest.
@@ -674,8 +694,8 @@ def _refresh_machine_probes(
     """Settle the card's job manager, then check its routes once for every project on it."""
 
     settle_job_manager(store, machine.host)
-    usage, _, _ = _machine_usage(store)
-    for project in usage.get(machine.host, []):
+    usage = _machine_usage(store)
+    for project in usage.projects.get(machine.host, []):
         record = store.project(project["project_id"])
         if record is None:
             continue
@@ -705,8 +725,8 @@ def check_space_machine_compute(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     _refresh_machine_probes(store, catalog, machine)
-    _, _, agent_hosts = _machine_usage(store)
-    sources = [card for card in store.space_machines() if card.host in agent_hosts]
+    usage = _machine_usage(store)
+    sources = [card for card in store.space_machines() if card.host in usage.agent_hosts]
     reach = [
         {"from": source.name, "probe": probe.model_dump(mode="json")}
         for source, probe in probe_machine_reach(machine, sources, space_kind=store.space_kind)
@@ -767,22 +787,38 @@ def delete_space_machine(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    with MACHINE_ATTACHMENT_LOCK:
-        view = _one_machine_view(
-            store,
-            _machine_or_404(store, machine_id),
-            _visible_project_ids(request, identity_access, store),
-        )
-        if view["in_use"] is not False:
-            detail = (
-                "A project uses this machine; remove it from the project first."
-                if view["in_use"]
-                else "RCP could not read every project, so it cannot tell whether this "
-                "machine is used."
-            )
-            raise HTTPException(status_code=409, detail=detail)
-        store.delete_space_machine(machine_id)
+    from rcp.api.project_state import detach_project_machine
+
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    listed = sorted(
+        {item["project_id"] for item in _machine_usage(store).projects.get(machine.host, [])}
+    )
+    # Each listing project's write fence comes first, as its own machine route takes
+    # it, so a detach never edits a project mid-transfer or under another writer.
+    with ExitStack() as fences:
+        for project_id in listed:
+            fences.enter_context(project_write_admission(project_id, request))
+        with MACHINE_ATTACHMENT_LOCK:
+            usage = _machine_usage(store)
+            if not usage.deletable(machine):
+                detail = (
+                    "A repository lives on this machine."
+                    if machine.host in usage.repository_hosts
+                    else "RCP could not read every project, so it cannot tell whether this "
+                    "machine is used."
+                )
+                raise HTTPException(status_code=409, detail=detail)
+            projects = usage.projects.get(machine.host, [])
+            if {item["project_id"] for item in projects} - set(listed):
+                raise HTTPException(status_code=409, detail="A project started using this machine.")
+            for project in projects:
+                detach_project_machine(
+                    project_display_cache, project["project_id"], project["alias"]
+                )
+            store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 
 

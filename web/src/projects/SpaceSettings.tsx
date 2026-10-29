@@ -125,7 +125,7 @@ function SpaceMachineList({
             writesDisabled={writesDisabled}
             onRecordChange={replace}
             onDelete={
-              machine.in_use === false
+              machine.deletable
                 ? async () => {
                     await deleteSpaceMachine(machine.machine_id);
                     remove(machine.machine_id);
@@ -147,7 +147,7 @@ function SpaceMachineList({
         />
       ) : (
         <button
-          className="button secondary compact"
+          className="button secondary compact space-machine-add"
           type="button"
           disabled={writesDisabled}
           onClick={() => setAdding(true)}
@@ -318,7 +318,22 @@ function ThisMac({
   const label = (value: string) => value.replaceAll("_", " ");
   const mode = (value: { enabled: boolean; active: boolean }) =>
     value.active ? "active" : value.enabled ? "waiting" : "off";
-  const reasons = status.demand_reasons.join(", ");
+  const reasons = status.demand_reasons.map(label).join(", ");
+  // Each toggle carries its own state; the rarer diagnostics sit in the tag's title.
+  // Not being installed is the ordinary state of lid-closed mode off, not a problem.
+  const installProblem = status.install_problem !== "not_installed" ? status.install_problem : null;
+  const lidState = status.latched
+    ? "latched off"
+    : installProblem
+      ? `installation ${label(installProblem)}`
+      : mode(status.lid_mode);
+  const lidDetails = [
+    status.last_release && `Last release: ${label(status.last_release.cause)}`,
+    status.latched && `Latch: ${label(status.latched)}`,
+    status.external_owner && "External owner",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <section className="settings-section provider-path-settings machine-power-settings">
       <header>
@@ -344,6 +359,11 @@ function ThisMac({
           />
           <span className="settings-check">{status.idle_hold.enabled && <Check size={12} />}</span>
           <strong>Stay awake while RCP is working</strong>
+          {status.idle_hold.active && (
+            <span className="tag" title={reasons}>
+              Awake
+            </span>
+          )}
         </label>
         <label className={lidEnabled ? "settings-repository selected" : "settings-repository"}>
           <input
@@ -360,6 +380,11 @@ function ThisMac({
           />
           <span className="settings-check">{lidEnabled && <Check size={12} />}</span>
           <strong>Lid-closed mode</strong>
+          {lidState !== "off" && (
+            <span className="tag" title={lidDetails || undefined}>
+              {lidState}
+            </span>
+          )}
         </label>
         {(status.installed || status.install_problem === "partial") && (
           <button
@@ -372,26 +397,6 @@ function ThisMac({
           </button>
         )}
       </div>
-      <p className="machine-power-status" role="status">
-        {status.idle_hold.active
-          ? `Keeping this Mac awake: ${reasons}`
-          : status.idle_hold.enabled
-            ? "Nothing running; this Mac may sleep"
-            : "Off"}
-        {" · Lid-closed mode: "}
-        {status.latched ? "latched off" : mode(status.lid_mode)}
-        {" · Demand: "}
-        {status.demand ? status.demand_reasons.map(label).join(", ") || "active" : "none"}
-        {status.last_release && ` · Last release: ${label(status.last_release.cause)}`}
-        {status.latched && ` · Latch: ${label(status.latched)}`}
-        {status.external_owner && " · External owner"}
-        {status.install_problem && ` · Installation: ${label(status.install_problem)}`}
-      </p>
-      <p className="machine-power-note">
-        Locking the screen is fine. Unless lid-closed mode is active, closing the lid still sleeps
-        this Mac: running work pauses, and automatic launches wait until it has been awake for a
-        while.
-      </p>
       {error && !installOpen && (
         <div className="settings-error" role="alert">
           {error}

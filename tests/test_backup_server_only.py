@@ -276,3 +276,26 @@ def test_server_only_capture_refuses_an_origin(tmp_path):
             expected_origin="",
             recorded_commit=proof["head"],
         )
+
+
+def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
+    from rcp.server_ops.backup_models import BackupRecoveryRepository
+    from rcp.transport.remote_backup_checkout import main
+
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    folder = tmp_path / "anywhere" / "notes"
+    commit = _initialize_git_repository(folder)  # with an origin RCP did not set
+    arguments = ["helper", "inspect-adopted", account, str(folder)]
+    assert main([*arguments, commit]) == 0
+    assert main([*arguments, "0" * 40]) == 3
+    with pytest.raises(CheckoutInspectionError):
+        inspect_checkout(
+            os_account=account, repository_path=str(folder), expected_origin="",
+            recorded_commit=commit,
+        )  # fmt: skip
+    # Archives written before adoption existed keep their exact bytes.
+    repository = BackupRecoveryRepository(
+        alias="notes", repository=None, machine_alias="server", resolved_path=str(folder),
+        git_commit=commit, deploy_key_label=None, public_key_fingerprint=None,
+    )  # fmt: skip
+    assert "adopted" not in repository.model_dump()

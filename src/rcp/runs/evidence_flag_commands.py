@@ -48,7 +48,7 @@ def handle_flag(
         )
 
     def validate_evidence() -> int:
-        state = service.history.state()
+        state = service.for_graph_target(task.graph_target).history.state()
         if not is_current_evidence(state, request.arguments.evidence_id):
             raise EvidenceFlagError("flag_evidence_invalid")
         return state.revision
@@ -121,7 +121,7 @@ def hold_consolidation_additions(
             ]
         if not created:
             return True
-        state = service().history.state()
+        state = service().for_graph_target(task.graph_target).history.state()
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         store.record_agent_task_event(
             operation_id,

@@ -371,7 +371,7 @@ async def test_work_watcher_binding_keeps_originating_episode_lineage(
     append_fixture_patch(service, seed_patch())
     request = _request()
     execution = _chat_task_execution(app, request, "work-episode-watcher-binding")
-    episode_id = "auto-research-episode"
+    episode_id = str(uuid.uuid4())
     task = execution.store.agent_task(execution.operation_id)
     assert task is not None
     execution.store.create_episode(

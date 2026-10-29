@@ -72,26 +72,13 @@ def test_code_admission_requires_one_repository(manifest, tmp_path) -> None:
     assert store.episodes("project") == []
 
 
-@pytest.mark.parametrize("ineligible", [None, "repositories", "host", "git", "grant"])
+@pytest.mark.parametrize("ineligible", [None, "repositories", "git", "grant"])
 def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeypatch, ineligible):
-    if ineligible == "host":
-        text = manifest.path.read_text()
-        text = text.replace(
-            '[[repositories]]\nalias = "repo-b"\nmachine = "laptop"',
-            '[[repositories]]\nalias = "repo-b"\nmachine = "gpu"',
-        ).replace('default_run_truth_scope = ["repo-a"]', 'default_run_truth_scope = ["repo-b"]')
-        manifest.path.write_text(
-            text.replace(
-                "[[repositories]]",
-                '[[machines]]\nalias = "gpu"\nhost = "gpu"\n\n[[repositories]]',
-                1,
-            )
-        )
-    if ineligible == "repositories":
+    # The default needs exactly one repository the project's agents can write.
+    if ineligible != "repositories":
         manifest.path.write_text(
             manifest.path.read_text().replace(
-                'default_run_truth_scope = ["repo-a"]',
-                'default_run_truth_scope = ["repo-a", "repo-b"]',
+                'truth_scope = ["repo-a", "repo-b"]', 'truth_scope = ["repo-a"]'
             )
         )
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -118,6 +105,32 @@ def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeyp
     assert store.agent_task(episode.root_operation_id).request["code_worktree"] is (
         ineligible is None
     )
+
+
+def test_a_chosen_worktree_repository_narrows_the_run_to_it(manifest, tmp_path, monkeypatch):
+    # Both repositories are writable, so only the human's pick can enable the worktree.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    monkeypatch.setattr(
+        app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+    )
+    monkeypatch.setattr(
+        "rcp.conversation_worktrees.worktree_command",
+        lambda *a, **kw: {"version": [2, 38, 0], "supported": True},
+    )
+    client = signed_in_client(app)
+    url = f"/api/projects/{app.state.default_project_id}/episodes"
+    body = {"mode": "auto_research", "invocation_ceiling": 1}
+
+    response = client.post(url, json={**body, "worktree_repository": "repo-a"})
+    assert response.status_code == 202, response.text
+    episode = store.episode(response.json()["episode_id"])
+    assert episode.code_worktree is True
+    assert store.agent_task(episode.root_operation_id).request["run_truth_scope"] == ["repo-a"]
+    refused = client.post(
+        url, json={**body, "worktree_repository": "repo-a", "code_worktree": False}
+    )
+    assert refused.status_code == 422
 
 
 @pytest.mark.parametrize("name", ["my-research", "", None, "Bad-name", "main"])

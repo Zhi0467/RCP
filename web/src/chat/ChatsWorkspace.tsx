@@ -11,6 +11,9 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { readPref, writePref } from "../core/prefStorage";
+import { ResizeHandle } from "../ui/ResizeHandle";
+import { useStoredSplit } from "../ui/useStoredSplit";
 import {
   AGENT_LIST_SECTIONS,
   AGENT_NAME_MAX_CHARS,
@@ -45,9 +48,7 @@ import {
   CHAT_LIST_DEFAULT_WIDTH,
   CHAT_LIST_COLLAPSED_WIDTH,
   CHAT_LIST_DIVIDER_WIDTH,
-  CHAT_LIST_MIN_WIDTH_COMPACT,
   chatListWidthBounds,
-  clampChatListWidth,
   isChatListToggleShortcut,
   type ChatListWidthBounds,
 } from "./chatLayout";
@@ -88,7 +89,6 @@ interface Props {
   nodes: Record<string, GraphNode>;
   graphTarget: GraphTargetRef;
   glossaryIndex: GlossaryIndex;
-  runScope: string[];
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
@@ -117,34 +117,9 @@ interface Props {
   onSendOrchestratorMessage?: SendOrchestratorMessage;
 }
 
-function chatListWidthStorageKey(projectId: string): string {
-  return `rcp:chat-list-width:${projectId}`;
-}
-
-function chatListCollapsedStorageKey(projectId: string): string {
-  return `rcp:chat-list-collapsed:${projectId}`;
-}
-
-function readChatListWidth(projectId: string): number {
-  if (typeof window === "undefined") return CHAT_LIST_DEFAULT_WIDTH;
-  try {
-    const value = Number(window.localStorage.getItem(chatListWidthStorageKey(projectId)));
-    return Number.isFinite(value) && value >= CHAT_LIST_MIN_WIDTH_COMPACT
-      ? value
-      : CHAT_LIST_DEFAULT_WIDTH;
-  } catch {
-    return CHAT_LIST_DEFAULT_WIDTH;
-  }
-}
-
-function readChatListCollapsed(projectId: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(chatListCollapsedStorageKey(projectId)) === "true";
-  } catch {
-    return false;
-  }
-}
+const chatListCollapsedStorageKey = (projectId: string) => `rcp:chat-list-collapsed:${projectId}`;
+const readChatListCollapsed = (projectId: string) =>
+  readPref(chatListCollapsedStorageKey(projectId)) === "true";
 
 type AgentFilter = "all" | "working" | "archived";
 
@@ -382,7 +357,6 @@ export function ChatsWorkspace({
   nodes,
   graphTarget,
   glossaryIndex,
-  runScope,
   tasks,
   watchers,
   graphChangesDisabled,
@@ -410,10 +384,14 @@ export function ChatsWorkspace({
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [filter, setFilter] = useState<AgentFilter>("all");
   const [query, setQuery] = useState("");
-  const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
     chatListWidthBounds(typeof window === "undefined" ? 1200 : window.innerWidth),
+  );
+  const listWidth = useStoredSplit(
+    `rcp:chat-list-width:${project.id}`,
+    widthBounds,
+    CHAT_LIST_DEFAULT_WIDTH,
   );
   const workspace = useRef<HTMLElement>(null);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
@@ -663,28 +641,13 @@ export function ChatsWorkspace({
   };
 
   useEffect(() => {
-    setListWidth(readChatListWidth(project.id));
     setListCollapsed(readChatListCollapsed(project.id));
     setQuery("");
     setFilter("all");
   }, [project.id]);
 
   useEffect(() => {
-    if (!project.id) return;
-    try {
-      window.localStorage.setItem(chatListWidthStorageKey(project.id), String(listWidth));
-    } catch {
-      // Layout state is a convenience; storage failures must not affect chat.
-    }
-  }, [listWidth, project.id]);
-
-  useEffect(() => {
-    if (!project.id) return;
-    try {
-      window.localStorage.setItem(chatListCollapsedStorageKey(project.id), String(listCollapsed));
-    } catch {
-      // Layout state is a convenience; storage failures must not affect chat.
-    }
+    if (project.id) writePref(chatListCollapsedStorageKey(project.id), String(listCollapsed));
   }, [listCollapsed, project.id]);
 
   useEffect(() => {
@@ -702,11 +665,7 @@ export function ChatsWorkspace({
     const element = workspace.current;
     if (!element || narrow) return;
 
-    const updateBounds = (width: number) => {
-      const nextBounds = chatListWidthBounds(width);
-      setWidthBounds(nextBounds);
-      setListWidth((current) => clampChatListWidth(current, nextBounds));
-    };
+    const updateBounds = (width: number) => setWidthBounds(chatListWidthBounds(width));
     updateBounds(element.getBoundingClientRect().width);
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -762,12 +721,6 @@ export function ChatsWorkspace({
       ? { autoResearchEpisodeId: selected.orchestratorEpisodeId }
       : {},
   );
-  const resizeFromPointer = (clientX: number) => {
-    const bounds = workspace.current?.getBoundingClientRect();
-    if (!bounds) return;
-    setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
-  };
-
   const selectedArchived = selected !== null && archivedChatIds.has(selected.chatId);
   const selectedWorking = selectedStatus?.state === "working";
   // Only a chat with a native session can branch; a branched chat has none before its first turn.
@@ -983,7 +936,7 @@ export function ChatsWorkspace({
           ? undefined
           : listCollapsed
             ? `${CHAT_LIST_COLLAPSED_WIDTH}px 0px minmax(0, 1fr)`
-            : `${listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
+            : `${listWidth.width}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
       <aside
@@ -1152,47 +1105,18 @@ export function ChatsWorkspace({
         </div>
       </aside>
       <div className="conversation-divider" hidden={listCollapsed}>
-        <div
-          aria-controls="conversation-list-panel conversation-surface-panel"
-          aria-label="Resize conversation list"
-          aria-orientation="vertical"
-          aria-valuemax={widthBounds.maximum}
-          aria-valuemin={widthBounds.minimum}
-          aria-valuenow={Math.round(listWidth)}
+        <ResizeHandle
+          label="Resize conversation list"
+          controls="conversation-list-panel conversation-surface-panel"
           className="conversation-resize-handle"
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-              event.preventDefault();
-              setListWidth((current) =>
-                clampChatListWidth(current + (event.key === "ArrowLeft" ? -16 : 16), widthBounds),
-              );
-            }
-            if (event.key === "Home" || event.key === "End") {
-              event.preventDefault();
-              setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
-            }
+          width={listWidth.width}
+          minimum={widthBounds.minimum}
+          maximum={widthBounds.maximum}
+          widthAt={(clientX) => {
+            const bounds = workspace.current?.getBoundingClientRect();
+            return bounds ? clientX - bounds.left : null;
           }}
-          onPointerCancel={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          onPointerDown={(event) => {
-            event.currentTarget.setPointerCapture(event.pointerId);
-            resizeFromPointer(event.clientX);
-          }}
-          onPointerMove={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              resizeFromPointer(event.clientX);
-            }
-          }}
-          onPointerUp={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-              event.currentTarget.releasePointerCapture(event.pointerId);
-            }
-          }}
-          role="separator"
-          tabIndex={0}
+          onResize={listWidth.resize}
         />
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">
@@ -1224,7 +1148,6 @@ export function ChatsWorkspace({
             headerActions={headerActions}
             headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
-            runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
             historyMessages={selectedOrchestratorTurns?.history}
             watchers={orchestratorWatchers}
@@ -1273,7 +1196,6 @@ export function ChatsWorkspace({
             headerActions={headerActions}
             headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
-            runScope={runScope}
             tasks={tasks}
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}

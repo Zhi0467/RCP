@@ -13,6 +13,7 @@ export function MachineTile({
   hostLabel,
   account = "",
   signals = [],
+  base = false,
   selected = false,
   disabled = false,
   onSelect,
@@ -21,6 +22,8 @@ export function MachineTile({
   hostLabel: string;
   account?: string;
   signals?: MachineSignal[];
+  /** The project's base machine, where every agent runs. */
+  base?: boolean;
   selected?: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -37,7 +40,10 @@ export function MachineTile({
       <span className="machine-tile-icon" aria-hidden="true">
         <Server size={16} />
       </span>
-      <strong>{name}</strong>
+      <strong>
+        <span className="machine-tile-name">{name}</span>
+        {base && <em className="tag machine-tile-base">Base</em>}
+      </strong>
       <span className="machine-tile-host">
         {hostLabel}
         {account ? ` · ${account}` : ""}

@@ -158,6 +158,7 @@ def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
         service,
         candidate,
         run_truth_scope=["repo-a"],
+        read_scope=None,
         source_operation_id=root.operation_id,
         profile="orchestrator",
     )
@@ -165,6 +166,7 @@ def test_profile_aware_live_validator_uses_orchestrator_schema_and_authority(
         service,
         candidate,
         run_truth_scope=["repo-a"],
+        read_scope=None,
         source_operation_id=root.operation_id,
     )
 
@@ -918,6 +920,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             execution,
             patch_text,
             run_truth_scope=["repo-a"],
+            read_scope=None,
             profile="orchestrator",
             source_operation_id=root.operation_id,
             source_effect_id=source_effect_id,
@@ -1144,6 +1147,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         execution,
         candidate,
         run_truth_scope=["repo-a"],
+        read_scope=None,
         profile="orchestrator",
         source_operation_id=root.operation_id,
         source_effect_id=applied_patches[0].source_effect_id,
@@ -1167,6 +1171,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         execution,
         fallback_candidate,
         run_truth_scope=["repo-a"],
+        read_scope=None,
         profile="orchestrator",
         source_operation_id=root.operation_id,
         source_effect_id=applied_patches[0].source_effect_id,
@@ -1179,6 +1184,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
         execution,
         fallback_candidate,
         run_truth_scope=["repo-a"],
+        read_scope=None,
         profile="orchestrator",
         source_operation_id=root.operation_id,
         source_effect_id=applied_patches[-1].source_effect_id,
@@ -1208,6 +1214,7 @@ async def test_orchestrator_final_settlement_recovers_apply_committed_before_con
             execution,
             patch_text,
             run_truth_scope=["repo-a"],
+            read_scope=None,
             profile="orchestrator",
             source_operation_id=root.operation_id,
             source_effect_id=source_effect_id,
@@ -3520,16 +3527,25 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
             yield AgentEvent(event="session", session_id=self.session_id)
             yield AgentEvent(event="remote_result_pending")
 
-    live = await _events(
-        stream_auto_research_worker_run(
-            service,
-            cast(Any, _LinkLost()),
-            request,
-            tmp_path / "data",
-            execution,
-            command_dispatcher=_dispatcher(store),
+    resolve_read_scope = auto_research_stream_module.resolve_read_scope
+
+    def with_sibling(*args):
+        scope = resolve_read_scope(*args)
+        return scope.model_copy(update={"paths": {**scope.paths, "sibling:code": "/sibling"}})
+
+    # The launch saw a group sibling; the recorded pass has no live group.
+    with monkeypatch.context() as launch:
+        launch.setattr(auto_research_stream_module, "resolve_read_scope", with_sibling)
+        live = await _events(
+            stream_auto_research_worker_run(
+                service,
+                cast(Any, _LinkLost()),
+                request,
+                tmp_path / "data",
+                execution,
+                command_dispatcher=_dispatcher(store),
+            )
         )
-    )
     assert not [event for event in live if event.event in {"answer", "error", "done"}]
 
     finalizer = recorded_finalizer(store, execution.operation_id)
@@ -3577,6 +3593,7 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
     ]
     assert settled[-1].event == "done"
     assert "blk/recorded" in service.history.state().nodes
+    assert "sibling:code" in (service.history.load_patches()[-1].run_read_scope or [])
     assert launcher.calls == 0
 
 

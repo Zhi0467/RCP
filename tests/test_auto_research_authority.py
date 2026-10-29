@@ -42,7 +42,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation import ValidationContext
 from rcp.core.validation.patch import validate_patch
 
-from .helpers import fabricated_authorizer, seated_on_every_project
+from .helpers import fabricated_authorizer, read_scope_of, seated_on_every_project
 
 
 def _orchestrator_patch(*ops: dict, agent_action: str | None = None) -> Patch:
@@ -420,6 +420,7 @@ def test_orchestrator_schema_is_elevated_without_widening_ordinary_schema() -> N
         draft,
         kind="work",
         run_truth_scope=["repo-a"],
+        read_scope=read_scope_of("repo-a"),
         profile="orchestrator",
     )
     assert prepared.agent_action == "decision_choice"

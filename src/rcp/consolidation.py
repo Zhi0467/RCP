@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
+from rcp.agents.project_repositories import write_repositories
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
@@ -22,17 +23,23 @@ from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.consolidation import target_ref
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.server_ops.maintenance import RuntimeAdmissionGate
-    from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
+    from rcp.storage.consolidation import (
+        ConsolidationRun,
+        ConsolidationSchedule,
+        ConsolidationTarget,
+    )
 
 logger = logging.getLogger(__name__)
 
 
-def consolidation_chat_id(project_id: str) -> str:
-    return str(uuid5(NAMESPACE_URL, f"rcp:consolidation:{project_id}"))
+def consolidation_chat_id(project_id: str, target: str = "main") -> str:
+    suffix = "" if target == "main" else f":{target}"
+    return str(uuid5(NAMESPACE_URL, f"rcp:consolidation:{project_id}{suffix}"))
 
 
 def occurrence_at(local_date: date, local_time: str, timezone: str) -> datetime:
@@ -129,14 +136,47 @@ class ConsolidationPoller:
                     logger.exception("Consolidation admission failed for %s", schedule.project_id)
 
     def _handle_due(self, schedule: ConsolidationSchedule, now: datetime) -> None:
+        targets = [("main", "main", None)] + [
+            (branch.branch_id, branch.name, branch.parent_head.revision)
+            for branch in self.store.graph_branches(schedule.project_id)
+            if not branch.archived
+        ]
+        for target, name, initial_covered in targets:
+            try:
+                coverage = self.store.ensure_consolidation_target(
+                    schedule, target=target, covered_head=initial_covered
+                )
+                if datetime.fromisoformat(coverage.next_due_at) <= now:
+                    self._handle_target(schedule, now, target, name, coverage)
+            except Exception:
+                logger.exception(
+                    "Consolidation admission failed for %s target %s", schedule.project_id, target
+                )
+        self.store.finish_consolidation_occurrence(
+            schedule,
+            targets=[target for target, _, _ in targets],
+            next_due_at=next_occurrence(schedule.local_time, schedule.timezone, now).isoformat(),
+        )
+
+    def _handle_target(
+        self,
+        schedule: ConsolidationSchedule,
+        now: datetime,
+        target: str,
+        name: str,
+        coverage: ConsolidationTarget,
+    ) -> None:
         if any(
             run.outcome_settled_at is None
-            for run in self.store.consolidation_runs(schedule.project_id, unsettled_only=True)
+            for run in self.store.consolidation_runs(
+                schedule.project_id, target=target, unsettled_only=True
+            )
         ):
             return
-        due = datetime.fromisoformat(schedule.next_due_at)
+        due = datetime.fromisoformat(coverage.next_due_at)
         occurrence_date = due.astimezone(ZoneInfo(schedule.timezone)).date().isoformat()
         next_due = next_occurrence(schedule.local_time, schedule.timezone, now).isoformat()
+        graph_target = target_ref(target)
         input_head = 0
         task = None
         execution_host = ""
@@ -148,13 +188,13 @@ class ConsolidationPoller:
             self.store.require_project_accepts_new_work(schedule.project_id)
             service = self.service_for(schedule.project_id)
             failure_code = "history_unavailable"
-            input_head, steps = _main_steps(service)
+            input_head, steps = _target_steps(service, graph_target)
             consolidation_operations = {
                 run.operation_id
                 for run in self.store.consolidation_runs(schedule.project_id)
                 if run.operation_id is not None
             }
-            covered = schedule.covered_head
+            covered = coverage.covered_head
             changed = covered is None or any(
                 step.after_head.revision > covered
                 and step.patch.source_operation_id not in consolidation_operations
@@ -162,7 +202,7 @@ class ConsolidationPoller:
             )
             if changed:
                 failure_code = "consolidation_launch_unavailable"
-                task = self._task(schedule, service)
+                task = self._task(schedule, service, target, name)
                 execution_host = service.manifest.machine_map[task.request["run_on"]].host
             else:
                 skipped = True
@@ -171,6 +211,7 @@ class ConsolidationPoller:
             error_code, error_message = failure_code, str(exc)
         run = self.store.claim_consolidation_occurrence(
             schedule,
+            target=target,
             occurrence_date=occurrence_date,
             next_due_at=next_due,
             input_head=input_head,
@@ -184,20 +225,33 @@ class ConsolidationPoller:
         if run is not None and run.operation_id is not None:
             self._launch(run.operation_id)
 
-    def _task(self, schedule: ConsolidationSchedule, service: ProjectService) -> AgentTaskRecord:
+    def _task(
+        self,
+        schedule: ConsolidationSchedule,
+        service: ProjectService,
+        target: str,
+        target_name: str,
+    ) -> AgentTaskRecord:
+        graph_target = target_ref(target)
         profile = service.resolve_agent_profile("project_chat")
         request = RunRequest(
             provider=profile.provider,
             model=profile.model,
             reasoning=profile.reasoning,
             run_on=profile.run_on,
-            run_truth_scope=list(service.manifest.project.truth_scope),
+            run_truth_scope=write_repositories(
+                service.for_graph_target(graph_target, initialize=False).history.state()
+            ),
             chat_scope="project",
-            chat_id=consolidation_chat_id(schedule.project_id),
+            chat_id=consolidation_chat_id(schedule.project_id, target),
             session_id=None,
             mode="work",
             trigger="schedule",
-            message="Run the graph-consolidation workflow on main.",
+            message=(
+                f"Run the graph-consolidation workflow on branch {target_name}."
+                if graph_target.kind == "branch"
+                else "Run the graph-consolidation workflow on main."
+            ),
             workflow_ids=["graph-consolidation"],
             skill_ids=[],
             invoked_workflow_ids=["graph-consolidation"],
@@ -219,9 +273,13 @@ class ConsolidationPoller:
         return AgentTaskRecord(
             operation_id=operation_id,
             project_id=schedule.project_id,
+            graph_target=graph_target,
             kind="project_chat",
             status="queued",
-            request=request.model_dump(mode="json"),
+            request={
+                **request.model_dump(mode="json"),
+                "graph_target": graph_target.model_dump(mode="json"),
+            },
             created_at=now,
             updated_at=now,
             status_message="Waiting for nightly graph consolidation.",
@@ -269,7 +327,7 @@ class ConsolidationPoller:
         committed_digests: set[str | None] = set()
         if not prelaunch_failure:
             try:
-                _, steps = _main_steps(self.service_for(run.project_id))
+                _, steps = _target_steps(self.service_for(run.project_id), run.graph_target)
                 revisions, proposals, covered = operation_outcome(
                     steps, task.operation_id, run.input_head
                 )
@@ -358,9 +416,9 @@ class ConsolidationPoller:
             self._stop.wait(self.interval)
 
 
-def _main_steps(service: ProjectService) -> tuple[int, list[StepRecord]]:
+def _target_steps(service: ProjectService, target: GraphTargetRef) -> tuple[int, list[StepRecord]]:
     engine: HistoryEngine = service.history_engine
-    head = engine.resolve(HeadSpec(revision="head"), default_target=GraphTargetRef())
+    head = engine.resolve(HeadSpec(revision="head"), default_target=target)
     if engine.state_at(head).replay_status != "complete":
         raise ValueError("Canonical graph history is incomplete")
     return head.revision, [step for step in engine.steps(head) if step.accepted]

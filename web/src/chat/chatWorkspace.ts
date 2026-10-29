@@ -1,7 +1,7 @@
 import { memberDraftKey } from "../core/draftStorage.ts";
 import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
+import type { ComposerTurnFields } from "./composerAttachments.tsx";
 import type {
-  ProjectReferenceSelector,
   AgentRunConfig,
   AgentTask,
   AgentTaskKind,
@@ -203,18 +203,18 @@ export function conversationAgentConfig(
 export interface ConversationTurnSubmission {
   kind: ChatKind;
   config: AgentRunConfig;
-  runTruthScope: string[];
   nodeId: string | null;
   message: string;
   chatId: string;
   sessionId: string | null;
   mode: ConversationMode;
   artifactContext?: ArtifactContextRequest | null;
-  references?: ProjectReferenceSelector[];
-  attachmentSetId?: string | null;
-  attachmentClientId?: string | null;
+  /** The composer's staged files and references, as `turnFields()` gives them. */
+  attachments?: ComposerTurnFields;
   skills?: SkillDefaults;
   providerSkillNames?: string[];
+  /** The repository a first worktree turn checks out; the server stamps every other scope. */
+  worktreeRepository?: string | null;
   worktree?: boolean;
   worktreeIntegration?: WorktreeIntegrationOption["id"];
 }
@@ -228,24 +228,24 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   return {
     ...submission.config,
     model: submission.config.model || null,
-    run_truth_scope: submission.runTruthScope,
     node_id: submission.nodeId,
     message,
     chat_id: submission.chatId,
     session_id: submission.sessionId,
     mode: submission.mode,
-    ...(submission.worktree ? { worktree: true } : {}),
+    ...(submission.worktree
+      ? {
+          worktree: true,
+          ...(submission.worktreeRepository
+            ? { run_truth_scope: [submission.worktreeRepository] }
+            : {}),
+        }
+      : {}),
     ...(submission.worktreeIntegration
       ? { worktree_integration: submission.worktreeIntegration }
       : {}),
-    ...(submission.references?.length ? { references: submission.references } : {}),
+    ...submission.attachments,
     ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
-    ...(submission.attachmentSetId && submission.attachmentClientId
-      ? {
-          attachment_set_id: submission.attachmentSetId,
-          attachment_client_id: submission.attachmentClientId,
-        }
-      : {}),
     invoked_workflow_ids: skills.workflow_ids,
     invoked_skill_ids: skills.skill_ids,
     invoked_provider_skill_names: submission.providerSkillNames ?? [],

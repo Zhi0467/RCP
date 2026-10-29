@@ -24,6 +24,9 @@ const { RunDialog, agentSelectionChanged } = await server.ssrLoadModule(
 const { AgentTaskInspector } = await server.ssrLoadModule("/src/agents/AgentTaskInspector.tsx");
 const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
 const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
+const { chosenWorktreeRepository } = await server.ssrLoadModule(
+  "/src/chat/worktreeRepositories.ts",
+);
 const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
 const { providerPathPresentation } = await server.ssrLoadModule("/src/projects/providerPaths.ts");
@@ -101,7 +104,6 @@ test("seed and refresh runs offer one empty, labelled additional-message field",
       open: true,
       kind: "seed",
       project,
-      initialScope: ["repo"],
       busy: false,
       onClose() {},
       onRun() {},
@@ -119,7 +121,6 @@ test("a closed run dialog renders no message field", () => {
       open: false,
       kind: "seed",
       project,
-      initialScope: ["repo"],
       busy: false,
       onClose() {},
       onRun() {},
@@ -616,7 +617,6 @@ test("conversation watcher status and wake attribution stay operational", () => 
   const props = {
     project,
     node: null,
-    runScope: ["repo"],
     tasks: [],
     activeTask: null,
     historyMessages: [
@@ -705,7 +705,6 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
   const props = {
     project,
     node,
-    runScope: ["repo"],
     tasks: [],
     historyMessages: [],
     chatId: "new-session-chat",
@@ -768,7 +767,6 @@ test("long human chat messages render a bounded preview control", () => {
     React.createElement(NodeChat, {
       project,
       node: null,
-      runScope: ["repo"],
       tasks: [],
       activeTask: null,
       historyMessages: [
@@ -863,7 +861,6 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     React.createElement(NodeChat, {
       project,
       node: null,
-      runScope: ["repo"],
       tasks: [activeTask],
       activeTask,
       historyMessages: [],
@@ -927,7 +924,6 @@ test("a running watcher wake or episode turn shows its Activity row before any a
       React.createElement(NodeChat, {
         project,
         node: null,
-        runScope: ["repo"],
         tasks: [running],
         activeTask: running,
         historyMessages: [],
@@ -954,7 +950,6 @@ test("retry keeps the original task boundary and exposes provider configuration"
       kind: "seed",
       mode: "retry",
       project,
-      initialScope: ["repo"],
       initialConfig: {
         provider: "codex",
         model: "",
@@ -970,14 +965,13 @@ test("retry keeps the original task boundary and exposes provider configuration"
   assert.doesNotMatch(html, /<button class="button primary" disabled=""/);
 });
 
-test("Experiment provider switch exposes provider controls but locks the execution machine", () => {
+test("Experiment provider switch exposes provider controls and no machine choice", () => {
   const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
       kind: "node_chat",
       mode: "retry",
       project,
-      initialScope: ["repo"],
       initialConfig: {
         provider: "codex",
         model: "",
@@ -990,7 +984,7 @@ test("Experiment provider switch exposes provider controls but locks the executi
     }),
   );
 
-  assert.match(html, /<select disabled=""><option value="local" selected="">local · local/);
+  assert.doesNotMatch(html, /<option value="local"/);
   assert.match(html, /<button class="button primary" disabled=""/);
 });
 
@@ -1005,7 +999,6 @@ test("every switch dialog holds its submit until the binding actually changes", 
         kind,
         mode: "retry",
         project,
-        initialScope: ["repo"],
         initialConfig: config ?? initialConfig,
         busy: false,
         onClose() {},
@@ -1022,41 +1015,6 @@ test("every switch dialog holds its submit until the binding actually changes", 
   const seed = render("seed");
 
   assert.doesNotMatch(seed, /<button class="button primary" disabled=""/);
-});
-
-test("a standalone retry may move machines while an episode-bound one stays pinned", () => {
-  // Only the caller knows whether anything is anchored to the machine, so the
-  // dialog locks by default and the standalone retry is the one that opts out.
-  const render = (props) =>
-    renderMarkup(
-      React.createElement(RunDialog, {
-        open: true,
-        kind: "node_chat",
-        mode: "retry",
-        project: {
-          ...project,
-          machines: [
-            { alias: "local", host: null },
-            { alias: "cluster", host: "" },
-          ],
-        },
-        initialScope: ["repo"],
-        initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
-        busy: false,
-        onClose() {},
-        onRun() {},
-        ...props,
-      }),
-    );
-
-  assert.match(render({ runOnLocked: false }), /<option value="cluster">/);
-
-  // Moving off a machine that is gone is the change, so nothing else is owed.
-  const moved = render({
-    runOnLocked: false,
-    initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "cluster" },
-  });
-  assert.doesNotMatch(moved, /<button class="button primary" disabled=""/);
 });
 
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {
@@ -1301,6 +1259,12 @@ test("isolation choices live in the agent picker, not beside it", () => {
   }
 });
 
+test("an inherited worktree keeps its owner's repository over any pick", () => {
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "repo-a", "repo-b"), "repo-b");
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "repo-b", null), "repo-b");
+  assert.equal(chosenWorktreeRepository(["repo-a", "repo-b"], "gone", null), "repo-a");
+});
+
 test("Run presents other-target live episodes before submission without disabling admission", () => {
   const node = {
     id: "experiment/shared",
@@ -1385,7 +1349,6 @@ test("A locked Auto-research child keeps its transcript and Runs route without a
     nodes: {},
     graphTarget,
     glossaryIndex: { entriesByInitial: new Map() },
-    runScope: [],
     tasks: [],
     watchers: [],
     graphChangesDisabled: false,
@@ -1443,7 +1406,6 @@ test("a selected inventory row cannot mount the composer on another target", () 
     board: false,
     nodes: {},
     glossaryIndex: { entriesByInitial: new Map() },
-    runScope: [],
     tasks: [],
     watchers: [],
     graphChangesDisabled: false,

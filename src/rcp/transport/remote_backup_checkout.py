@@ -81,10 +81,13 @@ def inspect_checkout(
     *,
     os_account: str,
     repository_path: str,
-    expected_origin: str,
+    expected_origin: str | None,
     recorded_commit: str,
 ) -> dict[str, str]:
-    """Verify exact account, path, origin, and retained provisioning commit."""
+    """Verify exact account, path, origin, and retained provisioning commit.
+
+    A None origin is an adopted folder: its remotes are its owner's, not RCP's.
+    """
 
     if pwd.getpwuid(os.geteuid()).pw_name != os_account:
         raise CheckoutInspectionError("The checkout is not being read as its configured account.")
@@ -108,7 +111,9 @@ def inspect_checkout(
         raise CheckoutInspectionError("The configured path is not the exact Git checkout root.")
     remotes = _git(repository, "remote").splitlines()
     origin = ""
-    if not expected_origin:
+    if expected_origin is None:
+        pass
+    elif not expected_origin:
         if remotes:
             raise CheckoutInspectionError("A server-only checkout acquired a remote.")
     else:
@@ -236,13 +241,14 @@ def main(argv: list[str]) -> int:
         payload["account_home"] = pwd.getpwuid(os.geteuid()).pw_dir
         sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
         return 0
+    adopted = len(argv) == 5 and argv[1] == "inspect-adopted"
     if len(argv) != 5:
         return 2
     try:
         payload = inspect_checkout(
-            os_account=argv[1],
-            repository_path=argv[2],
-            expected_origin=argv[3],
+            os_account=argv[2] if adopted else argv[1],
+            repository_path=argv[3] if adopted else argv[2],
+            expected_origin=None if adopted else argv[3],
             recorded_commit=argv[4],
         )
     except CheckoutInspectionError:

@@ -21,9 +21,10 @@ from pydantic import ValidationError
 import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
-from rcp.agents.context import RepositoryPointer
+from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.api.app import (
     _generic_watcher_delivery_request,
 )
@@ -118,7 +119,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
-from .paper_helpers import wire_saved_paper
+from .paper_helpers import coach_execution, wire_saved_paper
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
@@ -865,10 +866,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     }
     settings = client.put(
         f"/api/projects/{project_id}/settings",
-        json={
-            "default_run_truth_scope": ["repo-a"],
-            "agent_profiles": profiles,
-        },
+        json={"agent_profiles": profiles},
     )
     assert settings.status_code == 409
     assert settings.json()["coherent_revision"] == 2
@@ -1965,7 +1963,8 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
         for receipt in completed["debug_receipts"]
         if receipt["category"] == "context_assembled"
     )
-    assert context_receipt["payload"]["repository_count"] == 1
+    # Every project repository is readable context.
+    assert context_receipt["payload"]["repository_count"] == 2
     assert "source_errors" not in context_receipt["payload"]
     prompt_receipt = next(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_prompt"
@@ -5302,7 +5301,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_artifact_files(self, _scope_id):
             return []
 
-    monkeypatch.setattr("rcp.runs.tasks.discuss.RemoteRunStage", RecordingRemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RecordingRemoteStage)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="Remote continuation."), AgentEvent(event="done")]
     )
@@ -5331,14 +5330,16 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     assert staged.glossary_path == "/srv/project/.research/glossary.json"
     assert [
         (repository.alias, repository.host, repository.path) for repository in staged.repositories
-    ] == [("repo-a", "", "/srv/project")]
+    ] == [("repo-a", "", "/srv/project"), ("repo-b", "", "/srv/project")]
 
 
 @pytest.mark.asyncio
-async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_path) -> None:
+async def test_paper_resume_launches_with_changed_model(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     paper = service.paper
+    wire_saved_paper(service)
+    _record_local_codex_path(app)
     session_id = str(uuid.uuid4())
     now = datetime.now(UTC)
     paper.record_session(
@@ -5371,11 +5372,16 @@ async def test_paper_resume_rejects_settings_change_before_launch(manifest, tmp_
                 model="different-model",
             ),
             tmp_path / "data",
+            execution=coach_execution(service),
         )
     ]
 
-    assert any("cannot change model" in item for item in events)
-    assert launcher.calls == 0
+    assert not [
+        item for item in events if json.loads(item.removeprefix("data: "))["event"] == "error"
+    ]
+    assert launcher.calls == 1
+    assert launcher.last_kwargs["session_id"] == session_id
+    assert launcher.last_kwargs["model"] == "different-model"
 
 
 @pytest.mark.asyncio
@@ -5402,6 +5408,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
             paper,
             CoachRequest(message="Review the argument."),
             tmp_path / "data",
+            execution=coach_execution(service),
         )
     ]
 
@@ -5529,7 +5536,9 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "group",
         "work",
         "browser",
+        "branches",
     }
+    assert prompt_values["branches"] == []
     assert "graph_revision" not in prompt_values["current"]
     assert [item["id"] for item in prompt_values["compute"]["active"]] == ["laptop"]
     inputs = master_path.parent
@@ -5699,7 +5708,11 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
             "claude": "claude.permission-allowlist.v1",
         }[provider]
     )
-    assert launch["payload"]["canonical_repository_roots"] == [repository_root]
+    # Work writes every repository the project's agents can write.
+    assert launch["payload"]["canonical_repository_roots"] == [
+        repository_root,
+        str(Path(manifest.repository_map["repo-b"].path).resolve()),
+    ]
     assert launch["payload"]["canonical_write_roots"][1:2] == [repository_root]
     assert str(Path(repository_root) / ".research") in launch["payload"]["protected_write_paths"]
     assert len(launch["payload"]["write_scope_fingerprint"]) == 64
@@ -6499,6 +6512,15 @@ def _work_turn_whose_apply_loses_canonical_state(
 def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    # The turn launched while a group sibling was readable; Apply again must
+    # stamp that recorded scope, not re-resolve one without the group.
+    launch_scope = ChatContext.read_scope.fget
+
+    def with_sibling(context: ChatContext) -> RepositoryReadScope:
+        scope = launch_scope(context)
+        return scope.model_copy(update={"paths": {**scope.paths, "sibling:code": "/sibling"}})
+
+    monkeypatch.setattr(ChatContext, "read_scope", property(with_sibling))
     app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
         manifest, tmp_path, monkeypatch, StateUnreachable("ssh exited 255")
     )
@@ -6522,6 +6544,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     assert body["result"]["graph_update"]["applied_revision"] == revision + 1
     assert body["can_apply_again"] is False
     assert "rq/applied-again" in service.history.state().nodes
+    assert "sibling:code" in (service.history.load_patches()[-1].run_read_scope or [])
     assert store.agent_task_patch_output(operation_id) is None
 
     repeated = client.post(
@@ -7333,6 +7356,8 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     }
 
     new_loop_chat_id = str(uuid.uuid4())
+    # A new human run takes the project's current writable set.
+    writable = sorted(service.history.state().project_truth_scope)
 
     async def stream(_project_id, kind, request, _execution):
         assert kind == "node_chat"
@@ -7344,7 +7369,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.model == ""
         assert request.reasoning == "medium"
         assert request.run_on == "laptop"
-        assert request.run_truth_scope == ["repo-a"]
+        assert request.run_truth_scope == writable
         assert "/tmp/pending-loop.log" not in request.message
         yield _sse(AgentEvent(event="answer", text="Inspected the pending result."))
         yield _sse(AgentEvent(event="done"))
@@ -7369,7 +7394,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
     assert request["run_on"] == "laptop"
-    assert request["run_truth_scope"] == ["repo-a"]
+    assert request["run_truth_scope"] == writable
     assert response.json()["kind"] == "node_chat"
     assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
     assert store.watcher("pending-loop-watcher").notified is True
@@ -8482,7 +8507,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_pat
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
 
-    selection = _validate_stored_task_request(service, "seed", stored_request)
+    _request, selection = _validate_stored_task_request(service, "seed", stored_request)
 
     assert [(item.id, item.version) for item in selection.resolved_skill_packages] == [
         ("graph-audit", official_registry().package("skill", "graph-audit").version)

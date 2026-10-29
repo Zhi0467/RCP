@@ -1,3 +1,4 @@
+import { PaperConfirm } from "./PaperConfirm";
 import { PaperDialog } from "./PaperDialog";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -336,28 +337,20 @@ export function PaperHistory({
         )}
       </div>
       {confirmation && (
-        <PaperDialog
-          className="paper-box paper-confirm"
-          role="alertdialog"
-          label={confirmation.label}
-          onClose={() => setConfirmation(null)}
-        >
-          <strong>{confirmation.label}</strong>
-          <div className="paper-bar">
-            <button className="button" onClick={() => setConfirmation(null)}>
-              Cancel
-            </button>
-            <button
-              className="button"
-              onClick={() => {
-                setConfirmation(null);
-                void run(confirmation.action, confirmation.onDone);
-              }}
-            >
-              Confirm
-            </button>
-          </div>
-        </PaperDialog>
+        <PaperConfirm label={confirmation.label} onClose={() => setConfirmation(null)}>
+          <button className="button" onClick={() => setConfirmation(null)}>
+            Cancel
+          </button>
+          <button
+            className="button"
+            onClick={() => {
+              setConfirmation(null);
+              void run(confirmation.action, confirmation.onDone);
+            }}
+          >
+            Confirm
+          </button>
+        </PaperConfirm>
       )}
     </PaperDialog>
   );

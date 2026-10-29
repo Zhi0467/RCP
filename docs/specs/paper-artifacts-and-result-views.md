@@ -1,604 +1,502 @@
 # Paper, artifacts, and viewing
 
-This specification owns the shared paper, the writing coach, artifacts,
-versioned reports, content interaction, storage, and repository-file previews.
-[Interface design](interface-and-visual-design.md#artifact-viewer) owns panel layout;
-[API projections](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
-owns viewer state and run inventory payloads.
+This spec owns the shared paper, coaching, artifacts, report versions, interaction,
+storage, and repository previews. [Interface design](interface-and-visual-design.md#artifact-viewer)
+owns the panel layout. [API projections](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
+owns viewer and run payloads. Models live in [paper](../../src/rcp/paper/models.py),
+[artifacts](../../src/rcp/storage/artifact_models.py), and
+[live artifacts](../../src/rcp/live_artifacts.py). Limits live in `limits.py`.
 
 ## Shared paper
 
-The paper is a file tree of Markdown, LaTeX, Typst, BibTeX, figures and any
-other files, written by the project's members. It is non-authoritative: the
-graph and research rendering remain separate writing inputs, and no paper text
-becomes graph state. There is no main file; each preview starts from the file
-being read.
+Paper is a member-authored file tree containing Markdown, LaTeX, Typst,
+bibliographies, figures, and other files. It is non-authoritative and separate
+from graph and research inputs. Paper text never becomes graph state. There is
+no main file. Preview begins with the file being read. Each text file is a shared
+live document. Concurrent edits merge without personal drafts or concurrency
+refusals. The owning RCP process holds the live documents, including those for
+personal projects with SSH state roots.
 
-Every text file is one shared live document. Members edit it at once and their
-edits merge; there is no per-person draft and no edit is refused for being
-concurrent. The RCP process that owns the project holds the live documents: the
-team server for a team project, the member's own RCP for a personal one, even
-when its state root is on an SSH host.
+Saving and publishing are separate operations. An edit, its paper revision, and
+its publication intent commit in SQLite before broadcast or acknowledgment.
+Only acknowledgment means an edit is saved. Disconnected browser edits wait.
+Publication replaces `paper/` as one staged tree after idle editing and
+periodically during continuous editing. Renames and edits therefore never appear
+apart. Failed or unreachable publication backs off while saving continues.
+Paper is never committed to Git. Workers reconstruct documents and perform SQLite
+work under the project lock. After commit, the owner installs and broadcasts the
+result even if callers cancel. The paper badge means that saved revisions still
+await publication.
+**Why:** acknowledged keystrokes must survive crashes. Multi-file builds must
+never see half a published tree.
 
-**Saved and published are separate.** An edit is saved once it, the new paper
-revision, and the intent to publish commit in one SQLite transaction; only then
-is it broadcast and acknowledged, and only an acknowledgement shows the editor
-as saved. Edits made while disconnected wait in the browser until a server
-acknowledges them. Publication writes the saved tree to the state root's
-`paper/` some seconds after editing pauses, and at least every few minutes
-during continuous editing, as one staged tree that replaces the previous one in
-a single step, so a rename and the edit that follows it never appear apart. An
-unreachable state root leaves publication pending; saving continues. Failed
-publication retries after a backoff. Paper is never committed to Git. Candidate document reconstruction
-and SQLite work run on workers under the project lock; the owner loop installs
-and broadcasts only after commit, including when a caller is cancelled. The
-project snapshot exposes `paper` as a boolean badge: true means saved revisions
-still need publication, false means they are published.
+The editor locally refuses edits that exceed the advertised per-document limit.
+It flashes red and stays editable. A server refusal ends that connection and
+shows a red edge with Retry. A refusal caused only by rate limits retries
+automatically. Deletion, maintenance, and transfer pause live Paper.
+[Socket admission](../../src/rcp/api/paper_live.py) owns retryable and permanent
+close codes. It accepts the connection before closing so browsers see those codes.
+A failed stop or ended maintenance resumes live Paper. Backup marks saved Paper
+as unpublished. Restore republishes SQLite text instead of trusting copied folders.
+Import publishes after activation without requiring a visit.
 
-**Why:** a paper co-written live must not lose an acknowledged keystroke to a
-crash, and a half-published tree breaks every build that includes the missing
-half.
+Stable file ids survive renames. File, folder, and root menus offer the applicable
+Create, Upload, Rename, Download, and Delete actions. Folders exist through file
+paths, so empty folders are browser-local. Renaming or deleting a folder creates
+one revision. Downloading a folder produces one zip. Desktop uses native save
+dialogs. New and uploaded files open immediately. Replacement uploads require
+confirmation. Splits retain a usable width and the browser's preference. They
+support keyboard resizing and omit the divider when stacked.
 
-The editor refuses a local edit that would push its file past `max_doc_bytes`
-and flashes a red edge, leaving the text editable. An edit the server refuses,
-such as an invalid one, ends that file's connection for good and the editor
-shows a red edge with one retry action; an edit refused only by the update rate retries on its own. Deletion,
-maintenance, and transfer pause the live paper; paused admission closes with
-retryable socket code 4503, while lost membership or a deleted file closes with
-4403. Refused connections are accepted before closing so browsers receive the
-code. A stop that fails, or maintenance that ends, resumes it. The backup SQLite
-snapshot holds all saved Paper state and marks it unpublished, so a restore
-republishes the saved text rather than trusting the copied folder. An imported
-project's saved Paper publishes once the transfer activates it, without a visit.
+Deleting a file with unsent peer text keeps that editor read-only with Recreate.
+Otherwise, deletion selects another file. Hidden deleted files with unsent text
+remain behind a red icon across reloads until recreated. Restart pauses the editor
+without unmounting it or losing typing. Refused or inaccessible unsent text remains
+downloadable. Leaving with unsent text asks first. An early connection close never
+discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
+transfer. Uploaded binaries deduplicate by content hash. SVG, HTML, and unknown
+types download. Only raster images display inline. Paper files never execute as
+same-origin documents.
 
-Files keep a stable identity across renames. A new or uploaded file opens at
-once; uploads go to the chosen folder, and an upload over an existing path asks
-first. When a member deletes a file another member has open with unsent text,
-that member's editor keeps it read-only and offers to recreate it as a new file;
-with nothing unsent the editor moves to another file. A hidden file deleted that
-way stays reachable from one red icon while it holds unsent text, also after a
-reload, until Recreate moves the text to a new file. A backend
-restart pauses every document without unmounting the editor, so typing carries
-on; text refused by the server, or held when access is lost, can be downloaded,
-and a close before the server answered (such as a room limit) never discards it.
-While the open file has unsent text, leaving the page asks first. One path rule serves editing,
-backup and transfer; `.git` and `.publish` are reserved path components. Uploaded figures are stored once by
-content hash. Paper files are served as files, never as same-origin documents:
-SVG, HTML and unknown types download; only raster images show inline.
+A database without Paper adopts the existing published tree. Local revisions
+continue after its marker. SSH mirrors omit that marker, so publication waits
+until new revisions pass it. Paper from before the file tree becomes
+`introduction.md`. Both divergent old drafts and saved text are retained. The draft
+becomes live, and publication waits for a member to choose. The unchosen text
+remains in History.
 
-A database with no Paper for a project adopts the tree already published in its
-state root, every file and folder, so a fresh install pointed at existing state
-never publishes over it. On a local state root its revisions continue after the
-published one; an SSH mirror omits that marker, so publication waits until the
-new revisions pass it.
-A project that still holds a pre-tree paper keeps it as `introduction.md`. When
-its old draft had diverged from the saved introduction, both are kept, the draft
-becomes the live text, and nothing publishes until a member picks which to keep.
-The text not picked stays in History.
-
-History records a version after each burst of editing and on request. Deleting a
-file, replacing its uploaded content, or restoring History first checkpoints the
-current revision if no version covers it. Restore and text uploads replace only
-the changed span, preserving peer positions in unchanged text; identical content
-creates no edit. History rows include the member display name when available,
-and the tree advertises the per-document byte limit as `max_doc_bytes`. Automatic
-versions form a bounded ring; named versions have a quota, and a full quota
-refuses new names rather than evicting old ones. A history byte budget filled by named
-versions refuses only new names; edits keep saving. Members may delete named versions
-through `DELETE /api/projects/{project_id}/paper/history/{version_id}` to free quota;
-automatic versions refuse deletion with 409. A version is restored per file
-as a new live edit. Revision timing rows are pruned once both publication and
-the newest retained version cover them; unpublished or unversioned edits keep
-their timing records.
+History checkpoints editing bursts and explicit requests. Before deletion,
+replacement upload, or restore, it also checkpoints current revisions that are
+not yet covered. Restore and text upload change only the differing span to
+preserve peer positions. Identical text is a no-op. Per-file restore is a new
+live edit. Automatic versions form a bounded ring. Named versions have count and
+byte quotas. They refuse new names instead of evicting old versions or blocking
+edits. Members may delete named versions. Deleting automatic versions is refused.
+Timing rows prune only after publication and retained History both cover them.
 
 ### Preview
 
-Markdown renders in the browser, with image paths resolved inside the paper
-tree. A link to another paper file opens it in the editor, an `http(s)` link
-opens a new tab, and any other link is inert. Large Markdown files re-render only
-after typing pauses. Typst compiles in the browser from compiler and font files that the RCP
-backend downloads once, checks against pinned hashes, and serves from its own
-origin. LaTeX compiles on the RCP backend with Tectonic, downloaded and checked
-the same way on first use, run with `--untrusted` and bounded in time, output and
-concurrency. A compile changes no state, so any member may start one; a newer
-compile cancels a different older one for the same project, an identical one
-joins the running compile, a cancelled preview shows the failure with Retry, and
-earlier PDFs stay readable until the result limit ages them out. A
-compile starts from the one root that reaches the open file; with none or
-several, the preview lists the candidates, and the chosen one is sent as the
-compile root, accepted only while it still reaches the open file. The PDF keeps
-its scroll position per
-compile root across file switches, and Typst errors show as path, line and
-message.
+Markdown renders in the browser with images from the paper tree. Paper links open
+the editor. HTTP(S) links open a new tab. Other links are inert. Large files render
+after typing pauses. Typst runs in the browser with a compiler and fonts downloaded
+by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backend
+with `--untrusted` and bounded time, output, and concurrency. Compilation changes
+no state and is available to members. Identical concurrent requests join. A newer,
+different request cancels the project's older request and shows Retry. Previous
+PDFs remain readable within retention.
 
-Tectonic runs as the RCP server user with no operating-system sandbox.
-`--untrusted` turns off shell escape only, so `\input` of an absolute path
-can print any file that user can read into the preview PDF, including files
-that agent launches hide. This is accepted: members are one trusted lab, the
-PDF goes only to members, and no agent can read the preview.
+Preview selects the one compile root that reaches the open file. A LaTeX file
+with its own `\documentclass` is its own root, so the file the user is in
+compiles even when another root inputs it. If no root or multiple roots qualify,
+it shows candidates. A chosen root is accepted only while it reaches that file.
+LaTeX compiles with SyncTeX; the backend parses it beside the result into each
+tree file's first PDF page and height per source line, bounded in `limits.py`.
+After each compile and when the cursor settles, the PDF scrolls to the open
+file's line, so a section opens at its own page rather than page 1. Typst and a
+LaTeX file outside the map keep the per-root remembered scroll. The preview's actions
+(engine install, root choice, compile log, Download) sit in the panel header
+beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
+the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
+disables shell escape, but absolute inputs may expose any server-user-readable
+file in the member-only PDF, including agent-hidden files. This follows the
+[team trust model](server-and-machine-operations.md). Agent launches cannot read
+the preview.
 
 ## Writing coach
 
-The coach reads the paper, graph and research rendering, flags unsupported
-claims, asks questions, and may change the paper: edit, create, rename or delete
-any paper file. It reads a read-only snapshot of the saved paper taken when its
-turn starts, and writes whole files into its own changes folder
-(`changes/files/…`, with renames and deletions in `changes/moves.json`). RCP
-collects that folder alone, validates all of it or none of it, and turns it into
-change cards by diffing against the snapshot; the coach never writes diffs or
-line numbers. Validation applies the live paper's own limits to the whole
-proposed tree. A rename and the edits that depend on it form one card group.
+The coach reads saved paper, the graph, research, and context to question claims
+or propose file edits, creation, renames, and deletion. Each turn reads an immutable
+saved snapshot. It writes complete files only under `changes/files/` and records
+moves and deletions in `changes/moves.json`. RCP validates the whole output tree
+against paper limits or rejects it all. It then diffs the output against the
+snapshot to create cards. A rename and its dependent edits form one group. The
+coach writes no diffs or line numbers.
 
-A card applies only to the text it was made from. At the end of a turn RCP
-checks every card against the live paper; a card whose text has since changed is
-refreshed by up to two short follow-up turns of the same coach session, then
-shown as outdated with refresh and reject actions. These follow-ups retain the delivered
-master, send changed snapshot/output paths as a delta, and record a separate
-immutable prompt for each refresh round.
+Execution follows [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
+Remote snapshots are fixed stage inputs, never the live publication directory.
+Only changes are writable. Bounded read-back refuses symlinks and hardlinks and
+uses the same card collection. Shared supervised passes, process receipts, and
+quiescence prevent overlapping providers. Collection stores the task and round
+receipt with the cards. Replay therefore duplicates neither cards nor refreshes.
+Detached turns retain history mailboxes and their captured read scope through
+restart until settlement. Checkpointed recovery keeps stages. Completed stages
+survive for continuations until the sweeper removes them. Saved off-base sessions
+reopen fresh on base. Their visible history remains, but their native memory is
+lost. Model and effort changes retain the native session. Provider changes reopen
+it under ordinary profile compatibility.
 
-By default each card waits for a member to accept or reject it. In a chat set to
-apply directly, every fresh card is applied when the turn ends, and the cards
-become a log. Either way, applying re-checks the original text, happens once per
-card, and records a receipt that a guarded Undo reverses while the regions it
-changed still hold what the coach wrote; edits elsewhere in the file keep it. Undo all reverses every accepted or applied card of a turn. A card that fails to apply stays reviewable; in a chat set
-to apply directly, the other cards still apply. The same durable receipt holds the prepared operation,
-its inverse, and the core's committed result; replay returns that result before
-checking preconditions again. A refused Accept or Undo drops its prepared receipt,
-so a retry prepares it again against the current text. Outstanding cards and active coach turns keep their
-base revisions available even beyond the ordinary snapshot retention window.
-Pending and outdated binary cards retain both original and proposed blobs through
-backup and restore. Card lists load payloads together and read the live paper only
-when pending cards need their anchors checked. Each mapped text anchor exposes
-`current` with live UTF-16 start/end offsets, its 1-based start `line`, revision,
-and anchored text.
-Delete receipts also retain the text document state so Undo restores its CRDT
-identity; reconnecting a cached editor cannot duplicate the restored text.
+Uploads and references use ordinary attachment admission and a per-draft
+`attachment_scope_id`. They are staged as immutable readable inputs locally or
+remotely. The shared renderer separates uploads from references. It includes the
+ordinary graph read scope and named branches in the master and continuation deltas.
 
-The coach request's `paper_apply_directly` boolean is normalized into its saved
-`mode`. Rewrite Compare fetches the full proposed text from
-`GET /api/projects/{project_id}/paper/changes/{change_id}/proposed`; this
-membership-protected response is plain text, served as an attachment with
-`nosniff`. From RCP can attach the whole saved paper or any file by stable id.
+Cards apply only against their source text. Settlement checks the live anchors.
+Changed text gets up to two refresh turns in the same session. After that, the
+card becomes outdated and offers Refresh or Reject. Refresh preserves the master,
+sends changed paths as a delta, and saves an immutable prompt for each round.
+Default mode waits for the member to Accept or Reject. Apply-directly mode applies
+each fresh card at turn end. Failures remain reviewable without blocking other cards.
 
-The coach cannot write the paper directly, emit a Patch, approve Proposals, or
-promote paper text to graph state. Prior transcripts and skills cannot widen its
-capability or public-web contract; see [provider containment](providers-and-containment.md).
+Apply rechecks the source text and runs once per card. Its durable receipt holds
+the prepared operation, inverse, and committed result. The receipt replays before
+precondition checks. A refused Accept or Undo drops preparation so retry prepares
+again against live text. Guarded Undo requires the changed regions to still hold
+the coach's text but tolerates edits elsewhere. Undo all reverses a turn's applied
+cards. Undoing deletion retains CRDT identity so cached editors do not duplicate
+restored text. Pending cards and active turns retain base revisions. Pending and
+outdated binary cards retain both blobs through backup and restore. Card batches
+read live paper only to check pending anchors.
+[Change models](../../src/rcp/paper/changes.py) own anchor and receipt shapes.
+
+The saved mode normalizes the request's apply-directly choice. Rewrite Compare
+fetches the full proposed text through the member-only plain-text attachment
+route with `nosniff`. From RCP attaches all saved paper or files selected by stable
+id. The coach shares chat's composer, transcript, attachments, comments, and
+editable agent picker. Provider changes announce a fresh session. History and
+New chat sit at the end of Paper's view-switch row without adding a phone row.
+The coach has no direct paper, Patch, approval, or graph-promotion authority.
+[Containment](providers-and-containment.md) remains fixed regardless of transcripts
+or skills.
 
 ## Answer and artifacts are independent
 
-The labelled assistant message is the Markdown answer. Artifact discovery,
-validation, expiry, rendering, SSH, or Download failure cannot change the answer,
-task/Patch verdict, or graph.
+The labelled Markdown assistant message is the answer. Failures in discovery,
+validation, expiry, rendering, SSH, or Download never change the verdict for the
+answer, task, Patch, or graph. Discovery visits direct regular children of the
+exact turn artifact directory in filename order. It enforces the count,
+per-file, and total-byte caps in `limits.py` before reading. It ignores nested
+files, symlinks, provider paths and directives, and prose URLs. Empty or oversized
+files get no card. Durable omitted counts and discovery failures expose no paths.
+They survive even when there are no cards or answer. In-place edits to old files
+use versioning.
 
-Discovery reads direct regular children of the exact turn artifact directory,
-in filename order: at most eight files, 16 MiB each, 32 MiB total. Size is checked
-before reading. Nested files, symlinks, provider paths/directives, and prose URLs
-are ignored. Empty/over-bound files get no card; durable omission counts and
-`discovery_failed` survive even without cards or answer, never exposing paths.
-Earlier files edited in place follow [Editing and versions](#editing-and-versions).
+RCP captures bytes with origin task ids across chat, Experiments, workers, retry,
+and recovery. Viewing therefore needs no live stage. Bounded background import
+preserves the origin and supplier for both stage-only and repository-kept outputs.
+Temporary expiry uses the stage's last-touch time. Repository-kept originals never
+expire. Unresolved candidates import independently with full retention. Errors
+distinguish retryable backoff from terminal missing, expired, or invalid sources.
+Import cannot replace artifacts. Maintenance and shutdown drain active passes.
 
-Bytes are captured into RCP storage with task identifiers for chat, Experiment,
-child Work, retries, and recovery. Viewing/Download needs no live stage/session.
-Bounded background import covers stage-only/repository-kept outputs, preserving
-origin and supplier. Temporary imports expire from stage last-touch; kept files
-remain in the repository without expiry. Unresolved candidates import separately
-with a full retention period. Durable errors distinguish retryable backoff from
-terminal missing/expired/invalid sources. Import never replaces existing artifacts;
-maintenance/shutdown drains active passes.
-
-HTML uses the opaque sandbox required by
-[AGENTS invariant 10e](../../AGENTS.md#stable-invariants). Inline scripts cannot
-reach/navigate RCP, open popups, submit forms, download, or use ordinary network
-resource APIs. Trusted clicks on sanitized HTTP(S) references may relay through
-a wrapper-private channel. Child-frame self-navigation can still send data;
-there is no zero-network promise.
-
-Browser-granted turns can run `rcp-artifact-preview <dir> --port 0` on their host.
-It uses the production sanitizer/CSP, logs removed loading attributes, and serves
-only the granted turn workspace's artifact folder, refusing symlinks/other paths.
-It sets no palette, showing Expand/download fallback colors. The launcher supplies
-`ARTIFACT_PREVIEW_IDLE_SECONDS`; inactivity ends it. Other turns use logic checks.
-
-Type recognition fixes each artifact's presentation:
+HTML follows [invariant 10e](../../AGENTS.md#stable-invariants). It uses an opaque
+sandbox with no RCP access or navigation, popups, forms, downloads, or ordinary
+network resource APIs. Sanitized trusted HTTP(S) clicks may relay privately.
+Child self-navigation can still send data, so there is no zero-network promise.
+Browser-granted turns may use `rcp-artifact-preview <dir> --port 0` on the host.
+It uses the production sanitizer and CSP, reports removed attributes, and scopes
+access to the exact artifact folder. It refuses symlinks, uses authored fallback
+colors, and applies the launcher's idle timeout. Other turns use logic checks.
 
 | Type | Presentation |
 | --- | --- |
-| HTML | Sandboxed viewer, no card thumbnail. |
-| Raster/SVG | Viewer and small inline picture. |
-| MP4/M4V, MOV, WebM | Native video in chat and the viewer; whole-file comments. |
-| Markdown | Script-free rendered HTML; raw HTML visible, links inert, images not fetched. |
-| Text/data/code/notebook | Escaped numbered text; valid JSON/notebooks pretty-printed. |
-| PDF | Desktop system viewer; browser Download only. |
-| Other/unrecognized bytes | Download and Keep only, even if bytes/support later change. |
+| HTML | It opens in the sandboxed viewer without a thumbnail. |
+| Raster or SVG | It opens in the viewer and as an inline picture. |
+| Video | It uses the native player in chat and the viewer, with whole-file comments. |
+| Markdown | It renders without scripts. Raw HTML is visible, links are inert, and remote images are disabled. |
+| Text, data, code, or notebook | It displays as escaped numbered text. Valid JSON and notebooks are formatted. |
+| PDF | It uses the desktop system viewer or browser Download. |
+| Other | It offers only Download and Keep. Recognition never changes retroactively. |
 
-Video downloads on Play, then uses a blob URL in the native player. The byte
-route returns the whole file without Range support: WebKit refuses full-body 200
-responses to media range probes, and blobs avoid those probes within the 16 MiB
-artifact cap. Leaving the viewer aborts downloads and releases the blob.
-
-Text/Markdown previews label bounded prefixes; Download returns full bytes.
-A broken preview never hides Download/Keep or the reply. Keep refreshes the task
-projection. `view` and independent open/download/keep/discuss offers are backend
-answers; `can_open` always means an RCP viewer, not system PDF handling.
+[Byte classification](../../src/rcp/artifacts.py) owns the recognized formats.
+Play downloads video into a blob URL. This avoids WebKit's Range probes against
+the whole-file byte route. Leaving aborts the download and revokes the URL.
+Bounded text prefixes are labelled, while Download returns the full bytes.
+Broken previews retain Download, Keep, and the reply. Backend offers to view,
+open, download, keep, or discuss are independent. `can_open` means the RCP viewer,
+not system PDF opening. Keep refreshes the task projection.
 
 ## Live HTML pages
 
-Live HTML watches changing job, sweep, episode, node, graph, or file data. Reports are
-static: their creation/import owner records `live_data_allowed: false`, enforced
-by shared code. One JSON script `id="rcp-live"` declares version 1 and `needs`;
-`rcp.live_artifacts` owns schemas and `rcp-live-data` messages.
+One JSON script with `id="rcp-live"` declares needs through
+[LiveTag](../../src/rcp/live_artifacts.py). Reports explicitly forbid live data.
+Needs can identify helper keys, target nodes, the artifact's episode, or files
+and folders on the execution host. Read roots are registered repositories and
+ready conversation or episode worktrees. Stages and artifact folders are never
+read roots. Paths alone grant nothing.
 
-Needs identify helper launch keys, target node ids, the artifact's own episode,
-or absolute execution-host files/folders. File sources select tail/whole and
-jsonl/csv/text. Readable roots are prompt-listed registered repositories and the
-artifact's ready conversation/episode worktree, never task stages or artifact
-folders. Paths alone grant nothing.
+Folder patterns have bounded literal or fnmatch segments. Absolute, recursive,
+parent, empty, and dot segments are forbidden. Descriptor walks reject symlinks
+and nonregular files. They rediscover sorted matches on each read. Empty matches
+succeed. Missing or unreadable folders fail. Bounded files, bytes, and rows, along
+with per-file errors, preserve partial success. Remote folders use one SSH call
+that runs the same reader. Models and limits own the exact pattern, row, and byte caps.
 
-A folder need names absolute `dir` and relative segmented `pattern`. Up to eight
-literal/fnmatch segments allow `*`, `?`, `[...]`, but no absolute pattern, `**`,
-parent/empty/dot segments. Descriptor-based walks refuse symlinks and nonregular
-files. Each read rediscovers sorted matches, including new files. Empty matches
-succeed; missing/unreadable folders fail. File entries carry relative path, rows,
-truncation/error. Folder caps are 128 files and 1 MiB total, plus per-file/row caps;
-one file's failure does not hide others. One SSH call handles each remote folder;
-local and remote execute the same reader.
+Each artifact version resolves its needs once, including edited versions. Job
+keys bind to durable receipts and recovery lineage. Invalid declarations remain
+static with stored reasons. Bindings, diagnostics, and final snapshots belong to
+the version, so Undo cannot retarget them. Authenticated reads accept only artifact
+and version ids. They recheck membership and target, then use the stored bounded
+bindings. Episode budgets remain invocations. Visible viewers poll more slowly
+over SSH and relay data one-way into opaque HTML.
 
-Each version resolves needs once, including edits. Job keys bind stable receipt/
-recovery lineage; invalid declarations stay static with stored reasons. Bindings,
-diagnostics, and final snapshots belong to that version, so Undo cannot retarget it.
-Authenticated reads take only artifact/version ids, recheck membership/target,
-and use stored bindings with bounded regular-file readers (`limits.py`). Episode
-budget values remain invocations.
-
-The visible viewer polls (slower for SSH) and relays one-way into opaque HTML.
-Server reconciliation independently captures final data once all watched jobs/
-episodes end. Failures retry with bounded backoff/attempts, preserving exhausted
-errors. Expired unkept artifacts skip; invalid ownership/lineage/history-only
-sources terminate. Reads happen outside the artifact lock; save rechecks under it.
-Only complete snapshots become immutable and survive source loss. Node/graph/file/
-folder-only pages never finalize. Snapshot bytes share version backup/transfer/retention.
+Server reconciliation captures final data after all watched jobs and episodes
+end. Failures use bounded backoff and attempts, and exhausted errors are retained.
+Expired artifacts that were not kept are skipped. Invalid ownership, invalid
+lineage, and history-only sources terminate reconciliation. Reads occur outside
+the artifact lock. Saving rechecks state inside it. Only complete final snapshots
+become immutable and survive source loss. Pages that need only nodes, graphs,
+files, or folders never finalize. Snapshot bytes follow the version's backup,
+transfer, and retention rules.
+**Why:** the wrapper supplies declared data without giving HTML a credential or
+executing agent code outside a launch. Child navigation still prevents a
+zero-network promise.
 
 ### Graph views
 
-A `graph` need takes no parameters and delivers a lean projection of the
-artifact's bound graph target: each node's id, type, title, standing, and status,
-and each edge's source, relation, and target. Titles are cut to a schema limit
-with a flag; ids never are. Bodies are never included. The page's own script
-filters and draws it, so no query language exists. A declaration has at most one
-`graph` need and cannot combine it with `job` or `episode` needs.
+A parameterless graph need returns the bound target's lean `GraphSnapshot`, never
+node bodies. Schema bounds truncate titles with flags, never ids. Page code
+filters and draws the snapshot. There is no query language. Only one graph need
+is allowed, and it cannot accompany job or episode needs.
 
-Each graph snapshot is full, unchanged, or an error. It carries an opaque head
-for its target that also changes across restart and restore. The shell sends the
-head of the last complete graph it cached, and the server omits graph data when
-it is unchanged. Byte caps in `limits.py` bound the graph and the whole message;
-the shell re-measures a delivery rebuilt from its cache and, if it would exceed
-the message cap, drops the head so a full read decides.
-Over a cap, the read is an error: the shell keeps its last complete graph, marks
-it stale, and keeps polling until the graph fits again. Nodes and edges are never
-silently dropped. An oversized saved final, or declared identities that alone
-exceed the message cap, can never shrink, so that error is static.
+Snapshots are full, unchanged, or errors. They carry an opaque target head that
+restart or restore invalidates. The shell sends its last complete head. An
+unchanged response omits the graph. Graph and message caps also apply after shell
+cache reconstruction. If that result is too large, the shell drops the head and
+requests a full read. Reads over the cap retain the last complete graph as stale
+and continue polling. Nodes and edges are never silently omitted. Oversized
+immutable final snapshots or identities produce static errors.
 
-A page may post `rcp-open-node` with a node id. Each frame hop accepts it only
-from its exact child, and the shell forwards only ids in the last delivered
-graph. A pinned view opens RCP's own node panel; elsewhere it is ignored. The
-page never receives a reply.
-
-A member may pin an HTML artifact into the Artifacts switch, after Files | Paper,
-for main or an existing branch in the project. Pins are personal, shown only
-while that target is selected, bounded by `RESEARCH_VIEW_PIN_LIMIT` per target,
-and always show the current version. Pinning keeps
-the artifact in the same transaction; unpinning deletes only the pin. Pins are
-not carried by cross-space transfer. The viewer's compact branch picker defaults
-to the origin task's bound target; choosing a target does not pin until Pin is
-clicked. If already pinned on the selected target, the control opens that pin.
-The artifact's live-data binding remains unchanged.
-
-**Why:** members can keep a useful branch artifact accessible after merging its
-branch, while personal pins and their limits remain separate for each target.
-
-**Why:** RCP owns every graph read, so a custom view gains no data path the
-member lacks and no new request channel. Opening a node uses trusted UI, so the
-page cannot style or intercept protected content. Change history is not part of
-this projection; a revision head cannot reconstruct what changed.
-
-**Why:** The authenticated wrapper can relay declared data without giving agent
-HTML an RCP credential. Refresh never executes agent code outside a launch;
-the producing code shapes its own data. Relayed data can still leave through
-child-frame navigation.
+`rcp-open-node` crosses only exact-child frame hops and accepts only ids in the
+last delivered graph. Pinned views open trusted RCP detail. Other contexts ignore
+it, and HTML gets no reply. Personal HTML pins appear after Files and Paper only
+on their selected main or branch target. They are bounded per target and always
+show the current version. Pin atomically keeps the artifact. Unpin removes only
+the pin. Transfer omits pins. Viewer target selection defaults to the origin and
+requires explicit Pin. It opens an existing pin and never changes the live binding.
+**Why:** custom views inherit the member's graph access and trusted node UI, not
+another request channel. Personal pins for each target can retain useful branch
+views. Revision heads do not reconstruct change history.
 
 ## Episode reports
 
-Non-Stop endings use the hidden [visual wrap-up](conversations-episodes-and-watchers.md#visual-wrap-up).
-The provider writes exact `episode-report.html`; RCP validates/captures bounded
-immutable bytes into an Artifact. The lifecycle binds its first version permanently
-and stores no HTML. Viewing never resettles an episode. The official report skill
-requires a visual retrospective; runtime validation does not score aesthetics.
-
-Experiment reports cover objective, method/configuration, attempts, observations,
-Evidence, failures, limits, and pause/next step. Auto-research adds belief movement,
-Decisions, delegation, and handback. Reports have no graph, watcher, command, or
-Proposal channel and cannot decide verdicts. Generation failure stays visible and
-nonblocking. The panel shows current version and Download, without repository copies.
+Endings other than Stop use [visual wrap-up](conversations-episodes-and-watchers.md#visual-wrap-up)
+to write the exact file `episode-report.html`. RCP validates and captures bounded,
+immutable bytes. The lifecycle binds the first version permanently without storing
+HTML. Viewing cannot resettle the episode. The official skill asks for visual
+retrospectives, rather than runtime aesthetic scoring. Experiment reports cover
+the method, configuration, attempts, observations, Evidence, failures, limits, and
+next step. Auto-research adds belief movement, Decisions, delegation, and handback.
+Reports have no mutation, watcher, command, or approval channel. They cannot decide
+verdicts. Generation failure is visible and nonblocking. The viewer shows the
+current version and Download without repository copies.
 
 ## Artifacts panel
 
-Artifacts lists kept outputs and undeleted reports across history, including
-archives, independent of task/episode windows. Temporary outputs stay in their
-chats until kept. Reports appear when captured, except an Auto-research child
-Experiment's report, which offers Keep like a temporary output and is listed once
-kept. Revisits paint cached lists first.
+Artifacts inventories kept outputs and undeleted reports across all history,
+including archives. Temporary outputs remain in chats until kept. Auto-research
+child Experiment reports also need Keep. Chain reports summarize them. Revisits
+paint the cache first. Rows group by branch, with the branch having the newest
+output first. Device folds are shared with From RCP. Archived branches sit in a
+closed Archived fold. A single branch omits its header but retains row tags.
 
-**Why:** a chain can start many child Experiments, and listing every child report
-buried the outputs a member chose to keep; the chain's own report summarizes them.
-
-Rows group under their branch, the branch with the newest output first; each
-header folds, and the device remembers which branches are folded. Archived
-branches sit together in one Archived fold after the live ones, closed until the
-member opens it; the server marks each row's branch as archived. With one branch
-there is no header and each row keeps its branch tag. The composer's From RCP
-picker groups its Reports and Artifacts folders the same way, sharing the folds.
-
-Each branch is one raised box holding its rows, with no rules between them; an
-archived branch is the same full-width box under the Archived fold. A branch
-lists its five newest rows, then one Show more control for the rest. A row leads with the title; one quiet line
-below holds the author, a Source chat link when verified, and a node title link
-when the displayed graph holds the origin node. Clicking the row opens it. Copy
-reference, Download, and Delete are icon buttons at the right. Stored
-identity/time/path remain data, not repetitive row labels.
-
-Report titles come from captured/imported HTML metadata without rereading bytes;
-missing titles use Report. Metadata never changes the immutable digest/outcome.
-One resolver gives inventory and viewer the same exact-target source link after
-checking transcript and origin, including children/edits. Orchestrator outputs
-link to Runs. Unverifiable origins have no source link but remain viewable.
-Unsupported files offer Download; desktop PDFs also offer system opening.
+Each branch is one raised box without row rules. It shows the five newest outputs
+and Show more. Rows lead with the title. The author, verified Source chat, and
+node link form one quiet line. Clicking a row opens it. Copy reference, Download,
+and Delete sit on the right as icons. Stored identities, times, and paths are
+data rather than repetitive labels. Captured HTML metadata supplies titles
+without rereading the artifact or changing its digest or outcome. A missing title
+appears as Report. One origin resolver verifies the transcript and exact target
+for the inventory and viewer, including edits and children. Orchestrator outputs
+link to Runs. Unverifiable origins retain viewing without source links.
+Unsupported files download. Desktop PDFs can open in the system viewer.
 
 ## Unified artifact viewer
 
-Custom result HTML is an ordinary artifact, available in its origin chat, producing
-run, and after Keep in Artifacts, never unrelated chats. Stored result-view rows
-migrate to artifacts; old URLs redirect.
+Result HTML is an ordinary origin artifact. It is available in its chat or run
+and, after Keep, in Artifacts. It never appears in unrelated chats. Stored
+result-view rows migrate, and old URLs redirect. All viewable content uses the
+shared panel. Its chrome is the sole action bar. The same-origin shell owns
+notices, selection, comments, and Send while HTML stays opaque. Repository
+previews are script-free. PDF and download handling follow the file type.
 
-All viewable content uses the shared panel. Panel chrome is the one action bar:
-title, version, live state, Keep, Undo, Source chat, Delete, dock, and close. The
-embedded shell owns notices, selection, comments, and Send. No guidance line repeats these paths.
-The shell is same-origin-frameable; agent HTML remains opaque. Repository previews
-are script-free; PDFs/download-only formats follow the type table.
-
-HTML doctype stays before policy/bootstrap; a missing doctype retains browser
-quirks behavior. Uncaught errors/rejections produce a bounded plain-text notice
-beneath the panel frame, or inside a reply a red edge and one icon action whose
-title holds the summary, without hiding content or blocking live data or Download. First error appears immediately, later summaries
-at most once a second, only from the current private channel. Reload/version
-change clears it. Ask to fix prefills a comment for the human to send.
+Visible panels poll even static artifacts for others' edits and Undo. Disposal
+aborts polling. Editing stays until the server clears it. Permanent HTTP failures
+stop automatic reads until Retry. Transient failures keep polling. Versions and
+Undo reload frames. The HTML doctype stays before policy and bootstrap code.
+An absent doctype preserves quirks mode. Uncaught errors and rejections produce
+bounded plain text for the current channel. They do not hide content, live data,
+or Download. Panel notices sit beneath the frame. Inline errors use a red edge,
+an icon, and a tooltip. The first error appears immediately. Later summaries are
+rate-limited. Reloading or changing versions clears them. Ask to fix prefills a
+comment for the human to send.
 
 ### Artifacts inside a reply
 
-Markdown image syntax embeds a registered artifact by its absolute file path in
-any turn folder of the same chat; a cited link opens it the same way. A turn
-folder is named by its turn, so a path resolves through that turn's descriptors,
-or through the citing turn's when it published a new version of that file. An
-episode report's folder is named by its episode, so only a turn that published a
-version of the report resolves it, even after a member deletes it. When the edit
-forked because the artifact moved past the version it started from, the turn's
-fork answers to the path it cites. A path into another chat's turn resolves to
-nothing. HTML, images, video, Markdown, and text run/render in the inline viewer;
-the card becomes Comment/Expand/Keep/Download actions beneath it. Surrounding
-links are dropped. Unembedded videos show the same player below the reply; other
-artifacts keep cards. PDFs/download-only embeds point to their cards. Unknown
-names report unavailable without navigating. Old turns fetch their exact task
-before declaring absence and retain it across list refreshes.
+Markdown images and path links resolve registered artifacts in any turn folder
+of that chat. Resolution uses that turn's descriptors or the citing edit's new
+or forked version. Episode-folder report paths resolve only for publishing turns,
+including deletion history. Paths from another chat and unregistered paths never
+navigate. Older turns fetch the exact task before declaring an artifact absent.
+They retain it across list refreshes. HTML, images, video, Markdown, and text embed
+with Comment, Expand, Keep, and Download actions. Surrounding links are dropped.
+Unembedded video uses the same player. PDF and unknown embeds point to cards.
+`/viewer` is the explicit shell. `/preview` is its compatibility alias, including
+old image byte requests. `/content` renders raw sandboxed content and is not
+another entrance.
 
-Inline uses the same shell without chrome, with transparent background. Every
-frame pins the reply color-scheme; content receives `--rcp-*` palette before its
-CSS. Theme/mode changes reload it. Only inline supplies palette; Expand/download
-use authored fallbacks. Markdown/text run no script. Every embed holds one box of
-`limits.py`'s fixed height from mount, while its turn loads, and through refreshes
-and versions; taller content scrolls inside it, and an image is centered in it.
-Its caption stays one row until the reader acts (comment mode, a failed Keep), so
-an embed loading never moves the chat. Frames mount within 800px of the reader in
-the chat's own scroll box and refresh on settled turns, viewer version changes,
-page visibility, and a slow live interval. Live data remains one-way.
+Inline content uses the shared shell without chrome, a transparent background,
+the reply's color scheme, and the `--rcp-*` palette before CSS loads. Theme changes
+reload it. Expand and Download use authored fallback colors. Markdown and text
+run no script. The fixed embed height persists through loading, refreshes, and
+version changes. Content scrolls internally, and images are centered. The caption
+stays on one row until an action, avoiding chat motion. Frames mount near the
+reader in the chat scroll box. They refresh when turns settle, the version or
+visibility changes, and on a slow live interval. Live relay is one-way.
 
-Comment mode starts off, preserving chart/game input. Mouse/pen readers can enable
-selection; touch-only readers use Expand for whole-artifact comments. Selection
-opens the chat comment window; Add comment stages one artifact's comments and
-version in the composer. Admission rejects a moved version. Cancel/Escape/new
-selection or leaving mode closes the window. Version changes also clear old
-staged regions with a notice. Keep follows viewer state.
-
-Composer comments use that chat's Discuss/Work mode and execution profile,
-Experiment chats included, and share a turn with attachments and project
-references. Read-only Auto-research children compose comments only, in Discuss,
-without references. Both can
-publish the same artifact's next version through its tracked file.
-
-`/viewer` is the explicit shell; `/preview` remains its compatibility alias.
-An explicit legacy image request there still receives PNG/SVG bytes. `/content`
-is raw sandboxed rendering, never a separate viewer entrance. These routes serve
-both turn artifacts and reports; [run inventory](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
-supplies Runs cards.
+Comment mode defaults off to preserve interaction. Readers can select with a
+mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
+one artifact and version in the composer. Admission refuses moved versions.
+Cancel, Escape, a new selection, or leaving comment mode closes the window.
+Version changes clear stale regions with a notice. Composer comments follow the
+chat's mode and profile. They can combine attachments and references, including
+in Experiments. Read-only lineage children allow only Discuss comments without
+references. Both paths can publish tracked next versions. Keep follows viewer state.
 
 ### Selection and comments
 
-HTML/raster/SVG support gestures (on immediately in panel, opt-in inline).
-Other viewable types accept whole-artifact comments; PDF/download-only refuse.
-Each comment is text plus optional selection. Starting on text highlights it;
-figure/blank-space drags select area. The floating window offers Add comment or
-Edit now, which sends only the comment being written and leaves the tray as it is.
-Cancel/Escape discards it; a plain click elsewhere in the artifact only closes it,
-and its text returns with the next selection. A corner
-count icon opens the tray with Remove, whole-artifact comment, and Send to original
-chat, which sends every filed comment as a Work turn there. These are prompt inputs,
-never graph annotations.
+HTML, raster images, and SVG support gestures immediately in the panel and by
+opt-in inline. Other viewable types allow whole-file comments. PDFs and types
+available only for download refuse comments. Text selection highlights text.
+Dragging on figures or blank space selects a boxed region. Add saves a comment
+in the tray.
+Edit now sends only the comment being written without changing the tray. Cancel
+or Escape discards it. Clicking elsewhere closes the window but retains the text
+for the next selection. The tray offers Remove, a whole-file comment, and Send to
+original chat for all filed comments. These are prompt inputs, never graph annotations.
 
-The shell saves filed comments/unsent text per artifact in the browser profile.
-Both send paths post a comment list, with `edit_now` for immediate editing. A refusal
-keeps the comments with the reason (a refused Edit now files its comment in the tray,
-or returns it to the comment box when the tray is full);
-success removes only the comments it sent and reports the operation to the parent.
-Explicit fresh-session admission is labelled on Edit now, and on Send only where it
-too resumes the origin. Send, and inline comment mode in a chat, need only a readable
-artifact in a chat that takes human turns; the origin's master and session gate only
-Edit now (`can_edit_now`). A later edit failure comes from `edit_failure` until replaced.
-Theme follows the containing app, or remembered appearance when standalone.
+Browser-profile storage retains filed and unsent comments per artifact. Both
+send paths retain refused comments with a reason. A refused Edit now files the
+comment in the tray or returns it to the box if the tray is full. Success removes
+only sent comments and reports the operation. Fresh-session admission is labelled
+where the send resumes the origin. Ordinary Send and inline comments need a
+readable artifact and a chat that accepts human turns. The origin master and
+session gate Edit now. A later failure remains in `edit_failure` until replaced.
+The theme follows the app or the standalone preference.
 
-Selections carry bounded text/context. HTML boxes name up to eight elements by
-CSS path, own/chart label, text, and relative position within a containing element.
-Image boxes use orientation-correct displayed fractions. Raster crops are decoded
-once from the staged version and retained for recovery; animation uses its first
-frame and says so. SVG/over-pixel-limit images carry positions only. Legacy viewer-
-area boxes keep sampled text and are never cropped. Turns allow 50 annotations.
-Both routes number human `Comment N:` text and prompt regions identically;
-`edit_now` adds only the immediate-edit request. The chat route joins each human
-turn's selections to its message, so the bubble names the artifact and quotes what
-each numbered comment was drawn on: the text, the boxed elements' names, or a plain
-area for an image. The editable item also gives the
-URL-encoded Markdown embed of its tracked path, so a reply that changed the file in
-place can show it there. All input is bounded/untrusted.
+`ArtifactContextRequest` in [service models](../../src/rcp/service.py) owns bounded
+selection inputs. [Comment requests](../../src/rcp/api/artifacts.py) own sends.
+HTML areas identify elements by CSS path, label, text, and relative position.
+Image areas use displayed fractions corrected for orientation. Raster crops
+decode once from the staged version and survive recovery. Animation uses the
+first frame and labels it. SVG and oversized images carry only positions. Legacy
+viewer areas are never cropped. Both routes number human comments and regions
+identically. Edit now adds only the immediate request. Human bubbles name the
+artifact and selected text, elements, or image area. Editable context provides a
+URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions
 
-Admission captures artifact/version. A composer comment must belong to that chat
-and is an ordinary turn of it: its `artifact_context` names the artifact and the
-version it was drawn on, and nothing else binds it, so it follows the chat's mode,
-profile, session, write scope, group context, graph admission, compute, and worktree
-exactly as a plain follow-up does. A viewer Send is that same composer turn in Work, on the chat's latest
-profile, whenever the artifact's chat takes human turns (ordinary and Experiment
-chats, and an ended chain's orchestrator conversation). Edit now, and a Send whose
-origin is a running orchestrator or a read-only child, resume the recorded master: chat/child masters get Discuss with the origin
-profile; Experiment/orchestrator masters get a revoking scratch-only edit, without
-graph, watcher, master, or repository authority. Admission freezes this choice.
+Admission freezes the version and route. Composer comments are ordinary turns
+with that chat's mode, profile, session, scope, graph, compute, and worktree.
+Viewer Send uses the same Work path with the latest profile when the chat accepts
+human turns. This includes ordinary chats, Experiments, and ended orchestrators.
+Edit now resumes the recorded master. Send also resumes that master for a running
+orchestrator or read-only child. A chat or child master uses Discuss with the
+origin profile. An Experiment or orchestrator master uses a scratch-only edit
+that revokes graph, watcher, master, and repository rights.
+[Edit admission](../../src/rcp/runs/artifact_edit_admission.py) owns routing.
+**Why:** the recorded master defines session compatibility. After a revoking edit,
+the next operational turn must reopen its master. Versions need no Accept because
+Undo is reversible and never overwrites human repository files.
 
-**Why:** The recorded master defines which turns its session understands. A
-revoking edit avoids substituting an incompatible chat contract; the next
-operational turn reopens its own master. RCP-owned versions need no Accept step:
-publication is reversible through Undo and cannot overwrite a human repository file.
+Admission atomically reserves the session and stage across owners. A busy owner
+refuses the edit rather than queuing or steering it. Edits spend no episode
+invocation. They do not change health, Stop, or operational membership. The durable
+origin routes replies. Chat and child replies go to chat. Experiment replies go
+to node chat. Orchestrator replies go to Runs as delivered mail with a labelled
+answer. There is no new-chat routing, current-view routing, or implicit master reopening.
 
-Admission atomically reserves session/stage across launch owners. Busy returns
-409; comments are not queued/steered. Edit tasks consume no episode invocation or
-health/Stop state; provenance remains for display/replies, not operational membership.
-Completion never clears the need to reopen a revoked master.
+Artifacts track their origin-stage path and last recorded digest, using the first
+version for legacy artifacts. Before turns, unchanged tracked files synchronize
+to current versions after Undo or peer edits. Locally changed or missing files
+remain as they are. A new comment restores its selected version even over missing
+text or text from a failed turn. Retrying or resuming the same comment keeps changes.
+It restores current bytes only when the file is missing. Different stages get a
+turn-relative copy that publishes at settlement but is not tracked later. Read-only
+crops remain inputs. Question answers need no extant artifact. Other tracked-file
+errors warn and defer. Only failure of the commented file refuses that comment.
 
-Durable origin decides replies: chat/child outputs use their chat, Experiment
-outputs use its node chat, orchestrator outputs use Runs. Orchestrator comments
-are already-delivered mail with the labelled answer as reply. No new chat or
-current-view routing is involved.
+Settlement digests session files. Remote settlement uses one SSH call. Under the
+artifact lock, it publishes changed bytes against the retained version matching the
+recorded digest. A moved or pruned base forks into a new artifact and tracked
+file with an id prefix. Invalid types, sizes, or reads produce failures with
+reason codes. Ordinary absence produces nothing. A commented file that is
+unchanged or missing records that outcome. Reads stop beyond the cap. Every
+outcome updates the digest, including invalid markers, so later synchronization
+restores rejected or forked files. Replay retains receipts and already-published
+versions. Outcomes project as published, unchanged, failed, or forked, adapting
+older receipts. Replies state when publication did not occur. Artifacts deleted
+during a turn drop edits without an outcome. Publication failure leaves bytes for
+later settlement and cannot fail the answer. Failed turns retain their stage
+without publishing. Other new files remain ordinary outputs.
 
-Each turn artifact tracks `turns/<turn>/artifacts/<name>` on its origin stage and
-the digest last recorded there (legacy records use the first version). Session
-artifacts are live outputs sharing stage host/root. Correcting/enriching an old
-file in place makes a version; the agent decides when to create a new file.
-Before a turn, files still matching the recorded digest are rewritten to current
-versions, reflecting Undo/other edits. Changed files remain; missing files skip.
-
-A new comment restores its selected version at the tracked path, even over failed-
-turn changes or absence. Retrying or resuming that same comment preserves changes;
-if missing, it restores current bytes, not a possibly pruned base. A different stage
-receives only the commented artifact at a turn-relative path and publishes at turn
-end; no later session tracks that copy. A question answer is an ordinary turn with
-no comment, admitted whether or not the artifact still exists. Read-only selection
-crops remain alongside turn inputs. Turn start never refuses a turn over another
-tracked file: one it cannot check or read is a warning event and waits for a later
-turn; only the commented file's own failure refuses its comment.
-
-Settlement digests session files (one SSH call remotely). Changed bytes publish
-against the retained version matching their recorded digest, under the artifact
-lock. If current moved or that base was pruned, bytes fork into a separate artifact
-with an id-prefixed name and its own tracked file. Type changes, oversize, or
-unreadable files produce reason-coded failure; ordinary missing files produce
-nothing. Commented unchanged/missing files record `unchanged`/`missing`.
-Digest reads stop one byte beyond the limit. Every outcome updates the tracked
-digest, including invalid-file markers, so next start restores rejected/forked
-files to current content.
-
-Replay keeps receipts and recovers an already-published operation's version.
-`result.artifact_edit_outcomes` lists published/unchanged/failed/forked per artifact,
-including projected older single receipts. Replies state non-published outcomes;
-published versions show themselves. An edit to an artifact a member deleted during
-the turn is dropped without an outcome. Their later cards accept comments and tracked-
-file citations. Unreachable publication never fails the answer: bytes remain for
-a later settlement. Failed turns retain stages without publishing; other new files
-are ordinary outputs. Version storage stays outside provider-writable scratch.
-
-Undo moves back one retained version, with no redo and original preserved. It may
-run during an edit; active base versions stay retained. Publication, Undo, Keep,
-expiry, and pruning share the artifact lock. History-only/missing session/stage
-origins report unavailability. Only an identified resumability failure plus an
-explicit fresh-session flag permits a new session/scratch in the same reply thread,
-without restoring old authority. Viewer offers use durable origin/master/reservations
-without SSH/hash work; POST still performs full admission/integrity checks.
+Undo goes back one retained version and preserves the original. There is no redo.
+Undo may run during an edit while active bases remain retained. Publish, Undo,
+Keep, expiry, and pruning share a lock. Versions remain outside provider scratch.
+Missing or history-only origins report unavailability. A new session and scratch
+in the same thread require both an identified resumability failure and an explicit
+fresh-session flag. They do not retain old authority. Viewer offers use the
+durable origin, master, and reservations without SSH or hash probes. POST performs
+full admission and integrity checks.
 
 ### Shape boundary
 
-RCP defines no chart vocabulary/data encoding. Agents can draw bounded HTML for
-series, tables, distributions, matrices, projections, grids, and structured diffs.
-Specialist viewers retain computation graphs, spatial fields/meshes, traces, and
-other domain formats.
+RCP defines no chart vocabulary or data encoding. Agents draw bounded HTML.
+Specialist viewers retain domain computation graphs, spatial fields and meshes,
+traces, and other formats. See [current exclusions](../design.md).
 
 ## Keeping an artifact
 
-Keep stops expiry and refreshes the task, without writing the state repository.
-SQLite owns metadata; digest-addressed immutable files live per artifact under
-RCP data, written atomically. Original plus bounded recent versions obey
-`limits.py`. Publication checks base and operation idempotency under the shared
-lock. Capture guards delay unlinking until captures finish, not ordinary reads,
-creation, Keep, or non-pruning publication. Backup uses the SQLite snapshot's typed
-inventory; transfer derives metadata/versions/files from one read transaction.
-Report migration writes digest files before bindings and removal of inline HTML.
-
-**Why:** RCP storage gives every format version history without adding managed
-files beside human code. Team storage is already shared; artifacts intentionally
-do not travel with repository clones. Keep, publication, and Undo grant no graph
-authority, create no Proposal, and spend no graph revision.
+Keep stops expiry without writing to the canonical repository. SQLite owns the
+metadata. Immutable digest files for each artifact write atomically in RCP data.
+Original and recent versions are bounded. Publication checks the base and
+idempotency under the shared lock. Capture guards delay pruning and unlinking.
+They do not delay reads, creation, Keep, or publication that does not prune.
+Backup uses a typed SQLite inventory. Transfer reads metadata, versions, and files
+from one transaction. Report migration writes bytes before binding them and
+removing inline HTML. Keep, publication, and Undo create no graph authority,
+Proposal, or revision.
+**Why:** shared RCP storage supplies version history without managed files beside
+human code. Artifacts intentionally do not travel with repository clones.
 
 ### Deleting an artifact
 
-Any project member may delete an artifact from the viewer or the Artifacts list,
-with a second click to confirm. Delete and expiry share one removal under the
-artifact lock and capture guard. It removes every version and every member's pin,
-clears kept bindings on chat results, and leaves an import tombstone: `missing`
-after expiry, `deleted` after Delete. Nothing recreates a `deleted` identity; the
-importer skips it and `create_artifact` refuses it, so neither turn discovery nor
-a replayed fork restores it. Deleting it again succeeds.
-
-Delete is the human's call. It refuses only while a queued, running, or pausing
-turn reads or edits the artifact, an episode report is still publishing, a
-consolidation report awaits review, or a legacy import is pending; `can_delete`
-and the route apply that same rule. It also refuses, rather than waits, while a
-backup or transfer is copying artifact files; expiry waits for the copy instead. Unlike expiry, a paused or interrupted edit holds nothing;
-its retry is refused once the artifact is gone. Deleting an episode report also
-marks its report row deleted, in the same transaction, and keeps the row as lineage
-([episode reports](conversations-episodes-and-watchers.md#visual-wrap-up)). A file
-an older Keep copied into the state workspace stays; Delete only unbinds it.
-
-**Why:** without the tombstone, import restores a deleted chat output from its
-stage; without clearing kept bindings, backup inventory refuses the project.
+Any member may Delete with second-click confirmation. Delete and expiry share
+removal under the artifact lock and capture guard. They clear all versions, pins,
+and kept chat bindings. They leave an import tombstone: `missing` for expiry or
+`deleted` for Delete. A deleted identity never recreates through import, discovery,
+replay, or fork. Repeated Delete succeeds. Queued, running, or pausing readers and
+editors refuse deletion. So do publishing episode reports, unreviewed consolidation
+reports, and pending legacy imports. These refusals use the same route and offer
+rule. Backup and transfer file copying refuse Delete, while expiry waits. Paused
+or interrupted edits hold nothing, and retry refuses after deletion. Report rows
+retain lineage with a deletion marker in the same transaction. Older Keep copies
+in the state workspace remain. Delete only unbinds them.
+**Why:** tombstones prevent import resurrection. Cleared bindings keep the backup
+inventory coherent.
 
 ## Repository-file previews
 
-Absolute host-path citations, optionally with a line number, resolve against
-configured project repository roots. Exactly one match opens escaped, numbered,
-script-free text in the panel, frameable only by RCP. Remote reads use that
-repository's SSH host on demand without local retention. No/ambiguous/nested-root
-match, unavailable host, or nonregular/nontext file gives a nonnavigating error;
-RCP never guesses a host or chooses the longest root.
-
-Large files show a bounded window around the cited line, retaining that line by
-dropping leading context first. Without a line, show the beginning. Real line
-numbers, whole byte size, and window/truncation labels distinguish partial reads.
-Turn-written citations resolve registered artifacts (or focus download-only cards);
-unregistered names fail without navigation. Task prompts state this same contract.
+Absolute host paths with an optional line resolve against configured repository
+roots. Exactly one match opens escaped, numbered, script-free text that only RCP
+can frame. Remote reads use that repository's SSH host without local retention.
+Missing, ambiguous, or nested-root matches produce a nonnavigating error. So do
+unavailable hosts and files that are nonregular or nontext. RCP never guesses the
+host or selects the longest root. Large files show bounded windows. They preserve
+the cited line by dropping leading context first. Without a line, they show the
+beginning. Real line numbers, whole-byte size, and truncation labels identify
+partial reads. Registered turn-output citations open artifacts or focus download
+cards. Unregistered paths fail. Prompts render this same contract.
 
 ## Temporary chat inputs versus outputs
 
-Inputs are claimed for one turn and never offered for later download. Project
-artifact/paper references become read-only admission-time copies without changing
-the stored source. Outputs are discovered only in the exact turn directory;
-Keep changes their retention, not type or authority. Neither is canonical provenance.
+Inputs are claimed by a turn and never offered for later download. Project
+artifact and paper references are immutable admission copies. Their sources
+remain unchanged. Outputs come only from the exact turn directory. Keep changes
+retention, not type or authority. Neither inputs nor outputs are canonical provenance.
 
 ## Glossary presentation
 
-Graph-writing agents use `upsert_glossary` for thin project-wide definitions.
-Best-effort whole-term definitions appear inline in node prose, answers, and
-Proposal cards. There is no standalone Glossary or human glossary editor.
+[Typed graph operations](graph-history-and-transitions.md#typed-graph-operations)
+own glossary authoring. Best-effort definitions of whole terms appear inline in
+node prose, answers, and Proposal cards. There is no separate destination or human editor.

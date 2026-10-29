@@ -150,19 +150,13 @@ test("repository requests preserve add/connect intent and project identity", asy
     for (const body of [
       {
         kind: "add_repository",
-        repository: {
-          alias: "state",
-          source: null,
-          machine_alias: "server",
-          count_as_project_truth: false,
-        },
+        repository: { alias: "state", path: "/home/me/state", count_as_project_truth: false },
       },
       {
         kind: "add_repository",
         repository: {
           alias: "code",
           source: "https://github.com/lab/code.git",
-          machine_alias: "server",
           count_as_project_truth: true,
         },
       },

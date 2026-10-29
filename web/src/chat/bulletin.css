@@ -432,10 +432,12 @@ button.bulletin-roster-name:hover {
 .bulletin-message-action:hover {
   color: var(--ink);
 }
-.bulletin-message-action.is-confirming {
-  background: var(--red);
+.bulletin-message-action.armed-delete {
   border-color: var(--red);
-  color: var(--accent-ink);
+  color: var(--red);
+  gap: 5px;
+  padding: 0 8px;
+  width: auto;
 }
 
 .bulletin-composer {
@@ -584,7 +586,7 @@ button.bulletin-roster-name:hover {
   .bulletin-message-actions {
     opacity: 1;
   }
-  .bulletin-message-action:not(.is-confirming) {
+  .bulletin-message-action:not(.armed-delete) {
     border-color: transparent;
   }
 }

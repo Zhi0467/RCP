@@ -26,6 +26,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.group_context import group_prompt_value
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import (
     CHAT_MASTER_CONTEXT_VERSION,
     CONVERSATION_FORK_NOTE,
@@ -76,6 +77,7 @@ from rcp.runs.session_master import (
     stage_session_master,
 )
 from rcp.runs.shared import (
+    _protected_run_stage_roots,
     _read_local_workspace_file,
     _remove_local_tree,
     _safe_stage_name,
@@ -1343,6 +1345,33 @@ def _chat_stage_name(
     return _safe_stage_name(f"chat-{project_key}-{request.chat_id}")
 
 
+def open_remote_conversation_stage(
+    execution_host: str,
+    stage_name: str,
+    execution: AgentTaskExecution | None,
+    *,
+    saved_stage: bool,
+) -> RemoteRunStage:
+    """Open or attach the conversation's exact stage and checkpoint its binding."""
+    if saved_stage:
+        root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
+        stage = RemoteRunStage(execution_host).attach(root)
+    else:
+        stage = RemoteRunStage(execution_host).open(
+            stage_name,
+            reuse=True,
+            protected_roots=_protected_run_stage_roots(
+                execution.store if execution is not None else None,
+                execution_host,
+            ),
+        )
+    stage.touch()
+    assert stage.root is not None
+    if execution is not None:
+        execution.checkpoint_stage(execution_host, str(stage.root))
+    return stage
+
+
 def _validated_remote_chat_resume_stage(
     execution: AgentTaskExecution | None,
     execution_host: str,
@@ -1515,6 +1544,7 @@ def _project_write_scope(
                 raise ValueError("The integration turn has no admitted target branch.")
     scope = resolve_project_write_scope(
         manifest=service.manifest,
+        truth_scope=write_repositories(service.history.state()),
         project_id=project_id,
         execution_machine=execution_machine,
         capability=capability,

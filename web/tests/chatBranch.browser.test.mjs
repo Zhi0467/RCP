@@ -119,11 +119,6 @@ for (const width of [1000, 390]) {
     });
     page.on("pageerror", (error) => errors.push(error.message));
     await page.locator(".chat-header-menu > .icon-button").click();
-    // The repository list stays inside the screen's 16px gutter.
-    await page.locator(".chat-scope-control .scope-trigger").click();
-    const scope = await page.locator(".scope-popover").boundingBox();
-    assert.ok(scope.x >= 16 && scope.x + scope.width <= width - 16);
-    await page.keyboard.press("Escape");
     await page.locator(".chat-branch-picker .branch-picker-trigger").click();
     const picker = page.locator(".branch-picker-popover");
     await picker.locator('[data-branch-id="existing"]').waitFor();
@@ -245,13 +240,13 @@ test("Escape closes the repository list before the menu; the agent picker and Ad
   const page = await openFixture(t, { width: 1000, height: 850 }, refsOnly([main, branch]));
   const menu = page.locator(".chat-header-menu > .icon-button");
   await menu.click();
-  const scope = page.locator(".chat-scope-control .scope-trigger");
-  await scope.click();
-  await page.locator(".scope-popover").waitFor();
+  const branchTrigger = page.locator(".chat-branch-picker .branch-picker-trigger");
+  await branchTrigger.click();
+  await page.locator(".branch-picker-popover").waitFor();
   await page.keyboard.press("Escape");
-  await page.locator(".scope-popover").waitFor({ state: "detached" });
+  await page.locator(".branch-picker-popover").waitFor({ state: "detached" });
   assert.equal(await menu.getAttribute("aria-expanded"), "true");
-  assert.equal(await isFocused(scope), true);
+  assert.equal(await isFocused(branchTrigger), true);
   await page.keyboard.press("Escape");
   assert.equal(await menu.getAttribute("aria-expanded"), "false");
   assert.equal(await isFocused(menu), true);
@@ -307,12 +302,12 @@ test("The chat menu and Branch this chat work by keyboard; the current branch is
   const first = page.getByRole("menuitem").first();
   assert.equal(await isFocused(first), true);
   await page.keyboard.press("End");
-  assert.equal(await isFocused(page.locator(".chat-scope-control .scope-trigger")), true);
+  const branchTrigger = page.locator(".chat-branch-picker .branch-picker-trigger");
+  assert.equal(await isFocused(branchTrigger), true);
   await page.keyboard.press("ArrowDown");
   assert.equal(await isFocused(first), true);
   await page.keyboard.press("ArrowUp");
-  await page.keyboard.press("ArrowUp");
-  assert.equal(await isFocused(page.locator(".chat-branch-picker .branch-picker-trigger")), true);
+  assert.equal(await isFocused(branchTrigger), true);
   await page.keyboard.press("Enter");
   const picker = page.locator(".branch-picker-popover");
   await picker.waitFor();

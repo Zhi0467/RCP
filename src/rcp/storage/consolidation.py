@@ -6,13 +6,15 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, TypeVar, overload
 
 from pydantic import BaseModel, Field
 
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
     CONSOLIDATION_AUTHORIZATION_DAYS,
     CONSOLIDATION_RECENT_NIGHTS,
@@ -42,10 +44,20 @@ class ConsolidationSchedule(BaseModel):
     skipped_dates: list[str] = Field(default_factory=list)
 
 
+class ConsolidationTarget(BaseModel):
+    project_id: str
+    target: str
+    next_due_at: str
+    covered_head: int | None = None
+    last_occurrence_date: str | None = None
+    skipped_dates: list[str] = Field(default_factory=list)
+
+
 class ConsolidationRun(BaseModel):
     run_id: str
     project_id: str
     occurrence_date: str
+    target: str = "main"
     operation_id: str | None = None
     chat_id: str | None = None
     authorization_id: str
@@ -65,6 +77,19 @@ class ConsolidationRun(BaseModel):
     resolved_by: AuthorizedHuman | None = None
     resolved_at: str | None = None
     notification_observed_at: str | None = None
+
+    @property
+    def graph_target(self) -> GraphTargetRef:
+        return target_ref(self.target)
+
+
+def target_ref(target: str) -> GraphTargetRef:
+    return GraphTargetRef() if target == "main" else GraphTargetRef(kind="branch", branch_id=target)
+
+
+def target_label(target: str, names: Mapping[str, str]) -> str:
+    """Display a stored target, retaining the short id for an unavailable branch."""
+    return "main" if target == "main" else names.get(target, target[:8])
 
 
 def migrate_consolidation(connection: sqlite3.Connection) -> None:
@@ -98,7 +123,60 @@ def migrate_consolidation(connection: sqlite3.Connection) -> None:
     )
 
 
-def _record(model, row):
+def migrate_consolidation_targets(connection: sqlite3.Connection) -> None:
+    """Move v37 coverage and occurrences to independent graph targets."""
+    connection.execute("""CREATE TABLE consolidation_targets (
+        project_id TEXT NOT NULL, target TEXT NOT NULL, next_due_at TEXT NOT NULL,
+        covered_head INTEGER, last_occurrence_date TEXT, skipped_dates_json TEXT,
+        PRIMARY KEY(project_id,target)
+    )""")
+    connection.execute("""INSERT INTO consolidation_targets
+        SELECT project_id,'main',next_due_at,covered_head,last_occurrence_date,skipped_dates_json
+        FROM consolidation_schedules""")
+    connection.execute("""CREATE TABLE consolidation_runs_per_target (
+        run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, occurrence_date TEXT NOT NULL,
+        operation_id TEXT UNIQUE, chat_id TEXT, authorization_id TEXT NOT NULL,
+        authorized_by_json TEXT NOT NULL, input_head INTEGER NOT NULL, created_at TEXT NOT NULL,
+        outcome_settled_at TEXT, kind TEXT CHECK(kind IN ('report','failure')),
+        report_artifact_id TEXT, report_title TEXT, applied_revisions_json TEXT NOT NULL DEFAULT '[]',
+        revisions_verified INTEGER NOT NULL DEFAULT 0, proposals_created INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT, error_message TEXT,
+        state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','kept','dismissed')),
+        resolved_by_json TEXT, resolved_at TEXT, notification_observed_at TEXT,
+        target TEXT NOT NULL DEFAULT 'main',
+        UNIQUE(project_id,target,occurrence_date)
+    )""")
+    connection.execute(
+        "INSERT INTO consolidation_runs_per_target SELECT *, 'main' FROM consolidation_runs"
+    )
+    connection.execute("DROP TABLE consolidation_runs")
+    connection.execute("ALTER TABLE consolidation_runs_per_target RENAME TO consolidation_runs")
+    connection.execute(
+        "CREATE INDEX consolidation_runs_unsettled ON consolidation_runs(project_id,target,outcome_settled_at)"
+    )
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER resource_consolidation_schedules_{event}")
+    connection.execute("ALTER TABLE consolidation_schedules DROP COLUMN covered_head")
+    from rcp.storage.resource_versions import install_consolidation_resource_versions
+
+    install_consolidation_resource_versions(connection)
+    from rcp.storage.evidence_flags import migrate_evidence_flag_targets
+
+    migrate_evidence_flag_targets(connection)
+
+
+_Record = TypeVar("_Record", bound=BaseModel)
+
+
+@overload
+def _record(model: type[_Record], row: sqlite3.Row) -> _Record: ...
+
+
+@overload
+def _record(model: type[_Record], row: None) -> None: ...
+
+
+def _record(model: type[_Record], row: sqlite3.Row | None) -> _Record | None:
     if row is None:
         return None
     values = dict(row)
@@ -118,7 +196,8 @@ class ConsolidationStoreMixin(StoreMixinBase):
             return _record(
                 ConsolidationSchedule,
                 conn.execute(
-                    "SELECT * FROM consolidation_schedules WHERE project_id=?", (project_id,)
+                    "SELECT s.*,t.covered_head FROM consolidation_schedules s LEFT JOIN consolidation_targets t ON t.project_id=s.project_id AND t.target='main' WHERE s.project_id=?",
+                    (project_id,),
                 ).fetchone(),
             )
 
@@ -126,7 +205,9 @@ class ConsolidationStoreMixin(StoreMixinBase):
         with self.connection() as conn:
             return [
                 _record(ConsolidationSchedule, row)
-                for row in conn.execute("SELECT * FROM consolidation_schedules")
+                for row in conn.execute(
+                    "SELECT s.*,t.covered_head FROM consolidation_schedules s LEFT JOIN consolidation_targets t ON t.project_id=s.project_id AND t.target='main'"
+                )
             ]
 
     def put_consolidation_schedule(
@@ -162,7 +243,78 @@ class ConsolidationStoreMixin(StoreMixinBase):
                     next_due_at,
                 ),
             )
+            conn.execute(
+                "UPDATE consolidation_targets SET next_due_at=? WHERE project_id=?",
+                (next_due_at, project_id),
+            )
         return self.consolidation_schedule(project_id)
+
+    def consolidation_target(
+        self, project_id: str, target: str = "main"
+    ) -> ConsolidationTarget | None:
+        with self.connection() as conn:
+            return _record(
+                ConsolidationTarget,
+                conn.execute(
+                    "SELECT * FROM consolidation_targets WHERE project_id=? AND target=?",
+                    (project_id, target),
+                ).fetchone(),
+            )
+
+    def consolidation_targets(self, project_id: str) -> list[ConsolidationTarget]:
+        with self.connection() as conn:
+            return [
+                _record(ConsolidationTarget, row)
+                for row in conn.execute(
+                    "SELECT * FROM consolidation_targets WHERE project_id=?", (project_id,)
+                )
+            ]
+
+    def ensure_consolidation_target(
+        self,
+        schedule: ConsolidationSchedule,
+        target: str = "main",
+        *,
+        covered_head: int | None = None,
+    ) -> ConsolidationTarget:
+        with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if (
+                conn.execute(
+                    "SELECT 1 FROM consolidation_schedules WHERE project_id=? AND authorization_id=? AND next_due_at=?",
+                    (schedule.project_id, schedule.authorization_id, schedule.next_due_at),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("The consolidation schedule changed before target initialization.")
+            conn.execute(
+                "INSERT OR IGNORE INTO consolidation_targets(project_id,target,next_due_at,covered_head) VALUES(?,?,?,?)",
+                (schedule.project_id, target, schedule.next_due_at, covered_head),
+            )
+        coverage = self.consolidation_target(schedule.project_id, target)
+        assert coverage is not None
+        return coverage
+
+    def finish_consolidation_occurrence(
+        self, schedule: ConsolidationSchedule, *, targets: list[str], next_due_at: str
+    ) -> None:
+        """Keep the project due while any active target still owes an occurrence."""
+        with self.connection() as conn:
+            dues = [
+                row["next_due_at"]
+                for row in conn.execute(
+                    "SELECT target,next_due_at FROM consolidation_targets WHERE project_id=?",
+                    (schedule.project_id,),
+                )
+                if row["target"] in targets
+            ]
+            if len(dues) < len(set(targets)):
+                dues.append(schedule.next_due_at)
+            due = min([next_due_at, *dues], key=datetime.fromisoformat)
+            conn.execute(
+                "UPDATE consolidation_schedules SET next_due_at=? WHERE project_id=? AND authorization_id=? AND next_due_at=?",
+                (due, schedule.project_id, schedule.authorization_id, schedule.next_due_at),
+            )
 
     def delete_consolidation_schedule(self, project_id: str) -> None:
         with self.connection() as conn:
@@ -199,6 +351,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
         self,
         project_id: str | None = None,
         *,
+        target: str | None = None,
         unsettled_only: bool = False,
         open_only: bool = False,
     ) -> list[ConsolidationRun]:
@@ -206,6 +359,9 @@ class ConsolidationStoreMixin(StoreMixinBase):
         if project_id is not None:
             conditions.append("project_id=?")
             args.append(project_id)
+        if target is not None:
+            conditions.append("target=?")
+            args.append(target)
         if unsettled_only:
             conditions.append("(outcome_settled_at IS NULL OR revisions_verified=0)")
         if open_only:
@@ -226,6 +382,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
         occurrence_date: str,
         next_due_at: str,
         input_head: int,
+        target: str = "main",
         task: AgentTaskRecord | None = None,
         execution_host: str = "",
         error_code: str | None = None,
@@ -233,7 +390,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
         skipped: bool = False,
         now: str | None = None,
     ) -> ConsolidationRun | None:
-        """The due CAS, owner row, and ordinary task insertion are one commit."""
+        """Claim an initialized target: due CAS, owner row, and task commit together."""
         now = now or self.now()
         run_id = uuid.uuid4().hex
         with self.connection() as conn:
@@ -248,20 +405,28 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 or datetime.fromisoformat(current["next_due_at"]) > datetime.fromisoformat(now)
             ):
                 return None
+            target_state = conn.execute(
+                "SELECT * FROM consolidation_targets WHERE project_id=? AND target=?",
+                (schedule.project_id, target),
+            ).fetchone()
+            if target_state is None:
+                raise ValueError("Consolidation target must be initialized before claiming it.")
+            if datetime.fromisoformat(target_state["next_due_at"]) > datetime.fromisoformat(now):
+                return None
             if conn.execute(
-                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND outcome_settled_at IS NULL",
-                (schedule.project_id,),
+                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND target=? AND outcome_settled_at IS NULL",
+                (schedule.project_id, target),
             ).fetchone():
                 return None
             # A renewed schedule may owe a different time on an already handled date.
             duplicate = conn.execute(
-                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND occurrence_date=?",
-                (schedule.project_id, occurrence_date),
+                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND target=? AND occurrence_date=?",
+                (schedule.project_id, target, occurrence_date),
             ).fetchone()
-            if duplicate or current["last_occurrence_date"] == occurrence_date:
+            if duplicate or target_state["last_occurrence_date"] == occurrence_date:
                 conn.execute(
-                    "UPDATE consolidation_schedules SET next_due_at=? WHERE project_id=?",
-                    (next_due_at, schedule.project_id),
+                    "UPDATE consolidation_targets SET next_due_at=? WHERE project_id=? AND target=?",
+                    (next_due_at, schedule.project_id, target),
                 )
                 return None
             if not live_project_member(conn, schedule.project_id, schedule.authorized_by.user_id):
@@ -273,8 +438,11 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 if (
                     task.project_id != schedule.project_id
                     or task.authorized_by != schedule.authorized_by
+                    or task.graph_target != target_ref(target)
                 ):
-                    raise ValueError("consolidation task does not match its authorization")
+                    raise ValueError(
+                        "consolidation task does not match its authorization or target"
+                    )
                 self._require_project_accepts_new_work(conn, schedule.project_id)
                 if self._has_active_chat_overlap(conn, task):
                     return None
@@ -288,8 +456,8 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 if task is None and error_code is None:
                     raise ValueError("an occurrence requires a task or typed failure")
                 conn.execute(
-                    """INSERT INTO consolidation_runs(run_id,project_id,occurrence_date,operation_id,chat_id,authorization_id,authorized_by_json,input_head,created_at,outcome_settled_at,kind,error_code,error_message,revisions_verified)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    """INSERT INTO consolidation_runs(run_id,project_id,occurrence_date,operation_id,chat_id,authorization_id,authorized_by_json,input_head,created_at,outcome_settled_at,kind,error_code,error_message,revisions_verified,target)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         run_id,
                         schedule.project_id,
@@ -305,6 +473,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         error_code,
                         error_message,
                         int(task is None),
+                        target,
                     ),
                 )
                 if task is None:
@@ -313,28 +482,42 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         project_id=schedule.project_id,
                         kind="consolidation_failed",
                         item_id=run_id,
+                        target=target_ref(target).key,
                         created_at=now,
                         payload={
                             "title": "Nightly consolidation",
                             "status": "failed",
                             "deep_link": digest_link(
-                                schedule.project_id, {"kind": "main"}, "consolidation", run_id
+                                schedule.project_id,
+                                target_ref(target).model_dump(),
+                                "consolidation",
+                                run_id,
                             ),
                         },
                     )
                 if task:
                     task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
-            skipped_dates = schedule.skipped_dates
+            skipped_dates = json.loads(target_state["skipped_dates_json"] or "[]")
             if skipped:
                 skipped_dates = [*skipped_dates, occurrence_date][-CONSOLIDATION_RECENT_NIGHTS:]
             conn.execute(
-                "UPDATE consolidation_schedules SET next_due_at=?,last_run_at=?,last_outcome=?,last_occurrence_date=?,skipped_dates_json=? WHERE project_id=?",
+                "UPDATE consolidation_targets SET next_due_at=?,last_occurrence_date=?,skipped_dates_json=? WHERE project_id=? AND target=?",
                 (
                     next_due_at,
+                    occurrence_date,
+                    json.dumps(skipped_dates),
+                    schedule.project_id,
+                    target,
+                ),
+            )
+            conn.execute(
+                "UPDATE consolidation_schedules SET last_run_at=?,last_outcome=?,last_occurrence_date=?,skipped_dates_json=CASE WHEN ?='main' THEN ? ELSE skipped_dates_json END WHERE project_id=?",
+                (
                     now,
                     "skipped" if skipped else ("failed" if task is None else None),
                     occurrence_date,
+                    target,
                     json.dumps(skipped_dates),
                     schedule.project_id,
                 ),
@@ -435,23 +618,31 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 project_id=row["project_id"],
                 kind="consolidation_report" if kind == "report" else "consolidation_failed",
                 item_id=run_id,
+                target=target_ref(row["target"]).key,
                 created_at=now,
                 payload={
                     "title": report_title or "Nightly consolidation",
                     "report_artifact_id": report_artifact_id,
                     "status": "succeeded" if kind == "report" else "failed",
                     "deep_link": digest_link(
-                        row["project_id"], {"kind": "main"}, "consolidation", run_id
+                        row["project_id"],
+                        target_ref(row["target"]).model_dump(),
+                        "consolidation",
+                        run_id,
                     ),
                 },
             )
             conn.execute(
-                "UPDATE consolidation_schedules SET last_outcome=?,covered_head=COALESCE(?,covered_head) WHERE project_id=?",
+                "UPDATE consolidation_targets SET covered_head=COALESCE(?,covered_head) WHERE project_id=? AND target=?",
                 (
-                    "succeeded" if kind == "report" else "failed",
                     covered_head if kind == "report" else None,
                     row["project_id"],
+                    row["target"],
                 ),
+            )
+            conn.execute(
+                "UPDATE consolidation_schedules SET last_outcome=? WHERE project_id=?",
+                ("succeeded" if kind == "report" else "failed", row["project_id"]),
             )
         return self.consolidation_run(run_id)
 
@@ -607,7 +798,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
     ) -> None:
         connection.execute("DELETE FROM consolidation_schedules")
         rows = connection.execute(
-            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL RETURNING project_id,run_id",
+            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL RETURNING *",
             (now, diagnostic),
         ).fetchall()
         for row in rows:
@@ -616,12 +807,16 @@ class ConsolidationStoreMixin(StoreMixinBase):
                 project_id=row["project_id"],
                 kind="consolidation_failed",
                 item_id=row["run_id"],
+                target=target_ref(row["target"]).key,
                 created_at=now,
                 payload={
                     "title": "Nightly consolidation",
                     "status": "failed",
                     "deep_link": digest_link(
-                        row["project_id"], {"kind": "main"}, "consolidation", row["run_id"]
+                        row["project_id"],
+                        target_ref(row["target"]).model_dump(),
+                        "consolidation",
+                        row["run_id"],
                     ),
                 },
             )

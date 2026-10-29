@@ -7,9 +7,10 @@ from uuid import uuid4
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.prompts import render_graph_history
+from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
+from rcp.agents.prompts import GraphReadPrompt, render_graph_history
 from rcp.core.transition_models import GraphTargetRef
+from rcp.runs.session_master import recorded_master_values
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.graph import stream_graph_run
@@ -19,6 +20,7 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     async_wait_until,
+    authorized_human,
     changed_values,
     create_named_app,
     launch_contract_path,
@@ -74,11 +76,18 @@ class _HistoryLauncher:
             for code in master.split("`")[1::2]
             if " graph_diff " in code
         )
-        scope = GraphReadScope(
-            project_id=self.service._project_id,
-            target=self.service.history.graph_target,
+        scope = GraphReadScope.resolve(self.service._project_id, self.service.history)
+        assert (
+            render_graph_history(
+                scope,
+                command,
+                branches=[
+                    branch.model_dump(mode="json")
+                    for branch in readable_branches(scope, self.service.paper.store)
+                ],
+            )
+            in master
         )
-        assert render_graph_history(scope, command) in master
         await async_wait_until(lambda: gate.mailbox_id in self.handlers)
         identity, handler = self.handlers[gate.mailbox_id]
 
@@ -113,14 +122,36 @@ class _HistoryLauncher:
 @pytest.mark.parametrize("kind", ["seed", "refresh", "paper_coach", "discuss", "work"])
 @pytest.mark.parametrize("succeed", [True, False])
 def test_graph_reader_master_commands_and_committed_observation(
-    manifest, tmp_path, history_handlers, kind, succeed
+    manifest, tmp_path, history_handlers, kind, succeed, monkeypatch
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     if kind == "paper_coach":
         wire_saved_paper(service)
     if kind != "seed":
+        from .test_history_forks import fork_metadata
+
         append_fixture_patch(service, seed_patch())
+        branch = service.history.create_branch(
+            fork_metadata(service.history, service.history.head_ref()).model_copy(
+                update={"project_id": service._project_id, "authorized_by": authorized_human(app)}
+            )
+        )
+        service.paper.store.create_graph_branch(
+            project_id=service._project_id,
+            branch_id=branch.branch_id,
+            owner_episode_id=None,
+            parent_head=branch.branch_metadata().effective_parent_head,
+            created_by="human:test",
+            name="vla-if",
+        )
+    branch_reads = []
+
+    def read_once(scope, store):
+        branch_reads.append(scope)
+        return readable_branches(scope, store)
+
+    monkeypatch.setattr("rcp.agents.prompts.readable_branches", read_once)
     input_revision = service.history.state().revision
     launcher = _HistoryLauncher(service, history_handlers, kind=kind, succeed=succeed)
 
@@ -152,6 +183,16 @@ def test_graph_reader_master_commands_and_committed_observation(
         started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
         assert started.status_code == 202, started.text
         task = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        assert len(branch_reads) == 1
+        if kind == "paper_coach":
+            values = recorded_master_values(service.paper.store, started.json()["operation_id"])
+            assert values is not None
+            assert values["branches"] == [
+                branch.model_dump(mode="json")
+                for branch in readable_branches(
+                    GraphReadScope.resolve(project_id, service.history), service.paper.store
+                )
+            ]
         if continue_session:
             assert task["status"] == "succeeded", task.get("error")
             append_fixture_patch(service, refresh_patch())
@@ -164,7 +205,7 @@ def test_graph_reader_master_commands_and_committed_observation(
                 == f"main@{input_revision}"
             )
     assert task["status"] == ("succeeded" if succeed else "failed"), task.get("error")
-    assert launcher.calls == (2 if continue_session else 1)
+    assert len(branch_reads) == launcher.calls == (2 if continue_session else 1)
     if kind == "refresh":
         assert any(
             f"current.graph_changed_since: main@{input_revision}" in master
@@ -309,13 +350,14 @@ def test_session_master_adds_history_without_an_owner_splice(tmp_path, monkeypat
     rendered_scopes = []
     original = prompts.render_graph_history
 
-    def capture(rendered_scope, command):
+    def capture(rendered_scope, command, **kwargs):
         rendered_scopes.append(rendered_scope)
         assert rendered_scope is dispatcher.graph_read_scope
-        return original(rendered_scope, command)
+        return original(rendered_scope, command, **kwargs)
 
     monkeypatch.setattr(prompts, "render_graph_history", capture)
-    values = {"history_client": "client"}
+    graph_prompt = GraphReadPrompt(scope, store)
+    values = {"history_client": "client", **graph_prompt.values}
     master = start_session_master(
         cast(AgentTaskExecution, _task(store, "start", stage)),
         local_stage=stage,
@@ -324,7 +366,7 @@ def test_session_master_adds_history_without_an_owner_splice(tmp_path, monkeypat
         key="key",
         content="owner contract",
         values=values,
-        graph_read_scope=scope,
+        graph_read_prompt=graph_prompt,
         command_client="client",
     )
     content = Path(master.path).read_text()
@@ -350,7 +392,7 @@ def test_session_master_adds_history_without_an_owner_splice(tmp_path, monkeypat
         key="key",
         render=unexpected_render,
         values={"history_client": "next-client"},
-        graph_read_scope=scope,
+        graph_read_prompt=GraphReadPrompt(scope, store),
         command_client="next-client",
     )
     assert not kept.bootstrap
@@ -370,8 +412,12 @@ def test_embedded_work_and_correction_leave_history_in_the_master():
     from .test_prompts import _work_contract
 
     scope = GraphReadScope(project_id="project", target=GraphTargetRef())
-    standalone = _work_contract(graph_read_scope=scope, command_client="client")
-    embedded = _work_contract(graph_read_scope=scope, command_client="client", embedded=True)
+    standalone = _work_contract(
+        graph_read_prompt=GraphReadPrompt(scope, None), command_client="client"
+    )
+    embedded = _work_contract(
+        graph_read_prompt=GraphReadPrompt(scope, None), command_client="client", embedded=True
+    )
     correction = "\n".join(
         auto_research_patch_correction_parts(
             actor="worker",

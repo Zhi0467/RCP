@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -47,7 +47,7 @@ def _machine(client: TestClient, name: str) -> dict[str, object]:
     return next(machine for machine in machines if machine["name"] == name)
 
 
-def test_registered_machines_fill_the_list_and_a_used_machine_cannot_be_deleted(app) -> None:
+def test_repository_machine_cannot_be_deleted(app, manifest) -> None:
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     laptop = _machine(client, "laptop")
@@ -55,12 +55,102 @@ def test_registered_machines_fill_the_list_and_a_used_machine_cannot_be_deleted(
     assert laptop["projects"] == [
         {"project_id": project_id, "project_name": "test-paper", "alias": "laptop"}
     ]
+    before = manifest.path.read_bytes()
+    assert laptop["deletable"] is False
     assert client.delete(f"/api/space/machines/{laptop['machine_id']}").status_code == 409
+    assert manifest.path.read_bytes() == before
+    assert _machine(client, "laptop") == laptop
 
     store = _store(app)
     store.delete_space_machine(str(laptop["machine_id"]))
     fill_space_machines(store)
     assert [machine.name for machine in store.space_machines()] == ["laptop"]
+
+
+def _attach_gpu(client: TestClient, app) -> dict[str, object]:
+    machine = client.post(
+        "/api/space/machines",
+        json={"name": "GPU", "host": "worker@gpu.example", "os_account": "worker"},
+    ).json()
+    response = client.post(
+        f"/api/projects/{app.state.default_project_id}/machines",
+        json={"machine_id": machine["machine_id"], "alias": "gpu"},
+    )
+    assert response.status_code == 200, response.text
+    return machine
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_delete_detaches_a_listed_machine_without_repositories(
+    app, manifest, monkeypatch, fenced
+) -> None:
+    client = signed_in_client(app)
+    machine = _attach_gpu(client, app)
+    listed = _machine(client, "GPU")
+    assert listed["in_use"] is True and listed["deletable"] is True
+    if fenced:
+        # A project that takes no new work, such as one mid-transfer, keeps the card.
+        def refuse(_project_id):
+            raise ValueError("transfer in progress")
+
+        monkeypatch.setattr(_store(app), "require_project_accepts_new_work", refuse)
+        before = manifest.path.read_bytes()
+        assert client.delete(f"/api/space/machines/{machine['machine_id']}").status_code == 409
+        assert manifest.path.read_bytes() == before
+        assert _store(app).space_machine(machine["machine_id"])
+        return
+
+    deleted = client.delete(f"/api/space/machines/{machine['machine_id']}")
+    assert deleted.status_code == 200, deleted.text
+    assert "gpu" not in load_manifest(manifest.path).machine_map
+    assert all(card.machine_id != machine["machine_id"] for card in _store(app).space_machines())
+
+
+def test_delete_refuses_unreadable_projects_before_detaching(app, manifest, monkeypatch) -> None:
+    client = signed_in_client(app)
+    machine = _attach_gpu(client, app)
+    store = _store(app)
+    projects = store.projects()
+    monkeypatch.setattr(
+        store,
+        "projects",
+        lambda: [*projects, SimpleNamespace(locator=str(manifest.path.parent / "missing.toml"))],
+    )
+    before = manifest.path.read_bytes()
+    assert _machine(client, "GPU")["deletable"] is False
+    assert client.delete(f"/api/space/machines/{machine['machine_id']}").status_code == 409
+    assert manifest.path.read_bytes() == before
+    assert store.space_machine(machine["machine_id"])
+
+
+def test_failed_detachment_keeps_card_and_surfaces_error(app, manifest, monkeypatch) -> None:
+    import tomlkit
+
+    from rcp.projects import ProjectDisplayCache
+
+    document = tomlkit.parse(manifest.path.read_text())
+    for alias in ("gpu", "gpu-two"):
+        document["machines"].append({"alias": alias, "host": "worker@gpu.example"})
+    manifest.path.write_text(tomlkit.dumps(document))
+    fill_space_machines(_store(app))
+    client = signed_in_client(app)
+    machine = _machine(client, "gpu")
+    remove = ProjectDisplayCache.remove_machine
+    attempts = 0
+
+    def fail_second(self, project_id, alias):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2:
+            raise OSError("detachment failed")
+        return remove(self, project_id, alias)
+
+    monkeypatch.setattr(ProjectDisplayCache, "remove_machine", fail_second)
+    response = client.delete(f"/api/space/machines/{machine['machine_id']}")
+    assert response.status_code == 422
+    # The first alias detached before the second failed; the card stays for a retry.
+    assert len({"gpu", "gpu-two"} & set(load_manifest(manifest.path).machine_map)) == 1
+    assert _store(app).space_machine(str(machine["machine_id"]))
 
 
 def test_projects_naming_two_accounts_for_one_host_leave_its_card_with_none(app) -> None:

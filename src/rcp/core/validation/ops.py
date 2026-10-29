@@ -103,7 +103,9 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
             )
         raw = node.model_dump(mode="python", exclude_unset=True)
         validate_new_node(ctx.state, ctx.patch, raw, ctx.report, writer=ctx.writer)
-        validate_source_refs(raw, ctx.patch, ctx.report, writer=ctx.writer)
+        validate_source_refs(
+            raw, ctx.patch, ctx.report, writer=ctx.writer, repositories=ctx.repositories
+        )
 
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
@@ -224,6 +226,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             ctx.patch,
             ctx.report,
             writer=ctx.writer,
+            repositories=ctx.repositories,
         )
 
 
@@ -776,7 +779,6 @@ def validate_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> A
             project_truth_scope=ctx.project_truth_scope,
             repository_aliases=ctx.repositories,
             machine_aliases=ctx.machines,
-            default_run_truth_scope=ctx.default_run_truth_scope,
             state_repository=ctx.state_repository,
             context_patch=ctx.patch,
             writer=ctx.writer,
@@ -794,7 +796,6 @@ def author_create_proposals(op: CreateProposalsOperation, ctx: OpContext) -> Any
             project_truth_scope=ctx.project_truth_scope,
             repository_aliases=ctx.repositories,
             machine_aliases=ctx.machines,
-            default_run_truth_scope=ctx.default_run_truth_scope,
             state_repository=ctx.state_repository,
             validation_mode="admission",
             include_card_flags=True,
@@ -887,14 +888,6 @@ def validate_set_project_truth_scope(op: SetProjectTruthScopeOperation, ctx: OpC
         ctx.report.reject(
             "remove-state-repository",
             "The canonical state repository must remain in project truth scope in v1.",
-            ctx.revision,
-        )
-    removed_defaults = ctx.default_run_truth_scope - proposed
-    if removed_defaults:
-        ctx.report.reject(
-            "remove-default-run-repository",
-            "Project truth scope must retain every repository in the default run scope: "
-            f"{sorted(removed_defaults)}.",
             ctx.revision,
         )
     return None

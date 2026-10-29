@@ -20,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     Manifest,
     load_manifest,
@@ -53,6 +52,9 @@ from rcp.transport.state import SSHStateWorkspace, _remote_script, state_workspa
 
 if TYPE_CHECKING:
     from rcp.transfer.configuration import TransferTargetConfiguration
+
+
+_DEFAULT_COACH_MODEL = "gpt-5.6-luna"
 
 
 class _StrictSetupModel(BaseModel):
@@ -339,7 +341,7 @@ class SetupAgents(_StrictSetupModel):
     node_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     project_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     paper_coach: SetupAgentProfile = Field(
-        default_factory=lambda: SetupAgentProfile(model="gpt-5.6-luna")
+        default_factory=lambda: SetupAgentProfile(model=_DEFAULT_COACH_MODEL)
     )
     orchestrator: SetupAgentProfile | None = None
 
@@ -405,9 +407,6 @@ class ProjectSetupRequest(_StrictSetupModel):
         ]
         if len(locations) != len(set(locations)):
             raise ValueError("the same repository path cannot be added twice")
-        remote_hosts = {
-            repository.host for repository in self.repositories if repository.location == "ssh"
-        }
         if self.agents is None:
             canonical = next(
                 repository
@@ -424,24 +423,19 @@ class ProjectSetupRequest(_StrictSetupModel):
                 node_chat=graph_profile.model_copy(),
                 project_chat=graph_profile.model_copy(),
                 orchestrator=graph_profile.model_copy(),
+                paper_coach=graph_profile.model_copy(update={"model": _DEFAULT_COACH_MODEL}),
             )
         canonical = next(
             repository
             for repository in self.repositories
             if repository.alias == self.state_repository
         )
-        for surface in GRAPH_AGENT_EXECUTION_PROFILES:
+        for surface in _SETUP_AGENT_EXECUTION_PROFILES:
             profile = self.agents.profile(surface)
             if (profile.location, profile.host) != (canonical.location, canonical.host):
                 target = canonical.host or "this machine"
                 raise ValueError(
                     f"{surface.replace('_', ' ')} must run beside canonical state on {target}"
-                )
-        for surface in _SETUP_AGENT_EXECUTION_PROFILES:
-            profile = self.agents.profile(surface)
-            if profile.location == "ssh" and profile.host not in remote_hosts:
-                raise ValueError(
-                    f"{surface.replace('_', ' ')} must run on a host that owns a project repository"
                 )
         return self
 
@@ -632,17 +626,6 @@ class ProjectSetupManager:
                         f"authenticated on {host or 'this machine'}."
                         if readiness.authenticated
                         else readiness.reason or f"{profile.provider.title()} is unavailable."
-                    ),
-                )
-            )
-        if request.agents.paper_coach.location == "ssh":
-            checks.append(
-                SetupCheck(
-                    label="Paper coach session resume",
-                    status="warn",
-                    detail=(
-                        "The paper coach can be configured remotely, but v1 native-session "
-                        "resume requires a local execution machine."
                     ),
                 )
             )
@@ -1484,6 +1467,25 @@ def _replay_failure_detail(existing: ExistingResearchPreview) -> str:
         f"The last coherent revision is {existing.coherent_revision}; ordinary resume is "
         "unavailable."
     )
+
+
+def require_git_work_tree(host: str, path: str) -> None:
+    """A folder added as a repository: the root of a Git work tree with a commit."""
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        argv = ["git", "-C", path, *arguments]
+        if host:
+            return _ssh(host, argv)
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(argv, 255, "", str(exc))
+
+    root = git("rev-parse", "--show-prefix")
+    if root.returncode != 0 or root.stdout.strip():
+        raise ValueError(f"{path} is not the top folder of a Git repository.")
+    if git("rev-parse", "--verify", "--quiet", "HEAD^{commit}").returncode != 0:
+        raise ValueError(f"The Git repository at {path} has no commit yet.")
 
 
 def _ssh(host: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:

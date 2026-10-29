@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Iterable
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -231,9 +232,16 @@ def created_node_id(patch: Patch, node_id: Any) -> bool:
 
 
 def validate_source_refs(
-    raw: dict[str, Any], patch: Patch, report: ValidationReport, *, writer: Writer
+    raw: dict[str, Any],
+    patch: Patch,
+    report: ValidationReport,
+    *,
+    writer: Writer,
+    repositories: Iterable[str],
 ) -> None:
-    run_scope = set(patch.run_truth_scope)
+    """An agent cites only the project's repositories, every one of which it may read."""
+
+    readable = set(repositories)
     for item in raw.get("source_refs", []):
         try:
             ref = SourceRef.model_validate(item)
@@ -244,9 +252,10 @@ def validate_source_refs(
                 patch.revision or None,
             )
             continue
-        if writer.author != "human" and ref.truth_repository not in run_scope:
+        if writer.author != "human" and ref.truth_repository not in readable:
             report.reject(
                 "source-outside-run-scope",
-                f"Source reference uses {ref.truth_repository!r} outside this run scope.",
+                f"Source reference uses {ref.truth_repository!r}, which is not a project "
+                "repository.",
                 patch.revision or None,
             )

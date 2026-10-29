@@ -377,21 +377,39 @@
   font: var(--type-xs) var(--mono);
   overflow-wrap: anywhere;
 }
-.service-connection-models dd span {
-  color: var(--muted);
-  font-size: var(--type-xs);
-}
 .service-model-field {
   display: grid;
   gap: 6px;
 }
-.service-model-title span {
-  font-weight: 400;
-  letter-spacing: normal;
-  text-transform: none;
+/* A login RCP does not manage is its header alone. */
+.provider-login-account[data-provider-login="unmanaged"] {
+  padding-bottom: 0;
 }
-.transcription-note {
-  padding: 8px 16px 0;
+.provider-login-account[data-provider-login="unmanaged"] > header {
+  border-bottom: 0;
+}
+/* A failed load or action: one red edge, and its retry icon. */
+.provider-login-settings.failed,
+.provider-login-account.failed {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+.provider-login-settings > header > .icon-button {
+  margin-left: auto;
+}
+/* How a login is done opens over the page from its icon, centred like a dialog. */
+.provider-login-help {
+  inset: 0;
+  height: fit-content;
+  margin: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: var(--type-sm);
+  line-height: 1.5;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px;
 }
 .provider-login-detail {
   color: var(--muted);
@@ -445,6 +463,11 @@
   height: 31px;
   min-width: 0;
   padding: 0 8px;
+  width: 0;
+}
+.provider-login-token button {
+  flex: none;
+  white-space: nowrap;
 }
 .transcription-owner {
   border: 1px solid var(--line-strong);
@@ -1492,6 +1515,11 @@
   font-weight: 550;
   margin: 20px 0 0;
   padding: 16px 16px 0;
+}
+/* The first group sits under the section header, which already draws its line. */
+.transcription-settings > header + .transcription-group {
+  border-top: 0;
+  margin-top: 0;
 }
 
 .voice-history {

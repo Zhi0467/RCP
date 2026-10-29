@@ -209,18 +209,13 @@ function initialProviderChecks(
   const canonical = canonicalMachine(project);
   return agentProfiles.map(({ id }) => {
     const resolved = resolvedProfile(project.agent_profiles[id], readiness);
-    const requestedMachine = project.agent_profiles[id].run_on;
     return {
       profile: id,
       provider: resolved.provider,
       runtime_id: resolved.runtime,
       model: resolved.model,
       reasoning: resolved.reasoning,
-      machine_alias:
-        id === "paper_coach" &&
-        project.machines.some((machine) => machine.alias === requestedMachine)
-          ? requestedMachine
-          : canonical,
+      machine_alias: canonical,
     };
   });
 }
@@ -998,7 +993,7 @@ export function TransferProjectSetup({
                   <article className="agent-role-card" key={id}>
                     <header>
                       <strong>{label}</strong>
-                      <span className="role-permission">{profile.machine_alias}</span>
+                      <span className="tag">{profile.machine_alias}</span>
                     </header>
                     <div className="agent-role-fields">
                       <label>

@@ -3,7 +3,6 @@ import type { AgentExecutionProfile, AgentProfileSettings, SkillDefaults } from 
 
 export interface SettingsDraft {
   version: 4;
-  scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   skillDefaults?: SkillDefaults;
@@ -55,15 +54,15 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
       (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4)
     )
       return null;
-    if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
-      return null;
     if (!isRecord(parsed.profiles)) return null;
     dropProfilesWithoutRuntime(parsed.profiles);
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     // Machine settings once staged here; the space machine card saves them
     // directly now. v3 also briefly persisted compute connections. Drop all of
     // them on read, regardless of shape.
+    // The run scope once staged here too; agents read every repository now.
     for (const key of [
+      "scope",
       "providerPaths",
       "machineCompute",
       "machineComputeEdits",
@@ -90,7 +89,6 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (!isInvocationCeiling(parsed.campaignInvocationCeiling)) return null;
     return {
       version: 4,
-      scope: parsed.scope,
       profiles: parsed.profiles as SettingsDraft["profiles"],
       ...(parsed.campaignInvocationCeiling === undefined
         ? {}

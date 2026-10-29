@@ -24,6 +24,16 @@ DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 LEGACY_COMPUTE_CONNECTIONS_KEY = "compute_connections"
 
 
+def require_base_machine(run_on: str, base_machine: str, *, label: str = "agent.run_on") -> str:
+    """Refuse an agent machine other than the base; every agent runs beside .research/."""
+    if run_on != base_machine:
+        raise ValueError(
+            f"{label} must be the canonical state machine {base_machine!r}; "
+            "every agent runs beside .research/"
+        )
+    return base_machine
+
+
 class MachineComputeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -200,17 +210,6 @@ class StateConfig(BaseModel):
 AgentSurface = Literal["seed", "refresh", "node_chat", "project_chat", "paper_coach"]
 AgentExecutionProfile = AgentSurface | Literal["orchestrator"]
 
-GRAPH_AGENT_SURFACES: tuple[AgentSurface, ...] = (
-    "seed",
-    "refresh",
-    "node_chat",
-    "project_chat",
-)
-GRAPH_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
-    *GRAPH_AGENT_SURFACES,
-    "orchestrator",
-)
-
 
 class AgentPermissions(BaseModel):
     read_graph: bool
@@ -340,7 +339,7 @@ class Manifest(BaseModel):
                 "agent profiles must all be configured when legacy [execution] is absent"
             )
         legacy_coach = PaperCoachConfig.model_validate(self.paper.get("coach", {}))
-        state_machine = self.repository_map[self.state.repository].machine
+        state_machine = self.base_machine
         for surface in _AGENT_SURFACES:
             profile = getattr(self.agent, surface)
             if profile is None:
@@ -363,16 +362,19 @@ class Manifest(BaseModel):
                 deep=True,
                 update={"permissions": permissions_for("orchestrate")},
             )
+        coach = self.agent.paper_coach
+        assert coach is not None
+        # The coach once chose its own machine. Every agent now runs on the base,
+        # the canonical state machine, so an older choice is dropped on load.
+        coach.run_on = state_machine
         for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
             if profile.run_on not in machines:
                 raise ValueError(f"agent.{surface}.run_on must name a registered machine")
-            if surface in GRAPH_AGENT_EXECUTION_PROFILES and profile.run_on != state_machine:
-                raise ValueError(
-                    f"agent.{surface}.run_on must be the canonical state machine "
-                    f"{state_machine!r}; graph-writing agents run beside .research/"
-                )
+            profile.run_on = require_base_machine(
+                profile.run_on, state_machine, label=f"agent.{surface}.run_on"
+            )
             expected = permissions_for(surface)
             if profile.permissions is None:
                 profile.permissions = expected
@@ -403,6 +405,10 @@ class Manifest(BaseModel):
     @property
     def repository_map(self) -> dict[str, RepositoryConfig]:
         return {item.alias: item for item in self.repositories}
+
+    @property
+    def base_machine(self) -> str:
+        return self.repository_map[self.state.repository].machine
 
     @property
     def machine_map(self) -> dict[str, MachineConfig]:
@@ -609,6 +615,10 @@ def _project_scope_content(
                 document.add("repositories", repositories)
             repositories.append(repository)
     document["project"]["truth_scope"] = list(truth_scope)
+    agent = document.get("agent")
+    if agent is not None and "default_run_truth_scope" in agent:
+        # Kept equal to the truth scope for older readers; no launch selects from it.
+        agent["default_run_truth_scope"] = list(truth_scope)
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
@@ -702,14 +712,16 @@ def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
         raise ValueError(f"unknown machine: {alias}")
     if any(repository.machine == alias for repository in manifest.repositories):
         raise ValueError(f"a repository lives on {alias}")
-    if any(manifest.agent_profile(profile).run_on == alias for profile in AGENT_EXECUTION_PROFILES):
-        raise ValueError(f"an agent profile runs on {alias}")
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     machines = document["machines"]
     for index, table in enumerate(machines):
         if str(table.get("alias")) == alias:
             del machines[index]
             break
+    state_machine = manifest.base_machine
+    for table in document.get("agent", {}).values():
+        if isinstance(table, dict) and table.get("run_on") == alias:
+            table["run_on"] = state_machine
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

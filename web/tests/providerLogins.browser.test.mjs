@@ -46,9 +46,11 @@ test("a pending sign-in keeps polling past a transient status failure", async ()
     );
     const signIn = page.getByRole("button", { name: "Sign in with device code" });
     assert.equal(await signIn.isDisabled(), true);
-    await page.getByText("Sign-in status unavailable", { exact: true }).waitFor();
+    const failed = page.locator(".provider-login-account.failed");
+    await failed.locator('[title="Sign-in status unavailable"]').waitFor();
     // The failed poll disables nothing for good: the next poll lands and frees the row.
     await page.waitForFunction(() => window.loginChanges === 1);
+    await failed.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Sign in with device code" }).waitFor();
     assert.equal(await signIn.isDisabled(), false);
     assert.equal(polls, 2);
@@ -136,7 +138,8 @@ test("a settled sign-in stops contradicting the account state the row now shows"
     await page.getByRole("button", { name: "Cancel sign-in" }).click();
     // Cancelling refreshes the account, so the row speaks for itself immediately.
     await page.waitForFunction(() => window.loginChanges >= 1);
-    await page.getByText("Sign-in failed: The sign-in was canceled before it completed.").waitFor();
+    const failed = page.locator(".provider-login-account.failed");
+    await failed.getByRole("button", { name: "Retry" }).waitFor();
     // The account is signed in again; a settled sign-in must not survive to contradict it.
     await page.evaluate(() =>
       window.setLoginAccount({
@@ -146,9 +149,7 @@ test("a settled sign-in stops contradicting the account state the row now shows"
         sign_in: null,
       }),
     );
-    await page
-      .getByText("Sign-in failed: The sign-in was canceled before it completed.")
-      .waitFor({ state: "detached" });
+    await failed.waitFor({ state: "detached" });
 
     assert.equal(await page.locator(".provider-login-sign-in").count(), 0);
     assert.deepEqual(errors, []);

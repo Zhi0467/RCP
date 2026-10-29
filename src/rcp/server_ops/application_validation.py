@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import re
@@ -12,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Protocol
 
+import httpx
 import tomlkit
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
@@ -908,6 +910,10 @@ def _schema_columns(connection: sqlite3.Connection) -> dict[str, set[str]]:
 
 
 def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
+    return asyncio.run(_run_candidate_child(overlay_path, result_path))
+
+
+async def _run_candidate_child(overlay_path: Path, result_path: Path) -> int:
     overlay: RehearsalOverlay | None = None
     fence = StartupEffectFence("candidate update rehearsal")
     lock_context = None
@@ -958,16 +964,20 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             trusted_principal_resolver=rehearsal_principal,
             startup_effect_fence=fence,
         )
-        # Keep the test-client compatibility layer inside the captured candidate
-        # child. Importing this module is part of the operator-facing update
-        # coordinator, where dependency warnings would corrupt the rotating CLI
-        # status line.
-        from fastapi.testclient import TestClient
-
+        # Own the in-process transport rather than importing a test-only client:
+        # dependency warnings must not leak into the operator's CLI status line.
+        # ASGITransport does not run lifespan; enter it explicitly for the proof.
         reads: list[str] = []
         results: list[CandidateProjectVerification] = []
-        with TestClient(app) as client:
-            health = client.get("/api/health")
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+                follow_redirects=True,
+            ) as client,
+        ):
+            health = await client.get("/api/health")
             if health.status_code != 200:
                 raise CandidateRehearsalRefused("Candidate health read failed.")
             health_payload = health.json()
@@ -980,7 +990,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             cards: dict[str, dict[str, object]] = {}
             if users_by_id:
                 for principal in sorted(users_by_id):
-                    listing = client.get(
+                    listing = await client.get(
                         "/api/projects",
                         headers={"x-rcp-rehearsal-user": principal},
                     )
@@ -998,7 +1008,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                             )
                         cards[project_id] = card
             else:
-                listing = client.get("/api/projects")
+                listing = await client.get("/api/projects")
                 if listing.status_code != 403:
                     raise CandidateRehearsalRefused(
                         "Candidate pre-enrollment project inventory did not stay protected."
@@ -1014,7 +1024,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             for project in overlay.projects:
                 headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
                 if project.capture_status == "captured":
-                    response = client.get(
+                    response = await client.get(
                         f"/api/projects/{project.project_id}",
                         headers=headers,
                     )
@@ -1032,11 +1042,11 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                         raise CandidateRehearsalRefused(
                             f"Candidate replay changed project {project.project_id}."
                         )
-                    tasks = client.get(
+                    tasks = await client.get(
                         f"/api/projects/{project.project_id}/tasks",
                         headers=headers,
                     )
-                    watchers = client.get(
+                    watchers = await client.get(
                         f"/api/projects/{project.project_id}/watchers",
                         headers=headers,
                     )
@@ -1053,8 +1063,10 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                     )
                     # Paper reads are proven stable here but kept out of `reads`: the
                     # previous release's baseline names only the reads it served.
-                    paper_proof = _paper_read_proof(client, project.project_id, headers=headers)
-                    if _paper_read_proof(client, project.project_id, headers=headers) != (
+                    paper_proof = await _paper_read_proof(
+                        client, project.project_id, headers=headers
+                    )
+                    if await _paper_read_proof(client, project.project_id, headers=headers) != (
                         paper_proof
                     ):
                         raise CandidateRehearsalRefused(
@@ -1127,23 +1139,25 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             lock_context.__exit__(None, None, None)
 
 
-def _paper_read_proof(client, project_id: str, *, headers: dict[str, str]) -> str:
+async def _paper_read_proof(
+    client: httpx.AsyncClient, project_id: str, *, headers: dict[str, str]
+) -> str:
     """Read durable live Paper through its served API, including every saved file."""
     base = f"/api/projects/{project_id}/paper"
     proof: list[object] = []
 
-    def read(path: str):
-        response = client.get(path, headers=headers)
+    async def read(path: str):
+        response = await client.get(path, headers=headers)
         if response.status_code != 200:
             raise CandidateRehearsalRefused(f"Candidate Paper read failed for {project_id}.")
         return response
 
-    tree = read(f"{base}/tree").json()
+    tree = (await read(f"{base}/tree")).json()
     proof.append(tree)
-    proof.append(read(f"{base}/history").json())
+    proof.append((await read(f"{base}/history")).json())
     for file in tree["files"]:
         file_id = file["file_id"]
-        raw = read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
+        raw = await read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
         digest = hashlib.sha256(raw.content).hexdigest()
         if digest != file["sha256"]:
             raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")

@@ -9,7 +9,8 @@ grants no graph authority: writes stay pinned to the run's one target
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -19,9 +20,22 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 if TYPE_CHECKING:
     from rcp.history.branches import BranchHistoryManager
     from rcp.history.manager import HistoryManager
+    from rcp.storage import AppStore
 
 GraphHistoryVerb = Literal["graph_diff", "graph_log"]
 GRAPH_HISTORY_VERBS: frozenset[GraphHistoryVerb] = frozenset(("graph_diff", "graph_log"))
+
+
+def branch_label(branch_id: str | None, names: Mapping[str, str]) -> str:
+    return "main" if branch_id is None else names.get(branch_id, branch_id)
+
+
+class ReadableBranch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    id: str
+    parent: str
 
 
 class GraphReadScope(BaseModel):
@@ -45,18 +59,25 @@ class GraphReadScope(BaseModel):
     ) -> GraphReadScope:
         target = history.graph_target
         scope = cls(project_id=project_id, target=target, group_context=group_context)
-        if target.kind != "branch":
-            return scope
-        generations = history.history_engine.snapshots([target], refresh=False)
-        metadata = generations[target.key].source.metadata
-        if metadata is None or metadata.kind != "fork":
-            return scope
-        ceilings = []
-        while metadata is not None:
-            parent = metadata.effective_parent_head
-            ceilings.append(parent)
-            metadata = generations[parent.target.key].source.metadata
-        return scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
+        if target.kind == "branch":
+            generations = history.history_engine.snapshots([target], refresh=False)
+            metadata = generations[target.key].source.metadata
+            if metadata is not None and metadata.kind == "fork":
+                ceilings = []
+                while metadata is not None:
+                    parent = metadata.effective_parent_head
+                    ceilings.append(parent)
+                    metadata = generations[parent.target.key].source.metadata
+                scope = scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
+        return scope
+
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_branches(cls, value: Any) -> Any:
+        # Old mailbox checkpoints included prompt context in the saved authority.
+        if isinstance(value, dict) and "branches" in value:
+            return {key: item for key, item in value.items() if key != "branches"}
+        return value
 
     @model_validator(mode="after")
     def validate_group_project(self) -> GraphReadScope:
@@ -95,3 +116,21 @@ class GraphReadScope(BaseModel):
                 for head in self.ancestry_ceilings
             ]
         )
+
+
+def readable_branches(scope: GraphReadScope, store: AppStore) -> list[ReadableBranch]:
+    """Prompt identities, filtered by authority without becoming part of it."""
+
+    records = store.graph_branches(scope.project_id)
+    names = {branch.branch_id: branch.name for branch in records}
+    return [
+        ReadableBranch(
+            name=branch.name,
+            id=branch.branch_id,
+            parent=branch_label(branch.parent_head.target.branch_id, names),
+        )
+        for branch in records
+        if scope.readable(
+            scope.project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+        )
+    ]

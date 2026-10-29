@@ -247,7 +247,7 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
 
     from rcp import limits
     from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges
+    from rcp.paper.changes import PaperChanges, read_paper_changes
     from rcp.storage import AppStore
     from rcp.transport import LocalStateWorkspace
 
@@ -267,7 +267,7 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
             (output / "files").mkdir(parents=True)
             (output / "moves.json").write_text('{"delete":["figure.png"]}')
             groups = await asyncio.to_thread(
-                changes.collect, "p", "task", await live.snapshot("p"), output
+                changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
             )
             await asyncio.to_thread(changes.accept, "p", groups[0].group_id, "h")
             # An accepted card no longer pins the old snapshot, but Undo still needs bytes.
@@ -336,7 +336,7 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
     from contextlib import nullcontext
 
     from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges
+    from rcp.paper.changes import PaperChanges, read_paper_changes
     from rcp.paper.persistence import collect_bodies
     from rcp.storage import AppStore
     from rcp.transport import LocalStateWorkspace
@@ -361,7 +361,7 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
         (output / "files/figure.png").write_bytes(b"after")
         changes = PaperChanges(source, live, lambda _: nullcontext())
         groups = await asyncio.to_thread(
-            changes.collect, "p", "task", await live.snapshot("p"), output
+            changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
         )
         with source.connection() as connection:
             section = capture_paper_section(connection, "p")

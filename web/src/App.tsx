@@ -2,6 +2,7 @@ import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
+import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
 import { errorMessage } from "./core/errors";
 import { PinnedView, PinnedViewTab } from "./graph/PinnedView";
 import { pinRequest, pinScopeKey, researchViewsProfile } from "./graph/researchViewResources";
@@ -109,6 +110,7 @@ import {
 import { isActiveTask } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
 import { loadChatTranscript } from "./chat/chatApi";
+import { worktreeRepositoryChoices } from "./chat/worktreeRepositories";
 import {
   bindArtifactResourceStore,
   closeArtifactViewer,
@@ -469,11 +471,7 @@ const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
 
 /** A tab stays highlighted while one of its sub-views is open. */
 function navItemActive(item: AppView, view: AppView): boolean {
-  return (
-    view === item ||
-    (item === "scientific" && view === "dag") ||
-    (item === "artifacts" && view === "paper")
-  );
+  return topTab(view) === item;
 }
 
 function ArtifactsSubnav({
@@ -1023,7 +1021,6 @@ function MemberApp({
   const {
     view,
     trustView,
-    runScope,
     selectedNode,
     companionNode,
     detailFocusTokens,
@@ -1042,10 +1039,9 @@ function MemberApp({
     restoreProjectSelection,
     resetProjectSelection,
     applyCanonicalProject,
-    replaceRunScope,
     applyRouteSelection,
     changeView,
-    openLastResearchView,
+    openTab,
     changeTrustView,
     openNode,
     openRelatedNode: openRelatedGraphNode,
@@ -1427,7 +1423,6 @@ function MemberApp({
     ? {
         ...serializeProjectSessionTabState(projectSession),
         projectHeaderCollapsed,
-        runScope,
         selectedNodeId: selectedNode?.id ?? null,
         companionNodeId: companionNode?.id ?? null,
         detailFocusTokens,
@@ -2433,7 +2428,13 @@ function MemberApp({
     changeView("chats");
   };
 
-  // Leaving Agents resets it to the board, so only a link that names a chat skips it.
+  /** Returning to Agents reopens the chat left open there; inside Agents the tab is the board. */
+  const reopenAgents = () => {
+    const chatId = view !== "chats" && project ? rememberedChat(project.id) : null;
+    openChats(chatId && conversations.some((item) => item.chatId === chatId) ? chatId : null);
+  };
+
+  // Leaving Agents resets it to the board; the tab and a link that names a chat skip it.
   useEffect(() => {
     if (view !== "chats") setAgentsBoard(true);
   }, [view]);
@@ -2443,6 +2444,7 @@ function MemberApp({
   const pendingChatId = requestedChat.chatId;
   useEffect(() => {
     if (view !== "chats" || !project?.id || pendingChatId) return;
+    rememberOpenChat(project.id, openChatId ?? null);
     const hash = window.location.hash;
     const route = parseProjectHash(hash);
     if (route.projectId !== project.id || (route.chatId ?? undefined) === openChatId) return;
@@ -3047,6 +3049,15 @@ function MemberApp({
         // profile's machine.
         const profile = project.agent_profiles.node_chat;
         const agent = launchConfig ?? profile;
+        // Only a code worktree names its one repository; the server stamps every other scope.
+        const { worktree_repository: pickedRepository, ...isolationFields } = isolation ?? {};
+        const worktreeRepositories = worktreeRepositoryChoices(project, profile.run_on);
+        const worktreeRepository =
+          pickedRepository && worktreeRepositories.includes(pickedRepository)
+            ? pickedRepository
+            : worktreeRepositories.length === 1
+              ? worktreeRepositories[0]
+              : null;
         const task = await startExperimentRun(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
@@ -3054,12 +3065,14 @@ function MemberApp({
             model: agent.model || null,
             reasoning: agent.reasoning,
             run_on: profile.run_on,
-            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+            ...(isolation?.code_worktree && worktreeRepository
+              ? { run_truth_scope: [worktreeRepository] }
+              : {}),
             chat_id: chatId,
             // Omitted unless the human reauthorized an explicit count; the
             // backend then keeps the Experiment node's own limit.
             ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
-            ...isolation,
+            ...isolationFields,
             browser_requested: browserRequested,
             // A blank message lets the backend write the canonical start goal.
             ...(message?.trim() ? { message } : {}),
@@ -3121,7 +3134,6 @@ function MemberApp({
       refreshProjectExperimentLoops,
       refreshEpisodes,
       reload,
-      runScope,
       setFloatingChat,
       showExperiment,
     ],
@@ -3182,15 +3194,13 @@ function MemberApp({
     [project, startExperiment],
   );
 
-  const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
+  const runAgent = async (config: AgentRunConfig, message: string | null) => {
     if (!project || taskStarting || mutationsDisabled) return;
     const runKind = project.last_refresh_at ? "refresh" : "seed";
-    replaceRunScope(scope);
     try {
       await startAgentTask(runKind, {
         ...config,
         model: config.model || null,
-        run_truth_scope: scope,
         message,
       });
       closeRunDialog();
@@ -3218,6 +3228,7 @@ function MemberApp({
       launchConfig?: AgentRunConfig,
       branchName: string | null = null,
       bulletinEnabled = true,
+      worktreeRepository: string | null = null,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3237,8 +3248,13 @@ function MemberApp({
             invocation_ceiling: invocationCeiling,
             starting_instruction: startingInstruction,
             branch_name: branchName,
-            // Omitted, the server turns code isolation on only where it is eligible.
-            ...(codeWorktree ? {} : { code_worktree: false }),
+            // A named repository turns code isolation on for it; omitted, the
+            // server turns it on only where it is eligible.
+            ...(codeWorktree
+              ? worktreeRepository
+                ? { worktree_repository: worktreeRepository }
+                : {}
+              : { code_worktree: false }),
             // Omitted, the server uses the Settings orchestrator profile.
             ...(launchConfig
               ? {
@@ -3288,6 +3304,7 @@ function MemberApp({
     launchConfig?: AgentRunConfig,
     branchName: string | null = null,
     bulletinEnabled = true,
+    worktreeRepository: string | null = null,
   ) => {
     reportAutoResearchStartError(null);
     setAutoResearchBranchRefusal(null);
@@ -3301,6 +3318,7 @@ function MemberApp({
         launchConfig,
         branchName,
         bulletinEnabled,
+        worktreeRepository,
       );
     } catch (error) {
       setAutoResearchBranchRefusal(branchNameRefusal(error));
@@ -3814,13 +3832,11 @@ function MemberApp({
     project: null,
     tasks: [],
     conversationSource: webMcpConversationSource,
-    runScope: [],
   });
   voicePageRef.current = {
     project: webMcpProject,
     tasks,
     conversationSource: webMcpConversationSource,
-    runScope,
   };
   const voice = useVoiceAgent({
     ready: backendSessionReady,
@@ -4325,16 +4341,14 @@ function MemberApp({
     consolidation?.schedule ?? null,
     Date.now(),
   );
-  // Flags are project-wide Inbox rows; only main's graph carries their node marks.
+  // Evidence findings and node marks belong to the graph being viewed.
   const flagRows = evidenceFlagRows(
     consolidation?.evidence_flags ?? [],
     graph.nodes,
     project.repositories,
-    graphTarget.kind === "main",
+    graphTarget.kind === "main" ? "main" : graphTarget.branch_id,
   );
-  const flaggedNodeIds = new Set(
-    graphTarget.kind === "main" ? flagRows.flatMap((row) => (row.node ? [row.node.id] : [])) : [],
-  );
+  const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
@@ -4359,13 +4373,6 @@ function MemberApp({
         ? null
         : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
     : null;
-  const selectedExperimentControl = selectedExperimentRunId
-    ? selectedExperimentUsesIndex
-      ? (selectedTargetExperiment?.control ?? null)
-      : selectedMainRouteIsStale
-        ? null
-        : (presentedExperimentControl[selectedExperimentRunId] ?? null)
-    : null;
   const selectedExperimentNodes = Object.fromEntries(
     selectedExperimentExecution.nodes.map((node) => [node.id, node]),
   );
@@ -4386,7 +4393,6 @@ function MemberApp({
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
           glossaryIndex={glossaryIndex}
-          runScope={selectedExperimentControl?.operational?.session?.run_truth_scope ?? runScope}
           tasks={selectedExperimentExecution.tasks}
           watchers={selectedExperimentExecution.watchers}
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
@@ -4657,13 +4663,7 @@ function MemberApp({
         key={item.view}
         className={navItemActive(item.view, view) ? "active" : ""}
         aria-current={navItemActive(item.view, view) ? "page" : undefined}
-        onClick={() =>
-          item.view === "chats"
-            ? openChats()
-            : item.view === "scientific"
-              ? openLastResearchView()
-              : changeView(item.view)
-        }
+        onClick={() => (item.view === "chats" ? reopenAgents() : openTab(item.view))}
       >
         {item.icon}
         <span>{item.label}</span>
@@ -5363,9 +5363,6 @@ function MemberApp({
                     projectSettingsSavedProject(saved, current, retention),
                   );
                 else void reload();
-                // The saved snapshot carries the new default; the session may still
-                // hold the pre-save branch snapshot while its reload is in flight.
-                replaceRunScope(saved.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -5381,7 +5378,6 @@ function MemberApp({
               nodes={presentedGraph.nodes}
               graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
-              runScope={runScope}
               tasks={tasks}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
@@ -5576,7 +5572,11 @@ function MemberApp({
             }
             inheritedIsolation={
               activeBranchEpisode
-                ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
+                ? {
+                    graph_isolation: true,
+                    code_worktree: activeBranchEpisode.code_worktree,
+                    worktree_repository: activeBranchEpisode.checkout.repository_alias,
+                  }
                 : null
             }
             onOpenChat={() => {
@@ -5610,7 +5610,6 @@ function MemberApp({
                 conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
                   ?.title
               }
-              runScope={runScope}
               tasks={tasks}
               watchers={watchers}
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
@@ -5647,10 +5646,9 @@ function MemberApp({
         open={runDialogOpen}
         kind={runKind}
         project={project}
-        initialScope={runScope}
         busy={taskStarting}
         onClose={closeRunDialog}
-        onRun={(config, scope, message) => void runAgent(config, scope, message)}
+        onRun={(config, message) => void runAgent(config, message)}
       />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
@@ -5669,6 +5667,7 @@ function MemberApp({
           launchConfig,
           branchName,
           bulletinEnabled,
+          worktreeRepository,
         ) =>
           void authorizeAutoResearch(
             invocationCeiling,
@@ -5678,6 +5677,7 @@ function MemberApp({
             launchConfig,
             branchName,
             bulletinEnabled,
+            worktreeRepository,
           )
         }
         branchNameRefusal={autoResearchBranchRefusal}
@@ -5694,9 +5694,7 @@ function MemberApp({
           mode="retry"
           kind={retryProfileKind(retryTask)}
           project={project}
-          initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
-          runOnLocked={retryTask.episode_id !== null}
           busy={taskActionId === retryTask.operation_id}
           onClose={closeRetryTask}
           onRun={(config) => void retryAgentTask(retryTask, config)}

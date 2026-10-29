@@ -47,6 +47,7 @@
     "allow-desktop-test-notification",
     "allow-open-artifact-pdf",
     "allow-download-artifact",
+    "allow-download-paper-file",
     "allow-open-external",
     "allow-request-quit",
     "allow-check-for-update",

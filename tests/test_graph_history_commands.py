@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents.command_protocol import validate_command_request
-from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.group_context import GroupContext, GroupProjectContext
+from rcp.agents.prompts import GraphReadPrompt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.history.queries import GraphDiffPage
@@ -300,3 +301,96 @@ def test_group_history_resolves_sibling_and_binds_cursor(history_query, verb):
         )
         assert response.result["code"] == code
     assert resolved == ["project"]
+
+
+@pytest.mark.parametrize("verb", ["graph_log", "graph_diff", "branch_changes"])
+def test_branch_names_resolve_at_command_time(history_query, monkeypatch, verb):
+    service, scope, branch = history_query
+    branch.append(_branch_patch("ev/named"))
+    names = {branch.branch_id: "vla-if"}
+    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: dict(names))
+
+    def query(ref):
+        if verb == "graph_log":
+            return request(verb, id="ev/named", at=f"branch:{ref}@head")
+        if verb == "branch_changes":
+            return request(branch_changes=ref, ids=["ev/named"])
+        return request(**{"from": "main@1", "to": f"branch:{ref}@head", "ids": ["ev/named"]})
+
+    by_id = handle_graph_history_command(service, scope, query(branch.branch_id))
+    by_name = handle_graph_history_command(service, scope, query("vla-if"))
+    assert by_name.status == by_id.status == "ok"
+    assert by_name.result == by_id.result
+    assert by_name.result["entries" if verb == "graph_log" else "changes"]
+    assert by_name.result["branch_names"] == names
+    names[branch.branch_id] = "renamed-branch"
+    assert handle_graph_history_command(service, scope, query("renamed-branch")).status == "ok"
+    for missing in ("vla-if", "unknown-branch"):
+        refused = handle_graph_history_command(service, scope, query(missing))
+        assert refused.result["code"] == "graph_history_query_invalid"
+
+
+def test_branch_id_takes_precedence_over_another_branch_name(history_query, monkeypatch):
+    from .test_history_forks import fork_metadata
+
+    service, scope, branch = history_query
+    other = service.history.create_branch(
+        fork_metadata(service.history, service.history.head_ref())
+    )
+    names = {branch.branch_id: "named-branch", other.branch_id: branch.branch_id}
+    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: names)
+    response = handle_graph_history_command(
+        service, scope, request("graph_log", id="ev/long", at=f"branch:{branch.branch_id}@head")
+    )
+    assert response.status == "ok"
+    assert response.result["at_head"] == f"branch:{branch.branch_id}@2"
+    assert response.result["entries"]
+
+
+def test_branch_inventory_respects_fork_read_scope(history_query):
+    from .test_history_forks import fork_metadata
+
+    service, _, parent = history_query
+    fork = service.history.create_branch(fork_metadata(service.history, parent.head_ref()))
+    sibling = service.history.create_branch(fork_metadata(service.history, parent.head_ref()))
+    names = {
+        parent.branch_id: "parent-branch",
+        fork.branch_id: "my-fork",
+        sibling.branch_id: "sibling",
+    }
+    for branch in (parent, fork, sibling):
+        service.paper.store.create_graph_branch(
+            project_id=service._project_id,
+            branch_id=branch.branch_id,
+            owner_episode_id=None,
+            parent_head=branch.branch_metadata().effective_parent_head,
+            created_by="human:test",
+            name=names[branch.branch_id],
+        )
+    scope = GraphReadScope.resolve("project", fork)
+    branches = readable_branches(scope, service.paper.store)
+    assert {item.id for item in branches} == {parent.branch_id, fork.branch_id}
+    assert next(item for item in branches if item.id == fork.branch_id).parent == "parent-branch"
+    denied = handle_graph_history_command(
+        service, scope, request("graph_log", id="hyp/main", at="branch:sibling@head")
+    )
+    assert denied.result["code"] == "graph_history_scope_refused"
+
+
+def test_legacy_prompt_branches_do_not_change_history_cursor_binding(history_query):
+    from rcp.runs.graph_history_queries import _binding
+
+    service, scope, _branch = history_query
+    legacy = {
+        **scope.model_dump(mode="json"),
+        "branches": [{"id": "old", "name": "old", "parent": "main"}],
+    }
+    restored = GraphReadScope.model_validate(legacy)
+    query = request("graph_log", id="ev/long")
+    assert restored == scope
+    assert "branches" not in restored.model_dump()
+    assert _binding(restored, query) == _binding(scope, query)
+    assert (
+        GraphReadPrompt(restored, service.paper.store).values
+        == GraphReadPrompt(scope, service.paper.store).values
+    )
