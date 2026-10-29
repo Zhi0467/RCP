@@ -1,3 +1,6 @@
+.run-artifacts-retry {
+  color: var(--red);
+}
 .run-artifacts ul {
   display: grid;
   gap: 4px;
