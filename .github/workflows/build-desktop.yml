@@ -95,7 +95,7 @@ jobs:
           print(f"PASS: {len(modern)} modern Speech imports are weak; {len(overlays)} Swift dylib loads are weak")
           PYTHON
       - name: Smoke-test the bundled backend
-        run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
+        run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/Resources/backend/rcp-backend
       - name: Verify the updater signature against the signing key
         # Before anything is published: a key mismatch must fail while the
         # companion can still be rebuilt. During a key rotation the transition

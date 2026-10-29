@@ -41,12 +41,13 @@ analysis = Analysis(  # noqa: F821 - provided by PyInstaller
 
 pyz = PYZ(analysis.pure)  # noqa: F821 - provided by PyInstaller
 
+# One directory, not one file: a one-file backend unpacks every library into a
+# new temporary folder on each launch, and macOS scans each copy again (#251).
 executable = EXE(  # noqa: F821 - provided by PyInstaller
     pyz,
     analysis.scripts,
-    analysis.binaries,
-    analysis.datas,
     [],
+    exclude_binaries=True,
     name="rcp-backend",
     debug=False,
     bootloader_ignore_signals=False,
@@ -58,4 +59,13 @@ executable = EXE(  # noqa: F821 - provided by PyInstaller
     target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
+)
+
+COLLECT(  # noqa: F821 - provided by PyInstaller
+    executable,
+    analysis.binaries,
+    analysis.datas,
+    strip=False,
+    upx=False,
+    name="rcp-backend",
 )

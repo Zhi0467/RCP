@@ -899,10 +899,15 @@ fn backend_command(
             .current_dir(checkout)
             .args(["run", "rcp", "serve"])
     } else {
-        app.shell()
-            .sidecar("rcp-backend")
+        // A one-directory PyInstaller backend, kept in Resources: under
+        // Contents/MacOS its bootloader would look for its libraries in
+        // Contents/Frameworks instead of beside itself.
+        let backend = app
+            .path()
+            .resource_dir()
             .map_err(|error| format!("packaged backend is unavailable: {error}"))?
-            .args(["serve"])
+            .join("backend/rcp-backend");
+        app.shell().command(backend).args(["serve"])
     };
 
     let mut args = vec![

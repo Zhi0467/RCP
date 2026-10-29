@@ -24,7 +24,7 @@ fail() {
 major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$major" -ge 13 ] 2>/dev/null || fail "RCP needs macOS 13 or later."
 
-if pgrep -f '/RCP\.app/Contents/MacOS/' >/dev/null 2>&1; then
+if pgrep -f '/RCP\.app/Contents/(MacOS|Resources/backend)/' >/dev/null 2>&1; then
   fail "RCP is running. Quit it with Cmd+Q, then run this command again."
 fi
 [ -w "$applications" ] ||

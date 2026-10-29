@@ -3,7 +3,7 @@
     "beforeBuildCommand": "npm run build:clean"
   },
   "bundle": {
-    "externalBin": ["binaries/rcp-backend"],
+    "resources": { "../../packaging/dist/rcp-backend/": "backend/" },
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": false

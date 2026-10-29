@@ -246,7 +246,8 @@ Build the application:
 npm --prefix web run desktop:build
 ```
 
-The build compiles Web, freezes Python with PyInstaller and assembles the sidecar:
+The build compiles Web, freezes Python with PyInstaller as one directory, and
+copies that directory into the app's `Contents/Resources/backend`:
 
 ```text
 web/src-tauri/target/release/bundle/macos/RCP.app
@@ -255,11 +256,17 @@ web/src-tauri/target/release/bundle/macos/RCP.app
 Packaging includes first-party package source/data and Web assets with a verified
 SHA-256 inventory. Keep runtime resources inside the package; no per-file list is needed.
 
+The backend is one directory, not one file. A one-file backend unpacks its
+libraries into a new temporary folder at every launch, and macOS scans each
+copy again, so the app and every terminal took 10 s or more to start. It lives
+in `Resources`, not `MacOS`: in `MacOS`, PyInstaller's bootloader looks for its
+libraries in `Contents/Frameworks` instead of beside itself.
+
 Smoke-test the backend inside that exact bundle:
 
 ```bash
 uv run python packaging/smoke-backend.py \
-  web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
+  web/src-tauri/target/release/bundle/macos/RCP.app/Contents/Resources/backend/rcp-backend
 ```
 
 The smoke test drives a disposable SSH-project Discuss turn over the served API
