@@ -4173,6 +4173,7 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
         provider="claude",
     )
     store = app.state.background_tasks.store
+    store_test_claude_token(store)
     operation_id = "pause-without-native-checkpoint"
     now = store.now()
     store.create_agent_task(

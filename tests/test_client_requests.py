@@ -118,6 +118,8 @@ def test_client_request_key_cannot_cross_routes(request_app):
 
 def test_client_request_key_is_private_and_cannot_be_reused_by_another_member(tmp_path):
     app, client, store, people, acting = _team_app(tmp_path)
+    for member in people:
+        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
     project_id = _create_project(client, tmp_path / "repo")
     store.seat_project_member(project_id, people[1].user_id)
 
@@ -220,6 +222,8 @@ def test_second_member_retry_receipt_keeps_episode_authority(tmp_path):
     from .test_api import _experiment_fixture_patch
 
     app, client, store, people, acting = _team_app(tmp_path)
+    for member in people:
+        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
     project_id = _create_project(client, tmp_path / "repo")
     store.seat_project_member(project_id, people[1].user_id)
     service = app.state.catalog.open(project_id)
