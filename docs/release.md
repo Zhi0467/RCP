@@ -69,9 +69,9 @@ uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" --no-deps "$RCP_REHEARSAL_D
 "$RCP_REHEARSAL_DIR/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - > "$RCP_REHEARSAL_DIR/rehearsal.json" <<EOF_REHEARSAL
 {"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$RCP_REHEARSAL_DIR/out"}
 EOF_REHEARSAL
-printf '{"manifest_sha256":"%s","result":%s}\n' \
+printf '{"manifest_sha256":"%s","status":"%s"}\n' \
   "$(sha256sum < "$RCP_REHEARSAL_DIR/manifest.sha256" | cut -c1-64)" \
-  "$(cat "$RCP_REHEARSAL_DIR/rehearsal.json")"
+  "$("$RCP_REHEARSAL_DIR/venv/bin/python" -I -c 'import json, sys; print(json.load(sys.stdin)["status"])' < "$RCP_REHEARSAL_DIR/rehearsal.json")"
 ```
 
 The rehearsal refuses when a copied record or cache breaks a space-wide read;
@@ -102,8 +102,9 @@ gh workflow run promote.yml --repo Zhi0467/RCP \
   -f receipt="$(cat receipt.json)"
 ```
 
-Include one line per team; promotion cannot tell a team is missing. It refuses
-a receipt with no rehearsal, one that did not pass or tested other bytes, or
+Include one line per team; promotion cannot tell a team is missing. The receipt
+is public, so it carries no warnings or other fields. Promotion refuses any
+other field, no rehearsal, one that did not pass or tested other bytes, or
 another desktop run; see
 [release selection](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery).
 Check the workflow summary, which keeps the receipt, and the published release

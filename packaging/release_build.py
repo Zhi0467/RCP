@@ -228,7 +228,13 @@ def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) 
         value = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ReleaseBuildError(f"could not read qualification receipt: {exc}") from exc
-    if not isinstance(value, dict) or value.get("version") != 1:
+    # The receipt is public in the run inputs and summary, so it admits no
+    # rehearsal warnings, which can name projects and hosts.
+    if (
+        not isinstance(value, dict)
+        or value.keys() != {"version", "desktop_candidate_run", "rehearsals"}
+        or value["version"] != 1
+    ):
         raise ReleaseBuildError("qualification receipt must be a version 1 object")
     if (
         not desktop_candidate_run.isdecimal()
@@ -240,10 +246,11 @@ def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) 
         raise ReleaseBuildError("qualification receipt holds no copied-data rehearsal")
     digest = _digest(manifest)
     for number, rehearsal in enumerate(rehearsals, start=1):
-        if not isinstance(rehearsal, dict) or rehearsal.get("manifest_sha256") != digest:
+        if not isinstance(rehearsal, dict) or rehearsal.keys() != {"manifest_sha256", "status"}:
+            raise ReleaseBuildError(f"rehearsal {number} must hold only its digest and status")
+        if rehearsal["manifest_sha256"] != digest:
             raise ReleaseBuildError(f"rehearsal {number} did not install this build's assets")
-        result = rehearsal.get("result")
-        if not isinstance(result, dict) or result.get("status") != "ready":
+        if rehearsal["status"] != "ready":
             raise ReleaseBuildError(f"rehearsal {number} did not pass")
 
 
