@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ApiError,
   addProviderLogin,
   cancelProviderSignIn,
   loadProviderLoginSettings,
@@ -554,18 +555,24 @@ export function SignInCard({
         }
       } catch (cause) {
         if (cancelled) return;
-        setFailure({
-          message: errorMessage(cause),
-          retry: () => {
-            setFailure(null);
-            void onChangedRef.current();
-          },
-        });
+        // A restart settles every attempt, so an unknown id is final, not transient.
+        const gone = cause instanceof ApiError && cause.status === 404;
+        if (!gone) {
+          setFailure({
+            message: errorMessage(cause),
+            retry: () => {
+              setFailure(null);
+              void onChangedRef.current();
+            },
+          });
+        }
         // A transient status failure must not leave the card disabled forever.
         failures += 1;
-        if (failures < SIGN_IN_POLL_FAILURE_LIMIT) {
+        if (!gone && failures < SIGN_IN_POLL_FAILURE_LIMIT) {
           pollTimer.current = setTimeout(() => void poll(), SIGN_IN_POLL_MS);
         } else {
+          // Re-read the list first, or its stale row hands the attempt back.
+          await onChangedRef.current();
           setSignIn(null);
         }
       }
@@ -586,6 +593,8 @@ export function SignInCard({
       await onChanged();
     } catch (cause) {
       setFailure({ message: errorMessage(cause), retry: () => void run(kind, action) });
+      // Another member may have changed this login; nothing else re-reads an idle list.
+      void onChanged();
     } finally {
       setBusy(null);
     }

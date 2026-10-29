@@ -251,6 +251,40 @@ test("a pending sign-in keeps polling past a transient status failure", async (t
   assert.deepEqual(errors, []);
 });
 
+test("a failed card action re-reads the list, so a login removed elsewhere leaves", async (t) => {
+  const { page } = await openSignIns(t, {
+    // Nothing draining or pending, so the list is not already being followed.
+    rows: everyState.filter((row) => !row.draining_since && !row.sign_in),
+    onAction: (_call, current) => {
+      current.rows = current.rows.filter((row) => row.login_id !== "bo");
+      return { status: 409, json: { detail: "This login was removed." } };
+    },
+  });
+  const bo = card(page, "claude", "bo");
+  await bo.locator('[data-sign-in-action="more"]').click();
+  await bo.locator('[data-sign-in-action="remove"]').click();
+  await bo.locator('[data-sign-in-action="confirm-remove"]').click();
+  await bo.waitFor({ state: "detached", timeout: 3000 });
+});
+
+test("a sign-in the server no longer knows stops polling", async (t) => {
+  let polls = 0;
+  const { page, state } = await openSignIns(t, {
+    rows: codexRows(signIn()),
+    settings: codexSettings,
+    onAction: (_call, current) => {
+      polls += 1;
+      // A restart settled the attempt; only a fresh list read shows that.
+      current.rows = codexRows(null);
+      return { status: 404, json: { detail: "Unknown sign-in." } };
+    },
+  });
+  await page.locator('.sign-in-card[data-card-state="signed_out"]').waitFor();
+  await page.waitForTimeout(3000);
+  assert.equal(polls, 1);
+  assert.equal(state.rows[0].sign_in, null);
+});
+
 test("a pending sign-in keeps polling while the app re-renders", async (t) => {
   let polls = 0;
   const { page } = await openSignIns(t, {
