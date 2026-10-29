@@ -1402,6 +1402,7 @@ class LinuxServerDoctorMachine:
                 f"--unit={self.layout.service_unit_name}",
                 f"--since=-{limits.SERVER_DOCTOR_LOG_WINDOW_SECONDS}s",
                 f"--lines={limits.SERVER_DOCTOR_LOG_MAX_ENTRIES}",
+                "--reverse",
                 "--output=json",
                 "--output-fields=MESSAGE",
                 "--no-pager",
