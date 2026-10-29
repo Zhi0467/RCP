@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   Download,
@@ -50,6 +50,11 @@ function buildTree(files: PaperFile[], extraFolders: string[]): TreeFolder {
   return root;
 }
 const under = (path: string, folder: string) => path.startsWith(`${folder}/`);
+// A row's full path is its tooltip only while the name is cut short; otherwise it repeats the row.
+const titleWhenTruncated = (path: string) => (event: PointerEvent<HTMLButtonElement>) => {
+  const name = event.currentTarget.querySelector("span");
+  event.currentTarget.title = name && name.scrollWidth > name.clientWidth ? path : "";
+};
 
 export function PaperFiles({
   apiBase,
@@ -276,7 +281,7 @@ export function PaperFiles({
             <button
               className="paper-file"
               style={indent}
-              title={entry.path}
+              onPointerEnter={titleWhenTruncated(entry.path)}
               aria-pressed={selected === entry.file_id}
               onClick={() => onSelect(entry.file_id)}
             >
@@ -308,7 +313,7 @@ export function PaperFiles({
           <button
             className="paper-folder"
             style={indent}
-            title={entry.path}
+            onPointerEnter={titleWhenTruncated(entry.path)}
             aria-expanded={open}
             onClick={() =>
               setCollapsed((current) => {

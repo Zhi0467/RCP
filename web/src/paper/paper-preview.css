@@ -45,6 +45,12 @@
   min-width: 0;
   padding: 4px 12px 8px;
 }
+/* Before a PDF exists, the actions (install, compiling, log) are the pane's centred empty state. */
+.paper-preview-empty {
+  flex: 1;
+  height: auto;
+  justify-content: center;
+}
 .paper-preview-actions .icon-button {
   min-height: 44px;
   min-width: 44px;
