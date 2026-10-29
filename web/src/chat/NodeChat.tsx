@@ -11,10 +11,9 @@ import {
   ComposerAttachmentChips,
   formatBytes,
   useComposerAttachments,
-  type InsertReferenceText,
 } from "./composerAttachments";
 import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
-import { referenceDraftKey, sourceReference, type DraftReference } from "../core/projectReferences";
+import { referenceDraftKey, sourceReference } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen, questionTranscript } from "./questions";
@@ -509,6 +508,16 @@ export function NodeChat({
     project,
     scopeId: chatId,
     referencesKey,
+    input: textareaRef,
+    message: {
+      get: () => draft.get(),
+      set: (next) => {
+        if (dictating) stopDictation(true);
+        updateMessage(next);
+      },
+    },
+    filesDisabled: readOnly,
+    referencesDisabled: submitting || commentOnly,
     onError: setSubmitError,
   });
   const { attachments, references, attachmentSetId } = composer;
@@ -1212,33 +1221,6 @@ export function NodeChat({
       releaseMicrophone(sessionId);
       failDictation(sessionId, error);
     }
-  };
-
-  const addFiles = (incoming: File[]) => {
-    if (readOnly) return;
-    void composer.addFiles(incoming);
-  };
-
-  const addReference = (item: DraftReference) => {
-    if (submitting || commentOnly) return;
-    composer.addReference(item);
-  };
-  const insertReferenceText: InsertReferenceText = (
-    text,
-    fileCount = attachments.length,
-    insertPlainText = false,
-  ) => {
-    if (submitting || commentOnly) return false;
-    return composer.insertReferenceText(text, {
-      fileCount,
-      insertPlainText,
-      input: textareaRef.current,
-      current: draft.get(),
-      update: (next) => {
-        if (dictating) stopDictation(true);
-        updateMessage(next);
-      },
-    });
   };
 
   const toggleHumanMessage = (messageId: string) => {
@@ -2404,7 +2386,7 @@ export function NodeChat({
         <div
           className={`chat-composer${composer.dragging ? " is-dragging-files" : ""}`}
           data-mode={mode}
-          {...composer.dropTarget(addFiles, insertReferenceText)}
+          {...composer.dropTarget()}
         >
           <SkillPicker {...skills.props} />
           {freshProviderSession && (
@@ -2423,7 +2405,7 @@ export function NodeChat({
               if (dictating) stopDictation(true);
               updateMessage(event.target.value);
             }}
-            onPaste={(event) => composer.paste(event, addFiles, insertReferenceText)}
+            onPaste={composer.paste}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
               if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
@@ -2441,13 +2423,7 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <ComposerAddPicker
-                composer={composer}
-                disabled={attachDisabled}
-                referencesDisabled={commentOnly}
-                onAttach={addFiles}
-                onPickReference={addReference}
-              />
+              <ComposerAddPicker composer={composer} disabled={attachDisabled} />
               {!commentOnly && (
                 <>
                   <div

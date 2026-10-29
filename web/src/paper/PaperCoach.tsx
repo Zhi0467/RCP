@@ -38,7 +38,6 @@ import {
   ComposerAddPicker,
   ComposerAttachmentChips,
   useComposerAttachments,
-  type InsertReferenceText,
 } from "../chat/composerAttachments";
 import {
   AnswerCommentButton,
@@ -127,16 +126,10 @@ export function PaperCoach({
   const composer = useComposerAttachments({
     project,
     referencesKey: null,
+    input: textarea,
+    message: { get: () => message, set: setMessage },
     onError: setError,
   });
-  const insertReferenceText: InsertReferenceText = (pasted, fileCount, insertPlainText) =>
-    composer.insertReferenceText(pasted, {
-      fileCount,
-      insertPlainText,
-      input: textarea.current,
-      current: message,
-      update: setMessage,
-    });
   const taskRevision = tasks
     .filter((task) => task.kind === "paper_coach")
     .map((task) => `${task.operation_id}:${task.updated_at}`)
@@ -438,7 +431,7 @@ export function PaperCoach({
       </div>
       <div
         className={`chat-composer${error ? " paper-failure" : ""}${composer.dragging ? " is-dragging-files" : ""}`}
-        {...composer.dropTarget(composer.addFiles, insertReferenceText)}
+        {...composer.dropTarget()}
       >
         <SkillPicker {...skills.props} />
         {freshProviderSession && (
@@ -455,7 +448,7 @@ export function PaperCoach({
             skills.readMessage(event.target.value);
             setError(null);
           }}
-          onPaste={(event) => composer.paste(event, composer.addFiles, insertReferenceText)}
+          onPaste={composer.paste}
           onKeyDown={(event) => {
             if (skills.handleKeyDown(event)) return;
             if (returnSends(event)) {
@@ -469,8 +462,6 @@ export function PaperCoach({
             <ComposerAddPicker
               composer={composer}
               disabled={composer.full || composer.preparing || submitting}
-              onAttach={composer.addFiles}
-              onPickReference={composer.addReference}
             />
             <AgentConfigChip
               project={project}

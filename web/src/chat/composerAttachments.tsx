@@ -6,6 +6,7 @@ import {
   useState,
   type ClipboardEvent,
   type DragEvent,
+  type RefObject,
 } from "react";
 import { File, FolderOpen, LoaderCircle, Plus, Upload, X } from "lucide-react";
 import { api, removeChatAttachment, uploadChatAttachment } from "../core/api";
@@ -52,13 +53,6 @@ export interface ComposerAttachment {
   descriptor?: ChatAttachmentDescriptor;
   error?: string;
 }
-
-/** Puts referenced text at the cursor; true when the composer consumed the text. */
-export type InsertReferenceText = (
-  text: string,
-  fileCount?: number,
-  insertPlainText?: boolean,
-) => boolean;
 
 const TOO_MANY = `A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`;
 const DRAGGED_TYPES = ["Files", "text/plain", "text/uri-list"];
@@ -182,6 +176,10 @@ export function useComposerAttachments({
   project,
   scopeId,
   referencesKey,
+  input,
+  message,
+  filesDisabled = false,
+  referencesDisabled = false,
   onError,
 }: {
   project: ProjectSnapshot;
@@ -189,6 +187,13 @@ export function useComposerAttachments({
   scopeId?: string;
   /** Where unsent references persist for this viewer, or null to keep them in memory. */
   referencesKey: string | null;
+  /** The message field that pasted and dropped text joins at its cursor. */
+  input: RefObject<HTMLTextAreaElement | null>;
+  message: { get: () => string; set: (next: string) => void };
+  /** The composer takes no files now. */
+  filesDisabled?: boolean;
+  /** The composer takes no project references now. */
+  referencesDisabled?: boolean;
   onError: (message: string | null) => void;
 }) {
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
@@ -235,6 +240,7 @@ export function useComposerAttachments({
 
   const addFiles = async (incoming: File[]) => {
     setDragging(false);
+    if (filesDisabled) return;
     if (uploadBusyRef.current) {
       onError("Wait for the current files to finish preparing before adding more.");
       return;
@@ -366,29 +372,20 @@ export function useComposerAttachments({
   };
 
   const addReference = (item: DraftReference) => {
+    if (referencesDisabled) return;
     const result = mergeReferences(references, [item], attachments.length);
     setReferences(result.references);
     if (result.rejected) onError(TOO_MANY);
   };
 
-  /** Turns pasted or dropped RCP links into references and splices the rest at the cursor. */
+  /** Turns pasted or dropped RCP links into references and splices the rest at the cursor;
+   * true when the composer consumed the text. */
   const insertReferenceText = (
     text: string,
-    {
-      fileCount = attachments.length,
-      insertPlainText = false,
-      input,
-      current,
-      update,
-    }: {
-      fileCount?: number;
-      insertPlainText?: boolean;
-      input: HTMLTextAreaElement | null;
-      current: string;
-      update: (next: string) => void;
-    },
+    fileCount = attachments.length,
+    insertPlainText = false,
   ): boolean => {
-    if (!text) return false;
+    if (!text || referencesDisabled) return false;
     const target = project.graph_target ?? MAIN_GRAPH;
     const result = extractReferences(text, project.id, references, fileCount, (selector) =>
       selector.kind === "node" &&
@@ -399,11 +396,13 @@ export function useComposerAttachments({
     if (result.rejected) onError(TOO_MANY);
     if (result.text === text && !insertPlainText) return false;
     setReferences(result.references);
-    const start = input?.selectionStart ?? current.length;
-    const end = input?.selectionEnd ?? start;
-    update(current.slice(0, start) + result.text + current.slice(end));
+    const field = input.current;
+    const current = message.get();
+    const start = field?.selectionStart ?? current.length;
+    const end = field?.selectionEnd ?? start;
+    message.set(current.slice(0, start) + result.text + current.slice(end));
     requestAnimationFrame(() =>
-      input?.setSelectionRange(start + result.text.length, start + result.text.length),
+      field?.setSelectionRange(start + result.text.length, start + result.text.length),
     );
     return true;
   };
@@ -413,8 +412,8 @@ export function useComposerAttachments({
     attachments.length +
     Math.min(incoming, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
 
-  /** Drag-and-drop props for the composer; `insert` takes dropped text and links. */
-  const dropTarget = (attach: (files: File[]) => void, insert: InsertReferenceText) => ({
+  /** Drag-and-drop props for the composer: files attach, dropped links become references. */
+  const dropTarget = () => ({
     onDragEnter: (event: DragEvent<HTMLElement>) => {
       if (event.dataTransfer.types.some((type) => DRAGGED_TYPES.includes(type))) setDragging(true);
     },
@@ -433,24 +432,21 @@ export function useComposerAttachments({
         event.dataTransfer.getData("text/uri-list") || event.dataTransfer.getData("text/plain");
       if (files.length) {
         event.preventDefault();
-        attach(files);
+        void addFiles(files);
       }
-      if (insert(text, filesAfter(files.length), files.length === 0)) event.preventDefault();
+      if (insertReferenceText(text, filesAfter(files.length), files.length === 0))
+        event.preventDefault();
     },
   });
 
   /** A paste of files attaches them; pasted RCP links become references. */
-  const paste = (
-    event: ClipboardEvent<HTMLElement>,
-    attach: (files: File[]) => void,
-    insert: InsertReferenceText,
-  ) => {
+  const paste = (event: ClipboardEvent<HTMLElement>) => {
     const files = Array.from(event.clipboardData.files);
     if (files.length) {
       event.preventDefault();
-      attach(files);
+      void addFiles(files);
     }
-    if (insert(event.clipboardData.getData("text/plain"), filesAfter(files.length)))
+    if (insertReferenceText(event.clipboardData.getData("text/plain"), filesAfter(files.length)))
       event.preventDefault();
   };
 
@@ -494,7 +490,7 @@ export function useComposerAttachments({
     addFiles,
     removeAttachment,
     addReference,
-    insertReferenceText,
+    referencesDisabled,
     dropTarget,
     paste,
     turnFields,
@@ -565,15 +561,9 @@ export function ComposerAttachmentChips({ composer }: { composer: ComposerAttach
 export function ComposerAddPicker({
   composer,
   disabled,
-  referencesDisabled = false,
-  onAttach,
-  onPickReference,
 }: {
   composer: ComposerAttachments;
   disabled: boolean;
-  referencesDisabled?: boolean;
-  onAttach: (files: File[]) => void;
-  onPickReference: (item: DraftReference) => void;
 }) {
   const { project, addMenuOpen, setAddMenuOpen, pickerOpen, setPickerOpen } = composer;
   const pickerRef = useRef<HTMLDivElement | null>(null);
@@ -592,7 +582,7 @@ export function ComposerAddPicker({
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? []);
           event.currentTarget.value = "";
-          if (files.length) onAttach(files);
+          if (files.length) void composer.addFiles(files);
         }}
       />
       <button
@@ -626,7 +616,7 @@ export function ComposerAddPicker({
           <button
             type="button"
             role="menuitem"
-            disabled={disabled || referencesDisabled}
+            disabled={disabled || composer.referencesDisabled}
             onClick={() => {
               setAddMenuOpen(false);
               setPickerOpen(true);
@@ -643,7 +633,7 @@ export function ComposerAddPicker({
           target={project.graph_target ?? MAIN_GRAPH}
           nodes={project.graph?.nodes ?? {}}
           selectedKeys={new Set(composer.references.map((item) => referenceKey(item.selector)))}
-          onPick={onPickReference}
+          onPick={composer.addReference}
           onClose={() => setPickerOpen(false)}
         />
       )}
