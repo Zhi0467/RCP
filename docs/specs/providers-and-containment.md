@@ -782,7 +782,7 @@ input, never authority to change scope, budget or protected beliefs.
 Work and Experiment, including correction, bind their broker to the live provider
 process tree on the execution host. Prior turns cannot gain new authority;
 validate-only credentials refuse keyed commands. The helper's `launch` verb and
-scheduler route are owned by [compute jobs](compute-jobs.md); `lesson` is owned by
+scheduler route are owned by [machines and compute](machines-and-compute.md); `lesson` is owned by
 [graph consolidation](graph-consolidation-and-lessons.md).
 
 Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
