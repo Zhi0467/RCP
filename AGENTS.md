@@ -34,6 +34,7 @@ shared-contract changes, or integration uncertainty.
   All-file hooks see tracked files only.
 - Pre-commit runs `basedpyright` against `.basedpyright/baseline.json`. Fix new
   errors. Never use `--writebaseline`. The baseline only shrinks.
+- Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view
   changes need the affected served-app journey. Inspect network, console, and server
   logs. Report any verification gap.
