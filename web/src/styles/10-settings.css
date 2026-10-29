@@ -1447,9 +1447,8 @@ button.agent-provider-label {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conversation-header-meta {
-  color: var(--muted);
-  font-size: var(--type-2xs);
+.conversation-header-orchestrator {
+  justify-self: start;
 }
 .conversation-header-banner {
   align-items: center;

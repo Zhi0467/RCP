@@ -1735,6 +1735,54 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
     assert failure.payload["exception_type"] == "OSError"
 
 
+@pytest.mark.parametrize("cache", ["missing", "invalid"])
+def test_completed_graph_turn_rebuilds_an_unusable_display_cache(
+    manifest, tmp_path: Path, monkeypatch, cache: str
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    client = signed_in_client(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    if cache == "missing":
+        cache_path.unlink()
+    else:
+        cache_path.write_text("{", encoding="utf-8")
+
+    async def finish_work(_service, _launcher, _request, _data_dir, *, execution):
+        del execution
+        yield _event_frame(AgentEvent(event="answer", text="Work completed."))
+        yield _event_frame(AgentEvent(event="done"))
+
+    monkeypatch.setattr(api_app_module, "stream_work_run", finish_work)
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Complete graph-capable work.",
+        mode="work",
+        patch_kind="work",
+    )
+    task = app.state.background_tasks.start(
+        project_id,
+        "project_chat",
+        request,
+        authorized_by=authorized_human(app),
+    )
+    assert wait_for_task(app.state.background_tasks.store, task.operation_id).status == "succeeded"
+
+    wait_until(
+        lambda: app.state.catalog.cached_snapshot_status(project_id)[0] == "valid",
+        timeout=2,
+        detail="the completed turn did not rebuild the display cache",
+    )
+    index = client.get("/api/episodes?mode=experiment_loop").json()
+    assert [row["episode"]["episode_id"] for row in index["entries"]] == [current_episode]
+    assert index["unavailable"] == []
+
+
 def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:

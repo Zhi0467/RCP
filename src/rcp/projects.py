@@ -3085,14 +3085,13 @@ class ProjectDisplayCache:
             if service is None:
                 raise RuntimeError("The closed stream's project service is no longer loaded.")
             generation = self._catalog.reserve_cached_snapshot_generation(project_id)
-            cache_status, cached = self._catalog.cached_snapshot_status(project_id)
+            cache_status, _cached = self._catalog.cached_snapshot_status(project_id)
             if cache_status == "missing":
                 record = self._store.project(project_id)
                 if record is None or record.revision is None:
                     return
-                raise ValueError("The expected project display snapshot is missing.")
-            if cached is None:
-                raise ValueError("The existing project display snapshot is invalid.")
+            # A missing or invalid cache is rebuilt from canonical state like a valid one,
+            # so aggregate reads recover once the turn closes.
             materialization = service.history.materialize(write_outputs=False)
             snapshot = self.complete_snapshot(
                 project_id,

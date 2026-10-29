@@ -14,5 +14,8 @@
   lock. Probe `http://127.0.0.1:8421/api/health` first and reuse it. To run your
   own alongside, use a spare port and a throwaway `RCP_DATA_DIR`. Never kill
   the human's process.
+- In UI work, avoid unnecessary secondary labels and descriptions. Let the
+  layout do the explaining, put a truly needed note on hover, and keep motion
+  smooth (AGENTS.md Verification).
 - Use `uv run …` and `npm --prefix web …`. Do not activate the venv or change
   into `web/`.

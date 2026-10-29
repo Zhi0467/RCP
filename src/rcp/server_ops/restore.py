@@ -1759,6 +1759,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             projects,
             project_digest,
             capture_root,
+            # A restored archive carries no display caches; projects rebuild them.
+            None,
         )
         proof = ApplicationProof(
             boundary_sha256=boundary,

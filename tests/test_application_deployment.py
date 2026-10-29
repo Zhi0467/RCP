@@ -1487,3 +1487,72 @@ def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
                 version=1, data_dir=request.data_dir, output_dir=str(artifacts / "rehearsal")
             )
         )
+
+
+def _seed_experiment_run_with_old_display_cache(request, state) -> None:
+    """A live server whose Runs list reads a cache 0.4.34 wrote, coach on its own machine."""
+    from rcp.core.authority import AuthorizedHuman
+    from rcp.service import RunRequest
+    from rcp.storage import AgentTaskRecord
+
+    project_id = state["project_id"]
+    app = create_app(data_dir=Path(request.data_dir))
+    store = app.state.catalog.store
+    try:
+        assert app.state.services.project_display_cache.rebuild_cached_snapshot(project_id)
+        episode_id, operation_id, now = str(uuid.uuid4()), str(uuid.uuid4()), store.now()
+        run = RunRequest(
+            provider="codex",
+            model="qualification",
+            reasoning="medium",
+            run_on="server",
+            run_truth_scope=["paper"],
+            chat_id=str(uuid.uuid4()),
+            chat_scope="node",
+            node_id="exp/recovery",
+            mode="work",
+            trigger="experiment_run",
+            patch_kind="experiment_loop",
+            control_node_id="exp/recovery",
+            control_revision=1,
+            control_episode_id=episode_id,
+            control_invocation=1,
+            control_invocation_ceiling=3,
+            control_decision_bundle=[],
+            control_completion_criteria=[],
+        )
+        store.create_experiment_episode_with_invocation(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                episode_id=episode_id,
+                kind="node_chat",
+                status="queued",
+                request=run.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Waiting for the loop invocation.",
+                phase="queued",
+                last_activity_at=now,
+                authorized_by=AuthorizedHuman(
+                    space_id=state["space_id"],
+                    user_id=state["member_id"],
+                    display_name="Qualification researcher",
+                ),
+            )
+        )
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+        cache = app.state.catalog._cached_snapshot_path(project_id)
+    finally:
+        store.close()
+    envelope = json.loads(cache.read_text(encoding="utf-8"))
+    envelope["snapshot"]["agent_profiles"]["paper_coach"]["run_on"] = "old-worker"
+    cache.write_text(json.dumps(envelope), encoding="utf-8")
+
+
+def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path):
+    # 0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal
+    # carries the live caches and reads Runs before any project open rebuilds them.
+    request, state, _ = captured
+    _seed_experiment_run_with_old_display_cache(request, state)
+    assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
