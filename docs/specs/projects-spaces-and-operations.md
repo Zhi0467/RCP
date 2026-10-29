@@ -402,7 +402,8 @@ machine in client string branches.
 `storage/request_compat.py` normalizes persisted requests when a row becomes an
 `AgentTaskRecord`, before any recovery/Retry/watcher/mail policy parses it.
 Only the explicit per-kind retirement allowlist removes fields (currently legacy
-`auto_research.ending`). Unknown fields remain for strict rejection; mappings
+`auto_research.ending`, and the per-turn compute selection that every
+RunRequest kind froze through 0.4.29). Unknown fields remain for strict rejection; mappings
 assembled outside row decoding use the same helper. Live models remain
 `extra="forbid"`. Retire only shipped fields whose removal preserves meaning.
 Every launch and finalization check uses the one roundtrip rule in the same

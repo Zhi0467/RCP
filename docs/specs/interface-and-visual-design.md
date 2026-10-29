@@ -31,8 +31,11 @@ The unified logo contains RCP once, without a redundant initial tile.
 
 ## No commentary lines
 
-Do not put muted explanatory subtitles beneath buttons, titles, labels, or
-headings. Wording, hierarchy, shape, color, motion, and control state carry meaning.
+Avoid unnecessary secondary labels and descriptions. Let the layout do the
+explaining. Do not put muted explanatory subtitles beneath buttons, titles,
+labels, or headings. Wording, hierarchy, shape, color, motion, and control state
+carry meaning. A note that is truly needed appears on hover (a tooltip), not as
+text on the page.
 Errors, conflicts, required warnings, and accessibility labels stay explicit.
 A failure recoverable with one action uses a visual mark and one icon-only action.
 It does not use a stacked box or caption. An unsent turn has a red edge and
@@ -40,6 +43,12 @@ Resend at the top right.
 More detail belongs in an explicit read-only inspector.
 Chat and coaching have no sample prompts, slogans, instructional empty states,
 or textarea placeholders. Empty conversations are empty.
+
+## Smooth motion
+
+State changes are smooth, never choppy. Loading, polling, and switching keep
+their layout: no content jumps, no flicker between states, and no row that
+resizes when its data arrives. Transitions are short and honor reduced motion.
 
 ## Phone layout
 

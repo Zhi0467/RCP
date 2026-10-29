@@ -660,12 +660,6 @@ class LinuxServerDoctorMachine:
         )
         active_state, unit_file_state, main_pid, reload_mode = self._inspect_service(add_problem)
         self._inspect_linger(add_problem)
-        restore_pending = self._inspect_restore(
-            service_uid=service_uid,
-            add_problem=add_problem,
-        )
-        if restore_pending and (active_state != "inactive" or main_pid not in {None, 0}):
-            add_problem("unfinished replacement restore requires rcp.service to remain stopped")
         (
             metadata,
             probe,
@@ -809,10 +803,6 @@ class LinuxServerDoctorMachine:
             update_failure=update.failure,
             problems=tuple(problems),
         )
-
-    def _inspect_restore(self, *, service_uid: int, add_problem: Callable[[str], None]) -> bool:
-        # The supervisor projection below includes both update and restore work.
-        return False
 
     def _inspect_update(
         self, *, service_uid: int, installation_id: str | None, add_problem: Callable[[str], None]

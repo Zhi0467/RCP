@@ -167,7 +167,7 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
       () => document.activeElement?.getAttribute("aria-label") === "Message",
     );
     // The title row and the picker row only; the picker already names the agent.
-    assert.equal(await page.locator(".conversation-header-meta").count(), 0);
+    assert.equal(await page.locator(".conversation-header-orchestrator").count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
