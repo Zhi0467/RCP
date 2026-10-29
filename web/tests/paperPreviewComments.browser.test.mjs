@@ -3,16 +3,17 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { createPaperViteServer, pdfBytes } from "./paperTestServer.mjs";
 
-/** Two 300x400 pages; page `textPage` carries "Hello world" with its baseline 100pt from the top. */
-function textPdf(textPage) {
-  const stream = "BT /F1 24 Tf 40 300 Td (Hello world) Tj ET";
+/** Two 300x400 pages; each of `textPages` carries "Hello world" with its baseline 100pt from
+ * the top, and "second line" under it. */
+function textPdf(...textPages) {
+  const stream = "BT /F1 24 Tf 40 300 Td (Hello world) Tj 0 -30 Td (second line) Tj ET";
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>",
   ];
   for (let page = 1; page <= 2; page++)
     objects.push(
-      page === textPage
+      textPages.includes(page)
         ? "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>"
         : "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Resources << >> >>",
     );
@@ -31,7 +32,7 @@ function textPdf(textPage) {
   return Buffer.from(body);
 }
 
-const MARKDOWN = "# Title\n\nFirst paragraph\nsecond line.\n\n$$\nx^2\n$$\n\nAfter math.";
+const MARKDOWN = "# Title\n\nFirst paragraph\nsecond line.\n\n$$\nx^2\n$$\n\nAfter $y^2$ math.";
 
 test("preview selections name their source, and boxes on PDF pages open comments", async (t) => {
   const { server, close } = await createPaperViteServer([
@@ -67,6 +68,15 @@ test("preview selections name their source, and boxes on PDF pages open comments
             getSelection().removeAllRanges();
             getSelection().addRange(range);
             return resolvePreviewSelection(getSelection(), host)?.where ?? null;
+          };
+          window.quote = () => resolvePreviewSelection(getSelection(), host)?.quote ?? null;
+          window.selectSpan = (first, last, end = last.firstChild.length) => {
+            const range = document.createRange();
+            range.setStart(first.firstChild ?? first, 0);
+            range.setEnd(last.firstChild ?? last, end);
+            getSelection().removeAllRanges();
+            getSelection().addRange(range);
+            return resolvePreviewSelection(getSelection(), host) ?? null;
           };`;
       },
     },
@@ -104,13 +114,15 @@ test("preview selections name their source, and boxes on PDF pages open comments
           "sections/a.tex": [
             [5, 1, 70],
             [9, 1, 300],
+            [12, 2, 90],
+            [20, 2, 380],
           ],
         },
       },
     }),
   );
   await page.route("**/compiled.pdf", (route) =>
-    route.fulfill({ contentType: "application/pdf", body: textPdf(1) }),
+    route.fulfill({ contentType: "application/pdf", body: textPdf(1, 2) }),
   );
   await page.route("**/preview?*", (route) =>
     route.fulfill({ contentType: "text/html", body: "" }),
@@ -135,6 +147,22 @@ test("preview selections name their source, and boxes on PDF pages open comments
     await page.locator(".katex-display").evaluate((el) => window.select(el)),
     "notes.md, lines 6-8",
   );
+  // Inline math is quoted once, as shown, without KaTeX's hidden MathML.
+  assert.equal(
+    await page.evaluate(() => {
+      window.select([...document.querySelectorAll("p")].at(-1));
+      return window.quote().replace(/\s+/g, " ");
+    }),
+    "After y2 math.",
+  );
+  // A selection that ends where the next block starts (a triple-click) names its own block.
+  assert.equal(
+    await page.evaluate(() => {
+      const [heading, paragraph] = document.querySelectorAll("h1, p");
+      return window.selectSpan(heading, paragraph, 0).where;
+    }),
+    "notes.md, line 1",
+  );
 
   // Plain text: lines counted from the newlines before the range.
   await page.evaluate(() => window.show("txt", "alpha\nbeta\ngamma\n"));
@@ -149,6 +177,14 @@ test("preview selections name their source, and boxes on PDF pages open comments
   });
   await words.waitFor();
   assert.equal(await words.evaluate((el) => window.select(el)), "figs/doc.pdf, page 2");
+  // Text-layer lines keep a break between them in the quote.
+  assert.match(
+    await page.evaluate(() => {
+      const spans = document.querySelectorAll('.paper-pdf-page[data-page="2"] .textLayer span');
+      return window.selectSpan(spans[0], spans[spans.length - 1]).quote;
+    }),
+    /world\s+second/,
+  );
 
   // A mouse box from an empty corner of the page collects the text inside it.
   await words.scrollIntoViewIfNeeded();
@@ -183,6 +219,17 @@ test("preview selections name their source, and boxes on PDF pages open comments
   assert.equal(
     await compiled.evaluate((el) => window.select(el)),
     "main.tex, page 1, near sections/a.tex line 5",
+  );
+  // Across pages, the line comes from where the selection ends on its last page.
+  const next = page.locator('.paper-pdf-page[data-page="2"] .textLayer span', { hasText: "Hello" });
+  await next.waitFor();
+  assert.equal(
+    await page.evaluate(() => {
+      const spans = (n) =>
+        document.querySelectorAll(`.paper-pdf-page[data-page="${n}"] .textLayer span`);
+      return window.selectSpan(spans(1)[0], spans(2)[0]).where;
+    }),
+    "main.tex, pages 1-2, near sections/a.tex line 12",
   );
 
   // HTML: the saved revision in the inline shell, with comment mode in the panel tools.

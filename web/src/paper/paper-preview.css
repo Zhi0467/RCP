@@ -182,3 +182,9 @@
     padding: 8px;
   }
 }
+
+/* KaTeX keeps a hidden MathML copy for screen readers; leaving it out of selection
+   keeps a comment's quote to the math as shown. */
+.paper-markdown .katex-mathml {
+  user-select: none;
+}

@@ -111,7 +111,29 @@ export function boxWhere(target: HTMLElement, rect: DOMRect): string | undefined
   return path && `${path}, ${area}`;
 }
 
-const elementOf = (node: Node) => (node instanceof Element ? node : node.parentElement);
+/** The first and last text nodes holding selected characters other than whitespace.
+ *
+ * A triple-click ends at the start of the next block, and a drag can start past the end
+ * of a line; such a boundary holds none of the selected text, so it names no source. */
+function selectedEnds(range: Range): [Text, Text] | null {
+  const scope = range.commonAncestorContainer;
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+  let first: Text | null = null;
+  let last: Text | null = null;
+  for (
+    let node = scope instanceof Text ? scope : walker.nextNode();
+    node instanceof Text;
+    node = walker.nextNode()
+  ) {
+    if (!range.intersectsNode(node)) continue;
+    const from = node === range.startContainer ? range.startOffset : 0;
+    const to = node === range.endContainer ? range.endOffset : node.length;
+    if (!node.data.slice(from, to).trim()) continue;
+    first ??= node;
+    last = node;
+  }
+  return first && last ? [first, last] : null;
+}
 
 /** The commentable part of a DOM selection inside the preview root, or null. */
 export function resolvePreviewSelection(
@@ -120,9 +142,12 @@ export function resolvePreviewSelection(
 ): PreviewSelection | null {
   if (!selection.rangeCount || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
-  const quote = range.toString().trim();
-  const start = elementOf(range.startContainer);
-  const end = elementOf(range.endContainer);
+  // The browser's own reading keeps line and block breaks; Range.toString runs the
+  // lines of a PDF text layer together.
+  const quote = selection.toString().trim();
+  const ends = selectedEnds(range);
+  const start = ends?.[0].parentElement;
+  const end = ends?.[1].parentElement;
   if (!quote || !start || !end || !root.contains(start) || !root.contains(end)) return null;
   const host = start.closest<HTMLElement>("[data-paper-path]");
   if (!host || !root.contains(host) || !host.contains(end)) return null;
@@ -131,11 +156,20 @@ export function resolvePreviewSelection(
   if (Boolean(firstPage) !== Boolean(lastPage)) return null;
   const where =
     firstPage && lastPage
-      ? pdfWhere(firstPage, lastPage, range.getBoundingClientRect().bottom)
+      ? pdfWhere(firstPage, lastPage, endBottom(range, ends![1]))
       : host.tagName === "PRE"
         ? plainTextWhere(host, range)
         : markdownWhere(host, start, end);
   return { range: range.cloneRange(), quote, where };
+}
+
+/** Where the selection's last text ends on screen; a range across pages also spans the
+ * whole canvas of each page it passes, so its own bounds end at the page bottom. */
+function endBottom(range: Range, last: Text) {
+  const tail = document.createRange();
+  tail.selectNodeContents(last);
+  if (last === range.endContainer) tail.setEnd(last, range.endOffset);
+  return tail.getBoundingClientRect().bottom;
 }
 
 /** `path, line N` from the newlines in the `<pre>` before the selection's trimmed ends. */

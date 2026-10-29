@@ -148,6 +148,17 @@ def test_synctex_maps_each_files_lines_to_their_first_pdf_mark():
     assert [entry[1] for entry in mapping["main.tex"] if entry[0] == 3] == [1]
 
 
+def test_synctex_marks_are_in_pdf_points():
+    # TeX measures 72.27 points to the inch and PDF 72; the preview scales pages in
+    # PDF points, so a mark one inch down must read 72, not 72.27.
+    one_inch = 72.27 * 65536
+    text = (
+        "SyncTeX Version:1\nInput:1:/TREE/main.tex\nMagnification:1000\nUnit:1\n"
+        f"Y Offset:0\nContent:\n{{1\n[1,1:0,0:0,0,0\nh1,2:0,{one_inch:.0f}:0,0,0\n}}1\n"
+    )
+    assert synctex_map(text, Path("/TREE")) == {"main.tex": [(2, 1, 72.0)]}
+
+
 @pytest.mark.asyncio
 async def test_new_request_cancels_process_group_and_only_new_pdf_survives(tmp_path):
     ready = tmp_path / "ready"
