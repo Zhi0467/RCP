@@ -155,11 +155,11 @@ import {
 } from "../core/AgentConfigControls";
 import { useSkillPicker } from "../core/SkillPicker";
 import { useLayerDismiss } from "../core/useLayerDismiss";
-import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
 import { chatStatusTasks, compactionAnchors } from "./agentStatusModel";
 import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
+import { worktreeRepositoryChoices } from "./worktreeRepositories";
 
 interface Props {
   project: ProjectSnapshot;
@@ -177,7 +177,6 @@ interface Props {
   /** Controls the host adds to the header menu after its actions. */
   headerMenuItems?: ReactNode;
   headerState?: string;
-  runScope: string[];
   tasks: AgentTask[];
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
@@ -273,19 +272,6 @@ const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 // One empty map, so a chat without graph nodes keeps its answers' parse memoized.
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 
-export function reconcileChatRunScope(
-  current: string[],
-  requested: string[],
-  projectTruthScope: string[],
-  reset: boolean,
-): string[] {
-  const allowed = new Set(projectTruthScope);
-  const candidate = reset ? requested : current;
-  return candidate.filter(
-    (repository, index) => allowed.has(repository) && candidate.indexOf(repository) === index,
-  );
-}
-
 export function NodeChat({
   project,
   actorId,
@@ -298,7 +284,6 @@ export function NodeChat({
   headerActions = NO_HEADER_ACTIONS,
   headerMenuItems,
   headerState,
-  runScope,
   tasks,
   watchers = EMPTY_WATCHERS,
   historyMessages = EMPTY_HISTORY,
@@ -420,24 +405,30 @@ export function NodeChat({
         : derivedConfig,
     [chatId, configOverride, derivedConfig],
   );
-  const [scope, setScope] = useState(() =>
-    reconcileChatRunScope([], runScope, project.project_truth_scope, true),
-  );
+  // A worktree checks out one writable repository on the turn's machine; the
+  // human picks it only when several qualify. A bound worktree keeps its own.
+  const worktreeRepositories = worktreeRepositoryChoices(project, config.run_on);
+  const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<{
+    chatId: string;
+    alias: string;
+  } | null>(null);
+  const worktreeRepository =
+    worktreeRepositoryPick?.chatId === chatId &&
+    worktreeRepositories.includes(worktreeRepositoryPick.alias)
+      ? worktreeRepositoryPick.alias
+      : (worktreeRepositories[0] ?? null);
   const worktree = useConversationWorktree(
     project.id,
     chatId,
     node ? "node" : "project",
     node?.id ?? null,
     config.run_on,
-    scope,
+    worktreeRepository ? [worktreeRepository] : [],
     relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
     !readOnly,
     // The conversation's own graph: an orchestrator card opened from main lives on its branch.
     graphTarget,
   );
-  const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
-  const requestedScopeKey = runScope.join("\0");
-  const projectTruthScopeKey = project.project_truth_scope.join("\0");
   const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
@@ -675,16 +666,6 @@ export function NodeChat({
           : dictationState === "recording" && dictationEngine === "apple_server"
             ? "Dictating with Apple's server recognizer"
             : null;
-  useEffect(() => {
-    const identity = `${project.id}\0${chatId}`;
-    const reset = scopeIdentityRef.current !== identity;
-    scopeIdentityRef.current = identity;
-    setScope((current) =>
-      reconcileChatRunScope(current, runScope, project.project_truth_scope, reset),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the scope arrays are keyed by content so a new array with the same members keeps the user's choice
-  }, [chatId, project.id, projectTruthScopeKey, requestedScopeKey]);
-
   useEffect(() => {
     setModeState((current) =>
       current.pinned || current.value === derivedMode
@@ -1371,7 +1352,7 @@ export function NodeChat({
     JSON.stringify([
       mode,
       config,
-      scope,
+      worktreeRepository,
       artifactContext,
       composer.turnFields(),
       skills.selection,
@@ -1426,7 +1407,6 @@ export function NodeChat({
       submission: {
         kind: surface,
         config,
-        runTruthScope: scope,
         nodeId: node?.id ?? null,
         message: text,
         chatId,
@@ -1437,6 +1417,7 @@ export function NodeChat({
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,
+        worktreeRepository,
       },
       submittedOverride: configOverride,
     });
@@ -1511,7 +1492,6 @@ export function NodeChat({
       await startConversationTurn(onStartTask, {
         kind: surface,
         config,
-        runTruthScope: scope,
         nodeId: node?.id ?? null,
         message: option.label,
         chatId,
@@ -1850,17 +1830,6 @@ export function NodeChat({
         ]}
       >
         {headerMenuItems}
-        {!readOnly && (
-          <div className="chat-scope-control">
-            <RepositoryScope
-              repositories={project.repositories}
-              projectScope={project.project_truth_scope}
-              stateRepository={project.state_repository}
-              selected={scope}
-              onChange={relatedActive || reviewPending ? () => undefined : setScope}
-            />
-          </div>
-        )}
       </ChatHeaderMenu>
     </div>
   );
@@ -2471,6 +2440,9 @@ export function NodeChat({
                         repairingTaskId,
                       )}
                       onChoose={worktree.choose}
+                      repositories={worktreeRepositories}
+                      repository={worktreeRepository}
+                      onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
                     />
                   )}
                 </fieldset>
@@ -2532,7 +2504,6 @@ export function NodeChat({
                       Boolean(pausedAttempt) ||
                       Boolean(repairingTaskId) ||
                       reviewPending ||
-                      scope.length === 0 ||
                       !providerReady)
                 }
                 onClick={() => void send()}

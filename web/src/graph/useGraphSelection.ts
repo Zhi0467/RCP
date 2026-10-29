@@ -48,7 +48,6 @@ export const emptyGraph: GraphState = {
 };
 
 export interface GraphSelectionTabSnapshot {
-  runScope: string[];
   selectedNodeId: string | null;
   companionNodeId: string | null;
   detailFocusTokens: Record<DetailWindowSlot, number>;
@@ -159,7 +158,6 @@ export function useGraphSelection({
 }: UseGraphSelectionOptions) {
   const [view, setView] = useState<AppView>(initialView);
   const [trustView, setTrustView] = useState<TrustView>(readTrustView);
-  const [runScope, setRunScope] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [companionNode, setCompanionNode] = useState<GraphNode | null>(null);
   const [detailFocusTokens, setDetailFocusTokens] = useState<Record<DetailWindowSlot, number>>({
@@ -188,7 +186,6 @@ export function useGraphSelection({
   const dagViewportRefsRef = useRef(new Map<string, ProjectViewportRef<DagViewport>>());
   const researchTrailRefsRef = useRef(new Map<string, ProjectViewportRef<ResearchStep[]>>());
   const selectionSnapshotRef = useRef<SelectionSnapshot>({
-    runScope,
     selectedNodeId: selectedNode?.id ?? null,
     companionNodeId: companionNode?.id ?? null,
     detailFocusTokens,
@@ -200,7 +197,6 @@ export function useGraphSelection({
     dagRelationFocusId,
   });
   selectionSnapshotRef.current = {
-    runScope,
     selectedNodeId: selectedNode?.id ?? null,
     companionNodeId: companionNode?.id ?? null,
     detailFocusTokens,
@@ -228,7 +224,6 @@ export function useGraphSelection({
       const current = selectionSnapshotRef.current;
       return {
         ...current,
-        runScope: [...current.runScope],
         detailFocusTokens: { ...current.detailFocusTokens },
         selectedExperimentRoute: copyExperimentRoute(current.selectedExperimentRoute),
         dockedNodeIds: [...current.dockedNodeIds],
@@ -251,7 +246,6 @@ export function useGraphSelection({
       requestedRoute?: ProjectHashRoute,
       target: GraphTargetRef = MAIN_GRAPH,
     ) => {
-      setRunScope([...snapshot.runScope]);
       setSelectedNode(
         snapshot.selectedNodeId ? (presentedNodes[snapshot.selectedNodeId] ?? null) : null,
       );
@@ -311,7 +305,6 @@ export function useGraphSelection({
       setWatcherCheckId(null);
       setDockedNodeIds([]);
       setDagRelationFocusId(null);
-      setRunScope([]);
       panelScrollRef.current = new Map();
       setView(nextView);
     },
@@ -328,18 +321,10 @@ export function useGraphSelection({
         current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
       );
       setDockedNodeIds((current) => current.filter((nodeId) => nextGraph.nodes[nodeId]));
-      setRunScope((current) =>
-        current.length
-          ? current.filter((item) => nextProject.project_truth_scope.includes(item))
-          : nextProject.default_run_truth_scope,
-      );
     },
     [],
   );
 
-  const replaceRunScope = useCallback((nextScope: string[]) => {
-    setRunScope(nextScope);
-  }, []);
   const applyRouteSelection = useCallback(
     (
       nextView: AppView,
@@ -595,7 +580,6 @@ export function useGraphSelection({
   return {
     view,
     trustView,
-    runScope,
     selectedNode,
     companionNode,
     detailFocusTokens,
@@ -614,7 +598,6 @@ export function useGraphSelection({
     restoreProjectSelection,
     resetProjectSelection,
     applyCanonicalProject,
-    replaceRunScope,
     applyRouteSelection,
     changeView,
     openTab,

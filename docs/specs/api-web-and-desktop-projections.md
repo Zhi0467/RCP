@@ -1506,6 +1506,17 @@ read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
+Settings' Repos rows show each repository's **Agents can write** box, checked
+for members of `project_truth_scope` and fixed on for the state repository.
+`PUT /api/projects/{id}/repositories/{alias}/writable` (`{writable}`) appends the
+human approval that changes that membership and returns the project snapshot.
+A personal project's Add repo form posts a folder to
+`POST /api/projects/{id}/repositories` and has no GitHub mode; a team's uses the
+repository request below;
+`PUT /api/projects/{id}/settings` no longer takes a default run scope, and no
+composer or launch dialog selects repositories, except the single writable
+repository a worktree uses.
+
 Team repository descriptors include `source` (`github` or `server_only`),
 nullable `github_identity`, and `can_connect`, from `effective_repositories`;
 only a server-only team repository has `can_connect` set. The display

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import UUID4, BaseModel, ConfigDict
 
+from rcp.agents.project_repositories import write_repositories
 from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
@@ -1189,7 +1190,7 @@ def _resolved_auto_research_start_request(
         model=profile.model,
         reasoning=profile.reasoning,
         run_on=profile.run_on,
-        run_truth_scope=list(service.manifest.agent.default_run_truth_scope),
+        run_truth_scope=write_repositories(service.history.state()),
     )
     resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(resolved, AutoResearchStartRequest):

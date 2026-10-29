@@ -33,6 +33,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -266,9 +267,7 @@ def _continuation_graph_context(
         raise ValueError(
             f"The saved prepared context is unavailable ({exc}). Retry this task."
         ) from exc
-    expected_scope = sorted(
-        request.run_truth_scope or service.manifest.agent.default_run_truth_scope
-    )
+    expected_scope = sorted(request.run_truth_scope or write_repositories(service.history.state()))
     current_revision = int(service.graph_snapshot()["revision"])
     problems: list[str] = []
     if prepared.project_id != record.project_id:
@@ -325,9 +324,7 @@ def _try_reuse_graph_context(
     lineage = _retry_lineage(execution)
     if not lineage or execution is None:
         return None
-    expected_scope = sorted(
-        request.run_truth_scope or service.manifest.agent.default_run_truth_scope
-    )
+    expected_scope = sorted(request.run_truth_scope or write_repositories(service.history.state()))
     graph_revision = int(service.graph_snapshot()["revision"])
     prepared = None
     prepared_parent = None

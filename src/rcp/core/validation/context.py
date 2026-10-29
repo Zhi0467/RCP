@@ -32,7 +32,6 @@ class OpContext:
     project_truth_scope: set[str]
     repositories: set[str]
     machines: set[str] | None
-    default_run_truth_scope: set[str]
     state_repository: str | None
     mode: Literal["admission", "replay"]
     experiment_control_node_id: str | None = None

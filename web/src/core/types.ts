@@ -1705,6 +1705,8 @@ export interface EpisodeIsolationChoice {
   code_worktree: boolean;
   /** A new branch's name; blank or omitted takes the date fallback. */
   branch_name?: string | null;
+  /** The code worktree's one repository, when the launch picked among several. */
+  worktree_repository?: string | null;
 }
 
 export interface MergeEpisodeBody {
@@ -3313,7 +3315,6 @@ export interface SetupRepository {
   location: "local" | "ssh";
   path: string;
   host: string;
-  default_read: boolean;
 }
 
 export interface SetupExecution {
@@ -3521,7 +3522,6 @@ export interface ProjectSetupRequest {
 }
 
 export interface ProjectSettingsRequest {
-  default_run_truth_scope: string[];
   default_auto_research_invocation_ceiling: number;
   agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;

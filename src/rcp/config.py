@@ -615,6 +615,10 @@ def _project_scope_content(
                 document.add("repositories", repositories)
             repositories.append(repository)
     document["project"]["truth_scope"] = list(truth_scope)
+    agent = document.get("agent")
+    if agent is not None and "default_run_truth_scope" in agent:
+        # Kept equal to the truth scope for older readers; no launch selects from it.
+        agent["default_run_truth_scope"] = list(truth_scope)
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())

@@ -470,7 +470,6 @@ test("the shared conversation-turn owner preserves the visible composer's reques
   const submission = {
     kind: "node_chat",
     config: { provider: "codex", model: "", reasoning: "high", run_on: "gpu" },
-    runTruthScope: ["repo"],
     nodeId: "hyp-1",
     message: "  Compare the held-out curves.  ",
     chatId: "chat-1",
@@ -484,7 +483,6 @@ test("the shared conversation-turn owner preserves the visible composer's reques
     model: null,
     reasoning: "high",
     run_on: "gpu",
-    run_truth_scope: ["repo"],
     node_id: "hyp-1",
     message: "Compare the held-out curves.",
     chat_id: "chat-1",
@@ -507,7 +505,6 @@ test("the shared conversation-turn owner rejects a blank message before dispatch
   const submission = {
     kind: "project_chat",
     config: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
-    runTruthScope: ["repo"],
     nodeId: null,
     message: "  ",
     chatId: "chat-1",
@@ -528,7 +525,6 @@ test("worktree creation and integration preserve the ordinary conversation dispa
   const submission = {
     kind: "project_chat",
     config: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
-    runTruthScope: ["repo"],
     nodeId: null,
     message: "Worktree instruction",
     chatId: "chat-one",
@@ -540,18 +536,20 @@ test("worktree creation and integration preserve the ordinary conversation dispa
     calls.push({ kind, request });
     return { operation_id: `task-${calls.length}` };
   };
-  await startConversationTurn(start, { ...submission, worktree: true });
+  await startConversationTurn(start, { ...submission, worktree: true, worktreeRepository: "repo" });
   await startConversationTurn(start, { ...submission, worktreeIntegration: "starting_branch" });
   assert.equal(calls[0].request.worktree, true);
   assert.equal(calls[0].request.worktree_integration, undefined);
+  // Only the first worktree turn names its repository; a bound chat's server keeps it.
+  assert.deepEqual(calls[0].request.run_truth_scope, ["repo"]);
   assert.equal(calls[1].request.worktree, undefined);
   assert.equal(calls[1].request.worktree_integration, "starting_branch");
+  assert.equal("run_truth_scope" in calls[1].request, false);
   for (const { kind, request } of calls) {
     assert.equal(kind, "project_chat");
     assert.equal(request.session_id, "native-session");
     assert.equal(request.chat_id, "chat-one");
     assert.equal(request.run_on, "local");
-    assert.deepEqual(request.run_truth_scope, ["repo"]);
     assert.equal(request.mode, "work");
     assert.equal(request.writable_roots, undefined);
   }

@@ -216,6 +216,7 @@ class ProjectWriteScope(BaseModel):
 def resolve_project_write_scope(
     *,
     manifest: Manifest,
+    truth_scope: list[str],
     project_id: str,
     execution_machine: str,
     capability: AgentCapability,
@@ -256,7 +257,9 @@ def resolve_project_write_scope(
     aliases = sorted(set(admitted_aliases))
     if aliases != sorted(admitted_aliases):
         raise ValueError("write-scope repository aliases must be sorted and unique")
-    project_aliases = set(manifest.project.truth_scope)
+    # The graph's truth scope at launch, so a repository unticked after admission
+    # is no longer a write root.
+    project_aliases = set(truth_scope)
     if not set(aliases).issubset(project_aliases):
         unknown = sorted(set(aliases) - project_aliases)
         raise ValueError(f"write scope names repositories outside this project: {unknown}")

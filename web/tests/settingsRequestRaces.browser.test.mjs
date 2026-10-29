@@ -137,6 +137,39 @@ for (const operation of operations) {
   }
 }
 
+test("Agents can write applies at once and leaves the Save form clean", async (t) => {
+  const page = await openFixture(t);
+  const writes = [];
+  await page.route("**/api/projects/alpha/repositories/*/writable", async (route) => {
+    writes.push({
+      method: route.request().method(),
+      path: new URL(route.request().url()).pathname,
+      body: route.request().postDataJSON(),
+    });
+    const saved = await savedProject(page, 10);
+    saved.project_truth_scope = ["repo", "data"];
+    await route.fulfill({ json: saved });
+  });
+  // The canonical state repository is always writable.
+  const state = page.getByRole("checkbox", { name: "Agents can write repo" });
+  assert.equal(await state.isChecked(), true);
+  assert.equal(await state.isDisabled(), true);
+
+  const data = page.getByRole("checkbox", { name: "Agents can write data" });
+  assert.equal(await data.isChecked(), false);
+  await data.click();
+  await page.waitForFunction(() => window.settingsPublications.length === 1);
+  assert.deepEqual(writes, [
+    {
+      method: "PUT",
+      path: "/api/projects/alpha/repositories/data/writable",
+      body: { writable: true },
+    },
+  ]);
+  assert.equal(await data.isChecked(), true);
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).isDisabled(), true);
+});
+
 test("project member responses and invite selections stay with their project", async (t) => {
   const users = [
     { user_id: "self", display_name: "Researcher" },

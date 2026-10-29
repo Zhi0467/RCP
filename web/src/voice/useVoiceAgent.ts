@@ -70,8 +70,6 @@ export type VoicePageState = {
   project: ProjectSnapshot | null;
   tasks: AgentTask[];
   conversationSource: WebMcpConversationSource;
-  /** The page's run scope; empty means the project default. */
-  runScope: string[];
 };
 
 /** Spoken lines, plus one activity line per tool call so the member sees what ran. */
@@ -144,8 +142,8 @@ async function buildVoicePin(
       arguments: { experiment_id: id, invocation_ceiling: budget },
       budget,
       provider_profile: runProfile(project.agent_profiles.node_chat),
-      // The scope the start request will send, so a change invalidates the card.
-      truth_scope: page.runScope.length ? page.runScope : project.default_run_truth_scope,
+      // The repositories the run may write, so a change invalidates the card.
+      truth_scope: project.project_truth_scope,
     };
   }
   if (name === "rcp_authorize_auto_research") {
@@ -180,7 +178,7 @@ async function buildVoicePin(
       mode: typeof args.mode === "string" ? args.mode : null,
       provider_profile: { ...target.config, conversation: target.surface },
       // The write roots a Work turn will get, so a scope change invalidates the card.
-      truth_scope: target.runTruthScope,
+      truth_scope: project.project_truth_scope,
     };
   }
   throw new Error(`${name} has no confirmation card.`);

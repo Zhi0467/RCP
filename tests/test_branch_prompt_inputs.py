@@ -125,6 +125,7 @@ def test_branch_read_pointers_do_not_expand_worktree_write_or_include_roots(
     def scope(current):
         return resolve_project_write_scope(
             manifest=service.manifest,
+            truth_scope=service.manifest.project.truth_scope,
             project_id="project",
             execution_machine="laptop",
             capability="work_auto",

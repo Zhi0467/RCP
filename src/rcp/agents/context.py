@@ -7,13 +7,13 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from rcp.agents.group_context import GroupContext
+from rcp.agents.project_repositories import readable_repositories, write_repositories
 from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import SetCoverageOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.delta import RefreshDelta
 from rcp.providers import PROVIDERS
-from rcp.transport import RepositoryAccess
 
 
 class RepositoryPointer(BaseModel):
@@ -116,41 +116,51 @@ class ContextAssembler:
         self.manifest = manifest
         self.graph_root = graph_root if graph_root is not None else manifest.research_dir
 
+    def _repository_pointers(self) -> list[RepositoryPointer]:
+        return [
+            RepositoryPointer(
+                alias=item.alias,
+                machine=item.machine,
+                host=self.manifest.machine_map[item.machine].host,
+                path=item.path,
+            )
+            for item in readable_repositories(self.manifest)
+        ]
+
+    @staticmethod
+    def _writable(state: GraphState, writable: list[str] | None) -> list[str]:
+        """The task's admitted write set, else the whole truth scope.
+
+        Admission stamps each task once; a resumed task keeps what it was authorized.
+        """
+
+        truth = write_repositories(state)
+        if writable is None:
+            return truth
+        if not writable or not set(writable).issubset(truth):
+            raise ValueError("A run writes only inside this project's truth scope.")
+        return list(writable)
+
     def assemble(
         self,
         state: GraphState,
-        run_truth_scope: list[str] | None = None,
-        repository_access: dict[str, RepositoryAccess] | None = None,
+        *,
+        writable: list[str] | None = None,
         refresh_delta: RefreshDelta | None = None,
         source_roots: dict[str, list[str]] | None = None,
         imported_source_roots: dict[str, list[str]] | None = None,
         imported_source_fingerprint: str | None = None,
         source_errors: list[str] | None = None,
     ) -> RunContext:
-        selected = run_truth_scope or self.manifest.agent.default_run_truth_scope
-        selected_set = set(selected)
-        project_scope = set(state.project_truth_scope or self.manifest.project.truth_scope)
-        if not selected_set or not selected_set.issubset(project_scope):
-            raise ValueError("run truth scope must be a non-empty subset of project truth scope")
+        """Every repository to read; `writable` is the task's admitted write set."""
 
-        repositories = []
-        for item in self.manifest.repositories:
-            if item.alias not in selected_set:
-                continue
-            access = (repository_access or {}).get(item.alias)
-            repositories.append(
-                RepositoryPointer(
-                    alias=item.alias,
-                    machine=item.machine,
-                    host=access.host if access else self.manifest.machine_map[item.machine].host,
-                    path=item.path,
-                )
-            )
+        writable = self._writable(state, writable)
+        repositories = self._repository_pointers()
         root = self.graph_root
         paper = self.manifest.research_dir / "paper"
         return RunContext(
             project_name=self.manifest.name,
-            run_truth_scope=selected,
+            run_truth_scope=writable,
             repositories=repositories,
             ingestion_watermark=state.last_refresh_at,
             refresh_delta=refresh_delta,
@@ -174,36 +184,19 @@ class ContextAssembler:
         *,
         graph_target: GraphTargetRef,
         node_id: str | None = None,
-        run_truth_scope: list[str] | None = None,
-        repository_access: dict[str, RepositoryAccess] | None = None,
+        writable: list[str] | None = None,
     ) -> ChatContext:
-        selected = run_truth_scope or self.manifest.agent.default_run_truth_scope
-        selected_set = set(selected)
-        project_scope = set(state.project_truth_scope or self.manifest.project.truth_scope)
-        if not selected_set or not selected_set.issubset(project_scope):
-            raise ValueError("run truth scope must be a non-empty subset of project truth scope")
+        """Every repository to read; `writable` is the turn's admitted write set."""
+
+        writable = self._writable(state, writable)
         if node_id is not None and node_id not in state.nodes:
             raise ValueError(f"unknown node: {node_id}")
-
-        repositories = [
-            RepositoryPointer(
-                alias=item.alias,
-                machine=item.machine,
-                host=(
-                    (repository_access or {}).get(item.alias).host
-                    if (repository_access or {}).get(item.alias)
-                    else self.manifest.machine_map[item.machine].host
-                ),
-                path=item.path,
-            )
-            for item in self.manifest.repositories
-            if item.alias in selected_set
-        ]
+        repositories = self._repository_pointers()
         root = self.graph_root
         paper = self.manifest.research_dir / "paper"
         return ChatContext(
             project_name=self.manifest.name,
-            run_truth_scope=selected,
+            run_truth_scope=writable,
             repositories=repositories,
             graph_target=graph_target,
             graph_path=str(root / "graph.json"),
@@ -231,30 +224,13 @@ class ContextAssembler:
             for profile in sorted(PROVIDERS.values(), key=lambda item: item.id)
         }
 
-    def paper_pointers(
-        self,
-        paper_override: Path | None = None,
-        repository_access: dict[str, RepositoryAccess] | None = None,
-    ) -> CoachContext:
+    def paper_pointers(self, paper_override: Path | None = None) -> CoachContext:
         root = self.manifest.research_dir
         return CoachContext(
             paper=str(paper_override or root / "paper"),
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
-            repositories=[
-                RepositoryPointer(
-                    alias=item.alias,
-                    machine=item.machine,
-                    host=(
-                        repository_access[item.alias].host
-                        if repository_access and item.alias in repository_access
-                        else self.manifest.machine_map[item.machine].host
-                    ),
-                    path=item.path,
-                )
-                for item in self.manifest.repositories
-                if item.alias in self.manifest.project.truth_scope
-            ],
+            repositories=self._repository_pointers(),
         )
 
 

@@ -14,7 +14,6 @@ class ValidationContext:
     project_truth_scope: Iterable[str]
     repository_aliases: Iterable[str] | None = None
     machine_aliases: Iterable[str] | None = None
-    default_run_truth_scope: Iterable[str] | None = None
     state_repository: str | None = None
     mode: Literal["admission", "replay"] = "admission"
     # A branch merge's source head; content it carries verbatim skips content rules.
@@ -31,7 +30,6 @@ def build_validation_context(
         project_truth_scope=tuple(state.project_truth_scope),
         repository_aliases=tuple(manifest.repository_map),
         machine_aliases=tuple(manifest.machine_map),
-        default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
         state_repository=manifest.state.repository,
         mode=mode,
     )

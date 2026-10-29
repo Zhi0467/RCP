@@ -26,6 +26,7 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.group_context import group_prompt_value
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import (
     CHAT_MASTER_CONTEXT_VERSION,
     CONVERSATION_FORK_NOTE,
@@ -1543,6 +1544,7 @@ def _project_write_scope(
                 raise ValueError("The integration turn has no admitted target branch.")
     scope = resolve_project_write_scope(
         manifest=service.manifest,
+        truth_scope=write_repositories(service.history.state()),
         project_id=project_id,
         execution_machine=execution_machine,
         capability=capability,

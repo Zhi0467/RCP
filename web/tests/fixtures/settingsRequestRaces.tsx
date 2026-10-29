@@ -37,9 +37,11 @@ function projectFor(id: string): ProjectSnapshot {
     ),
     providers: { codex: readiness },
     provider_readiness: { local: { codex: readiness } },
-    repositories: [{ alias: "repo", machine: "local", path: `/${id}/repo` }],
+    repositories: [
+      { alias: "repo", machine: "local", path: `/${id}/repo` },
+      { alias: "data", machine: "local", path: `/${id}/data` },
+    ],
     project_truth_scope: ["repo"],
-    default_run_truth_scope: ["repo"],
     default_auto_research_invocation_ceiling: id === "beta" ? 20 : 10,
     state_repository: "repo",
     machines: [

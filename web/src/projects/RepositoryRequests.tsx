@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createProjectRepositoryRequest, type ProjectRepositoryRequest } from "../core/api";
+import { api, createProjectRepositoryRequest, type ProjectRepositoryRequest } from "../core/api";
 import type { ProjectSnapshot } from "../core/types";
 import { PathPicker } from "./PathPicker";
 import {
@@ -20,22 +20,27 @@ function folderName(path: string): string {
 }
 
 /**
- * Add a repository on the base machine, or connect the one the Repos list chose,
- * through a setup request.
+ * Add a repository on the base machine, or connect the one the Repos list chose.
+ * A team project adds through a setup request; a personal one adds a folder
+ * directly, since it has nothing to clone with.
  */
 export function RepositoryRequests({
   project,
+  spaceKind,
   baseMachineId,
   disabled,
   connectAlias,
   onCloseConnect,
+  onAdded,
 }: {
   project: Pick<ProjectSnapshot, "id" | "name" | "repositories">;
+  spaceKind: "personal" | "team";
   /** The base machine's space machine id, which the folder picker browses. */
   baseMachineId: string | null;
   disabled: boolean;
   connectAlias: string | null;
   onCloseConnect: () => void;
+  onAdded: (project: ProjectSnapshot) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [mode, setMode] = useState<AddMode>("folder");
@@ -84,6 +89,23 @@ export function RepositoryRequests({
     setBusy(true);
     setError(null);
     try {
+      if (spaceKind === "personal" && body.kind === "add_repository") {
+        const saved = await api<ProjectSnapshot>(
+          `/api/projects/${encodeURIComponent(project.id)}/repositories`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              alias: body.repository.alias,
+              path: body.repository.path,
+              count_as_project_truth: body.repository.count_as_project_truth,
+            }),
+          },
+        );
+        if (!active.current) return;
+        onAdded(saved);
+        close();
+        return;
+      }
       const request = await createProjectRepositoryRequest(project.id, body);
       if (active.current) window.location.hash = projectProvisioningHash(request.request_id);
     } catch (caught) {
@@ -163,29 +185,31 @@ export function RepositoryRequests({
       <fieldset disabled={disabled || busy} aria-label="Add repo">
         <header className="repository-add-header">
           <strong>Add repo</strong>
-          <div className="repository-add-modes" role="group" aria-label="Repository source">
-            {ADD_MODES.map((item) => (
-              <button
-                type="button"
-                key={item.id}
-                aria-pressed={mode === item.id}
-                onClick={() => {
-                  setMode(item.id);
-                  setBrowsing(false);
-                  setError(null);
-                  if (!nameEdited) {
-                    setAlias(
-                      item.id === "folder"
-                        ? path && defaultName(folderName(path))
-                        : source.trim() && defaultName(githubRepositoryName(source)),
-                    );
-                  }
-                }}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          {spaceKind === "team" && (
+            <div className="repository-add-modes" role="group" aria-label="Repository source">
+              {ADD_MODES.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  aria-pressed={mode === item.id}
+                  onClick={() => {
+                    setMode(item.id);
+                    setBrowsing(false);
+                    setError(null);
+                    if (!nameEdited) {
+                      setAlias(
+                        item.id === "folder"
+                          ? path && defaultName(folderName(path))
+                          : source.trim() && defaultName(githubRepositoryName(source)),
+                      );
+                    }
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
         </header>
         {mode === "folder" ? (
           <div className="repository-add-path">

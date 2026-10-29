@@ -72,26 +72,13 @@ def test_code_admission_requires_one_repository(manifest, tmp_path) -> None:
     assert store.episodes("project") == []
 
 
-@pytest.mark.parametrize("ineligible", [None, "repositories", "host", "git", "grant"])
+@pytest.mark.parametrize("ineligible", [None, "repositories", "git", "grant"])
 def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeypatch, ineligible):
-    if ineligible == "host":
-        text = manifest.path.read_text()
-        text = text.replace(
-            '[[repositories]]\nalias = "repo-b"\nmachine = "laptop"',
-            '[[repositories]]\nalias = "repo-b"\nmachine = "gpu"',
-        ).replace('default_run_truth_scope = ["repo-a"]', 'default_run_truth_scope = ["repo-b"]')
-        manifest.path.write_text(
-            text.replace(
-                "[[repositories]]",
-                '[[machines]]\nalias = "gpu"\nhost = "gpu"\n\n[[repositories]]',
-                1,
-            )
-        )
-    if ineligible == "repositories":
+    # The default needs exactly one repository the project's agents can write.
+    if ineligible != "repositories":
         manifest.path.write_text(
             manifest.path.read_text().replace(
-                'default_run_truth_scope = ["repo-a"]',
-                'default_run_truth_scope = ["repo-a", "repo-b"]',
+                'truth_scope = ["repo-a", "repo-b"]', 'truth_scope = ["repo-a"]'
             )
         )
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")

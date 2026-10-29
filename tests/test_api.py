@@ -865,10 +865,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     }
     settings = client.put(
         f"/api/projects/{project_id}/settings",
-        json={
-            "default_run_truth_scope": ["repo-a"],
-            "agent_profiles": profiles,
-        },
+        json={"agent_profiles": profiles},
     )
     assert settings.status_code == 409
     assert settings.json()["coherent_revision"] == 2
@@ -1965,7 +1962,8 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
         for receipt in completed["debug_receipts"]
         if receipt["category"] == "context_assembled"
     )
-    assert context_receipt["payload"]["repository_count"] == 1
+    # Every project repository is readable context.
+    assert context_receipt["payload"]["repository_count"] == 2
     assert "source_errors" not in context_receipt["payload"]
     prompt_receipt = next(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_prompt"
@@ -5331,7 +5329,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     assert staged.glossary_path == "/srv/project/.research/glossary.json"
     assert [
         (repository.alias, repository.host, repository.path) for repository in staged.repositories
-    ] == [("repo-a", "", "/srv/project")]
+    ] == [("repo-a", "", "/srv/project"), ("repo-b", "", "/srv/project")]
 
 
 @pytest.mark.asyncio
@@ -5709,7 +5707,11 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
             "claude": "claude.permission-allowlist.v1",
         }[provider]
     )
-    assert launch["payload"]["canonical_repository_roots"] == [repository_root]
+    # Work writes every repository the project's agents can write.
+    assert launch["payload"]["canonical_repository_roots"] == [
+        repository_root,
+        str(Path(manifest.repository_map["repo-b"].path).resolve()),
+    ]
     assert launch["payload"]["canonical_write_roots"][1:2] == [repository_root]
     assert str(Path(repository_root) / ".research") in launch["payload"]["protected_write_paths"]
     assert len(launch["payload"]["write_scope_fingerprint"]) == 64
@@ -7343,6 +7345,8 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     }
 
     new_loop_chat_id = str(uuid.uuid4())
+    # A new human run takes the project's current writable set.
+    writable = sorted(service.history.state().project_truth_scope)
 
     async def stream(_project_id, kind, request, _execution):
         assert kind == "node_chat"
@@ -7354,7 +7358,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.model == ""
         assert request.reasoning == "medium"
         assert request.run_on == "laptop"
-        assert request.run_truth_scope == ["repo-a"]
+        assert request.run_truth_scope == writable
         assert "/tmp/pending-loop.log" not in request.message
         yield _sse(AgentEvent(event="answer", text="Inspected the pending result."))
         yield _sse(AgentEvent(event="done"))
@@ -7379,7 +7383,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
     assert request["run_on"] == "laptop"
-    assert request["run_truth_scope"] == ["repo-a"]
+    assert request["run_truth_scope"] == writable
     assert response.json()["kind"] == "node_chat"
     assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
     assert store.watcher("pending-loop-watcher").notified is True

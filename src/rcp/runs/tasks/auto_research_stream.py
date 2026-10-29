@@ -58,6 +58,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import GraphReadPrompt, render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
@@ -165,7 +166,6 @@ from rcp.transport import (
     RunLockCancelled,
     RunStageMailbox,
     StateUnavailable,
-    repository_access,
 )
 from rcp.transport.run_stage import remote_stage_name
 
@@ -1207,21 +1207,11 @@ def _auto_research_context(
     stage: _WorkerStage,
 ) -> ChatContext:
     state = service.history.state()
-    selected = request.run_truth_scope or service.manifest.agent.default_run_truth_scope
-    access = {
-        alias: repository_access(
-            service.manifest.repository_map[alias],
-            service.manifest.machine_map[service.manifest.repository_map[alias].machine],
-        )
-        for alias in selected
-        if alias in service.manifest.repository_map
-    }
     context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
         graph_target=service.history.graph_target,
         node_id=None,
-        run_truth_scope=request.run_truth_scope,
-        repository_access=access,
+        writable=request.run_truth_scope,
     )
     state_machine = service.manifest.base_machine
     if state_machine != request.run_on:
@@ -2192,7 +2182,7 @@ async def _settle_worker_patch(
                     execution,
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope,
+                    or write_repositories(service.history.state()),
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )

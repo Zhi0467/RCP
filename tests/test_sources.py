@@ -14,7 +14,7 @@ from rcp.core.models import GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
-from rcp.service import ProjectService, RunRequest
+from rcp.service import ProjectService
 from rcp.sources import ConversationIndexer
 from rcp.sources.indexer import (
     _REMOTE_INDEX_SCRIPT,
@@ -516,12 +516,10 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
     on_owner = assembler.chat_context(
         state,
         graph_target=GraphTargetRef(),
-        run_truth_scope=["repo-a"],
     )
     from_laptop = assembler.chat_context(
         state,
         graph_target=GraphTargetRef(),
-        run_truth_scope=["repo-a"],
     )
 
     assert "conversations" not in on_owner.model_dump()
@@ -553,7 +551,6 @@ def test_chat_context_does_not_include_indexed_transcripts(manifest, tmp_path) -
     context = ContextAssembler(manifest).chat_context(
         GraphState(project_truth_scope=manifest.project.truth_scope),
         graph_target=GraphTargetRef(),
-        run_truth_scope=["repo-a"],
     )
 
     assert "conversations" not in context.model_dump()
@@ -622,31 +619,9 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
     index = indexer.build()
     assert index.sessions
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
-    context = ContextAssembler(manifest).chat_context(
-        state, graph_target=GraphTargetRef(), run_truth_scope=["repo-a"]
-    )
+    context = ContextAssembler(manifest).chat_context(state, graph_target=GraphTargetRef())
 
     assert "conversations" not in context.model_dump()
-
-
-def test_out_of_scope_run_is_rejected_before_index(manifest, tmp_path, monkeypatch) -> None:
-    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
-    service = ProjectService(
-        manifest,
-        history,
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-    )
-    monkeypatch.setattr(
-        service.indexer,
-        "build",
-        lambda **_kwargs: pytest.fail("source indexing must follow scope validation"),
-    )
-
-    with pytest.raises(ValueError, match="non-empty subset"):
-        service.assemble_run(
-            RunRequest(run_truth_scope=["outside-project"]),
-            surface="refresh",
-        )
 
 
 def test_remote_index_script_filters_by_embedded_cwd(tmp_path) -> None:

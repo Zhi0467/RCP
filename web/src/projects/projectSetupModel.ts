@@ -311,9 +311,7 @@ export function buildTeamProvisioningRequest({
   stateRepository: string;
   defaultAutoResearchInvocationCeiling: number;
   machines: ProjectProvisioningCreateRequest["machines"];
-  repositories: Array<
-    ProjectProvisioningCreateRequest["repositories"][number] & { default_read: boolean }
-  >;
+  repositories: ProjectProvisioningCreateRequest["repositories"];
   providerChecks: ProjectProvisioningCreateRequest["provider_checks"];
 }): ProjectProvisioningCreateRequest {
   const aliases = repositories.map((repository) => repository.alias);
@@ -321,12 +319,11 @@ export function buildTeamProvisioningRequest({
     name: name.trim(),
     state_repository: stateRepository,
     project_truth_scope: aliases,
-    default_run_truth_scope: repositories
-      .filter((repository) => repository.default_read)
-      .map((repository) => repository.alias),
+    // Agents read every repository; the create API still takes a default, the whole scope.
+    default_run_truth_scope: aliases,
     default_auto_research_invocation_ceiling: defaultAutoResearchInvocationCeiling,
     machines,
-    repositories: repositories.map(({ default_read: _defaultRead, ...repository }) => repository),
+    repositories,
     provider_checks: providerChecks,
   };
 }
