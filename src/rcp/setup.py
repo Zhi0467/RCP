@@ -54,6 +54,9 @@ if TYPE_CHECKING:
     from rcp.transfer.configuration import TransferTargetConfiguration
 
 
+_DEFAULT_COACH_MODEL = "gpt-5.6-luna"
+
+
 class _StrictSetupModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -338,7 +341,7 @@ class SetupAgents(_StrictSetupModel):
     node_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     project_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     paper_coach: SetupAgentProfile = Field(
-        default_factory=lambda: SetupAgentProfile(model="gpt-5.6-luna")
+        default_factory=lambda: SetupAgentProfile(model=_DEFAULT_COACH_MODEL)
     )
     orchestrator: SetupAgentProfile | None = None
 
@@ -420,7 +423,7 @@ class ProjectSetupRequest(_StrictSetupModel):
                 node_chat=graph_profile.model_copy(),
                 project_chat=graph_profile.model_copy(),
                 orchestrator=graph_profile.model_copy(),
-                paper_coach=graph_profile.model_copy(update={"model": "gpt-5.6-luna"}),
+                paper_coach=graph_profile.model_copy(update={"model": _DEFAULT_COACH_MODEL}),
             )
         canonical = next(
             repository

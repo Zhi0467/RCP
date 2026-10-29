@@ -4397,7 +4397,7 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
     launcher = FakeLauncher(
         [
             AgentEvent(event="session", session_id=session_id),
-            AgentEvent(event="message", text=answer),
+            AgentEvent(event="answer", text=answer),
             AgentEvent(event="done"),
         ]
     )
@@ -4529,7 +4529,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
             yield AgentEvent(event="session", session_id=session_id)
-            yield AgentEvent(event="message", text=answer)
+            yield AgentEvent(event="answer", text=answer)
             yield AgentEvent(event="done")
 
     launcher = PausingCoachLauncher()
@@ -5302,7 +5302,7 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def list_artifact_files(self, _scope_id):
             return []
 
-    monkeypatch.setattr("rcp.runs.tasks.discuss.RemoteRunStage", RecordingRemoteStage)
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RecordingRemoteStage)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="Remote continuation."), AgentEvent(event="done")]
     )
@@ -5395,7 +5395,7 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
     launcher = FakeLauncher(
         [
             AgentEvent(event="session", session_id=session_id),
-            AgentEvent(event="message", text="Review the claim boundary."),
+            AgentEvent(event="answer", text="Review the claim boundary."),
             AgentEvent(event="done"),
         ]
     )

@@ -3982,24 +3982,6 @@
                 }
             }
         ],
-        "./src/rcp/runs/tasks/coach.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/runs/tasks/compute_commands.py": [
             {
                 "code": "reportGeneralTypeIssues",

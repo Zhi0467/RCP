@@ -12,7 +12,7 @@ import shlex
 import threading
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -189,9 +189,17 @@ class MachineDirectoriesRequest(BaseModel):
         return str(path)
 
 
-def _machine_usage(
-    store: AppStore,
-) -> tuple[dict[str, list[dict[str, str]]], bool, set[str], set[str]]:
+class MachineUsage(NamedTuple):
+    projects: dict[str, list[dict[str, str]]]
+    complete: bool
+    agent_hosts: set[str]
+    repository_hosts: set[str]
+
+    def deletable(self, machine: SpaceMachineRecord) -> bool:
+        return self.complete and machine.host not in self.repository_hosts
+
+
+def _machine_usage(store: AppStore) -> MachineUsage:
     """Which registered projects name each machine account, whether every manifest
     read, and the hosts with agents or repositories."""
 
@@ -221,7 +229,7 @@ def _machine_usage(
         repository_hosts.update(
             manifest.machine_map[repository.machine].host for repository in manifest.repositories
         )
-    return usage, complete, agent_hosts, repository_hosts
+    return MachineUsage(usage, complete, agent_hosts, repository_hosts)
 
 
 def _hidden_read_projection(
@@ -277,14 +285,12 @@ def _compute_probes(
 
 def _machine_view(
     machine: SpaceMachineRecord,
-    usage: dict[str, list[dict[str, str]]],
-    complete: bool,
-    repository_hosts: set[str],
+    usage: MachineUsage,
     visible: set[str],
     store: AppStore,
     launcher: AgentLauncher | None,
 ) -> dict[str, object]:
-    projects = usage.get(machine.host, [])
+    projects = usage.projects.get(machine.host, [])
     readiness = {
         provider: launcher.cached_readiness(
             provider, host=machine.host, binary=machine.provider_paths.get(provider)
@@ -332,8 +338,8 @@ def _machine_view(
         "hidden_read": _hidden_read_projection(machine, store.path.parent).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
-        "in_use": True if projects else (False if complete else None),
-        "deletable": complete and machine.host not in repository_hosts,
+        "in_use": True if projects else (False if usage.complete else None),
+        "deletable": usage.deletable(machine),
     }
 
 
@@ -343,8 +349,8 @@ def _one_machine_view(
     visible: set[str],
     launcher: AgentLauncher | None = None,
 ) -> dict[str, object]:
-    usage, complete, _, repository_hosts = _machine_usage(store)
-    return _machine_view(machine, usage, complete, repository_hosts, visible, store, launcher)
+    usage = _machine_usage(store)
+    return _machine_view(machine, usage, visible, store, launcher)
 
 
 def _visible_project_ids(
@@ -520,12 +526,10 @@ def list_space_machines(
     catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
-    usage, complete, _, repository_hosts = _machine_usage(store)
+    usage = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(
-                machine, usage, complete, repository_hosts, visible, store, catalog.launcher
-            )
+            _machine_view(machine, usage, visible, store, catalog.launcher)
             for machine in store.space_machines()
         ]
     }
@@ -652,10 +656,10 @@ def update_space_machine(
     compute_changed = (
         body.job_manager is not None and body.job_manager != machine.job_manager
     ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
-    usage, _, _, _ = _machine_usage(store)
+    usage = _machine_usage(store)
     if compute_changed:
         # Fail closed: no project keeps a route check made under the old settings.
-        for project in usage.get(machine.host, []):
+        for project in usage.projects.get(machine.host, []):
             store.delete_compute_backend_probe(project["project_id"], project["alias"])
     # A human edit makes the card the owner: no later start refills a field
     # this edit cleared from an older manifest.
@@ -690,8 +694,8 @@ def _refresh_machine_probes(
     """Settle the card's job manager, then check its routes once for every project on it."""
 
     settle_job_manager(store, machine.host)
-    usage, _, _, _ = _machine_usage(store)
-    for project in usage.get(machine.host, []):
+    usage = _machine_usage(store)
+    for project in usage.projects.get(machine.host, []):
         record = store.project(project["project_id"])
         if record is None:
             continue
@@ -721,8 +725,8 @@ def check_space_machine_compute(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     _refresh_machine_probes(store, catalog, machine)
-    _, _, agent_hosts, _ = _machine_usage(store)
-    sources = [card for card in store.space_machines() if card.host in agent_hosts]
+    usage = _machine_usage(store)
+    sources = [card for card in store.space_machines() if card.host in usage.agent_hosts]
     reach = [
         {"from": source.name, "probe": probe.model_dump(mode="json")}
         for source, probe in probe_machine_reach(machine, sources, space_kind=store.space_kind)
@@ -785,34 +789,35 @@ def delete_space_machine(
     store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
+    from rcp.api.project_state import detach_project_machine
+
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
-    listed = sorted({item["project_id"] for item in _machine_usage(store)[0].get(machine.host, [])})
+    listed = sorted(
+        {item["project_id"] for item in _machine_usage(store).projects.get(machine.host, [])}
+    )
     # Each listing project's write fence comes first, as its own machine route takes
     # it, so a detach never edits a project mid-transfer or under another writer.
     with ExitStack() as fences:
         for project_id in listed:
             fences.enter_context(project_write_admission(project_id, request))
         with MACHINE_ATTACHMENT_LOCK:
-            usage, complete, _, repository_hosts = _machine_usage(store)
-            if not complete or machine.host in repository_hosts:
+            usage = _machine_usage(store)
+            if not usage.deletable(machine):
                 detail = (
                     "A repository lives on this machine."
-                    if machine.host in repository_hosts
+                    if machine.host in usage.repository_hosts
                     else "RCP could not read every project, so it cannot tell whether this "
                     "machine is used."
                 )
                 raise HTTPException(status_code=409, detail=detail)
-            projects = usage.get(machine.host, [])
+            projects = usage.projects.get(machine.host, [])
             if {item["project_id"] for item in projects} - set(listed):
                 raise HTTPException(status_code=409, detail="A project started using this machine.")
-            try:
-                for project in projects:
-                    project_display_cache.remove_machine(project["project_id"], project["alias"])
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail="Project not found") from exc
-            except (OSError, ValueError) as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            for project in projects:
+                detach_project_machine(
+                    project_display_cache, project["project_id"], project["alias"]
+                )
             store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 

@@ -667,13 +667,13 @@
   z-index: 1;
 }
 
-/* An armed Delete, and a failed artifact action, in the list and the viewer header alike. */
-.artifact-delete-confirm {
+/* An armed Delete (artifacts, machine cards), and a failed artifact action. */
+.armed-delete {
   border: 1px solid var(--red);
   color: var(--red);
 }
-/* The armed list button grows to fit its label. */
-.icon-button.artifact-delete-confirm {
+/* An armed icon button grows to fit its label. */
+.icon-button.armed-delete {
   padding: 0 9px;
   width: auto;
 }

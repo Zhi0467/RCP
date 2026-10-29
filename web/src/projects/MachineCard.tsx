@@ -23,6 +23,7 @@ import {
   updateSpaceMachine,
 } from "../core/api";
 import { errorMessage } from "../core/errors";
+import { useArmedConfirm } from "../core/useArmedConfirm";
 import {
   createPathEditor,
   createMachineWriteQueue,
@@ -53,7 +54,7 @@ interface Props {
   record: SpaceMachine | null;
   writesDisabled?: boolean;
   onRecordChange: (machine: SpaceMachine) => void;
-  /** Offered only for a space machine no project uses. */
+  /** Offered for a space machine no repository lives on; it detaches from projects too. */
   onDelete?: () => Promise<void>;
   /** Offered on a project's card when nothing in the project uses the machine. */
   onRemoveFromProject?: () => Promise<void>;
@@ -74,6 +75,7 @@ export function MachineCard({
   onRemoveFromProject,
 }: Props) {
   const [busy, setBusy] = useState<"delete" | "unlink" | null>(null);
+  const { armed: deleteArmed, arm: armDelete, disarm: disarmDelete } = useArmedConfirm();
   // Every write on this card queues here, so no earlier answer lands after a newer one.
   const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
   const save = writes.save;
@@ -127,13 +129,20 @@ export function MachineCard({
           <button
             type="button"
             data-machine-action="delete"
-            aria-label={`Remove ${title}`}
+            aria-label={deleteArmed ? "Confirm delete" : `Remove ${title}`}
             {...failedProps(failure, "delete")}
-            className={`icon-button${failure?.key === "delete" ? " failed" : ""}`}
+            className={`icon-button${deleteArmed ? " armed-delete" : failure?.key === "delete" ? " failed" : ""}`}
             disabled={writesDisabled || busy !== null}
-            onClick={() => void act("delete", onDelete)}
+            onBlur={disarmDelete}
+            onClick={() => {
+              // Delete also detaches the machine from every project, so it arms first.
+              if (!deleteArmed) return armDelete();
+              disarmDelete();
+              void act("delete", onDelete);
+            }}
           >
             {busy === "delete" ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
+            {deleteArmed && "Delete"}
           </button>
         )}
       </header>

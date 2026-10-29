@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import cast
+from contextlib import aclosing
+from typing import Literal, cast
 
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.runs.tasks.coach import stream_coach
+from rcp.runs.tasks.coach import _resolved_coach_request, stream_coach
 from rcp.service import CoachRequest
 
 from .test_coach_suggestions import coach as coach
@@ -88,3 +89,63 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     assert third_launch["session_id"] == current.native_session_id
     assert third_launch["model"] == expected.model
     assert third_launch["reasoning"] == expected.reasoning
+
+    off_base = current.model_copy(
+        update={"native_session_id": "off-base-session", "execution_machine": "previous-base"}
+    )
+    service.paper.record_session(off_base)
+    admitted = _resolved_coach_request(
+        service,
+        CoachRequest(
+            message="Continue",
+            session_id=off_base.native_session_id,
+            run_on=off_base.execution_machine,
+        ),
+    )
+    assert (admitted.provider, admitted.model, admitted.reasoning) == (
+        current.provider,
+        expected.model or None,
+        current.reasoning,
+    )
+    assert admitted.session_id is None
+    assert admitted.run_on == service.manifest.base_machine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_event", ["error", "paused"])
+async def test_coach_records_session_when_consumer_closes_on_failure(
+    coach, stop_event: Literal["error", "paused"]
+):
+    from rcp.providers import configured_runtime_id, legacy_runtime_id
+
+    service, _live, data = coach
+    execution = execution_for(service)
+    execution.runtime_id = configured_runtime_id("codex", "app-server")
+    runtime_id = legacy_runtime_id("codex")
+
+    class Launcher:
+        async def stream(self, _provider, _prompt, **kwargs):
+            yield AgentEvent(event="runtime", text=runtime_id)
+            yield AgentEvent(event="session", session_id="interrupted-session")
+            yield AgentEvent(event=stop_event, text="Interrupted")
+
+    async with aclosing(
+        stream_coach(
+            service,
+            cast(AgentLauncher, Launcher()),
+            service.paper,
+            CoachRequest(message="Review", provider="codex"),
+            data,
+            execution,
+        )
+    ) as stream:
+        async for frame in stream:
+            event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+            if event.event in {"error", "paused"}:
+                assert event.event == stop_event
+                break
+        else:
+            pytest.fail("The provider did not emit its interruption")
+    assert [
+        (session.native_session_id, session.runtime_id) for session in service.paper.sessions()
+    ] == [("interrupted-session", runtime_id)]

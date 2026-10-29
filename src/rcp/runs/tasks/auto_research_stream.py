@@ -1216,7 +1216,7 @@ def _auto_research_context(
         run_truth_scope=request.run_truth_scope,
         repository_access=access,
     )
-    state_machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    state_machine = service.manifest.base_machine
     if state_machine != request.run_on:
         repositories = []
         for item in context.repositories:
@@ -1633,7 +1633,7 @@ def _orchestrator_prompt(
     )
 
     if graph_read_scope is not None:
-        values["branches"] = [item.model_dump(mode="json") for item in graph_read_scope.branches]
+        values["branches"] = graph_read_scope.branch_values()
 
     snapshot, dismissal_ids = auto_research_question_snapshot(
         execution.store,
@@ -1823,7 +1823,7 @@ def _worker_prompt(
     )
 
     if graph_read_scope is not None:
-        values["branches"] = [item.model_dump(mode="json") for item in graph_read_scope.branches]
+        values["branches"] = graph_read_scope.branch_values()
 
     def render_master() -> str:
         return auto_research_worker_task_contract(

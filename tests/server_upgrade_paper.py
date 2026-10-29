@@ -65,11 +65,11 @@ def assert_tree_paper(request, fixture: dict, cookie: str) -> None:
             assert _sha(response.read()) == sha, f"Upgrade changed {path}"
 
 
-def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict | None:
+def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
     """Execute the historical Paper writer so draft, base and canonical diverge.
 
     A release that already keeps the live Paper file tree has no such writer; it
-    seeds nothing here and the current writer journey starts from an empty paper.
+    records that writer here; the serving baseline seeds its tree through HTTP.
     """
     from rcp.config import load_manifest
     from rcp.paper import PaperService
@@ -83,7 +83,7 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict | None:
         close = getattr(store, "close", None)
         if close is not None:
             close()
-        return None
+        return {"writer": "tree"}
 
     def save(text, snapshot):
         arguments = {"content": text, "base_hash": snapshot.base_hash}
@@ -141,8 +141,9 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         )
 
     tree = call("/tree")
-    legacy = fixture["paper"] if (fixture.get("paper") or {}).get("writer") == "legacy" else None
-    if legacy:
+    baseline = fixture["paper"]
+    writer = baseline["writer"]
+    if writer == "legacy":
         assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
         history = call("/history")
         preserved = set()
@@ -152,7 +153,7 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         # The draft becomes the live text; the diverged canonical and ancestor become versions.
         assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
         required = {_sha(CANONICAL.encode())}
-        if legacy["ancestor_stored"]:
+        if baseline["ancestor_stored"]:
             required.add(_sha(ANCESTOR.encode()))
         assert required <= preserved, "Migration lost a divergent legacy history version"
     for path in ("sections/methods.tex", "references.bib"):
@@ -174,7 +175,7 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     )
     saved = call("/tree")
     assert saved["saved_revision"] > before["saved_revision"]
-    if legacy:
+    if writer == "legacy":
         # Only the held legacy paper keeps its saves unpublished.
         assert saved["saved_revision"] > saved["published_revision"]
     assert saved["hold"] == tree["hold"]

@@ -43,6 +43,16 @@ class PaperSnapshot(BaseModel):
     # Captured bytes keep a snapshot materializable after SQLite retention runs.
     _blobs: dict[str, bytes] = PrivateAttr(default_factory=dict)
 
+    def files_under(self, folder: str) -> list[PaperFile]:
+        return [file for file in self.files if file.path.startswith(f"{folder}/")]
+
+    def file_bytes(self, file: PaperFile) -> bytes:
+        return (
+            (file.text or "").encode()
+            if file.kind == "text"
+            else self._blobs[file.blob_sha256 or ""]
+        )
+
 
 class PaperTreeFile(BaseModel):
     file_id: str
