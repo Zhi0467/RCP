@@ -11,9 +11,10 @@ by the whole team. With this change:
 - Each machine keeps a set of **shared sign-ins** per provider. Any member with
   access to the machine can add one or remove one.
 - Each member can also add **their own** sign-in on a machine.
-- Each member sets, per machine and provider, what their work runs on:
-  **Yours only**, **Yours, then shared**, or **Shared only**. It is a setting,
-  not a per-run choice. RCP applies it to every chat, episode and background turn.
+- Each member sets, per machine and provider, two groups: **Yours** and
+  **Shared**. Each group has an on/off switch, and the member picks which group
+  is tried first. At least one group stays on. It is a setting, not a per-run
+  choice. RCP applies it to every chat, episode and background turn.
 - Among the shared sign-ins, a session stays on the same one while it is healthy.
   A new session takes the one used longest ago, which spreads load across
   accounts.
@@ -31,19 +32,18 @@ by the whole team. With this change:
 | --- | --- |
 | Nobody changes anything | Same as today. Each machine's shared set holds its one existing sign-in. |
 | A member adds a second shared account | New sessions spread across both. Running sessions stay where they are. |
-| Everyone uses their own | Each member sets "Yours only". Each member's work bills their own account. |
+| Everyone uses their own | Each member turns Shared off. Each member's work bills their own account. |
 | Some use their own, some the shared ones | Each member's setting decides. |
-| Someone joins after the upgrade | Their work is refused until they add their own sign-in or pick a setting that includes shared. |
+| Someone joins after the upgrade | Their work is refused until they add their own sign-in or turn Shared on. |
 | You join a teammate's Codex chat | It stays on the sign-in it started with, so that account pays. In a Claude chat your own setting decides. |
 | That sign-in's owner is removed from the space | Codex chats bound to their own sign-in stop; start a new chat. Shared sign-ins they added stay. |
 
 Machines that run no agents never consult any of this. Nothing changes for them.
 
-There is no team or owner default. Without a saved setting, a team member uses
-**Yours only**, so using the shared sign-ins is each member's own opt-in. In a
+There is no team or owner default. Without a saved setting, a team member has
+only Yours on, so using the shared sign-ins is each member's own opt-in. In a
 personal space everything is shared, since one person owns every sign-in.
-Members who exist at upgrade get **Yours, then shared**, so nothing changes for
-them.
+Members who exist at upgrade get Yours then Shared, so nothing changes for them.
 
 The spec says RCP creates no extra provider homes. This changes that: each added
 Codex sign-in gets its own folder. RCP still never moves a running Codex session
@@ -58,7 +58,8 @@ from one account to another.
 | Machine sign-in | `login_id = ""`. Today's only login: the OS account's own CLI login for Codex and OpenCode, and the stored token for Claude. It is always one of the shared logins. It cannot be removed, only signed out. |
 | Shared login | A login with no `member_id`: the machine sign-in, plus every login a member added as shared. Any member may sign it in, verify it, sign it out, add it or remove it. UI group: "Shared on <machine>". |
 | Own login | A login with `member_id` set. One per member, provider and host. Only that member may act on it. UI row: "Yours". |
-| Setting | Per `(member, provider, host)`: `own`, `own_then_shared` or `shared` (UI: "Yours only", "Yours, then shared", "Shared only"). |
+| Source | One of the two groups: own (the member's login) or shared (the machine's shared logins). |
+| Setting | Per `(member, provider, host)`: which sources are on and in what order. One of four values: `own`, `own_then_shared`, `shared_then_own`, `shared`. The UI shows two groups, each with a switch, and a swap button for the order. "Both off" cannot be stored. |
 | Usable | The credential is present, the row is `signed_in`, and the login is not removed. Bound work (rules 1 and 2) needs only this. |
 | Assignable | Usable and not draining. New choices (rules 3 and 4) need this. "Healthy" in the table means assignable. |
 | Limited | A recent turn on this login ended with `session_limit` (section 1, "Limit mark"). A soft mark that lapses. RCP still uses the login when nothing else allowed is free. |
@@ -68,9 +69,8 @@ from one account to another.
 | Park | Work waits, without failing, until its login is usable again. |
 | Fence, generation | As in the providers spec, [Login state and failure](../docs/specs/providers-and-containment.md#login-state-and-failure). |
 
-"Pool first" was dropped. It would only matter to a member who wants their own
-account kept as a backup. "Shared only" plus adding their own sign-in later
-covers that.
+`shared_then_own` lets the shared accounts pay first, with the member's own
+account as the backup.
 
 ## Decision table: setting × runtime event
 
@@ -110,20 +110,24 @@ through its owner's existing path:
 A chat moves on the member's next message or Retry. With no such login,
 everything stays as today.
 
-| Event | Yours only | Yours, then shared | Shared only |
-| --- | --- | --- | --- |
-| **New session** (chat, episode, child) | Your login. If it is unhealthy, admission refuses, and the notice opens your row. If it is limited, it still runs. | Your login if it is healthy and not limited. Otherwise the shared login used longest ago. If nothing is healthy, refused, naming your login. | The shared login used longest ago, preferring one that is not limited. If none is healthy, refused, naming the shared set. |
-| **Your login hits a limit mid-episode, Claude** | The turn ends `session_limit`, and your login is marked limited. Existing recovery, as today: Auto-research resumes on your login and may hit the limit again; an Experiment waits for Retry. Notice: the existing limit notice. | The turn ends `session_limit`. The episode's next turn comes from the one automatic retry above, and the same session moves to a shared login (`limited`). It moves back (`preferred_source_available`) only after the mark is cleared by evidence: a completed turn on your login, or a Verify. A lapse never moves a running session. | Not applicable. |
-| **Your login hits a limit mid-episode, Codex** | The session is bound. It waits for existing recovery or Retry on your login. Switch provider is offered where it is today. | Same session: bound, waits as before. New Codex sessions, such as new Auto-research children, start on a shared login. | Not applicable. |
-| **The shared login a session is on hits a limit** | Not applicable. | Claude: the next turn (the automatic retry for episodes, the next message for chats) goes back to your login if it is assignable and not limited, else to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. | Claude: the next turn, triggered the same way, goes to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. |
-| **Every allowed login is limited** | Runs on your login. | Runs on your login; it comes first even when limited. | A continued session stays on its previous login if it is still assignable, with no receipt. A fresh session takes the one used longest ago. In every column the limit may have lifted. If not, the turn ends `session_limit` again and existing recovery owns the next try. Nothing is refused, and no automatic retry fires. |
-| **Resume or Retry of a paused or limited session** | Runs for whoever pressed it; episode tasks for the episode's authorizer. Your login; if unusable, parks under it. | Claude: resolved as a new turn, so it may move (receipt). Codex: the bound login; if unusable it parks; if limited it runs. | Claude: resolved as a new turn; sticky if its login is still assignable and not limited. Codex: as left. |
-| **A teammate presses Retry on your chat** | Claude: resolves by the teammate's setting, since they asked. Receipt `sender_setting` if the login differs. Codex: the bound login. Episode tasks: always the episode's authorizer. | Same rule. | Same rule. |
-| **Switch provider on a run** | Existing handoff: a fresh session on the new provider, with the handoff receipt it records today. The new provider resolves by your setting for it on that machine: your login there. | Fresh session. Your login for the new provider if it is healthy and not limited, else that provider's shared login. | Fresh session on that provider's shared login. |
-| **Switch to a provider whose own login is limited** | Runs on your limited login, since nothing else is allowed. It may hit the limit again. | Falls back to that provider's shared login. | Not affected. |
-| **A login is signed out or revoked mid-run** | The running turn finishes or fails on its login. Provider evidence fences only that login. The work parks as `provider_auth` under your login, and the notice offers sign-in. | Unbound work: if another allowed login is assignable, release runs right after settlement records the park, and the next turn moves (`unhealthy`). Otherwise it parks. This includes a Codex task that failed before the provider named its session. Bound Codex: parks until that login is verified; Switch provider where offered. | Same as the middle column, over the shared logins. |
-| **A new turn in a chat whose earlier turns ran on another login** | Claude: your login, the sender's. If it differs from the previous login, a receipt with reason `sender_setting`. Codex: the session's login, whoever sends, so its owner pays. If that login is unhealthy, the turn waits; start a new chat or switch provider. | Claude: by your setting, staying on the previous login if it is the source your setting picks. Codex: as left. | Claude: the previous shared login if it is healthy and not limited, else the one used longest ago. Codex: as left. |
-| **The shared login a session is on is being removed** | Not applicable. | Claude: moves at its next turn (`unhealthy`). Codex: keeps running on it, because draining is still usable, until nothing running is bound (section 3). | Same as the middle column. |
+| Event | `own` | `own_then_shared` | `shared_then_own` | `shared` |
+| --- | --- | --- | --- | --- |
+| **New session** (chat, episode, child) | Your login. If it is unhealthy, admission refuses, and the notice opens your row. If it is limited, it still runs. | Your login if it is healthy and not limited. Otherwise the shared login used longest ago. If nothing is healthy, refused, naming your login. | The shared login used longest ago without the mark. Otherwise your login if it is healthy and not limited. If every allowed login is limited, the shared login used longest ago. If nothing is healthy, refused, naming the shared set. | The shared login used longest ago, preferring one that is not limited. If none is healthy, refused, naming the shared set. |
+| **Your login hits a limit mid-episode, Claude** | The turn ends `session_limit`, and your login is marked limited. Existing recovery, as today: Auto-research resumes on your login and may hit the limit again; an Experiment waits for Retry. Notice: the existing limit notice. | The turn ends `session_limit`. The episode's next turn comes from the one automatic retry above, and the same session moves to a shared login (`limited`). It moves back (`preferred_source_available`) only after the mark is cleared by evidence: a completed turn on your login, or a Verify. A lapse never moves a running session. | Your login was in use only because no shared login was free. The next turn, triggered the same way, goes to a shared login without the mark (`limited`). If there is none, existing recovery as today. | Not applicable. |
+| **Your login hits a limit mid-episode, Codex** | The session is bound. It waits for existing recovery or Retry on your login. Switch provider is offered where it is today. | Same session: bound, waits as before. New Codex sessions, such as new Auto-research children, start on a shared login. | Bound, waits as before. New Codex sessions start on a shared login. | Not applicable. |
+| **The shared login a session is on hits a limit** | Not applicable. | Claude: the next turn (the automatic retry for episodes, the next message for chats) goes back to your login if it is assignable and not limited, else to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. | Claude: the next turn goes to another shared login without the mark (`limited`), else to your login if it is assignable and not limited (`limited`). It moves back to shared (`preferred_source_available`) only after a shared login's mark is cleared by evidence. Codex: bound, waits; new sessions avoid the limited login. | Claude: the next turn, triggered the same way, goes to another shared login without the mark (`limited`). Codex: bound, waits; new sessions avoid the limited login. |
+| **Every allowed login is limited** | Runs on your login. | Runs on your login; it comes first even when limited. | Shared comes first: a continued session stays on its previous shared login if it is still assignable, with no receipt. A fresh session takes the shared login used longest ago. | A continued session stays on its previous login if it is still assignable, with no receipt. A fresh session takes the one used longest ago. |
+| **Resume or Retry of a paused or limited session** | Runs for whoever pressed it; episode tasks for the episode's authorizer. Your login; if unusable, parks under it. | Claude: resolved as a new turn, so it may move (receipt). Codex: the bound login; if unusable it parks; if limited it runs. | Claude: resolved as a new turn, so it may move (receipt). Codex: as left. | Claude: resolved as a new turn; sticky if its login is still assignable and not limited. Codex: as left. |
+| **A teammate presses Retry on your chat** | Claude: resolves by the teammate's setting, since they asked. Receipt `sender_setting` if the login differs. Codex: the bound login. Episode tasks: always the episode's authorizer. | Same rule. | Same rule. | Same rule. |
+| **Switch provider on a run** | Existing handoff: a fresh session on the new provider, with the handoff receipt it records today. The new provider resolves by your setting for it on that machine: your login there. | Fresh session. Your login for the new provider if it is healthy and not limited, else that provider's shared login. | Fresh session. That provider's shared login first, then yours. | Fresh session on that provider's shared login. |
+| **Switch to a provider whose own login is limited** | Runs on your limited login, since nothing else is allowed. It may hit the limit again. | Falls back to that provider's shared login. | Not affected while that provider has an assignable shared login. Otherwise runs on your limited login. | Not affected. |
+| **A login is signed out or revoked mid-run** | The running turn finishes or fails on its login. Provider evidence fences only that login. The work parks as `provider_auth` under your login, and the notice offers sign-in. | Unbound work: if another allowed login is assignable, release runs right after settlement records the park, and the next turn moves (`unhealthy`). Otherwise it parks. This includes a Codex task that failed before the provider named its session. Bound Codex: parks until that login is verified; Switch provider where offered. | Same as `own_then_shared`, with the sources swapped. | Same as `own_then_shared`, over the shared logins. |
+| **A new turn in a chat whose earlier turns ran on another login** | Claude: your login, the sender's. If it differs from the previous login, a receipt with reason `sender_setting`. Codex: the session's login, whoever sends, so its owner pays. If that login is unhealthy, the turn waits; start a new chat or switch provider. | Claude: by your setting, staying on the previous login if it is the source your setting picks. Codex: as left. | Claude: by your setting, staying on the previous login if it is a shared login that is assignable and not limited. Codex: as left. | Claude: the previous shared login if it is healthy and not limited, else the one used longest ago. Codex: as left. |
+| **The shared login a session is on is being removed** | Not applicable. | Claude: moves at its next turn (`unhealthy`). Codex: keeps running on it, because draining is still usable, until nothing running is bound (section 3). | Same as `own_then_shared`. | Same as `own_then_shared`. |
+
+When every allowed login is limited, the limit may have lifted. If it has not,
+the turn ends `session_limit` again and existing recovery owns the next try.
+Nothing is refused, and no automatic retry fires.
 
 Release rule from the table: when unbound work parks as `provider_auth` while
 another login its setting allows is assignable, it is released at once. It does
@@ -149,7 +153,7 @@ One storage schema migration, numbered after `consolidation_targets_v1`:
 - `provider_readiness_snapshots`: a cache. Drop it and recreate it keyed
   `(provider, host, login_id, binary)`.
 - New `provider_login_settings(user_id, provider, host, setting, changed_at)`.
-  `setting` is a TEXT enum of the three values. `host = '*'` is a member's
+  `setting` is a TEXT enum of the four values, so "both off" cannot be stored. `host = '*'` is a member's
   fallback for any host without its own row. Only the migration writes `*` rows
   (below). Lookup order: the host's row, then the member's `*` row, then the
   built-in default (`own` in a team space, `shared` in a personal one).
@@ -257,7 +261,8 @@ previous login if any. Rules, first match wins:
    - Watcher wakes and Paper coach sessions inherit the login the same way.
    - If that login is not usable, the task waits. If it was removed, the task
      fails with `session_refused` and the reason "start a new chat".
-3. **Source.** Walk the member's setting over the two sources, own and shared.
+3. **Source.** Walk the sources the setting turns on, in the setting's order
+   (own and shared, or shared and own).
    Take the first source with an assignable login that is not limited. If there
    is none, take the first source with any assignable login.
 4. **Login within the source.**
@@ -478,79 +483,82 @@ only repeat the same choice. Settings already gathers each machine's provider
 paths, limits and compute on one space card. The standalone "Provider logins"
 section moves into that card as a "Sign-ins" fold. Notices open that fold.
 
-**Layout carries the meaning.** Per provider, top to bottom:
+**Layout carries the meaning.** Each provider is one raised panel. Inside it:
 
-1. your own sign-in;
-2. the choice of what your work runs on, between the two;
-3. the machine's shared sign-ins, grouped under the machine's name;
-4. other members, collapsed.
+- **Two sunken trays.** "Yours" holds your sign-in card. "Shared on <machine>"
+  holds the machine sign-in card, any added cards, and an add slot.
+- **A round swap button** between the trays.
+- **A switch** in each tray's header.
 
-The words "Mine" and "Pool" do not appear.
+Left to right is the order your work tries the trays. At 390px the trays stack
+top to bottom, and the swap icon turns to point up and down. The Members row sits
+collapsed below the trays. The words "Mine", "Pool" and "Runs on" do not appear.
+
+Each switch and swap writes the setting at once (`PUT …/logins/setting`). The
+two switches and the order map onto the four values. The last switch that is on
+cannot be turned off.
+
+**States.**
+
+| Element | State | Looks like |
+| --- | --- | --- |
+| Tray | Switched off | Fades. Its cards flatten. |
+| Card | Ready | Raised, reads "Ready". |
+| Card | Signed out | Flat, dashed border, with a "Sign in" button. |
+| Card | Limited | Raised, amber bottom edge, reads "Usage limit". |
+| Card | Draining | Reads "Being removed". |
+| Card | Signing in | Reads "<name> is signing in". |
+
+Card actions sit behind a ⋯ that shows on hover. At 390px, where there is no
+hover, the ⋯ is always shown.
+
+At 390px, one provider panel:
 
 ```
-┌ gpu-1 ─────────────────────────────────┐
-│ ▾ Sign-ins                             │
-│                                        │
-│ Claude                                 │
-│  Yours        ● Signed in      ⟳  ⏏   │
-│  Runs on      [Yours, then shared ▾]   │
-│  Shared on gpu-1                       │
-│   ● Machine sign-in            ⟳  ⏏   │
-│   ◐ Added by Ana               ⟳  ⏏ ✕ │
-│   ○ Added by Bo                ↪    ✕ │
-│   ＋                                   │
-│  Members      ▸ 3 of 5                 │
-│                                        │
-│ Codex                                  │
-│  Yours        ＋                       │
-│  Runs on      [Shared only ▾]          │
-│  Shared on gpu-1                       │
-│   ● Machine sign-in            ⟳  ⏏   │
-│   ＋                                   │
-│  Members      ▸ 1 of 5                 │
-│                                        │
-│ OpenCode                               │
-│  Shared on gpu-1                       │
-│   ● Machine sign-in                    │
-└────────────────────────────────────────┘
+┌ Claude ─────────────────────────┐
+│ ┌ Yours ───────────────── ◉ ┐   │
+│ │ [ Ready              ⋯ ]  │   │
+│ └───────────────────────────┘   │
+│              ( ⇅ )              │
+│ ┌ Shared on gpu-1 ──────── ◉ ┐  │
+│ │ [ Machine sign-in · Ready ⋯ ]│
+│ │ [ Ana · Usage limit       ⋯ ]│
+│ │ ┊ Bo           [Sign in]  ┊ │ │
+│ │ ＋                          │ │
+│ └─────────────────────────────┘ │
+│ Members ▸ 3 of 5                │
+└─────────────────────────────────┘
 ```
-
-At 390px the card meets the screen edges, row labels sit on the left, and
-actions stay icon-only at the right. Long names truncate with a hover title.
 
 **Exact labels and hover texts.** Hover texts are `title` and tooltip text only.
 No captions appear on the page.
 
 | Element | Label | Hover |
 | --- | --- | --- |
-| Own row | "Yours" | "Your own <Provider> account on <machine>. Only you can change it." |
-| Own row, absent | icon ＋ | "Add your own <Provider> sign-in" |
-| Choice row | "Runs on" | "What your agents on <machine> use for <Provider>." |
-| Option | "Yours only" | "Only your sign-in. If it can't run, your work waits." |
-| Option | "Yours, then shared" | "Your sign-in first. If it can't run, a shared one." |
-| Option | "Shared only" | "Only the shared sign-ins on <machine>." |
-| Shared group | "Shared on <machine>" | "Any member can use, add or remove these." |
-| Machine sign-in row | "Machine sign-in" | "This machine's own <Provider> login." |
-| Added shared row | "Added by <name>" | "Added <date>." |
-| Add shared | icon ＋ | "Add a shared <Provider> sign-in" |
+| Yours tray | "Yours" | "Your own <Provider> account on <machine>. Only you can change it." |
+| Yours tray, no sign-in | add slot ＋ | "Add your own <Provider> sign-in" |
+| Shared tray | "Shared on <machine>" | "Any member can use, add or remove these." |
+| Tray switch, on | (switch) | "Used" |
+| Tray switch, off | (switch) | "Not used" |
+| Last switch that is on | (switch, locked) | "One group must stay on" |
+| Swap button | ⇄ (⇅ at 390px) | "Swap the order" |
+| Machine sign-in card | "Machine sign-in" | "This machine's own <Provider> login." |
+| Added shared card | "<name>" | "Added by <name> on <date>." |
+| Shared add slot | ＋ | "Add a shared <Provider> sign-in" |
+| Ready | "Ready" | "Signed in · checked <time>" |
+| Limited | "Usage limit" | "Hit a usage limit <time>. Used when nothing else is free." |
+| Draining | "Being removed" | "<n> running" |
+| Signed out | "Sign in" (button) | (none) |
+| More | ⋯ | "More" |
+| Menu items | "Check sign-in", "Sign out", "Remove from shared" | (none) |
 | Members row | "Members" plus "▸ n of m" | "Other members' own sign-ins. Signed in: n of m." |
-| Dot ● | (none) | "Signed in · checked <time>" |
-| Dot ◐ | (none) | "Hit a usage limit <time>. Used when nothing else is free." |
-| Dot ○ | (none) | "Signed out" |
-| Dot, draining | (none) | "Being removed · <n> running" |
-| Dot, signing in | (none) | "<name> is signing in" |
-| Action ↪ | (none) | "Sign in" |
-| Action ⟳ | (none) | "Check sign-in" |
-| Action ⏏ | (none) | "Sign out" |
-| Action ✕ | (none) | "Remove from shared" |
 
-When the own row is absent and the choice is "Yours only", the choice row still
-shows. The refused-launch notice opens this fold so that a new member sees both
-fixes side by side: ＋ on "Yours", or a "Runs on" option that includes shared.
+A refused launch's notice opens this panel. A new member then sees both fixes
+side by side: the add slot in "Yours", or the switch on "Shared".
 
-A personal space shows only the "Shared on <machine>" group, titled with the
-machine name alone. It has no "Yours" row, no "Runs on" row and no Members row.
-OpenCode shows only its machine sign-in, with no actions RCP does not manage.
+A personal space shows only the shared tray, titled with the machine name alone.
+It has no Yours tray, no switches, no swap and no Members row. OpenCode shows only
+its machine sign-in card, with no switch, no add slot and no ⋯ actions.
 
 **Who sees and edits what.**
 
@@ -595,7 +603,8 @@ These are human HTTP routes. No agent command verb reaches them
   only for the member who started it. Everyone else sees only who is signing in.
 - New `GET /api/providers/logins/settings` returns the caller's settings. New
   `PUT /api/providers/{provider}/logins/setting` with
-  `{"host": "", "setting": "own_then_shared"}`.
+  `{"host": "", "setting": "shared_then_own"}`. The body takes exactly one of
+  the four values.
 
 `ProjectService.provider_logins_for` and `agent_login_accounts` build the same
 rows for notices and follow the same mapping.
@@ -667,8 +676,14 @@ and Codex where the cell differs. Each test checks:
 - A lapse reorders new sessions but does not move a running session back.
 - When every shared login is limited, a continued session stays put and writes no
   receipt.
-- An Experiment on "Yours, then shared" whose own login hits a limit is retried
+- An Experiment on `own_then_shared` whose own login hits a limit is retried
   once automatically and moves to a shared login.
+- `shared_then_own`:
+  - a new session starts on a shared login;
+  - when every shared login is limited or signed out, the next turn falls back
+    to your own login (`limited` or `unhealthy`);
+  - after a shared login's mark is cleared by evidence, the next turn returns to
+    shared (`preferred_source_available`).
 
 **Lineage and sessions.**
 
@@ -709,17 +724,23 @@ and Codex where the cell differs. Each test checks:
   the four links, resume, a config write and session indexing.
 - A served-app journey:
   1. add a shared login;
-  2. set "Yours, then shared";
+  2. set the order with the swap button and the switches, and check each of the
+     four stored values;
   3. get a refused launch for a new member;
   4. open the notice into the fold;
   5. check every hover text.
 
-  Plus the 390px check against the sketch.
+  Plus the 390px check against the sketch: trays stack, the swap icon turns,
+  and ⋯ stays visible.
 
 ## Rejected alternatives
 
-- **"Pool first" as a fourth setting.** It only keeps one's own account as a
-  backup, which "Shared only" covers until it is needed.
+- **Three fixed choices in one select.** It hid that the setting is an order,
+  and it had no way to put shared first.
+- **A ranked list of single logins.** It would lose load spreading inside the
+  shared group.
+- **One order across providers.** RCP would then switch provider on its own,
+  which today only a member does.
 - **The first healthy login in a fixed order.** It piles all load onto one
   account, and it would need an ordering control.
 - **Least-recently-used on every turn.** It spreads load more evenly, but each
