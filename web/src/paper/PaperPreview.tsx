@@ -37,7 +37,7 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
-import { rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
+import { boxArea, rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { useInlineShell } from "../artifacts/useInlineShell";
 
@@ -145,20 +145,28 @@ function HtmlPreview({
   revision,
   toolbar,
   onDirectComment,
+  onDirectCancel,
 }: {
   projectId: string;
   file: PaperFile;
   revision: number;
   toolbar: HTMLElement | null;
   onDirectComment?: (comment: PreviewDirectComment) => void;
+  onDirectCancel?: (clear: () => void) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(false);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
+  // The clear of the comment the frame last opened; a cancel in the frame names it.
+  const opened = useRef<(() => void) | null>(null);
   const onLoad = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
-    onCancel: () => {},
-    onSelection: ({ selection, description, anchor, clear }) => {
+    onCancel: () => {
+      if (opened.current) onDirectCancel?.(opened.current);
+      opened.current = null;
+    },
+    onSelection: ({ selection, anchor, clear }) => {
+      opened.current = clear;
       const labels =
         selection.kind === "box"
           ? (selection.elements ?? [])
@@ -167,9 +175,8 @@ function HtmlPreview({
               .join(", ")
           : "";
       onDirectComment?.({
-        quote:
-          selection.kind === "text" ? selection.text : labels || description || "Selected area",
-        where: file.path,
+        quote: selection.kind === "text" ? selection.text : labels || "Selected area",
+        where: selection.kind === "box" ? `${file.path}, ${boxArea(selection.rect)}` : file.path,
         anchor,
         clear,
       });
@@ -224,6 +231,7 @@ export function PaperPreview({
   toolbar,
   cursorLine,
   onDirectComment,
+  onDirectCancel,
 }: {
   projectId: string;
   file: PaperFile;
@@ -238,6 +246,8 @@ export function PaperPreview({
   cursorLine: number;
   /** Opens a comment on a box drawn over a PDF page or image, or a selection inside an HTML page. */
   onDirectComment?: (comment: PreviewDirectComment) => void;
+  /** The HTML frame cancelled the selection whose comment carries this clear. */
+  onDirectCancel?: (clear: () => void) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -446,6 +456,7 @@ export function PaperPreview({
         revision={tree.saved_revision}
         toolbar={toolbar}
         onDirectComment={onDirectComment}
+        onDirectCancel={onDirectCancel}
       />
     );
   if (file.format === "pdf")

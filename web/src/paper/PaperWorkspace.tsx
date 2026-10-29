@@ -149,6 +149,14 @@ export function PaperWorkspace({
     });
     comments.focusComment();
   };
+  // A selection cancelled inside the HTML frame closes the comment opened from it.
+  const cancelPreviewComment = (clear: () => void) => {
+    if (comments.externalSelectionClear.current !== clear) return;
+    // The frame already cleared its mark; a clear sent now would end the drag that
+    // a new selection starts with.
+    comments.externalSelectionClear.current = null;
+    comments.dismiss(false);
+  };
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
   const segmentLabel = (panel: "write" | "preview" | "coach") => (
@@ -574,6 +582,7 @@ export function PaperWorkspace({
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
+                onDirectCancel={cancelPreviewComment}
               />
             ) : (
               <PaperPreview
@@ -586,6 +595,7 @@ export function PaperWorkspace({
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
+                onDirectCancel={cancelPreviewComment}
               />
             ))}
         </div>

@@ -120,8 +120,9 @@ comment-mode toggle, because comment mode captures the page's own clicks. Each
 comment records where it came from: path and line for Markdown and plain text;
 compile root and page for PDFs, plus "near" a source line from reverse SyncTeX
 for LaTeX, which is approximate because the map keeps one mark per line; path for
-images and HTML. A box adds its area on the page or image, as percentages across
-and down, and sends its text, never pixels. Comments wait
+images and HTML. A box adds its area on the PDF page, image, or HTML frame, as
+percentages across and down, and sends its text, never pixels. Cancelling the
+selection inside the HTML frame closes the comment box it opened. Comments wait
 in the Coach composer, the Coach button shows their count and any staging error,
 and they travel as text with the next Coach message. Coach turns carry no
 artifact context.

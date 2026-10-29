@@ -88,12 +88,24 @@ function pdfWhere(
   return source ? `${where}, near ${source.path} line ${source.line}` : where;
 }
 
-/** Where a box drawn on a PDF page slot or an image sits, including its area, since no pixels are sent. */
+/** A box's place in fractions of its page, image, or frame: `area 10-40% across, 20-60% down`.
+ *
+ * Boxes send no pixels, so this is how the coach tells two boxes on one figure apart. */
+export function boxArea(box: { x: number; y: number; width: number; height: number }) {
+  const span = (from: number, size: number) =>
+    `${Math.round(from * 100)}-${Math.round((from + size) * 100)}%`;
+  return `area ${span(box.x, box.width)} across, ${span(box.y, box.height)} down`;
+}
+
+/** Where a box drawn on a PDF page slot or an image sits, including its area. */
 export function boxWhere(target: HTMLElement, rect: DOMRect): string | undefined {
   const bounds = target.getBoundingClientRect();
-  const span = (from: number, size: number, whole: number) =>
-    `${Math.round((from * 100) / whole)}-${Math.round(((from + size) * 100) / whole)}%`;
-  const area = `area ${span(rect.left - bounds.left, rect.width, bounds.width)} across, ${span(rect.top - bounds.top, rect.height, bounds.height)} down`;
+  const area = boxArea({
+    x: (rect.left - bounds.left) / bounds.width,
+    y: (rect.top - bounds.top) / bounds.height,
+    width: rect.width / bounds.width,
+    height: rect.height / bounds.height,
+  });
   if (target.dataset.page) return pdfWhere(target, target, rect.bottom, area);
   const path = target.closest<HTMLElement>("[data-paper-path]")?.dataset.paperPath;
   return path && `${path}, ${area}`;
