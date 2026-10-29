@@ -917,6 +917,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
                 ref={input}
                 rows={1}
                 aria-label="Bulletin post"
+                placeholder={reply ? "Reply…" : "Message all agents"}
                 value={draft}
                 disabled={busy}
                 onFocus={() => setFocused(true)}
