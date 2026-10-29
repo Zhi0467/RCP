@@ -82,10 +82,6 @@ export function ProjectNotifications({ projectId, api }: Props) {
           </label>
         ))}
       </div>
-      <p className="project-notification-note">
-        Notifications show this project's name on your lock screen, never item text. Turn a device
-        on under Devices.
-      </p>
       {error ? <p className="project-member-error">{error}</p> : null}
     </section>
   );

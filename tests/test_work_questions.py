@@ -136,7 +136,8 @@ def test_question_view_waiting_expires_and_resets_on_pending_round(tmp_path):
 def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     execution, human = work_execution(tmp_path)
     handler = work_command_handler(execution, None)
-    assert handler.allowed_verbs == {"validate", "ask", "lesson", "bulletin", "name"}
+    assert handler.allowed_verbs == {"validate", "ask", "bulletin", "name"}
+    assert handler.lesson_actions == ()  # This question-only fixture has no project membership.
     request = ask_request()
     pending = handler(request, identity())
     assert pending.result["state"] == "pending"

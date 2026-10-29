@@ -8,17 +8,13 @@ import {
   RotateCcw,
   Send,
   Square,
-  X,
   Zap,
 } from "lucide-react";
 import { coachConversation, isActiveTask, reconstructTaskTranscript } from "../agents/agentTasks";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
+import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
+import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import { api } from "../core/api";
+import { readPref, writePref } from "../core/prefStorage";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { returnSends } from "../ui/composerKeys";
 import { MarkdownAnswer } from "../core/chatMarkdown";
@@ -81,15 +77,16 @@ export function PaperCoach({
   const [fresh, setFresh] = useState(false);
   // Turns started here, kept from admission until the task list carries them.
   const [started, setStarted] = useState<AgentTask[]>([]);
-  const [config, setConfig] = useState<AgentRunConfig>(() =>
-    profileRunConfig(project.agent_profiles.paper_coach),
-  );
+  // The human's pick for the next turns, kept while the same conversation stays open.
+  const [configOverride, setConfigOverride] = useState<{
+    anchor: string | null;
+    config: AgentRunConfig;
+  } | null>(null);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionRefresh, setSessionRefresh] = useState(0);
-  const [configOpen, setConfigOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
   const historyList = useRef<HTMLDivElement>(null);
@@ -99,13 +96,8 @@ export function PaperCoach({
     [historyList, historyButton],
     historyButton,
   );
-  const [applyDirectly, setApplyDirectly] = useState(() => {
-    try {
-      return localStorage.getItem(`rcp:paper-coach-mode:${apiBase}`) === "apply";
-    } catch {
-      return false;
-    }
-  });
+  const modeKey = `rcp:paper-coach-mode:${apiBase}`;
+  const [applyDirectly, setApplyDirectly] = useState(() => readPref(modeKey) === "apply");
   const textarea = useRef<HTMLTextAreaElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const comments = useAnswerComments({
@@ -144,7 +136,7 @@ export function PaperCoach({
     setSessionId(session.native_session_id);
     setFresh(false);
     setStarted([]);
-    setConfig(sessionConfig(session, baseMachine));
+    setConfigOverride(null);
     setHistoryOpen(false);
     setError(null);
   };
@@ -173,16 +165,24 @@ export function PaperCoach({
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );
-  const configuredSession = useRef<string | null>(null);
-  useEffect(() => {
-    if (selectedSession && configuredSession.current !== selectedSession.native_session_id) {
-      configuredSession.current = selectedSession.native_session_id;
-      setConfig(sessionConfig(selectedSession, baseMachine));
-    }
-  }, [selectedSession, baseMachine]);
+  const config =
+    configOverride && configOverride.anchor === openedSession
+      ? configOverride.config
+      : selectedSession
+        ? sessionConfig(selectedSession, baseMachine)
+        : profileRunConfig(project.agent_profiles.paper_coach);
   const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
   const transcript = reconstructTaskTranscript(sessionTasks);
+  const agentPicker = useAgentConfigPicker({
+    project,
+    value: config,
+    onChange: (next) => setConfigOverride({ anchor: openedSession, config: next }),
+    label: "Coach agent",
+    disabled: Boolean(activeTask) || submitting,
+    workLikeCapable: false,
+    panelClassName: "paper-agent-popover",
+  });
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
     catalog: project.skill_catalog ?? [],
@@ -317,7 +317,7 @@ export function PaperCoach({
                 setSessionId(null);
                 setFresh(true);
                 setStarted([]);
-                setConfig(profileRunConfig(project.agent_profiles.paper_coach));
+                setConfigOverride(null);
                 skills.reset();
                 setError(null);
               }}
@@ -452,14 +452,7 @@ export function PaperCoach({
         }
         tools={
           <>
-            <AgentConfigChip
-              project={project}
-              value={config}
-              label="Coach agent"
-              open={configOpen}
-              disabled={Boolean(activeTask) || submitting}
-              onToggle={() => setConfigOpen(!configOpen)}
-            />
+            {agentPicker.chip}
             <div className="segmented" role="group" aria-label="Coach changes">
               {([false, true] as const).map((apply) => (
                 <button
@@ -469,12 +462,7 @@ export function PaperCoach({
                   aria-pressed={applyDirectly === apply}
                   onClick={() => {
                     setApplyDirectly(apply);
-                    try {
-                      localStorage.setItem(
-                        `rcp:paper-coach-mode:${apiBase}`,
-                        apply ? "apply" : "review",
-                      );
-                    } catch {}
+                    writePref(modeKey, apply ? "apply" : "review");
                   }}
                 >
                   {apply ? <Zap size={15} /> : <ListChecks size={15} />}
@@ -513,24 +501,7 @@ export function PaperCoach({
           )
         }
       />
-      {configOpen && (
-        <div className="paper-agent-popover">
-          <button
-            className="icon-button compact"
-            aria-label="Close agent settings"
-            onClick={() => setConfigOpen(false)}
-          >
-            <X size={14} />
-          </button>
-          <AgentConfigControls
-            project={project}
-            value={config}
-            onChange={setConfig}
-            workLikeCapable={false}
-            compact
-          />
-        </div>
-      )}
+      {agentPicker.panel}
       <AnswerCommentLayers comments={comments} mode="discuss" />
     </div>
   );

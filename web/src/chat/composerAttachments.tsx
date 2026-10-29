@@ -29,6 +29,7 @@ import type {
   ProjectReferenceSelector,
   ProjectSnapshot,
 } from "../core/types";
+import { readPref, writePref } from "../core/prefStorage";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
 
@@ -155,23 +156,6 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MiB`;
 }
 
-function readStorage(key: string | null): string | null {
-  if (!key) return null;
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage(key: string | null, value: string | null): void {
-  if (!key) return;
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {}
-}
-
 export function useComposerAttachments({
   project,
   scopeId,
@@ -200,16 +184,17 @@ export function useComposerAttachments({
   const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
   const scope = scopeId ?? draftScope;
   const [references, setReferences] = useState<DraftReference[]>(() =>
-    parseReferenceDraft(readStorage(referencesKey)),
+    parseReferenceDraft(referencesKey ? readPref(referencesKey) : null),
   );
   const referencesIdentity = useRef(referencesKey);
   useEffect(() => {
     if (referencesIdentity.current !== referencesKey) {
       referencesIdentity.current = referencesKey;
-      setReferences(parseReferenceDraft(readStorage(referencesKey)));
+      setReferences(parseReferenceDraft(referencesKey ? readPref(referencesKey) : null));
       return;
     }
-    writeStorage(referencesKey, references.length ? JSON.stringify(references) : null);
+    if (referencesKey)
+      writePref(referencesKey, references.length ? JSON.stringify(references) : null);
   }, [referencesKey, references]);
   const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
   useEffect(() => {

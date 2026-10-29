@@ -1,268 +1,136 @@
 # Research Control Panel design
 
-RCP is a local research control panel for turning agent-assisted research into
-one durable project record: a research graph, a human authority queue,
-operational conversations and bounded episodes, append-only provenance, and a
-human-controlled paper workspace with reviewed writing-coach changes.
-
-The graph is both a research record and a control input. Epistemic structure
-records what is believed and why; Hypotheses may connect to the Decisions their
-work needs, and action structure records the Decisions governing Experiments
-and observable Blockers preventing them from starting. A Decision may be purely
-an Experiment input, without a Hypothesis attachment. RCP may dispatch and
-observe work, but it never silently converts an operational observation into
-canonical truth or an agent's scientific judgment into human approval.
+RCP turns agent-assisted research into one durable project record: a research
+graph, a human authority queue, operational conversations and bounded episodes,
+append-only provenance, and a human-controlled paper workspace.
 
 ## Product boundary
 
-RCP owns the research-control layer around existing repositories, provider
-sessions, experiment systems, and tools. It does not replace Git, schedulers,
-process managers, notebooks, experiment trackers, or domain-native viewers.
-Repository and provider side effects remain real operational effects; canonical
-graph history records their research meaning only through an admitted Patch.
+RCP owns research control around existing repositories, provider sessions,
+experiment systems, and tools. It does not replace Git, schedulers, process
+managers, notebooks, experiment trackers, or domain-native viewers. Repository
+and provider side effects are real. Only an admitted Patch records their graph
+meaning. Graph workflows do not roll external effects back.
 
-RCP schedules autonomous work only inside a human-authorized Auto-research
-episode with a fixed operational invocation budget, or as the nightly
-consolidation a member authorized for a project. Every such episode writes
-research-graph changes to its persistent graph branch. Consolidation runs one
-ordinary Work turn per changed graph, main and each active branch, under an
-expiring member authorization; each reports every change in the Inbox. Humans can inspect
-and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
-during and after the episode. Those conversations have their own sessions and
-authority. Main stays editable,
-and branch work reaches main only when a human dispatches the dedicated semantic
-merge. A clean merge may finish without a provider turn. An episode may also
-bind one repository worktree. That code isolation
-is separate from graph truth and shares one owner across its children and
-continuations. External effects are never rolled back by the graph workflow.
+The graph records what is believed and why, and controls work through Decisions,
+Experiments, and observable Blockers. A Decision may be an Experiment input
+without a Hypothesis attachment. Operational observations never silently become
+project truth or human approval.
 
-The paper workspace is human-controlled and non-authoritative. Its writing coach
-proposes changes against saved snapshots; humans review cards or authorize
-Apply-directly mode for the coach chat. Agent-created
-artifacts and reports help a researcher read work; they do not become graph
-truth. Every artifact, reports and Experiment or Auto-research outputs included,
-may be viewed, commented on, versioned, and kept through one viewer. A comment
-sent from the viewer edits its tracked file under Discuss authority or a revoking
-scratch-only launch; one sent from a chat composer is that chat's ordinary
-Discuss or Work turn, with exactly that turn's authority. RCP publishes an
-immutable version, and Undo moves the current pointer back; the comment and its
-versions grant no graph authority of their own. The backend
-owns the viewer entrance, so ordinary server-served UI changes do not require a
-matching native rebuild. The thinner native team entrance is a separate
-boundary: before enrollment, token exchange, project-card read, or browser-cookie
-installation, the source-built desktop and team server negotiate the highest
-overlap in one inclusive integer protocol range. No overlap or a missing or
-mismatched handshake answer refuses the connection and names both source commits
-so the desktop can be rebuilt or the server updated to a compatible promoted release.
+Human authorization bounds autonomous episodes and nightly consolidation.
+Episode branches, human-dispatched merges, and optional repository worktrees have
+separate owners. See [Auto-research](specs/auto-research-and-branch-merge.md) and
+[consolidation](specs/graph-consolidation-and-lessons.md). Ordinary conversations
+remain distinct from episode authority.
 
-A compatible browser host may expose a page-scoped WebMCP tool surface for
-reading projects, opening existing views, sending ordinary conversation turns,
-operating bounded Experiment controls, and authorizing or gracefully stopping
-Auto-research. RCP's voice agent uses the same fixed tool catalog. An agent the
-member runs in their own page acts as that member
-([why](specs/conversations-episodes-and-watchers.md#native-chat-context)).
-Those tools compose the same browser and API owners as visible controls; they
-add no backend shortcut, graph-change channel, or provider capability, and they
-expose none of the protected judgment controls.
+The paper workspace is human-controlled. Coach changes are reviewed or applied
+under the chat's human-authorized mode. Artifacts, reports, comments, and versions
+are reading and collaboration tools. They do not establish graph truth.
+Their authority and lifetime belong to [paper and artifacts](specs/paper-artifacts-and-result-views.md).
 
-The confirmed first team deployment is one lab using one installed RCP server
-and desktop member clients. A dedicated Linux `rcp` account owns the control
-plane and every server-local team checkout; an explicitly configured remote
-execution account owns a team checkout on its SSH machine. Members remain
-distinct RCP humans and may keep independent personal checkouts. RCP member
-identity, process identity, SSH transport credentials, repository credentials,
-and provider-native authentication are separate authorities. Project members
-are trusted on their project's server: a member terminal runs as the service
-account and inherits the Work trust boundary. Where supported, its mount namespace
-resists mistakes, not deliberate use of that account's authority, and makes
-canonical paths read-only in the terminal filesystem view. Cooperative sessions
-explicitly report that canonical-state protection is unavailable on the machine;
-there is no canonical-state filesystem fence. RCP selects and
-readiness-checks a provider and keeps one durable record per machine account of
-whether its shared login is alive, learned from real provider results and
-verified by one real request. Members sign a shared account in and out from the
-product; Codex keeps its native login on one refresh path, Claude runs on a
-stored long-lived token that RCP injects into every process it starts, and RCP
-starts no provider process it does not need. No new provider work starts on an
-account whose login is known to be dead. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
-non-reloading service, and its commit and update lifecycle are managed by the
-server CLI. The unfinished journeys that make this deployment usable are not
-yet driven end to end.
+Team trust and deployment belong to [server operations](specs/server-and-machine-operations.md).
+Native compatibility belongs to the [API and desktop contract](specs/api-web-and-desktop-projections.md).
+Provider login and execution belong to [providers](specs/providers-and-containment.md).
+Page tools and voice compose ordinary controls with the member's authority. See
+[native chat context](specs/conversations-episodes-and-watchers.md#native-chat-context).
 
 ## Cross-cutting invariants
 
-These are the repository-wide promises every module keeps. They are stated here
-as principles; the permanent numbered identifiers that source comments and
-tests cite (`4b`, `10g`, and the rest) are registered in
-[`AGENTS.md`](../AGENTS.md) under "Stable invariants" and are never renumbered.
-The two lists decompose the same promises at different grain, so do not read a
-number here.
-
-- **Canonical history is append-only.** Main and episode branch Patch
-  logs are never edited or compacted. Materialized graph, research, glossary,
-  Proposal, control, and branch outputs are derived and replaceable.
-- **Graph changes have one typed channel.** Agents write one strict Patch,
-  `patch.json`, in their RCP-owned task stage, and RCP collects it from that
-  stage and nowhere else; the providers specification names exactly which
-  stage files each run kind collects. Typed operations preserve the persisted
-  JSON shape. RCP never parses graph authority from an answer,
-  artifact, command trace, or repository edit.
-- **One transition owns one mutation.** Human Sync, agent Apply, branch Apply,
-  and branch merge all pass through the synchronous backend transition manager.
-  Deterministic generated effects, validation, final graph, control, guidance,
-  and events either commit as one revision or do not commit.
-- **Replay records; it does not re-decide.** Replay applies the expanded
-  operations already committed in each transition. It does not rerun historical
-  rules or consult current users, memberships, provider settings, or SQLite
-  operational state.
-- **Humans retain the protected authority boundary.** Only humans set ordinary
-  belief standing, resolve Proposals, change project truth membership, authorize
-  a bounded episode, or dispatch a branch merge into main. A member's own
-  authenticated page authorizes episodes, including through an agent the member
-  runs there, and the member's ordinary Work chat may start an Experiment they
-  asked for; every other protected action stays a visible control. Agents may
-  assert new work and must propose changes to an existing ResearchQuestion or
-  Hypothesis. The one
-  deliberate Decision exception is the human-authorized Auto-research
-  orchestrator: on its branch and its lineage's forks, and during its
-  human-dispatched merge, it may choose Decisions directly, and it may merge a
-  fork back into the owned branch it came from. No agent may approve a Proposal.
-- **Operational capability and graph authority are separate.** A task's fixed
-  surface, provider profile, graph action, project target, current state, and
-  budget all have to admit an effect. Work-like providers name the exact task
-  stage and admitted project repository roots to the provider's own unattended
-  enforcement, which bounds file-editing tools on every provider and the shell
-  only where the provider can do so without disabling real compute. This is an
-  accidental-write guardrail for cooperative users, not a hostile-user security
-  boundary or a read-confidentiality claim. The per-chat browser grant is human
-  consent to a code-defined tool ([why](specs/providers-and-containment.md#browser-grants)).
-- **Canonical state has one home.** A project has one durable id, one home
-  space, and one local or remote canonical state repository. Main and graph
-  branch namespaces live inside that repository. Routes never write canonical
-  files directly; state workspaces own locks, atomic publication, and remote
-  recovery.
-- **Operational state follows canonical events.** SQLite owns tasks, episodes,
-  watchers, membership, and other mutable control-plane records. Stable
-  transition event ids and target-specific watermarks reconcile a canonical
-  commit into those projections idempotently after crashes.
-- **One episode means one authority boundary and native session.** Experiment
-  and Auto-research episodes pin their human authorization, graph target,
-  provider session, execution host, exact reusable stage, and budget. Stop is a
-  durable admission fence; every already-authorized turn settles honestly. A
-  human may post in a human-started Experiment's conversation between its turns
-  as an ordinary chat turn outside the episode; each owner reopens its own
-  contract after another owner's turn. Auto-research child chats admit ordinary
-  human turns only after their episode lineage and any child Experiment have
-  ended. Episode-owned turns retain their owner through recovery; a continuation
-  re-locks child chats and waits for active human-owned child turns to settle.
-- **The browser renders one revision at a time.** A committed project response
-  carries graph, graph-derived control, guidance validity, and head from the
-  same transition. The client replaces that snapshot atomically. It never
-  computes transition rules or splices a new graph into old control state.
+The permanent [AGENTS.md registry](../AGENTS.md#stable-invariants) is the single
+home for repository-wide invariants and their stable identifiers.
 
 ## Terminology
 
-- A **space** is one durable RCP authority domain and SQLite control plane.
-- A **project** is one durable project identity, manifest, repository set, and
+- A **Space** is one durable RCP authority domain with a SQLite control plane.
+- A **Project** has one durable identity, a manifest, a repository set, and a
   canonical state repository.
 - **Main** is the project graph visible in ordinary project views.
-- A **graph branch** is an append-only graph history based on one immutable
-  parent head: `main@R` for an episode branch, or any exact head of main or
-  another branch for a fork. An episode lineage or a human owns it. It is not a
-  Git or filesystem branch.
-- The **Bulletin** is one operational board of hearsay posts per graph target.
-  Members, and agents whose run holds the Bulletin, read and post there; it never
-  wakes, steers, or grants authority.
-- A **Patch** is an attributable ordered list of typed semantic graph operations.
-- A **transition** is the manager-prepared atomic result of one initiating
-  mutation, including generated actions and lifecycle events.
+- A **Graph branch** has append-only history based on an immutable parent head.
+  An episode lineage or a human owns it. It is separate from a Git or filesystem
+  branch.
+- A **Bulletin** is an operational board of hearsay for one graph target.
+  It has no wake, steering, or authority effects.
+- A **Patch** is an attributable, ordered list of typed semantic graph operations.
+- A **Transition** is the manager-prepared atomic result of one mutation.
+  It includes generated actions and lifecycle events.
 - A **Proposal** is an agent request for human judgment on a protected existing
   ResearchQuestion or Hypothesis.
-- A **task** is one durable provider invocation or recovery attempt.
-- A **conversation** is one reusable native-session scratch workspace containing
-  explicitly labelled Discuss and Work turns.
-- An **artifact** is an RCP-owned file supplied by a turn or episode ending.
-  Its metadata lives in SQLite and immutable versions live in the data directory.
-  Turn outputs expire unless kept; reports never expire. It is never a graph
-  object or a second answer channel. A live HTML version reads declared sources
-  only through data RCP's viewer relays into the opaque sandbox.
-- An **episode** is the persisted parent for bounded Experiment control or
-  Auto-research, with one operational budget, one native-session binding, and
-  one graceful Stop boundary.
-- A **watcher** is a durable observation that may admit a later continuation;
-  it is not proof that external work succeeded.
-
-## Documentation authority
-
-Current sources have this precedence:
-
-1. This file owns repository-wide product boundaries and cross-cutting
-   invariants.
-2. The applicable file in [`specs/`](specs/) owns current module behavior and
-   the short rationale that guards it.
-3. The few [`decisions/`](decisions/README.md) records explain cross-cutting
-   rationale but do not override current design or specifications.
-
-Docs describe only current behavior. Unbuilt work lives in GitHub issues and
-pull requests.
-
-[`server.md`](server.md), [`device-pairing.md`](device-pairing.md), and
-[`desktop.md`](desktop.md) are operator and
-developer guides. They own the exact procedure an operator runs and the native
-build, verification, and release steps, so a scenario may cite one for a manual
-path. They are subordinate to specifications and never define product behavior:
-when a guide and a specification disagree, the specification wins and the guide
-is the defect.
-
-A contradiction among current sources is a documentation defect; do not choose a
-winner by timestamp or silently implement around it.
+- A **Task** is one durable provider invocation or recovery attempt.
+- A **Conversation** is a reusable scratch workspace for a native session.
+  Its turns are explicitly labelled Discuss or Work.
+- An **Artifact** is an RCP-owned file with SQLite metadata and immutable versions.
+  It is never a graph object or a second answer channel.
+- An **Episode** is a persisted parent for bounded Experiment control or
+  Auto-research. It has one budget, a native-session binding, and a graceful
+  Stop boundary.
+- A **Watcher** is a durable observation that may admit a continuation.
+  It does not prove external success.
 
 ## Module specifications
 
-- [Graph, history, and transitions](specs/graph-history-and-transitions.md) —
+- [Graph, history, and transitions](specs/graph-history-and-transitions.md) covers
   ontology, claim-relative Evidence, typed operations, Patch logs, transition
   closure, replay, and graph heads.
-- [Authority and Proposals](specs/authority-and-proposals.md) — human and agent
+- [Authority and Proposals](specs/authority-and-proposals.md) covers human and agent
   principals, action admission, protected beliefs, Proposal judgment, and
   attribution.
-- [Providers and containment](specs/providers-and-containment.md) — run
+- [Providers and containment](specs/providers-and-containment.md) covers run
   capabilities, provider launches, exact project write scopes, remote execution,
   ingestion, skills, and durable task receipts.
-- [Compute jobs](specs/compute-jobs.md) — direct scheduler submission, readiness,
-  OS-owned helper launches, shell-watcher actions, and durable receipts.
+- [Machines and compute](specs/machines-and-compute.md) covers base and project machines,
+  scheduler readiness, OS-owned helper launches, shell-watcher actions, and
+  durable receipts
+  ([previous path](specs/compute-jobs.md)).
 - [Conversations, episodes, and watchers](specs/conversations-episodes-and-watchers.md)
-  — Discuss and Work context, Experiment control, native-session continuity,
+  covers Discuss and Work context, Experiment control, native-session continuity,
   watcher delivery, Stop, and reporting.
-- [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) —
+- [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) covers
   orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
-- [Graph consolidation and lessons](specs/graph-consolidation-and-lessons.md) —
+- [Graph consolidation and lessons](specs/graph-consolidation-and-lessons.md) covers
   the authorized nightly consolidation turns, their Inbox rows, and per-project
   operational lessons.
-- [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) —
+- [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) covers
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.
-- [Server and machine operations](specs/server-and-machine-operations.md) — the
+- [Server and machine operations](specs/server-and-machine-operations.md) covers the
   installed team server, machine authority, version and update lifecycle,
   central checkouts, provisioning, transfer, and backup and restore.
-- [API, Web, and desktop projections](specs/api-web-and-desktop-projections.md) —
+- [API, Web, and desktop projections](specs/api-web-and-desktop-projections.md) covers
   mutation envelopes, current application surfaces, revision reconciliation,
   tabs, and shell lifecycle.
-- [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) —
+- [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) covers
   human paper authorship, reviewed coaching, previews, reports, unified
   artifact interaction, and repository-file reading.
-- [Interface and visual design](specs/interface-and-visual-design.md) — the
+- [Interface and visual design](specs/interface-and-visual-design.md) covers the
   visual grammar, project shell, Research and Runs projections, node detail, DAG
   controls, composer, and the no-commentary-lines rule.
 
 ## Current exclusions
 
-RCP has no free-form graph branching (every branch is an episode branch or a
-fork of an exact head), conflict viewer, repository rollback, orchestrator merge
-into main, frontend transition-rule engine,
-user-authored rule language, provider-neutral hostile-process sandbox,
-live output watcher, hard provider interruption,
-persistent provider daemon, or peer-to-peer agent mail. Human steering of an
-ordinary running chat uses only RCP's existing process for that exact attempt.
-Confirmed but unimplemented product journeys belong in a GitHub issue, never
-here.
+The supported team-server target excludes public-internet HTTPS, containers,
+Linux desktop packages, a hosted service, and multi-server failover.
+
+- Graph branches are episode branches or forks of exact heads, not free-form
+  histories. There is no conflict viewer, repository rollback, orchestrator merge
+  into main, frontend transition-rule engine, or user-authored rule language.
+- Watchers wake on completion rather than intermediate output. Observation
+  failures remain visible, as does the history of completed, stopped, or degraded
+  work. There is no separate history-cleanup feature.
+- Parallel repository work has no exclusive repository lease. Shared-checkout
+  concurrency and explicit code integration are separate from graph branching.
+- Human graph editing uses preview and Sync. Artifact selection supplies
+  conversation context, not an Evidence-creation or human-judgment shortcut.
+- Provider containment is not a provider-neutral hostile-process sandbox. There
+  is no hard provider interruption or persistent provider daemon. Steering uses
+  the existing ordinary chat attempt.
+- [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
+  connects the orchestrator to its workers in a star. There is no peer or
+  cross-episode mail.
+- [Restore](specs/server-and-machine-operations.md#backup-and-restore) requires its
+  explicit safety procedure. Matching `space_id` is not a client rollback detector.
+
+The core is general-purpose, with no research-field allowlist or speculative
+supported-domain claims. Domain connectors and visualization may extend it.
+[Glossary definitions and deterministic quality advice](specs/graph-history-and-transitions.md#typed-graph-operations)
+are metadata and guidance, not scientific judgment.

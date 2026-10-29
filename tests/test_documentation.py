@@ -8,6 +8,7 @@ DOCS = ROOT / "docs"
 
 EXPECTED_SPECS = {
     "compute-jobs.md",
+    "machines-and-compute.md",
     "api-web-and-desktop-projections.md",
     "authority-and-proposals.md",
     "auto-research-and-branch-merge.md",
@@ -22,7 +23,7 @@ EXPECTED_SPECS = {
 }
 
 EXPECTED_CURRENT_FILES = {
-    "docs/decisions/README.md",
+    "AGENTS.md",
     "docs/design.md",
     *(f"docs/specs/{name}" for name in EXPECTED_SPECS),
     "tests/test_documentation.py",

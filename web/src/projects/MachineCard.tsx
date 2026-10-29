@@ -8,7 +8,6 @@ import {
   ScanSearch,
   ShieldAlert,
   ShieldQuestion,
-  Trash2,
   Unlink,
   WifiOff,
   X,
@@ -23,7 +22,7 @@ import {
   updateSpaceMachine,
 } from "../core/api";
 import { errorMessage } from "../core/errors";
-import { useArmedConfirm } from "../core/useArmedConfirm";
+import { ArmedDeleteButton } from "../ui/ArmedDeleteButton";
 import {
   createPathEditor,
   createMachineWriteQueue,
@@ -75,7 +74,6 @@ export function MachineCard({
   onRemoveFromProject,
 }: Props) {
   const [busy, setBusy] = useState<"delete" | "unlink" | null>(null);
-  const { armed: deleteArmed, arm: armDelete, disarm: disarmDelete } = useArmedConfirm();
   // Every write on this card queues here, so no earlier answer lands after a newer one.
   const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
   const save = writes.save;
@@ -125,25 +123,17 @@ export function MachineCard({
             {busy === "unlink" ? <LoaderCircle className="spin" size={14} /> : <Unlink size={14} />}
           </button>
         )}
+        {/* Delete also detaches the machine from every project, so it arms first. */}
         {onDelete && (
-          <button
-            type="button"
+          <ArmedDeleteButton
             data-machine-action="delete"
-            aria-label={deleteArmed ? "Confirm delete" : `Remove ${title}`}
-            {...failedProps(failure, "delete")}
-            className={`icon-button${deleteArmed ? " armed-delete" : failure?.key === "delete" ? " failed" : ""}`}
+            label={`Remove ${title}`}
+            className="icon-button"
+            busy={busy === "delete"}
             disabled={writesDisabled || busy !== null}
-            onBlur={disarmDelete}
-            onClick={() => {
-              // Delete also detaches the machine from every project, so it arms first.
-              if (!deleteArmed) return armDelete();
-              disarmDelete();
-              void act("delete", onDelete);
-            }}
-          >
-            {busy === "delete" ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
-            {deleteArmed && "Delete"}
-          </button>
+            failure={failure?.key === "delete" ? failure.message : null}
+            onConfirm={() => void act("delete", onDelete)}
+          />
         )}
       </header>
       {record && (

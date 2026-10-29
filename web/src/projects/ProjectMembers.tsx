@@ -145,8 +145,6 @@ export function ProjectMembers({ projectId, identity, api, onLeft, headerAction 
 
       {invited ? <p className="project-member-invited">Invited {invited}.</p> : null}
 
-      {canInvite && inviteBlocked ? <p className="project-member-note">{inviteBlocked}</p> : null}
-
       <div className="project-member-actions">
         {canInvite ? (
           <>
@@ -155,6 +153,7 @@ export function ProjectMembers({ projectId, identity, api, onLeft, headerAction 
               disabled={busy || candidates.length === 0}
               onChange={(event) => setSelected(event.target.value)}
               aria-label="Invite a member of this space"
+              title={inviteBlocked ?? undefined}
             >
               <option value="">Invite member…</option>
               {candidates.map((user) => (

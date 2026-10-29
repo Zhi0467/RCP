@@ -9,6 +9,7 @@ verbs. The engine that produces them lives in ``rcp.history.engine``.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -30,13 +31,15 @@ class HeadSpec(BaseModel):
     revision: int | Literal["head"]
 
 
-def parse_head(text: str) -> HeadSpec:
+def parse_head(text: str, names: Mapping[str, str] | None = None) -> HeadSpec:
     """Parse ``main@R``, ``branch:<id>@R``, ``main@head``, or a bare ``@R``/``@head``."""
 
     match = _HEAD.fullmatch(text.strip())
     if match is None:
         raise ValueError(f"not a graph head reference: {text!r}")
     main, branch_id, revision = match.groups()
+    if branch_id and names is not None and branch_id not in names:
+        branch_id = next((key for key, name in names.items() if name == branch_id), branch_id)
     target = (
         GraphTargetRef()
         if main

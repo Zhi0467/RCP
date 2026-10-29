@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { rememberSubview, tabEntryView, topTab } from "../src/core/viewTabs.ts";
+import {
+  rememberedChat,
+  rememberOpenChat,
+  rememberSubview,
+  tabEntryView,
+  topTab,
+} from "../src/core/viewTabs.ts";
 
 test("each top tab reopens the sub-view last open there, per project", () => {
   const values = new Map();
   globalThis.localStorage = {
     getItem: (key) => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
   };
   try {
     assert.equal(tabEntryView("a", "artifacts"), "artifacts");
@@ -22,6 +29,11 @@ test("each top tab reopens the sub-view last open there, per project", () => {
     rememberSubview("a", "artifacts");
     assert.equal(tabEntryView("a", "artifacts"), "artifacts");
     assert.equal(topTab("paper"), "artifacts");
+    rememberOpenChat("a", "c1");
+    assert.equal(rememberedChat("a"), "c1");
+    assert.equal(rememberedChat("b"), null);
+    rememberOpenChat("a", null);
+    assert.equal(rememberedChat("a"), null);
 
     globalThis.localStorage.getItem = () => {
       throw new DOMException("denied", "SecurityError");

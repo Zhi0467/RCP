@@ -110,33 +110,19 @@
   margin: 0.5rem 0 0;
   font-size: 0.8rem;
 }
-.project-member-note {
-  color: var(--muted);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  margin: 0.6rem 0 0;
-  padding: 0 20px;
-}
 
 /* Project notifications: one toggle per kind, for the calling member. */
 .project-notification-kinds {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 0.45rem 1rem;
-  padding: 18px 20px 0;
+  padding: 18px 20px;
 }
 .project-notification-kinds label {
   display: flex;
   align-items: center;
   gap: 0.45rem;
   font-size: 0.9rem;
-}
-.project-notification-note {
-  color: var(--muted);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  margin: 0.6rem 0 0;
-  padding: 0 20px 18px;
 }
 
 /* O6 — one read-only operational ledger for the shared team server. */
@@ -667,7 +653,7 @@
   z-index: 1;
 }
 
-/* An armed Delete (artifacts, machine cards), and a failed artifact action. */
+/* An armed Delete (ArmedDeleteButton), and a failed artifact action. */
 .armed-delete {
   border: 1px solid var(--red);
   color: var(--red);
@@ -677,7 +663,9 @@
   padding: 0 9px;
   width: auto;
 }
-.artifact-action-failed {
+.artifact-action-failed,
+.artifact-viewer-control.failed,
+.artifact-entry-action.failed {
   border-color: var(--red);
 }
 

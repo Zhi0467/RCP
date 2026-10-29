@@ -42,7 +42,7 @@ export function MachineTile({
       </span>
       <strong>
         <span className="machine-tile-name">{name}</span>
-        {base && <em className="machine-tile-base">Base</em>}
+        {base && <em className="tag machine-tile-base">Base</em>}
       </strong>
       <span className="machine-tile-host">
         {hostLabel}

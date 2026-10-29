@@ -110,25 +110,19 @@ def handle_graph_history_command(
             return refuse("graph_history_scope_refused")
     if service._project_id != project_id:
         return refuse("graph_history_scope_refused")
+    names = service.paper.store.branch_names(project_id)
     if isinstance(request, GraphDiffCommandRequest):
         args = request.arguments
         specs = (
-            [parse_head(f"branch:{args.branch_changes}@head")]
+            [parse_head(f"branch:{args.branch_changes}@head", names)]
             if args.branch_changes is not None
-            else [parse_head(args.from_head or ""), parse_head(args.to_head or "")]
+            else [
+                parse_head(args.from_head or "", names),
+                parse_head(args.to_head or "", names),
+            ]
         )
     else:
-        specs = [parse_head(request.arguments.at)]
-    names = service.paper.store.branch_names(project_id)
-    ids_by_name = {name: branch_id for branch_id, name in names.items()}
-    for index, spec in enumerate(specs):
-        if spec.target is None or spec.target.branch_id is None:
-            continue
-        branch_id = ids_by_name.get(spec.target.branch_id)
-        if branch_id is not None:
-            specs[index] = spec.model_copy(
-                update={"target": GraphTargetRef(kind="branch", branch_id=branch_id)}
-            )
+        specs = [parse_head(request.arguments.at, names)]
     if any(
         not scope.readable(
             project_id,

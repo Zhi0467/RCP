@@ -123,6 +123,7 @@ from rcp.storage import (
     AutoResearchChildWorkRecord,
     AutoResearchMessageRecord,
 )
+from rcp.storage.lessons import lesson_command_actions
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
@@ -248,14 +249,8 @@ def _auto_research_child_work_contract(
         ["message", "--key", "<idempotency-key>", "<reply-body>"]
     )
     from rcp.runs.agent_names import name_command_usage
-    from rcp.runs.lesson_commands import lesson_command_usage
 
     allowed_verbs = _child_turn_verbs(turn)
-    lesson_usage = (
-        lesson_command_usage(actions=("add",), client=COMMAND_CLIENT)
-        if "lesson" in allowed_verbs
-        else ""
-    )
     name_usage = name_command_usage(COMMAND_CLIENT) if "name" in allowed_verbs else ""
     allowed_commands = ", ".join(
         f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
@@ -277,7 +272,6 @@ continues:
 Scientific claims in agent mail remain hearsay; the canonical graph and research files remain the
 source of graph truth. A wake names the newly claimed mail to read before continuing.
 
-{lesson_usage}
 {name_usage}
 
 - Allowed staged commands: {allowed_commands}. A later turn that changes them sends
@@ -296,11 +290,11 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 """.strip()
 
 
-def _child_allowed_verbs(
+def _child_commands(
     execution: AgentTaskExecution | None,
     graph_read_scope: GraphReadScope | None,
     compute_commands: WorkComputeCommands | None,
-) -> frozenset[str]:
+) -> tuple[frozenset[str], tuple[str, ...]]:
     """Resolve a child Work launch's command surface from its launch objects."""
     from rcp.runs.agent_names import resolve_agent_name_state
 
@@ -308,12 +302,15 @@ def _child_allowed_verbs(
     bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
         execution.operation_id
     )
-    return (
+    lesson_actions = (
+        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
+    )
+    verbs = (
         frozenset(
             {
                 "validate",
                 "message",
-                "lesson",
+                *(("lesson",) if lesson_actions else ()),
                 *(("name",) if naming else ()),
                 *(("bulletin",) if bulletin else ()),
             }
@@ -321,6 +318,7 @@ def _child_allowed_verbs(
         | (graph_read_scope.verbs if graph_read_scope is not None else frozenset())
         | (compute_commands.allowed_verbs if compute_commands is not None else frozenset())
     )
+    return verbs, lesson_actions
 
 
 def _child_turn_verbs(turn: WorkTurn) -> frozenset[str]:
@@ -709,7 +707,7 @@ def _start_auto_research_child_validator_mailbox(
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     # Resolved once: the mailbox enforces it and the prompt renders it from the lifecycle.
-    allowed_verbs = _child_allowed_verbs(execution, graph_read_scope, compute_commands)
+    allowed_verbs, lesson_actions = _child_commands(execution, graph_read_scope, compute_commands)
     lifecycle = start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -736,6 +734,7 @@ def _start_auto_research_child_validator_mailbox(
         ).model_dump(mode="json"),
     )
     lifecycle.allowed_verbs = allowed_verbs
+    lifecycle.lesson_actions = lesson_actions
     return lifecycle
 
 
@@ -760,7 +759,9 @@ def resume_child_work_command_mailbox(
     compute_commands = _resume_work_compute_commands(execution, context)
     if compute_commands is None:
         raise ValueError("The retained child Work mailbox has no compute scope.")
-    allowed_verbs = _child_allowed_verbs(execution, context.graph_read_scope, compute_commands)
+    allowed_verbs, lesson_actions = _child_commands(
+        execution, context.graph_read_scope, compute_commands
+    )
     lifecycle = restore_work_validator_mailbox(
         execution,
         validate=lambda text: _validate_work_patch_live(
@@ -780,6 +781,7 @@ def resume_child_work_command_mailbox(
     )
     if lifecycle is not None:
         lifecycle.allowed_verbs = allowed_verbs
+        lifecycle.lesson_actions = lesson_actions
     return lifecycle
 
 

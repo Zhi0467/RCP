@@ -1,1080 +1,669 @@
 # Server and machine operations
 
-Installed server, machine authority, deployment, checkouts, provisioning, transfer
-and backup contracts. [Projects and spaces](projects-spaces-and-operations.md)
-owns identity/membership; [server.md](../server.md) owns operator procedures.
+This spec owns the rules for installed-server authority, deployment, checkouts,
+provisioning, transfer and backup.
+[Projects and spaces](projects-spaces-and-operations.md) owns identity and
+membership. [server.md](../server.md) owns operator procedures.
 
 ## Agent secret hiding and repository authentication
 
-The backend owns one long-lived deploy-key `ssh-agent` per OS account, guarded
-by an account lock even when backends use different data directories. Its private
-stable socket directory lives under `~/.rcp`, outside `/tmp`, so the service's
-`PrivateTmp` does not split the transport. Startup opens the effect fence, starts
-the agent, and then admits recovery launches; shutdown drains workers before
-stopping it. The user's `SSH_AUTH_SOCK` remains separate. Provisioning, restore,
-and rotation load deploy keys immediately after writing them when the local
-account agent is running; the next launch can hide them without a restart.
-When another backend holds the account lock, startup still loads this backend's
-deploy keys into the shared agent. Repeated loads are idempotent. Only the lock
-owner manages the agent's lifetime; stopping a contender leaves the agent and
-its keys available for launch confirmation.
+The backend owns one deploy-key `ssh-agent` per OS account. An account lock
+coordinates backends with different data directories. Only its owner starts and
+stops the agent. Contenders may load their own keys without taking lifetime
+ownership. The stable private socket under `~/.rcp` survives the service's
+`PrivateTmp` boundary and remains separate from the user's `SSH_AUTH_SOCK`.
+Startup starts the agent before recovery launches. Shutdown drains workers
+first. Provisioning, restore and rotation load new keys immediately when it is
+running.
 
-Repository `core.sshCommand` retains its transport and adds the stable
-`IdentityAgent` socket. A deploy key is hidden only after fingerprint identity
-and bounded signing confirmation on the launch host. Unconfirmed keys remain
-readable so Git keeps working. On remote execution machines, the existing generic
-launch helper starts one long-lived account agent through a systemd user unit
-on Linux or launchd on macOS, on the first launch that needs it, using
-`~/.rcp/ssh-agent/agent.sock`. A staged stdlib helper loads keys from `~/.local/share/rcp/credentials` and confirms deploy
-keys against that stable socket and user identities against the remote account's
-own `SSH_AUTH_SOCK` on each launch. Remote `core.sshCommand` keeps `-i` and adds
-`IdentityAgent` when the account agent runs. Missing agents or failed identity or
-signing checks leave the affected keys readable for that turn.
+Repository transport retains its `core.sshCommand` and adds `IdentityAgent`.
+Keys become hidden only after a matching fingerprint and a bounded signing proof
+on the launch host. Remote launches use an account-owned systemd or launchd
+agent and a shipped helper. Private keys remain on their owning machine. Missing
+agents or failed confirmation leave the affected key readable so Git continues
+to work. [ssh_agent.py](../../src/rcp/ssh_agent.py) and
+[remote_ssh_agent.py](../../src/rcp/transport/remote_ssh_agent.py) own this
+evidence.
 
-Settings and doctor show missing hiding support, blocked Linux user namespaces,
-readable private keys, and the macOS browser exception. There is no per-turn
-warning trace or badge; the agent prompt retains its effective status. Local
-Settings checks account key evidence as well as wrapper readiness; remote
-Settings leaves status unchecked until launch. Launches with these gaps report
-unhidden; hiding availability never blocks provider launches or shrinks browser
-and Git capability. This is selected-secret protection against generic network prompt
-injection, not a separate account or a hostile same-account sandbox.
+Settings and doctor expose missing hiding support, blocked namespaces, readable
+keys and the macOS browser exception. Remote status remains unchecked until
+launch. Local status includes account-key evidence. Gaps are reported as
+unhidden in the prompt without blocking provider launches or reducing browser or
+Git capability. This protects selected secrets from generic network prompt
+injection. It is not a separate account or a hostile same-account sandbox.
 
 ## External dependencies
 
-`src/rcp/dependencies.py` owns program presence, roles/platforms and required versus
-optional status; [AGENTS.md](../../AGENTS.md#cross-cutting-implementation-rules)
-owns registration rules. Machine cards, install and doctor use the same registry.
-Missing required tools refuse runs; optional gaps disable their named feature.
-`tests/test_external_dependencies.py` checks launch sites, scripts and the apt line.
+[dependencies.py](../../src/rcp/dependencies.py) owns presence, roles, platforms
+and whether a dependency is required or optional. Installation, doctor and
+machine cards share this registry. Missing required tools cause launch refusal.
+Optional gaps name their feature and its visible limitation. Feature-specific
+versions stay with their concrete owners.
 
-`dependency_check.py` checks local macOS/Linux in-process and remote Linux through
-`staged_dependency_check.sh` over state SSH transport, accepting only nonce-bounded
-output. Other remote OSes are unsupported; untested Linux distributions get a note.
-At `admit_provider_task`, only definite missing/unsupported refuses before task
-creation. Timeout, unreachable host or unreadable output is `not checked` and
-admits. Exit 127 means missing `sh`. Dropped connections use transport backoff.
-Definite results cache ten minutes, unchecked one; missing is rechecked before refusal.
+Dependency admission checks local macOS and Linux in-process and remote Linux
+over state SSH with nonce-bounded output. Unsupported remote OSes and definite
+missing tools cause refusal before task creation. Unreachable hosts, timeouts
+and unreadable results remain `not checked` and allow admission. Cached missing
+results are rechecked before refusal. Remote helpers use their declared
+standard-library Python compatibility floor.
 
-Feature/version contracts stay with owners: Git worktrees 2.38, browser Node 20,
-bwrap/Seatbelt, systemd-run 254 expansion and age 1.x. Remote helpers use Python
-3.9 standard library only.
+[state_transfer.py](../../src/rcp/transport/state_transfer.py) selects rsync by
+required flags and protocol, caches completed host verdicts and respects PATH
+order. Transport failures remain unavailable-host outcomes, not capability
+failures. Only synchronization or publication of canonical state and publication of
+run-stage inputs use its tar fallback. Backups, kept files, views and source
+indexing need rsync.
 
-`transport/state_transfer.py` selects rsync by actual flags and protocol >=29,
-not release number; GNU rsync and macOS openrsync qualify. It caches completed
-verdicts per host/process and the absolute local path, preserving PATH order.
-Exit 127 or protocol mismatch reprobes. SSH 255, timeout or spawn errors are
-uncached unavailable-host outcomes, not warned contract failures.
-Only `_sync_remote_tree`, `_publish`, `_publish_committed_history` and
-`RemoteRunStage.finalize_inputs` use engine selection. Backup/restore, kept files,
-views and source indexing require rsync. All owners retry dropped streams through
-`state_transfer.run_rsync`.
-
-Tar fallback validates archive/extraction before applying to the existing mirror;
-input pushes include only listed paths. Pulls replace files via temporary siblings,
-create directories/links, then delete absent entries except exclusions. Root stays
-in place; interruption leaves complete old/new files and retry converges.
-First fallback per host logs a warning and active-task event with failed end,
-version and required installation. Project readiness exposes `state_transfers`
-engine/version after transfer without probing for display. Fallback never blocks work.
+The tar fallback validates before changing the mirror. It publishes complete
+temporary siblings and preserves the root. It converges on retry. It announces the first
+fallback per host in logs and task events and exposes the selected engine in
+project readiness. The fallback does not block work. Dropped rsync streams share
+one retry owner. No implementation duplicates a remote helper inside a command
+string.
 
 ## Remote display state
 
-Remote display reads pin immutable local generations for the whole operation.
-Background capture holds remote `.refresh.lock`, downloads privately, validates
-and atomically publishes a descriptor. Cold reads report unavailable and queue
-capture; they never wait for transport or initialize state. Retired generations
-remain until readers exit. Failure retains the last copy and reports sync error/time
-separately from content versions.
+Remote reads pin immutable local generations for their whole operation.
+Background capture takes the remote refresh lock and downloads privately. It
+validates the download and atomically publishes a descriptor. Cold reads report unavailable and queue
+capture without transport waits or state initialization. Old generations survive
+until readers exit. Failures retain the last copy and report sync health
+separately.
 
-The lifespan coordinator unions membership-filtered open sets under independent
-60-second leases and captures each remote workspace every ten seconds. Tab
-activation bypasses cadence and coalesces one follow-up. Shutdown drains workers.
-Changed/deleted paths advance graph, branch, chat, Paper and Settings tokens;
-unchanged captures update health only, which graph tokens fold in as
-reachability. Local state uses direct reads/counters.
+The lifespan coordinator combines membership-filtered open sets under expiring
+leases. Activation bypasses the cadence and coalesces a follow-up. Shutdown
+drains workers. Changed paths advance graph, branch, chat, Paper and Settings
+tokens. An unchanged capture updates health only. Local state uses direct reads
+and counters.
 
 Capture and authoritative publication share sequencing. Writes retain canonical
-transactions. Retry/Resume/chat preparation pins display inputs and resolves
-branches without initialization; execution reloads authoritative config for scope
-checks. Pause needs no graph. Stop commits its SQLite fence before rebuilding
-display controls. Retry/Resume/chat idempotency receipts commit with admission.
+transactions. Execution reloads the authoritative scope after preparing display
+inputs. Pause needs no graph. Stop commits its SQLite fence before rebuilding
+controls. Retry, Resume and chat receipts commit with admission. Generation
+ownership lives in
+[transport/generations.py](../../src/rcp/transport/generations.py).
 
 ## Confirmed first team-server target
 
-The supported deployment is one lab, one Linux server, one team space, and
-macOS desktop clients. Ubuntu 22.04/24.04 LTS on x86-64 with systemd are tested;
-other distributions and architectures are unverified. The server runs a verified
-promoted wheel, hashed dependency lock and prebuilt Web bundle without reload.
-[Release selection](#release-selection-deployment-and-automatic-recovery) owns
-installation and recovery; [the operator guide](../server.md) owns commands.
+The supported target is one Ubuntu 22.04 or 24.04 LTS x86-64 server running
+systemd, one team space, and macOS desktop clients. Installation refuses other
+targets. The server runs promoted, verified wheels, lock files and Web assets
+without source reload. [Current exclusions](../design.md#current-exclusions)
+owns product limits.
 
-The dedicated `rcp` account has home `/home/rcp`, shell `/bin/bash`, no usable
-password, general sudo, or privileged supplementary group. Its unusable shadow
-value is `*NP*`, not an OpenSSH-blocking leading `!`. Installation does not edit
-`sshd_config` or enable password SSH. Direct key-only access requires an explicit
-operator grant; a named operator with narrow sudo is preferred for independent
-revocation and audit. RCP does not choose that account or edit sudo policy.
+The dedicated service account has no usable password, general sudo or privileged
+supplementary group. Installation owns its home and exact non-locking unusable
+shadow value. It does not change SSH password policy. Direct key-only access is
+an explicit operator grant. Named operators with narrow sudo support independent
+revocation. RCP does not select human accounts or edit their sudo policy.
 
-Git, OpenSSH, system-wide `uv`, and upstream age 1.x are prerequisites. Install
-creates the account, then installs and validates its uv-managed Python 3.12.
-It enables linger and requires `Linger=yes`; doctor diagnoses missing linger.
-CI builds Web assets with Node.js 24; servers need Node/npm only for optional
-features such as the agent browser. Root install/update best-effort installs the
-fixed Ubuntu Chromium library set (t64 on 24.04), without adding apt repositories.
-Failure is a warning. Browser readiness names the needed apt command, rendered
-for the viewer's own shell by `operator_commands`; browser installation itself
-never elevates.
+The account owns releases, data, checkouts, keys and application Python. Root
+owns the supervisor runtime, selected receipts, journals and system integration.
+Paths and modes are defined by
+[server_ops/layout.py](../../src/rcp/server_ops/layout.py). Installation
+enables and verifies service-account linger. Updates retain its choices.
+Application preparation uses umask 077 and validates ownership and modes.
+Browser library installation is best-effort during root installation or update.
+Failure is visible. Browser readiness supplies the needed operator action.
 
-Service-owned releases, data, central checkouts, keys and checkpoint payloads
-live under `/home/rcp/rcp-server/`. Root owns `/etc/rcp/supervisor/`, its runtime,
-selected receipt, operation/adoption journals, restore receipts and bounded logs.
-Other integration paths are `/etc/rcp/server.toml`, `/etc/rcp/current`, the
-root-only backup identity and public sidecar, `/run/rcp/control.sock`, CLI
-wrappers, systemd units and journald. Backup destination is configurable.
+The service binds to loopback. SSH transport, RCP member identity, repository
+deploy keys, provider login and execution-account ownership are separate
+authorities. Project members are trusted as the service account, including its
+provider logins. Terminal containment guards accidents, not hostile same-account
+users. There is no read-confidentiality promise. Member checkouts remain
+independent. Remote resources belong to the configured account. Provider-native
+state remains in that account's home, outside protected backups. The random
+installation identity is distinct from space and member identities.
 
-Provider-native state stays in the execution account's normal home; SSH state
-stays in `.ssh`. RCP's Claude setup token lives in
-`providers/claude/<account>/setup-token` under app data (0700 directory, 0600
-file), outside protected backups. Any member can sign in, verify and sign out
-Codex/Claude through the product; dead logins refuse new work. OpenCode login
-remains operator-managed. See [provider authentication](../server.md#11-provider-authentication).
-
-Provider update runs the native updater as `rcp`, never reads credentials, and
-verifies the selected executable and login separately. Service PATH puts
-`/home/rcp/.local/bin` first; discovery then checks declared native locations,
-including `~/.opencode/bin`, and saves stable command paths rather than resolved
-versioned symlinks. The Codex installer runs noninteractively without launching
-Codex or removing an older package-manager installation.
-
-The immutable random `installation_id` is distinct from `space_id` and member
-identity. New installs need no source deploy key; restore still recognizes old
-`rcp-source:<installation-id>` grant labels. New backups do not emit them.
-The service binds loopback. Desktop SSH transport, RCP membership, repository
-deploy keys, provider login and execution-account ownership remain separate.
-Remote checkouts belong to their explicitly configured SSH execution account;
-member checkouts remain independent. Public HTTPS, containers, Linux desktop
-packages, hosted service and multi-server failover are outside this target.
+Provider updates run the native updater as the service account. They never
+collect credentials. They check the executable and login independently.
+Discovery saves stable command paths rather than resolved versioned symlinks.
+Product login behavior belongs to
+[Providers and containment](providers-and-containment.md#login-state-and-failure). Operator actions belong to
+[server.md](../server.md#11-provider-authentication).
 
 ### Release check and update notices
 
-`release_check.py` polls GitHub stable shortly after startup and every six hours.
-For a newer release it verifies a published same-commit `desktop-vX.Y.Z`
-companion with zip and checksum. Routes reuse checks younger than ten minutes;
-Settings refresh uses one minute. Concurrent readers take cached status rather
-than wait. Failures record check time and a bounded reason, never response bodies;
-success clears the error. Team status uses the selected receipt, reports pins,
-and never lets lookup failure alter doctor's install-integrity `source_state`.
-Doctor performs its own live lookup. `RCP_UPDATE_CHECK=off` disables all calls.
-Requests carry no credentials, project data or installation id.
+[release_check.py](../../src/rcp/release_check.py) checks stable releases and
+verifies the same-commit desktop companion and assets before advertising it.
+Concurrent readers use bounded cached status. Failures retain the check time and
+a safe reason, not response bodies. They cannot alter installed-build integrity.
+Team status uses the selected receipt and reports pins. Doctor performs its own
+lookup. `RCP_UPDATE_CHECK=off` disables calls. Requests contain no credentials,
+project data or installation identity. Timing constants live in `limits.py`.
 
-Source `rcp serve` holds a shared `<checkout>/.rcp-serve.lock`.
-`scripts/update-from-source` needs its exclusive lock before checkout/build and
-restores the starting revision and build on failure.
+Source serving holds a shared checkout lock. The source updater needs exclusive
+ownership before checkout or build. It restores the starting revision on
+failure.
 
 ## Machine authority and the operator surface
 
-RCP has no administrator member role. Installation, deployment, backup/restore,
-credential provisioning and removing another human require machine authority.
-Member tokens cannot perform them. `rcp server ...` owns these operations, not
-ordinary graph, chat, task or membership actions.
+There is no administrator member role. Installation, deployment, backup,
+restore, credential provisioning and removal of another human require machine
+authority, not a member token. Root coordinates installation, restore, update
+and supervisor replacement. It drops to the service account for application and
+provider work. Privileged commands use a separate root-owned runtime, never the
+service-owned application environment. A command using the wrong identity
+refuses before durable work.
 
-Root coordinates `install`, `backup configure`, `restore`, `update`, supervisor
-update and provider update. It drops to `rcp` for application/data/provider work.
-Privileged retained commands use a separate root-owned runtime pinned to the
-selected build; root never executes the service-owned app environment.
-`doctor`, `provider check`, `project provision`, `project transfer-import`,
-`backup run` and `member remove` run as `rcp`, directly or through narrow sudo.
-Wrong identity refuses before durable work; root's home never supplies credentials.
+**Why:** account creation and system integration cannot depend on an operator's
+checkout or home or be delegated to the account being installed.
 
-**Why:** the service account cannot create itself or replace its own system
-service. Separating root coordination from service-owned installation avoids
-production files and credentials depending on an operator's checkout or home.
+Bootstrap verifies promoted artifacts without fetching a source tree. Fresh
+installation leaves the unit stopped and disabled until team initialization and
+the operator's confirmation that the bootstrap code was saved. Interrupted
+installation retains an exact continuation. Existing initialized spaces converge
+to running. SQLite is owner-only before the code is exposed, including during
+resumed installation.
 
-Paired-wheel bootstrap verifies one promoted bundle and converges the account,
-paths, prerequisites, backup identity and supervisor. It fetches no source tree.
-Application preparation sets umask 077 and restores it on exit, validates modes
-and ownership, and reuses sealed builds only with matching origin identity.
-Interrupted preparations retain exact paths and diagnostics. Supervisor/operator
-Python and runtimes are root-owned, separate from service Python.
+Online commands use the private service-account control socket. Offline work
+proves that the service has stopped and takes the instance lock. The
+authenticated, versioned probe advertises supported operations. No member HTTP
+route grants machine operations.
+[server_ops/control.py](../../src/rcp/server_ops/control.py) owns protocol
+negotiation. [models.py](../../src/rcp/server_ops/models.py) owns CLI requests
+and events rather than a copied field inventory here.
 
-Fresh install leaves the unit stopped and disabled until interactive
-`space init --team` as `rcp`. The wizard runs that action on Enter, requires a
-second confirmation that the bootstrap code was saved, then re-enters install,
-starts and reads back service. Closing or quitting leaves the exact continue
-command usable. Existing initialized spaces converge to running. Initialization
-restricts SQLite to owner-only before exposing the code; resumed install refuses
-wider modes. The installed wrapper resolves `RCP_DATA_DIR`.
+Interactive output has one current-step line. Stops identify the target, ordered
+actions, nonsecret values and exact continuation. Enter performs the declared
+actions. Quitting, EOF or a disconnect pauses the operation. Machine-readable
+output is append-only. It never prompts or performs human actions. Neither
+output mode emits secrets. Failures preserve a bounded cause, safe-state
+evidence, recovery steps and diagnostic reruns. Authenticated refusal text is
+not accepted from an unverified peer.
 
-Commands use the private `rcp`-owned control socket while the service owns data.
-Offline install/restore must prove service stop and acquire the instance lock.
-No member HTTP route exposes machine authority. The versioned probe advertises
-operations; doctor requires both provider-plan and provider-check. Provider check
-resolves one request/project, shows its plan and returns bounded results.
-The socket retains provisioning, transfer, snapshots and member removal, not a
-deployment coordinator. Maintenance is root-authenticated; compute probing needs
-protocol 12's explicit route, while other operations retain versions 8–11.
-Older clients are not advertised compute probe support.
+Member removal previews the affected work and credentials. It refuses removal of
+the last enrolled member or a sole project member. Otherwise, it atomically
+fences access and revokes tokens, sessions and unconsumed invitations. The user
+remains a tombstone. The owners of graceful shutdown settle work. Apply rechecks membership.
+Service connections are removed under their lock. Startup and re-entry resume
+unfinished removal. Self-revocation has the same anti-stranding rule. Rotation
+returns a replacement first. Operators cannot assign memberships to bypass a
+guard or mint user credentials.
 
-Interactive output keeps one current-step line. Human stops name the target,
-ordered actions, nonsecret values and exact continue command; Enter executes
-those declared actions, while `q`, EOF or disconnect pauses. A pause can change
-its task-facing title/purpose, not step identity. Optional shell context remains
-separate from target authority. Redirected output stays bounded and readable;
-`--machine-readable` is the full append-only event stream and never prompts or
-runs human actions. Neither renderer emits secrets.
-
-Failures report bounded causes, safe-state fields, recovery and exact diagnostic
-reruns. Candidate failure also names retained capture/result and safe cleanup
-paths. Socket refusals contribute operator text only after peer, request,
-instance and protocol authentication; success-only fields are not required.
-Fenced probe errors retain a redacted cause and private log reference; failed
-recovery reports both deployment and recovery causes.
-
-Member removal previews work, memberships, credentials and invitations. It
-refuses the last enrolled member and any sole project member; pending invitations
-do not count, and operators cannot assign membership to bypass the guard.
-One transaction fences access, revokes tokens/sessions and unconsumed authored
-space invitations, revokes authored/received project invitations distinctly from
-declines, and removes memberships. The user row/name remains a tombstone.
-Graceful owners settle live work; Apply rechecks membership. Service connections
-are deleted under their writer lock after fencing and before completion.
-Startup/re-entry resumes removal until no live work remains.
-
-Self-revocation likewise cannot strand the last enrolled member or a project's
-only authenticating member. Atomic rotation returns a replacement before
-invalidating the old token. Operators cannot mint or impersonate credentials;
-another enrolled member handles loss through invitation.
+Provider journaling records process start and end identities, executable,
+runtime, capability, host, PID and operation. End records add status, elapsed
+duration and RCP's failure classification. Requested stops are expected. Raw
+provider output and stderr stay on the task row, never in journald, because they
+may contain secrets. [agents/launcher.py](../../src/rcp/agents/launcher.py) owns
+this boundary.
 
 ### Compute backend probe
 
-`rcp server compute probe --project <project_id> <machine_alias> --route <scheduler|helper>`
-runs inside the service through its control socket as `rcp`. It stores a
-`ComputeBackendProbe` and returns `ServerControlComputeProbeResult` with service,
-project, machine and route identities, readiness, containment and repair action.
-Exit 0 means ready; otherwise 1. Helper probing checks separation from the
-service. Slurm probing checks tools and queue access through the execution
-account's bounded login shell; it submits no job or scheduler changes. Actual
-submission validates resources and permissions. This is the only compute CLI verb.
+Compute probing is a service-socket operation that persists independent route
+results and succeeds only when the requested route is ready. Its rule owner is
+[Machines and compute](machines-and-compute.md#readiness-and-setup). Commands
+belong to [server.md](../server.md). It grants no scheduler authority.
 
 ### Package identity and offline storage migration
 
-`rcp --version` reports verbatim version, build and commit without serving.
-Source builds say `build none commit none`; base version precedes `+`.
-`--machine-readable` emits the existing event shape with `version`,
-`base_version`, `build`, `commit`; absent values are strings `none`, unlike
-health's JSON nulls.
+Version reporting returns the package identity without serving. It explicitly
+reports absent source build and commit values.
+[server_ops/models.py](../../src/rcp/server_ops/models.py) and the CLI own
+machine-readable shapes.
 
-`rcp migrate [--data-dir PATH] [--machine-readable]` and `--check` resolve data
-like `serve` and first acquire its exclusive instance lock. Contention refuses
-without mutation; neither migrates beside a server or silently uses a copy.
-`--check` opens SQLite read-only, including committed WAL (normal sidecars may
-change), and reports ledger head, registry head and ordered pending entries:
+Offline migration resolves the same data root as serving and first takes its
+exclusive instance lock. Check mode opens existing SQLite read-only, including
+the committed WAL. It classifies the state as fresh, current or pending and
+returns a success status. Unknown or ahead ledgers, invalid SQLite, unrecognized
+nonempty pre-ledger data or failed validation cause refusal without database
+mutation. Normal SQLite sidecars may change. Actual migration runs the known
+ordered chain and validation without serving.
 
-- `fresh`: no database; no file is created.
-- `current`: complete ledger and passing validation.
-- `pending`: known ordered migrations, including recognized frozen pre-ledger
-  boundaries, without applying them.
-
-Those states exit 0. Unknown/ahead ledger, failed validation, unrecognized
-nonempty pre-ledger data or invalid SQLite exits 2 without database mutation.
-Actual migrate uses the same classification, applies known migrations through
-normal store opening, validates, reports the resulting head and exits 0 without
-serving. Machine-readable output ends with the exit outcome.
-
-Install converges; there is no uninstall verb. Teardown is:
-
-```bash
-sudo systemctl disable --now rcp.service rcp-backup.timer
-sudo rm -f /etc/systemd/system/rcp.service \
-  /etc/systemd/system/rcp-backup.service /etc/systemd/system/rcp-backup.timer
-sudo systemctl daemon-reload
-sudo rm -rf /etc/rcp /usr/local/bin/rcp /usr/local/bin/rcp-supervisor
-sudo userdel -r rcp
-```
-
-Skip unconfigured backup units. `/run/rcp` disappears with service stop.
-Before deleting `/etc/rcp`, copy its recovery identity to protected off-host
-storage or accept permanently undecryptable backups. Deleting the account removes
-team data, checkouts and keys; GitHub grants still need revocation there.
+Installation converges. There is no uninstall verb. Operator teardown must
+preserve the backup recovery identity or explicitly accept undecryptable
+archives. Operators must separately revoke external grants. Removing the account
+removes its owned data, checkouts and keys. [server.md](../server.md) owns
+teardown commands.
 
 ## Keeping a Mac awake
 
-In personal macOS spaces, `machine_power.py` prevents idle sleep while work needs
-it. Settings → This Mac has an enabled-by-default toggle; preference is in SQLite
-`machine_power_state`, not manifests. Team API returns 404; other platforms report
-unsupported. `PLATFORM_PROFILES` declares support and lid capability;
-`machine_power_macos.py` owns platform operations.
+Personal macOS spaces have an enabled-by-default idle-hold preference in SQLite,
+not manifests. The team API rejects it. Other platforms report it as
+unsupported. [machine_power.py](../../src/rcp/machine_power.py) owns demand and
+platform profiles. [machine_sleep.py](../../src/rcp/machine_sleep.py) gates
+automatic launches until wake stabilizes.
 
-Demand runs `caffeinate -i -w <backend pid>` without root or lasting state. Locking
-or display sleep does not end it; lid closure, battery or thermal emergencies can.
-`machine_sleep.py` holds automatic launches behind a 30-second stable-wake gate.
-Every ten seconds demand includes locally owned starting/active/recovering/stopping/
-wrapping-up episodes, admitted queued/running/pausing tasks, nonidle runtime or
-scheduled transport retry. Sign-in-blocked wrapping-up/tasks, human-only waits,
-ended episodes and armed watchers alone do not count. Failed reads retain the hold
-and log; they are not evidence work ended.
+Demand holds `caffeinate` for the backend lifetime without root or lasting
+state. Display sleep and screen locking do not release it. Lid closure or OS
+emergencies may. Locally owned episodes count when they are active, recovering,
+stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
+retries also count. Human-only waits, ended work, sign-in-blocked tasks and
+armed watchers alone do not. Failed reads retain the hold and log a failure
+rather than infer completion.
 
 ### Lid-closed mode
 
-Opt-in lid mode sets `SleepDisabled` during demand. **Why:** idle assertions do
-not prevent lid sleep; an independent watchdog restores sleep if the backend dies.
-One admin prompt installs visudo-validated `/etc/sudoers.d/rcp-keep-awake`, granting
-only `/usr/bin/pmset -a disablesleep 0` and `1`; a root boot-reset LaunchDaemon;
-and `/Library/Application Support/RCP/keep-awake/`. Foreign files or a second
-account refuse. Uninstall clears/verifies the flag and removes all but directory
-and `owner.lock`. Install/uninstall reload the reset daemon.
+Opt-in lid mode sets `SleepDisabled` only during demand. **Why:** idle
+assertions do not prevent lid sleep, and an independent watchdog must restore
+sleep when the backend dies. Administrative installation grants only the two
+exact pmset flag operations and installs a boot-reset daemon. Foreign files or
+accounts cause refusal. Uninstall clears and verifies the flag before removing
+the integration.
 
-One advisory machine-wide lock owns the flag. A set flag without an activation
-record is `external_owner`, never adopted/cleared by the controller. Only detached
-`machine_power_watchdog.sh` invokes disablesleep. Ten-second heartbeats bind
-generation, PID/start time and desired state. A fresh on-heartbeat for a live
-process keeps the flag; otherwise the watchdog clears/readbacks and invokes
-`pmset sleepnow` unless lid is known open. Stale/mismatched generations are revoked
-before exit so a resumed backend cannot re-arm them.
+A machine-wide advisory lock owns the flag. A flag without an activation record
+is external ownership, never adopted or cleared. Only the detached watchdog sets
+it. Heartbeats bind the generation, process identity and demand. Stale or
+mismatched heartbeats cause the watchdog to clear and read back the flag, revoke
+the generation and sleep unless the lid is known open. A resumed backend cannot
+re-arm a revoked generation.
 
-While enabled or cleaning up, each safety pass reads battery, thermal, lid and
-flag through ctypes macOS frameworks: IOKit, `NSProcessInfo.thermalState`,
-`AppleClamshellState`, `IOPMCopySystemPowerSettings`. Missing data is failure,
-with no command fallback. Battery <=20% off AC, thermal serious/critical, read
-failure, incomplete install or watchdog failure releases lid mode; idle hold stays
-demand-driven. Demand ending drops both without sleeping an open Mac. The shell
-watchdog separately parses pmset/ioreg; only it treats omitted `SleepDisabled`
-under a valid settings header as off.
-
-Thermal/cleanup failures latch off across restart until human re-enable; uninstall
-clears the latch. Battery release re-arms on AC. Failed clear keeps its cause and
-waits for human action, not repeated watchdogs. Home shows
-`sudo pmset -a disablesleep 0` if clearing failed, or `pmset sleepnow` if a closed
-Mac did not sleep after clearing. Removing sudoers can strand the flag. Preferences
-and latches share `machine_power_state`.
+Safety checks read the battery, thermal, lid and flag state through macOS
+frameworks without a command fallback. Low battery off AC, serious thermal
+state, unreadable state, incomplete installation or a failed watchdog releases
+lid mode. The idle hold remains demand-driven. Ending demand releases both
+without sleeping an open Mac. Thermal or cleanup failures latch the mode off
+across restart until a human reenables it. Battery release re-arms on AC. A
+failed clear retains its cause and asks for human repair instead of launching
+repeated watchdogs. Preferences, latches and thresholds stay with the owner.
 
 ## Release selection, deployment, and automatic recovery
 
-**Why:** an independent supervisor can recover even when the new application
-cannot start. CI promotion preserves tested bytes; rebuilding on each server
-would not. The application owns admission and semantic proof, while the
-supervisor owns release selection, journals and filesystem rollback.
+**Why:** an independent supervisor can recover when a new app cannot start, and
+promotion preserves tested bytes. The app owns admission and semantic proof. The
+supervisor owns selection, journals and filesystem rollback.
 
-The separately versioned `supervisor/` distribution imports no RCP modules and
-has no runtime dependencies. Its low-level `fetch`, `verify`, and unprivileged
-`install` commands prepare bundles. Installed `rcp server install`, `update`,
-`restore`, and `supervisor update` delegate to it using the existing versioned
-operator event envelope. `--plan` is side-effect-free. Non-deployment operations retain their application owners.
+Every qualifying main CI run publishes one `build/<N>` prerelease from the
+already-tested artifacts. Main runs do not cancel earlier builds. App version
+stamping binds the base version, build number and commit. The supervisor version
+is independent. Completeness of the wheels, hashed locks and manifest is
+enforced by [release_build.py](../../packaging/release_build.py) and
+[CI](../../.github/workflows/ci.yml), including old-data and installed-upgrade
+gates.
 
-Installed config schema 3 has `[release] followed = "stable"` and an optional
-explicit `pin = "vX.Y.Z"`. The team address lives separately in
-`/etc/rcp/team.toml` (`access_url = "https://…"`, same root:rcp 0640 rules),
-so the strict schema-3 file never grows a field a pinned older release would
-reject; it names the one https origin members' own devices open, is
-operator-set and read-only to members through the team API, and doctor reports
-it as `team_access_url`, naming the file as a problem when it is unreadable or
-invalid. Stable is the newest non-prerelease GitHub Release;
-prereleases, missing assets, unsupported selectors, altered hashes, and
-inconsistent wheel/manifest identities refuse without choosing another source.
-The release metadata binds the full commit to the wheel's short commit suffix.
-A root-owned selected receipt binds tag, complete wheel version, build, full
-commit, manifest SHA-256, release directory, and bundled supervisor version.
-The root-owned current pointer must agree with it before application launch.
+Only a human promotes a release.
+[Promotion](../../.github/workflows/promote.yml) verifies the base version, tag
+and commit. It refuses existing tags or releases. It copies the same assets
+without rebuilding. Historical complete asset sets remain promotable. A partial
+supervisor pair causes refusal. Installation requires supervisor assets.
+[Build pruning](../../.github/workflows/prune-builds.yml) removes only expired
+build prereleases and tags under `STALE_BUILD_DAYS`. Stable releases stay
+retained. **Why:** build expiry bounds CI artifacts while promotion preserves
+tested bytes and a permanent human-selected release.
 
-`server update` displays an exact `vX.Y.Z:manifest-sha256` target for operator
-confirmation. Preparation uses a new isolated service-owned release directory;
-no failed preparation overwrites an existing directory. A newer required
-supervisor version must be installed first through `server supervisor update`;
-that refusal's next actions name it before the rerun. That command validates a separate root-owned runtime and atomically switches its
-pointer under the same operation lock, without rolling back application data.
+The separately versioned `supervisor/` distribution imports no RCP modules.
+Installed deployment commands delegate through the operator event envelope.
+Planning has no side effects. Non-deployment operations keep application owners.
+Strict configuration and selected-receipt types live in
+[server_ops/config.py](../../src/rcp/server_ops/config.py) and
+[supervisor releases](../../supervisor/src/rcp_supervisor/releases.py).
 
-The target's `update-rehearsal` child command takes an online SQLite snapshot
-and byte-copies local project roots under its output directory. It runs the
-target's full inspection, preparation, and application-proof checks on that copy,
-without the outgoing release's receipt, and returns `ready` with project warnings.
-The service keeps running; rehearsal takes no live instance lock and never changes
-admission. The caller removes the output directory. This checks
-the captured copy, not a later update boundary.
+Stable follows the newest non-prerelease release. An explicit pin selects an
+exact tag. Unsupported selectors, missing assets, altered hashes or inconsistent
+wheel and manifest identities cause refusal without choosing another source.
+Metadata binds the full commit to the wheel suffix. The root-owned selected
+receipt and current pointer must agree before launch. The operator-set HTTPS
+team address is stored separately from pinned release configuration and is
+read-only to members.
+
+Update confirms an exact tag and manifest digest, then prepares an isolated
+release directory without overwriting failed or existing builds. A required
+newer supervisor must be installed first, under the same operation lock.
+Supervisor replacement switches its validated root-owned runtime without rolling
+back application data.
+
+Update rehearsal snapshots online SQLite and copies local project roots into a
+disposable output. It then runs candidate inspection, preparation and proof
+there. It never changes live admission or takes the live instance lock. A ready
+result covers that captured copy, not a later cutover. Warnings identify omitted
+projects.
 
 ### Application boundary and local checkpoint
 
-Deployment attempts a protected backup before closing admission. An incomplete
-or unreadable backup becomes `backup_warning`, not an update refusal. Root
-authenticates maintenance RPC against service PID, account, instance and data
-identity. The application closes mutations, launches, watchers, machine work
-and recovery, drains entered work (up to two hours for agent turns), and returns
-a SQLite capture bound to that quiet boundary. A drain timeout refuses cleanly.
-The drain never waits on a human answer: closed admission parks every waiting
-`ask` ([why](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)).
+Deployment first attempts a protected backup. An incomplete or unreadable
+capture produces an explicit warning without refusing the update. Authenticated
+maintenance closes mutations, launches, watchers, machine work and recovery. It
+drains entered work and captures SQLite at that quiet boundary. A timeout causes a clean refusal. Human-input waits park under closed admission rather than prevent
+drainage.
 
-The candidate inventories local roots from captured SQLite. It rechecks failed
-backup inventories; unreadable projects become named warnings and are excluded
-from both copy proof and live proof. Identity, ownership, checkout/path safety,
-migration and proof failures on proven projects still refuse. Before stop,
-`check-space` estimates allocated bytes/inodes plus margin on each destination
-filesystem. Copy errors decide success; there is no fixed size, entry or elapsed
-copy ceiling. Cancellation terminates and reaps owned children.
+The candidate inventories captured local roots and rechecks failed backup
+inventories. Unreadable projects are named and excluded from copying and live
+proof. Identity, ownership, path, migration and proof failures on proven
+projects still cause refusal. Capacity is estimated per filesystem. Actual copy
+errors determine success. There is no fixed ceiling on scientific-history size,
+entry count or time.
 
-After proving the service PID is gone, root snapshots the whole data directory
-and every registered local canonical `.research` root. Nested roots collapse.
-The snapshot must cover all replacement roots declared by candidate preparation.
-It includes credentials, scratch, unknown files, empty directories and special
-nodes without typed filtering. Provider homes, source checkouts and remote
-canonical roots are outside replacement scope. The candidate proof never owns
-rollback authority.
+After the service is proven stopped, root snapshots the entire data directory
+and all registered local canonical roots. The snapshot collapses nesting and
+covers candidate replacement roots. Credentials, scratch, unknown entries, empty
+directories and special nodes survive. Provider homes, source checkouts and
+remote canonical roots are outside replacement scope. Candidate proof never
+grants rollback power.
 
-**Why:** backup's typed inventory can lag behind valid data written by the app.
-A stopped whole-root snapshot still restores that data exactly. Keeping backup
-warnings separate lets the core service update without hiding lost proof coverage.
-Stored-data readers enforce their safety needs, not stricter copies of writer
-rules; secret redaction is not a stored-data validity rule.
+**Why:** typed backup inventory can lag valid application data. Whole-root
+stopped snapshots restore it exactly. Backup warnings remain visible without
+blocking all updates. Stored-data readers enforce reader safety, not current
+writer rules or secret-redaction rules misapplied as storage validation.
 
-Before selection, effects are fenced and only local state changes. Remote live
-checks compare a current local display cache or leave the project unopened;
-validation already replayed its captured main and branch heads on copies and
-refuses any head that differs. Remote projects
-open only after selection, when rollback is no longer possible. Artifact versions
-are in the data root; legacy kept files retain typed checks until imported.
+Pre-selection effects are fenced and local only. Remote live checks use current
+local display caches or leave projects unopened. Copied main and branch heads
+replay and must match. Remote projects open only after durable selection. Proof
+exercises API projections, replay and merge receipts, retained tasks and stages,
+imported history and startup recovery with the application lifespan. A migration
+check alone is insufficient. Rollback runs the old binary's own fenced proof
+without making it parse the candidate's newer schema.
 
-Offline proof exercises API projections, main/branch replay, merge receipts,
-retained tasks/stages, imported history and startup recovery. `migrate --check`
-alone is insufficient. After rollback the old binary runs its own fenced proof,
-without parsing a newer proof schema. The supervisor handles opaque snapshots
-and proof digests. The copied-state API proof uses an explicit in-process HTTP
-transport with application lifespan startup and shutdown. It does not import a
-test client, keeping its dependency warnings out of operator output.
+Projection upgrades verify the baseline digest, remove retired fields and fill
+only proven deterministic defaults. They preserve explicit values, unknown keys,
+edge layers and serializer-owned operations. Display caches upgrade or replay
+against the same proof. Unproven factories require a migration. Compatibility
+keeps frozen sanitized fixtures written by each supported old persistence
+boundary. **Why:** skipped releases and old writers cannot be verified with
+current models.
 
-`upgrade_graph_projection` verifies the baseline digest, removes retired
-`coverage`, and fills absent deterministic defaults using the real nested graph
-models. It preserves explicit values, unknown keys, stored edge layers and
-serializer-owned operations. Only constant defaults, built-in empty factories
-and model factories composed of them are safe; other factories need explicit
-migration. Display caches receive the same upgrade, or replay if behind the
-proof. Recursive tests cover every reachable model, populated collections and
-optional fields, default omission, idempotence and preservation; missing examples
-or unproven factories fail by field name.
+The deployment source floor is `UPDATE_SOURCE_FLOOR` in
+[deployment.py](../../src/rcp/server_ops/deployment.py), not a copied release
+number here. Below-floor updates change no live state and name the required
+intermediate update. Uncomparable identities require receipt repair or adoption.
+The floor gates release qualification. Old data still uses its migration chain.
+Raising support boundaries requires explicit review, not fixture age.
 
-Persistence migrations retain frozen, sanitized fixtures for every server-era
-schema/semantics boundary and exercise the exact candidate base. Fixtures are
-created with the code that wrote that boundary, never regenerated by new code.
-**Why:** operators may skip updates; current models cannot prove what old code
-stored. Removing a supported persistence boundary requires an explicit migration
-path and human decision, not fixture age.
+CI qualifies published stable releases at or above the floor and frozen
+fixtures, using production installation and update owners, populated old data
+and offline scratch. Failure injection verifies rollback and old-code use before
+retry. Pull requests install the floor and the newest four releases; main
+installs every one. The aggregate gate promotes those same bytes. It does not
+prove arbitrary installations, provider authentication, remote-root behavior or
+reboot recovery.
 
-Deployment has a separate source floor: `UPDATE_SOURCE_FLOOR` in
-`src/rcp/server_ops/deployment.py`, currently **v0.4.5**. Maintenance advertises
-it as `update_source_floor`. Older data still runs the full migration chain,
-but release gates cover stable releases at or above the floor plus frozen
-fixtures. Raise the floor only after checking served installations. The
-supervisor compares numeric major/minor/patch, ignoring build suffixes. Below
-floor it changes no live state and instructs an update to the pinned floor,
-then unpinning and updating again. Uncomparable identity requires receipt repair
-or supervised adoption. Targets without the optional field keep their contract;
-a target requiring a newer supervisor refuses until that supervisor is installed.
+The privileged checkpoint copier preserves metadata, links, special nodes and
+cross-root hardlinks on each filesystem. Process connections do not survive.
+Payloads live outside captured roots. Copy and filesystem synchronization finish
+before readiness. Rollback journals each root, quarantines live trees, restores
+saved trees (including original absence) and syncs parents. Recovery resumes
+from journal and path evidence. Consumed checkpoints never overwrite accepted
+later work.
 
-CI discovers every published stable `v*` release at/above the floor, exhausts
-pagination, and fails on discovery errors or a missing floor. Each gets current-
-and stale-cache checks. The installed matrix takes the floor and the newest four
-on pull requests and every discovered release on main, which gates `build`. It
-uses pristine Ubuntu 24.04 runners, production bootstrap and wrappers,
-historical populated data, and real offline
-scratch (uv hardlinks, Git, FIFOs, sockets, unreadable entries, dangling links,
-empty directories and sparse files). Provider/Git receipts are synthetic.
-A root-owned test hook substitutes the verified candidate bundle and port 18421;
-all deployment owners remain production code. An injected failure checks restored
-paths, types, bytes, modes, ownership, times, xattrs, links and hardlink groups,
-then old-code HTTP, usable scratch, encrypted backup and successful retry.
-The aggregate `old-data upgrade` check gates publication of those exact bytes.
-It does not qualify privileged GitHub download, provider authentication, remote
-roots, arbitrary old data or reboot recovery.
-
-The checkpoint copier uses GNU `cp -a --preserve=xattr --reflink=auto
---sparse=always`, grouping roots by filesystem to retain hardlinks. Payloads live
-outside captured roots on their own filesystems; a central catalog records them.
-Ownership, modes, links, ACLs, xattrs, FIFOs and socket nodes survive; process
-connections do not. External hardlinks become independent saved content.
-A BSD fallback supports macOS development; Linux CI qualifies GNU behavior.
-Copy plus `sync -f` must finish before readiness.
-
-Rollback journals each root, renames the live tree to quarantine, renames the
-saved payload into place and fsyncs both parents. Absent roots return to absence.
-Recovery resumes from journal and paths; consumed snapshots are never replayed
-over later work. Legacy subset checkpoints cannot stand in for whole-root copies.
-Active operations finish with their original supervisor before self-update.
-
-Preparation/pruning use a preparation lock; startup recovery uses the operation
-lock so systemd can enter during an update. Retention follows confirmed successful
-update (including already-current), supervisor update or restore, or explicit
-`server prune`. It refuses unfinished operations or selected/current mismatch.
-
-`limits.py` retains zero finished checkpoints, two newest completed application
-trees plus live, 20 journals, and two completed supervisor/operator environments
-plus selected/executing ones. Cleanup removes payloads/quarantines before journals,
-including unpublished UUID workspaces and failed numeric builds. Receipts follow
-release retention; a pruned build must be fetched and verified again. Unreferenced
-root Python runtimes and interrupted staging are reclaimed; adoption is protected.
-
-Failed diagnostics keep at most 20 logs, each bounded by the existing 8 MiB limit.
-Success removes logs, download/fetch staging, temporary metadata, root uv cache
-and maintenance captures. App installation uses per-release temporary files with
-persistent uv caching disabled. Service Python and provider caches remain because
-agent environments may use them. Journald owns service/backup log retention.
-Unknown artifacts are reported untouched; pruning never follows symlinks into
-unrelated data or imposes a byte quota on research or agent scratch.
+Preparation and operation locks separate staging from startup recovery. Pruning
+requires no unfinished operation and no mismatch between the selected receipt
+and current pointer. It follows confirmed successful operations or an explicit
+invocation. Retention limits belong to
+[supervisor limits](../../supervisor/src/rcp_supervisor/limits.py). Payloads
+and quarantines are removed before journals. Selected and executing runtimes and
+adoption state stay protected. Success clears bounded diagnostics and staging.
+Service Python and provider caches remain. Unknown files are reported and left
+untouched. Research and agent scratch have no pruning byte quota.
 
 ### Selection and startup guard
 
-The supervisor journals each phase before its effect. Candidate probation runs
-as the service account with HTTP/background admission closed, proves exact build
-and private live state, then stops. Durable `candidate_chosen` ends automatic
-rollback authority; only then are selected receipt and ordinary service published.
-Earlier failures after checkpoint readiness restore stopped roots and run the
-old binary's own fenced proof. Failed candidate trees stay quarantined/reported.
+The supervisor journals before effects. Candidate probation runs as the service
+account with admission closed and proves the exact build and private state
+before stopping the candidate. Durable `candidate_chosen` ends automatic
+rollback authority. Only afterward are the selected receipt and normal service
+published. An earlier failure restores stopped roots and runs old-code proof.
+Failed candidate trees remain quarantined and are reported.
 
-`ExecStartPre` runs root `rcp-supervisor recover --startup` from local code,
-journals and checkpoints, without fetching or requiring GitHub. It finishes
-rollback before startup and never recursively controls its own unit. If the active
-coordinator holds the lock while awaiting systemd, startup still requires a durable
-choice and matching receipt/pointer. Unknown, inconsistent, corrupt or multiple
-active journals refuse; contention alone grants nothing.
+The root startup guard recovers from local code, journals and checkpoints
+without network. It completes rollback before startup. It never recursively
+controls its own unit. Coordinator contention grants nothing. Startup still
+requires a durable choice and a matching receipt and pointer. Unknown, corrupt,
+inconsistent or multiple active journals cause refusal.
 
-At/after `candidate_chosen` or `previous_chosen`, recovery verifies current chosen
-state without replaying the captured proof or discarding accepted work. Fresh-host
-rollback leaves uninitialized data stopped. `create_app` never interprets deployment
-journals or chooses releases/rollback.
-
-Read-only doctor reports selected/current/running identity, control availability,
-root observational status and durable provider login state without writable SQLite.
-Those projections cannot authorize startup. Team Settings reads release/backup
-status, not private journals; absent public restore timestamps mean unavailable
-history, not proof no restore occurred, and do not block other status.
+After the candidate or previous release is chosen, recovery verifies the chosen
+state without replaying captured proof over accepted work. Fresh-host rollback
+leaves an uninitialized service stopped. `create_app` never chooses releases or
+rollback. Read-only doctor and Settings projections cannot authorize startup.
+Missing public restore timestamps mean unavailable history, not proof that no
+restore occurred.
 
 ### Source installation adoption and qualification
 
-Paired-wheel adoption stages new integration without replacing the active
-config, wrapper, unit or source pointer. A root-owned journal retains those files
-and the full source commit; a startup guard is installed before service stop.
-Current code discovers local roots from a disposable raw SQLite copy, then takes
-one stopped whole-root snapshot, preserving cross-root hardlinks. Candidate
-replacement roots must fit that snapshot, and a complete protected capture is
-required before activation.
+Legacy source adoption stages integration beside the active install and journals
+its files and full commit. The startup guard precedes stop. Disposable SQLite
+inspection determines the roots before one stopped whole-root snapshot.
+Candidate replacement roots must fit. Activation requires a complete protected
+capture. Failure before choice restores data and integration before the old
+source starts. Failure after choice preserves candidate data.
 
-Before durable choice, failure restores raw data and original integration before
-old source code starts. After choice, recovery preserves candidate data. This
-explicit legacy adoption path does not change normal artifact-based updates.
-
-Disposable QEMU qualification on Ubuntu 22.04/24.04 interrupts update and restore
-at journal and individual-root boundaries, including repeated rollback and
-network-free recovery. It requires changed Linux boot IDs; unavailable
-virtualization is unqualified failure. Process restart tests do not prove reboot
-recovery. Production cutover requires qualification and human promotion.
+Reboot qualification uses disposable Linux VMs and interruption at journal and
+root boundaries, including repeated rollback and network-free recovery. Changed
+boot identity is required. A process restart is not reboot proof. Production
+promotion requires the corresponding qualification and human approval.
 
 ## Central checkouts and repository credentials
 
-Each team project has one managed checkout per declared repository on its
-execution machine: `rcp` owns server-local files; the configured SSH account owns
-remote files. Creation/transfer prepares the whole set before registration.
-Personal checkouts are not discovered or adopted.
+A team project prepares one managed checkout per declared repository, under its
+owning local service or configured remote account, before registration. Explicit
+central-root intent or exact-account default resolution binds final reviewed
+paths. Ownership, modes and symlink-free ancestry are checked. Manifest paths do
+not authorize a later root choice. Personal checkouts are not auto-discovered.
 
-Server-local roots use installed layout. SSH requests store an explicit absolute
-central root or null default intent. An exact-account helper resolves default to
-`<remote-home>/.local/share/rcp/projects`; its receipt pins the root and
-`<project-id>/repositories/<alias>` descendants. Final review shows those paths;
-operators recheck ownership, modes and symlink-free ancestry. Manifests retain
-resolved paths, not permission to choose a new root.
+Repository sources are GitHub.com or server-only. `GitHubRepositoryRef` in
+[server_ops/github.py](../../src/rcp/server_ops/github.py) owns URL validation.
+Credentials, traversal, alternate hosts or ports and unsafe components cause
+refusal before input or output. GitHub uses a write-enabled deploy key per
+repository, including public repositories. RCP collects no GitHub user token or
+OAuth credentials.
 
-Sources are GitHub.com or null (**Server only**). `GitHubRepositoryRef` accepts
-only `https://github.com/<owner>/<repository>[.git]` or
-`git@github.com:<owner>/<repository>[.git]` before any request or I/O. Owner is
-1–39 ASCII alphanumeric/hyphen characters, alphanumeric at both ends; repository
-is 1–100 ASCII alphanumeric, `.`, `_`, `-`, except `.` and `..`. One exact
-`.git` suffix is stripped and identity lowercased. Credentials, queries,
-fragments, encoding/traversal, other schemes/hosts/ports and extra components
-refuse. All clone/settings URLs derive from that value; Enterprise/other hosts
-need a trusted-origin design.
+Private keys remain only on the checked checkout account in RCP-owned private
+storage. A shipped helper validates the uid, home and modes. Neither the
+manifest nor shell HOME can choose a key root. Keys never enter SQLite,
+manifests, prompts, diagnostics or backups. Public labels and fingerprints
+remain recovery evidence.
 
-GitHub uses one write-enabled SSH deploy key per repository. A human adds its
-public key with **Allow write access**; no GitHub user login, OAuth or token is
-collected. Public repositories still require write proof. Private keys stay only
-on the checkout account: installed `credentials/` locally or verified
-`<remote-home>/.local/share/rcp/credentials/` remotely. A shipped helper validates
-uid/home/modes; shell HOME and manifest overrides cannot choose the key root.
-Keys never move between machines or enter SQLite, manifests, prompts, diagnostics
-or backup. Public fingerprints and deterministic labels
-`rcp:<space-id>:<project-id>:<repository-alias>` remain as recovery evidence.
+Write proof creates, reads and removes a request-scoped ref to existing history.
+An empty source instead uses the announced initial `Start RCP project` commit
+and reads back the non-forced push. Retry reuses the recorded commit.
+Conflicting pushes need human repair. Server-only setup creates the same initial
+history without a remote, key or push. Its code is explicitly not backed up.
+**Why:** Git-backed research can start without GitHub, while research archives
+remain separate from source code. Restore recreates empty server-only checkouts.
+Adopted folders must already exist at their recorded path and commit.
 
-With branch history, write proof creates, reads and removes a request-scoped ref
-to an existing commit. Without it, the announced step initializes `main`, makes
-empty `Start RCP project` as `RCP <rcp@rcp.invalid>`, records path/commit, then
-pushes and reads back that commit as proof. Retry reuses it; non-forced pushes
-and remote readback reconcile lost receipts. Competing pushes require human repair.
-
-Server-only setup makes the same commit at the same checked path, with no remote,
-key or push proof. Its code is **not backed up**; setup, Settings and backup
-status say so. [Restore](#backup-and-restore) recreates an empty checkout.
-**Why:** agents need Git history and branches, but starting research need not
-require GitHub. An announced empty RCP-authored commit avoids unannounced changes
-to human code. Keeping source Git outside research archives preserves their scope.
-
-Cancellation needs an explicit request-owned key/checkout disposition. A public
-key already granted on GitHub keeps **operator action needed** until revocation
-is confirmed or the request is preserved for reuse. Removing a private key does
-not revoke its grant. [Project deletion](projects-spaces-and-operations.md#deletion)
-removes catalog/app data only; central checkouts, canonical history and deploy
-keys remain for separate operator deprovisioning.
+Cancellation records explicit key and checkout cleanup or reuse. A granted
+public key requires confirmed revocation or preservation. Deleting the private
+key does not revoke the grant.
+[Project deletion](projects-spaces-and-operations.md#deletion) leaves central
+checkouts, canonical history and deploy keys for operator disposition.
 
 ## Durable project provisioning
 
-The unified project wizard creates durable requests before machine work.
-Browser and desktop can create/review team setup; moving personal research
-requires the desktop's authenticated two-space relay. Backend status is
-**waiting for server setup**, **setup in progress**, **operator action needed**,
-**ready for review**, **completed** or **cancelled**. UI renders it and the exact
-next action, never infers readiness from subprocess exit or files.
+The wizard creates a durable request before machine work. The browser and
+desktop can prepare team setup. Personal transfer uses the desktop's
+authenticated two-space relay.
+[storage/models.py](../../src/rcp/storage/models.py) owns durable request and
+review records.
+[api/project_provisioning.py](../../src/rcp/api/project_provisioning.py) owns
+API input types. The state and exact next actions come from the backend. They
+are never inferred from files or subprocess exit. Reserving a project id grants
+no canonical identity.
 
-Requests bind target space, name, sources/aliases, machines, state repository,
-truth/default-run scopes, Auto-research ceiling, central-root intent, execution
-profiles and preparation authorizer. Invalid text refuses before persistence/I/O.
-New setup reserves a random `project_id`; transfer retains the existing id.
-Reservation grants no canonical identity or writable home.
+Machine preparation resumes bounded steps for paths, keys, checkouts, readiness
+and write proof. Each step checks for a stale boundary. Empty-repository commits
+are announced before execution. Only ready-for-review readback proves
+preparation completed. Members may inspect requests. A new-project authorizer
+can cancel through the member API only before machine work and with nothing to
+remove. Afterward, the machine owner records the cleanup or reuse disposition.
 
-`rcp server project provision <request-id>` resumes path/mode checks, Git key and
-checkout preparation, execution/provider readiness and write proof. The id is
-correlation, not machine authority. It advances one durable stale-boundary-checked
-step at a time and succeeds only after reading **ready for review** back.
-Stops name exact GitHub grant, account/provider/SSH repair and resume actions.
-Empty-repository initialization is announced before any commit/push.
+Creation checks for an existing identity or Patch history before overwrite and
+again at review. Either causes refusal. It never adopts retained research. Personal history requires
+transfer. Desktop setup needs a separately proven operator SSH route using
+system SSH, without collecting private keys or sudo passwords. Interactive work
+opens the fixed command in Terminal. Browsers receive an operator command to
+copy.
 
-Every authenticated team member may inspect requests. Only the direct new-project
-preparation authorizer can cancel through the member API, only while waiting
-with **nothing to remove**; completed cancellation is idempotent. Once machine
-work begins its owner must record cleanup/reuse disposition.
-
-Direct creation never adopts or archives retained research. Existing identity or
-Patch history stops before overwrite: personal history directs **Move to team
-space**; other conflicts need a deliberately cleaned/different repository.
-Review checks again. Transfer alone may reuse an archive-proven matching prefix.
-
-Desktop **Run setup now** requires a proven saved operator SSH route, separate
-from member transport: direct `rcp` or named operator with `sudo -n -u rcp -H`.
-It uses system SSH configuration/agent, never collects a key or sudo password,
-bounds progress and rereads the authenticated request afterward. Interactive
-steps open the fixed command in Terminal. Otherwise it shows a copyable operator
-command; a browser cannot run machine steps.
-
-Machine preparation creates no project. Final review shows paths, readiness and
-work to settle. New-project completion at
-`POST /api/project-provisioning/requests/{request-id}/complete` requires the exact
-review digest and a current member; the preparation authorizer must remain
-enrolled. It rechecks configuration, all six profiles, checkout paths, Git/provider
-proofs and retained inputs without rerunning preparation. It renders the manifest,
-appends one system `created` identity with the reserved id, and seats the reviewer.
-Manifest, identity Patch, registration, seating and completion have recoverable
-boundaries. Retry accepts only that request's exact one-Patch identity prefix;
-stale digest, changed inputs, unsafe paths or conflicting identity refuse.
-Completed confirmation returns the same request/project.
-
-Settings can request one added repository on the base machine, cloned from
-GitHub or adopted in place from an existing Git folder, or connect one RCP-created
-server-only repository
-to GitHub through the same command/review, without provider setup. Add prepares
-a new checkout and publishes the reviewed descriptor/truth choice through a
-human approval transition. Connect preserves checkout/manifest, adds the reviewed
-remote and key, and pushes recorded `main` only if remote main is absent or an
-ancestor. Divergence requires a human merge before retry; RCP never merges or
-force-pushes. The exact storage/review contract belongs to
+Final completion requires the exact review digest and a current member while the
+preparation authorizer remains enrolled. It rechecks configuration and profiles,
+paths, Git and provider proof and retained inputs. It then publishes the
+manifest, one created-identity Patch, registration and seating through
+recoverable boundaries. Retry accepts only the request's exact identity prefix.
+Stale or conflicting inputs cause refusal. Settings requests to add or connect
+repositories use the same review path. Their scope is owned by
 [Repository and truth scope](projects-spaces-and-operations.md#repository-and-truth-scope).
 
-Transfer links bind a checksummed nonsecret source summary: schema/codec versions,
-sources and aliases, state repository, truth provenance and manifest digest.
-Target negotiates a common version before preparation and rebuilds configuration
-without source paths/homes. Source rechecks summary and preparation revision
-before fencing; drift/incompatibility leaves it writable and requires review.
+Transfer links bind the source summary, compatible formats, aliases, state and
+truth provenance and manifest digest. The target rebuilds configuration without
+source paths. Drift causes refusal before source fencing. Final desktop review
+records target admission then source release through independently authenticated
+actors. Target confirmation alone creates nothing and leaves the source
+writable.
 
-One final desktop review records target admission first, then source release,
-through independently authenticated backends with their own actors and request
-receipts. User ids need not match. Target-only confirmation leaves source writable
-and creates nothing. Source release waits for legacy artifact imports. Import
-must validate both receipts and cannot supply human authority.
-
-Each linked side commits SHA-256 of its independent random 256-bit one-time proof;
-review binds both commitments. Source proof is revealed only in the sealed
-post-fence archive; target proof only after activation through the native
-permanent-token route. [Transfer](#personal-to-team-transfer-archive) owns relay,
-consumption and cleanup. **Why:** a client-relayed JSON receipt, request id,
-archive path or successful CLI exit cannot prove the other space's transition.
-These proofs protect product authority, not storage from root or its owning account.
+Each side commits a hash of an independent one-time proof. The source reveals
+its proof only in the sealed post-fence archive. The target reveals its proof
+only after activation. **Why:** request ids, client JSON and CLI success cannot
+prove the other space's transition. These proofs protect product authority, not
+data from root or the owning account.
 
 ## Personal-to-team transfer archive
 
-Transfer requires the two human confirmations and source configuration/proof
-binding in [provisioning](#durable-project-provisioning). It preserves project
-identity while changing home; it never clones either space's authority database.
+Transfer preserves project identity while changing home, under the two human
+confirmations above. One sealed archive provides one retry and compatibility
+boundary. Copying a raw database would import unrelated space authority and
+continuations. [TransferArchiveManifest](../../src/rcp/transfer/archive.py) and
+[TransferRecordBundle](../../src/rcp/transfer/records.py) own inventories,
+fields, format versions and exclusions. Every project-linked table is
+classified.
 
-After revalidation, the source closes paused standalone attempts as interrupted
-in one settlement transaction, with request-bound events/receipts. Original
-output, native-session evidence, finish timestamp and scratch remain at source.
-The final review discloses this closure. Queued/running/pausing or episode-owned
-attempts are not administratively stopped. Any live task, episode, watcher,
-report, child or delivery refuses settlement until its normal owner settles it.
-Read-only export never changes task status.
+The archive carries canonical histories and heads, branch and merge metadata,
+typed chats, saved Paper and facts, finished operational history, referenced
+artifacts and matched native transcripts. Membership, credentials, caches,
+resumable sessions and stages and executable bindings never travel. Imported
+tasks remain history-only. Chat ids, answers and receipts stay readable. Future
+work uses the target configuration. Artifacts follow
+[availability rules](paper-artifacts-and-result-views.md).
 
-One versioned, checksummed archive carries:
+Source release settles paused standalone attempts as interrupted with receipts.
+Queued work, running work and episode work must finish through their normal
+owner. Live tasks, episodes, watchers, reports, children or deliveries cause
+export refusal. Read-only export never changes status. Source release fences new
+admissions transactionally. Authorized continuations may settle. Capture waits
+for a quiet boundary.
 
-- Project identity, exact main/branch heads, immutable branch metadata, Patches,
-  merge receipts and source manifest as provenance, never materialized outputs.
-- Typed RCP chats, Paper draft including conflict ancestors, canonical
-  introduction and opaque safe regular `.research/facts/` files.
-- All finished human-visible tasks, events, receipts, usage and stopped
-  episode/watcher/report history, including child, message, recovery, lifecycle,
-  Apply-result and inert-command records needed to render them.
-- Every database-referenced artifact version and saved live snapshot through one
-  typed inventory; older inline-report and repository-kept formats stay readable.
-  A deleted episode report travels as its lineage row without bytes, and the
-  target records its artifact as deleted. Older targets refuse such a project.
-- Complete project-matched native provider conversations and, when required or
-  explicitly chosen, reviewed Git commits and their reachable history.
+Native transcript selection is best-effort by the recorded account, working
+directory and repositories. Clear matches copy unchanged. Unreadable or
+ambiguous files produce diagnostics, not a completeness claim. Once sealed, the
+content-hashed read-only inventory is durable: missing, changed or unsafe
+entries are corruption. Seed and Refresh read it alongside live sources. Staging
+verifies its fingerprint. Old session ids or paths never grant execution
+authority.
 
-A schema inventory test requires explicit classification of every project-linked
-table. Membership, invitations, authentication, skill inventories, reconciliation
-watermarks, operation leases, resumable stages/sessions, pending wake fields,
-wrap-up paths, temporary input attachment bytes, expired unkept artifacts,
-credentials, machine configuration and caches do not transfer.
+Target paths, accounts, binaries and profiles come from reviewed readiness
+proof. Historical aliases and truth provenance remain stable. Main and branches
+replay in isolation. Episode branch authorizers bind to canonical home at the
+immutable base. Past-head forks validate against the recorded home-transfer
+chain, as owned by [history/branches.py](../../src/rcp/history/branches.py).
+Retained research must be an exact coherent archive prefix without later or
+unknown content. Review, identities, heads and prefix fingerprints bind the
+receipt. Conflicts never overwrite.
 
-Canonical chats retain stable chat/message ids, text, times, provider/model
-labels, graph receipts and display-only attachment metadata. They clear native
-session ids, execution machine/cwd and unmapped operation bindings.
-`writing_sessions` and `chat_session_contexts` are excluded. Imported tasks keep
-honest terminal status and answer but are history-only: no Pause, Resume, Retry,
-graph repair, action-queue entry or executable source-session identity. Future
-work starts under target configuration.
+GitHub unpushed-commit inclusion is opt-in. It binds reviewed HEADs and rechecks
+them at export. Server-only repositories require reviewed self-contained
+bundles. No push, dirty files, unrelated branches, credentials or hooks travel.
+Import validates bundles offline. Changed GitHub revisions use detached HEAD.
+Unchanged checkouts retain attachment. Server-only history attaches to main.
+Unsafe or divergent checkouts cause refusal. Only ordinary full clones are
+supported. Linked worktrees, shallow clones, submodules and LFS or
+filter-managed content cause refusal. Format incompatibility requires review
+before release.
 
-**Why:** one sealed archive provides one inspectable compatibility and retry
-boundary. Raw database copying would import unrelated space authority and unsafe
-continuations. Finished operational history explains the research without
-pretending source processes can resume.
+After the home changes, the source seals one protected request archive. Retries
+rehash the same bytes. The native relay pins both backend identities and streams
+bounded chunks over system SSH into a request-derived upload lease. Private
+partial publication never overwrites existing bytes. Exact retries verify the
+existing bytes. Browser and Tauri messages carry request and progress metadata,
+never archive bytes, raw proofs or credentials.
 
-The existing conversation index selects native transcripts best-effort by
-recorded cwd and declared repository paths, using each saved profile's exact
-local/SSH account and provider roots. It copies clear matches byte-for-byte and
-rechecks cwd; unmatched, rewritten, malformed or unreadable files get a
-nonblocking count/diagnostic. There is no completeness claim, history inference
-or manual classification screen. RCP-owned chats travel separately.
+Import validates the inventory and both proofs. It inserts mapped operational
+rows transactionally, then publishes through concrete file owners. Partial
+publication stays invisible. Retry uses the stored configuration and digests.
+Replay and readback complete activation, registration and seating together
+before the target proof becomes visible. Upload or CLI success alone grants no
+project authority. Source cleanup validates that proof and sealed bytes before
+retirement or removal. Corrupt or missing archives remain repairable. The
+historical membership audit remains.
 
-**Why:** normalizing native files loses provider-specific evidence; filtering by
-`last_refresh_at` mistakes an overlap watermark for exact coverage. Passive
-session ids, paths or sensitive printed text may remain in historical bytes,
-but never become execution bindings.
-
-Imported files live read-only under
-`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`, named
-by content hash with a sealed inventory. They are durable project data, not
-canonical state, cache or a provider home. Seed/Refresh reads them beside live
-provider roots and retains the overlap watermark. SSH execution stages only that
-inventory into immutable task input; Resume/prepared-context reuse verifies its
-fingerprint. Missing or changed staging uses the visible clean-retry path.
-After sealing, missing, altered, writable, symlinked, special or undeclared source
-entries are corruption and fail visibly; best-effort selection has ended.
-
-Target configuration comes solely from reviewed readiness proofs. Historical
-repository/machine aliases, state repository and truth provenance stay stable;
-paths, hosts/accounts, binaries, native roots and execution profiles are rebuilt.
-Main and every branch replay against it in isolation. A branch's authorizer must
-match canonical home at its immutable base, not merely today's home, and gains
-no current write authority from that history.
-Retained Git `.research` must be a byte-identical coherent archive prefix with
-no later external commit, unknown durable entry or alias conflict. Validation
-binds review, source/link/archive identities, rebuilt manifest, retained-prefix
-fingerprint and replay heads into the importer receipt; conflicts never overwrite.
-
-**Include local unpushed commits** is off by default for GitHub sources. Without
-it the prepared GitHub checkout is used and review warns about unpublished source
-commits. With it every repository HEAD is bound to source configuration and both
-confirmations, rechecked at export and carried as a self-contained Git bundle.
-A no-origin repository becomes server-only and always requires its reviewed
-commit/bundle; mixed projects bundle only captured repositories. No GitHub push
-occurs. Other branches, dirty/ignored files, external outputs, Git configuration,
-credentials and hooks do not travel.
-
-Bundles require schema/codec `2` / `rcp-transfer-v2`; GitHub-only transfers without
-bundles retain byte-compatible v1 with absent commit fields. An incompatible
-target refuses before release. Changed HEAD or choice needs fresh review; old
-commitments and sealed archives remain valid.
-
-The importer validates bundles in isolation and imports objects without network.
-A changed GitHub revision becomes detached HEAD, retaining origin and branch
-refs; an already-matching checkout retains attachment and untracked/ignored files.
-Server-only import attaches the commit to `main` without a remote. Missing bundles,
-tracked changes, unsupported Git layouts or tracked `.research`/`.recovery` refuse.
-Create a branch before new commits from detached HEAD. Interrupted multi-repository
-import resumes the same archive and remains inactive until full activation.
-
-Before mutation, import checks the exact regular-file inventory, sizes/hashes,
-identities, heads, references, configuration and excluded fields. One SQLite
-transaction inserts mapped operational rows and configuration/import receipts.
-Concrete atomic owners then publish the manifest, canonical history, chats,
-Paper, facts, artifacts and provider files. Legacy kept files restore to their
-old location for background import. No project or writing-session row is created.
-Readback and replay produce one completion digest. On interruption,
-`database_imported` can coexist with partial matching files, but the project is
-invisible. Retry uses stored configuration and exact digests, not a new inventory
-of partially published state. Activation needs the complete receipt.
-
-Captured artifacts stay viewable/downloadable; editing uses **Edit in a new
-session**. Unimported legacy stage artifacts are explicitly unavailable. Artifact
-projection and content/action admission use the availability contract in
-[Paper, artifacts, and viewing](paper-artifacts-and-result-views.md), never source
-stage pointers or client inference.
-
-`source_released` fences new human tasks, episodes, Auto-research, Experiments
-and merges inside their admission transaction; HTTP also holds the project
-operation lock. Authorized continuations may settle, but export refuses remaining
-live work. Canonical/file capture holds the workspace transaction and remote
-lease when applicable. Home change records both human actors.
-
-After home change, the source atomically seals mode-0600
-`<RCP_DATA_DIR>/transfer-exports/<request-id>.rcp-transfer`. The post-fence source
-proof contributes to its bound digest and is consumed, not imported. Every retry
-rehashes and streams the same file; it never reselects provider history.
-The original confirmed configuration/head remains available for recovery;
-source-release re-entry finishes settlement/capture without another request or
-ownership confirmation. Ordinary Delete remains unavailable.
-
-The native relay verifies the pinned personal backend and fetches that exact
-request export with its pinned-instance header. It streams bounded chunks to
-stdin of one system-SSH child running
-`rcp server project transfer-import <request-id>`. Through the private socket,
-the CLI gets expected digest/size and a request-derived upload lease; it accepts
-no arbitrary archive path and never opens SQLite. It writes a same-directory
-0600 `.partial` in `transfer-inbox/`, publishes by no-overwrite hard link to the
-request filename, verifies and removes the partial. Exact retries consume and
-verify stdin without replacing the final file.
-
-The service owns upload states `active`, `complete`, `consumed`, `invalidated`.
-Completion rehashes bytes; a separate control call decodes into disposable staging
-and validates human receipts, fence, readiness, modes, digest, manifest and source
-proof before invoking import. Upload or CLI success is never project authority.
-After readback/replay, one transaction registers the project, seats the target
-confirmer, completes provisioning and activation receipts, marks
-`target_activated` and consumes the upload. Only then is the project visible and
-the target proof retrievable. Cleanup removes the verified inbox and stage;
-retry after activation refreshes catalog state and cleans those exact files.
-Pre-activation failure retains the completed inbox for repair.
-
-The native permanent-token route returns the precommitted activation proof only
-to the original current target confirmer for that completed request. The relay
-returns it directly to the pinned source. Source cleanup holds the project lock,
-validates the sealed archive, consumes proof, retires the catalog row and
-revalidates before unlinking the exact file. Missing/corrupt bytes stay visible
-for repair; consumed-proof and retirement receipts distinguish completed cleanup
-from premature loss. Historical membership/invitation audit rows remain.
-The public cleanup acknowledgment lets the target erase its raw proof.
-
-No archive bytes, raw proofs or other-space credentials enter browser state,
-URLs, argv, shell strings, logs, credential stores or Tauri IPC. Web commands
-carry only validated request ids and progress metadata. Tauri builds no `scp`,
-`mv` or shell pipeline. Without a proven operator route, the desktop exports one
-protected local file and shows bounded Terminal commands.
-
-Update refuses an active upload immediately with admission still open for
-completion. Preparation retains receipt-backed complete inbox files, ignores
-consumed records and rejects untyped leftovers; whole-root rollback retains the
-entire inbox independently. Team backups exclude inbox and personal exports.
-Restore invalidates old leases and unfinished machine state, marking nonterminal
-incoming requests **operator action needed**. An `archive_bound` re-entry checks
-the restored revision, rebuilt review digest, original current confirmer and
-same archive, then issues a fresh relay lease. Later phases remain fenced until
-their proof/cleanup owner revalidates them. Target restore never reverses a
-committed source home change.
+An active upload causes update refusal without closing the upload completion
+route. Completed receipt-backed inboxes survive preparation and rollback.
+Backups exclude transfer inboxes and exports. Restore invalidates leases and
+marks unfinished requests for operator action. Re-entry must validate the
+restored review, actor and archive before a new lease. Target restore never
+reverses a committed source home change.
 
 ## Backup and restore
 
-Protected backups are encrypted research/control-plane archives, distinct from
-whole-root update checkpoints. They do not pause dispatch or Apply and never
-claim an unreachable project is protected. [The operator guide](../server.md#back-up-the-team-server)
-owns configuration, capture and restore commands.
+Protected backups are encrypted archives of research and control-plane state,
+separate from whole-root update checkpoints. Capture does not pause dispatch or
+Apply or claim unreachable projects are protected.
+[BackupArchiveManifest](../../src/rcp/server_ops/backup_models.py) owns
+inventory, recovery descriptors and exclusions.
+[server.md](../server.md#back-up-the-team-server) owns configuration, capture
+and restore commands.
 
-Capture uses one immutable online SQLite snapshot and inventories only its
-referenced durable files. It includes main/branch Patch histories and exact heads,
-branch metadata/merge receipts, typed RCP chats, the saved Paper tree and its
-CRDT records, retained versions, receipts, publication state and referenced bytes,
-safe regular facts, referenced artifact versions/live snapshots and imported
-project-owned provider histories. Artifact capture holds the pruning lock.
-Legacy repository-kept candidates remain capturable while pending import;
-stage-only candidates do not. Restoring bytes never accepts a candidate.
-UUID4 and UUID5 task identities are both valid inventory inputs.
+One immutable online SQLite snapshot determines referenced durable bytes:
+canonical main and branch history, typed chats, saved and published Paper,
+facts, artifacts and sealed imported histories. Saved unpublished Paper comes
+from that snapshot. Artifact capture holds its pruning lock. Live credentials
+and provider homes, source Git, caches, temporary stages and materialized
+outputs are excluded. Unknown roots, unsafe or missing references or unreachable
+projects are visibly uncaptured.
 
-Paper capture reads only the caller-owned SQLite snapshot, including saved
-revisions that have not published; restore recovers saved Paper from that
-archived database. The recursive published `paper/` tree is inventoried
-separately. Transfer record schema 7 carries the saved Paper section, while
-schema 6 remains readable. Transfer sealing,
-delete and maintenance settle the process-owned live documents first.
+File reads use complete typed chat boundaries and bounded stable reads without
+canonical publication or remote refresh locks. Healthy projects remain usable
+during churn elsewhere. Entries bind the size and digest and stream without a
+scientific-history size ceiling. Capacity failure remains explicit. Atomic
+encrypted publication and full readback produce immutable receipts with safe,
+bounded diagnostics.
 
-The app-data inventory is closed. Live SQLite/WAL/SHM, process metadata, bootstrap
-locators, display/source/session caches, temporary chat attachments, run/transfer
-stages, personal transfer exports, source Git, deploy/SSH/provider credentials,
-live provider homes/logs and materialized graph outputs are excluded. Each new
-direct child needs explicit classification or capture becomes visibly partial.
-Every project gets a sealed imported-history inventory or explicit absence;
-orphaned, unsafe, missing or hash-mismatched imported history fails visibly and
-never substitutes a live provider home.
+Each project binds the current manifest, resolved routes and checkouts and
+public key evidence in a nonsecret recovery descriptor. The GitHub origin and
+commit must match. Server-only code is not protected. Restore initializes empty
+server-only Git history, but adopted folders must still exist with the recorded
+commit. Missing or inconsistent descriptors cannot silently become successful
+capture. Historical schema and default compatibility is enforced by the typed
+readers and fixture checks.
 
-Project-file capture takes no canonical append/chat/publication or remote refresh
-lock. It reads chats through complete typed-valid JSONL boundaries and mutable
-Paper/facts/kept files through bounded stable reads. Churn, unsafe or missing
-referenced entries, unknown durable roots and unreachable projects are uncaptured,
-while healthy projects remain usable. Later replacements never count as partially
-captured files. Inventory and capture use no Git fetch or provider credentials.
+Backup accepts native X25519 age recipients and the supported upstream age
+contract. It does not accept plugins, passphrases or SSH recipients. The
+destination is explicit local or mounted storage. RCP infers no off-host
+durability. Managed identity creation is root-only and atomic, with a public
+sidecar. A missing, corrupt or mismatched identity causes refusal rather than
+regeneration. External-recipient rotation is never implicit. **Why:** full-host
+recovery requires retaining both archive and decryption identity elsewhere.
+Same-host convenience alone cannot prove recoverability.
 
-Archives bind every entry's size/digest and stream through fixed-size buffers.
-There is no arbitrary scientific-history size ceiling; insufficient capacity is
-an explicit partial/failure result. Ciphertext is atomically published and fully
-read back with an immutable receipt. Failures name safe categories and relative
-components (including state, checkout, history and SSH), never raw exceptions or
-absolute locators. CLI/doctor report these causes; pre-update failures become
-`backup_warning`. Optional operation-bound diagnostic sidecars preserve causes
-without changing strict older receipts; absent sidecars are not reconstructed.
+Configuration serializes under the operation lock and journals public intent. It
+fences and reconciles the timer before replacement. Enablement needs a
+successful first backup and readback. Shared retention keeps the configured
+count plus the newest complete archive when needed. It bounds diagnostics and
+staging without truncating research or scratch. Publication retries reconcile
+known intents before cleanup.
 
-Each protected team project also binds a nonsecret recovery descriptor: current
-manifest settings/machines (including each machine's access hint and compute
-block), effective repository sources/aliases, resolved checkout
-paths/routes, and public old key labels/fingerprints. Completed provisioning proves
-checkout location and grants; it does not freeze later Settings edits or machines
-without repositories. Missing, credential-bearing or inconsistent descriptors
-make the project uncaptured. A descriptor omits an empty hint or compute block,
-so an older descriptor, which never recorded them, still matches its manifest;
-an older release refuses a descriptor that carries either. [Effective repositories](projects-spaces-and-operations.md#repository-and-truth-scope)
-fold completed create/add/connect requests.
+Restore requires operator confirmation that old authority cannot resume. Before
+mutation, it also requires archive integrity, replay and an exact roster review.
+Future formats cause refusal. Preparation binds the archive and release outside
+app data. The operator must revoke or prove destruction of old deploy-key
+grants, SSH grants and provider logins. The operator must renew required access.
+RCP never collects or revokes those credentials automatically. Permanent member
+token hashes survive the snapshot. Known-stale members therefore need safe
+removal or a newer archive. A sole stale member cannot be impersonated or
+bypassed. Transient credentials and executable lifecycle bindings detach before
+startup. Notification devices detach and observations reset to a quiet baseline.
+Preferences remain.
 
-GitHub checkouts retain origin/commit checks. Server-only checkouts have no remote;
-backup names each as **code not backed up**, even if research capture is complete.
-Restore initializes missing server-only destinations with `git init -b main` and
-empty `Start RCP project` as `RCP <rcp@rcp.invalid>`, then publishes research.
-An adopted folder is server-only code at its own path; its descriptor is marked
-`adopted`, so backup checks its recorded commit but not its remotes, which belong
-to its owner. Restore re-adopts it at that path and refuses when the folder or
-the commit is gone; it never creates one.
-Private `checkout-recovery/<project-id>.json` records replacement commit and public
-key evidence, bound to repository/machine; a later connect supersedes its proof.
-Backup embeds the resolved proof, not the raw receipt, and restore reconstructs
-it without changing historical provisioning reviews.
+Space identity, readable answers, receipts, chats and Paper survive. Prior tasks
+become history-only. Active work becomes interrupted. Unfinished machine
+requests need operator action. No old turn, watcher, retry or graph mutation may
+auto-launch. Every captured checkout is reconstructed before research publication.
+Conflicting history causes refusal. Uncaptured projects remain visible but
+unavailable.
 
-Skill comparisons preserve manifest-declared fields, including omissions, rather
-than release defaults. Older descriptors keep bytes/hashes and compare only fields
-the current manifest declares; other checkout/configuration authority stays exact.
-
-Backup accepts native X25519 `age1...` recipients and upstream age >=1.0.0,<2.0.0,
-not plugin, SSH, passphrase or post-quantum recipients. Destination is one explicit
-writable local/mounted directory. RCP owns publication, integrity and retention,
-not cloud/SSH transport, and infers no off-host durability from its path.
-
-The machine config's strict `[backup]` table contains only destination, recipient,
-schedule and retention, independent of restored SQLite. Configuration defaults
-to 02:00 server-local time and 30 archives and requires explicit confirmation.
-Without `--recipient`, it atomically creates/reuses root-only 0600
-`/etc/rcp/backup-recovery.agekey` and a root-owned 0644 `.pub` sidecar. Only the
-public recipient enters config. The sidecar detects a missing managed identity;
-missing, corrupt, unsafe or mismatched keys refuse, never regenerate silently.
-An external recipient must be supplied exactly again; rotation is not implicit.
-Private key text never enters CLI arguments or progress.
-
-**Why:** the default makes routine capture and same-host restore simple. Whole-host
-recovery still needs both archive and identity retained elsewhere, or an externally
-managed recipient. RCP cannot infer that either is protected off-host.
-
-One root-owned operation lock serializes install/configuration. Before unit
-changes, configuration records the complete public intent atomically, fences any
-loaded timer and proves it disabled/inactive after reload. Interrupted work must
-finish and read back that exact intent before new configuration proceeds. Only
-matching config/timer/systemd readback clears it. The timer enables only after a
-successful first backup/readback; failure leaves it disabled.
-
-Nightly/manual/pre-update captures share retention. Keep the configured count
-plus the newest complete archive if outside it: at most `retention + 1`
-archive/receipt pairs. Fixed status/diagnostic files remain bounded. Only the
-newest failed plaintext capture remains; a completed protected or partial archive
-removes prior stages. Retry reconciles publication intents under the backup lock
-before reclaiming recognized temporary files/orphan receipts. Research and agent
-scratch are never truncated by this policy.
-
-Restore is an operator-confirmed workflow over the displayed configured
-`RCP_DATA_DIR`, initialized or fresh. It requires assurance that the old space
-cannot resume serving, integrity/replay checks, and supported archive/schema
-identity before mutation. Future formats refuse with an update requirement.
-Default decryption uses the fixed root identity; `--identity-file` reads an
-external file only for that run, never raw key text in environment or output.
-Restore does not redirect systemd to another data root.
-
-Root-owned preparation outside app data binds archive and selected release,
-operator confirmations and progress. Protected plaintext is readable only by
-root and service group. The app's offline worker owns archive validation,
-lifecycle detachment, checkout recovery, roster policy and replay; the supervisor
-owns journals/selection. A credential/review pause returns an existing server to
-service; retry captures a fresh rollback boundary and revalidates preparation.
-A fresh host stays stopped without dummy team initialization.
-
-Restore names old source/project deploy keys, server-to-remote SSH grants and
-provider logins to revoke or prove destroyed, then replacement routes/grants.
-It never collects those secrets or performs external login/revocation.
-Permanent snapshot-time member token hashes survive, but browser sessions,
-bootstrap/enrollment and pairing codes are invalidated. Before serving, the
-operator reviews capture time and exact member roster. RCP cannot know later
-revocations. Known-stale tokens require a newer safe archive or explicit offline
-member removal with another enrolled member and no orphaned project. The normal
-removal transaction/fence applies; operators cannot impersonate or mint a token.
-A sole stale member leaves restore stopped for separate identity recovery.
-
-`space_id` survives. All prior tasks become history-only and captured active work
-becomes interrupted; native session/stage bindings, writing sessions and chat
-context indexes are cleared. Answers, receipts, chat and Paper remain readable;
-new turns start fresh only after provider readiness. Restore detaches nonterminal
-episodes, reports, watchers, deliveries, child admissions and automatic recovery
-before startup. Proof must show that no old turn, check, retry or graph mutation
-launches. The same transaction rotates the resource watermark epoch.
-Unfinished provisioning/operation leases lose old step claims and become
-**operator action needed**, never auto-resume machine authority.
-
-Notification preferences/devices/outbox/observations participate in schema and
-restore validation. Restore detaches devices and resets observations for a quiet
-baseline. Transfer discards only that project's preferences/outbox/observations,
-not space devices or other projects. The sender starts after recovery/effect
-fence release; maintenance drains it and reopening resumes it. It never mutates
-canonical graph history.
-
-Every captured checkout is reconstructed before `.research` publication, using
-its descriptor and normal exact-account checkout/key helpers. GitHub recovery
-generates new local/remote repository keys; SSH routes need renewed verification.
-Server-only recovery follows the empty-repository rule above. Existing retained
-research must be byte-identical archived entries without later commits. Conflicts
-refuse. All captured file groups and replay must validate; uncaptured projects
-stay visible but unavailable. Bootstrap locators regenerate from descriptors and
-catalog paths rebind; old absolute locator files are not authority.
-
-Protected restore uses deployment's journal and whole-root publication protocol.
-Before replacement it backs up an initialized target, closes admission, stops it
-and snapshots every destination, including absence. Additional local project,
-artifact and legacy view roots are captured. Candidate trees preserve unrelated
-existing files with the privileged copier before overlaying validated content.
-Divergent same-host remote history refuses because local rollback cannot undo it;
-fresh remote reconstruction requires explicit old-authority review and grants.
-
-Root publishes under closed admission, runs the app's fenced proof of replay,
-imported history, roster and detached lifecycle, then durably selects and serves.
-Pre-selection failure restores prior initialized service or leaves a fresh host
-stopped; startup recovers interrupted publication. Post-selection recovery keeps
-accepted work. Provider sign-in is separate: missing login blocks new tasks,
-not restoration or reading of research.
+Root uses the deployment journal and whole-root rollback protocol under closed
+admission, preserving unrelated files and original absence. Divergent remote
+history causes refusal because local rollback cannot undo it. Fenced proof of
+replay, history, the roster and lifecycle precedes durable selection. Pre-choice
+failure restores the initialized service or leaves a fresh host stopped.
+Post-choice recovery preserves accepted work. Missing provider login blocks new
+tasks, not restored research reads.
 
 ## Agent browser host runtime
 
-Browser installation is explicit. The execution account needs Node.js 20 or
-newer and npm; RCP itself still starts without them. Doctor and machine cards
-use the same readiness service. Doctor probes the installed service account,
-including its login environment, rather than root's tools. Browser readiness is
-optional and does not make the core server dependency check fail.
+Browser installation is explicit and optional. Readiness checks the execution
+account's Node and npm environment. Missing browser prerequisites never prevent
+core startup. [browser/host.py](../../src/rcp/browser/host.py) owns the pinned
+CLI, Chromium and Node compatibility contract. Agents use the RCP-owned launcher
+and its checked Node, not whichever executable appears first on PATH.
 
-RCP installs a pinned Playwright CLI and Chromium into its tools directory. Agents
-reach it through an RCP-owned `playwright-cli` launcher in `tools/bin` that runs
-the Node readiness checked, never whichever `node` comes first on the shell's
-`PATH`; the pinned Playwright refuses Node older than 20.
-Profiles, configurations and owner state live in the sibling browser directory.
-Both roots are excluded from protected backups and remain RCP-owned protected
-storage under ordinary agent write scopes. SSH hosts use the private account
-RCP root. Browser cookies and live process handles are never restored.
+The tools live in an RCP-owned protected root. Browser profiles, configuration
+and ownership state live in a separate protected root. This separation also
+applies to remote account storage. Both roots are excluded from backups. Cookies and process handles are never restored. Doctor and machine
+cards use the same readiness service, not root's environment.

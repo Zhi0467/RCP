@@ -130,7 +130,7 @@
   .conversation-list .agent-list-search input,
   .agent-list-filters button,
   .agent-status-chip,
-  .chat-header-menu-list > button,
+  .overflow-menu-list > button,
   .chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
     height: auto;
     min-height: 44px;

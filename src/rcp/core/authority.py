@@ -131,6 +131,24 @@ class AgentDispatchAuthority(BaseModel):
     task_contract: AgentCapability
     scope: AgentDispatchScope
 
+    @property
+    def is_work_chat(self) -> bool:
+        return (
+            self.profile == "ordinary"
+            and self.task_contract == "work_auto"
+            and self.scope.patch_kind == "work"
+            and bool(self.scope.chat_id)
+        )
+
+    @property
+    def is_discuss_chat(self) -> bool:
+        return (
+            self.profile == "ordinary"
+            and self.task_contract == "discuss"
+            and self.scope.patch_kind is None
+            and bool(self.scope.chat_id)
+        )
+
 
 class AgentTaskAuthority(BaseModel):
     """One project-scoped operational task binding resolved for live Apply."""
