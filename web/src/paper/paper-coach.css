@@ -12,9 +12,6 @@
   gap: 6px;
 }
 /* The agent pick sits among chat's composer tools and gives way to them. */
-.paper-coach .chat-send {
-  min-width: 0;
-}
 .paper-coach .chat-composer-tools {
   flex-wrap: nowrap;
 }

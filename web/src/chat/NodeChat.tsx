@@ -1,17 +1,12 @@
 import { ChatOriginLink } from "./ChatBranchPicker";
-import { ProviderSwitchHint } from "./ProviderSwitchHint";
+import { ChatComposer } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ReferenceChip } from "../core/ReferenceChip";
-import {
-  ComposerAddPicker,
-  ComposerAttachmentChips,
-  formatBytes,
-  useComposerAttachments,
-} from "./composerAttachments";
+import { formatBytes, useComposerAttachments } from "./composerAttachments";
 import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
 import { referenceDraftKey, sourceReference } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
@@ -89,12 +84,7 @@ import {
 } from "../artifacts/InlineArtifact";
 import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import {
-  AnswerCommentButton,
-  AnswerCommentLayers,
-  StagedAnswerComments,
-  useAnswerComments,
-} from "./answerComments";
+import { AnswerCommentButton, AnswerCommentLayers, useAnswerComments } from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -163,7 +153,7 @@ import {
   launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
-import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useSkillPicker } from "../core/SkillPicker";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { RepositoryScope } from "./RepositoryScope";
 import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
@@ -2362,50 +2352,47 @@ export function NodeChat({
       </div>
       {!canCompose && readOnlyNotice}
       {canCompose && (
-        <div
-          className={`chat-composer${composer.dragging ? " is-dragging-files" : ""}`}
-          data-mode={mode}
-          {...composer.dropTarget()}
-        >
-          <SkillPicker {...skills.props} />
-          <ProviderSwitchHint
-            project={project}
-            config={config}
-            tasks={relatedTasks}
-            sessionId={sessionId}
-          />
-          <StagedAnswerComments comments={comments} />
-          <ComposerAttachmentChips composer={composer} />
-          <ComposerTextarea
-            draft={draft}
-            ref={textareaRef}
-            aria-label="Message"
-            aria-keyshortcuts="Shift+Tab"
-            disabled={awaitingSteerReceipt}
-            onChange={(event) => {
-              setSendAfterDictation(null);
-              if (dictating) stopDictation(true);
-              updateMessage(event.target.value);
-            }}
-            onPaste={composer.paste}
-            onKeyDown={(event) => {
-              if (skills.handleKeyDown(event)) return;
-              if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
-                if (presentation !== "workspace") {
-                  event.preventDefault();
-                  toggleMode();
+        <ChatComposer
+          project={project}
+          config={config}
+          tasks={relatedTasks}
+          sessionId={sessionId}
+          mode={mode}
+          composer={composer}
+          comments={comments}
+          skills={skills.props}
+          addDisabled={attachDisabled}
+          field={
+            <ComposerTextarea
+              draft={draft}
+              ref={textareaRef}
+              aria-label="Message"
+              aria-keyshortcuts="Shift+Tab"
+              disabled={awaitingSteerReceipt}
+              onChange={(event) => {
+                setSendAfterDictation(null);
+                if (dictating) stopDictation(true);
+                updateMessage(event.target.value);
+              }}
+              onPaste={composer.paste}
+              onKeyDown={(event) => {
+                if (skills.handleKeyDown(event)) return;
+                if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
+                  if (presentation !== "workspace") {
+                    event.preventDefault();
+                    toggleMode();
+                  }
+                  return;
                 }
-                return;
-              }
-              if (returnSends(event)) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <div className="chat-send">
-            <div className="chat-composer-tools">
-              <ComposerAddPicker composer={composer} disabled={attachDisabled} />
+                if (returnSends(event)) {
+                  event.preventDefault();
+                  void send();
+                }
+              }}
+            />
+          }
+          tools={
+            <>
               {!commentOnly && (
                 <>
                   <div
@@ -2488,8 +2475,10 @@ export function NodeChat({
                   )}
                 </fieldset>
               </div>
-            </div>
-            <div className="chat-send-actions">
+            </>
+          }
+          actions={
+            <>
               <button
                 className={`icon-button chat-dictation-button${
                   dictating && dictationState !== "transcribing" ? " recording" : ""
@@ -2553,8 +2542,10 @@ export function NodeChat({
               >
                 <Send size={16} />
               </button>
-            </div>
-            {discardPrompt ? (
+            </>
+          }
+          notice={
+            discardPrompt ? (
               <span className="chat-dictation-error" role="alert">
                 Discard the kept dictation?
                 <button
@@ -2605,9 +2596,9 @@ export function NodeChat({
               <span className="chat-dictation-status" role="status">
                 {dictationStatus ?? dictationNote}
               </span>
-            ) : null}
-          </div>
-        </div>
+            ) : null
+          }
+        />
       )}
       <AnswerCommentLayers comments={comments} mode={mode} />
     </div>

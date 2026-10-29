@@ -22,7 +22,7 @@ import { api } from "../core/api";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { returnSends } from "../ui/composerKeys";
 import { MarkdownAnswer } from "../core/chatMarkdown";
-import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import type {
   AgentRunConfig,
@@ -32,16 +32,11 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
-import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
-import {
-  ComposerAddPicker,
-  ComposerAttachmentChips,
-  useComposerAttachments,
-} from "../chat/composerAttachments";
+import { ChatComposer } from "../chat/ChatComposer";
+import { useComposerAttachments } from "../chat/composerAttachments";
 import {
   AnswerCommentButton,
   AnswerCommentLayers,
-  StagedAnswerComments,
   useAnswerComments,
 } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
@@ -424,43 +419,39 @@ export function PaperCoach({
         )}
         {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
       </div>
-      <div
-        className={`chat-composer${error ? " paper-failure" : ""}${composer.dragging ? " is-dragging-files" : ""}`}
-        {...composer.dropTarget()}
-      >
-        <SkillPicker {...skills.props} />
-        <ProviderSwitchHint
-          project={project}
-          config={config}
-          tasks={sessionTasks}
-          sessionId={currentSessionId}
-        />
-        <StagedAnswerComments comments={comments} />
-        <ComposerAttachmentChips composer={composer} />
-        <textarea
-          ref={textarea}
-          aria-label="Message"
-          value={message}
-          onChange={(event) => {
-            setMessage(event.target.value);
-            skills.readMessage(event.target.value);
-            setError(null);
-          }}
-          onPaste={composer.paste}
-          onKeyDown={(event) => {
-            if (skills.handleKeyDown(event)) return;
-            if (returnSends(event)) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <div className="chat-send">
-          <div className="chat-composer-tools">
-            <ComposerAddPicker
-              composer={composer}
-              disabled={composer.full || composer.preparing || submitting}
-            />
+      <ChatComposer
+        project={project}
+        config={config}
+        tasks={sessionTasks}
+        sessionId={currentSessionId}
+        mode="discuss"
+        composer={composer}
+        comments={comments}
+        skills={skills.props}
+        addDisabled={composer.full || composer.preparing || submitting}
+        className={error ? "paper-failure" : undefined}
+        field={
+          <textarea
+            ref={textarea}
+            aria-label="Message"
+            value={message}
+            onChange={(event) => {
+              setMessage(event.target.value);
+              skills.readMessage(event.target.value);
+              setError(null);
+            }}
+            onPaste={composer.paste}
+            onKeyDown={(event) => {
+              if (skills.handleKeyDown(event)) return;
+              if (returnSends(event)) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+        }
+        tools={
+          <>
             <AgentConfigChip
               project={project}
               value={config}
@@ -490,38 +481,38 @@ export function PaperCoach({
                 </button>
               ))}
             </div>
-          </div>
-          <div className="chat-send-actions">
-            {activeTask?.can_pause ? (
-              <button
-                className="icon-button primary chat-send-button"
-                aria-label="Stop coach"
-                title={error || undefined}
-                onClick={() => void stop(activeTask)}
-              >
-                <Square size={14} />
-              </button>
-            ) : (
-              <button
-                className="icon-button primary chat-send-button"
-                aria-label={error ? "Retry message" : "Send coach message"}
-                title={error || undefined}
-                disabled={
-                  !text ||
-                  !comments.complete ||
-                  composer.unready ||
-                  Boolean(activeTask) ||
-                  submitting ||
-                  !launchProviderReady(project, config)
-                }
-                onClick={() => void send()}
-              >
-                {error ? <RotateCcw size={16} /> : <Send size={16} />}
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          activeTask?.can_pause ? (
+            <button
+              className="icon-button primary chat-send-button"
+              aria-label="Stop coach"
+              title={error || undefined}
+              onClick={() => void stop(activeTask)}
+            >
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              className="icon-button primary chat-send-button"
+              aria-label={error ? "Retry message" : "Send coach message"}
+              title={error || undefined}
+              disabled={
+                !text ||
+                !comments.complete ||
+                composer.unready ||
+                Boolean(activeTask) ||
+                submitting ||
+                !launchProviderReady(project, config)
+              }
+              onClick={() => void send()}
+            >
+              {error ? <RotateCcw size={16} /> : <Send size={16} />}
+            </button>
+          )
+        }
+      />
       {configOpen && (
         <div className="paper-agent-popover">
           <button
