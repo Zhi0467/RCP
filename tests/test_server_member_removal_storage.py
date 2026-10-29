@@ -414,6 +414,33 @@ def test_pending_member_cleanup_retries_removed_login_credentials(tmp_path, monk
     )
 
 
+def test_member_cleanup_keeps_a_credential_until_its_running_turn_ends(tmp_path) -> None:
+    import json
+
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.server_ops import provider_cleanup
+
+    store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
+    own = store.add_provider_login("claude", "", member_id=bob.user_id, added_by=bob.user_id)
+    credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
+    credentials.store_token(
+        "claude", "", "token", member_id=bob.user_id, now=store.now(), login_id=own.login_id
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO graph_runs(operation_id,project_id,kind,status,request_json,created_at,"
+            "updated_at,status_message,login_id) VALUES('turn','project','refresh','running',?,?,?,"
+            "'running',?)",
+            (json.dumps({"provider": "claude"}), store.now(), store.now(), own.login_id),
+        )
+    assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
+    assert credentials.token("claude", "", own.login_id) == "token"
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status = 'completed'")
+    assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
+    assert credentials.token("claude", "", own.login_id) is None
+
+
 @pytest.mark.parametrize(
     ("provider", "relative"),
     [

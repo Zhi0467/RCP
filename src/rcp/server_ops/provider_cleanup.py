@@ -34,7 +34,8 @@ def remove_remote_credential(provider: str, login_id: str) -> None:
 
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
-    """Fence own logins before best-effort remote deletion; return unreached hosts."""
+    """Fence own logins, then delete credentials nothing runs on; return unreached hosts."""
+    from rcp.runs.provider_login import bound_running_count
     from rcp.storage.models import LoginKey
 
     # Include removed rows: later advance passes must retry their credentials.
@@ -49,9 +50,16 @@ def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str
     with store.connection() as connection:
         connection.execute("DELETE FROM provider_login_settings WHERE user_id = ?", (member_id,))
 
+    # A turn already running on a fenced login keeps its credential until it
+    # ends; a later advance pass deletes it.
     return tuple(
         sorted(
-            {login.host for login in logins if not cleanup_provider_login_credential(store, login)}
+            {
+                login.host
+                for login in logins
+                if not bound_running_count(store, login)
+                and not cleanup_provider_login_credential(store, login)
+            }
         )
     )
 
