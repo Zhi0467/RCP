@@ -87,18 +87,24 @@ export function useProviderSignIns(viewerUserId: string | null): SignInsData {
   useEffect(() => {
     void refresh();
   }, [refresh]);
-  // A starter follows their own attempt; everyone else sees its end on the next list.
-  const othersSigningIn = Boolean(
+  // A starter follows their own attempt; everyone else sees its end on the next
+  // list. A removal finishes on the server, so a draining row is followed too.
+  const followList = Boolean(
     rows?.some(
-      (row) => row.sign_in?.state === "pending" && row.sign_in.started_by !== viewerUserId,
+      (row) =>
+        row.draining_since ||
+        (row.sign_in?.state === "pending" && row.sign_in.started_by !== viewerUserId),
     ),
   );
   useEffect(() => {
-    if (!othersSigningIn) return;
+    if (!followList) return;
     const timer = setInterval(() => void refresh(), OTHERS_SIGN_IN_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [othersSigningIn, refresh]);
+  }, [followList, refresh]);
 
+  // Writes for one provider and host run one after another; the last one to
+  // settle decides what is shown, and a failure reloads the stored value.
+  const settingWrites = useRef(new Map<string, Promise<unknown>>());
   const saveSetting = useCallback(
     async (provider: string, host: string, value: ProviderLoginSettingValue) => {
       const replace = (setting: ProviderLoginSettingValue) =>
@@ -112,18 +118,21 @@ export function useProviderSignIns(viewerUserId: string | null): SignInsData {
               }
             : current,
         );
-      const previous = settings?.settings.find(
-        (item) => item.provider === provider && item.host === host,
-      )?.setting;
+      const key = `${provider}:${host}`;
+      const write = (settingWrites.current.get(key) ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => saveProviderLoginSetting(provider, host, value));
+      settingWrites.current.set(key, write);
       replace(value);
       try {
-        await saveProviderLoginSetting(provider, host, value);
+        const saved = await write;
+        if (settingWrites.current.get(key) === write) replace(saved.setting);
       } catch (failure) {
-        if (previous) replace(previous);
+        if (settingWrites.current.get(key) === write) void refresh();
         throw failure;
       }
     },
-    [settings],
+    [refresh],
   );
   return { rows, settings, error, refresh, saveSetting };
 }
@@ -521,13 +530,17 @@ export function SignInCard({
 
   // A settled attempt is history once the list stops reporting it: the card's
   // state already carries the outcome.
+  // Someone else's attempt is only known through the list, so mirror it as is.
   useEffect(() => {
-    if (row.sign_in) {
+    const attempt = row.sign_in ?? signIn;
+    if (!viewerUserId || attempt?.started_by !== viewerUserId) {
+      if (row.sign_in !== signIn) setSignIn(row.sign_in);
+    } else if (row.sign_in) {
       if (row.sign_in.attempt_id !== signIn?.attempt_id) setSignIn(row.sign_in);
     } else if (signIn && signIn.state !== "pending") {
       setSignIn(null);
     }
-  }, [row.sign_in, signIn]);
+  }, [row.sign_in, signIn, viewerUserId]);
 
   // Only the starter may read an attempt; everyone else follows the list.
   const starter = Boolean(viewerUserId && signIn?.started_by === viewerUserId);
