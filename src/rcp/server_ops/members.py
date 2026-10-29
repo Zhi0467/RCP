@@ -213,19 +213,18 @@ class MemberRemovalCoordinator:
             fence_episodes_for_removed_member(self.store, self.background, member_id)
         except (KeyError, RuntimeError, ValueError) as exc:
             errors.append(f"episodes: {type(exc).__name__}")
-        # After the pause requests, so the pass that completes removal finds
-        # nothing running and deletes every credential it can reach.
-        provider_cleanup_unreached = (
-            cleanup_member_provider_logins(self.store, member_id)
-            if before.member.removed_at is None
-            else ()
-        )
-
         after = self.store.member_removal_preview(member_id)
         if not after.active_task_ids and not after.active_episode_ids:
             ServiceConnections(self.store, member_id).remove_member_data()
             self.store.complete_member_removal(member_id)
             after = self.store.member_removal_preview(member_id)
+        # After the completion check, so the pass that completes removal has none
+        # of this member's turns running and deletes every credential it can reach.
+        provider_cleanup_unreached = (
+            cleanup_member_provider_logins(self.store, member_id)
+            if before.member.removed_at is None
+            else ()
+        )
         snapshot = self._snapshot(after)
         step = self._result_step(snapshot, errors=errors)
         return ServerControlMemberAdvanceResult(
