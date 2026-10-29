@@ -19,14 +19,25 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 if TYPE_CHECKING:
     from rcp.history.branches import BranchHistoryManager
     from rcp.history.manager import HistoryManager
+    from rcp.storage import AppStore
 
 GraphHistoryVerb = Literal["graph_diff", "graph_log"]
 GRAPH_HISTORY_VERBS: frozenset[GraphHistoryVerb] = frozenset(("graph_diff", "graph_log"))
 
 
+class ReadableBranch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    id: str
+    parent: str
+    head_revision: int
+
+
 class GraphReadScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    branches: tuple[ReadableBranch, ...] = ()
     group_context: GroupContext | None = None
     project_id: str
     # The run's own target; a head reference without a target resolves here.
@@ -42,21 +53,46 @@ class GraphReadScope(BaseModel):
         project_id: str,
         history: HistoryManager | BranchHistoryManager,
         group_context: GroupContext | None = None,
+        *,
+        store: AppStore,
     ) -> GraphReadScope:
         target = history.graph_target
         scope = cls(project_id=project_id, target=target, group_context=group_context)
-        if target.kind != "branch":
-            return scope
-        generations = history.history_engine.snapshots([target], refresh=False)
-        metadata = generations[target.key].source.metadata
-        if metadata is None or metadata.kind != "fork":
-            return scope
-        ceilings = []
-        while metadata is not None:
-            parent = metadata.effective_parent_head
-            ceilings.append(parent)
-            metadata = generations[parent.target.key].source.metadata
-        return scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
+        if target.kind == "branch":
+            generations = history.history_engine.snapshots([target], refresh=False)
+            metadata = generations[target.key].source.metadata
+            if metadata is not None and metadata.kind == "fork":
+                ceilings = []
+                while metadata is not None:
+                    parent = metadata.effective_parent_head
+                    ceilings.append(parent)
+                    metadata = generations[parent.target.key].source.metadata
+                scope = scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
+        records = store.graph_branches(project_id)
+        names = {branch.branch_id: branch.name for branch in records}
+        identities = [
+            (branch.branch_id, branch.owner_episode_id, project_id)
+            for branch in records
+            if scope.readable(project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id))
+        ]
+        snapshots = history.history_engine.manager.branch_read_snapshots(identities)
+        branches = []
+        for branch_id, snapshot in snapshots.items():
+            if snapshot is None:
+                continue
+            metadata = snapshot.metadata
+            parent = metadata.effective_parent_head.target
+            branches.append(
+                ReadableBranch(
+                    name=names[branch_id],
+                    id=branch_id,
+                    parent="main"
+                    if parent.kind == "main"
+                    else names.get(parent.branch_id or "", parent.key),
+                    head_revision=metadata.head.revision,
+                )
+            )
+        return scope.model_copy(update={"branches": tuple(branches)})
 
     @model_validator(mode="after")
     def validate_group_project(self) -> GraphReadScope:

@@ -200,17 +200,6 @@ class StateConfig(BaseModel):
 AgentSurface = Literal["seed", "refresh", "node_chat", "project_chat", "paper_coach"]
 AgentExecutionProfile = AgentSurface | Literal["orchestrator"]
 
-GRAPH_AGENT_SURFACES: tuple[AgentSurface, ...] = (
-    "seed",
-    "refresh",
-    "node_chat",
-    "project_chat",
-)
-GRAPH_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
-    *GRAPH_AGENT_SURFACES,
-    "orchestrator",
-)
-
 
 class AgentPermissions(BaseModel):
     read_graph: bool
@@ -363,15 +352,20 @@ class Manifest(BaseModel):
                 deep=True,
                 update={"permissions": permissions_for("orchestrate")},
             )
+        coach = self.agent.paper_coach
+        assert coach is not None
+        # The coach once chose its own machine. Every agent now runs on the base,
+        # the canonical state machine, so an older choice is dropped on load.
+        coach.run_on = state_machine
         for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
             if profile.run_on not in machines:
                 raise ValueError(f"agent.{surface}.run_on must name a registered machine")
-            if surface in GRAPH_AGENT_EXECUTION_PROFILES and profile.run_on != state_machine:
+            if profile.run_on != state_machine:
                 raise ValueError(
                     f"agent.{surface}.run_on must be the canonical state machine "
-                    f"{state_machine!r}; graph-writing agents run beside .research/"
+                    f"{state_machine!r}; every agent runs beside .research/"
                 )
             expected = permissions_for(surface)
             if profile.permissions is None:
@@ -710,6 +704,10 @@ def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
         if str(table.get("alias")) == alias:
             del machines[index]
             break
+    state_machine = manifest.repository_map[manifest.state.repository].machine
+    for table in document.get("agent", {}).values():
+        if isinstance(table, dict) and table.get("run_on") == alias:
+            table["run_on"] = state_machine
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

@@ -1258,7 +1258,7 @@ wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 `GET /api/providers/logins` lists machine accounts, dependent project machines,
 secret-free credential summaries, labels, supported sign-in methods, and active
 sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
-uses: each execution profile's provider on its `run_on` machine, plus any
+uses: each execution profile's provider on the base machine, plus any
 account holding this project's parked work (queued tasks, provider-auth
 recoveries, the current failed Experiment turn, undelivered watcher groups). A
 machine no profile runs on raises no notice. Signed-out accounts get one notice
@@ -1523,9 +1523,12 @@ re-checks them before it returns, so the returned card shows the new routes.
 `POST /api/space/machines/{machine_id}/compute/check` re-runs the route probes
 and reach now. Both settle an undecided job manager, even on a card no project
 uses yet. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
-finds the executable on the machine and records it on the card. A card
-in use by any project, or whose use cannot be established, cannot be deleted,
-and host and account never change. A team create with a blank account fills it
+finds the executable on the machine and records it on the card. A card carries a boolean
+`deletable`: true only when every project can be read and no repository
+lives on any alias bound to it, including each project’s base. Delete detaches
+the machine from every listing project before deleting the card. If detaching
+fails, the error is returned and the card stays. Host and account never change.
+A team create with a blank account fills it
 from the login check or refuses with 422 and a `detail.code` of
 `authentication_failed`, `host_key_unknown` (with the fingerprint),
 `host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes

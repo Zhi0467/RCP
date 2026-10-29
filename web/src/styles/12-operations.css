@@ -672,6 +672,11 @@
   border: 1px solid var(--red);
   color: var(--red);
 }
+/* The armed list button grows to fit its label. */
+.icon-button.artifact-delete-confirm {
+  padding: 0 9px;
+  width: auto;
+}
 .artifact-action-failed {
   border-color: var(--red);
 }

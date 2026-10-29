@@ -437,8 +437,9 @@ history.
 
 ## Add another machine, such as a cloud VM
 
-Agents reach every other machine over the service account's own SSH settings.
-RCP collects no keys. Give the service account a route first, then add the
+Agents run on the project's base, the machine that holds its state repository
+(tagged **Base** in project Settings → Machines), and reach every other machine
+over that machine's own SSH settings. RCP collects no keys. Give the service account a route first, then add the
 machine.
 
 For a Google Compute Engine VM, open a terminal in RCP and run:
@@ -464,8 +465,7 @@ machine is told its SSH name and hint.
 
 Agents reach the VM with plain `ssh <Host name>`; that needs no gcloud. To let
 them run `gcloud` as well, for example to start a stopped spot VM, add
-`/home/rcp/.config/gcloud` to **Writable paths** on the card of the machine the
-agents run on. gcloud writes its token cache there on every command, so a
+`/home/rcp/.config/gcloud` to **Writable paths** on the base machine's card. gcloud writes its token cache there on every command, so a
 read-only folder fails even for a `describe`. Any other cloud CLI works the same
 way with its own folder, such as `/home/rcp/.aws`.
 

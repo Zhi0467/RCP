@@ -15,8 +15,62 @@ FIGURE = b"\x89PNG\r\n\x1a\nold-figure\x00"
 EDITED_FIGURE = b"\x89PNG\r\n\x1a\nnew-figure\x00"
 
 
-def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
-    """Execute the historical Paper writer so draft, base and canonical diverge."""
+TREE_FILES = {
+    "sections/baseline.md": b"# Baseline\n\nWritten by the baseline release.\n",
+    "figures/baseline.png": FIGURE,
+}
+
+
+def _uploader(request, fixture: dict, cookie: str):
+    base = f"/api/projects/{fixture['project_id']}/paper"
+
+    def upload(path, content):
+        boundary = uuid.uuid4().hex
+        payload = (
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="path"\r\n\r\n'
+                f'{path}\r\n--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                f'filename="{Path(path).name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
+            ).encode()
+            + content
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        with request(
+            base + "/uploads",
+            body=payload,
+            method="POST",
+            cookie=cookie,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        ) as response:
+            return json.load(response)
+
+    return base, upload
+
+
+def seed_tree_paper(request, fixture: dict, cookie: str) -> dict:
+    """Write a file tree through a baseline release that already keeps one."""
+    _, upload = _uploader(request, fixture, cookie)
+    for path, content in TREE_FILES.items():
+        upload(path, content)
+    return {"writer": "tree", "files": {path: _sha(data) for path, data in TREE_FILES.items()}}
+
+
+def assert_tree_paper(request, fixture: dict, cookie: str) -> None:
+    """The baseline's file tree survives the upgrade byte for byte."""
+    base, _ = _uploader(request, fixture, cookie)
+    with request(base + "/tree", cookie=cookie) as response:
+        files = {file["path"]: file["file_id"] for file in json.load(response)["files"]}
+    for path, sha in fixture["paper"]["files"].items():
+        with request(f"{base}/files/{files[path]}/raw", cookie=cookie) as response:
+            assert _sha(response.read()) == sha, f"Upgrade changed {path}"
+
+
+def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict | None:
+    """Execute the historical Paper writer so draft, base and canonical diverge.
+
+    A release that already keeps the live Paper file tree has no such writer; it
+    seeds nothing here and the current writer journey starts from an empty paper.
+    """
     from rcp.config import load_manifest
     from rcp.paper import PaperService
     from rcp.storage import AppStore
@@ -25,6 +79,11 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
     record = store.project(fixture["project_id"])
     assert record is not None
     paper = PaperService(load_manifest(Path(record.locator)), store, project_id=record.project_id)
+    if not hasattr(paper, "create"):
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+        return None
 
     def save(text, snapshot):
         arguments = {"content": text, "base_hash": snapshot.base_hash}
@@ -82,18 +141,20 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         )
 
     tree = call("/tree")
-    assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
-    history = call("/history")
-    preserved = set()
-    for version in history:
-        files = version["manifest"]
-        preserved.update(file.get("text_sha256") for file in files)
-    # The draft becomes the live text; the diverged canonical and ancestor become versions.
-    assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
-    required = {_sha(CANONICAL.encode())}
-    if fixture["paper"]["ancestor_stored"]:
-        required.add(_sha(ANCESTOR.encode()))
-    assert required <= preserved, "Migration lost a divergent legacy history version"
+    legacy = fixture["paper"] if (fixture.get("paper") or {}).get("writer") == "legacy" else None
+    if legacy:
+        assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
+        history = call("/history")
+        preserved = set()
+        for version in history:
+            files = version["manifest"]
+            preserved.update(file.get("text_sha256") for file in files)
+        # The draft becomes the live text; the diverged canonical and ancestor become versions.
+        assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
+        required = {_sha(CANONICAL.encode())}
+        if legacy["ancestor_stored"]:
+            required.add(_sha(ANCESTOR.encode()))
+        assert required <= preserved, "Migration lost a divergent legacy history version"
     for path in ("sections/methods.tex", "references.bib"):
         call("/files", body={"path": path, "kind": "text"}, method="POST")
     upload("figures/result.png", FIGURE)
@@ -113,7 +174,9 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     )
     saved = call("/tree")
     assert saved["saved_revision"] > before["saved_revision"]
-    assert saved["saved_revision"] > saved["published_revision"]
+    if legacy:
+        # Only the held legacy paper keeps its saves unpublished.
+        assert saved["saved_revision"] > saved["published_revision"]
     assert saved["hold"] == tree["hold"]
     assert (
         next(file for file in saved["files"] if file["file_id"] == ids["sections/methods.tex"])[

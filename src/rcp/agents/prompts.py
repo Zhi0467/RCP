@@ -130,7 +130,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 26
+CHAT_MASTER_CONTEXT_VERSION = 27
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -341,6 +341,9 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
         "graph_log": "[--project <project id>] <id> [--at <head>]",
     }
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
+    branch_list = "\nBranches: " + json.dumps(
+        [branch.model_dump(mode="json") for branch in scope.branches], separators=(",", ":")
+    )
     return (
         "## Graph history queries\n\n"
         f"Project: `{scope.project_id}`. Readable targets: {scope.readable_targets}; "
@@ -350,10 +353,10 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
         "Reads grant no write authority.\n"
         f"{calls}\n"
         "A continuation that changes `history_client` or `patch.command_client` replaces the command prefix above. "
-        "Heads: `main@R`, `branch:<id>@R`, or `@R`; `head` may replace R. "
+        "Heads: `main@R`, `branch:<name-or-id>@R`, or `@R`; `head` may replace R. "
         "Continue a paged answer with the same verb and its returned cursor (`--cursor`). "
         "When a continuation lists `current.graph_changed_since` and `current.graph_head`, "
-        "query that range with graph_diff. The range tracks only this run's target."
+        "query that range with graph_diff. The range tracks only this run's target." + branch_list
     )
 
 
@@ -909,9 +912,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v10"
+DISCUSS_POLICY_VERSION = "discuss-v11"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v16"
+WORK_POLICY_VERSION = "work-v17"
 
 
 class PromptFactory:
@@ -1162,7 +1165,7 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v4"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v5"
 
     @staticmethod
     def graph_task_contract(
@@ -1550,7 +1553,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v6"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v8"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1561,6 +1564,7 @@ Graph Patch (optional):
         research_path: str,
         repositories: list[dict[str, str]],
         human_request_path: str,
+        attachments: list[dict[str, object]] | None = None,
         retry_diagnostics_path: str | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -1587,7 +1591,7 @@ Required inputs:
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
 {graph_rules(edits=False, ontology_extensions=False)}
 Relevant repository inputs; read only when the coaching request needs them:
-{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}
+{_repository_pointers(repositories)}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.

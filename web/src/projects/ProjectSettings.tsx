@@ -92,12 +92,18 @@ const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 
+/** Every agent runs on the base: the machine that holds the canonical state repository. */
+function baseMachine(project: ProjectSnapshot): string {
+  return (
+    project.repositories.find((repository) => repository.alias === project.state_repository)
+      ?.machine ?? project.run_on
+  );
+}
+
 function profilesFrom(
   project: ProjectSnapshot,
 ): Record<AgentExecutionProfile, AgentProfileSettings> {
-  const canonicalMachine =
-    project.repositories.find((repository) => repository.alias === project.state_repository)
-      ?.machine ?? project.run_on;
+  const base = baseMachine(project);
   return Object.fromEntries(
     executionProfiles.map(({ id }) => {
       const storedProfile =
@@ -105,7 +111,7 @@ function profilesFrom(
           ? (project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
           : project.agent_profiles[id];
       const settings = { ...profileRunConfig(storedProfile), runtime: storedProfile.runtime };
-      return [id, id === "paper_coach" ? settings : { ...settings, run_on: canonicalMachine }];
+      return [id, { ...settings, run_on: base }];
     }),
   ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
@@ -575,6 +581,7 @@ export function ProjectSettings({
               name={machines.map((machine) => machine.alias).join(", ")}
               hostLabel={machineHostLabel(machines[0].host, spaceKind)}
               account={machines[0].os_account}
+              base={machines.some((machine) => machine.alias === baseMachine(project))}
               signals={[
                 ...new Map(
                   machines.flatMap(machineSignals).map((signal) => [signal.label, signal]),
@@ -721,7 +728,6 @@ export function ProjectSettings({
                     : ""
                 }
                 locked={writesDisabled}
-                runOnLocked={id !== "paper_coach"}
                 workLikeCapable={project.agent_profiles[id]?.work_like_capable ?? true}
                 onRefreshReadiness={onRefreshReadiness}
                 readinessPending={readinessRequest?.pending ?? false}

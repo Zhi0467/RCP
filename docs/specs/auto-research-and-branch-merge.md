@@ -98,6 +98,14 @@ root's UTC date, lowercase English month, and two-digit day; clashes get `-2`,
 reuse reservations. Rename preserves other fallback names. One storage owner
 resolves names; transfer carries current and retired reservations.
 
+Discuss/Work, Seed/Refresh, Experiment, Auto-research, and branch-merge launches
+carry a compact branch list in their resolved read scope:
+name, id, parent name (or `main`), and head revision. Only retained, readable
+targets appear; archived branches remain listed when readable. The shared history
+contract renders this same scope. Agents may use either current names or ids in
+history commands, including the staged parent reference; see
+[History reads](graph-history-and-transitions.md#history-reads).
+
 Any member may rename, archive, or unarchive through graph-ref routes; these
 are operational labels, not Patches. Every surface uses the shared name. The
 project-wide branch picker and tagged project-wide Runs/Artifacts follow the

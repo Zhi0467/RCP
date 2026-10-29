@@ -15,8 +15,6 @@ interface Props {
   initialScope: string[];
   initialConfig?: AgentRunConfig;
   mode?: "start" | "retry";
-  /** A run pinned to its machine. Only a retry that nothing is anchored to may move. */
-  runOnLocked?: boolean;
   busy: boolean;
   onClose: () => void;
   onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
@@ -36,7 +34,6 @@ export function RunDialog({
   initialScope,
   initialConfig,
   mode = "start",
-  runOnLocked = true,
   busy,
   onClose,
   onRun,
@@ -63,12 +60,7 @@ export function RunDialog({
   // retry path, so requiring a change there would block a plain retry.
   const switching = mode === "retry" && kind !== "seed" && kind !== "refresh";
   const switchSelectionUnchanged = Boolean(
-    switching &&
-    initialConfig &&
-    !agentSelectionChanged(config, initialConfig) &&
-    // Moving off a machine that is gone is the whole reason a standalone
-    // retry may change one, so it counts as the change this dialog wants.
-    (runOnLocked || config.run_on === initialConfig.run_on),
+    switching && initialConfig && !agentSelectionChanged(config, initialConfig),
   );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   // Which runtime this run will use. A request cannot override the profile's
@@ -176,7 +168,6 @@ export function RunDialog({
           onChange={setConfig}
           workLikeCapable={project.agent_profiles[kind]?.work_like_capable ?? true}
           runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
-          runOnLocked={runOnLocked}
           collapsible
         />
         {childBindingStays && (

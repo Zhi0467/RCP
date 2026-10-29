@@ -852,7 +852,6 @@ export function DetailDrawer({
                         effectiveModel={launchEffectiveModel}
                         workLikeCapable={launchProfile.work_like_capable}
                         locked={nodeMutationDisabled || experimentRunBusy}
-                        showRunOn={false}
                         compact
                       >
                         <div

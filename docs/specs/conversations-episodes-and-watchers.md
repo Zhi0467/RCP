@@ -364,8 +364,9 @@ captured target/settings; a changed target or setting keeps the draft instead.
 RCP stores no audio. SpeechAnalyzer is local; the older Apple recognizer or a
 chosen network service may send audio externally. Audio attachments are refused.
 
-One nonblank Discuss/Work message atomically claims bounded temporary attachments.
-They stage immutably on the execution host and recovery reuses the exact batch;
+One nonblank Discuss/Work or Paper coach message atomically claims bounded
+temporary attachments. They stage immutably on the execution host and recovery
+reuses the exact batch;
 partial transfer fails rather than dropping files. The claimed batch expires
 `RUN_STAGE_RETENTION_DAYS` after send; from then on its task offers no Retry or
 Resume and both endpoints refuse, since recovery without the exact batch would
@@ -378,9 +379,9 @@ target, or the saved paper introduction. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
 They share attachment caps and add no roots or target authority. Prompts list
-them separately from uploads and editable comments. Only ordinary node/project
-Discuss/Work and the Paper coach admit them; steering and other run kinds refuse
-them, and question or watcher follow-ups clear them.
+them separately from uploads and editable comments. Ordinary node/project
+Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
+and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
 Overshoots clamp to answer text; a visible Comment command provides a keyboard
@@ -389,8 +390,7 @@ viewport at every width. Multiple editable/removable annotations remain per-chat
 drafts with a count; blank comments block send until completed or removed.
 Sending appends copied text and `comment: <comment>` to the human message, with
 no source ids, offsets or durable annotation model. Acceptance clears drafts;
-refusal retains them. The [Paper coach](paper-artifacts-and-result-views.md#writing-coach)
-renders this same composer flow. [Artifact comments](paper-artifacts-and-result-views.md)
+refusal retains them. [Artifact comments](paper-artifacts-and-result-views.md)
 use their own viewer flow.
 
 ## Common episode parent

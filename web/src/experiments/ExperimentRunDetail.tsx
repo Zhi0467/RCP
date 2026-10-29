@@ -395,7 +395,6 @@ export function ExperimentRunDetail({
             effectiveModel={launchEffectiveModel}
             workLikeCapable={launchProfile.work_like_capable}
             locked={runDisabled || startDisabled || runBusy}
-            showRunOn={false}
             compact
           >
             <div className="agent-config-options" role="group" aria-label="Launch options">

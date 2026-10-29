@@ -154,7 +154,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     paper_coach: defaultProfile("gpt-5.6-luna"),
     orchestrator: defaultProfile(),
   });
-  const [paperCoachMachine, setPaperCoachMachine] = useState("server");
   const [defaultAutoResearchInvocationCeiling, setDefaultAutoResearchInvocationCeiling] =
     useState(10);
   const [providers, setProviders] = useState<ProviderReadiness[]>([]);
@@ -392,9 +391,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     ) {
       return "Set the default auto-research ceiling to at least 1 operational invocation.";
     }
-    if (!machines.some((machine) => machine.alias === paperCoachMachine)) {
-      return "Choose a configured machine for Paper coach.";
-    }
     if (agentProfiles.some(({ id }) => !agents[id].provider || !agents[id].runtime)) {
       return "Choose an available provider and runtime for every agent role.";
     }
@@ -425,7 +421,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         runtime_id: agents[id].runtime,
         model: agents[id].model,
         reasoning: agents[id].reasoning,
-        machine_alias: id === "paper_coach" ? paperCoachMachine : canonicalMachine,
+        machine_alias: canonicalMachine,
       })),
     });
 
@@ -701,9 +697,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                             : item,
                         ),
                       );
-                      if (paperCoachMachine === machine.alias) {
-                        setPaperCoachMachine(patch.alias);
-                      }
                     }
                     setMachines((current) =>
                       current.map((item) =>
@@ -723,7 +716,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                           : item,
                       ),
                     );
-                    if (paperCoachMachine === machine.alias) setPaperCoachMachine(replacement);
                   }}
                 />
               ))}
@@ -824,7 +816,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                 const readiness = readinessFor(providers, profile.provider);
                 const models = readiness?.models ?? [];
                 const runtimes = runtimeOptions(readiness, profile.runtime);
-                const machine = id === "paper_coach" ? paperCoachMachine : canonicalMachine;
                 return (
                   <article className="agent-role-card" key={id}>
                     <header>
@@ -907,20 +898,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                               </option>
                             ),
                           )}
-                        </select>
-                      </label>
-                      <label>
-                        Run on
-                        <select
-                          value={machine}
-                          disabled={id !== "paper_coach"}
-                          onChange={(event) => setPaperCoachMachine(event.target.value)}
-                        >
-                          {machines.map((item) => (
-                            <option key={item.alias} value={item.alias}>
-                              {item.alias}
-                            </option>
-                          ))}
                         </select>
                       </label>
                     </div>

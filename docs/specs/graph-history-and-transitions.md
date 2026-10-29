@@ -350,7 +350,12 @@ populated. Checks for a persisted graph change:
 
 One engine serves every history reader and materialization path. References are
 `main@R`, `branch:<id>@R`, or either target's `@head`; resolved heads carry transition
-ids. Missing, out-of-range, and pre-base revisions refuse rather than clamp.
+ids. Agent history commands also accept `branch:<name>@R` and a name for
+`--branch-changes`. The command handler resolves current project names through
+the branch-name store before checking read scope; the pure history parser and
+engine retain canonical ids. Responses keep canonical heads and include a
+`branch_names` map for the queried branches. Unknown names refuse like unknown ids.
+Missing, out-of-range, and pre-base revisions refuse rather than clamp.
 Rejected receipts remain valid heads with previous accepted semantics.
 
 Step records hold before/after heads and states, decoded Patch/operations, semantic

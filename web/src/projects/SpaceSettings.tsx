@@ -125,7 +125,7 @@ function SpaceMachineList({
             writesDisabled={writesDisabled}
             onRecordChange={replace}
             onDelete={
-              machine.in_use === false
+              machine.deletable
                 ? async () => {
                     await deleteSpaceMachine(machine.machine_id);
                     remove(machine.machine_id);

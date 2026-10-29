@@ -851,10 +851,8 @@ session, since the prior continuation belongs to the binding it left, so the
 rebinding reaches exactly the actors that have a clean-session path: an
 Auto-research worker continues only through the exact session its dispatch bound
 it to, and its recovery is refused rather than admitted as a turn that cannot
-launch. The execution machine moves only where nothing is anchored to it. An
-episode's watchers, stage, and children live on the machine its turn runs on, so
-a recovery inside an episode keeps that machine on every Retry path, while a
-standalone turn owns nothing there and may move to any reachable one. A failed run retains its scratch and Patch text for bounded
+launch. No recovery moves the execution machine: every turn runs on the project's base
+(see [Local and SSH execution](#local-and-ssh-execution)). A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,
@@ -916,8 +914,24 @@ processes do not recover in-flight steering.
 
 ## Local and SSH execution
 
-Providers run on the selected repository execution machine with the same
-capability and scope locally and over SSH. Remote launches use remote canonical
+Every agent runs on the project's **base**: the machine that holds the
+canonical state repository. Chat, Seed, Refresh, Experiments, Auto-research,
+watchers and the Paper coach alike; no profile, request or recovery picks
+another machine, and project Settings tags the base's machine card. A manifest
+whose coach names another machine loads with that choice dropped. A fresh Paper
+turn or standalone retry without a native session ignores a stale request's
+machine choice. Continuing, refreshing cards from, or resuming a Paper session
+recorded on another machine starts a fresh native session on the base. Visible
+chat history remains; native session memory is lost. Sessions already on the
+base retain their native session and stage.
+The coach stages its fixed paper snapshot and reads changes back over the same
+remote-stage transport as other agents; see [Writing coach](paper-artifacts-and-result-views.md#writing-coach).
+
+**Why:** graph-writing agents already had to run beside `.research/`, and a
+per-launch machine made "where does the agent's SSH start" depend on the chat.
+One base means one machine whose SSH settings reach the others.
+
+Providers run with the same capability and scope locally and over SSH. Remote launches use remote canonical
 roots. The remote stage owns validation, wrappers, transfers and recovery;
 resumption proves its saved host and stage. Transport failure is unavailable,
 not semantic correction.

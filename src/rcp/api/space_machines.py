@@ -20,7 +20,12 @@ from rcp.agents import AgentLauncher
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
 from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
-from rcp.api.dependencies import get_catalog, get_identity_access, get_store
+from rcp.api.dependencies import (
+    get_catalog,
+    get_identity_access,
+    get_project_display_cache,
+    get_store,
+)
 from rcp.api.identity import IdentityAccess
 from rcp.browser import BrowserReadiness, enable_linger, install_browser, readiness
 from rcp.compute import probe_machine_reach
@@ -38,7 +43,7 @@ from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
-from rcp.projects import ProjectCatalog
+from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
@@ -52,6 +57,7 @@ router = APIRouter()
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_display_cache)]
 
 #: Held across "is this card used?" and delete, and across adding a card to a
 #: project, so a delete cannot slip between an add's read and its manifest write.
@@ -183,12 +189,13 @@ class MachineDirectoriesRequest(BaseModel):
 
 def _machine_usage(
     store: AppStore,
-) -> tuple[dict[str, list[dict[str, str]]], bool, set[str]]:
+) -> tuple[dict[str, list[dict[str, str]]], bool, set[str], set[str]]:
     """Which registered projects name each machine account, whether every manifest
-    read, and the hosts any project's agents run on."""
+    read, and the hosts with agents or repositories."""
 
     usage: dict[str, list[dict[str, str]]] = {}
     agent_hosts: set[str] = set()
+    repository_hosts: set[str] = set()
     complete = True
     for project in store.projects():
         try:
@@ -209,7 +216,10 @@ def _machine_usage(
             manifest.machine_map[manifest.agent_profile(profile).run_on].host
             for profile in AGENT_EXECUTION_PROFILES
         )
-    return usage, complete, agent_hosts
+        repository_hosts.update(
+            manifest.machine_map[repository.machine].host for repository in manifest.repositories
+        )
+    return usage, complete, agent_hosts, repository_hosts
 
 
 def _hidden_read_projection(
@@ -267,6 +277,7 @@ def _machine_view(
     machine: SpaceMachineRecord,
     usage: dict[str, list[dict[str, str]]],
     complete: bool,
+    repository_hosts: set[str],
     visible: set[str],
     store: AppStore,
     launcher: AgentLauncher | None,
@@ -320,6 +331,7 @@ def _machine_view(
         # Use counts every project; only the viewer's own projects are named.
         "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
+        "deletable": complete and machine.host not in repository_hosts,
     }
 
 
@@ -329,8 +341,8 @@ def _one_machine_view(
     visible: set[str],
     launcher: AgentLauncher | None = None,
 ) -> dict[str, object]:
-    usage, complete, _ = _machine_usage(store)
-    return _machine_view(machine, usage, complete, visible, store, launcher)
+    usage, complete, _, repository_hosts = _machine_usage(store)
+    return _machine_view(machine, usage, complete, repository_hosts, visible, store, launcher)
 
 
 def _visible_project_ids(
@@ -506,10 +518,12 @@ def list_space_machines(
     catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
-    usage, complete, _ = _machine_usage(store)
+    usage, complete, _, repository_hosts = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible, store, catalog.launcher)
+            _machine_view(
+                machine, usage, complete, repository_hosts, visible, store, catalog.launcher
+            )
             for machine in store.space_machines()
         ]
     }
@@ -636,7 +650,7 @@ def update_space_machine(
     compute_changed = (
         body.job_manager is not None and body.job_manager != machine.job_manager
     ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
-    usage, _, _ = _machine_usage(store)
+    usage, _, _, _ = _machine_usage(store)
     if compute_changed:
         # Fail closed: no project keeps a route check made under the old settings.
         for project in usage.get(machine.host, []):
@@ -674,7 +688,7 @@ def _refresh_machine_probes(
     """Settle the card's job manager, then check its routes once for every project on it."""
 
     settle_job_manager(store, machine.host)
-    usage, _, _ = _machine_usage(store)
+    usage, _, _, _ = _machine_usage(store)
     for project in usage.get(machine.host, []):
         record = store.project(project["project_id"])
         if record is None:
@@ -705,7 +719,7 @@ def check_space_machine_compute(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     _refresh_machine_probes(store, catalog, machine)
-    _, _, agent_hosts = _machine_usage(store)
+    _, _, agent_hosts, _ = _machine_usage(store)
     sources = [card for card in store.space_machines() if card.host in agent_hosts]
     reach = [
         {"from": source.name, "probe": probe.model_dump(mode="json")}
@@ -767,21 +781,27 @@ def delete_space_machine(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
+    identity_access.acting_user(request)
     with MACHINE_ATTACHMENT_LOCK:
-        view = _one_machine_view(
-            store,
-            _machine_or_404(store, machine_id),
-            _visible_project_ids(request, identity_access, store),
-        )
-        if view["in_use"] is not False:
+        machine = _machine_or_404(store, machine_id)
+        usage, complete, _, repository_hosts = _machine_usage(store)
+        if not complete or machine.host in repository_hosts:
             detail = (
-                "A project uses this machine; remove it from the project first."
-                if view["in_use"]
+                "A repository lives on this machine."
+                if machine.host in repository_hosts
                 else "RCP could not read every project, so it cannot tell whether this "
                 "machine is used."
             )
             raise HTTPException(status_code=409, detail=detail)
+        try:
+            for project in usage.get(machine.host, []):
+                project_display_cache.remove_machine(project["project_id"], project["alias"])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Project not found") from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 

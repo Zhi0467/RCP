@@ -395,18 +395,24 @@ def start_ordinary_task(
             else str(uuid.uuid4())
         )
         claimed_set: tuple[str, str] | None = None
-        if kind in {"node_chat", "project_chat"}:
-            assert isinstance(request, RunRequest)
+        if kind in {"node_chat", "project_chat", "paper_coach"}:
+            assert isinstance(request, (RunRequest, CoachRequest))
             supplied = (request.attachment_set_id, request.attachment_client_id)
             if any(supplied) and not all(supplied):
                 raise ValueError(
                     "Chat attachments require both attachment_set_id and attachment_client_id."
                 )
             if request.attachment_set_id or request.references:
-                assert request.chat_id is not None
+                attachment_scope_id = (
+                    request.attachment_scope_id
+                    if isinstance(request, CoachRequest)
+                    else request.chat_id
+                )
+                if attachment_scope_id is None:
+                    raise ValueError("Attachments and references require an attachment scope.")
                 claimed = attachment_store.claim(
                     project_id=project_id,
-                    chat_id=request.chat_id,
+                    chat_id=attachment_scope_id,
                     client_id=request.attachment_client_id,
                     attachment_set_id=request.attachment_set_id,
                     operation_id=operation_id,
@@ -494,8 +500,10 @@ def start_agent_task(
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
     branch_id: str | None = None,
 ) -> dict[str, object]:
-    if body.get("references") and kind not in {"node_chat", "project_chat"}:
-        raise HTTPException(status_code=422, detail="Project references require an ordinary chat.")
+    if body.get("references") and kind not in {"node_chat", "project_chat", "paper_coach"}:
+        raise HTTPException(
+            status_code=422, detail="Project references require an ordinary chat or Paper coach."
+        )
     if kind in {"auto_research", "branch_merge", "episode_report", "artifact_edit"}:
         raise HTTPException(
             status_code=405,
@@ -1343,18 +1351,26 @@ def _validated_task_request(
 ) -> AgentTaskRequest:
     if "graph_target" in body or "branch_id" in body:
         raise ValueError("Select the graph target with the branch_id route parameter.")
-    if body.get("references") and kind not in {"node_chat", "project_chat"}:
-        raise ValueError("Project references require an ordinary chat.")
-    if kind == "paper_coach":
-        return _resolved_coach_request(service, CoachRequest.model_validate(body))
-
+    if body.get("references") and kind not in {"node_chat", "project_chat", "paper_coach"}:
+        raise ValueError("Project references require an ordinary chat or Paper coach.")
     client_request = dict(body)
+    # Claimed batches and descriptors are server-owned for every composer.
+    client_request.pop("attachments", None)
+    client_request.pop("attachment_batch_id", None)
+    if kind == "paper_coach":
+        coach_request = CoachRequest.model_validate(client_request)
+        if coach_request.attachment_scope_id is not None:
+            try:
+                uuid.UUID(coach_request.attachment_scope_id)
+            except ValueError as exc:
+                raise ValueError("attachment_scope_id must be a UUID") from exc
+        return _resolved_coach_request(service, coach_request)
+
     # Resolved compute metadata is a server-owned admission snapshot. A client
     # may echo or forge this field, but it never participates in resolution.
     client_request.pop("artifact_edit", None)
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
-    client_request.pop("attachments", None)
     for field in (
         "fork_session_id",
         "fork_source_cwd",
@@ -1374,8 +1390,6 @@ def _validated_task_request(
             "control_decision_bundle": [],
             "control_completion_criteria": [],
             "watcher_ids": [],
-            "attachment_batch_id": None,
-            "attachments": [],
         }
     )
     if kind in {"seed", "refresh"}:

@@ -403,6 +403,9 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
             return f"/remote/task/inputs/{label}"
 
         monkeypatch.setattr(remote_stage, "put_file", upload)
+    monkeypatch.setattr(
+        service.paper.store, "branch_names", lambda project: {parent.history.branch_id: "vla-if"}
+    )
     context = service.assemble_chat(RunRequest(chat_scope="project"))
     fields = stage_branch_read_context(context, service, None if remote else stage, remote_stage)
     path = fields["parent_graph_path"]
@@ -410,6 +413,18 @@ def test_parent_snapshot_and_location_exclude_post_parent_graph(
     content = uploaded[PurePosixPath(path).name] if remote else Path(path).read_text()
     assert json.loads(content) == main.history_engine.state_at(head).model_dump(mode="json")
     assert fields["branch_name"] == fork.branch_id
-    assert fields["branch_parent"] == f"{head.target.key}@{head.revision}"
+    assert fields["branch_parent"] == f"branch:vla-if@{head.revision}"
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.runs.graph_history_queries import handle_graph_history_command
+
+    from .test_graph_history_commands import request
+
+    response = handle_graph_history_command(
+        service,
+        GraphReadScope.resolve("project", fork, store=service.paper.store),
+        request("graph_log", id="ev/after-parent", at=fields["branch_parent"]),
+    )
+    assert response.status == "ok"
+    assert response.result["at_head"] == f"{head.target.key}@{head.revision}"
     assert "ev/after-parent" not in json.loads(content)["nodes"]
     assert "ev/main-only" not in json.loads(content)["nodes"]

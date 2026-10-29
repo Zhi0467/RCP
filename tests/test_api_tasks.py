@@ -147,3 +147,87 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
         assert payload["result"] == {"messages": [f"{kind} answer"]}
         assert payload["events"]
         assert payload["debug_receipts"]
+
+
+@pytest.mark.parametrize("kind", ["project_chat", "paper_coach"])
+def test_composer_admission_claims_uploads_and_project_references(manifest, tmp_path, kind):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    project_id = app.state.default_project_id
+    scope_id, client_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def stream(_project_id, _kind, _request, _execution):
+        yield _event_frame(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    with signed_in_client(app) as client:
+        uploaded = client.post(
+            f"/api/projects/{project_id}/chats/{scope_id}/attachments",
+            data={"client_id": client_id},
+            files={"file": ("notes.txt", b"temporary input", "text/plain")},
+        )
+        assert uploaded.status_code == 200
+        upload = uploaded.json()
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/{kind}",
+            json={
+                "chat_id" if kind == "project_chat" else "attachment_scope_id": scope_id,
+                "message": "Use the uploaded note and hypothesis.",
+                "attachment_set_id": upload["attachment_set_id"],
+                "attachment_client_id": client_id,
+                "references": [{"kind": "node", "node_id": "hyp/replanning-restores-plasticity"}],
+                "attachment_batch_id": "client-forged-batch",
+                "attachments": [{"invalid": "client-forged-descriptor"}],
+            },
+        )
+        assert started.status_code == 202, started.text
+        request = started.json()["request"]
+        assert request["attachment_set_id"] is None
+        assert request["attachment_client_id"] is None
+        assert request["references"] == []
+        assert request["attachment_batch_id"] == upload["attachment_set_id"]
+        assert len(request["attachments"]) == 2
+        assert request["attachments"][0]["attachment_id"] == upload["attachment"]["attachment_id"]
+        assert request["attachments"][1]["reference"]["source_id"] == (
+            "hyp/replanning-restores-plasticity"
+        )
+        assert _wait_for_run(client, project_id, started.json()["operation_id"])["status"] == (
+            "succeeded"
+        )
+        removed = client.delete(
+            f"/api/projects/{project_id}/chats/{scope_id}/attachments/"
+            f"{upload['attachment']['attachment_id']}",
+            params={"client_id": client_id, "attachment_set_id": upload["attachment_set_id"]},
+        )
+        assert removed.status_code == 422
+
+
+@pytest.mark.parametrize("scope", [None, "invalid", "different"])
+def test_coach_attachment_scope_refusal_preserves_upload(manifest, tmp_path, scope):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    scope_id, client_id = str(uuid.uuid4()), str(uuid.uuid4())
+    with signed_in_client(app) as client:
+        uploaded = client.post(
+            f"/api/projects/{project_id}/chats/{scope_id}/attachments",
+            data={"client_id": client_id},
+            files={"file": ("notes.txt", b"temporary input", "text/plain")},
+        )
+        assert uploaded.status_code == 200
+        upload = uploaded.json()
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/paper_coach",
+            json={
+                "message": "Read the note.",
+                "attachment_scope_id": str(uuid.uuid4()) if scope == "different" else scope,
+                "attachment_set_id": upload["attachment_set_id"],
+                "attachment_client_id": client_id,
+            },
+        )
+        assert response.status_code == 422
+        removed = client.delete(
+            f"/api/projects/{project_id}/chats/{scope_id}/attachments/"
+            f"{upload['attachment']['attachment_id']}",
+            params={"client_id": client_id, "attachment_set_id": upload["attachment_set_id"]},
+        )
+        assert removed.status_code == 200

@@ -26,6 +26,25 @@ const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
   logLevel: "silent",
+  plugins: [
+    {
+      name: "fixture-space-machines",
+      enforce: "pre",
+      resolveId(id) {
+        if (id === "./useSpaceMachines") return "\0fixture-space-machines";
+      },
+      load(id) {
+        if (id === "\0fixture-space-machines")
+          return `
+        let machines = null;
+        export function setMachines(value) { machines = value; }
+        export function useSpaceMachines() {
+          return { machines, error: null, replace() {}, remove() {} };
+        }
+      `;
+      },
+    },
+  ],
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
@@ -60,6 +79,7 @@ const gpu = {
   autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
   projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
   in_use: true,
+  deletable: true,
   job_manager: "slurm",
   jobs_root: "",
   access_hint: "",
@@ -72,6 +92,27 @@ const gpu = {
   compute_probes: { scheduler: null, helper: null },
   reach: [{ from: "laptop", probe: null }],
 };
+
+test("space settings offers Delete only for deletable cards, even when listed by a project", async () => {
+  const { setMachines } = await server.ssrLoadModule("\0fixture-space-machines");
+  try {
+    for (const deletable of [true, false]) {
+      setMachines([{ ...gpu, deletable }]);
+      const html = renderMarkup(
+        React.createElement(SpaceSettings, {
+          spaceKind: "personal",
+          cacheProjectId: null,
+          cacheClearDisabled: false,
+          onAllCachesCleared() {},
+          onClose() {},
+        }),
+      );
+      assert.equal(html.includes('data-machine-action="delete"'), deletable);
+    }
+  } finally {
+    setMachines(null);
+  }
+});
 
 function page(entries, nextOffset, path = "/data", parent = "/") {
   return { path, parent, entries, total: 3, next_offset: nextOffset };
@@ -337,6 +378,32 @@ test("space-wide sections render on space Settings and project sections on proje
     assert.match(html, /data-machine-action="add-machine"/);
     assert.doesNotMatch(html, /app-cache-danger-row/);
   }
+});
+
+test("the machine holding the state repository is the one tagged as the base", () => {
+  const project = settingsProject();
+  project.machines = [
+    ...project.machines,
+    { ...project.machines[0], alias: "gpu", host: "gpu.example", removable: true },
+  ];
+  const html = renderMarkup(
+    React.createElement(ProjectSettings, {
+      apiBase: `/api/projects/${projectId}`,
+      project,
+      identity: null,
+      onLeftProject() {},
+      usage: null,
+      onRefreshUsage: async () => {},
+      cacheClearDisabled: false,
+      onSaved() {},
+      onCacheMetricsChange() {},
+      onRefreshReadiness: async () => {},
+      spaceKind: "personal",
+    }),
+  );
+  const tile = (name) => html.match(new RegExp(`data-machine-tile="${name}".*?</button>`))[0];
+  assert.match(tile("local"), /machine-tile-base/);
+  assert.doesNotMatch(tile("gpu"), /machine-tile-base/);
 });
 
 test("the identity menu holds Display, and Space settings sits beside it", () => {

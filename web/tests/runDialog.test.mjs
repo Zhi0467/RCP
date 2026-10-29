@@ -970,7 +970,7 @@ test("retry keeps the original task boundary and exposes provider configuration"
   assert.doesNotMatch(html, /<button class="button primary" disabled=""/);
 });
 
-test("Experiment provider switch exposes provider controls but locks the execution machine", () => {
+test("Experiment provider switch exposes provider controls and no machine choice", () => {
   const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
@@ -990,7 +990,7 @@ test("Experiment provider switch exposes provider controls but locks the executi
     }),
   );
 
-  assert.match(html, /<select disabled=""><option value="local" selected="">local · local/);
+  assert.doesNotMatch(html, /<option value="local"/);
   assert.match(html, /<button class="button primary" disabled=""/);
 });
 
@@ -1022,41 +1022,6 @@ test("every switch dialog holds its submit until the binding actually changes", 
   const seed = render("seed");
 
   assert.doesNotMatch(seed, /<button class="button primary" disabled=""/);
-});
-
-test("a standalone retry may move machines while an episode-bound one stays pinned", () => {
-  // Only the caller knows whether anything is anchored to the machine, so the
-  // dialog locks by default and the standalone retry is the one that opts out.
-  const render = (props) =>
-    renderMarkup(
-      React.createElement(RunDialog, {
-        open: true,
-        kind: "node_chat",
-        mode: "retry",
-        project: {
-          ...project,
-          machines: [
-            { alias: "local", host: null },
-            { alias: "cluster", host: "" },
-          ],
-        },
-        initialScope: ["repo"],
-        initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
-        busy: false,
-        onClose() {},
-        onRun() {},
-        ...props,
-      }),
-    );
-
-  assert.match(render({ runOnLocked: false }), /<option value="cluster">/);
-
-  // Moving off a machine that is gone is the change, so nothing else is owed.
-  const moved = render({
-    runOnLocked: false,
-    initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "cluster" },
-  });
-  assert.doesNotMatch(moved, /<button class="button primary" disabled=""/);
 });
 
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {

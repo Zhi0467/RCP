@@ -137,6 +137,30 @@ change cards by diffing against the snapshot; the coach never writes diffs or
 line numbers. Validation applies the live paper's own limits to the whole
 proposed tree. A rename and the edits that depend on it form one card group.
 
+The coach runs on the project's base machine, locally or over SSH. Remote
+turns upload each fixed saved-paper snapshot as immutable stage input; they
+never read the live published paper directory. Graph and repository pointers
+refer to base-side paths. The native session reuses its stage workspace, and
+only its changes folder is writable. After each completed round, bounded,
+symlink- and hardlink-refusing read-back supplies the same local card collection.
+Each remote round uses the shared supervised provider pass: durable process receipts
+and a quiescence check prevent overlapping providers in the session workspace. Checkpointed
+recovery on the base retains its stage; finished stages remain for session
+continuations until the normal stage sweeper removes them. Continuing, refreshing
+cards from, or resuming a session recorded on another machine starts a fresh
+native session on the base, preserving visible chat history but losing native
+session memory. A standalone retry without a native session also uses the base.
+Model and reasoning changes retain the native session; changing provider starts
+a fresh native session while preserving visible coach history, using the same
+profile compatibility decision as ordinary chat.
+
+Coach turns claim uploads and project references through ordinary chat attachment
+admission, using the composer's UUID `attachment_scope_id` as the upload chat id.
+The same attachment store stages immutable copies locally or on the remote base;
+their parent folders are readable and the shared prompt renderer lists uploads
+and references separately. The coach also resolves the ordinary graph read scope,
+including named branch pointers in its master and continuation deltas.
+
 A card applies only to the text it was made from. At the end of a turn RCP
 checks every card against the live paper; a card whose text has since changed is
 refreshed by up to two short follow-up turns of the same coach session, then
