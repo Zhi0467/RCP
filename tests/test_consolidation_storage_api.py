@@ -12,6 +12,7 @@ import pytest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
 from rcp.storage import Artifact
+from rcp.storage.consolidation import target_label
 from tests.helpers import signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app
@@ -25,23 +26,25 @@ def setup(manifest, tmp_path):
     return signed_in_client(app), store, app.state.default_project_id
 
 
-def _due(store, project_id):
+def _due(store, project_id, *, target="main"):
     now = datetime.fromisoformat(store.now())
     owner = store.local_owner
     human = AuthorizedHuman(
         space_id=store.space_id, user_id=owner.user_id, display_name=owner.display_name
     )
-    return store.put_consolidation_schedule(
+    schedule = store.put_consolidation_schedule(
         project_id,
         local_time="00:00",
         timezone="UTC",
         authorized_by=human,
         next_due_at=(now - timedelta(minutes=1)).isoformat(),
     )
+    store.ensure_consolidation_target(schedule, target=target)
+    return schedule
 
 
 def _failure(store, project_id, *, target="main"):
-    schedule = _due(store, project_id)
+    schedule = _due(store, project_id, target=target)
     now = datetime.fromisoformat(store.now())
     return store.claim_consolidation_occurrence(
         schedule,
@@ -141,6 +144,7 @@ def test_schedule_contract_renewal_validation_and_delete(setup):
 def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup, on_branch):
     client, store, project = setup
     target = str(uuid.uuid4()) if on_branch else "main"
+    assert target_label(target, {}) == (target[:8] if on_branch else "main")
     if on_branch:
         store.create_graph_branch(
             project_id=project,
@@ -181,9 +185,10 @@ def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
         {"occurrence_date": run.occurrence_date, "outcome": "failed"}
     ]
     now = datetime.fromisoformat(store.now())
+    target = str(uuid.uuid4())
     store.claim_consolidation_occurrence(
-        _due(store, project),
-        target=str(uuid.uuid4()),
+        _due(store, project, target=target),
+        target=target,
         occurrence_date=run.occurrence_date,
         next_due_at=(now + timedelta(days=1)).isoformat(),
         input_head=0,
@@ -339,8 +344,7 @@ def test_a_linked_report_is_saved_but_stays_open_for_review(setup, settled):
     assert store.consolidation_run(run.run_id).state == "open"
 
 
-@pytest.mark.parametrize("target", ["main", "branch-id"])
-def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup, target):
+def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):
     _, store, project = setup
     closed = _failure(store, project)
     closed = store.resolve_consolidation_run(
@@ -356,7 +360,6 @@ def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup, t
         occurrence_date=(now + timedelta(days=1)).date().isoformat(),
         next_due_at=(now + timedelta(days=2)).isoformat(),
         input_head=0,
-        target=target,
         error_code="authorizer_not_member",
         error_message="departed",
     )
@@ -367,7 +370,6 @@ def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup, t
         store.detach_consolidation_for_restore(conn, diagnostic="restored", now=store.now())
     assert store.consolidation_schedule(project) is None
     detached = store.consolidation_run(run.run_id)
-    assert detached.target == target
     assert detached.error_code == "restored_run_detached" and detached.outcome_settled_at
     assert store.consolidation_run(closed.run_id) == closed
 

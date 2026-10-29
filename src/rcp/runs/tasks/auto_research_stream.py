@@ -159,6 +159,7 @@ from rcp.storage import (
     AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
 )
+from rcp.storage.lessons import lesson_command_actions
 from rcp.transport import (
     RemoteRunStage,
     RunLockCancelled,
@@ -318,11 +319,13 @@ async def stream_auto_research_orchestrator_run(
             turn.task.project_id, service.history, context.group_context, store=service.paper.store
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
+        lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
         allowed_verbs = auto_research_allowed_verbs(
             "orchestrator",
             can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            lesson_actions=lesson_actions,
         )
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
@@ -418,6 +421,7 @@ async def stream_auto_research_orchestrator_run(
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
                 allowed_verbs=allowed_verbs,
+                lesson_actions=lesson_actions,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 messages_path=messages_path,
@@ -603,10 +607,12 @@ async def stream_auto_research_worker_run(
             turn.task.project_id, service.history, context.group_context, store=service.paper.store
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
+        lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
         allowed_verbs = auto_research_allowed_verbs(
             "worker",
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            lesson_actions=lesson_actions,
         )
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
@@ -670,6 +676,7 @@ async def stream_auto_research_worker_run(
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
                 allowed_verbs=allowed_verbs,
+                lesson_actions=lesson_actions,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
@@ -1594,6 +1601,7 @@ def _orchestrator_prompt(
     schema_path: str,
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
+    lesson_actions: tuple[str, ...] = (),
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     messages_path: str | None,
@@ -1673,6 +1681,7 @@ def _orchestrator_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             instruction_path=instruction_path,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
@@ -1704,6 +1713,7 @@ def _orchestrator_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=_retry_diagnostics_path(
@@ -1781,6 +1791,7 @@ def _worker_prompt(
     schema_path: str,
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
+    lesson_actions: tuple[str, ...] = (),
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     reply_key: str,
@@ -1839,6 +1850,7 @@ def _worker_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             reply_key=reply_key,
             messages_path=messages_path,
             write_scope=write_scope,

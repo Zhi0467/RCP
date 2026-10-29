@@ -355,6 +355,7 @@ ids. Agent history commands also accept `branch:<name>@R` and a name for
 the branch-name store before checking read scope; the pure history parser and
 engine retain canonical ids. Responses keep canonical heads and include a
 `branch_names` map for the queried branches. Unknown names refuse like unknown ids.
+Canonical ids take precedence when another branch's name matches an id.
 Missing, out-of-range, and pre-base revisions refuse rather than clamp.
 Rejected receipts remain valid heads with previous accepted semantics.
 
