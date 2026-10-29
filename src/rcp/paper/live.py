@@ -612,6 +612,11 @@ class PaperLive:
                 raise PaperPrecondition("Paper path is occupied")
             if check.get("file_id_absent") in files:
                 raise PaperPrecondition("Paper identity already exists")
+            if "folder" in check:
+                prefix = f"{check['folder']}/"
+                held = {f.file_id for f in files.values() if f.path.startswith(prefix)}
+                if held != set(check["file_ids"]):
+                    raise PaperPrecondition("Paper folder changed")
             if "file_id" not in check:
                 continue
             file = files.get(check["file_id"])
