@@ -1650,13 +1650,13 @@ class WatcherPoller:
                 groups.append(external)
         if self.on_completed is not None:
             for group in groups:
+                watcher_ids = [record.watcher_id for record in group]
                 try:
                     self.on_completed(group)
-                except Exception:
-                    logger.exception(
-                        "Watcher completion callback failed for %s",
-                        [record.watcher_id for record in group],
-                    )
+                except Exception as exc:
+                    # The group stays pending for the next poll; its watchers show why.
+                    logger.exception("Watcher completion callback failed for %s", watcher_ids)
+                    self.store.record_watcher_wake_error(watcher_ids, f"Wake failed: {exc}")
         if self.on_poll_completed is not None:
             try:
                 self.on_poll_completed()

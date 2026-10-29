@@ -63,6 +63,7 @@ def _waiting_child(tmp_path, *, ceiling=5, fork=False):
 @pytest.mark.parametrize("fork", [False, True])
 def test_child_watcher_wake_claims_once_on_saved_route_and_does_not_spend_b(tmp_path, fork):
     store, parent, route, watcher, wake = _waiting_child(tmp_path, fork=fork)
+    store.record_watcher_wake_error([watcher.watcher_id], "An earlier wake failed.")
     before = store.episode_budget_meter(parent.episode_id).invocations_used
     candidates = [wake, wake.model_copy(update={"operation_id": "another-wake"})]
 
@@ -83,6 +84,7 @@ def test_child_watcher_wake_claims_once_on_saved_route_and_does_not_spend_b(tmp_
     )
     assert store.agent_task_continuation_cause(result.operation_id) == "watcher_wake"
     assert store.watcher(watcher.watcher_id).notification_operation_id == result.operation_id
+    assert store.watcher(watcher.watcher_id).last_error is None
     assert store.episode_budget_meter(parent.episode_id).invocations_used == before
     assert store.auto_research_waiting_child_work_ids(parent.episode_id) == set()
 
