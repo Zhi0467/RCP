@@ -498,10 +498,15 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
 
 # Captured shape of v0.4.35's nightly consolidation failure: six minute-by-minute
 # `Consolidation dispatch failed for <uuid>` records with their tracebacks, between
-# uvicorn access lines, as `journalctl --output=json` prints them.
-_JOURNAL_SAMPLE = (
-    Path(__file__).parent / "fixtures/service_journal/consolidation_launch_failure.jsonl"
-).read_text(encoding="utf-8")
+# uvicorn access lines. The file is oldest first; doctor reads newest first, as
+# `journalctl --output=json --reverse` prints them.
+_JOURNAL_SAMPLE = "".join(
+    reversed(
+        (Path(__file__).parent / "fixtures/service_journal/consolidation_launch_failure.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines(keepends=True)
+    )
+)
 
 
 def _journal_lines(*, records: int | None = None, errors: bool = True) -> str:
@@ -541,11 +546,11 @@ def test_doctor_groups_the_captured_journal_into_one_recurring_problem(tmp_path:
         ErrorSignature("rcp.consolidation", "ValueError", "launch_admitted")
     ]
     assert groups[0].count == 6 >= limits.SERVER_DOCTOR_RECURRING_ERROR_COUNT
-    first_error = next(
+    first_error = [
         entry
         for entry in map(json.loads, _JOURNAL_SAMPLE.splitlines())
         if entry["MESSAGE"].startswith("ERROR ")
-    )
+    ][-1]
     assert groups[0].first_seen == datetime.fromtimestamp(
         int(first_error["__REALTIME_TIMESTAMP"]) / 1_000_000, UTC
     )

@@ -41,15 +41,18 @@ class ErrorGroup:
 
 
 def journal_entries(output: str, *, max_chars: int) -> list[tuple[datetime, str]]:
-    """Timestamped messages from `journalctl --output=json`, newest `max_chars` only.
+    """Oldest-first timestamped messages from `journalctl --output=json --reverse`.
 
-    An entry whose MESSAGE journalctl prints as null or a byte array is skipped.
+    The input is newest first: with `--since`, journalctl 249 applies `--lines` from
+    the oldest end, so only `--reverse` keeps the newest entries. Only the newest
+    `max_chars` are read. An entry whose MESSAGE journalctl prints as null or a byte
+    array is skipped.
     """
 
     if len(output) > max_chars:
-        output = output[-max_chars:].partition("\n")[2]
+        output = output[:max_chars].rpartition("\n")[0]
     entries: list[tuple[datetime, str]] = []
-    for line in output.splitlines():
+    for line in reversed(output.splitlines()):
         try:
             entry = json.loads(line)
             message = entry["MESSAGE"]
