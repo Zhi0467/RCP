@@ -210,7 +210,8 @@
   width: 100%;
 }
 /* The selection pill and annotation popover are portaled out of the dock, so
-   they carry the chat's mode themselves. */
+   they carry the chat's mode themselves. The Paper coach converses as Discuss. */
+.paper-coach,
 .chat-dock[data-mode="discuss"],
 .chat-selection-comment[data-mode="discuss"],
 .chat-annotation-composer[data-mode="discuss"] {

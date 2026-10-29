@@ -379,8 +379,8 @@ project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
 They share attachment caps and add no roots or target authority. Prompts list
 them separately from uploads and editable comments. Only ordinary node/project
-Discuss/Work admits them; steering and other run kinds refuse them, and question
-or watcher follow-ups clear them.
+Discuss/Work and the Paper coach admit them; steering and other run kinds refuse
+them, and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
 Overshoots clamp to answer text; a visible Comment command provides a keyboard
@@ -389,7 +389,8 @@ viewport at every width. Multiple editable/removable annotations remain per-chat
 drafts with a count; blank comments block send until completed or removed.
 Sending appends copied text and `comment: <comment>` to the human message, with
 no source ids, offsets or durable annotation model. Acceptance clears drafts;
-refusal retains them. [Artifact comments](paper-artifacts-and-result-views.md)
+refusal retains them. The [Paper coach](paper-artifacts-and-result-views.md#writing-coach)
+renders this same composer flow. [Artifact comments](paper-artifacts-and-result-views.md)
 use their own viewer flow.
 
 ## Common episode parent

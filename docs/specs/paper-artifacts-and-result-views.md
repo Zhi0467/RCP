@@ -167,6 +167,12 @@ The coach request's `paper_apply_directly` boolean is normalized into its saved
 `GET /api/projects/{project_id}/paper/changes/{change_id}/proposed`; this
 membership-protected response is plain text, served as an attachment with
 `nosniff`. From RCP can attach the whole saved paper or any file by stable id.
+The coach composer is chat's: uploads, project references and answer-text
+comments behave, and keep or clear their drafts, as in
+[chat](conversations-episodes-and-watchers.md). Each draft uploads into its own
+attachment scope, named in the turn as `attachment_scope_id`. The agent picker
+stays editable inside a session; a provider change shows chat's fresh-session
+notice, and the turn still names the session for the backend to resolve.
 
 The coach cannot write the paper directly, emit a Patch, approve Proposals, or
 promote paper text to graph state. Prior transcripts and skills cannot widen its
