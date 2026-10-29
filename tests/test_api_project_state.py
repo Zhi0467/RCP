@@ -473,6 +473,28 @@ def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
+def test_space_runs_read_a_cache_written_when_the_coach_had_its_own_machine(
+    manifest, tmp_path
+) -> None:
+    # Releases before 0.4.35 let the coach pick its machine and cached that
+    # choice. The Runs list refuses a project whose cache is invalid, so the
+    # cache must stay valid, with the coach on the base like a fresh load.
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    fresh = client.get(f"/api/projects/{project_id}").json()["agent_profiles"]
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    envelope["snapshot"]["agent_profiles"]["paper_coach"]["run_on"] = "old-worker"
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    assert app.state.catalog.cached_snapshot_status(project_id)[0] == "valid"
+    assert client.get("/api/space/runs").status_code == 200
+    cached = client.get(f"/api/projects/{project_id}/cached").json()["agent_profiles"]
+    assert cached["paper_coach"]["run_on"] == fresh["paper_coach"]["run_on"]
+
+
 def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
     manifest, tmp_path
 ) -> None:
@@ -592,14 +614,6 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     legacy["snapshot"]["default_auto_research_invocation_ceiling"] = 11
     cache_path.write_text(json.dumps(legacy), encoding="utf-8")
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
-
-    # A cache from when the coach chose its own machine is re-derived on the base.
-    off_base = dict(legacy, snapshot=authoritative.json())
-    off_base["snapshot"]["agent_profiles"]["paper_coach"]["run_on"] = "elsewhere"
-    cache_path.write_text(json.dumps(off_base), encoding="utf-8")
-    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
-    profiles = client.get(f"/api/projects/{project_id}").json()["agent_profiles"]
-    assert len({profile["run_on"] for profile in profiles.values()}) == 1
 
     monkeypatch.setattr(projects_module, "PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES", 16)
     cache_path.write_bytes(b"x" * 17)
