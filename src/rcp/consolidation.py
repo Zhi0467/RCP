@@ -118,22 +118,28 @@ class ConsolidationPoller:
             self.reconcile_outcomes()
             if seconds_until_automatic_launch() > 0:
                 return
-            for run in self.store.consolidation_runs(unsettled_only=True):
-                if run.operation_id:
-                    task = self.store.agent_task(run.operation_id)
-                    if task is not None and task.status == "queued":
-                        self._launch(task.operation_id)
-            now = datetime.fromisoformat(self.clock())
-            for schedule in self.store.consolidation_schedules():
-                if (
-                    datetime.fromisoformat(schedule.next_due_at) > now
-                    or datetime.fromisoformat(schedule.expires_at) <= now
-                ):
-                    continue
-                try:
-                    self._handle_due(schedule, now)
-                except Exception:
-                    logger.exception("Consolidation admission failed for %s", schedule.project_id)
+            self.dispatch_due(datetime.fromisoformat(self.clock()))
+
+    def dispatch_due(self, now: datetime) -> None:
+        """Launch queued runs, then admit and launch every schedule due at `now`.
+
+        The update rehearsal calls this on copied state at each due instant.
+        """
+        for run in self.store.consolidation_runs(unsettled_only=True):
+            if run.operation_id:
+                task = self.store.agent_task(run.operation_id)
+                if task is not None and task.status == "queued":
+                    self._launch(task.operation_id)
+        for schedule in self.store.consolidation_schedules():
+            if (
+                datetime.fromisoformat(schedule.next_due_at) > now
+                or datetime.fromisoformat(schedule.expires_at) <= now
+            ):
+                continue
+            try:
+                self._handle_due(schedule, now)
+            except Exception:
+                logger.exception("Consolidation admission failed for %s", schedule.project_id)
 
     def _handle_due(self, schedule: ConsolidationSchedule, now: datetime) -> None:
         targets = [("main", "main", None)] + [

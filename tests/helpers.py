@@ -274,6 +274,27 @@ def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHum
     )
 
 
+def fake_launch_admitted(
+    monkeypatch: pytest.MonkeyPatch,
+    tasks: BackgroundAgentTasks,
+    launch: Callable[[str], object] | None = None,
+) -> None:
+    """Replace ``launch_admitted`` with ``launch`` behind the real request validation.
+
+    A queued row's request must parse and round-trip as the real launch requires
+    before ``launch`` runs, so a producer that persists an unlaunchable request
+    fails its test. Without ``launch`` the fake returns the row unchanged.
+    """
+
+    def launch_admitted(operation_id: str) -> object:
+        record = tasks.store.agent_task(operation_id)
+        if record is not None and record.status == "queued":
+            tasks._launchable_request(record)
+        return launch(operation_id) if launch else tasks.store.agent_task(operation_id)
+
+    monkeypatch.setattr(tasks, "launch_admitted", launch_admitted)
+
+
 def record_launched_experiment_turn(store: AppStore, operation_id: str) -> None:
     """Record what a real Experiment launch holds before its provider starts."""
 

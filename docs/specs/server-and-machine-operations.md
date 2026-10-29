@@ -351,6 +351,15 @@ or an Experiment index row that cannot read a copied project, refuses. **Why:** 
 cached bytes that a space-wide read cannot use. A restore has no caches to
 carry and makes only the second pass.
 
+Due consolidation then runs on the copy with the fence still closed. Copied
+queued runs launch first. Then the copied clock advances to each schedule's next
+due time, so real admission writes new rows. Every launch of a copied project
+goes through the engine's own pre-spawn validation, `validate_admitted_launch`,
+and stops where a provider would start. A validation error, a run that never
+reached validation, or a new run with an error code refuses. Provider sign-in
+and machine programs are not part of the copy, so their deferral is accepted.
+Watchers and other scheduled dispatch are not exercised.
+
 Projection upgrades verify the baseline digest, remove retired fields and fill
 only proven deterministic defaults. They preserve explicit values, unknown keys,
 edge layers and serializer-owned operations. Display caches upgrade or replay

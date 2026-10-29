@@ -771,7 +771,6 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
         parent_operation_id=parent.operation_id,
     )
     tasks = BackgroundAgentTasks(store, _done_stream)
-    request = BackgroundAgentTasks._request_from_record(child)
 
     monkeypatch.setattr(
         store,
@@ -784,7 +783,7 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
     )
     with pytest.raises(ValueError, match="changed before background dispatch"):
         tasks._validated_spawn_record(
-            child.model_copy(update={"parent_operation_id": None}), request, parent=None
+            child.model_copy(update={"parent_operation_id": None}), parent=None
         )
 
     monkeypatch.setattr(
@@ -797,7 +796,7 @@ def test_validated_spawn_record_rejects_both_parent_presence_directions(
         ),
     )
     with pytest.raises(ValueError, match="changed before background dispatch"):
-        tasks._validated_spawn_record(child, request, parent=parent)
+        tasks._validated_spawn_record(child, parent=parent)
 
 
 def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_path: Path) -> None:

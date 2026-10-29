@@ -10,8 +10,9 @@ import sqlite3
 import stat
 from collections.abc import Mapping
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Literal, Protocol, get_args
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, cast, get_args
 
 import httpx
 import tomlkit
@@ -19,8 +20,9 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, 
 
 from rcp.api import create_app
 from rcp.api.resource_watermarks import ResourceName
-from rcp.background import BackgroundAgentTasks, StartupEffectFence
+from rcp.background import AdmittedLaunch, BackgroundAgentTasks, StartupEffectFence
 from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
+from rcp.consolidation import ConsolidationPoller
 from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
 from rcp.limits import (
@@ -62,7 +64,9 @@ from rcp.sources.imported import (
 )
 
 if TYPE_CHECKING:
-    from rcp.storage import AppStore
+    from fastapi import FastAPI
+
+    from rcp.storage import AgentTaskRecord, AppStore
 
 REHEARSAL_OVERLAY_SCHEMA_VERSION = 1
 CANDIDATE_REHEARSAL_RESULT_SCHEMA_VERSION = 1
@@ -1027,6 +1031,7 @@ async def _verify_candidate(
             else:
                 results.append(_verify_unavailable_project(cards[project.project_id], project))
         await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+        await asyncio.to_thread(_verify_due_consolidation, app, overlay)
     if fence.attempted_effects:
         raise CandidateRehearsalRefused(
             "Candidate startup attempted an effect while its fence was closed."
@@ -1175,6 +1180,93 @@ async def _verify_aggregate_reads(
                 raise CandidateRehearsalRefused(
                     f"Candidate read GET {path} could not read a copied Experiment."
                 )
+
+
+class _RehearsalLaunches:
+    """The task engine as the consolidation poller sees it, minus the provider.
+
+    Each launch runs the engine's own pre-spawn validation on the copied row
+    and stops where a live launch would start the provider.
+    """
+
+    def __init__(self, tasks: BackgroundAgentTasks, captured: set[str]) -> None:
+        self._tasks = tasks
+        self._captured = captured
+        self.dispatch_authority_resolver = tasks.dispatch_authority_resolver
+        self.validated: set[str] = set()
+        self.refusals: dict[str, str] = {}
+
+    def launch_admitted(self, operation_id: str) -> AgentTaskRecord:
+        from rcp.runs.provider_login import AdmissionRefused
+
+        record = self._tasks.store.agent_task(operation_id)
+        if record is None or record.project_id not in self._captured:
+            raise KeyError(operation_id)
+        try:
+            launch = self._tasks.validate_admitted_launch(operation_id)
+        except AdmissionRefused:
+            # Provider sign-in and machine programs stay outside the copy; a live
+            # launch defers on them and retries.
+            launch = record
+        except Exception as exc:
+            self.refusals[operation_id] = str(exc)
+            raise
+        self.validated.add(operation_id)
+        return launch.record if isinstance(launch, AdmittedLaunch) else launch
+
+
+def _verify_due_consolidation(app: FastAPI, overlay: RehearsalOverlay) -> None:
+    """Launch copied queued consolidations, then admit each schedule at its due time.
+
+    Real admission writes the copied rows; the engine's own launch validation
+    reads them back. Only the provider process is left out.
+    """
+
+    captured = {
+        project.project_id for project in overlay.projects if project.capture_status == "captured"
+    }
+    tasks: BackgroundAgentTasks = app.state.background_tasks
+    store = tasks.store
+
+    def service_for(project_id: str):
+        if project_id not in captured:
+            raise KeyError(project_id)  # Not copied; the proof never opens it.
+        return app.state.catalog.open(project_id)
+
+    launches = _RehearsalLaunches(tasks, captured)
+    poller = ConsolidationPoller(
+        store, cast(BackgroundAgentTasks, launches), service_for=service_for
+    )
+    before = {run.run_id for run in store.consolidation_runs()}
+    now = datetime.fromisoformat(store.now())
+    for instant in sorted(
+        {
+            now,
+            *(
+                max(now, datetime.fromisoformat(s.next_due_at))
+                for s in store.consolidation_schedules()
+            ),
+        }
+    ):
+        poller.dispatch_due(instant)
+    if launches.refusals:
+        operation_id, reason = next(iter(launches.refusals.items()))
+        raise CandidateRehearsalRefused(
+            f"Candidate refused consolidation {operation_id} before launch: {reason}"
+        )
+    for run in store.consolidation_runs():
+        if run.project_id not in captured:
+            continue
+        task = store.agent_task(run.operation_id) if run.operation_id else None
+        due = run.run_id not in before or (task is not None and task.status == "queued")
+        if due and run.operation_id is not None and run.operation_id not in launches.validated:
+            raise CandidateRehearsalRefused(
+                f"Candidate consolidation {run.operation_id} never reached launch validation."
+            )
+        if run.run_id not in before and run.error_code is not None:
+            raise CandidateRehearsalRefused(
+                f"Candidate consolidation admission failed with {run.error_code}."
+            )
 
 
 async def _verify_captured_project(
