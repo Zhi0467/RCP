@@ -150,13 +150,15 @@ def test_synctex_maps_each_files_lines_to_their_first_pdf_mark():
 
 def test_synctex_marks_are_in_pdf_points():
     # TeX measures 72.27 points to the inch and PDF 72; the preview scales pages in
-    # PDF points, so a mark one inch down must read 72, not 72.27.
-    one_inch = 72.27 * 65536
+    # PDF points. Half an inch of offset plus a quarter inch counted in units of
+    # two, magnified twice, is two inches: 144 PDF points.
+    half_inch = 72.27 * 65536 / 2
     text = (
-        "SyncTeX Version:1\nInput:1:/TREE/main.tex\nMagnification:1000\nUnit:1\n"
-        f"Y Offset:0\nContent:\n{{1\n[1,1:0,0:0,0,0\nh1,2:0,{one_inch:.0f}:0,0,0\n}}1\n"
+        "SyncTeX Version:1\nInput:1:/TREE/main.tex\nMagnification:2000\nUnit:2\n"
+        f"Y Offset:{half_inch:.0f}\nContent:\n{{1\n[1,1:0,0:0,0,0\n"
+        f"h1,2:0,{half_inch / 2:.0f}:0,0,0\n}}1\n"
     )
-    assert synctex_map(text, Path("/TREE")) == {"main.tex": [(2, 1, 72.0)]}
+    assert synctex_map(text, Path("/TREE")) == {"main.tex": [(2, 1, 144.0)]}
 
 
 @pytest.mark.asyncio
