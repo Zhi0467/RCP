@@ -191,9 +191,11 @@ def _mutate(
                 (project_id, lesson_id),
             )
             return {}
+        # The author is the last editor; an agent's edit never removes human ownership.
         connection.execute(
             "UPDATE operational_lessons SET text=?,updated_at=?,author_kind=?,operation_id=?,"
-            "user_id=?,display_name=?,human_owned=? WHERE project_id=? AND lesson_id=?",
+            "user_id=?,display_name=?,human_owned=max(human_owned,?) "
+            "WHERE project_id=? AND lesson_id=?",
             (
                 text,
                 now,

@@ -196,7 +196,8 @@ Members also manage lessons in Settings.
 
 Child Work, Experiment, and Auto-research roots and workers may only add lessons.
 Consolidation may manage all notes, including human-owned ones.
-It reports every change. Seed, Refresh, and branch merge have no lesson commands.
+It reports every change. A note's author is its last editor, but an agent's
+edit keeps a human-owned note human-owned, so it still leads `lessons.md`. Seed, Refresh, and branch merge have no lesson commands.
 Discuss gains no graph or Apply authority. Resolved handler actions render usage
 from parser option records.
 **Why:** ordinary chat acts for its member on operational notes.
