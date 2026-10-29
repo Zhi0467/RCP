@@ -53,6 +53,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     member: "human",
     admitted: true,
     projectGate: null,
+    indexGate: null,
     projectStatus: 200,
     projectName: null,
     identityGate: null,
@@ -196,9 +197,10 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       if (state.graphRefs === null)
         return route.fulfill({ status: 503, json: { detail: "unavailable" } });
       json = state.graphRefs;
-    } else if (path === "/api/projects")
+    } else if (path === "/api/projects") {
+      if (state.indexGate) await state.indexGate.promise;
       json = ["demo", "second"].map((id) => ({ id, name: project(id).name, revision: 1 }));
-    else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
+    } else if (/^\/api\/projects\/[^/]+$/.test(path) || path.endsWith("/cached")) {
       if (state.connected) {
         state.reconnectLoads++;
         state.reconnectRequested.resolve();
@@ -679,6 +681,41 @@ test("a desktop refresh revalidates the shown project without holding it inert",
   assert.equal(await page.evaluate(() => window.__sawInert), false);
   // Nothing changed, so nothing is downloaded again.
   assert.equal(projectReads(), readsBefore);
+});
+
+test("a loaded index stays on screen while a quick return refreshes it", async (t) => {
+  const useCheckout = {
+    intent: "use_existing_checkout_personally",
+    eligible: true,
+    preselected: true,
+    primary_action_label: "Use existing checkout",
+    required_fields: [],
+    pinned_source_project_id: null,
+    unavailable_reason: null,
+  };
+  const { page, state, authoritativeLoaded } = await openDemoProject(t, "fresh", {
+    health: { ...HEALTH, project_creation: { intents: [useCheckout] } },
+  });
+  await authoritativeLoaded;
+  await page.evaluate(() => {
+    location.hash = "";
+  });
+  await page.locator(".project-shelf").waitFor();
+  // Leave for a project whose snapshot is still loading, then come straight back.
+  state.projectGate = Promise.withResolvers();
+  await page.evaluate(() => {
+    location.hash = "#/projects/second";
+  });
+  await page.locator(".app-loading").waitFor();
+  state.indexGate = Promise.withResolvers();
+  await page.evaluate(() => {
+    location.hash = "";
+  });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal(await page.locator(".project-shelf").count(), 1);
+  assert.equal(await page.locator(".app-loading").count(), 0);
+  state.indexGate.resolve();
+  state.projectGate.resolve();
 });
 
 test("switching project tabs returns to the panel each project was left on", async (t) => {

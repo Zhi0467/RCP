@@ -1167,6 +1167,7 @@ function MemberApp({
   const authoritativeProjectId = useRef<string | null>(null);
   // The last open the project effect ran, and whether a backend reverification
   // has interrupted it since. Recovery on the same backend reconciles that open.
+  const projectIndexLoaded = useRef(false);
   const lastProjectOpen = useRef<{
     backendKey: string | null;
     projectId: string | null;
@@ -1754,7 +1755,13 @@ function MemberApp({
   useLayoutEffect(() => {
     if (!backendSessionReady || setupOpen) return;
     if (!projectId) {
-      void loadProjectIndex().finally(() => setLoading(false));
+      // A loaded index stays on screen while it refreshes; only the first read waits.
+      if (projectIndexLoaded.current) setLoading(false);
+      void loadProjectIndex()
+        .then(() => {
+          projectIndexLoaded.current = true;
+        })
+        .finally(() => setLoading(false));
       void refreshProjectInvitations();
       return;
     }
