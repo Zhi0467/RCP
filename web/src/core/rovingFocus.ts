@@ -1,3 +1,8 @@
+/** A popover's rows: the buttons inside it that match `selector`, in document order. */
+export function popoverRows(popover: HTMLElement | null, selector: string): HTMLButtonElement[] {
+  return [...(popover?.querySelectorAll<HTMLButtonElement>(selector) ?? [])];
+}
+
 /**
  * The row an arrow, Home, or End key moves focus to within a popover's rows,
  * wrapping at the ends; null for any other key or a target outside the rows.
