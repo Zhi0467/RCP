@@ -66,6 +66,8 @@ uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" --no-deps "$RCP_REHEARSAL_D
 EOF_REHEARSAL
 ```
 
+The rehearsal refuses when a copied record or cache breaks a space-wide read;
+see [copied-state reads](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint).
 Inspect the result and any backup warnings, including omitted projects. Retain
 needed diagnostics before removing this exact temporary directory:
 

@@ -11,13 +11,14 @@ import stat
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, get_args
 
 import httpx
 import tomlkit
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from rcp.api import create_app
+from rcp.api.resource_watermarks import ResourceName
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
 from rcp.core.authority import WriteAuthority
@@ -46,6 +47,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     normalized_absolute_path as _absolute_path,
 )
+from rcp.server_ops.application_snapshot import copy_live_research_tree
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
 )
@@ -171,6 +173,8 @@ class RehearsalOverlay(_StrictModel):
     projects: tuple[RehearsalProjectOverlay, ...]
     transfer_inbox_entries: tuple[str, ...]
     excluded_project_ids: tuple[str, ...] = ()
+    # Whether the live display caches were carried; a restored archive has none.
+    display_caches: bool = False
 
     @field_validator("root", "data_dir", "database_path")
     @classmethod
@@ -288,6 +292,7 @@ def build_rehearsal_overlay(
     project_receipt_sha256: str,
     capture_root: Path,
     candidate_migrator: CandidateDatabaseMigrator | None = None,
+    display_cache_root: Path | None = None,
     excluded_project_ids: tuple[str, ...] = (),
 ) -> RehearsalOverlay:
     root = operation_root.resolve() / "overlay"
@@ -296,6 +301,9 @@ def build_rehearsal_overlay(
     absent_root = root / "known-absent"
     for path in (root, data_dir, projects_root, absent_root):
         path.mkdir(mode=_DIRECTORY_MODE)
+    if display_cache_root is not None:
+        # Cached display bytes an older release wrote, read as the live server reads them.
+        copy_live_research_tree(display_cache_root, data_dir / "project-snapshots")
     database_path = data_dir / "rcp.sqlite3"
     _copy_verified_file(
         Path(sqlite_receipt.snapshot_path),
@@ -419,6 +427,7 @@ def build_rehearsal_overlay(
         projects=tuple(projects),
         transfer_inbox_entries=transfer_paths,
         excluded_project_ids=excluded_project_ids,
+        display_caches=display_cache_root is not None,
     )
     for path in overlay.transfer_inbox_entries:
         if Path(path).exists() or Path(path).is_symlink():
@@ -1007,12 +1016,17 @@ async def _verify_candidate(
                 "Candidate project inventory omitted or substituted a project."
             )
         reads.append("/api/projects")
+        # Space-wide reads first serve copied caches and rows that no project open
+        # has rebuilt, then the state that opening every project leaves behind.
+        if overlay.display_caches:
+            await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
         for project in overlay.projects:
             headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
             if project.capture_status == "captured":
                 results.append(await _verify_captured_project(client, project, headers, reads))
             else:
                 results.append(_verify_unavailable_project(cards[project.project_id], project))
+        await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
     if fence.attempted_effects:
         raise CandidateRehearsalRefused(
             "Candidate startup attempted an effect while its fence was closed."
@@ -1089,6 +1103,78 @@ async def _candidate_project_cards(
                 )
             cards[project_id] = card
     return cards
+
+
+# Project-level resources a member page subscribes to, plus main's graph.
+_WATERMARK_RESOURCES = (
+    *(
+        {"name": name}
+        for name in get_args(ResourceName)
+        if name not in {"graph", "chat", "task", "episode"}
+    ),
+    {"name": "graph", "ref": "main"},
+)
+
+
+async def _verify_aggregate_reads(
+    client: httpx.AsyncClient,
+    overlay: RehearsalOverlay,
+    opened: AppStore,
+    members: list[str],
+) -> None:
+    """Every member's space-wide reads: Runs, Experiment indexes, watermarks, Inbox.
+
+    Kept out of `reads`, like Paper: the previous release's baseline names only
+    the reads it served.
+    """
+
+    captured = {
+        project.project_id for project in overlay.projects if project.capture_status == "captured"
+    }
+    for member in members:
+        headers = {"x-rcp-rehearsal-user": member}
+        visible = sorted(opened.member_project_ids(member))
+        experiment_index = {"mode": "experiment_loop"}
+        responses = [
+            await client.get("/api/space/runs", headers=headers),
+            await client.get("/api/episodes", params=experiment_index, headers=headers),
+            await client.post(
+                "/api/resource-watermarks",
+                headers=headers,
+                json={
+                    "client_id": "update-rehearsal",
+                    "open": [
+                        {"project_id": project_id, "resources": list(_WATERMARK_RESOURCES)}
+                        for project_id in visible
+                        if project_id in captured
+                    ],
+                    "due": visible,
+                },
+            ),
+        ]
+        for project_id in visible:
+            base = f"/api/projects/{project_id}"
+            responses.append(
+                await client.get(
+                    f"{base}/experiment-episodes", params=experiment_index, headers=headers
+                )
+            )
+            responses.append(await client.get(f"{base}/consolidation", headers=headers))
+        for response in responses:
+            path = response.request.url.path
+            if response.status_code != 200:
+                raise CandidateRehearsalRefused(
+                    f"Candidate read {response.request.method} {path} "
+                    f"returned {response.status_code}."
+                )
+            # The indexes degrade an unreadable live loop to one row rather than
+            # fail; on copied local state that row is the candidate's failure.
+            if path.endswith(("/api/episodes", "/experiment-episodes")) and any(
+                row["project_id"] in captured for row in response.json()["unavailable"]
+            ):
+                raise CandidateRehearsalRefused(
+                    f"Candidate read GET {path} could not read a copied Experiment."
+                )
 
 
 async def _verify_captured_project(
