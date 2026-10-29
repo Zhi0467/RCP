@@ -69,7 +69,9 @@ export function ConsolidationInbox({
         return (
           <article className={`consolidation-row ${item.kind}`} key={item.run_id}>
             <div className="proposal-topline">
-              <span className="eyebrow">{item.kind === "report" ? "Report" : "Failed"}</span>
+              <span className="eyebrow">
+                {item.kind === "report" ? "Report" : "Failed"} · {item.graph_branch_name}
+              </span>
               <span className="mono">{item.occurrence_date}</span>
             </div>
             {item.kind === "report" && item.report ? (

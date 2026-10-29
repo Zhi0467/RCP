@@ -57,7 +57,11 @@ export function isNotificationLinkHash(hash: string): boolean {
  * node itself, resolved or not.
  */
 export function graphNotificationHash(link: NotificationLink): string {
-  return projectViewHash(link.projectId, MAIN_GRAPH, "attention");
+  const target =
+    link.kind === "consolidation" && link.target.startsWith("branch:")
+      ? { kind: "branch" as const, branch_id: link.target.slice("branch:".length) }
+      : MAIN_GRAPH;
+  return projectViewHash(link.projectId, target, "attention");
 }
 
 /**

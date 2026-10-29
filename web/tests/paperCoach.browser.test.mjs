@@ -246,10 +246,9 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
   assert.deepEqual(errors, []);
 });
 
-test("phone coach agent and branch pickers are 44px targets", async (t) => {
+test("the phone branch picker is a 44px target beside the coach", async (t) => {
   const { page } = await open(t);
   await coach(page);
-  await target(page.locator(".paper-composer-actions .agent-config-chip"));
   // The shared fixture mounts the workspace without the project-shell branch picker.
   await page.evaluate(async () => {
     const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
@@ -274,7 +273,22 @@ test("phone coach agent and branch pickers are 44px targets", async (t) => {
 });
 
 test("on a touch phone Return writes a new line and a tap outside closes chat history", async (t) => {
-  const { page } = await open(t, { touch: true });
+  const session = {
+    provider: "codex",
+    native_session_id: "s1",
+    execution_machine: "local",
+    title: "Earlier",
+    model: "",
+    created_at: new Date().toISOString(),
+  };
+  const { page } = await open(t, {
+    touch: true,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions") ? { json: [session] } : respond(path, ...rest);
+    },
+  });
   await coach(page);
   const message = page.getByRole("textbox", { name: "Message" });
   await message.tap();
@@ -286,4 +300,109 @@ test("on a touch phone Return writes a new line and a tap outside closes chat hi
   await page.locator(".paper-session-list").waitFor();
   await page.locator(".paper-coach-transcript").tap();
   await page.locator(".paper-session-list").waitFor({ state: "detached" });
+});
+
+// One finished coach turn in session s1, for the tests that continue it.
+const turn = {
+  operation_id: "t1",
+  kind: "paper_coach",
+  native_session_id: "s1",
+  request: { message: "Review the introduction", session_id: null },
+  result: { messages: ["The introduction needs a clearer claim."] },
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  active: false,
+  attempt: 1,
+};
+
+test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
+  const uploads = [];
+  const { page } = await open(t, {
+    width: 1280,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, ...rest) => {
+        const upload = path.match(/\/chats\/([^/]+)\/attachments$/);
+        if (!upload) return respond(path, method, ...rest);
+        uploads.push(upload[1]);
+        return {
+          json: {
+            attachment_set_id: "set-1",
+            attachment: {
+              attachment_id: "a1",
+              name: "notes.md",
+              media_type: "text/markdown",
+              size: 5,
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            },
+          },
+        };
+      };
+    },
+  });
+  await coach(page);
+  // The picker stays editable inside an existing coach session.
+  assert.equal(
+    await page.locator(".paper-coach .chat-composer-tools .agent-config-chip").isDisabled(),
+    false,
+  );
+
+  await page.getByRole("button", { name: "Comment on this answer" }).click();
+  const source = page.getByRole("textbox", { name: "Select answer text" });
+  await source.waitFor();
+  // The keyboard way in: the answer opens as selectable text.
+  await source.press("ControlOrMeta+A");
+  await page.getByRole("button", { name: "Comment on selection" }).click();
+  await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Name the claim.");
+  await page.getByRole("button", { name: "Add comment" }).click();
+  await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
+
+  await page
+    .locator(".paper-coach .chat-composer .chat-add-picker input[type=file]")
+    .setInputFiles({ name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("notes") });
+  await page.locator(".paper-coach .chat-composer .chat-attachment-chip.ready").waitFor();
+  await page.getByRole("textbox", { name: "Message" }).fill("Tighten it.");
+  await page.getByRole("button", { name: "Send coach message" }).click();
+
+  const [started] = await page.evaluate(() => window.paperCoachFixture.started);
+  assert.equal(started.kind, "paper_coach");
+  const { request } = started;
+  assert.equal(request.session_id, "s1");
+  assert.ok(request.message.startsWith("Tighten it."));
+  assert.ok(request.message.includes("The introduction needs a clearer claim."));
+  assert.ok(request.message.includes("Name the claim."));
+  assert.equal(request.attachment_set_id, "set-1");
+  assert.equal(typeof request.attachment_client_id, "string");
+  assert.equal(request.attachment_scope_id, uploads[0]);
+  // The admitted turn owns its comments and files; the next draft starts empty.
+  await page
+    .locator(".paper-coach .chat-composer .chat-annotation-count")
+    .waitFor({ state: "detached" });
+  assert.equal(await page.locator(".paper-coach .chat-composer .chat-attachment-chip").count(), 0);
+});
+
+test("a coach turn carrying only a project reference names its attachment scope", async (t) => {
+  const { page } = await open(t, {
+    width: 1280,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+  });
+  await coach(page);
+  const message = page.getByRole("textbox", { name: "Message" });
+  await message.click();
+  await page.evaluate(async () => {
+    const { referenceUrl } = await import("/src/core/projectReferences.ts");
+    const link = referenceUrl("p", { kind: "main" }, { kind: "paper", file_id: "d1" });
+    const data = new DataTransfer();
+    data.setData("text/plain", `See ${link}`);
+    document.activeElement.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  });
+  await page.locator(".paper-coach .chat-composer .chat-attachment-chips").waitFor();
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  const [started] = await page.evaluate(() => window.paperCoachFixture.started);
+  assert.deepEqual(started.request.references, [{ kind: "paper", file_id: "d1" }]);
+  assert.equal(typeof started.request.attachment_scope_id, "string");
+  assert.equal(started.request.attachment_set_id, undefined);
 });

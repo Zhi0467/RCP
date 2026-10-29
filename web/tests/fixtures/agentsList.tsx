@@ -108,7 +108,6 @@ function Fixture() {
         nodes={{}}
         graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
-        runScope={[]}
         tasks={conversations.flatMap((conversation) => conversation.tasks)}
         watchers={[]}
         graphChangesDisabled={false}

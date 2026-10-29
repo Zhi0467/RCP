@@ -127,7 +127,6 @@ export type SettingsResource = Pick<
   | "name"
   | "state_repository"
   | "run_on"
-  | "default_run_truth_scope"
   | "default_auto_research_invocation_ceiling"
   | "repositories"
   | "machines"
@@ -162,7 +161,6 @@ export function settingsProfile(projectId: string): ResourceProfile<SettingsReso
         name: project.name,
         state_repository: project.state_repository,
         run_on: project.run_on,
-        default_run_truth_scope: project.default_run_truth_scope,
         default_auto_research_invocation_ceiling: project.default_auto_research_invocation_ceiling,
         repositories: project.repositories,
         machines: project.machines,

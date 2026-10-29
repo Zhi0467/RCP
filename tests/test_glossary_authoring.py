@@ -18,7 +18,12 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation import ValidationContext
 from rcp.core.validation.patch import validate_patch
 from rcp.history import HistoryManager
-from tests.helpers import fabricated_authorizer, seated_on_every_project, unchecked_write_authority
+from tests.helpers import (
+    fabricated_authorizer,
+    read_scope_of,
+    seated_on_every_project,
+    unchecked_write_authority,
+)
 
 
 def _definition_patch(definition, *, kind="work", profile="ordinary", term="EWC"):
@@ -36,7 +41,9 @@ def _definition_patch(definition, *, kind="work", profile="ordinary", term="EWC"
         ),
         profile=profile,
     )
-    return prepare_agent_patch(draft, kind=kind, run_truth_scope=["repo-a"])
+    return prepare_agent_patch(
+        draft, kind=kind, run_truth_scope=["repo-a"], read_scope=read_scope_of("repo-a")
+    )
 
 
 @pytest.mark.parametrize(

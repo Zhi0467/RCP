@@ -21,7 +21,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_protocol import GraphDiffCommandRequest, MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import render_graph_history
+from rcp.agents.prompts import GraphReadPrompt, render_graph_history
 from rcp.api.app import create_app
 from rcp.api.episode_routes import _resolved_branch_merge_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -1507,8 +1507,15 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         assert invocation_gate is not None
         master = next((cwd.parent / "inputs").glob("*-branch-merge.md")).read_text()
         await serving.wait()
-        scope = GraphReadScope(project_id=harness.project_id, target=GraphTargetRef())
-        assert render_graph_history(scope, handlers[0]["staged"].client_command()) in master
+        scope = GraphReadScope.resolve(harness.project_id, harness.service.history)
+        assert (
+            render_graph_history(
+                scope,
+                handlers[0]["staged"].client_command(),
+                **GraphReadPrompt(scope, harness.service.paper.store).values,
+            )
+            in master
+        )
         response = handlers[0]["command_handler"](
             GraphDiffCommandRequest.model_validate(
                 {

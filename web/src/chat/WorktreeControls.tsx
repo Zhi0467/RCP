@@ -10,6 +10,35 @@ import type {
 } from "../core/types";
 import "./WorktreeControls.css";
 
+/** Which repository a worktree checks out; shown only when there is a choice. */
+export function WorktreeRepositoryPicker({
+  repositories,
+  value,
+  disabled,
+  onChange,
+}: {
+  repositories: string[];
+  value: string | null;
+  disabled: boolean;
+  onChange: (alias: string) => void;
+}) {
+  if (repositories.length < 2) return null;
+  return (
+    <select
+      aria-label="Worktree repository"
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      {repositories.map((alias) => (
+        <option key={alias} value={alias}>
+          {alias}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 export function useConversationWorktree(
   projectId: string,
   chatId: string,
@@ -249,24 +278,38 @@ export function WorktreeChooser({
   chosen,
   disabled,
   onChoose,
+  repositories,
+  repository,
+  onRepository,
 }: {
   state: ConversationWorktreeState | null;
   chosen: boolean;
   disabled: boolean;
   onChoose: (selected: boolean) => void;
+  repositories: string[];
+  repository: string | null;
+  onRepository: (alias: string) => void;
 }) {
   if (!state?.show_chooser || state.binding) return null;
   return (
     <div className="chat-option">
-      <label>
-        <input
-          type="checkbox"
-          checked={chosen}
-          disabled={disabled || !state.can_choose}
-          onChange={(event) => onChoose(event.target.checked)}
+      <div className="chat-worktree-choice">
+        <label>
+          <input
+            type="checkbox"
+            checked={chosen}
+            disabled={disabled || !state.can_choose}
+            onChange={(event) => onChoose(event.target.checked)}
+          />
+          Work in a worktree
+        </label>
+        <WorktreeRepositoryPicker
+          repositories={repositories}
+          value={repository}
+          disabled={disabled}
+          onChange={onRepository}
         />
-        Work in a worktree
-      </label>
+      </div>
       {state.unavailable_reason && <p>{state.unavailable_reason}</p>}
     </div>
   );

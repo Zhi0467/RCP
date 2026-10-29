@@ -38,6 +38,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
+from rcp.agents.project_repositories import RepositoryReadScope, resolve_read_scope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
@@ -115,7 +116,11 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.questions import WorkCommandHandler, require_question_origin_binding
+from rcp.runs.questions import (
+    WORK_TURN_ARTIFACTS,
+    WorkCommandHandler,
+    require_question_origin_binding,
+)
 from rcp.runs.questions import work_command_handler as _work_command_handler
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
@@ -213,7 +218,6 @@ from rcp.storage import (
     ExperimentWatcherResourceRecord,
     WatcherContinuation,
 )
-from rcp.storage.lessons import lesson_edit_authorized
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
 from rcp.watchers import (
@@ -228,6 +232,8 @@ _WorkPatchFailure = _DeliverableFailure
 
 WORK_FINALIZATION_CONTEXT_ROLE = "work_finalization_context"
 _WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
+# The read scope a turn launched or first applied with, so later passes stamp the same.
+_WORK_READ_SCOPE_ROLE = "work_read_scope"
 
 
 class _StoredExperimentFinalizationResource(BaseModel):
@@ -256,6 +262,8 @@ class _StoredWorkFinalizationContext(BaseModel):
     stage_root: str
     workspace: str
     run_truth_scope: list[str]
+    # Absent in snapshots written before reads were stamped.
+    read_scope: RepositoryReadScope | None = None
     write_scope: ProjectWriteScope
     artifact_scope_id: str
     artifact_directory: str
@@ -377,43 +385,55 @@ def _work_turn_command_handler(
 def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
-    handler = _work_turn_command_handler(turn)
+    lifecycle = getattr(turn, "validator_lifecycle", None)
+    if lifecycle is not None and lifecycle.lesson_actions is not None:
+        verbs, actions, artifacts = (
+            lifecycle.allowed_verbs,
+            lifecycle.lesson_actions,
+            WORK_TURN_ARTIFACTS,
+        )
+    else:
+        handler = _work_turn_command_handler(turn)
+        verbs, actions, artifacts = (
+            handler.allowed_verbs,
+            handler.lesson_actions,
+            handler.turn_artifacts,
+        )
+    assert verbs is not None
     instructions = []
-    if "flag" in handler.allowed_verbs:
+    if "flag" in verbs:
         instructions.append(
             flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
-    if "lesson" in handler.allowed_verbs:
+    if "lesson" in verbs:
         instructions.append(
             lesson_command_usage(
-                edit_authorized=lesson_edit_authorized(
-                    turn.execution.store, turn.execution.operation_id
-                ),
+                actions=actions,
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
-    if "name" in handler.allowed_verbs:
+    if "name" in verbs:
         from rcp.runs.agent_names import name_command_usage
 
         instructions.append(
             name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
-    if "bulletin" in handler.allowed_verbs:
+    if "bulletin" in verbs:
         instructions.append(
             bulletin_command_usage(
                 client or turn.patch_inputs.validator_staged.client_command(),
-                turn_artifacts=handler.turn_artifacts,
+                turn_artifacts=artifacts,
             )
         )
-    if "ask" in handler.allowed_verbs:
+    if "ask" in verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
-    if "apply" in handler.allowed_verbs:
+    if "apply" in verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
             "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
         )
-    if "episode" in handler.allowed_verbs:
+    if "episode" in verbs:
         instructions.append(
             work_experiment_command_usage(
                 client or turn.patch_inputs.validator_staged.client_command(),
@@ -422,7 +442,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 ),
             )
         )
-    if turn.compute_commands is None or "launch" not in handler.allowed_verbs:
+    if turn.compute_commands is None or "launch" not in verbs:
         return "\n\n".join(instructions)
     arguments = (
         "launch",
@@ -491,7 +511,7 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
     """The stable values a Work master states, built from the inputs its renderer uses."""
 
     _prepare_work_observation(turn)
-    return chat_prompt_values(
+    values = chat_prompt_values(
         turn.context,
         turn.request,
         repositories=staged.repositories,
@@ -502,6 +522,8 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
     )
+    values.update(turn.graph_read_prompt.values)
+    return values
 
 
 def _resolve_work_execution(
@@ -549,6 +571,7 @@ def _work_finalization_context(
         request=turn.request,
         execution=turn.execution,
         run_truth_scope=list(turn.context.run_truth_scope),
+        read_scope=turn.context.read_scope,
         workspace=turn.workspace,
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
@@ -591,6 +614,7 @@ def _record_work_finalization_context(
         stage_root=execution.stage_root,
         workspace=str(turn.workspace),
         run_truth_scope=list(turn.context.run_truth_scope),
+        read_scope=turn.context.read_scope,
         write_scope=turn.write_scope,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=str(staged.artifact_directory),
@@ -613,6 +637,29 @@ def _record_work_finalization_context(
         content,
         hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
+
+
+def record_work_read_scope(execution: AgentTaskExecution, read_scope: RepositoryReadScope) -> None:
+    """Keep a turn's first read scope; a later pass of the same turn reuses it."""
+
+    if recorded_work_read_scope(execution.store, execution.operation_id) is not None:
+        return
+    content = read_scope.model_dump_json()
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        _WORK_READ_SCOPE_ROLE,
+        content,
+        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    )
+
+
+def recorded_work_read_scope(store: AppStore, operation_id: str) -> RepositoryReadScope | None:
+    """The read scope a turn recorded first; None when it recorded none."""
+
+    content = store.agent_task_contract(operation_id, _WORK_READ_SCOPE_ROLE)
+    if content is None:
+        return None
+    return RepositoryReadScope.model_validate_json(content)
 
 
 def _load_work_finalization_context(
@@ -679,6 +726,7 @@ def _load_work_finalization_context(
         request=stored.request,
         execution=execution,
         run_truth_scope=list(stored.run_truth_scope),
+        read_scope=stored.read_scope,
         workspace=workspace,
         local_stage=local_stage,
         remote_stage=remote_stage,
@@ -891,7 +939,7 @@ def _work_contract_text(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         command_client=turn.patch_inputs.command_client,
-        graph_read_scope=turn.graph_read_scope,
+        graph_read_prompt=turn.graph_read_prompt,
         write_scope=turn.write_scope,
         skill_pointers=staged.skill_pointers,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1114,7 +1162,7 @@ def _work_chat_master_context(
         workspace_path=str(turn.workspace),
         output_schema_path=turn.patch_inputs.schema_path,
         command_client=turn.patch_inputs.command_client,
-        graph_read_scope=turn.graph_read_scope,
+        graph_read_prompt=turn.graph_read_prompt,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
@@ -1391,6 +1439,7 @@ async def _validate_patch_deliverable(
             turn.execution,
             patch_text,
             run_truth_scope=turn.run_truth_scope,
+            read_scope=turn.read_scope,
             source_effect_id=(
                 settlement_source_effect_id(turn.execution, patch_text)
                 if is_consolidation(turn.execution)
@@ -1804,6 +1853,7 @@ async def _settle_patch_deliverable(
                 budget=launch_turn.validator_budget,
                 compute_commands=launch_turn.compute_commands,
                 run_truth_scope=turn.run_truth_scope,
+                read_scope=turn.read_scope,
                 graph_read_scope=launch_turn.graph_read_scope,
             )
             correction_prompt, correction_path = _compose_work_correction_prompt(
@@ -2028,6 +2078,7 @@ async def _settle_watch_deliverable(
             budget=launch_turn.validator_budget,
             compute_commands=launch_turn.compute_commands,
             run_truth_scope=turn.run_truth_scope,
+            read_scope=turn.read_scope,
             graph_read_scope=launch_turn.graph_read_scope,
         )
         primary_error: BaseException | None = None
@@ -2827,7 +2878,9 @@ async def _stream_work_graph_repair(
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
         graph_read_scope = GraphReadScope.resolve(
-            task_record.project_id, service.history, context.group_context
+            task_record.project_id,
+            service.history,
+            context.group_context,
         )
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)
@@ -2867,6 +2920,7 @@ async def _stream_work_graph_repair(
             execution=execution,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             graph_read_scope=graph_read_scope,
         )
         read_dirs = _chat_read_dirs(
@@ -3040,6 +3094,7 @@ async def _stream_work_graph_repair(
             execution,
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
         ),
         bounded_messages=_bounded_graph_messages,
         record_rejection=lambda update: _record_work_graph_rejection(execution, update),
@@ -3087,6 +3142,7 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     command_handler = _work_command_handler(
@@ -3113,11 +3169,13 @@ def _start_work_validator_mailbox(
             compute_commands,
             ask_allowed="ask" in command_handler.allowed_verbs,
             graph_read_scope=graph_read_scope,
+            read_scope=read_scope,
         ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
@@ -3129,6 +3187,8 @@ class _WorkMailboxContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_truth_scope: list[str]
+    # Absent in mailboxes retained before reads were stamped.
+    read_scope: RepositoryReadScope | None = None
     ask_allowed: bool = False
     graph_read_scope: GraphReadScope | None = None
     write_scope: ProjectWriteScope | None = None
@@ -3142,9 +3202,11 @@ def _work_mailbox_context(
     *,
     ask_allowed: bool = False,
     graph_read_scope: GraphReadScope | None = None,
+    read_scope: RepositoryReadScope | None = None,
 ) -> _WorkMailboxContext:
     return _WorkMailboxContext(
         run_truth_scope=run_truth_scope,
+        read_scope=read_scope,
         ask_allowed=ask_allowed,
         graph_read_scope=graph_read_scope,
         write_scope=compute_commands.write_scope if compute_commands is not None else None,
@@ -3230,6 +3292,7 @@ def resume_work_command_mailbox(
             service(),
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
@@ -3240,6 +3303,7 @@ def _prepare_work_patch_candidate(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
@@ -3253,7 +3317,9 @@ def _prepare_work_patch_candidate(
         draft,
         kind="work",
         run_truth_scope=run_truth_scope,
-        repository_paths=service.manifest.repository_paths,
+        # A turn retained before reads were stamped read this project's repositories.
+        read_scope=read_scope
+        or resolve_read_scope(service._project_id, service.manifest.repositories, None),
         source_operation_id=source_operation_id,
         source_effect_id=source_effect_id,
         source_effect_sha256=(
@@ -3276,6 +3342,7 @@ def _validate_work_patch_live(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
@@ -3287,6 +3354,7 @@ def _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
@@ -3301,6 +3369,7 @@ def _apply_work_patch(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     profile: AgentProfile = "ordinary",
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
@@ -3311,6 +3380,8 @@ def _apply_work_patch(
     """Validate and atomically apply one Work patch candidate."""
 
     source_operation_id = source_operation_id or _work_patch_source_operation_id(execution)
+    if execution is not None and read_scope is not None:
+        record_work_read_scope(execution, read_scope)
     return apply_work_patch(
         service,
         execution,
@@ -3319,6 +3390,7 @@ def _apply_work_patch(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,

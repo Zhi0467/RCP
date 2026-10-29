@@ -100,16 +100,12 @@ def validate_episode_admission(
     if project is None:
         raise KeyError(project_id)
     manifest = load_manifest(project.locator)
-    aliases = (
-        request.run_truth_scope
-        if request.run_truth_scope is not None
-        else manifest.agent.default_run_truth_scope
-    )
+    aliases = request.run_truth_scope or []
     if len(aliases) != 1:
         raise ValueError("episode_isolation_requires_one_repository")
     repository = manifest.repository_map[aliases[0]]
     # Graph-writing profiles default to the canonical state machine.
-    run_on = request.run_on or manifest.repository_map[manifest.state.repository].machine
+    run_on = request.run_on or manifest.base_machine
     host = manifest.machine_map[run_on].host
     if repository.machine != run_on:
         raise ValueError("episode_isolation_host_mismatch")

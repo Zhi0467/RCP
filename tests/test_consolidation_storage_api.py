@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -9,7 +10,9 @@ from threading import Event
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef
 from rcp.storage import Artifact
+from rcp.storage.consolidation import target_label
 from tests.helpers import signed_in_client
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app
@@ -23,29 +26,32 @@ def setup(manifest, tmp_path):
     return signed_in_client(app), store, app.state.default_project_id
 
 
-def _due(store, project_id):
+def _due(store, project_id, *, target="main"):
     now = datetime.fromisoformat(store.now())
     owner = store.local_owner
     human = AuthorizedHuman(
         space_id=store.space_id, user_id=owner.user_id, display_name=owner.display_name
     )
-    return store.put_consolidation_schedule(
+    schedule = store.put_consolidation_schedule(
         project_id,
         local_time="00:00",
         timezone="UTC",
         authorized_by=human,
         next_due_at=(now - timedelta(minutes=1)).isoformat(),
     )
+    store.ensure_consolidation_target(schedule, target=target)
+    return schedule
 
 
-def _failure(store, project_id):
-    schedule = _due(store, project_id)
+def _failure(store, project_id, *, target="main"):
+    schedule = _due(store, project_id, target=target)
     now = datetime.fromisoformat(store.now())
     return store.claim_consolidation_occurrence(
         schedule,
         occurrence_date=now.date().isoformat(),
         next_due_at=(now + timedelta(days=1)).isoformat(),
         input_head=0,
+        target=target,
         error_code="authorizer_not_member",
         error_message="departed",
     )
@@ -134,9 +140,21 @@ def test_schedule_contract_renewal_validation_and_delete(setup):
     assert client.delete(base + "/schedule").json() == {"schedule": None}
 
 
-def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup):
+@pytest.mark.parametrize("on_branch", [False, True])
+def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup, on_branch):
     client, store, project = setup
-    run = _failure(store, project)
+    target = str(uuid.uuid4()) if on_branch else "main"
+    assert target_label(target, {}) == (target[:8] if on_branch else "main")
+    if on_branch:
+        store.create_graph_branch(
+            project_id=project,
+            branch_id=target,
+            owner_episode_id=None,
+            parent_head=GraphHeadRef(revision=0),
+            created_by=store.local_owner.user_id,
+            name="source-audit",
+        )
+    run = _failure(store, project, target=target)
     with store.connection() as conn:
         conn.execute(
             "UPDATE consolidation_runs SET error_code='history_unavailable',revisions_verified=0 WHERE run_id=?",
@@ -148,6 +166,8 @@ def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup):
     assert response["can_write"]
     inbox = response["inbox"]
     assert len(inbox) == 1 and inbox[0]["operation_id"] is None
+    assert inbox[0]["graph_target"] == run.graph_target.model_dump(mode="json")
+    assert inbox[0]["graph_branch_name"] == ("source-audit" if on_branch else "main")
     assert not inbox[0]["revisions_verified"]
     assert inbox[0]["error"]["code"] == "history_unavailable"
     assert (
@@ -165,10 +185,33 @@ def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
         {"occurrence_date": run.occurrence_date, "outcome": "failed"}
     ]
     now = datetime.fromisoformat(store.now())
+    target = str(uuid.uuid4())
+    store.claim_consolidation_occurrence(
+        _due(store, project, target=target),
+        target=target,
+        occurrence_date=run.occurrence_date,
+        next_due_at=(now + timedelta(days=1)).isoformat(),
+        input_head=0,
+        skipped=True,
+    )
+    assert client.get(url).json()["schedule"]["last_outcome"] == "failed"
+    renewed = client.put(url + "/schedule", json={"local_time": "02:30", "timezone": "UTC"})
+    assert renewed.json()["schedule"]["last_outcome"] == "failed"
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE consolidation_runs SET outcome_settled_at=NULL WHERE run_id=?", (run.run_id,)
+        )
+    assert client.get(url).json()["schedule"]["last_outcome"] is None
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE consolidation_runs SET outcome_settled_at=? WHERE run_id=?",
+            (store.now(), run.run_id),
+        )
     for days in range(1, 8):
         due = (now - timedelta(minutes=1)).isoformat()
         with store.connection() as conn:
             conn.execute("UPDATE consolidation_schedules SET next_due_at=?", (due,))
+            conn.execute("UPDATE consolidation_targets SET next_due_at=?", (due,))
         store.claim_consolidation_occurrence(
             store.consolidation_schedule(project),
             occurrence_date=(now + timedelta(days=days)).date().isoformat(),
@@ -441,3 +484,46 @@ def test_legacy_project_id_rewrite_moves_consolidation_state(setup):
     assert store.consolidation_schedule(legacy_id) is None
     assert store.consolidation_schedule(canonical_id) is not None
     assert [item.run_id for item in store.consolidation_runs(canonical_id)] == [run.run_id]
+
+
+def test_old_writer_migration_preserves_main_coverage_and_runs(tmp_path):
+    from rcp.storage.consolidation import migrate_consolidation, migrate_consolidation_targets
+    from rcp.storage.evidence_flags import migrate_evidence_flags
+    from rcp.storage.resource_versions import _bump, _install
+
+    # Use the unchanged historical writer, not the current models or new schema.
+    path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        migrate_consolidation(conn)
+        migrate_evidence_flags(conn)
+        conn.execute(
+            "CREATE TABLE resource_versions(scope TEXT,resource TEXT,entity TEXT,generation INTEGER,PRIMARY KEY(scope,resource,entity))"
+        )
+        _install(conn, "consolidation_schedules", [_bump("ROW.project_id", "consolidation")])
+        conn.execute(
+            "INSERT INTO consolidation_schedules(project_id,authorization_id,local_time,timezone,authorized_by_json,authorized_at,expires_at,next_due_at,covered_head,last_occurrence_date) VALUES('project','auth','01:00','UTC','{}','created','expires','due',17,'date')"
+        )
+        conn.execute(
+            "INSERT INTO consolidation_runs(run_id,project_id,occurrence_date,authorization_id,authorized_by_json,input_head,created_at,kind,outcome_settled_at) VALUES('run','project','date','auth','{}',17,'created','failure','settled')"
+        )
+        old_run = dict(conn.execute("SELECT * FROM consolidation_runs").fetchone())
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        migrate_consolidation_targets(conn)
+        coverage = dict(conn.execute("SELECT * FROM consolidation_targets").fetchone())
+        assert coverage == {
+            "project_id": "project",
+            "target": "main",
+            "next_due_at": "due",
+            "covered_head": 17,
+            "last_occurrence_date": "date",
+            "skipped_dates_json": None,
+        }
+        assert dict(conn.execute("SELECT * FROM consolidation_runs").fetchone()) == {
+            **old_run,
+            "target": "main",
+        }
+        assert "covered_head" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(consolidation_schedules)")
+        }

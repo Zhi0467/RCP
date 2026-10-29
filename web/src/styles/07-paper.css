@@ -1,7 +1,7 @@
 /* Paper uses the same raised Aqua surfaces and inset fields as the chat shell. */
 .paper-live-workspace {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
   gap: 14px;
   padding: 8px 14px 14px;
   height: calc(100dvh - 190px);
@@ -10,7 +10,38 @@
   color: var(--walnut);
 }
 .paper-live-workspace.files-folded {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
+}
+/* The right pane sits in the last column, so the handle can share that cell and cover
+   the gap before it. */
+.paper-right-box,
+.paper-split-handle {
+  grid-column: -2;
+  grid-row: 1;
+}
+.paper-split-handle {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  justify-self: start;
+  width: 14px;
+  margin-left: -14px;
+  border-radius: 7px;
+  z-index: 2;
+}
+/* The grip shows the gap can be dragged; it turns teal under the pointer and while held. */
+.paper-split-handle::before {
+  background: var(--line);
+  border-radius: 2px;
+  content: "";
+  height: 36px;
+  transition: background-color 0.14s ease;
+  width: 4px;
+}
+.paper-split-handle:hover::before,
+.paper-split-handle:focus-visible::before,
+.paper-split-handle:active::before {
+  background: var(--teal);
 }
 .paper-box {
   display: flex;
@@ -35,6 +66,7 @@
   min-height: 48px;
   flex: none;
 }
+/* A bar's controls share one height: 29px here, the 44px phone target below. */
 @media (min-width: 701px) {
   .paper-bar .icon-button {
     flex: none;
@@ -42,6 +74,13 @@
     height: 29px;
     min-height: 29px;
     padding: 5px;
+  }
+  .paper-bar .segmented {
+    height: 29px;
+    padding: 2px;
+  }
+  .paper-bar .segmented button {
+    padding: 0 12px;
   }
 }
 .paper-grow {
@@ -83,14 +122,7 @@
   font-size: 9px;
   font-weight: 700;
 }
-.paper-saved {
-  color: var(--muted);
-  display: flex;
-  flex-shrink: 0;
-}
-.paper-saved.saved {
-  color: var(--forest);
-}
+/* Save state is announced, not drawn: unsaved text is guarded on leave, and a failure shows its retry. */
 .paper-tree {
   margin: 0 10px;
   flex: 1;
@@ -127,14 +159,53 @@
 .paper-folder svg {
   flex: none;
 }
-.paper-file.selected,
-.paper-folder.selected {
+.paper-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 7px;
+}
+.paper-row > .paper-file,
+.paper-row > .paper-folder {
+  flex: 1;
+}
+.paper-row.selected {
   background: var(--aqua-selected, var(--paper));
   box-shadow: var(--aqua-inset, inset 0 0 0 1px var(--rule));
 }
-.paper-file:hover,
-.paper-folder:hover {
+.paper-row:hover {
   background: color-mix(in srgb, var(--teal) 10%, transparent);
+}
+.paper-tree-menu-button {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  opacity: 0;
+}
+.paper-tree-menu-button:hover,
+.paper-tree-menu-button[aria-expanded="true"] {
+  color: var(--walnut);
+  background: color-mix(in srgb, var(--teal) 14%, transparent);
+}
+.paper-row:hover .paper-tree-menu-button,
+.paper-row:focus-within .paper-tree-menu-button,
+.paper-row.selected .paper-tree-menu-button,
+.paper-tree-menu-button[aria-expanded="true"] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .paper-tree-menu-button {
+    opacity: 1;
+  }
 }
 .paper-path-form {
   display: flex;
@@ -146,28 +217,10 @@
   min-width: 0;
   width: 100%;
 }
-.paper-segments {
-  display: inline-flex;
-  gap: 3px;
-  padding: 3px;
-  border-radius: 9px;
-  background: var(--aqua-field, var(--paper-deep));
-  box-shadow: var(--aqua-inset, inset 0 1px 4px rgb(0 0 0 / 12%));
-}
-.paper-segments button {
-  border: 0;
-  box-shadow: none;
-  border-radius: 7px;
-  color: var(--muted);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 6px 12px;
-}
-.paper-segments button[aria-pressed="true"] {
-  color: var(--walnut);
-  background: var(--aqua-surface, var(--surface));
-  box-shadow: var(--aqua-raised, var(--shadow));
+/* A view switch fills its row's height, set per width below. */
+.paper-live-workspace .segmented button {
+  align-self: stretch;
+  min-height: 0;
 }
 .paper-writing-pane,
 .paper-right-pane {
@@ -192,7 +245,8 @@
   font: 13px/1.75 var(--mono);
   color: var(--walnut);
 }
-.paper-code .cm-editor.cm-focused {
+.paper-code .cm-editor.cm-focused,
+.paper-code .cm-content:focus-visible {
   outline: none;
 }
 .paper-code .cm-scroller {
@@ -299,9 +353,13 @@
 }
 @media (max-width: 1180px) and (min-width: 701px) {
   .paper-live-workspace {
-    grid-template-columns: 165px minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: 165px minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
     gap: 10px;
     padding-inline: 10px;
+  }
+  .paper-split-handle {
+    width: 10px;
+    margin-left: -10px;
   }
   .paper-presence {
     max-width: 40px;
@@ -327,6 +385,9 @@
     flex: 1;
     border-radius: 10px;
   }
+  .paper-split-handle {
+    display: none;
+  }
   .paper-right-box {
     display: none;
   }
@@ -346,16 +407,14 @@
     display: inline-flex;
   }
   .paper-phone-segments {
+    align-items: center;
     display: flex;
-    margin: 0 10px 10px;
+    gap: 6px;
+    margin: 0 10px 8px;
     flex: none;
-  }
-  .paper-phone-segments button {
-    flex: 1;
   }
   .paper-desktop-segments,
   .paper-position,
-  .paper-copy,
   .paper-suggestion-actions {
     display: none;
   }
@@ -369,10 +428,12 @@
     max-width: 43px;
   }
   .paper-format {
-    max-width: 65px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: none;
+  }
+  /* Beside the coach the file row keeps only its path, as chat keeps its title. */
+  .paper-live-workspace[data-view="coach"] .paper-presence,
+  .paper-live-workspace[data-view="coach"] .paper-history-button {
+    display: none;
   }
   .paper-live-workspace:not([data-view="write"]) .paper-editor-box {
     flex: none;
@@ -402,10 +463,21 @@
   .paper-path-form input {
     min-height: 44px;
   }
+  .paper-tree-menu-button {
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+  }
   .paper-live-workspace .icon-button,
-  .paper-dialog .icon-button,
-  .paper-live-workspace .paper-segments button {
+  .paper-dialog .icon-button {
     min-width: 44px;
     min-height: 44px;
+  }
+  .paper-phone-segments .segmented {
+    height: 44px;
+  }
+  /* Paper's icon buttons take the phone target at this width, so its composer does too. */
+  .paper-live-workspace {
+    --composer-control: 44px;
   }
 }

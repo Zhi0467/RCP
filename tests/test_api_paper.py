@@ -84,3 +84,69 @@ def test_source_uploads_are_live_text_documents(manifest, tmp_path):
         assert all(file["kind"] == "text" for file in files)
         with app.state.services.store.connection() as conn:
             assert conn.execute("SELECT COUNT(*) FROM paper_updates").fetchone()[0] == 6
+
+
+def test_folder_actions_cover_every_file_under_the_folder_and_only_those(manifest, tmp_path):
+    import io
+    import zipfile
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        for path in ("draft/intro.md", "draft/deep/notes.md", "drafts.md"):
+            assert client.post(prefix + "/files", json={"path": path}).status_code == 200
+        client.post(
+            prefix + "/uploads",
+            data={"path": "draft/figure.png"},
+            files={"file": ("figure.png", b"\x89PNG")},
+        )
+        revision = client.get(prefix + "/tree").json()["revision"]
+        renamed = client.post(prefix + "/folders/rename", json={"path": "draft", "to": "final"})
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["revision"] == revision + 1
+        paths = {file["path"] for file in client.get(prefix + "/tree").json()["files"]}
+        assert paths == {"final/intro.md", "final/deep/notes.md", "final/figure.png", "drafts.md"}
+
+        archive = client.get(prefix + "/folders/archive", params={"path": "final"})
+        assert archive.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(archive.content)) as opened:
+            assert sorted(opened.namelist()) == [
+                "final/deep/notes.md",
+                "final/figure.png",
+                "final/intro.md",
+            ]
+            assert opened.read("final/figure.png") == b"\x89PNG"
+
+        assert client.post(prefix + "/folders/delete", json={"path": "final"}).status_code == 200
+        assert [file["path"] for file in client.get(prefix + "/tree").json()["files"]] == [
+            "drafts.md"
+        ]
+        for missing in (
+            client.post(prefix + "/folders/delete", json={"path": "final"}),
+            client.get(prefix + "/folders/archive", params={"path": "final"}),
+        ):
+            assert missing.status_code == 404
+
+
+def test_a_folder_action_refuses_a_file_added_after_its_files_were_read(manifest, tmp_path):
+    from rcp.paper import PaperOp
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    live = app.state.paper_live
+    snapshot = live.snapshot
+
+    async def stale_snapshot(project_id, revision=None):
+        # A peer adds a file under the folder between the read and the admitted mutation.
+        read = await snapshot(project_id, revision)
+        await live.apply(project_id, [PaperOp(kind="create", path="draft/late.md")], "peer", {})
+        live.snapshot = snapshot
+        return read
+
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        assert client.post(prefix + "/files", json={"path": "draft/intro.md"}).status_code == 200
+        live.snapshot = stale_snapshot
+        refused = client.post(prefix + "/folders/delete", json={"path": "draft"})
+        assert refused.status_code == 409, refused.text
+        paths = {file["path"] for file in client.get(prefix + "/tree").json()["files"]}
+        assert paths == {"draft/intro.md", "draft/late.md"}

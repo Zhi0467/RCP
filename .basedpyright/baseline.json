@@ -830,16 +830,6 @@
                 }
             }
         ],
-        "./src/rcp/agents/context.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 62,
-                    "endColumn": 66,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/agents/hidden_read.py": [
             {
                 "code": "reportArgumentType",
@@ -971,14 +961,6 @@
                     "startColumn": 4,
                     "endColumn": 7,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportCallIssue",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 5,
-                    "lineCount": 18
                 }
             }
         ],
@@ -3982,32 +3964,6 @@
                 }
             }
         ],
-        "./src/rcp/runs/tasks/coach.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 35,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 47,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/runs/tasks/compute_commands.py": [
             {
                 "code": "reportGeneralTypeIssues",
@@ -4475,22 +4431,6 @@
             }
         ],
         "./src/rcp/runs/tasks/work.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 35,
-                    "endColumn": 40,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 57,
-                    "endColumn": 69,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportArgumentType",
                 "range": {
@@ -6942,25 +6882,9 @@
             {
                 "code": "reportReturnType",
                 "range": {
-                    "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 4
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
                     "startColumn": 15,
                     "endColumn": 54,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 19,
-                    "endColumn": 13,
-                    "lineCount": 6
                 }
             },
             {
@@ -7001,22 +6925,6 @@
                     "startColumn": 20,
                     "endColumn": 33,
                     "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 53,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportReturnType",
-                "range": {
-                    "startColumn": 23,
-                    "endColumn": 17,
-                    "lineCount": 6
                 }
             },
             {

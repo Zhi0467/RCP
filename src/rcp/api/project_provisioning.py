@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -22,7 +23,6 @@ from rcp.api.identity import IdentityAccess
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
-    GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
@@ -212,19 +212,55 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         }
         canonical_machine = repository_machines.get(self.state_repository)
         if canonical_machine is not None and any(
-            check.profile in GRAPH_AGENT_EXECUTION_PROFILES
-            and check.machine_alias != canonical_machine
-            for check in self.provider_checks
+            check.machine_alias != canonical_machine for check in self.provider_checks
         ):
-            raise ValueError(
-                "graph-writing provider profiles must run on the canonical state machine"
-            )
+            raise ValueError("every provider profile must run on the canonical state machine")
         return self
+
+
+class ProjectRepositoryAddition(_StrictModel):
+    """One repository on the project's base machine, read-only unless chosen.
+
+    Exactly one source: a GitHub URL cloned into a central checkout, or the path
+    of a Git work tree already on the base machine, adopted in place.
+    """
+
+    alias: str
+    source: str | None = None
+    path: str | None = None
+    count_as_project_truth: bool = False
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str | None) -> str | None:
+        if value is not None:
+            parse_github_repository_ref(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_one_source(self) -> ProjectRepositoryAddition:
+        if (self.source is None) == (self.path is None):
+            raise ValueError("Add a repository from exactly one GitHub URL or folder.")
+        return self
+
+    def intent(self, machine_alias: str) -> ProjectProvisioningRepositoryIntent:
+        return ProjectProvisioningRepositoryIntent(
+            alias=self.alias,
+            repository=parse_github_repository_ref(self.source) if self.source else None,
+            existing_path=self.path,
+            machine_alias=machine_alias,
+            count_as_project_truth=self.count_as_project_truth,
+        )
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    first, second = PurePosixPath(left), PurePosixPath(right)
+    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
 
 
 class ProjectRepositoryAddRequest(_StrictModel):
     kind: Literal["add_repository"]
-    repository: ProjectProvisioningRepositoryRequest
+    repository: ProjectRepositoryAddition
 
 
 class ProjectRepositoryConnectRequest(_StrictModel):
@@ -1236,14 +1272,27 @@ def create_project_repository_request(
                     raise ValueError("Project not found")
                 completed = store.completed_project_provisioning_requests(project_id)
                 inventory = effective_repositories(project, completed)
+                manifest = service.history.manifest
                 if body.kind == "add_repository":
-                    intent = body.repository.intent()
-                    if intent.alias in service.history.manifest.repository_map:
+                    intent = body.repository.intent(manifest.base_machine)
+                    if intent.alias in manifest.repository_map:
                         raise ValueError("The repository alias already belongs to this project.")
+                    if intent.existing_path is not None and any(
+                        _paths_overlap(intent.existing_path, repository.path)
+                        for repository in manifest.repositories
+                        if repository.machine == intent.machine_alias
+                    ):
+                        raise ValueError("The folder overlaps a repository of this project.")
                 else:
                     previous = next((repo for repo in inventory if repo.alias == body.alias), None)
-                    if previous is None or previous.repository is not None:
-                        raise ValueError("Connect requires an existing server-only repository.")
+                    if (
+                        previous is None
+                        or previous.repository is not None
+                        or previous.existing_path is not None
+                    ):
+                        raise ValueError(
+                            "Connect requires an existing server-only repository RCP created."
+                        )
                     descriptor = service.history.manifest.repository_map.get(previous.alias)
                     if descriptor is None or (
                         descriptor.machine != previous.machine_alias

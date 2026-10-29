@@ -1,5 +1,9 @@
 # RCP
 
+Coding-agent sessions end, and findings get buried in separate chats.
+Unverified claims can get repeated as facts.
+RCP keeps one durable research graph; only a human can promote a claim to project truth.
+
 **A control panel for research done with coding agents.** RCP turns your Codex
 and Claude Code sessions into one durable research graph of questions,
 hypotheses, experiments, evidence, and decisions. Agents propose; you decide.
@@ -9,56 +13,38 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
 
 ## Who it's for today
 
-- **Agents:** Codex, Claude Code, and OpenCode.
-- **Platforms:** macOS 13+ on Apple Silicon for the desktop app; Ubuntu 22.04
-  or 24.04 LTS on x86-64 for the web app and team server.
-- **Install:** the macOS app with one command, or from source with the steps
-  below. RCP shows a notice when a newer release is out.
-
-## Set up with your agent
-
-Send this to your agent:
-
-> Clone Zhi0467/RCP from GitHub. Build the web app and, on macOS, the desktop app
-> from source, following the README and docs/desktop.md. Then walk me through
-> using RCP.
-
-For a Linux machine your team will share as an RCP server, make sure you have SSH
-access, then send:
-
-> Set up my RCP team server using `<ssh-host>` as the SSH host, following
-> docs/server.md. Pause and ask about optional setup choices or when you need
-> sudo access. Then show me how to use my team space in the desktop app,
-> including inviting people, transferring projects, and creating shared projects.
+- Researchers who run experiments with Codex, Claude Code, or OpenCode.
+- Lab teams who want a shared record of questions, evidence, and decisions.
 
 ## What it does
 
-- **One graph, append-only history.** Questions, hypotheses, experiments,
-  evidence, decisions, and blockers, replayable from a patch log and versioned
-  in Git.
+- **One graph, append-only history.** RCP records questions, hypotheses,
+  experiments, evidence, decisions, and blockers in a patch log. The log is
+  replayable and versioned in Git.
 - **Agents propose, you decide.** Agents create nodes and file Proposals; only
   a human approves one, promotes a claim to project truth, or authorizes an
   autonomous episode.
 - **Bounded autonomy.** One click starts an Experiment or an Auto-research
-  episode from the graph or a graph branch, with a budget and a Stop. Watchers,
-  recovery, and visual reports keep running without an open tab, and the phone
-  UI shows them. A nightly pass merges duplicate nodes, and agents keep short
-  operational lessons for later runs.
+  episode from the graph or a graph branch, with a budget and a Stop.
+- **Work between sessions.** Watchers, recovery, and visual reports keep running
+  without an open tab, and the phone UI shows them. A nightly pass merges
+  duplicate nodes, and agents keep short operational lessons for later runs.
 - **Artifacts in the reply.** Agents put pages, charts, and images right in
   their reply, running and interactive. Live pages redraw while a job runs.
   Select text or an image region to comment, and the agent that made it
   answers with a new version.
 - **Agents that reach you.** An agent can stop and ask you a question. Proposals
-  and questions arrive as notifications on the Mac and the phone, and a Mac
-  stays awake while RCP has work, even with the lid closed.
+  and questions arrive as notifications on the Mac and the phone.
+  [Mac power controls](docs/specs/server-and-machine-operations.md#keeping-a-mac-awake)
+  support ongoing work.
 - **Talk to it.** Dictate into any chat, or open a voice session that answers
   questions about a project and starts or stops work when you say so.
 - **Agents that browse.** A per-chat grant gives an agent a headless browser
   to check pages and local services it started.
-- **Your machines, your subscriptions.** Codex, Claude Code, or OpenCode, locally or over
-  SSH, with provider, runtime, and model settings per agent role. A team space
+- **Your machines, your subscriptions.** Run Codex, Claude Code, or OpenCode
+  locally or over SSH. Choose provider, runtime, and model settings per agent role. A team space
   on your own Linux server adds shared projects, member attribution, central
-  Git checkouts, and backup/restore.
+  Git checkouts, and backup and restore.
 
 ![An agent's chart in its reply, with a boxed region sent back as a comment](docs/media/artifacts.gif)
 
@@ -70,46 +56,10 @@ access, then send:
 
 ## Install and run
 
-**macOS app.** Paste this into Terminal, from an admin account:
+Start with [installation](docs/install.md) for the macOS app, a source checkout,
+and development checks. For a shared team space, use the
+[team-server runbook](docs/server.md). Native builds and verification live in
+[the desktop guide](docs/desktop.md).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Zhi0467/RCP/main/scripts/install-macos.sh | sh
-```
-
-It installs the latest release to `/Applications/RCP.app`, and the app opens
-with no approval step. Run it again to reinstall. Once installed, the app
-updates itself from its **Update** button. RCP needs Git, which comes with
-Apple's Command Line Tools (`xcode-select --install`).
-
-Or download `RCP-vX.Y.Z-macos-arm64.zip` from the latest `desktop-vX.Y.Z`
-pre-release on the [releases page](https://github.com/Zhi0467/RCP/releases),
-unzip it, and move `RCP.app` to Applications. The app is not signed by Apple,
-so macOS blocks a downloaded zip's first launch: open System Settings →
-Privacy & Security and choose **Open Anyway**.
-
-**From source.** You need Git, Node.js, [`uv`](https://docs.astral.sh/uv/), and Codex CLI or
-Claude Code signed in. Build the web app and run it in your browser:
-
-```bash
-git clone https://github.com/Zhi0467/RCP.git
-cd RCP
-git checkout --detach <tag>   # the vX.Y.Z tag of the latest release
-npm --prefix web ci && npm --prefix web run build
-uv sync
-uv run rcp open
-```
-
-For the macOS app, also install [Rust](https://rustup.rs) and the Xcode
-command-line tools, then build and open it:
-
-```bash
-npm --prefix web run desktop:build-dev
-open "web/src-tauri/target/debug/bundle/macos/RCP Dev.app"
-```
-
-Development runs, verification, and updating a source checkout with
-`scripts/update-from-source` are in [docs/install.md](docs/install.md).
-
-A shared team space on your own Ubuntu server is set up through the
-[team server guide](docs/server.md). Design and behavior live in
-[docs/design.md](docs/design.md) and [docs/specs/](docs/specs/).
+The [design and spec index](docs/design.md) explains product boundaries and
+current behavior.

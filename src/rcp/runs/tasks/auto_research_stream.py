@@ -58,7 +58,8 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
-from rcp.agents.prompts import render_group_context
+from rcp.agents.project_repositories import resolve_read_scope, write_repositories
+from rcp.agents.prompts import GraphReadPrompt, render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -143,6 +144,8 @@ from rcp.runs.tasks.work import (
     _read_correction_patch,
     _record_work_graph_rejection,
     _WorkPatchFailure,
+    record_work_read_scope,
+    recorded_work_read_scope,
 )
 from rcp.runs.tasks.work_turn_runtime import (
     WorkValidatorMailboxLifecycle,
@@ -159,12 +162,12 @@ from rcp.storage import (
     AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
 )
+from rcp.storage.lessons import lesson_command_actions
 from rcp.transport import (
     RemoteRunStage,
     RunLockCancelled,
     RunStageMailbox,
     StateUnavailable,
-    repository_access,
 )
 from rcp.transport.run_stage import remote_stage_name
 
@@ -314,15 +317,23 @@ async def stream_auto_research_orchestrator_run(
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
         )
+        record_work_read_scope(
+            execution,
+            resolve_read_scope(
+                service._project_id, service.manifest.repositories, context.group_context
+            ),
+        )
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
+        lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
         allowed_verbs = auto_research_allowed_verbs(
             "orchestrator",
             can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            lesson_actions=lesson_actions,
         )
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
@@ -418,6 +429,7 @@ async def stream_auto_research_orchestrator_run(
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
                 allowed_verbs=allowed_verbs,
+                lesson_actions=lesson_actions,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 messages_path=messages_path,
@@ -585,6 +597,12 @@ async def stream_auto_research_worker_run(
         context.group_context = build_group_context(
             service, execution.store, turn.request.run_on or ""
         )
+        record_work_read_scope(
+            execution,
+            resolve_read_scope(
+                service._project_id, service.manifest.repositories, context.group_context
+            ),
+        )
         _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
@@ -603,10 +621,12 @@ async def stream_auto_research_worker_run(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
+        lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
         allowed_verbs = auto_research_allowed_verbs(
             "worker",
             graph_read_scope=graph_read_scope,
             bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            lesson_actions=lesson_actions,
         )
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
@@ -670,6 +690,7 @@ async def stream_auto_research_worker_run(
                 schema_path=schema_path,
                 command_client=staged_commands.client_command(),
                 allowed_verbs=allowed_verbs,
+                lesson_actions=lesson_actions,
                 graph_read_scope=graph_read_scope,
                 staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
@@ -1200,23 +1221,13 @@ def _auto_research_context(
     stage: _WorkerStage,
 ) -> ChatContext:
     state = service.history.state()
-    selected = request.run_truth_scope or service.manifest.agent.default_run_truth_scope
-    access = {
-        alias: repository_access(
-            service.manifest.repository_map[alias],
-            service.manifest.machine_map[service.manifest.repository_map[alias].machine],
-        )
-        for alias in selected
-        if alias in service.manifest.repository_map
-    }
     context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
         graph_target=service.history.graph_target,
         node_id=None,
-        run_truth_scope=request.run_truth_scope,
-        repository_access=access,
+        writable=request.run_truth_scope,
     )
-    state_machine = service.manifest.repository_map[service.manifest.state.repository].machine
+    state_machine = service.manifest.base_machine
     if state_machine != request.run_on:
         repositories = []
         for item in context.repositories:
@@ -1594,6 +1605,7 @@ def _orchestrator_prompt(
     schema_path: str,
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
+    lesson_actions: tuple[str, ...] = (),
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     messages_path: str | None,
@@ -1631,6 +1643,11 @@ def _orchestrator_prompt(
         child_profiles=child_profiles,
         compute_profiles=compute_profiles,
     )
+
+    graph_prompt = GraphReadPrompt(
+        graph_read_scope, service.paper.store if graph_read_scope else None
+    )
+    values.update(graph_prompt.values)
 
     snapshot, dismissal_ids = auto_research_question_snapshot(
         execution.store,
@@ -1670,13 +1687,14 @@ def _orchestrator_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             instruction_path=instruction_path,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
             child_profiles=child_profiles,
             compute_profiles=compute_profiles,
         )
@@ -1701,6 +1719,7 @@ def _orchestrator_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=_retry_diagnostics_path(
@@ -1709,7 +1728,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
         )
 
     def continuation_parts() -> list[str]:
@@ -1778,6 +1797,7 @@ def _worker_prompt(
     schema_path: str,
     command_client: str,
     allowed_verbs: tuple[CommandVerb, ...],
+    lesson_actions: tuple[str, ...] = (),
     graph_read_scope: GraphReadScope | None = None,
     staged_head: GraphHeadRef | None = None,
     reply_key: str,
@@ -1819,6 +1839,11 @@ def _worker_prompt(
         compute_profiles=compute_profiles,
     )
 
+    graph_prompt = GraphReadPrompt(
+        graph_read_scope, service.paper.store if graph_read_scope else None
+    )
+    values.update(graph_prompt.values)
+
     def render_master() -> str:
         return auto_research_worker_task_contract(
             project_name=context.project_name,
@@ -1833,11 +1858,12 @@ def _worker_prompt(
             output_schema_path=schema_path,
             command_client=command_client,
             allowed_verbs=allowed_verbs,
+            lesson_actions=lesson_actions,
             reply_key=reply_key,
             messages_path=messages_path,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
             compute_profiles=compute_profiles,
         )
 
@@ -2170,7 +2196,20 @@ async def _settle_worker_patch(
                     execution,
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope,
+                    or write_repositories(service.history.state()),
+                    # A recorded pass has no live group; it reuses its launch's scope.
+                    read_scope=(
+                        resolve_read_scope(
+                            service._project_id,
+                            service.manifest.repositories,
+                            correction.group_context,
+                        )
+                        if correction is not None
+                        else recorded_work_read_scope(execution.store, execution.operation_id)
+                        or resolve_read_scope(
+                            service._project_id, service.manifest.repositories, None
+                        )
+                    ),
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )

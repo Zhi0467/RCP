@@ -541,6 +541,9 @@ class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
     repository: GitHubRepositoryRef | None = None
     machine_alias: str
     count_as_project_truth: bool = True
+    # An existing Git work tree adopted in place: server-only code RCP does not
+    # back up. Omitted when absent so earlier records keep their exact bytes.
+    existing_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @property
     def source_kind(self) -> Literal["github", "server_only"]:
@@ -552,6 +555,19 @@ class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
         if _PROVISIONING_ALIAS.fullmatch(value) is None:
             raise ValueError("provisioning repository or machine alias is invalid")
         return value
+
+    @field_validator("existing_path")
+    @classmethod
+    def validate_existing_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _provisioning_absolute_path(value, label="existing repository path")
+
+    @model_validator(mode="after")
+    def validate_existing_source(self) -> ProjectProvisioningRepositoryIntent:
+        if self.existing_path is not None and self.repository is not None:
+            raise ValueError("an adopted folder cannot also name a GitHub source")
+        return self
 
 
 class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
@@ -838,7 +854,13 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
             machine = machine_map.get(repository.machine_alias)
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
-            if machine.central_root is None:
+            if repository.existing_path is not None:
+                if self.kind != "add_repository" or {
+                    repository.intended_path,
+                    repository.resolved_path or repository.existing_path,
+                } != {repository.existing_path}:
+                    raise ValueError("an adopted folder is added in place at its own path")
+            elif machine.central_root is None:
                 if repository.intended_path is not None:
                     raise ValueError("default remote repository path cannot be guessed")
             else:
@@ -863,7 +885,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                     / "repositories"
                     / repository.alias
                 )
-                if repository.resolved_path != str(resolved):
+                if repository.existing_path is None and repository.resolved_path != str(resolved):
                     raise ValueError("provisioning repository resolved path is not derived")
                 if self.configuration_complete and repository.checkout_disposition is None:
                     raise ValueError("resolved repository path requires its checkout disposition")

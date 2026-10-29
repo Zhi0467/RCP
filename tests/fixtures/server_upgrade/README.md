@@ -162,3 +162,8 @@ source from `pre-machine-settings-v32-0a934a6`.
 added its tables (storage migration 63), ending at migration 62 after question
 versions. It is built by the exact boundary source from
 `pre-question-versions-v33-070729d`.
+
+`pre-consolidation-targets-v35-ceaa0d7` retains the last shape before nightly
+consolidation gained per-graph-target coverage and runs (storage migration 64),
+ending at migration 63 with the live Paper tables. It is built by the exact
+boundary source from `pre-paper-live-v34-22089be`.

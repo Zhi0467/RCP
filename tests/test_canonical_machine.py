@@ -7,7 +7,7 @@ from rcp.config import AgentSurfaceConfig, Manifest
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.providers import ModelChoice
-from rcp.service import ProjectService
+from rcp.service import CoachRequest, ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
 from tests.helpers import unchecked_write_authority
@@ -59,18 +59,16 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
         )
 
 
-def test_runtime_override_cannot_move_graph_agent(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("surface", ["refresh", "paper_coach"])
+def test_runtime_override_cannot_move_an_agent_off_the_base(manifest, tmp_path, surface) -> None:
     manifest.machines.append(type(manifest.machines[0])(alias="remote", host="gpu.example"))
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
 
-    with pytest.raises(ValueError, match="canonical state machine"):
-        service.resolve_agent_profile("refresh", run_on="remote")
-
-    coach = service.resolve_agent_profile("paper_coach", run_on="remote")
-    assert coach.run_on == "remote"
+    with pytest.raises(ValueError):
+        service.resolve_agent_profile(surface, run_on="remote")
 
 
 def test_provider_override_does_not_inherit_previous_provider_model(manifest, tmp_path) -> None:
@@ -179,3 +177,52 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     }
     # Only the already-cached probe for that machine's exact executable is read.
     assert probed[0] == ("codex", machine.host, None)
+
+
+@pytest.mark.asyncio
+async def test_old_coach_checkpoint_starts_fresh_on_base(manifest, tmp_path) -> None:
+    from typing import cast
+
+    from rcp.agents import AgentEvent, AgentLauncher
+    from rcp.runs.tasks.coach import stream_coach
+
+    from .helpers import create_named_app
+    from .paper_helpers import wire_saved_paper
+    from .test_coach_suggestions import execution_for
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    wire_saved_paper(service)
+    execution = execution_for(service)
+    execution.continuation = "resume"
+    execution.stage_host = "old.example"
+    execution.stage_root = "/old/checkpoint"
+    request = CoachRequest(
+        message="Continue coaching", session_id="old-native", run_on="old-worker"
+    )
+    launched = []
+
+    class Launcher:
+        async def stream(self, _provider, _prompt, **kwargs):
+            launched.append(kwargs)
+            assert kwargs["session_id"] is None
+            assert kwargs.get("host", "") == manifest.machine_map[manifest.base_machine].host
+            assert str(kwargs["cwd"]) != "/old/checkpoint"
+            yield AgentEvent(event="session", session_id="new-native")
+            yield AgentEvent(event="done")
+
+    events = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+        async for frame in stream_coach(
+            service,
+            cast(AgentLauncher, Launcher()),
+            service.paper,
+            request,
+            tmp_path / "data",
+            execution,
+        )
+    ]
+    assert launched
+    assert not [event for event in events if event.event == "error"]
+    sessions = {session.native_session_id: session for session in service.paper.sessions()}
+    assert sessions["new-native"].execution_machine == manifest.base_machine

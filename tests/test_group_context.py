@@ -41,6 +41,7 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
     def write_scope():
         return resolve_project_write_scope(
             manifest=service.manifest,
+            truth_scope=service.manifest.project.truth_scope,
             project_id="project",
             execution_machine="laptop",
             capability="work_auto",

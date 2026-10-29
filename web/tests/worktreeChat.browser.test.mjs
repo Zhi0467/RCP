@@ -114,6 +114,8 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     );
     await page.getByRole("button", { name: "Options" }).click();
     await page.getByRole("checkbox", { name: "Work in a worktree" }).check();
+    // The project's one writable repository on this machine needs no choice.
+    assert.equal(await page.getByRole("combobox", { name: "Worktree repository" }).count(), 0);
     await page.getByRole("button", { name: "Work", exact: true }).click();
     await page.getByRole("textbox", { name: "Message" }).fill("Create my change.");
     projection = bound;
@@ -121,6 +123,7 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     await page.getByText("Worktree: rcp/chat-one (ready)").waitFor();
     const first = await page.evaluate(() => window.worktreeRequests[0]);
     assert.equal(first.worktree, true);
+    assert.deepEqual(first.run_truth_scope, ["repo"]);
     assert.equal(first.mode, "work");
     assert.equal(await page.getByRole("checkbox", { name: "Work in a worktree" }).count(), 0);
 
@@ -134,7 +137,7 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     assert.equal(integration.worktree_integration, "pull_request");
     assert.equal(integration.mode, "work");
     assert.equal(integration.session_id, "session-one");
-    assert.deepEqual(integration.run_truth_scope, ["repo"]);
+    assert.equal("run_truth_scope" in integration, false);
     assert.equal(
       await page.getByRole("textbox", { name: "Message" }).inputValue(),
       "Preserve this draft.",

@@ -8,7 +8,6 @@ import {
   ScanSearch,
   ShieldAlert,
   ShieldQuestion,
-  Trash2,
   Unlink,
   WifiOff,
   X,
@@ -23,6 +22,7 @@ import {
   updateSpaceMachine,
 } from "../core/api";
 import { errorMessage } from "../core/errors";
+import { ArmedDeleteButton } from "../ui/ArmedDeleteButton";
 import {
   createPathEditor,
   createMachineWriteQueue,
@@ -53,7 +53,7 @@ interface Props {
   record: SpaceMachine | null;
   writesDisabled?: boolean;
   onRecordChange: (machine: SpaceMachine) => void;
-  /** Offered only for a space machine no project uses. */
+  /** Offered for a space machine no repository lives on; it detaches from projects too. */
   onDelete?: () => Promise<void>;
   /** Offered on a project's card when nothing in the project uses the machine. */
   onRemoveFromProject?: () => Promise<void>;
@@ -123,18 +123,17 @@ export function MachineCard({
             {busy === "unlink" ? <LoaderCircle className="spin" size={14} /> : <Unlink size={14} />}
           </button>
         )}
+        {/* Delete also detaches the machine from every project, so it arms first. */}
         {onDelete && (
-          <button
-            type="button"
+          <ArmedDeleteButton
             data-machine-action="delete"
-            aria-label={`Remove ${title}`}
-            {...failedProps(failure, "delete")}
-            className={`icon-button${failure?.key === "delete" ? " failed" : ""}`}
+            label={`Remove ${title}`}
+            className="icon-button"
+            busy={busy === "delete"}
             disabled={writesDisabled || busy !== null}
-            onClick={() => void act("delete", onDelete)}
-          >
-            {busy === "delete" ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
-          </button>
+            failure={failure?.key === "delete" ? failure.message : null}
+            onConfirm={() => void act("delete", onDelete)}
+          />
         )}
       </header>
       {record && (

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from rcp.agents.project_repositories import readable_repositories
 from rcp.config import Manifest, load_manifest
 from rcp.transport import RepositoryAccess
 from rcp.transport.state import (
@@ -136,8 +137,7 @@ def build_group_context(
                     ),
                     repositories=tuple(
                         pointer(item.alias, item.machine, item.path)
-                        for item in manifest.repositories
-                        if item.alias in manifest.project.truth_scope
+                        for item in readable_repositories(manifest)
                     ),
                 )
             )

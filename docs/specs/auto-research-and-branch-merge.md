@@ -1,583 +1,454 @@
 # Auto-research and branch merge
 
 This spec owns project-wide orchestration, budgets, children, mail, staged
-commands, episode graph branches, and human-dispatched merge to main.
+commands, graph branches, and merge. Source owners are
+[Auto-research](../../src/rcp/runs/auto_research.py),
+[admission](../../src/rcp/runs/auto_research_admission.py), and
+[episode merge](../../src/rcp/runs/episodes/merge.py).
 
 ## Episode scope, budget, and authority
 
 One human action starts project-wide Auto-research. Each project has one
-orchestrator profile; each graph branch has at most one live Auto-research
-episode, so several may run at once on separate branches. Status lists the others
-as `other_auto_research` (capped `{rows, omitted}` of episode, target, starter, and
-checkout), and the start dialog shows them; neither gates a start. An optional
-instruction guides the first invocation without granting authority. Human start
-pins provider, model, and reasoning, defaulting to that profile. Child picks
-use the orchestrator's explicit choice or the Settings node_chat profile, always
-on the child's profile machine. Unsupported choices refuse before admission;
-prompts list the same probed readiness choices.
-**Why:** each episode's graph writes stay on its own branch; overlap in a shared
-checkout is for humans to coordinate, as with Experiment loops below.
+orchestrator profile. Each graph branch has at most one live Auto-research episode.
+Other episodes appear in capped lists in status and the start dialog without
+gating admission. An optional opening instruction grants no authority. Start pins
+the provider, model, and reasoning from the human's choices or the orchestrator
+profile. Children use the orchestrator's choices or node-chat defaults. All
+profiles run on the project's base machine, as enforced by
+`config.require_base_machine`. Unsupported choices are refused before admission.
+Prompts show the same probed choices.
+**Why:** branch writes are isolated. Humans coordinate overlapping checkout work.
 
-Start and reauthorization resolve the execution machine without gating on compute
-readiness. The helper probes on use; Settings shows the stored probe. See
-[Compute jobs](compute-jobs.md) for setup and human Cancel.
+Start and reauthorization resolve execution without gating on compute readiness.
+The helper probes when used. Settings shows stored readiness. See
+[Machines and compute](machines-and-compute.md).
 
-The brakes are the human's invocation ceiling **B** (defaulted from Settings)
-and [protected-belief authority](authority-and-proposals.md#graph-action-vocabulary),
-not a subtree fence. The root has the orchestrator profile on its branch;
-children have the ordinary profile. Neither approves Proposals. The root decides
-choices its evidence settles. It queues `ready` only for human preference, risk,
-cost, or an unspecified direction, naming the needed judgment in `rationale`.
-Waiting for an unannounced `ready` Decision must not be its only way forward.
+The brakes are the human's invocation ceiling **B** and
+[protected-belief authority](authority-and-proposals.md#graph-action-vocabulary),
+not a subtree fence. The root has the orchestrator profile. Children have the
+ordinary profile. Neither approves Proposals. The root decides choices that the
+evidence settles. It queues `ready` only for human preference, risk, cost, or an
+unspecified direction, and names the needed judgment in the rationale. An
+unannounced ready Decision cannot be its only plan.
 
-Every root turn, mail or graph-condition wake, and operational continuation
-spends one B. Workers are ordinary Work and unmetered: a worker's turns and wakes
-spend neither B nor E, like a Work chat a member starts. Exact recovery spends none and restages durable claimed mail and
-lifecycle input, replacing failed-attempt copies. It includes input harvested by
-any attempt of that allocation; cleared input stays unread. Oversized recovery
-input stages the oldest items that fit and logs the dropped count. At exhaustion,
-current turns finish but new work cannot start.
-
-The shared child-Experiment allowance is **E = 5 × B**. Each actual child
-invocation spends one E and one unit of its pinned ceiling. Sleeping reserves
-nothing; exact recovery spends nothing. The orchestrator cannot widen E.
+Each root turn, wake, and operational continuation spends one invocation from B.
+Ordinary Work workers are unmetered, including their turns and wakes. Exact
+recovery spends nothing. It restages durably claimed mail and lifecycle input
+from the allocation's attempts, replacing failed copies. Cleared input stays
+unread. If recovery input is oversized, it stages the oldest items that fit and
+logs omissions. Exhaustion lets current turns finish but admits no new work.
+Child Experiments share **E = 5 × B**. Each invocation spends one invocation from E
+and the child's pinned ceiling. Sleep reserves nothing. Exact recovery spends
+nothing, and the orchestrator cannot widen E.
 
 ## Workers and child Experiments
 
-The orchestrator picks the child by the job. A fix that needs no long compute is
-its own work, alone or with provider-native subagents inside its turn. Compute
-work that must outlive its turn, such as a smoke run, goes to a node-seated
-worker. Before a child Experiment it audits the Experiment and every node one
-edge away. Research-state upkeep goes to a project-seated worker. Whatever a
-child reports, the orchestrator decides from the findings whether the graph
-changes: a result bearing on a Hypothesis or Decision is Evidence, a plumbing
-check is not.
-**Why:** paid workers doing code fixes and smoke runs recorded as Evidence once
-spent a whole episode on preparation without a run.
+The root chooses children by job. Short fixes stay in its turn or native
+subagents. Compute that outlives the turn goes to a node worker. Research-state
+upkeep goes to a project worker. Before starting a child Experiment, audit that
+Experiment and every one-edge neighbour. The root decides whether findings
+warrant graph changes. Results bearing on a hypothesis or decision are Evidence.
+Plumbing checks are not.
+**Why:** preparation and smoke runs must not consume the episode as research results.
 
-An ordinary Work worker may sit on any existing node. Its instruction defines
-the result that ends its job; the seat gives context, not subtree authority.
-It uses its exact child repository scope and parent branch. Direct scheduler
-submission and generic `launch` both follow ordinary shell watcher validation,
-correction, and arming. A helper still running from this turn or its recovery
-lineage requires the returned shell watcher at settlement.
+A Work worker may sit on any existing node. Its instruction defines completion,
+while its seat supplies only context. It uses the exact child repository scope
+and parent branch. Direct scheduler submission and generic launch follow ordinary
+shell watcher validation, correction, and arming. A live helper from this turn or
+recovery lineage requires the returned shell watcher at settlement. A succeeded
+route with an armed, undelivered watcher is waiting. This is derived from existing
+rows. Root status distinguishes waiting, running, and settled work without a new
+task state.
 
-A route is waiting when its current task succeeded and has an armed undelivered
-watcher. This derives from route/task/watcher rows, not a new task state. Root
-status distinguishes waiting, running, and settled workers.
-
-At most one live Experiment loop exists per node **per graph target**. Kickoff
-uses normal readiness on the root's branch. The orchestrator never stops, adopts,
-or waits on a loop it did not start. Other-target loops do not block kickoff:
-`live_elsewhere` in its result and `other_branch_loops` in status use capped
-`{rows, omitted}` lists of node, episode, target, starter, state, and checkout.
-Agents ask the human when work could interfere with an RCP episode on another
-branch; queueing on a shared scheduler is not interference. A child without
-`ask` pauses that work and reports to its orchestrator. Restarting its own child requires
-Stop, settlement, then kickoff.
-**Why:** branch isolation forbids one branch stopping another's loop. Visibility
-lets humans coordinate legitimate variants without a project-wide start gate.
-
-Child admission, budget spend, parent registration, target, and lifecycle route
-commit atomically. Recovery dispatches the same queued id without another spend.
+At most one live Experiment loop exists per node and target. Kickoff uses normal
+branch readiness. The root never stops, adopts, or waits on a loop it did not
+start. Loops on other targets appear in capped results and status without blocking
+admission. Interference with another branch's RCP episode requires human
+coordination. Shared scheduler queueing alone is not interference. A child without
+ask pauses and reports to the root. Restarting its own child requires Stop,
+settlement, and then kickoff. Child admission, spend, parent registration, target,
+and lifecycle route commit atomically. Recovery dispatches the same queued id
+without another spend.
+**Why:** visibility permits variants without cross-branch control authority.
 
 ## Branch names
 
-Each root branch has one project-unique name: 2–32 lowercase letters, digits,
-and hyphens, with alphanumeric ends, never `main`. Retired and archived names
-stay reserved. Both episode kinds accept `branch_name`; an Experiment may name
-one only when creating an isolated branch. Invalid/taken names return
-`branch_name_invalid` (422) / `branch_name_taken` (409). Name and episode
-reservation share one SQLite transaction. A name field lowercases as the member
-types and turns each run of spaces or hyphens into one hyphen; it drops edge hyphens
-only when the name is submitted, so a space typed between words survives.
+Root branches have project-unique names governed by
+[branch-name storage](../../src/rcp/storage/branch_names.py). Retired and archived
+names remain reserved. Both episode kinds accept names. An Experiment may name
+only a new isolated branch. The name and episode reservation share a transaction.
+The Web field lowercases text and collapses spaces and hyphens while typing.
+It trims edges only on submission. Invalid and taken names produce distinct refusals.
 
-Blank names become `research-<mon>-<day>` or `experiment-<mon>-<day>` using the
-root's UTC date, lowercase English month, and two-digit day; clashes get `-2`,
-`-3`, in creation order. Legacy read-time fallbacks need no migration and cannot
-reuse reservations. Rename preserves other fallback names. One storage owner
-resolves names; transfer carries current and retired reservations.
+Blank names derive from the root's UTC date as `research-<mon>-<day>` or
+`experiment-<mon>-<day>`. Collisions use numeric suffixes in creation order.
+Read-time legacy fallbacks need no migration. Renames preserve other fallbacks.
+Transfer carries current and retired reservations.
 
-Any member may rename, archive, or unarchive through graph-ref routes; these
-are operational labels, not Patches. Every surface uses the shared name. The
-project-wide branch picker and tagged project-wide Runs/Artifacts follow the
+Discuss, Work, Seed, Refresh, Experiment, Auto-research, and merge launches carry
+the same inventory of retained readable branches in their resolved read scope
+and history usage. Archived readable targets remain listed. Names or ids resolve
+through [History reads](graph-history-and-transitions.md#history-reads).
+Any member may rename, archive, or unarchive through graph-ref routes. Labels are
+operational and never Patches. All surfaces use shared names and the
 [graph-ref projection](api-web-and-desktop-projections.md#project-graph-ref-inventory).
-**Why:** one named object and selector prevent screens inventing incompatible
-labels or showing different targets. Reserving old names keeps historical tags
-unambiguous.
+**Why:** one inventory prevents inconsistent labels and targets. Reserved old
+names keep historical tags unambiguous.
 
 ## Persistent graph branch
 
-An Auto-research root or main-target Experiment with graph isolation owns one
-persistent branch, through the same creation owner. Its episode id is the branch
-id. Before provider launch, RCP captures a coherent main head, creates/reconciles
-canonical metadata, stores that base in SQLite, and proves the binding. Startup
-repairs a one-sided crash only by restoring that exact binding; it otherwise
-fails explicitly, never redirects to main.
-
-[History and graph targets](graph-history-and-transitions.md#append-only-history-and-graph-targets)
-own metadata and replay. Main movement and successful merge never rewrite a
-branch base or log; continuation episodes share the root's branch.
+An Auto-research root or isolated main-target Experiment owns one persistent
+branch whose id is its episode id. Before launch, RCP captures a coherent main
+head, creates or reconciles canonical metadata, stores the base in SQLite, and
+proves the binding. Startup repairs one-sided crashes only by restoring that
+exact binding. Otherwise it fails and never redirects to main.
+[History and targets](graph-history-and-transitions.md#append-only-history-and-graph-targets)
+own replay and metadata. Main movement and merge never rewrite the branch's base
+or history. Continuation episodes share the root's branch.
 
 ## Exact branch targeting
 
-Every descendant graph path uses the exact branch: context, validation, Apply,
-correction, continuation, child control and repair, watchers/conditions, lifecycle
-reconciliation, settlement/report inputs, and merge preparation. Task, episode,
-watcher, stage, session, command, and control rows carry it. Main/branch event
-watermarks stay independent; sessions cannot switch targets on resume.
-
-Graph/synthesis pointers resolve in that branch even remotely. Shared inputs such
-as the paper introduction retain project-owned paths. Child Experiment Patches
-keep the child's episode id; admission checks the task target, not equality with
-the branch owner. Branch writes advance only branch graph/control/guidance/events;
-ordinary human and agent work may keep advancing main.
+All descendant context retains the exact target. Validation, Apply, correction,
+continuation, control, repair, watchers, lifecycle, settlement, reports, and merge
+also retain it. Task, episode, watcher, stage, session, command, and control rows
+bind the target. Main and branch watermarks are independent. Resumed sessions
+cannot switch targets. Remote graph and synthesis pointers resolve there. Shared
+paper retains project paths. Child Patches retain child episode ids. Admission
+checks the task target rather than branch-owner equality. Branch writes affect
+only that branch's projections. Ordinary work can continue on main.
 
 ## Forks
 
-A fork is a graph branch with its own UUID4 id, unlike an episode branch whose id
-is its episode id, and an exact parent head (`main@R` or `branch:<id>@R`) fixed
-at creation. Its owner is an episode lineage (the chain root) or, for a member's
-fork, no episode. A lineage owns its persistent branch and every fork it created.
-[History and graph targets](graph-history-and-transitions.md#append-only-history-and-graph-targets)
-own metadata and replay.
+A fork has its own UUID4 id and an immutable exact parent head. It has either an
+episode lineage owner or, for member forks, no episode. A lineage owns its
+persistent branch and the forks it created. Metadata and replay follow the
+history spec.
 
-The orchestrator places children with `spawn` and `episode --kick-off-experiment`.
-`--at <ref@R>` forks any project ref, resolved once to an exact head; a bare `@R`
-names the root's branch. `--target <branch>` (id or name) uses an open
-lineage-owned branch; archived, foreign, and main targets refuse with
-`child_target_refused`. Omitting both keeps the root's branch. `spawn --project`
-and `--seat-node` choose the seat, never the target. `--seed-file <file>` requires
-`--at` and must hold at least one operation valid under the orchestrator profile.
-Fork reservation, seed snapshot, child admission, and budget spend commit in one
-command start. RCP then publishes the fork and commits the seed as its first
-Patch before the child launches; retry re-drives that recorded identity, never
-a new fork.
+Spawn and Experiment kickoff accept `--at <ref@R>` to fork an exact head. A bare
+`@R` means the root branch. They accept `--target <branch>` for an open branch
+owned by the lineage. Main, foreign, and archived targets are refused. Omitting
+the target keeps the root's branch. Seat options never choose the target.
+`--seed-file` requires `--at` and nonempty operations valid under the orchestrator
+profile. Fork reservation, the seed snapshot, admission, and spend commit together.
+Publication and the first seed Patch precede child launch. Retry re-drives the
+same identity and never creates another fork.
 
-A run whose target is a fork reads graph history only on the fork and its
-ancestors, each through the revision it was forked at; other runs read main and
-every branch. The prompt renders that same scope, and reading grants no writes.
-The loop-overlap builder takes the same scope, so such a run is shown no live
-loops on other branches; human views stay unfiltered.
+Runs targeting a fork read only that fork and its ancestors through their fork
+points. Other runs read main and every branch. Prompt and overlap visibility
+share that scope, which grants no writes. Human views remain unfiltered.
 
-An orchestrator fork archives automatically when its head still equals its parent
-head and no writer can reach it: no unsettled task using it as graph target or
-bound merge destination, no unstopped worker that can still resume there from its
-session and stage, no nested fork with such work, no publication of unknown outcome,
-no undelivered watcher or worker mail, no live child Experiment, and no accepted
-admission targeting it.
-The child poll rechecks this under the canonical write lock. `branch --archive <id>`
-archives an owned fork, never the root's own branch. Member forks never auto-archive.
+An owned fork archives automatically only when its parent head is unchanged.
+It must have no reachable writer, nested live fork, unknown publication,
+undelivered watcher or mail, live child Experiment, or accepted admission.
+Resumable sessions and stages, along with bound merge destinations, count as
+writers. Child polling checks under the canonical lock. Explicit archive targets
+owned forks, never the root's branch. Member forks do not archive automatically.
 
-`merge --key K <fork>` delivers an owned fork into its parent when the lineage owns
-both and the parent is open. A fork of main or of a foreign branch has no owned
-destination (`merge_main_requires_human`, `merge_branch_not_owned`). The
-[semantic merge](#semantic-rebase-and-merge) runs against the parent: a plan with no
-conflicts or review cards commits without a provider; one that needs the agent spends
-one lineage invocation, reserved at admission or when the parent's advance first needs
-it, and refuses with `merge_budget_exhausted`. Protected beliefs arrive as pending Proposals on the
-parent. The root must be running without ending or Stop; a delivered head, a live
-source writer, or another merge into that parent refuses. Merge does not archive.
-**Why:** invariant 3 lets the orchestrator merge only within its own lineage; main
-truth changes only by human dispatch.
+Keyed merge delivers an owned fork into its open, owned parent. Main or foreign
+parents require human dispatch. A deterministic plan commits without a provider.
+Conflicts or review cards spend one lineage invocation. That invocation is reserved
+at admission or when parent movement first requires it. An exhausted budget
+refuses the merge. Protected changes become pending parent Proposals. The root
+must be running without ending or Stop. Delivered heads, live source writers,
+and concurrent parent merges are refused. Merge does not archive.
+[Invariant 3](../../AGENTS.md#stable-invariants) bounds lineage authority. Only a
+human dispatches delivery into main.
 
-Any member may fork an explicit `main@R` or `branch:<id>@R` with
-`POST /api/projects/{project_id}/graph-refs` (`{request_id, at, name?}`; the
-UUID4 `request_id` becomes the branch id) and deliver any fork, member or
-lineage, into its parent with `POST .../graph-refs/{branch_id}/merge`
-(`{request_id}`), without an episode or budget; the branch picker offers Merge on
-each open, merge-eligible fork. An episode branch refuses
-(`merge_source_is_episode_branch`) and delivers through episode Merge. A member
-merge carries no episode attribution, even out of a lineage fork. **Why:** a
-lineage fork of main, or of a branch the lineage does not own, has no owned
-destination, so only a member can deliver it. A member fork has no owner episode,
-so the first Experiment admitted on it becomes the isolation owner that later
-Experiments there share, reserved at admission before any launch binds it.
+Members may fork an exact head and merge any fork into its parent without an
+episode budget. [Graph-ref requests](../../src/rcp/api/episode_routes.py) own the
+request fields. Episode branches use episode Merge. Member merges carry no
+episode attribution, even from lineage forks. A member fork's first Experiment
+reserves its isolation ownership at admission. Later Experiments there share it.
 
 ## Graph and code isolation
 
-Auto-research always isolates its graph. An omitted code-isolation choice resolves
-on only with one repository, Git 2.38+, and no writable grant overlapping the shared
-checkout; otherwise off. Explicit ineligible choices refuse. The root owns the
-optional worktree. Children, continuations, and human-started Experiments on that
-branch share its immutable
+Auto-research always isolates its graph. Code isolation defaults on only with
+one repository, Git 2.38+, and no overlapping writable shared-checkout grant.
+When several repositories are writable on the orchestrator's machine, the start
+dialog's Code worktree option picks one, and the run writes only that one. With
+none, the option is off and disabled. Explicit ineligible choices are refused. The root owns the optional worktree.
+Children, continuations, and human-started Experiments there share the immutable
 [isolation binding](conversations-episodes-and-watchers.md#episode-isolation).
-With code isolation off they retain ordinary repository scope. Neither choice
-changes truth membership or rolls back repository effects.
-
-Graph merge does not copy repository files. Human Merge coordinates separate code
-and graph delivery through the isolation owner; graph history persists afterward.
+Without code isolation, they keep ordinary repository scope. Neither choice
+changes truth membership or undoes repository effects. Graph merge never copies
+files. Human Merge coordinates code and graph delivery through the isolation owner.
 
 ## Mail and lifecycle notices
 
-Mail is Markdown hearsay in a star: root to its spawned worker's stable id, worker
-to root. It grants no graph authority. Live steering remains the separate
-[ordinary human chat channel](providers-and-containment.md#live-human-steering),
-never episode-worker or agent-to-agent live injection.
+Mail is Markdown hearsay in a star connecting the root to workers. It grants no
+graph authority and is not live injection.
+[Human steering](providers-and-containment.md#live-human-steering) remains a
+separate ordinary-chat channel.
 
-While any continuation-chain member runs, including sleep/wrap-up, child composers
-point to **Message orchestrator** (`auto_research_child_read_only`). After the
-lineage ends (`completed`, `failed`, `needs_action`, `stopped`), ordinary human turns
-are admitted only if any child Experiment also ended and isolation remains
-available. `removing`/`removed` isolation keeps `episode_isolation_unavailable`.
-The sender authorizes these Discuss/Work turns outside episode budgets. Wakes,
-question follow-ups, Resume, Retry, and Repair use the same ownership fence;
-artifact comments remain allowed.
+While any continuation member runs, including during sleep or wrap-up, child
+composers offer Message orchestrator. After the lineage ends, ordinary human
+turns require ended child Experiments and available isolation. Removed isolation
+or isolation being removed refuses those turns. Questions, wakes, Resume, Retry,
+and Repair share the ownership fence. Artifact comments remain allowed. Human
+turns use ordinary chat masters. Episode turns use episode masters. Switching
+reopens that master's retained Patch and recovery checks. Recovery never converts
+ownership. Generic child recovery after the parent ends is refused, except for
+already-paid recovery behind a pending child Stop. Message orchestrator appears
+only for a running-lineage lock, not a merge or isolation refusal. Add turns
+refuses while a lineage child has a human turn. It then relocks composers.
+Session and stage exclusion still prevents overlap.
 
-Episode turns use episode master keys; human turns use ordinary chat masters.
-Switching owner reopens that owner's master, including retained Patch/recovery
-checks. Episode recovery never converts to human-owned work. The store's
-`episode_child_recovery_refusal` blocks generic child Work Retry/Resume and child
-Experiment recovery after the parent ended, except already-paid recovery behind
-the child's pending Stop. Projections and transport retry use that same rule.
-**Message orchestrator** appears only for a running-lineage lock, not isolation
-or merge refusal. Add N turns refuses while a human turn is active in a lineage
-child, naming the chat; admission locks composers again. Session/stage exclusion
-still prevents overlap.
+The chain's orchestrator chat has the same lock. Its chat id equals the root
+episode id and branch id. After ending, project-chat turns on that branch resume the newest
+orchestrator session and stage. If they start fresh, they give an explicit reason:
+unavailability, a provider or machine change, or a dropped session. Add turns
+refuses during such a turn. Viewer Send continues it as Work.
 
-The chain's orchestrator conversation (chat id = root episode id = its branch)
-follows the same lock with `auto_research_orchestrator_running`. After the chain
-ends it takes ordinary project-chat turns on that branch. The first resumes the
-newest member's orchestrator session and stage, or starts fresh with
-`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or the
-ordinary dropped-session reason. The conversation's graph target is that branch.
-Add N turns refuses while such a turn is active, and viewer Send on an ended
-chain's orchestrator artifact continues this conversation with a Work turn.
+Lifecycle notices are deduplicated RCP facts committed with source transitions.
+They cover child settlement and recovery, Experiment attention and ending, and
+graph readiness. Busy actors receive them after their turn. Sleeping delivery
+atomically claims a bounded batch and one invocation from B. Root graph wakes
+also claim pending input, with a short grace window to batch notices. Running
+roots harvest mail and notices transactionally with turn attribution. Responses
+expose nonzero pending counts. Large inboxes require repeated harvests. Clear
+refuses if its complete acknowledgment exceeds the bounds. Exhaustion retains
+input without paid wakes.
 
-Lifecycle notices are RCP facts: child settlement/recovery, child Experiment
-attention/ending, and graph readiness. Source transition and deduplicated notice
-commit together. Busy actors receive input after their turn. Sleeping delivery
-atomically claims a bounded batch and one B allocation; a root graph wake also
-claims pending root mail/notices. A short grace window batches lifecycle wakes.
-A running root may harvest both mail and notices transactionally, attributing
-consumption to its turn. Other command responses include nonzero `inbox_pending`
-counts. Large inboxes need multiple harvests; clear refuses if its complete compact
-acknowledgment would exceed bounds. Exhaustion retains input without paid wakes.
-
-Stop records `human:<member>`, `orchestrator:<operation>`, or `system:<reason>`
-with its fence. Root-requested Stop notices carry `wake_suppressed=self_caused`;
-revoked-login child failures use `provider_auth`. Suppressed notices never buy a
-wake, hold ordinary mail, or block quiescence/ending; harvest and ending receipts
-still include them.
-
-A completed worker watcher group wakes the same route/session, not the root.
-Its atomic claim binds one continuation, requiring a running parent, an unfenced
-route, and a succeeded task. The wake retains pinned scope and
-watcher model/reasoning/skills, with job identity, result, times, duration, logs,
-backend, and shell observations. Child settlement then notifies the root.
-
-Experiment agents may retire their own staged graph conditions through the same
-atomic `external` stop list as external observers; see
-[watcher resources](conversations-episodes-and-watchers.md#watcher-resources).
-**Why:** an obsolete condition otherwise holds work open and spends a wake nobody
-needs. Retirement cancels no job and does not widen the separate human retire
-control, which excludes Experiment graph conditions.
+Stop receipts record attribution to a human, orchestrator operation, or system.
+Self-caused Stops and child failures from revoked login suppress wakes. Suppressed
+notices neither hold ordinary mail nor block quiescence or ending. They remain
+in harvest and ending receipts. A completed worker watcher group wakes that same
+route and session with its pinned scope, profile, and recorded job observations.
+This requires a running parent, an unfenced route, and a succeeded task. Child
+settlement then notifies the root. Experiment agents may retire their own staged
+conditions through the shared
+[watcher stop contract](conversations-episodes-and-watchers.md#watcher-resources).
+This neither cancels jobs nor widens human retire controls.
 
 ## Staged command client
 
-The exact RCP-authored prefix exposes validation/keyed Apply, status, keyed worker
-spawn and pause/resume/stop, star mail, graph-condition registration, child
-Experiment kickoff/stop/exact-resume, keyed fork merge and fork archive (see
-[Forks](#forks)), inbox harvest/clear, the Bulletin while it is on, ask, and
-guarded finish.
-Spawn/kickoff may select provider/model/effort. Root commands expose no compute
-helper verbs; child Work uses `launch` on the generic route or direct scheduler
-submission. Validation/reply policy remains surface-specific.
+The RCP-authored prefix exposes the resolved closed vocabulary from
+[Auto-research commands](../../src/rcp/runs/auto_research.py). It includes validation,
+keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
+merge and archive, inbox harvest and clear, Bulletin while enabled, root ask, and
+guarded finish. Spawn and kickoff may choose the provider, model, and effort.
+The root has no helper verbs. Child Work uses ordinary generic launch or direct
+scheduler submission.
 
-Continuations refresh prefix, vocabulary, graph inputs, schema, validator, and
-write boundary while retaining assignment/work. Correction gets a fresh
-validate-only credential, not earlier Apply/coordination commands. Keyed Apply
-returns the revision and refreshed pointers within the turn; a final unconsumed
-`patch.json` applies at settlement. Resume uses the exact saved session/stage;
-there is no agent Retry. An unusable child must be stopped, settled, and replaced.
+Continuations refresh the prefix, vocabulary, graph inputs, schema, validator,
+and write boundary while retaining the assignment and work. Correction receives
+fresh validate-only credentials. Keyed Apply returns the revision and refreshed
+pointers. An unconsumed final Patch applies at settlement. Resume keeps the exact
+session and stage. There is no agent Retry. Unusable children must stop, settle,
+and be replaced.
 
-Mutations require an idempotency key. RCP persists intent, input file bytes/digest,
-and identity before effects. Completed `ok`/`invalid` results replay exactly;
-interrupted/`unavailable` effects may only prove or resume the same intent, never
-reread changed bytes or invent another child. Starts/exits enter task events.
+Mutations persist keyed intent, file bytes and digest, and identity before effects.
+Completed ok or invalid results replay exactly. Interrupted or unavailable effects
+may only prove or resume the same intent. They never reread changed files or
+invent a child. Starts and exits become task events. The broker for each invocation
+authenticates the provider process and descendants on the host. It uses no
+reusable credentials in prompts, the environment, stages, or arguments. This
+establishes provenance within the cooperative account, not isolation from hostile
+UIDs. Episode and signature binding remain despite shared broker mechanics.
 
-The per-invocation broker authenticates the provider process or live descendants
-on its host without reusable bearer credentials in prompt, environment, stage,
-or arguments. It guards provenance within the cooperative execution-account
-model, not hostile same-UID processes. Episode id/signature remain bound even
-though ordinary Work and Experiment turns share the broker mechanism.
-
-Apply uses the branch transition manager with idempotent effect identity.
-Guarded finish is a pure transition: unfinished children, undelivered notices,
-and accepted-but-unreflected admissions yield a complete immutable blocker
-receipt. A waiting worker yields `waiting_work` and `stop --key <key> <worker_id>`.
-Finish never silently cleans up blockers.
+Apply uses idempotent branch transitions. Finish is a pure guard. It returns an
+immutable, complete blocker receipt for unfinished children, undelivered notices,
+or accepted admissions not yet reflected in state. Waiting workers return
+waiting-work plus a stop command. Finish never silently cleans up blockers.
 
 ## Orchestrator questions
 
-Only the root may keyed `ask`; workers mail it. RCP captures episode, operation,
-session, stage, scope, and target. Repeating the same owner/key reads current
-state. `ask` returns `parked`; the root ends its turn while workers continue.
-Open questions add `needs_action` health without changing episode admission/status.
+Only the root may use keyed ask. Workers mail the root. The question captures the
+exact episode, operation, session, stage, scope, and target. The same owner and
+key read the current state. Ask parks the root's turn while workers continue.
+Open cards add needs-action health without changing admission or status.
 
-An answer creates one hearsay-only human mail per question/revision, with full
-answer and selected choices. Normal mail wakes spend B or defer while busy;
-harvest can consume it in-turn. Reconciliation repairs interrupted insertion.
-Answers grant no approval, scope, or authority, and no budget except the turns a
-human names on an ended episode's last open card.
+Each answer revision creates one hearsay-only mail with the full answer and
+choices. Mail wakes spend B or defer and harvest normally. Reconciliation repairs
+insertion. Answers grant no approval, scope, or authority. They grant no budget
+except explicitly named turns on an ended episode's last open card.
 
-Each root launch stages a bounded snapshot of open questions, undelivered
-dismissals, and claimed answers, never transcripts. Successful turns acknowledge
-dismissals; failed launches retain them. Dismissal never wakes or mails. Only
-Stop withdraws cards read-only; after any other ending, answers to the chain's
-cards are held and its last open card names the turns that continue it, so the
-continuation's first turn claims every held answer as mail, in the same
-admission as its notice, along with answer mail the chain never delivered, up
-to the mail cap. Any continuation does this, so Add turns retries a card
-whose own continuation failed. A continuation that cannot start reopens the
-answered card, so the human can answer again. Continuations reopen ancestor
-cards with their original bindings. Root and session-start Retry expose `ask`; workers do not.
+Launch stages bounded open questions, undelivered dismissals, and claimed answers,
+never transcripts. Successful turns acknowledge dismissals. Failures retain them.
+Dismissal neither wakes nor mails. Stop withdraws read-only cards. Other endings
+hold answers. The last open card authorizes continuation turns. Any continuation
+atomically claims held or undelivered answers up to the cap with its opening
+notice. A failed start reopens answered cards. Ancestor cards keep their original
+bindings. The root and session-start Retry expose ask. Workers do not.
 
 ## Completion, Stop, and report
 
-Completion requires explicit idempotent `finish`. A settled child, open Blocker,
-resource contention, or human-started downstream Experiment is not completion if
-the root can still act, delegate, or arrange an observable continuation. Pausing
-for a human must name the missing judgment, credential, privileged action,
-approval, or coordination. Use the actual scheduler/process route; never invent
-a scheduler or repeat uncertain submissions.
+Completion requires keyed finish. A settled child, Blocker, contention, or
+human-started downstream Experiment is not completion while the root can act,
+delegate, or arrange an observable continuation. Human pauses name the missing
+judgment, credential, privilege, approval, or coordination. Use actual compute
+routes. Never invent schedulers or repeat uncertain submissions.
 
-Exhaustion/non-Stop ending fences new work, settles admitted children, and runs
-the common visual report in the exact branch session using one immutable bounded
-receipt. Human Stop skips the report. Report reconciliation records failures:
-permanent admission defects settle with a nonblocking report error; sign-in
-blockages park pending without spending an attempt; transient failures retry with
-a diagnostic receipt. Unclassified admission or non-transient launch failures
-settle after three repeats per process. Warnings are deduplicated per episode and
-failure kind. Failed reports do not auto-retry; a later continuation has its own
-ending/report.
-**Why:** logging a deterministic failure forever can leave an episode stuck in
-wrap-up. Durable phase-specific outcomes keep its controls usable.
+Exhaustion or an ending other than Stop fences new work, settles admitted children,
+and runs [the visual report](paper-artifacts-and-result-views.md#episode-reports)
+in the exact branch and session from an immutable bounded receipt. Stop skips it.
+Permanent admission defects settle with a nonblocking report error. Sign-in blocks
+park without spend. Transient failures retry with the receipt. Unclassified or
+non-transient failures settle after three repeats per process, with deduplicated
+warnings. Failed reports do not retry automatically. A continuation gets its own
+ending and report.
+**Why:** durable phase outcomes prevent deterministic failures from trapping wrap-up.
 
-**Add N turns** creates a new episode linked by `continues_episode_id`, using the
-same branch and exact native session. N is the new ceiling; the new member grant
-is recorded without changing the source authorizer, ending, receipt, or report.
-The root id remains `branch_id`; current-writer lookups resolve the newest chain
-member. Pending/running child Experiment routes move to it; child Work routes,
-ordinary mail/notices, and watchers stay on the source. Undelivered question
-answers follow reopened questions, without redelivering old answers. Its opening
-`lifecycle_wake` claims a `reauthorized` notice naming source and ceiling.
-**Why:** a new record preserves one ending per episode and prevents delayed old
-callbacks mutating a reopened run, while retaining branch work and session memory.
+Add N turns creates a new linked episode with a new ceiling and grant. It uses
+the same branch and exact native session. The source authorizer, ending, receipt,
+and report remain immutable. Current-writer lookup follows the newest chain
+member. Pending and running child Experiments move to it. Work routes, ordinary
+input, and watchers stay on the source. Questions reopen without redelivery.
+The opening wake claims a reauthorization notice.
+**Why:** delayed old callbacks cannot mutate a reopened run.
 
-`POST .../episodes/{id}/continue` takes `invocation_ceiling` and `request_id` for
-both episode kinds, including stopped sources. `can_continue` requires bound
-session/stage. Admission refuses nonterminal/already-continued sources, live turns,
-active merge, a competing live branch/node-target episode, removed isolation, or
-an active human-owned lineage-child turn. Exact request replay returns the same
-continuation. Stopped watchers stay stopped; missing bindings require a new run.
+Continuation requires a terminal source that has not yet continued and a bound
+session and stage. It requires available isolation, no live turn or merge, no
+competing branch-node episode, and no human-owned turn in a lineage child. Exact
+request replay returns the same continuation. Stopped watchers stay stopped.
+Absent bindings require a new run. Message orchestrator targets the newest member.
+A running member gets mail. An ended member requires explicit N; the composer
+defaults to 3, while the API has no default. Ending races refuse implicit turns.
+Continuation and mail commit together. Replay matches the message, N, and member
+ids. Concurrent losing sends become mail to the running winner without spending
+their N.
 
-**Message orchestrator** targets the newest member. Running members get ordinary
-mail; ended members require explicit N to authorize continuation with that message.
-The composer defaults N to 3 and sends it; the API has no N default. Ordinary mail
-racing with ending refuses rather than silently granting turns. Continuation and
-sender mail are created in one transaction and claimed with the opening notice.
-Replay requires matching message, N, and member ids, not display name. Concurrent
-losing sends become mail to the still-running winner; their N is unused. Refusals
-carry codes and disable the composer until admission is available.
-
-Parent settlement/report launch waits for unfinished child Experiment turns and
-exact paid recovery without another E spend. Ended parents or exhausted E prevent
-new invocations and leave watcher completion unconsumed. A report allocation whose
-snapshot predates child settlement ends with a visible nonblocking error once the
-child settles, preserving its receipt/attempts. Reconciliation scans every episode,
-independent of recent-history display limits.
-
-Episode Stop atomically retires root/child watchers and fences live child
-Experiments, including late handoffs. Child `stop` fences its route and retires
-watchers. Neither can wake again or claim to cancel compute jobs.
+Parent settlement and reporting wait for unfinished child turns and paid recovery
+without extra E. Ended parents and exhausted E block new invocations. They retain
+unconsumed watcher completion. A report snapshot predating child settlement gets
+a visible, nonblocking error after settlement. Its receipt and attempts remain.
+Reconciliation covers all episodes independently of display limits. Root Stop
+atomically retires root and child watchers and fences child Experiments, including
+late handoffs. Child Stop fences its route and watchers. Neither control cancels
+compute jobs.
 
 ## Branch lifecycle and merge eligibility
 
-Graph delivery requires an exact head newer than base, no successful receipt for
-that head, and no queued/running/pausing graph writer (`branch_merge` is not a
-writer). Episode status, ending, wrap-up, quiescence, and root pause are irrelevant.
-Stop ends work; Merge delivers it. A newer head may merge again; recovered or
-explicitly abandoned attempts are not live writers. Code delivery is independent,
-so code-only owners or delivered graphs with newer code can still Merge.
-**Why:** a report failure must not trap valid branch work. The human chooses when
-a head is ready; merge does not end the episode.
+Graph delivery requires a head newer than the base and no successful receipt for
+that head. It also requires no queued, running, or pausing graph writer. Merge
+itself is not a graph writer. Episode status, ending, wrap-up, and pause do not
+gate delivery. Recovered and abandoned attempts are not live writers. Newer heads
+may merge again. Code delivery is independent.
+**Why:** report failure must not trap valid work. Stop ends work, and Merge delivers it.
 
-Only a human member dispatches Merge, from any owner-chain card, without episode
-budget spend. Fully delivered, foreign, concurrent, and live-writer requests refuse,
-naming the writer when applicable. An active reservation fences new work on the
-entire isolation binding through cleanup; branch history is never deleted.
+Human members dispatch episode Merge from any owner-chain card without a budget.
+Fully delivered, foreign, concurrent, or live-writer requests are refused with
+specific reasons. Reservations fence work across the isolation binding through
+cleanup. History is retained.
 
 ## Episode code merge and cleanup
 
 Merge reserves the owner and persists an attempt before committing leftovers.
-Phases are `pre_merge`, `landing`, `agent_merging`, `verified`, `graph_committed`,
-`cleanup`, and `done`; next Merge/startup reconciles interruption against recorded
-commits. The immutable binding and mutable attempts are separate.
+[Merge implementation](../../src/rcp/runs/episodes/merge.py) owns persisted phases.
+Startup or the next Merge reconciles recorded commits separately from the immutable
+binding. The human chooses a local target, defaulting to the starting branch,
+with Git 2.38+. Missing targets and self-targets are refused. So are targets
+checked out elsewhere, dirty target checkouts, unfinished Git operations, an
+unmerged index, and dirty submodules. RCP commits ordinary episode leftovers with
+`git add -A` under its fixed identity. It ignores ignored files. It never commits
+shared changes, resets, stashes, force-pushes, or pushes.
 
-The human chooses a local target, defaulting to the starting branch, with Git
-2.38+. Missing/self targets, targets checked out outside the shared checkout,
-a dirty shared checkout holding the target, unfinished merge/rebase/cherry-pick,
-unmerged index, and dirty submodules refuse. RCP commits only ordinary episode
-leftovers with `git add -A`, excluding ignored files, under a fixed RCP identity.
-It never commits shared-checkout changes, resets, stashes, force-pushes, or pushes.
+The plan and `git merge-tree --write-tree` decide whether judgment is needed.
+Deterministic landing builds from the tested tree. It fast-forwards a clean,
+checked-out target or moves an unchecked-out target by compare-and-swap. Both
+paths first recheck the source, target, and checkout identity. Code lands and
+verifies before graph commit. A code conflict or graph answers starts one task
+in chat Integrate's local-merge scope. The landing must contain both recorded
+commits. Code-only delivery targets main without a graph side. If there are no
+graph answers, subsequent graph delivery runs without an agent. A missing landing
+fails, and the next Merge starts fresh. Later graph failure never undoes landed code.
 
-The merge plan and `git merge-tree --write-tree` decide whether judgment is needed. With none,
-RCP builds the landing commit from the tested tree: a clean checked-out target
-fast-forwards in one step; an unchecked-out target moves by compare-and-swap.
-Source/target commits and checkout identity are rechecked before landing. Code
-lands and is verified before the graph transition.
+Default history is a merge commit. Squash is available only without an agent.
+It records its commit and forbids Keep branch open. Verification proves source
+ancestry or the recorded squash. Code and graph delivery records are separate.
+**Why:** deterministic tested trees need no paid judgment. Only the episode owns
+its leftovers, and shared files and the index must remain intact.
 
-Either code conflict or a graph plan needing answers starts one merge task in chat Integrate's
-local-merge scope. RCP verifies its landing contains both recorded source and
-target commits before graph commit. With no graph answers needed, the code turn is
-followed by agentless graph delivery. Code-only tasks target main with no graph
-side. Missing landing fails before graph commit; next Merge starts a fresh
-attempt. A later graph failure never undoes landed code.
-
-Default history is a merge commit (`--no-ff`). Squash requires agentless delivery,
-records its resulting commit, and forbids Keep branch open. Verification proves
-source ancestry or recorded squash. Code and graph have separate delivery records.
-**Why:** clean merges need no paid judgment. Testing the tree before moving refs
-and preserving checked-out files/index make deterministic landing safe; only the
-episode owns its leftovers.
-
-Cleanup records independently retryable steps: remove worktree, delete code branch,
-archive graph branch. Deletion requires worktree removal and verified delivery or
-recorded squash. Archive preserves Patches; Keep branch open skips cleanup.
-Discard/archive before delivery needs confirmation. Live turns block removal;
-live or unobservable jobs pause it until human confirmation. Cleanup failure does
-not change delivery into failure.
+Cleanup independently retries worktree removal, code-branch deletion, and graph
+archive. Branch deletion requires a removed worktree and verified delivery or
+squash. Keep branch open skips cleanup. Discard or archive before delivery needs
+confirmation. Live turns block removal. Live or unobservable jobs need human
+confirmation. Cleanup failure does not turn delivery into failure.
 
 ## Semantic rebase and merge
 
-RCP builds every merge Patch; the merge agent never writes operations. The loader
-captures the exact base, source, and destination heads and graphs, canonical human
-source facts, scoped earlier merge reviews, and the dispatching human's live
-authority. Dispatch pins the destination's current truth membership;
-`repositories_read` is empty. Changed membership requires new dispatch.
+RCP builds the Patch. Agents never write merge operations. Loading captures the
+exact base, source, and destination, canonical human facts, earlier scoped reviews,
+and live dispatch authority. Truth membership is pinned. A change requires new
+dispatch. Repository read scope is empty.
 
-The planner (`runs/merge_plan.py`) is a pure three-way comparison over whole fields
-whose model role is `content`; `engine` and `identity` fields never diff, and every
-graph model field declares its role. A one-sided change wins, identical changes agree,
-and different changes to one field conflict. Removal on one side against an edit, a new
-reference, or a new or edited incident edge on the other is a presence conflict.
-Re-merge compares from the last delivered source snapshot; a field under a still-pending
-earlier merge review compares against the destination's current value, so the new
-review replaces it with the resolved outstanding and new effects together. Outstanding
-effects are computed by the loader from the canonical filing snapshot and stored as
-changes, without carrying that snapshot in the plan; historical operations never run
-against the live destination. A stale review contributes no outstanding effect, so its subjects
-use ordinary three-way comparison. Reverting source work can cancel a pending effect:
-the predecessor is withdrawn without re-filing its operations. Rejected work is not
-resurrected, and approved work yields to later destination judgments.
-**Why:** a second, merge-only model of graph semantics drifted from core on every
-schema or rule change; whole-field comparison over declared roles has nothing to drift.
+[The planner](../../src/rcp/runs/merge_plan.py) compares whole fields with a declared
+content role. Engine and identity fields never diff. One-sided changes win.
+Identical changes agree. Different changes to the same field conflict. Removal
+conflicts with edits, new references, or new or edited incident edges. These are
+presence conflicts. Re-merge uses the last delivered source. Still-pending review
+fields compare against the current destination, replacing outstanding and new
+effects together. The loader derives outstanding changes from canonical filing
+snapshots without replaying historical operations on live state. Stale reviews
+contribute nothing. Source reversion can withdraw without re-filing. Rejection
+never resurrects work. Approved work yields to later destination judgment.
+**Why:** declared model roles keep merge semantics aligned with core.
 
-Core decides each change's route (`classify_graph_changes`): admitted changes are
-written directly, reviewable ones become pending Proposals, refused ones fail the merge
-with the exact diagnostic. Protected changes are grouped by their core-reported approval
-dependencies and effects into one Proposal per connected group, so approving one merge
-Proposal never makes another from the same merge stale. Planning, splitting answered
-groups, and core filing admission share one connectivity function, which recomputes
-combined approval footprints until stable. The builder
-(`runs/merge_patch.py`) encodes Decision outcomes, decided creation, supersede and merge,
-and edge replacement with the operation sequences core accepts; a carried status keeps the
-cause its source transition recorded, and only an exact canonical human source fact keeps
-`human_edit`. When a later branch edit relabeled or removed the recorded evidence edge
-while the status stood, the status carries the newest evidence edge the merge still
-carries into that Hypothesis; with none left the merge refuses that status, and a branch edit
-repairs it. Creation keeps every writable content field, including explicit default
-values, and restores a Decision's selected lifecycle after reconstructing its choice.
-Live source Proposals that overlap a review join its connected group: their operations
-are filed in that group's Proposal. Independent source Proposals retain identity and
-content with destination filing stamps.
+Core classifies changes as direct, reviewable, or refused. One Proposal per group
+connected by approval dependencies or effects prevents approvals from making each
+other stale. Planning, answered splitting, and filing share connectivity until
+the footprints stabilize. [Patch construction](../../src/rcp/runs/merge_patch.py)
+uses core-accepted sequences for Decisions, retirement, and edge replacement.
+Carried status retains its recorded cause. Only canonical human facts keep a
+human-edit cause. If the source cause changed or was removed, the merge uses the
+newest carried Evidence edge into that Hypothesis. If no such edge is available,
+it refuses for branch repair. Creation retains all writable content, defaults, and the selected
+Decision lifecycle. Overlapping source Proposals join review groups. Independent
+ones retain their identity and content with new destination filing stamps.
 
-The agent answers only real conflicts and writes card prose for review groups, in
-`answers.json`: `branch`, `destination`, or a `merged` value (node `status` and
-`standing` pick a side), keep-removal or keep-node for presence conflicts. It runs
-`merge-answers check`, which dry-runs the same preparation as commit and binds a
-receipt to the exact answers bytes, plan, and heads; a turn ends only with a passing
-receipt for the collected bytes, or the task fails with the reason. A matching receipt
-takes precedence over refusal or clash diagnostics from other attempted answer files.
-Core coherence clashes become
-node-level questions during planning or preparation, even when those nodes already
-have ordinary field conflicts. Promotion happens once per node group; repeated clashes
-go back to the agent's check. Answer-dependent construction and review-footprint
-failures also return answer diagnostics with conflict ids; authority and other hard
-refusals remain terminal. A plan with no
-conflicts and no review cards commits without a provider.
-**Why:** deterministic paths already have a specified result; the agent is needed only
-for judgment, and a check that runs the commit path cannot disagree with commit.
-Agentless merge still requires human dispatch. Merges are pairwise against the current
-destination, never a batch of branches.
+Agents write only conflict answers and review prose in `answers.json`. Answers
+choose the branch value, destination value, merged value, or presence. Status and
+standing answers must pick a side. `merge-answers check` runs commit preparation
+and binds the receipt to bytes, plan, and heads. Settlement requires a passing
+receipt for the collected bytes. That receipt overrides diagnostics from other
+attempted files. Coherence clashes become node questions once per group. Repeated
+clashes return through check. Construction or footprint errors that depend on
+answers name conflict ids. Hard authority errors and refusals remain terminal.
+Without conflicts or cards, there is no provider. Pairwise merges always use the
+current destination.
 
-The merge agent has the orchestrator graph profile under the dispatching human. It gets
-scratch and, only for code landing, the episode worktree/shared-checkout roots rendered
-from the resolved scope. It gains no membership, ontology, configuration, approval,
-server, or general branch authority. One merge commits one destination transition or
-nothing.
-
-Append compares prepared main head. If it advanced, RCP rebuilds/re-prepares;
-it never overwrites or concatenates history. Paused/failed attempts leave histories
-unchanged and allow fresh human dispatch. Commit provenance and reconciled receipt
-bind source branch/episode/base/head, prepared main, resulting revision/transition,
-task, dispatcher, and time. Crash recovery cannot merge the same head twice.
-Only main watchers see the successful main transition, exactly once.
+The merge task has the orchestrator profile under dispatch authority and scratch.
+Only for code landing does it also receive the resolved worktree or shared-checkout
+roots. It gains no approval, membership, ontology, configuration, server, or general
+branch authority. One merge commits one destination transition or none. A changed
+head rebuilds and prepares again. It never overwrites or concatenates history.
+Failed and paused attempts allow fresh dispatch. Canonical provenance and the
+reconciled receipt bind the source, base, head, prepared destination, result, task,
+dispatcher, and time. Crash recovery cannot deliver the same head twice. Main
+watchers see a successful main delivery once.
 
 ## Runs projection
 
-The parent has one health/recommendation; child/task states support it. Detail
-shows branch name/base/head, merge state (`unmerged`, `merging`,
-`merged-through-head`, `needs-action`, `failed`), task history, and
-report/error. Paused/interrupted merge tasks retain diagnostics and offer fresh
-Merge when eligible.
+Child and task state support one parent health and recommendation. Detail shows
+the branch base and head, merge state, tasks, report, and error. Backend `can_merge`
+covers graph delivery, code delivery, cleanup, and settled-attempt reconciliation.
+Delivered exact graph heads alone offer no Merge. Newer heads return to unmerged.
+Zero semantic preview counts still require a no-change receipt. Graph-only
+requests for already-delivered or unchanged heads are refused.
 
-The episode's server-owned `can_merge` offers graph delivery, retained code
-worktree delivery/cleanup, or reconciliation of a settled reserved attempt. An
-exactly delivered graph head alone offers no Merge, whether kept open or archived;
-a newer branch head returns to `unmerged`. Zero preview counts alone do not mean
-an exact head was delivered: a new head with no semantic change still gets a
-no-change receipt. The endpoint independently refuses an already delivered or
-unchanged graph-only request with `no_undelivered_work`.
+Preview counts changes, commits, conflicts, and Proposals. It selects the target,
+eligible merge or squash, cleanup, and Keep branch open. Squash cannot keep the
+branch open. Submission rechecks state. Failures mark the same Merge action red
+with the reason in a tooltip. Clicking it gets a fresh preview. There is no
+separate Retry. An in-flight request or missing preview disables submission.
+Open graph shows the persistent branch. Changes compares the base and head with
+neighbouring context, creations, updates, removals, before and after values,
+provenance, and task filtering. Lens switches never change edit or picker targets.
+Removed objects have only history.
 
-Preview counts graph changes, commits, conflicts, and Proposals. Its pickers
-choose target, merge/squash when eligible,
-worktree/code-branch removal, and Keep branch open (not with squash). Submission
-rechecks server state and presents the specific refusal using the
-[visual rules](interface-and-visual-design.md). There is no retry: a failed merge
-task leaves the ordinary Merge action, and clicking it plans against the current
-heads again. A failed task's diagnostic, or a refused preview or submission, shows
-as a red edge on the same Merge action with the reason in the tooltip; after a
-refusal, clicking it loads a fresh preview. Without a `can_merge` offer there
-is no Merge action. An in-flight action or missing current preview disables
-submission.
-
-**Open graph** opens the persistent branch. Changes compares base to head with
-neighboring context, create/update/remove markers, before/after content, provenance,
-and a task filter. Context/full-graph switches change only the lens; editing and
-pickers always use the full graph. Removed objects have history, not node controls.
-
-Branches expose ordinary edits, Sync, Inbox, and Discuss/Work during and after
-an episode. These human-authorized conversations and standalone Experiments own
-their sessions/stages, not the root's budget or route. Only episode-owned work
-gets episode provenance. Recovery, steering, and wakes preserve exact target;
-main/branch chats are separate, and merge fences writers.
-
-Drafts, selection, requests, viewport, and chat state key by project and target,
-even at equal revisions. Missing/foreign branches fail without substituting main.
-The [project branch picker](api-web-and-desktop-projections.md#project-graph-ref-inventory)
-controls the shared view target. Reports retain original lifecycle versions;
-artifact edits create later versions without changing graph/lifecycle provenance.
-Root artifact comments stay in its thread without budget spend.
-
-Every branch is an episode branch or a fork of an exact head, and only a human
-merges into main. Cherry-pick, free-form conflict editing, and repository rollback
-are not current features.
+Branch edits, Sync, Inbox, Discuss, Work, and standalone Experiments remain
+available during and after episodes under their own human authority, session,
+and budget. Only episode work gets episode provenance. Recovery and wakes preserve
+targets, and merge fences writers. Drafts, selection, viewport, requests, and chats
+are keyed by project and target even at equal revisions. Missing or foreign
+targets never fall back to main. The
+[branch picker](api-web-and-desktop-projections.md#project-graph-ref-inventory)
+owns the shared view target. Report lifecycle versions remain fixed while artifact
+edits add versions. Root artifact comments remain in the thread without budget
+spend. Current exclusions belong to [design](../design.md).
 
 ### Browser preference in Auto-research
 
-Human launch sets `browser_requested`. Continue, retry, wakes, and children
-preserve it; command payloads cannot grant browser access. Each child retains its
-own stable stage across recovery/wakes. API projects launch preference and each
-turn's durable browser status.
+Human launch sets `browser_requested`. Continuation, retry, wakes, and children
+retain it. Commands cannot grant access. Each child keeps a stable stage for
+recovery and wakes. Projections show the launch preference and durable per-turn status.

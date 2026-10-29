@@ -43,7 +43,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import graph_read_contract
+from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import (
     WriteAuthority,
@@ -770,6 +770,7 @@ async def stream_branch_merge_run(
     continuation_cause: Literal["promotion", "destination_moved"] = "destination_moved"
     needs_code = bool(code_block) and not code_landed
 
+    graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store if service else None)
     while True:
         try:
             if not merge_answers_complete(plan, answers) or needs_code:
@@ -788,6 +789,7 @@ async def stream_branch_merge_run(
                     retained_answers=answers,
                     history_client=history_client,
                 )
+                values.update(graph_prompt.values)
                 staged_head = plan.destination_head
                 if service is not None:
                     staged_head = prepare_graph_observation(
@@ -810,7 +812,7 @@ async def stream_branch_merge_run(
                             retained_answers=answers,
                             code_block=code_block,
                         ),
-                        graph_read_scope,
+                        graph_prompt,
                         history_client,
                     )
                     label = f"task-{token}-branch-merge.md"

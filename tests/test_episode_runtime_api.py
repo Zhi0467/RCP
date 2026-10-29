@@ -96,7 +96,8 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         assert request.model == "orchestrator-only"
         assert request.reasoning == "high"
         assert request.run_on == "laptop"
-        assert request.run_truth_scope == ["repo-a"]
+        # An Auto-research root writes every repository the agents can write.
+        assert request.run_truth_scope == ["repo-a", "repo-b"]
         assert request.instruction == "Investigate the unresolved evidence."
         assert root.kind == "auto_research"
         assert root.episode_id == episode_id
@@ -104,7 +105,7 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         assert root.dispatch_authority.profile == "orchestrator"
         assert root.dispatch_authority.task_contract == "orchestrate"
         assert root.dispatch_authority.scope.episode_id == episode_id
-        assert root.dispatch_authority.scope.run_truth_scope == ["repo-a"]
+        assert root.dispatch_authority.scope.run_truth_scope == ["repo-a", "repo-b"]
 
         settled = wait_for_task(store, operation_id, expect="succeeded")
         assert settled.error is None
@@ -448,7 +449,8 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         "low",
     )
     assert worker.run_on == profiles["node_chat"].run_on
-    assert worker.run_truth_scope == list(manifest.agent.default_run_truth_scope)
+    # A worker inherits the orchestrator's recorded write set.
+    assert worker.run_truth_scope == request.run_truth_scope
     assert worker.chat_id == worker_id
     assert worker.chat_scope == "node"
     assert worker.node_id == "hyp/replanning-restores-plasticity"

@@ -255,6 +255,51 @@ class ProjectCheckoutManager:
             expected_commit=expected_commit,
         )
 
+    def adopt_existing(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        *,
+        repository_alias: str,
+        repository_path: str,
+        expected_commit: str | None = None,
+    ) -> ProjectCheckoutResult:
+        """Prove one existing Git work tree with a commit, owned by the account, in place.
+
+        Nothing is created or rewritten; a plain folder or an unborn branch refuses.
+        """
+
+        account = self._helper(machine, ("account", machine.os_account))
+        home = account.get("home")
+        if account.get("account") != machine.os_account or not isinstance(home, str):
+            raise ProjectCheckoutRefused("account_or_path", "Invalid execution account receipt.")
+        context = CheckoutAccount(
+            home,
+            machine.os_account,
+            machine.central_root or str(remote_projects_root(home)),
+        )
+        self._verify_git_directory(machine, context, repository_path)
+        head = self._git_at(
+            machine, context, repository_path, ("rev-parse", "--verify", "HEAD^{commit}")
+        )
+        commit = head.stdout.strip()
+        if head.returncode != 0 or _FULL_COMMIT.fullmatch(commit) is None:
+            raise self._checkout_conflict(
+                context, repository_path, "The folder's Git repository has no commit."
+            )
+        if expected_commit is not None and commit != expected_commit:
+            raise self._checkout_conflict(
+                context, repository_path, "The folder's commit changed after it was checked."
+            )
+        return ProjectCheckoutResult(
+            machine_alias=machine.alias,
+            repository_alias=repository_alias,
+            central_root=context.central_root,
+            repository_path=repository_path,
+            checkout_disposition="reused_existing",
+            commit=commit,
+            retained_research=RetainedResearchState(False, False, None, None),
+        )
+
     def prepare_initial(
         self,
         machine: ProjectProvisioningMachineIntent,

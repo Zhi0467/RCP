@@ -1705,6 +1705,8 @@ export interface EpisodeIsolationChoice {
   code_worktree: boolean;
   /** A new branch's name; blank or omitted takes the date fallback. */
   branch_name?: string | null;
+  /** The code worktree's one repository, when the launch picked among several. */
+  worktree_repository?: string | null;
 }
 
 export interface MergeEpisodeBody {
@@ -2870,6 +2872,8 @@ export interface StartEpisodeRequest {
   browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;
+  /** The code worktree's one repository; naming it turns the worktree on. */
+  worktree_repository?: string | null;
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
@@ -3313,7 +3317,6 @@ export interface SetupRepository {
   location: "local" | "ssh";
   path: string;
   host: string;
-  default_read: boolean;
 }
 
 export interface SetupExecution {
@@ -3412,6 +3415,7 @@ export interface SpaceMachine {
   projects: SpaceMachineProject[];
   /** Null when the server could not tell. */
   in_use: boolean | null;
+  deletable: boolean;
   /** Null until the background probe detects it. */
   job_manager: "slurm" | "none" | null;
   /** Empty uses the default. */
@@ -3520,7 +3524,6 @@ export interface ProjectSetupRequest {
 }
 
 export interface ProjectSettingsRequest {
-  default_run_truth_scope: string[];
   default_auto_research_invocation_ceiling: number;
   agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;
@@ -3912,6 +3915,8 @@ export interface ConsolidationSchedule {
 
 export interface ConsolidationInboxItem {
   run_id: string;
+  graph_target: GraphTargetRef;
+  graph_branch_name: string;
   kind: "report" | "failure";
   occurrence_date: string;
   created_at: string;
@@ -3935,6 +3940,7 @@ export type EvidenceFlagKind =
 
 export interface EvidenceFlag {
   flag_id: string;
+  target: string;
   run_id: string | null;
   occurrence_date: string | null;
   evidence_id: string;

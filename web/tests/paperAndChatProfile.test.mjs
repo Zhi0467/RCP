@@ -11,7 +11,10 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { worktreeRepositoryChoices } = await server.ssrLoadModule(
+  "/src/chat/worktreeRepositories.ts",
+);
 const { chatDraftStorageKey } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
 
 const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
@@ -69,7 +72,6 @@ const project = {
 const chatProps = {
   project,
   node: null,
-  runScope: ["repo"],
   tasks: [],
   activeTask: null,
   chatId: "chat",
@@ -81,7 +83,7 @@ const chatProps = {
   onClose() {},
 };
 
-test("chat shows its agent identity and keeps New session and the scope picker in its menu", () => {
+test("chat shows its agent identity and keeps New session in its menu", () => {
   const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
   assert.match(fresh, /aria-label="Chat agent: Codex"/);
   assert.match(fresh, /class="chat-header-menu"/);
@@ -143,15 +145,19 @@ test("a persisted chat draft is restored only for the member who wrote it", () =
   }
 });
 
-test("chat run scope preserves valid choices, prunes removed repositories, and resets", () => {
-  assert.deepEqual(
-    reconcileChatRunScope(["repo-b", "removed"], ["repo-a"], ["repo-a", "repo-b"], false),
-    ["repo-b"],
-  );
-  assert.deepEqual(
-    reconcileChatRunScope(["repo-b"], ["repo-a", "removed", "repo-a"], ["repo-a"], true),
-    ["repo-a"],
-  );
+test("a worktree chooses among writable repositories on the turn's machine", () => {
+  const choices = {
+    repositories: [
+      { alias: "repo-a", machine: "gpu", path: "/a" },
+      { alias: "read-only", machine: "gpu", path: "/r" },
+      { alias: "repo-b", machine: "gpu", path: "/b" },
+      { alias: "elsewhere", machine: "local", path: "/e" },
+    ],
+    project_truth_scope: ["repo-a", "repo-b", "elsewhere"],
+  };
+  assert.deepEqual(worktreeRepositoryChoices(choices, "gpu"), ["repo-a", "repo-b"]);
+  assert.deepEqual(worktreeRepositoryChoices(choices, "local"), ["elsewhere"]);
+  assert.deepEqual(worktreeRepositoryChoices(choices, "other"), []);
 });
 
 test("the agent-name field shares the server's agent-name cap", async () => {

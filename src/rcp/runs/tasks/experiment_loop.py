@@ -47,6 +47,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import build_group_context, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
+from rcp.agents.project_repositories import RepositoryReadScope, resolve_read_scope
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     _invoked_package_section,
@@ -605,6 +606,7 @@ def _experiment_values(
         execution["helper_owner"] = backend.id if backend is not None else None
     return {
         **values,
+        **turn.graph_read_prompt.values,
         "group": group_prompt_value(turn.context.group_context),
         "execution": execution,
         "compute": {"active": turn.compute_profiles},
@@ -1178,7 +1180,9 @@ def _experiment_start_contract(
         ),
     )
     contract = graph_read_contract(
-        contract, turn.graph_read_scope, turn.patch_inputs.command_client
+        contract,
+        turn.graph_read_prompt,
+        turn.patch_inputs.command_client,
     )
     if invoked:
         contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
@@ -1662,6 +1666,7 @@ async def _settle_watch_deliverable(
                 compute_commands=turn.compute_commands,
                 graph_read_scope=launch_turn.graph_read_scope,
                 run_truth_scope=turn.run_truth_scope,
+                read_scope=turn.read_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
@@ -1859,6 +1864,7 @@ async def _apply_experiment_loop_turn(
                             turn.execution,
                             final_patch_text,
                             run_truth_scope=turn.run_truth_scope,
+                            read_scope=turn.read_scope,
                             control_node_id=turn.request.control_node_id,
                             control_decision_bundle=(turn.request.control_decision_bundle),
                         )
@@ -1949,6 +1955,7 @@ async def _apply_experiment_loop_turn(
                 compute_commands=turn.compute_commands,
                 graph_read_scope=launch_turn.graph_read_scope,
                 run_truth_scope=turn.run_truth_scope,
+                read_scope=turn.read_scope,
                 control_node_id=turn.request.control_node_id,
                 control_decision_bundle=turn.request.control_decision_bundle,
             )
@@ -2867,7 +2874,9 @@ async def _stream_work_graph_repair(
         if task_record is None:
             raise ValueError("The graph-reading task record is unavailable.")
         graph_read_scope = GraphReadScope.resolve(
-            task_record.project_id, service.history, context.group_context
+            task_record.project_id,
+            service.history,
+            context.group_context,
         )
         validator_lifecycle = _start_work_validator_mailbox(
             service,
@@ -2875,6 +2884,7 @@ async def _stream_work_graph_repair(
             execution=execution,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             graph_read_scope=graph_read_scope,
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
@@ -3026,6 +3036,7 @@ async def _stream_work_graph_repair(
             execution,
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
         ),
@@ -3147,6 +3158,7 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     graph_read_scope: GraphReadScope | None = None,
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
@@ -3170,6 +3182,7 @@ def _start_work_validator_mailbox(
                 compute_commands,
                 ask_allowed="ask" in command_handler.allowed_verbs,
                 graph_read_scope=graph_read_scope,
+                read_scope=read_scope,
             ).model_dump(),
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
@@ -3178,6 +3191,7 @@ def _start_work_validator_mailbox(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=_work_patch_source_operation_id(execution),
@@ -3204,6 +3218,7 @@ def resume_experiment_command_mailbox(
             service(),
             text,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             control_node_id=context.control_node_id,
             control_decision_bundle=context.control_decision_bundle,
             source_operation_id=_work_patch_source_operation_id(execution),
@@ -3229,6 +3244,7 @@ def _prepare_work_patch_candidate(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
     source_operation_id: str | None = None,
@@ -3244,7 +3260,9 @@ def _prepare_work_patch_candidate(
         draft,
         kind="experiment_loop",
         run_truth_scope=run_truth_scope,
-        repository_paths=service.manifest.repository_paths,
+        # A turn retained before reads were stamped read this project's repositories.
+        read_scope=read_scope
+        or resolve_read_scope(service._project_id, service.manifest.repositories, None),
         source_operation_id=source_operation_id,
         source_effect_id=source_effect_id,
         source_effect_sha256=(
@@ -3276,6 +3294,7 @@ def _validate_work_patch_live(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin] | None,
     source_operation_id: str | None = None,
@@ -3289,6 +3308,7 @@ def _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,
@@ -3305,6 +3325,7 @@ def _apply_work_patch(
     patch_text: str,
     *,
     run_truth_scope: list[str],
+    read_scope: RepositoryReadScope | None,
     control_node_id: str | None = None,
     control_decision_bundle: list[ExperimentDecisionPin] | None = None,
     profile: AgentProfile = "ordinary",
@@ -3322,6 +3343,7 @@ def _apply_work_patch(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            read_scope=read_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,

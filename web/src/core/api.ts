@@ -311,8 +311,9 @@ export type ProjectRepositoryRequest =
       kind: "add_repository";
       repository: {
         alias: string;
-        source?: string | null;
-        machine_alias: string;
+        /** One of the two: a GitHub URL cloned onto the base, or a folder already there. */
+        source?: string;
+        path?: string;
         count_as_project_truth: boolean;
       };
     }

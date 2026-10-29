@@ -601,9 +601,7 @@ def test_episode_id_is_inert_to_validation_and_apply_permission() -> None:
         report = validate_patch(
             GraphState(),
             patch,
-            ValidationContext(
-                ["repo-a"], repository_aliases=["repo-a"], default_run_truth_scope=["repo-a"]
-            ),
+            ValidationContext(["repo-a"], repository_aliases=["repo-a"]),
         )
         dispatch = require_apply(authority, patch, is_project_member=seated_on_every_project)
         verdicts.append(

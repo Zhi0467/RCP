@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -25,6 +26,7 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.rcp_home import rcp_temp_dir
+from rcp.regular_tree_reader import RegularTree
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport import remote_stage_root, state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
@@ -1044,6 +1046,57 @@ finally:
             return [(str(name), int(size)) for name, size in values]
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StateUnavailable("remote artifact listing was invalid") from exc
+
+    def read_workspace_directory(
+        self,
+        name: str,
+        *,
+        max_entries: int,
+        max_files: int,
+        max_file_bytes: int,
+        max_total_bytes: int,
+    ) -> RegularTree:
+        """Read a bounded regular-file tree with the same traversal as local reads."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        relative_directory = PurePosixPath(name)
+        if (
+            relative_directory.is_absolute()
+            or not relative_directory.parts
+            or ".." in relative_directory.parts
+        ):
+            raise ValueError("workspace tree name must be a safe relative directory")
+        script = (Path(__file__).parent.parent / "regular_tree_reader.py").read_text(
+            encoding="utf-8"
+        )
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                script,
+                str(self.root),
+                str(PurePosixPath("workspace") / relative_directory),
+                str(max_entries),
+                str(max_files),
+                str(max_file_bytes),
+                str(max_total_bytes),
+            ]
+        )
+        if result.returncode == 45:
+            raise ValueError(result.stderr.decode("utf-8", errors="replace").strip())
+        if result.returncode:
+            raise _ssh_failure(result, "could not read remote workspace tree")
+        try:
+            values = json.loads(result.stdout)
+            return RegularTree(
+                files={
+                    relative: base64.b64decode(encoded, validate=True)
+                    for relative, encoded in values["files"]
+                },
+                directories=values["directories"],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateUnavailable("remote workspace tree returned invalid data") from exc
 
     def read_live_file(self, path: str, *, max_bytes: int, tail: bool = False) -> bytes:
         """Use the same bounded, symlink-refusing reader as local artifact reads."""

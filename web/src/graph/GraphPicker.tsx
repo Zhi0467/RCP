@@ -22,6 +22,7 @@ import {
 } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
 import { rovingFocusTarget } from "../core/rovingFocus";
+import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
 import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
   graphPickerOptions,
@@ -62,30 +63,6 @@ type Branch = Extract<GraphRef, { kind: "branch" }>;
 
 // Matches the popover's CSS width, min(360px, 100vw - 32px).
 const POPOVER_WIDTH = 360;
-const VIEWPORT_GUTTER = 16;
-const TRIGGER_GAP = 4;
-
-type PopoverPlacement = { top?: number; bottom?: number; right: number; maxHeight: number };
-
-/** Right-aligned beside the trigger, shifted left only as far as the viewport allows.
- *  It opens on the side with more room and never runs past the viewport, so a
- *  long list scrolls inside it. */
-function popoverPlacement(trigger: HTMLElement | null): PopoverPlacement | null {
-  const rect = trigger?.getBoundingClientRect();
-  if (!rect) return null;
-  const width = Math.min(POPOVER_WIDTH, window.innerWidth - 2 * VIEWPORT_GUTTER);
-  const right = Math.max(VIEWPORT_GUTTER, window.innerWidth - rect.right);
-  const below = window.innerHeight - rect.bottom - TRIGGER_GAP - VIEWPORT_GUTTER;
-  const above = rect.top - TRIGGER_GAP - VIEWPORT_GUTTER;
-  const cap = window.innerHeight * 0.65;
-  return {
-    ...(below >= above
-      ? { top: rect.bottom + TRIGGER_GAP }
-      : { bottom: window.innerHeight - rect.top + TRIGGER_GAP }),
-    right: Math.min(right, window.innerWidth - VIEWPORT_GUTTER - width),
-    maxHeight: Math.min(cap, Math.max(below, above)),
-  };
-}
 
 /** The popover's choosable rows: each branch name and New branch. */
 function rowButtons(popover: HTMLElement | null) {
@@ -165,7 +142,7 @@ export function GraphPicker({
       setWarning(null);
     };
     const positionList = () => {
-      const placement = popoverPlacement(button.current);
+      const placement = popoverPlacement(button.current, POPOVER_WIDTH);
       if (placement) setPosition(placement);
     };
     positionList();
@@ -311,7 +288,7 @@ export function GraphPicker({
         aria-haspopup="dialog"
         disabled={!refs || unavailable}
         onClick={() => {
-          const placement = popoverPlacement(button.current);
+          const placement = popoverPlacement(button.current, POPOVER_WIDTH);
           if (placement) setPosition(placement);
           if (!open) onOpen?.();
           setOpen(!open);

@@ -27,6 +27,7 @@ from rcp.limits import (
 )
 from rcp.paper.engines import EngineStore
 from rcp.paper.models import PaperSnapshot
+from rcp.paper.synctex import SyncTexMap, read_synctex
 
 
 class PaperLiveAdapter(Protocol):
@@ -44,6 +45,8 @@ class CompileResult(BaseModel):
     candidates: list[str] | None = None
     log_tail: str = ""
     pdf_url: str | None = None
+    # Per tree path, each source line's first PDF mark: [line, page, y points from top].
+    synctex: SyncTexMap = {}
 
 
 def _reference(source: str, target: str, suffix: str) -> str | None:
@@ -56,7 +59,11 @@ def _reference(source: str, target: str, suffix: str) -> str | None:
 
 
 def root_candidates(files: Mapping[str, str], open_path: str) -> list[str]:
-    """Find static LaTeX roots reaching the open file; traverse cycles once."""
+    """Find static LaTeX roots reaching the open file; traverse cycles once.
+
+    An open file that is itself a root compiles alone, even when another root
+    also includes it: the preview shows the file the writer is in.
+    """
     suffix = ".tex"
     texts = {path: text for path, text in files.items() if path.endswith(suffix)}
     roots: set[str] = set()
@@ -90,6 +97,8 @@ def root_candidates(files: Mapping[str, str], open_path: str) -> list[str]:
                     pending.append((child, child if command == "subfile" else context))
         return False
 
+    if open_path in roots:
+        return [open_path]
     return sorted(root for root in roots if reaches(root))
 
 
@@ -213,6 +222,13 @@ class PaperCompiler:
                         if not data.startswith(b"%PDF-"):
                             raise ValueError("Compiler did not produce a PDF.")
                         self._pdfs[compile_id] = (project_id, data)
+                        synctex = output / (Path(roots[0]).stem + ".synctex.gz")
+                        if synctex.is_file() and not synctex.is_symlink():
+                            mapping = await asyncio.to_thread(read_synctex, synctex, tree)
+                            if mapping is None:
+                                result.log_tail += "\nSyncTeX data exceeds its limit."
+                            else:
+                                result.synctex = mapping
                         while len(self._pdfs) > PAPER_COMPILE_RESULT_LIMIT:
                             self._pdfs.popitem(last=False)
                         result.status = "ok"
@@ -234,6 +250,7 @@ class PaperCompiler:
                 "-X",
                 "compile",
                 "--untrusted",
+                "--synctex",
                 "--outdir",
                 str(output),
                 str(tree / root),

@@ -2979,3 +2979,41 @@ def test_generation_flushes_data_and_descriptor_before_selection(tmp_path, monke
     monkeypatch.setattr(Path, "replace", select)
     generations.copy(root)
     assert generations.current is not None
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["symlink", "directory_symlink", "hardlink", "oversize", "entries"]
+)
+def test_remote_stage_workspace_tree_is_bounded_and_refuses_links(
+    local_remote_stage, unsafe: str
+) -> None:
+    from rcp.regular_tree_reader import read_regular_tree
+
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    directory = root / "workspace" / "turns" / "coach" / "artifacts"
+    (directory / "nested").mkdir(parents=True)
+    payload = b"\x00\xffpaper"
+    (directory / "nested" / "draft.tex").write_bytes(payload)
+    limits = {"max_entries": 3, "max_files": 8, "max_file_bytes": 16, "max_total_bytes": 32}
+    assert stage.read_workspace_directory("turns/coach/artifacts", **limits).files == {
+        "nested/draft.tex": payload
+    }
+    assert read_regular_tree(directory, **limits) == stage.read_workspace_directory(
+        "turns/coach/artifacts", **limits
+    )
+    if unsafe == "symlink":
+        (directory / "linked.tex").symlink_to(directory / "nested" / "draft.tex")
+    elif unsafe == "directory_symlink":
+        (directory / "linked").symlink_to(directory / "nested", target_is_directory=True)
+    elif unsafe == "hardlink":
+        (directory / "linked.tex").hardlink_to(directory / "nested" / "draft.tex")
+    elif unsafe == "oversize":
+        (directory / "large.tex").write_bytes(b"x" * 17)
+    else:
+        (directory / "empty").mkdir()
+        (directory / "empty/file").touch()
+    with pytest.raises(ValueError):
+        stage.read_workspace_directory("turns/coach/artifacts", **limits)
+    with pytest.raises(ValueError):
+        read_regular_tree(directory, **limits)

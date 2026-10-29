@@ -109,6 +109,17 @@ if TYPE_CHECKING:
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
 
+def native_session_profile_reason(
+    previous: Mapping[str, object], requested: Mapping[str, object]
+) -> Literal["current_session", "provider_mismatch", "machine_mismatch"]:
+    """Model and effort may change in-place; provider and machine bind the session."""
+    if previous.get("provider") != requested.get("provider"):
+        return "provider_mismatch"
+    if previous.get("run_on") != requested.get("run_on"):
+        return "machine_mismatch"
+    return "current_session"
+
+
 def _origin_bound_edit(request: Mapping[str, object]) -> bool:
     """A viewer comment's edit runs on its origin's session, outside chat admission.
 
@@ -1736,9 +1747,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         if (dropped := self._dropped_chat_session_reason(binding)) is not None:
             return dropped, None
         previous = json.loads(binding["request_json"])
-        for field, code in (("provider", "provider_mismatch"), ("run_on", "machine_mismatch")):
-            if previous.get(field) != record.request.get(field):
-                return code, None
+        reason = native_session_profile_reason(previous, record.request)
+        if reason != "current_session":
+            return reason, None
         return "orchestrator_session", binding
 
     def _chat_fork_launch(
@@ -1981,13 +1992,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                             },
                         }
                     )
-                for field, code in (
-                    ("provider", "provider_mismatch"),
-                    ("run_on", "machine_mismatch"),
-                ):
-                    if previous.get(field) != record.request.get(field):
-                        reason = code
-                        break
+                reason = native_session_profile_reason(previous, record.request)
                 if reason != "current_session" and waking:
                     message = (
                         f"Watcher wake refused: {reason}. The watcher's recorded machine "

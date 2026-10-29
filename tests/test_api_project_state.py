@@ -97,7 +97,6 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
     assert set(current.json()["experiment_control"]) == {"exp/bounded-loop"}
 
     body = {
-        "default_run_truth_scope": current.json()["default_run_truth_scope"],
         "agent_profiles": {
             surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
             for surface, profile in current.json()["agent_profiles"].items()
@@ -322,7 +321,6 @@ def test_settings_watermark_signals_a_save_the_page_has_not_rendered(manifest, t
     assert resource_watermark_tokens(client, project_id, *keys) == before
 
     body = {
-        "default_run_truth_scope": rendered["default_run_truth_scope"],
         "default_auto_research_invocation_ceiling": (
             rendered["default_auto_research_invocation_ceiling"] + 1
         ),
@@ -594,6 +592,14 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     legacy["snapshot"]["default_auto_research_invocation_ceiling"] = 11
     cache_path.write_text(json.dumps(legacy), encoding="utf-8")
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
+
+    # A cache from when the coach chose its own machine is re-derived on the base.
+    off_base = dict(legacy, snapshot=authoritative.json())
+    off_base["snapshot"]["agent_profiles"]["paper_coach"]["run_on"] = "elsewhere"
+    cache_path.write_text(json.dumps(off_base), encoding="utf-8")
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
+    profiles = client.get(f"/api/projects/{project_id}").json()["agent_profiles"]
+    assert len({profile["run_on"] for profile in profiles.values()}) == 1
 
     monkeypatch.setattr(projects_module, "PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES", 16)
     cache_path.write_bytes(b"x" * 17)
@@ -943,7 +949,6 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     incomplete = client.put(
         f"/api/projects/{project_id}/settings",
         json={
-            "default_run_truth_scope": ["repo-b"],
             "agent_profiles": {
                 surface: profile
                 for surface, profile in profiles.items()
@@ -956,7 +961,6 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     mismatched_runtime = client.put(
         f"/api/projects/{project_id}/settings",
         json={
-            "default_run_truth_scope": ["repo-b"],
             "agent_profiles": {
                 **profiles,
                 "refresh": {**profiles["refresh"], "provider": "claude", "runtime": "app-server"},
@@ -972,7 +976,6 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     invalid_budget = client.put(
         f"/api/projects/{project_id}/settings",
         json={
-            "default_run_truth_scope": ["repo-b"],
             "default_auto_research_invocation_ceiling": 0,
             "agent_profiles": profiles,
         },
@@ -982,7 +985,6 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     legacy_budget_key = client.put(
         f"/api/projects/{project_id}/settings",
         json={
-            "default_run_truth_scope": ["repo-b"],
             "default_campaign_invocation_ceiling": 14,
             "agent_profiles": profiles,
         },
@@ -992,14 +994,12 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     response = client.put(
         f"/api/projects/{project_id}/settings",
         json={
-            "default_run_truth_scope": ["repo-b"],
             "default_auto_research_invocation_ceiling": 14,
             "agent_profiles": profiles,
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["default_run_truth_scope"] == ["repo-b"]
     assert response.json()["default_auto_research_invocation_ceiling"] == 14
     assert "default_campaign_invocation_ceiling" not in response.json()
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"

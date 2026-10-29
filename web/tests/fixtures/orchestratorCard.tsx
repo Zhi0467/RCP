@@ -152,7 +152,6 @@ function Fixture() {
         // Viewed from main: a branch orchestrator opens in place, like any agent.
         graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
-        runScope={["repo"]}
         tasks={tasks}
         watchers={[]}
         graphChangesDisabled={false}

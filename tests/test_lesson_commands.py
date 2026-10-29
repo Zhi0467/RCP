@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
-from rcp.agents import AgentProcessControl, staged_command_client
+from rcp.agents import AgentLauncher, AgentProcessControl, staged_command_client
 from rcp.agents.command_protocol import LessonArguments, LessonCommandRequest
 from rcp.background import AgentTaskExecution
-from rcp.runs.questions import work_command_handler
+from rcp.runs.questions import discuss_command_handler, work_command_handler
 
-from .test_lessons_store import store  # noqa: F401
+from .test_lessons_store import consolidate, store  # noqa: F401
 from .test_work_questions import identity
 
 
@@ -23,6 +25,12 @@ def request(action, *, key=None, **arguments):
 
 
 def test_work_lesson_authority_and_keyed_outcome(store):  # noqa: F811
+    consolidate(store)
+    agent = store.execute_lesson_command("project", "turn", "add", key="seed", text="agent")[
+        "lesson"
+    ]
+    with store.connection() as connection:
+        connection.execute("DELETE FROM consolidation_runs")
     execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
     handler = work_command_handler(execution, None)
     add = request("add", key="once", text="Use uv")
@@ -33,11 +41,131 @@ def test_work_lesson_authority_and_keyed_outcome(store):  # noqa: F811
     assert handler(request("add", key="once", text="different"), identity()).result == {
         "code": "lesson_key_conflict"
     }
+    assert isinstance(first.result["lesson"], dict)
+    human = store.add_lesson(
+        "project", "human", user_id=store.local_owner.user_id, display_name="Original author"
+    )
+    listed = handler(request("list"), identity())
+    assert len(listed.result["lessons"]) == 3
+    task = store.agent_task("turn")
+    for lesson in (agent, human):
+        lesson_id = lesson["lesson_id"]
+        updated = handler(
+            request("update", key=lesson_id, lesson_id=lesson_id, text="merged"), identity()
+        )
+        assert updated.status == "ok"
+        assert isinstance(updated.result["lesson"], dict)
+        assert updated.result["lesson"]["human_owned"] is True
+        assert (
+            updated.result["lesson"]["author"]
+            == first.result["lesson"]["author"]
+            == {
+                "kind": "human",
+                "user_id": task.authorized_by.user_id,
+                "display_name": task.authorized_by.display_name,
+            }
+        )
+        assert (
+            handler(request("delete", key=lesson_id, lesson_id=lesson_id), identity()).status
+            == "ok"
+        )
     lesson_id = first.result["lesson"]["lesson_id"]
     response = handler(request("delete", key="edit", lesson_id=lesson_id), identity())
+    assert response.status == "ok"
+    assert handler(add, identity()).result == first.result
+    assert handler(request("delete", key="edit", lesson_id=lesson_id), identity()).result == {}
+    assert store.list_lessons("project") == []
+
+
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+def test_chat_lesson_commands_recheck_live_membership(store, mode):  # noqa: F811
+    import json
+
+    from rcp.service import RunRequest, resolve_dispatch_authority
+
+    chat = RunRequest(
+        chat_scope="project", chat_id="chat", message="Manage lessons", mode=mode, provider="codex"
+    )
+    authority = resolve_dispatch_authority("project_chat", chat)
+    assert authority is not None
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET dispatch_authority_json=?,request_json=? WHERE operation_id='turn'",
+            (
+                authority.model_dump_json(),
+                json.dumps(chat.model_dump(mode="json")),
+            ),
+        )
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    factory = (
+        discuss_command_handler if mode == "discuss" else lambda ex: work_command_handler(ex, None)
+    )
+    handler = factory(execution)
+    added = handler(request("add", key="a", text="tip"), identity())
+    assert added.status == "ok"
+    assert isinstance(added.result["lesson"], dict)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members WHERE project_id='project'")
+    response = handler(request("add", key="a", text="tip"), identity())
     assert response.status == "invalid"
-    assert response.result["code"] == "lesson_edit_not_authorized"
+    assert response.result["code"] == "lesson_forbidden"
+    refreshed = factory(execution)
+    assert refreshed.lesson_actions == ()
+    assert "lesson" not in refreshed.allowed_verbs
     assert len(store.list_lessons("project")) == 1
+
+
+@pytest.mark.parametrize("mode", ["experiment", "episode", "child_work_episode", "child_work"])
+def test_episode_chat_is_add_only(store, mode):  # noqa: F811
+    from rcp.service import RunRequest, resolve_dispatch_authority
+
+    from .test_auto_research_children_storage import _auto_parent, _work_pair
+
+    operation_id = "turn"
+    with store.connection() as connection:
+        if mode == "experiment":
+            task = store.agent_task(operation_id)
+            authority = task.dispatch_authority.model_copy(deep=True)
+            authority.scope.patch_kind = "experiment_loop"
+            authority.scope.control_node_id = "exp/test"
+            authority.scope.control_episode_id = "episode"
+            connection.execute(
+                "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id=?",
+                (authority.model_dump_json(), operation_id),
+            )
+        connection.execute("UPDATE graph_runs SET episode_id='episode' WHERE operation_id='turn'")
+    if mode.startswith("child_work"):
+        episode, root = _auto_parent(store)
+        route, task = _work_pair(store, episode, root, worker_id="child")
+        task = task.model_copy(
+            update={
+                "dispatch_authority": resolve_dispatch_authority(
+                    task.kind, RunRequest.model_validate(task.request)
+                )
+            }
+        )
+        store.create_auto_research_child_work(route, task)
+        operation_id = task.operation_id
+        if mode == "child_work":
+            # Isolate the route guard from the episode-id guard exercised above.
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET episode_id=NULL WHERE operation_id=?", (operation_id,)
+                )
+    execution = AgentTaskExecution(
+        operation_id=operation_id, store=store, control=AgentProcessControl()
+    )
+    handler = work_command_handler(execution, None)
+    added = handler(request("add", key="a", text="tip"), identity(task_id=operation_id))
+    assert added.status == "ok", added
+    assert isinstance(added.result["lesson"], dict)
+    refused = handler(
+        request("update", key="u", lesson_id=added.result["lesson"]["lesson_id"], text="changed"),
+        identity(task_id=operation_id),
+    )
+    assert refused.status == "invalid"
+    assert refused.result["code"] == "lesson_edit_not_authorized"
+    assert added.result["lesson"]["human_owned"] is False
 
 
 def test_lesson_client_parser_preserves_subcommand_arguments(tmp_path):
@@ -92,6 +220,7 @@ def test_auto_research_owners_add_lessons_with_their_operation_author(tmp_path, 
     lesson_store, episode, root = _setup_auto_research(tmp_path)
     task = root if role == "orchestrator" else _worker(lesson_store, episode, root, "worker")
     owner = lesson_store.local_owner
+    assert owner is not None
     lesson_store.seat_project_member(task.project_id, owner.user_id)
     with lesson_store.connection() as connection:
         connection.execute(
@@ -107,7 +236,123 @@ def test_auto_research_owners_add_lessons_with_their_operation_author(tmp_path, 
 
     assert response.status == "ok", response
     lesson = response.result["lesson"]
+    assert isinstance(lesson, dict)
     assert lesson["author"] == {"kind": "agent", "operation_id": task.operation_id}
     assert lesson["human_owned"] is False
     assert dispatcher.dispatch(task.operation_id, call).result == response.result
     assert lesson_store.list_lessons(task.project_id) == [lesson]
+
+
+def test_served_chat_lesson_broker_and_discuss_graph_boundary(manifest, tmp_path):
+    import asyncio
+    import json
+    import shlex
+    from pathlib import Path
+    from uuid import uuid4
+
+    from rcp.runs.tasks.discuss import stream_discuss_run
+
+    from .helpers import (
+        create_named_app,
+        current_command_client,
+        signed_in_client,
+        wait_for_task_response,
+    )
+    from .test_api import ScriptedLauncher
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    project_id = app.state.default_project_id
+    results = []
+
+    class Launcher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            prefix = shlex.split(current_command_client(prompt))
+
+            async def call(*args):
+                async with kwargs["invocation_gate"].serve_current_session():
+                    process = await asyncio.create_subprocess_exec(
+                        *prefix,
+                        *args,
+                        cwd=kwargs["cwd"],
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await process.communicate()
+                assert not stderr, stderr.decode()
+                response = json.loads(stdout)
+                results.append((args, process.returncode, response))
+                return response
+
+            added = await call("lesson", "add", "--key", "add", "--text", "Use uv")
+            assert added["status"] == "ok", added
+            lesson = added["result"]["lesson"]
+            assert lesson["human_owned"] is True
+            listed = await call("lesson", "list")
+            assert listed["result"]["lessons"] == [lesson]
+            (Path(kwargs["cwd"]) / "patch.json").write_text('{"operations":[]}')
+            assert (await call("apply", "--key", "forbidden", "patch.json"))["status"] == "invalid"
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = Launcher([{}], message="Lessons managed")
+
+    async def stream(_project_id, _kind, chat, execution):
+        async for frame in stream_discuss_run(
+            app.state.service,
+            cast(AgentLauncher, launcher),
+            chat,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    tasks.stream = stream
+    with signed_in_client(app) as client:
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": str(uuid4()),
+                "message": "Manage lessons",
+                "mode": "discuss",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        assert response.status_code == 202, response.text
+        operation_id = response.json()["operation_id"]
+        result = wait_for_task_response(client, project_id, operation_id)
+        assert result["status"] == "succeeded", result.get("error", result)
+        lessons = client.get(f"/api/projects/{project_id}/lessons").json()["lessons"]
+        assert [lesson["text"] for lesson in lessons] == ["Use uv"]
+    assert launcher.calls == 1
+    assert all(code == (1 if args[0] == "apply" else 0) for args, code, _ in results)
+    assert tasks.store.agent_task(operation_id).applied_revision is None
+
+
+def test_lesson_usage_and_handler_share_resolved_actions(store, tmp_path):  # noqa: F811
+    import shlex
+
+    from rcp.runs.lesson_commands import lesson_command_usage
+
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    handler = work_command_handler(execution, None)
+    usage = lesson_command_usage(actions=handler.lesson_actions, client="client")
+    actions = []
+    for invocation in staged_command_client.lesson_usages(handler.lesson_actions):
+        assert invocation in usage
+        argv = [value.strip("[]") for value in shlex.split(invocation)]
+        parsed = staged_command_client._parser().parse_args(
+            [
+                "--broker",
+                "broker",
+                "--timeout",
+                "1",
+                "--workspace",
+                str(tmp_path),
+                *argv,
+            ]
+        )
+        verb, _, arguments = staged_command_client._request_arguments(parsed, str(tmp_path))
+        assert verb == "lesson"
+        actions.append(arguments["action"])
+    assert tuple(actions) == handler.lesson_actions

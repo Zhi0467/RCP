@@ -129,7 +129,7 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
     gc_enabled = gc.isenabled()
     gc.disable()
     try:
-        for index in range(150):
+        for index in range(2 * STORAGE_IDLE_CONNECTION_LIMIT):
             store = AppStore(tmp_path / str(index) / "rcp.sqlite3")
             store.cycle = store  # Match apps retained until cyclic GC.
             stores.append(store)
@@ -311,7 +311,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (63, "paper_live_v1")
+    assert migrations[-1] == (64, "consolidation_targets_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -2253,6 +2253,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "digest_marks": 0,
         "digest_heads": 0,
         "consolidation_schedules": 0,
+        "consolidation_targets": 0,
         "consolidation_runs": 0,
         "consolidation_apply_receipts": 0,
         "lesson_command_receipts": 0,

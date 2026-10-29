@@ -1,43 +1,19 @@
 .paper-coach {
-  display: flex;
   flex: 1;
-  flex-direction: column;
   min-width: 0;
-  min-height: 0;
   position: relative;
 }
-.paper-coach-toolbar {
-  justify-content: flex-end;
+/* The coach's few tools keep one row. */
+.paper-coach .chat-composer-tools {
+  flex-wrap: nowrap;
 }
-.paper-coach-transcript {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  overflow: auto;
-  padding: 6px 12px 14px;
-}
-.paper-coach-message {
-  background: var(--sheet);
-  border-radius: 10px;
-  box-shadow: var(--aqua-raised, var(--shadow));
-  flex-shrink: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  padding: 10px 12px;
+.paper-coach .node-chat-line {
   position: relative;
 }
-.paper-coach-message.human {
-  align-self: flex-end;
-  background: var(--aqua-selected, var(--surface-cool));
-  box-shadow: var(--aqua-inset, var(--shadow));
-  max-width: 92%;
-}
-.paper-coach-message.agent:empty {
+.paper-coach .node-chat-line.agent:empty {
   display: none;
 }
-.paper-coach-message.paper-failure {
+.paper-coach .node-chat-line.paper-failure {
   padding-right: 42px;
 }
 .paper-reply-retry {
@@ -46,59 +22,13 @@
   right: 7px;
 }
 /* A turn that failed before any reply is just its edge and its icon. */
-.paper-coach-message.bare {
+.paper-coach .node-chat-line.bare {
   display: flex;
   justify-content: flex-end;
   padding: 6px;
 }
-.paper-coach-message.bare .paper-reply-retry {
+.paper-coach .node-chat-line.bare .paper-reply-retry {
   position: static;
-}
-.paper-coach-composer {
-  background: var(--aqua-field, var(--paper));
-  border-radius: 9px;
-  box-shadow: var(--aqua-inset, var(--shadow));
-  margin: 0 10px 10px;
-  padding: 8px;
-  position: relative;
-}
-.paper-coach-composer textarea {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  font: inherit;
-  min-height: 60px;
-  max-height: 180px;
-  padding: 5px;
-  resize: vertical;
-  width: 100%;
-}
-.paper-composer-actions {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  min-width: 0;
-}
-.paper-composer-actions .agent-config-chip {
-  flex: 1;
-  min-width: 0;
-  width: auto;
-  border: 0;
-  border-radius: 999px;
-  background: var(--aqua-surface, var(--surface));
-  box-shadow: var(--aqua-raised, var(--shadow));
-  padding: 6px 10px;
-}
-.paper-composer-actions .paper-segments button {
-  padding: 5px 7px;
-}
-.paper-composer-actions .agent-config-chip-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.paper-composer-actions > .icon-button {
-  flex: none;
 }
 .paper-agent-popover,
 .paper-session-list {
@@ -113,15 +43,8 @@
   max-height: min(60dvh, 460px);
   overflow: auto;
 }
-.paper-agent-popover {
-  bottom: 8px;
-  max-height: min(460px, calc(100% - 16px));
-}
-.paper-agent-popover > .icon-button {
-  float: right;
-}
 .paper-session-list {
-  top: 44px;
+  top: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -344,20 +267,11 @@
   .paper-history-comparison {
     grid-template-columns: minmax(0, 1fr);
   }
-  .paper-coach-transcript {
-    padding: 6px 8px 12px;
-  }
-  .paper-coach-message {
-    padding: 9px;
-  }
   .paper-change {
     padding: 8px;
   }
   .paper-change-name {
     font-size: 11px;
-  }
-  .paper-composer-actions {
-    gap: 6px;
   }
 }
 
@@ -377,7 +291,6 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .paper-composer-actions .agent-config-chip,
   :root:has(.paper-live-workspace) .branch-picker-trigger {
     min-height: 44px;
   }

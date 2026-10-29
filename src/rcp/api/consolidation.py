@@ -33,7 +33,13 @@ from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
 from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
 from rcp.storage.client_requests import ClientRequestConflict
-from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule
+from rcp.storage.consolidation import (
+    ConsolidationRun,
+    ConsolidationSchedule,
+    ConsolidationTarget,
+    target_label,
+    target_ref,
+)
 from rcp.storage.evidence_flags import EvidenceFlagError, address_request_route
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -58,7 +64,9 @@ class ScheduleRequest(BaseModel):
         return value
 
 
-def schedule_response(schedule: ConsolidationSchedule | None, now: str) -> dict | None:
+def schedule_response(
+    schedule: ConsolidationSchedule | None, now: str, nights: list[dict]
+) -> dict | None:
     if schedule is None:
         return None
     result = schedule.model_dump(
@@ -73,13 +81,18 @@ def schedule_response(schedule: ConsolidationSchedule | None, now: str) -> dict 
     )
     result["authorized_by"] = schedule.authorized_by.model_dump(include={"user_id", "display_name"})
     result["expired"] = datetime.fromisoformat(schedule.expires_at) <= datetime.fromisoformat(now)
+    if nights:
+        outcome = nights[-1]["outcome"]
+        result["last_outcome"] = None if outcome == "running" else outcome
     return result
 
 
-def item_response(run: ConsolidationRun) -> dict:
+def item_response(run: ConsolidationRun, branch_names: dict[str, str]) -> dict:
     prelaunch_failure = run.error_code in CONSOLIDATION_PRELAUNCH_ERRORS
     return {
         "run_id": run.run_id,
+        "graph_target": run.graph_target.model_dump(mode="json"),
+        "graph_branch_name": target_label(run.target, branch_names),
         "kind": run.kind,
         "occurrence_date": run.occurrence_date,
         "created_at": run.created_at,
@@ -96,19 +109,20 @@ def item_response(run: ConsolidationRun) -> dict:
     }
 
 
-def recent_nights(
-    schedule: ConsolidationSchedule | None, runs: list[ConsolidationRun]
-) -> list[dict]:
-    """The newest occurrences, oldest first: run outcomes plus recorded skips."""
-    nights = {date: "skipped" for date in (schedule.skipped_dates if schedule else [])}
+def recent_nights(targets: list[ConsolidationTarget], runs: list[ConsolidationRun]) -> list[dict]:
+    """Aggregate each date without hiding unresolved targets or failures."""
+    nights = {date: "skipped" for target in targets for date in target.skipped_dates}
+    priority = {"skipped": 0, "succeeded": 1, "failed": 2, "running": 3}
     for run in runs:
-        nights[run.occurrence_date] = (
+        outcome = (
             "running"
             if run.outcome_settled_at is None
             else "succeeded"
             if run.kind == "report"
             else "failed"
         )
+        if priority[outcome] > priority[nights.get(run.occurrence_date, "skipped")]:
+            nights[run.occurrence_date] = outcome
     newest = sorted(nights)[-CONSOLIDATION_RECENT_NIGHTS:]
     return [{"occurrence_date": date, "outcome": nights[date]} for date in newest]
 
@@ -124,15 +138,17 @@ def get_consolidation(project_id: str, *, store: Store, catalog: Catalog) -> dic
         can_write = False
     schedule = store.consolidation_schedule(project_id)
     runs = store.consolidation_runs(project_id)
+    branch_names = store.branch_names(project_id)
+    nights = recent_nights(store.consolidation_targets(project_id), runs)
     return {
         "can_write": can_write,
-        "schedule": schedule_response(schedule, store.now()),
+        "schedule": schedule_response(schedule, store.now(), nights),
         "inbox": [
-            item_response(run)
+            item_response(run, branch_names)
             for run in runs
             if run.state == "open" and run.outcome_settled_at is not None
         ],
-        "recent_nights": recent_nights(schedule, runs),
+        "recent_nights": nights,
         "evidence_flags": store.list_evidence_flags(project_id),
     }
 
@@ -164,7 +180,10 @@ def put_schedule(
         ).isoformat(),
         now=now,
     )
-    return {"schedule": schedule_response(schedule, now)}
+    nights = recent_nights(
+        store.consolidation_targets(project_id), store.consolidation_runs(project_id)
+    )
+    return {"schedule": schedule_response(schedule, now, nights)}
 
 
 @router.delete(
@@ -191,7 +210,7 @@ def _resolve(project_id, run_id, request, store, catalog, identity_access, state
         raise HTTPException(status_code=404, detail="Consolidation row not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"item": item_response(run)}
+    return {"item": item_response(run, store.branch_names(run.project_id))}
 
 
 @router.post(
@@ -252,6 +271,7 @@ def evidence_flag_message(flags: list[dict[str, Any]]) -> str:
                 "flag_id",
                 "run_id",
                 "occurrence_date",
+                "target",
                 "evidence_id",
                 "evidence_revision",
                 "kind",
@@ -394,9 +414,13 @@ def _address_evidence_flags(
                 with store.evidence_flag_admission(
                     project_id, flag_ids, user_id=human.user_id, require_open=not single_route
                 ) as flags:
+                    target_id = flags[0]["target"]
+                    if any(flag["target"] != target_id for flag in flags):
+                        raise EvidenceFlagError("flag_target_mismatch")
+                    target = target_ref(target_id)
                     if flags[0]["state"] == "open":
                         service = get_graph_service(
-                            catalog, project_id, initialize=False, write=True
+                            catalog, project_id, target.branch_id, initialize=False, write=True
                         )
                         state = service.history.state()
                         if any(
@@ -422,6 +446,7 @@ def _address_evidence_flags(
                                 identity_access=identity_access,
                                 attachment_store=attachment_store,
                                 background_tasks=background_tasks,
+                                branch_id=target.branch_id,
                             )
                         except HTTPException as exc:
                             if exc.status_code == 404:

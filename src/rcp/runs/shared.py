@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents.context import CoachContext
+from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -769,6 +771,7 @@ class _ProviderOutcome:
     """
 
     session_id: str | None = None
+    runtime_id: str | None = None
     completed: bool = False
     failed: bool = False
     paused: bool = False
@@ -839,7 +842,7 @@ async def _prepare_hidden_read_scope(
 
 async def _stream_agent_events(
     launcher: AgentLauncher,
-    request: RunRequest,
+    request: RunRequest | CoachRequest,
     prompt: str,
     *,
     workspace: Path,
@@ -856,6 +859,7 @@ async def _stream_agent_events(
     invocation_gate: ProviderInvocationGate | None = None,
     shell_timeout_seconds: int | None | EllipsisType = ...,
     required_session_id: str | None = None,
+    forward_labelled_events: bool = False,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     service: ProjectService | None = None,
@@ -865,6 +869,7 @@ async def _stream_agent_events(
 
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
+    Owners that display provider answers directly can forward labelled events.
     """
     if execution is not None and write_scope is not None:
         from rcp.runs.episodes.isolation import validate_episode_launch
@@ -1070,6 +1075,8 @@ async def _stream_agent_events(
                 # Background consumes these. It durably checkpoints the runtime
                 # before the launcher writes the prompt, and records why an
                 # earlier candidate was passed over rather than showing it.
+                if event.event == "runtime":
+                    outcome.runtime_id = event.text
                 if event.event == "remote_result_pending":
                     outcome.remote_result_pending = True
                 yield _sse(event)
@@ -1099,6 +1106,7 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.session_id = event.session_id
+                # An unowned remote session cannot be resumed by its local caller.
                 if execution_host and execution is None:
                     continue
             if event.event == "answer":
@@ -1111,23 +1119,14 @@ async def _stream_agent_events(
                     )
                     return
                 outcome.answers.append(event.text)
-                if event.usage is not None:
-                    # A provider's final result is both its answer and its
-                    # accounting boundary. The answer text is withheld from the
-                    # wire, so without forwarding the usage on its own a
-                    # succeeding turn records none at all — only a failing one,
-                    # whose error event is forwarded, was ever counted. A queued
-                    # follow-up makes this two results, each counted once.
-                    yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
-                elif event.status is not None:
-                    yield _sse(AgentEvent(event="raw", status=event.status))
-                continue
-            if event.event == "message":
-                if event.text.strip() and len(outcome.trace_messages) < 16:
-                    outcome.trace_messages.append(event.text.strip()[:16_000])
-                if event.usage is not None or event.status is not None:
-                    # The text stays off the wire; the live display still
-                    # needs what the provider observed alongside it.
+            if event.event == "message" and event.text.strip() and len(outcome.trace_messages) < 16:
+                outcome.trace_messages.append(event.text.strip()[:16_000])
+            if event.event in {"answer", "message"}:
+                # Capture above is unconditional. Forward accounting exactly once:
+                # on the labelled frame when displayed, otherwise without its text.
+                if forward_labelled_events:
+                    yield _sse(event)
+                elif event.usage is not None or event.status is not None:
                     yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
                 continue
             if event.event == "error":
@@ -1260,7 +1259,7 @@ def stage_branch_read_context(
     parent_ref = (
         "main"
         if parent.target.kind == "main"
-        else f"branch:{names.get(parent.target.branch_id or '', parent.target.branch_id)}"
+        else f"branch:{branch_label(parent.target.branch_id, names)}"
     )
     content = (
         service.history_engine.state_at(parent).model_dump_json(indent=2)
@@ -1273,7 +1272,7 @@ def stage_branch_read_context(
     )
     return {
         "parent_graph_path": path,
-        "branch_name": names.get(metadata.branch_id, metadata.branch_id),
+        "branch_name": branch_label(metadata.branch_id, names),
         "branch_parent": f"{parent_ref}@{parent.revision}",
         "shared_repositories": [
             item.model_copy(update={"path": service.manifest.repository_map[item.alias].path})
@@ -1283,25 +1282,24 @@ def stage_branch_read_context(
 
 
 def _stage_context_paths(
-    context: RunContext | ChatContext,
+    context: RunContext | ChatContext | CoachContext,
     service: ProjectService,
     stage: RemoteRunStage,
     execution_machine: str,
 ) -> dict[str, object]:
     """Repository and materialized-state pointers a remote agent can open."""
-
     repositories = []
     for repository in context.repositories:
         if repository.machine == execution_machine:
             repositories.append(repository.model_copy(update={"host": ""}))
-            continue
-        if not repository.host:
+        elif not repository.host:
             raise StateUnavailable(
                 f"Repository {repository.alias!r} is on {repository.machine!r}, which has no "
                 f"SSH host reachable from execution machine {execution_machine!r}. Run the "
                 "agent on that repository's machine or configure a reachable host."
             )
-        repositories.append(repository)
+        else:
+            repositories.append(repository)
     updates: dict[str, object] = {"repositories": repositories}
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     if state_repository.machine != execution_machine:
@@ -1309,12 +1307,11 @@ def _stage_context_paths(
             "Graph-writing agents must run on the canonical state machine; "
             "cross-machine state staging is forbidden."
         )
-    canonical = PurePosixPath(state_repository.path) / ".research"
     for field in _STATE_PATH_FIELDS:
-        raw_path = getattr(context, field)
+        raw_path = getattr(context, field, None)
         if raw_path:
             relative_path = Path(raw_path).relative_to(service.manifest.research_dir)
-            updates[field] = str(canonical / relative_path)
+            updates[field] = str(PurePosixPath(state_repository.path) / ".research" / relative_path)
     return updates
 
 

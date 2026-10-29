@@ -1,3 +1,5 @@
+import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
+import { chosenWorktreeRepository, worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
@@ -252,16 +254,38 @@ export function DetailDrawer({
     code_worktree: false,
   });
   const [experimentBranch, setExperimentBranch] = useState("");
+  // The worktree's one repository: a writable one on the Experiment's machine.
+  const worktreeRepositories = project
+    ? worktreeRepositoryChoices(project, project.agent_profiles.node_chat.run_on)
+    : [];
+  const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<string | null>(null);
+  // An inherited worktree is bound to its owner's repository; admission refuses any other.
+  const inheritedRepository = inheritedIsolation?.worktree_repository ?? null;
+  const worktreeRepository = chosenWorktreeRepository(
+    worktreeRepositories,
+    worktreeRepositoryPick,
+    inheritedRepository,
+  );
   const codeWorktreeToggle = (
-    <label>
-      <input
-        type="checkbox"
-        checked={(inheritedIsolation ?? isolation).code_worktree}
-        disabled={Boolean(inheritedIsolation)}
-        onChange={(event) => setIsolation({ ...isolation, code_worktree: event.target.checked })}
-      />
-      Code worktree
-    </label>
+    <span className="code-worktree-choice">
+      <label>
+        <input
+          type="checkbox"
+          checked={(inheritedIsolation ?? isolation).code_worktree}
+          disabled={Boolean(inheritedIsolation)}
+          onChange={(event) => setIsolation({ ...isolation, code_worktree: event.target.checked })}
+        />
+        Code worktree
+      </label>
+      {(inheritedIsolation ?? isolation).code_worktree && (
+        <WorktreeRepositoryPicker
+          repositories={inheritedRepository ? [inheritedRepository] : worktreeRepositories}
+          value={worktreeRepository}
+          disabled={Boolean(inheritedRepository)}
+          onChange={setWorktreeRepositoryPick}
+        />
+      )}
+    </span>
   );
   const newBranchNameValid =
     inheritedIsolation || !isolation.graph_isolation || branchNameValid(experimentBranch);
@@ -822,10 +846,13 @@ export function DetailDrawer({
                       }
                       onClick={() =>
                         onRunExperiment(
-                          inheritedIsolation ??
-                            (isolation.graph_isolation
-                              ? { ...isolation, branch_name: branchNameRequest(experimentBranch) }
-                              : isolation),
+                          {
+                            ...(inheritedIsolation ??
+                              (isolation.graph_isolation
+                                ? { ...isolation, branch_name: branchNameRequest(experimentBranch) }
+                                : isolation)),
+                            worktree_repository: worktreeRepository,
+                          },
                           browserRequested,
                           launchConfig,
                           startMessage,
@@ -852,7 +879,6 @@ export function DetailDrawer({
                         effectiveModel={launchEffectiveModel}
                         workLikeCapable={launchProfile.work_like_capable}
                         locked={nodeMutationDisabled || experimentRunBusy}
-                        showRunOn={false}
                         compact
                       >
                         <div

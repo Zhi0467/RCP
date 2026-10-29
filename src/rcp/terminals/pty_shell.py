@@ -10,6 +10,11 @@ import termios
 def main() -> None:
     # Popen already created a session. A controlling terminal gives interactive
     # job control and delivers SIGHUP when the server's last master fd closes.
+    # The one-file packaged backend runs Python as a child of its bootloader,
+    # which holds that session, so the child starts its own (#259). The
+    # bootloader forwards the server's SIGHUP to it.
+    if os.getsid(0) != os.getpid():
+        os.setsid()
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
     os.write(1, b"\x1ercp-terminal-ready\x1f")
     os.execv("/bin/bash", ["/bin/bash", "--noprofile", "--norc", "-i"])

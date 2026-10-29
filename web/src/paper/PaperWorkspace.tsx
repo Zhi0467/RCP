@@ -1,19 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { EditorView } from "@codemirror/view";
-import {
-  Cloud,
-  CloudOff,
-  Copy,
-  Download,
-  FileWarning,
-  History,
-  LoaderCircle,
-  PanelLeft,
-  RotateCcw,
-} from "lucide-react";
+import { Download, FileWarning, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
-import { referenceUrl } from "../core/projectReferences";
+import { readPref, writePref } from "../core/prefStorage";
 import type {
   AgentTask,
   IdentityResponse,
@@ -36,10 +26,12 @@ import {
 } from "./paperDocuments";
 import { carryPaperSelection, PaperEditor } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
+import { usePaperSplit } from "./usePaperSplit";
+import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
-import { PaperDialog } from "./PaperDialog";
+import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 
 /** Route snapshots retain selection only; IndexedDB owns all document content. */
@@ -55,13 +47,7 @@ interface Props {
   tasks: AgentTask[];
   onStartTask: StartAgentTask;
 }
-function storedFold() {
-  try {
-    return localStorage.getItem("rcp:paper-files-folded") === "true";
-  } catch {
-    return false;
-  }
-}
+const FOLD_KEY = "rcp:paper-files-folded";
 export function PaperWorkspace({
   apiBase,
   project,
@@ -99,7 +85,7 @@ export function PaperWorkspace({
   useEffect(() => {
     if (requestedFileId?.fileId) setSelected(requestedFileId.fileId);
   }, [requestedFileId, setSelected]);
-  const [folded, setFolded] = useState(storedFold);
+  const [folded, setFolded] = useState(() => readPref(FOLD_KEY) === "true");
   const [filesOpen, setFilesOpen] = useState(false);
   const [view, setView] = useState<"write" | "preview" | "coach">("write");
   const [right, setRight] = useState<"preview" | "coach">("preview");
@@ -111,6 +97,13 @@ export function PaperWorkspace({
     return () => media.removeEventListener("change", changed);
   }, []);
   const writingPane = useRef<HTMLDivElement>(null);
+  // The coach's History and New chat join the row that switches the Paper view.
+  const [panelBar, setPanelBar] = useState<HTMLElement | null>(null);
+  // The open file's settled cursor line; the preview follows it through SyncTeX.
+  const [cursor, setCursor] = useState<{ file: string | null; line: number }>({
+    file: null,
+    line: 1,
+  });
   const [history, setHistory] = useState(false);
   const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
   const [actionError, setActionError] = useState<{
@@ -297,20 +290,12 @@ export function PaperWorkspace({
   const fold = () => {
     setFolded(true);
     setFilesOpen(false);
-    try {
-      localStorage.setItem("rcp:paper-files-folded", "true");
-    } catch {
-      /* Device preference is optional. */
-    }
+    writePref(FOLD_KEY, "true");
   };
   const unfold = () => {
     setFolded(false);
     setFilesOpen(true);
-    try {
-      localStorage.setItem("rcp:paper-files-folded", "false");
-    } catch {
-      /* Device preference is optional. */
-    }
+    writePref(FOLD_KEY, "false");
   };
   // Focus follows an explicit request (Write, a picked or new file), never a load.
   const focusPending = useRef(false);
@@ -338,13 +323,16 @@ export function PaperWorkspace({
   const [previewShown, setPreviewShown] = useState(previewActive);
   if (previewActive && !previewShown) setPreviewShown(true);
   const retryError = actionError?.error ?? identityError ?? resource.error ?? changeFeed.error;
+  const split = usePaperSplit();
   return (
     <section
       className={`paper-live-workspace ${folded ? "files-folded" : ""} ${filesOpen ? "files-open" : ""} ${retryError ? "paper-failed" : ""}`}
       data-view={view}
+      style={split.style}
     >
       <PaperFiles
         apiBase={apiBase}
+        projectId={project.id}
         files={tree?.files ?? []}
         selected={file?.file_id ?? null}
         onSelect={(id, existsAt) => {
@@ -355,7 +343,7 @@ export function PaperWorkspace({
         onFold={fold}
         onChanged={refresh}
       />
-      <main className="paper-box paper-editor-box">
+      <main className="paper-box paper-editor-box" id="paper-editor-pane" ref={split.editor}>
         <header className="paper-bar paper-document-header">
           <button className="icon-button paper-show-files" aria-label="Show files" onClick={unfold}>
             <PanelLeft size={16} />
@@ -438,37 +426,22 @@ export function PaperWorkspace({
             </button>
           )}
           <button
-            className="icon-button"
+            className="icon-button paper-history-button"
             aria-label="Paper history"
             onClick={() => setHistory(true)}
           >
             <History size={16} />
           </button>
-          <button
-            className="icon-button paper-copy"
-            aria-label="Copy reference"
-            disabled={!file}
-            onClick={() =>
-              void perform(async () => {
-                await navigator.clipboard.writeText(
-                  referenceUrl(
-                    project.id,
-                    { kind: "main" },
-                    { kind: "paper", file_id: file!.file_id },
-                  ),
-                );
-              })
-            }
-          >
-            <Copy size={16} />
-          </button>
         </header>
-        <div className="paper-phone-segments paper-segments" aria-label="Paper view">
-          {(["write", "preview", "coach"] as const).map((panel) => (
-            <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
-              {panel[0].toUpperCase() + panel.slice(1)}
-            </button>
-          ))}
+        <div className="paper-phone-segments">
+          <div className="segmented" role="group" aria-label="Paper view">
+            {(["write", "preview", "coach"] as const).map((panel) => (
+              <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
+                {panel[0].toUpperCase() + panel.slice(1)}
+              </button>
+            ))}
+          </div>
+          {phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </div>
         <div className="paper-writing-pane" ref={writingPane}>
           {document ? (
@@ -480,6 +453,7 @@ export function PaperWorkspace({
               changes={changeFeed.changes}
               focusChange={focusChange}
               onDecide={(id, action) => void perform(() => act(id, action))}
+              onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
           ) : file?.kind === "binary" ? (
             <a
@@ -494,15 +468,24 @@ export function PaperWorkspace({
           ) : null}
         </div>
       </main>
-      <aside className="paper-box paper-right-box">
+      {split.handle && (
+        <ResizeHandle
+          label="Resize editor"
+          controls="paper-editor-pane paper-right-pane"
+          className="paper-split-handle"
+          {...split.handle}
+        />
+      )}
+      <aside className="paper-box paper-right-box" id="paper-right-pane" ref={split.right}>
         <header className="paper-bar paper-desktop-segments">
-          <div className="paper-segments">
+          <div className="segmented" role="group" aria-label="Paper panel">
             {(["preview", "coach"] as const).map((panel) => (
               <button key={panel} aria-pressed={right === panel} onClick={() => switchView(panel)}>
                 {panel[0].toUpperCase() + panel.slice(1)}
               </button>
             ))}
           </div>
+          {!phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </header>
         <div className="paper-right-pane" hidden={right !== "preview"}>
           {previewShown &&
@@ -516,6 +499,8 @@ export function PaperWorkspace({
                 tree={tree}
                 onOpenFile={setSelected}
                 active={previewActive}
+                toolbar={(phone ? view : right) === "preview" ? panelBar : null}
+                cursorLine={cursor.file === file.file_id ? cursor.line : 1}
               />
             ) : (
               <PaperPreview
@@ -525,6 +510,8 @@ export function PaperWorkspace({
                 text=""
                 onOpenFile={setSelected}
                 active={previewActive}
+                toolbar={(phone ? view : right) === "preview" ? panelBar : null}
+                cursorLine={cursor.file === file.file_id ? cursor.line : 1}
               />
             ))}
         </div>
@@ -544,6 +531,7 @@ export function PaperWorkspace({
               }
             }}
             onLocate={locate}
+            toolbar={(phone ? view : right) === "coach" ? panelBar : null}
           />
         </div>
       </aside>
@@ -556,39 +544,36 @@ export function PaperWorkspace({
         />
       )}
       {tree?.hold && (
-        <PaperDialog
-          className={`paper-box paper-confirm ${actionError ? "paper-failed" : ""}`}
+        <PaperConfirm
           label="Choose Paper version"
+          failed={Boolean(actionError)}
           onClose={() => {
             /* A version must be chosen. */
           }}
         >
-          <strong>Choose Paper version</strong>
-          <div className="paper-bar">
-            {(["draft", "canonical"] as const).map((keep) => (
-              <button
-                key={keep}
-                className="button"
-                disabled={resolving}
-                onClick={() =>
-                  void perform(async () => {
-                    setResolving(true);
-                    try {
-                      await api(`${apiBase}/paper/hold/resolve`, {
-                        method: "POST",
-                        body: JSON.stringify({ keep }),
-                      });
-                      refresh();
-                    } finally {
-                      setResolving(false);
-                    }
-                  })
-                }
-              >
-                {keep === "draft" ? "Keep draft" : "Keep saved"}
-              </button>
-            ))}
-          </div>
+          {(["draft", "canonical"] as const).map((keep) => (
+            <button
+              key={keep}
+              className="button"
+              disabled={resolving}
+              onClick={() =>
+                void perform(async () => {
+                  setResolving(true);
+                  try {
+                    await api(`${apiBase}/paper/hold/resolve`, {
+                      method: "POST",
+                      body: JSON.stringify({ keep }),
+                    });
+                    refresh();
+                  } finally {
+                    setResolving(false);
+                  }
+                })
+              }
+            >
+              {keep === "draft" ? "Keep draft" : "Keep saved"}
+            </button>
+          ))}
           {actionError && (
             <button
               className="icon-button"
@@ -598,7 +583,7 @@ export function PaperWorkspace({
               <RotateCcw size={16} />
             </button>
           )}
-        </PaperDialog>
+        </PaperConfirm>
       )}
     </section>
   );
@@ -645,14 +630,12 @@ function DocumentStatus({
         ))}
       </div>
       <span
-        className={`paper-saved ${state.saved ? "saved" : ""}`}
+        className="visually-hidden"
         data-testid="paper-saved"
         data-saved={state.saved}
         role="status"
-        aria-label={state.saved ? "Saved" : "Saving"}
-        title={state.saved ? "Saved" : "Saving"}
       >
-        {state.connected ? <Cloud size={16} /> : <CloudOff size={16} />}
+        {state.saved ? "Saved" : "Saving"}
       </span>
       {state.closed !== null && !state.saved && !recover && (
         <button

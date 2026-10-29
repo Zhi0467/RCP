@@ -293,6 +293,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "chat_pins",
             "research_view_pins",
             "evidence_flags",
+            "consolidation_targets",
             "auto_research_experiment_invocations",
             "auto_research_child_work_attempts",
             "artifact_versions",

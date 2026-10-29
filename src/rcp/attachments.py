@@ -644,6 +644,27 @@ def _atomic_write_metadata(destination: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def stage_turn_attachments(
+    data_dir: Path,
+    batch_id: str | None,
+    attachments: list[ChatAttachmentDescriptor],
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> tuple[list[dict[str, object]], list[Path]]:
+    """Return the admitted batch's pointers and attachment read directories."""
+    if bool(batch_id) != bool(attachments):
+        raise ValueError("The chat task has incomplete attachment batch metadata.")
+    pointers = (
+        ChatAttachmentStore(data_dir / "chat-attachments").stage(
+            batch_id, attachments, local_stage=local_stage, remote_stage=remote_stage
+        )
+        if batch_id
+        else []
+    )
+    return pointers, list(dict.fromkeys(Path(str(item["path"])).parent for item in pointers))
+
+
 def _canonical_uuid(value: str, label: str) -> str:
     try:
         normalized = str(uuid.UUID(value))

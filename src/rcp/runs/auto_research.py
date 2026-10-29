@@ -2160,6 +2160,7 @@ class AutoResearchCommandDispatcher:
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
         from rcp.runs.agent_names import task_agent_name_state
+        from rcp.storage.lessons import lesson_command_actions
 
         # A launch binds the surface its prompt rendered; recovery of a recorded call
         # outside any launch resolves the role's surface.
@@ -2178,6 +2179,7 @@ class AutoResearchCommandDispatcher:
                 ),
                 graph_read_scope=self.graph_read_scope,
                 bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
+                lesson_actions=lesson_command_actions(self.store, context.task.operation_id),
             )
         )
         if request.verb not in allowed:

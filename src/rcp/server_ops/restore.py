@@ -46,6 +46,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-target consolidation (v64): fresh, immutable fixtures, and in-place upgrades.
+        "8e5862b1bfafe8a9e5556405639b6ec8a615a15532d7eee9d6a0c68f1e1806d1",
+        "562caa199e8c92719449de5201884e41d3a4d41686b3faddd8c412af5e757adc",
+        "039daa7c2662baf199aad9c328d0614d35834ba27d9acf0964f530d51115b5eb",
+        "4f46b1ff761fa0ffc44fe34f99cc05f3bb4bf61f964f442ec1ca86a9013dcd3d",
+        "74e2db6a52ad5fe9ae9745227e164e89e38a16e8b468c55fa852e6fcd543c87b",
+        "7adcc5e1db7fa95cd6445a48969daa1efcbb1c64f4d45314bd34d4618233c3c5",
+        "91fa1818b7b9e71c8a2c0e567a6c75171812adc6c50e15958e5e72e4914e055f",
+        "a0e55acccfd652f26d3567d801c443413c59460cd0ce17a49efb71ce4fa44823",
+        "b62114df3c08258196296e2fbbb4692a73662df289ee2bdf52e8e175b7f5bf75",
+        "c8350af6255a7033d7c09bd756c4d83e5656a54c97289240d19821250456f925",
+        "ea4b00da1aaacd2c8c5a0b45656c7da99abbbb60534911957b6e0972de8231d8",
         # Live Paper (v63): fresh, immutable fixture upgrades, and in-place upgrades.
         "14615397c3f599d096a656ee22f3c2e91bcbb6e079c8db15773f39a1f847705b",
         "190acaf47763878ceea7f9f187c91f49cf83b36d7678dfb069038171ad2333bb",
@@ -974,6 +986,42 @@ def _recovery_machine(archived):
     )
 
 
+def _recover_adopted(checkouts, machine, repository, saved):
+    """Re-adopt a Git folder at its recorded path; restore never creates one."""
+    import json
+
+    from rcp.server_ops.backup_checkout import _remote_checkout_source
+
+    recorded = saved.checkout_commit if saved is not None else repository.git_commit
+    result = checkouts._target(
+        machine,
+        (
+            "python3",
+            "-c",
+            _remote_checkout_source(),
+            "inspect-adopted",
+            machine.os_account,
+            repository.resolved_path,
+            recorded,
+        ),
+    )
+    if result.returncode != 0:
+        raise RestoreRefused(
+            f"The adopted folder {repository.resolved_path} is missing or lost its recorded commit."
+        )
+    payload = json.loads(result.stdout)
+    commit = payload.get("head")
+    if payload != {
+        "account": machine.os_account,
+        "repository_path": repository.resolved_path,
+        "origin": "",
+        "head": commit,
+        "recorded_commit": recorded,
+    } or not re.fullmatch(r"[0-9a-f]{40}", str(commit)):
+        raise RestoreRefused("The adopted folder proof changed.")
+    return recorded
+
+
 def _recover_server_only(checkouts, machine, repository, saved, archived_research):
     import json
 
@@ -1042,6 +1090,7 @@ def _record_restored_checkout_proofs(store, data_dir, capture, progress):
                     git_commit=r.git_check.commit,
                     deploy_key_label=r.git_check.deploy_key_label,
                     public_key_fingerprint=r.git_check.public_key_fingerprint,
+                    adopted=r.existing_path is not None,
                 )
                 for r in repositories
                 if r.resolved_path is not None and r.git_check.commit is not None
@@ -1135,7 +1184,11 @@ def _recover_repositories(request, manifest, previous_store, members):
             if repository.repository is None:
                 if saved is not None and saved.source != "server_only":
                     raise RestoreRefused("Server-only restore progress carries GitHub authority.")
-                commit = _recover_server_only(checkouts, machine, repository, saved, archived)
+                commit = (
+                    _recover_adopted(checkouts, machine, repository, saved)
+                    if repository.adopted
+                    else _recover_server_only(checkouts, machine, repository, saved, archived)
+                )
                 if saved is None:
                     progress.append(
                         RestoreRepositoryRecovery(
@@ -1146,7 +1199,9 @@ def _recover_repositories(request, manifest, previous_store, members):
                             state="checkout_ready",
                             central_root=machine.central_root,
                             repository_path=repository.resolved_path,
-                            checkout_disposition="request_created",
+                            checkout_disposition=(
+                                "reused_existing" if repository.adopted else "request_created"
+                            ),
                             checkout_commit=commit,
                         )
                     )

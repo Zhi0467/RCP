@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import smoke_agent
+import smoke_terminal
 
 LAUNCH_TIMEOUT_SECONDS = 30.0
 HEALTH_TIMEOUT_SECONDS = 30.0
@@ -28,6 +29,7 @@ SHUTDOWN_TIMEOUT_SECONDS = 20.0
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--terminal-only", action="store_true")
     parser.add_argument(
         "backend",
         nargs="?",
@@ -167,11 +169,18 @@ def _stderr(process: subprocess.Popen[str]) -> str:
 
 
 def main() -> None:
-    backend = _arguments().backend.expanduser().resolve()
+    arguments = _arguments()
+    backend = arguments.backend.expanduser().resolve()
     if not backend.is_file() or not os.access(backend, os.X_OK):
         raise SystemExit(f"Packaged backend is not executable: {backend}")
 
     with tempfile.TemporaryDirectory(prefix="rcp-packaging-smoke-") as temporary:
+        if arguments.terminal_only:
+            # Opt-in until the backend ships unpacked (#251): each terminal
+            # re-launches the one-file executable, which can take 10 s or more.
+            smoke_terminal.verify(backend, Path(temporary))
+            print(json.dumps({"local_terminal": "passed", "cleanup_paths": 2}))
+            return
         data_dir = Path(temporary) / "data"
         environment = _environment(data_dir)
         environment.update(smoke_agent.prepare(Path(temporary)))

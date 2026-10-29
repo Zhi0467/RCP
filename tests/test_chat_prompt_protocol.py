@@ -419,6 +419,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
     assert baseline is not None
     snapshot = json.loads(baseline.snapshot_json)
     assert set(snapshot["values"]) == {
+        "branches",
         "project",
         "settings",
         "current",

@@ -1,8 +1,9 @@
-"""Lesson commands shared by concrete owners of served mutating mailboxes."""
+"""Lesson commands shared by concrete owners of served mailboxes."""
 
 from __future__ import annotations
 
 from rcp.agents.command_protocol import CommandResponse, LessonCommandRequest
+from rcp.agents.staged_command_client import lesson_usages
 from rcp.storage import AppStore
 from rcp.storage.lessons import LessonError
 
@@ -45,14 +46,5 @@ def handle_lesson(
     return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
 
-def lesson_command_usage(*, edit_authorized: bool, client: str) -> str:
-    usages = ["lesson add --key <key> --text <text>"]
-    if edit_authorized:
-        usages.extend(
-            (
-                "lesson list [--cursor <cursor>]",
-                "lesson update --key <key> --id <lesson-id> --text <text>",
-                "lesson delete --key <key> --id <lesson-id>",
-            )
-        )
-    return "\n".join(f"- `{client} {usage}`" for usage in usages)
+def lesson_command_usage(*, actions: tuple[str, ...], client: str) -> str:
+    return "\n".join(f"- `{client} {usage}`" for usage in lesson_usages(actions))

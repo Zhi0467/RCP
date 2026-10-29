@@ -606,12 +606,17 @@ class PaperLive:
         rate.append(now)
 
     @staticmethod
-    def _check_snapshot(files: dict[str, PaperFile], checks: list[dict]) -> None:
+    def _check_snapshot(snapshot: PaperSnapshot, checks: list[dict]) -> None:
+        files = {file.file_id: file for file in snapshot.files}
         for check in checks:
             if "path_free" in check and any(f.path == check["path_free"] for f in files.values()):
                 raise PaperPrecondition("Paper path is occupied")
             if check.get("file_id_absent") in files:
                 raise PaperPrecondition("Paper identity already exists")
+            if "folder" in check:
+                held = {file.file_id for file in snapshot.files_under(check["folder"])}
+                if held != set(check["file_ids"]):
+                    raise PaperPrecondition("Paper folder changed")
             if "file_id" not in check:
                 continue
             file = files.get(check["file_id"])
@@ -684,7 +689,7 @@ class PaperLive:
             raise PaperPrecondition("Paper revision changed")
         checks = expect.get("checks")
         if checks is not None:
-            self._check_snapshot(files, checks)
+            self._check_snapshot(snapshot, checks)
         docs: dict[str, Doc] = {}
         bases: dict[str, Room] = {}
         blobs: dict[str, bytes] = {}

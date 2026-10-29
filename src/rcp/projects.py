@@ -39,7 +39,7 @@ from rcp.core.attention import (
 )
 from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import MaterializationResult
-from rcp.core.models import GraphState, upgrade_graph_projection
+from rcp.core.models import AuthorizedHuman, GraphState, upgrade_graph_projection
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
@@ -258,6 +258,7 @@ def inspect_backup_project_registration(
                     git_commit=repository.git_check.commit,
                     deploy_key_label=repository.git_check.deploy_key_label,
                     public_key_fingerprint=repository.git_check.public_key_fingerprint,
+                    adopted=repository.existing_path is not None,
                 )
                 for repository in repositories
                 if repository.resolved_path is not None and repository.git_check.commit is not None
@@ -2632,6 +2633,56 @@ class ProjectCatalog:
         )
         return _ProjectSnapshotDraft(snapshot)
 
+    def add_existing_repository(
+        self,
+        project_id: str,
+        alias: str,
+        path: str,
+        writable: bool,
+        *,
+        authorized_by: AuthorizedHuman | None,
+    ) -> _ProjectSnapshotDraft:
+        return self._change_repositories(
+            project_id,
+            lambda service: service.add_existing_repository(
+                alias, path, writable, authorized_by=authorized_by
+            ),
+        )
+
+    def set_repository_writable(
+        self,
+        project_id: str,
+        alias: str,
+        writable: bool,
+        *,
+        authorized_by: AuthorizedHuman | None,
+    ) -> _ProjectSnapshotDraft:
+        return self._change_repositories(
+            project_id,
+            lambda service: service.set_repository_writable(
+                alias, writable, authorized_by=authorized_by
+            ),
+        )
+
+    def _change_repositories(
+        self, project_id: str, change: Callable[[ProjectService], None]
+    ) -> _ProjectSnapshotDraft:
+        project_id = self._canonical_project_id(project_id)
+        generation = self.reserve_cached_snapshot_generation(project_id)
+        service = self.open(project_id)
+        change(service)
+        self._persist_bootstrap_locator(project_id, service)
+        snapshot = _snapshot_payload(service.project_snapshot())
+        self._stamp_snapshot_identity(snapshot, project_id)
+        self.mark_snapshot_fresh(snapshot)
+        self.commit_cached_snapshot(
+            project_id,
+            snapshot,
+            generation=generation,
+            patch_log_head=service.history.workspace.cached_patch_log_head(),
+        )
+        return _ProjectSnapshotDraft(snapshot)
+
     def add_machine(
         self,
         project_id: str,
@@ -2895,6 +2946,32 @@ class ProjectDisplayCache:
         return self.complete_snapshot(
             project_id,
             self._catalog.update_settings(project_id, request),
+        )
+
+    def add_existing_repository(
+        self,
+        project_id: str,
+        alias: str,
+        path: str,
+        writable: bool,
+        *,
+        authorized_by: AuthorizedHuman | None,
+    ) -> dict[str, object]:
+        return self.complete_snapshot(
+            project_id,
+            self._catalog.add_existing_repository(
+                project_id, alias, path, writable, authorized_by=authorized_by
+            ),
+        )
+
+    def set_repository_writable(
+        self, project_id: str, alias: str, writable: bool, *, authorized_by: AuthorizedHuman | None
+    ) -> dict[str, object]:
+        return self.complete_snapshot(
+            project_id,
+            self._catalog.set_repository_writable(
+                project_id, alias, writable, authorized_by=authorized_by
+            ),
         )
 
     def add_machine(self, project_id: str, machine_id: str, alias: str) -> dict[str, object]:

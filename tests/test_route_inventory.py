@@ -102,6 +102,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/project-provisioning/requests/{request_id}/cancel"),
     (("POST",), "/api/project-provisioning/requests/{request_id}/complete"),
     (("POST",), "/api/projects/{project_id}/repository-requests"),
+    (("POST",), "/api/projects/{project_id}/repositories"),
+    (("PUT",), "/api/projects/{project_id}/repositories/{alias}/writable"),
     (("POST",), "/api/project-transfers/incoming-provisioning-requests"),
     (("GET",), "/api/project-transfers/incoming-provisioning-requests"),
     (
@@ -271,6 +273,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/paper/compile/{compile_id}/pdf"),
     (("GET",), "/api/projects/{project_id}/paper/engines"),
     (("GET",), "/api/projects/{project_id}/paper/files/{file_id}/raw"),
+    (("GET",), "/api/projects/{project_id}/paper/folders/archive"),
     (("DELETE",), "/api/projects/{project_id}/paper/history/{version_id}"),
     (("GET",), "/api/projects/{project_id}/paper/history"),
     (("GET",), "/api/projects/{project_id}/paper/history/{version_id}/files/{file_id}"),
@@ -281,6 +284,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/paper/engines/{name}/install"),
     (("POST",), "/api/projects/{project_id}/paper/files"),
     (("POST",), "/api/projects/{project_id}/paper/files/{file_id}/rename"),
+    (("POST",), "/api/projects/{project_id}/paper/folders/delete"),
+    (("POST",), "/api/projects/{project_id}/paper/folders/rename"),
     (("POST",), "/api/projects/{project_id}/paper/history"),
     (("POST",), "/api/projects/{project_id}/paper/history/{version_id}/restore"),
     (("POST",), "/api/projects/{project_id}/paper/hold/resolve"),
@@ -348,12 +353,12 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 288
+    assert len(_FROZEN_ROUTE_INVENTORY) == 293
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 284
+    assert sum(isinstance(route, APIRoute) for route in routes) == 289
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

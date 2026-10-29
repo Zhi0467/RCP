@@ -1311,10 +1311,7 @@ def test_provider_default_model_stays_pinned_after_settings_change(loop, tmp_pat
     profiles["node_chat"]["model"] = "new-explicit-model"
     changed = loop.client.put(
         f"/api/projects/{loop.project_id}/settings",
-        json={
-            "default_run_truth_scope": ["repo-a"],
-            "agent_profiles": profiles,
-        },
+        json={"agent_profiles": profiles},
     )
     assert changed.status_code == 200, changed.text
 
@@ -1337,13 +1334,14 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
         "node_chat",
         loop.root_request().model_copy(update={"run_truth_scope": requested_scope}),
     )
-    assert resolved.run_truth_scope == ["repo-a"]
+    writable = sorted(loop.service.history.state().project_truth_scope)
+    assert resolved.run_truth_scope == writable
     loop.start_episode(request=resolved)
     loop.bind_session(tmp_path / "scope-stage")
     loop.arm_watcher(
         "default-scope-result",
         status="completed",
-        continuation=loop.continuation(run_truth_scope=["repo-a"]),
+        continuation=loop.continuation(run_truth_scope=writable),
     )
     loop.record_answers()
 
@@ -1354,7 +1352,7 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
         for task in loop.store.agent_tasks(loop.project_id)
         if task.request.get("trigger") == "watcher"
     )
-    assert wake.request["run_truth_scope"] == ["repo-a"]
+    assert wake.request["run_truth_scope"] == writable
 
 
 def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
@@ -2359,7 +2357,8 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
     assert request["run_on"] == "laptop"
-    assert request["run_truth_scope"] == ["repo-a"]
+    # A new human authorization takes the project's current writable set.
+    assert request["run_truth_scope"] == sorted(loop.service.history.state().project_truth_scope)
     assert request["chat_id"] == new_chat_id
     assert request["session_id"] is None
 
@@ -2397,10 +2396,9 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
         f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
         json={"run_on": "gpu"},
     )
-    assert pinned.status_code == 409
     # The machine exists and is reachable; the loop still stays where its
     # canonical state and episode live.
-    assert "must run on canonical state machine 'laptop'" in pinned.json()["detail"]
+    assert pinned.status_code == 409
 
 
 def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop, tmp_path) -> None:

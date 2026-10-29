@@ -87,6 +87,8 @@ class StartEpisodeBody(BaseModel):
     bulletin_enabled: bool = True
     browser_requested: bool = False
     code_worktree: bool | None = None
+    # The one writable repository a code worktree checks out; naming one turns it on.
+    worktree_repository: str | None = None
     graph_isolation: Literal[True] = True
     branch_name: str | None = None
     invocation_ceiling: int = Field(ge=1)

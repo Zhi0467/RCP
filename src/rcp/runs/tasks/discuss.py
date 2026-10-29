@@ -24,6 +24,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
+    GraphReadPrompt,
     _command_client_rule,
     chat_master_contract_key,
     graph_read_contract,
@@ -31,7 +32,7 @@ from rcp.agents.prompts import (
     live_ask_contract,
     render_chat_read_context,
 )
-from rcp.attachments import ChatAttachmentStore
+from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution, persisted_request_roundtrips
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
@@ -57,15 +58,16 @@ from rcp.runs.chat import (
     _stage_chat_patch_inputs,
     _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
-    _validated_remote_chat_resume_stage,
     chat_continuation_master,
     chat_master_label,
     chat_master_owner,
     chat_prompt_values,
+    open_remote_conversation_stage,
     retained_work_values,
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
+from rcp.runs.lesson_commands import lesson_command_usage
 from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
@@ -103,7 +105,6 @@ from rcp.runs.session_master import (
 from rcp.runs.shared import (
     _pinned_to_profile,
     _prepare_hidden_read_scope,
-    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _sse,
@@ -134,6 +135,10 @@ def _discuss_execution_instructions(
     from rcp.runs.agent_names import name_command_usage
 
     instructions = []
+    if "lesson" in handler.allowed_verbs:
+        instructions.append(
+            lesson_command_usage(actions=handler.lesson_actions, client=COMMAND_CLIENT)
+        )
     if "name" in handler.allowed_verbs:
         instructions.append(name_command_usage(COMMAND_CLIENT))
     if "ask" in handler.allowed_verbs:
@@ -681,24 +686,9 @@ async def stream_discuss_run(
             stage_name = _chat_stage_name(service, request, execution)
             saved_stage = execution is not None and execution.stage_root is not None
             if execution_host:
-                if saved_stage:
-                    stage_root = _validated_remote_chat_resume_stage(
-                        execution, execution_host, stage_name
-                    )
-                    remote_stage = RemoteRunStage(execution_host).attach(stage_root)
-                else:
-                    remote_stage = RemoteRunStage(execution_host).open(
-                        stage_name,
-                        reuse=True,
-                        protected_roots=_protected_run_stage_roots(
-                            execution.store if execution is not None else None,
-                            execution_host,
-                        ),
-                    )
-                assert remote_stage.root is not None
-                remote_stage.touch()
-                if execution is not None:
-                    execution.checkpoint_stage(execution_host, str(remote_stage.root))
+                remote_stage = open_remote_conversation_stage(
+                    execution_host, stage_name, execution, saved_stage=saved_stage
+                )
                 # Resumes rebuild context too; branch read pointers need execution-host paths.
                 context = context.model_copy(
                     update=_stage_context_paths(
@@ -808,18 +798,6 @@ async def stream_discuss_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
-            if bool(request.attachment_batch_id) != bool(request.attachments):
-                raise ValueError("The chat task has incomplete attachment batch metadata.")
-            attachment_pointers = (
-                ChatAttachmentStore(data_dir / "chat-attachments").stage(
-                    request.attachment_batch_id,
-                    request.attachments,
-                    local_stage=local_stage,
-                    remote_stage=remote_stage,
-                )
-                if request.attachment_batch_id
-                else []
-            )
             edit_path = (
                 sync_session_artifacts(execution, request, artifact_directory, remote_stage)
                 if execution is not None
@@ -833,8 +811,6 @@ async def stream_discuss_run(
                 remote_stage=remote_stage,
                 edit_path=edit_path,
             )
-            if artifact_context_pointer is not None:
-                attachment_pointers.append(artifact_context_pointer.pointer)
             read_dirs = _chat_read_dirs(
                 context,
                 local_stage,
@@ -844,12 +820,18 @@ async def stream_discuss_run(
             )
             if context.group_context is not None:
                 read_dirs.extend(context.group_context.read_dirs())
+            attachment_pointers, attachment_dirs = stage_turn_attachments(
+                data_dir,
+                request.attachment_batch_id,
+                request.attachments,
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+            )
+            if artifact_context_pointer is not None:
+                attachment_pointers.append(artifact_context_pointer.pointer)
+                attachment_dirs.append(Path(str(artifact_context_pointer.pointer["path"])).parent)
             read_dirs.extend(
-                path
-                for path in dict.fromkeys(
-                    Path(str(item["path"])).parent for item in attachment_pointers
-                )
-                if path not in read_dirs
+                directory for directory in attachment_dirs if directory not in read_dirs
             )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
@@ -883,6 +865,8 @@ async def stream_discuss_run(
                 experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
+            graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store)
+            discuss_values.update(graph_prompt.values)
             handler = discuss_command_handler(
                 execution, service=service, graph_read_scope=graph_read_scope
             )
@@ -1006,7 +990,9 @@ async def stream_discuss_run(
                     )
                     if patch_inputs is not None:
                         contract = graph_read_contract(
-                            contract, graph_read_scope, patch_inputs.command_client
+                            contract,
+                            graph_prompt,
+                            patch_inputs.command_client,
                         )
                     return contract + "\n\n" + browser_prompt_line(browser_grant)
 
@@ -1115,7 +1101,7 @@ async def stream_discuss_run(
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
                     discuss_execution_instructions=instructions,
-                    graph_read_scope=graph_read_scope,
+                    graph_read_prompt=graph_prompt,
                 )
                 prompt, contract_path = _prepare_discuss_chat_prompt(
                     execution,

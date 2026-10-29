@@ -17,7 +17,13 @@ test("Address starts the flag's chat without opening it", async () => {
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    const flag = { flag_id: "flag-1", evidence_id: "e/claim", kind: "overclaim", finding: "" };
+    const flag = {
+      target: "main",
+      flag_id: "flag-1",
+      evidence_id: "e/claim",
+      kind: "overclaim",
+      finding: "",
+    };
     await page.route("**/evidence-flags/flag-1/address", (route) =>
       route.fulfill({
         json: { flag: { ...flag, state: "addressing", chat_id: "chat-1" }, chat_id: "chat-1" },
@@ -68,6 +74,7 @@ test("Address all uses one capped request, retries the same batch, and fits at 3
         json: {
           flags: body.flag_ids.map((id) => ({
             flag_id: id,
+            target: "main",
             evidence_id: "e/claim",
             kind: "overclaim",
             state: "addressing",

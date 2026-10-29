@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+from collections.abc import Callable
 from contextlib import chdir
 from datetime import datetime
 from pathlib import Path
@@ -153,6 +154,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (61,),
             (62,),
             (63,),
+            (64,),
         ]
 
         plan = connection.execute(
@@ -322,6 +324,20 @@ def test_new_storage_migrations_freeze_the_base_shape(tmp_path: Path) -> None:
     )
 
 
+@pytest.fixture(scope="module")
+def release_checkout(tmp_path_factory: pytest.TempPathFactory) -> Callable[[str], Path]:
+    """Build each release once; its current- and stale-cache cases only read the checkout."""
+    root = tmp_path_factory.mktemp("releases")
+    built: dict[str, Path] = {}
+
+    def checkout(tag: str) -> Path:
+        if tag not in built:
+            built[tag] = build_release_checkout(tag, root / tag)
+        return built[tag]
+
+    return checkout
+
+
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
 @pytest.mark.parametrize(
     "release_tag",
@@ -333,6 +349,7 @@ def test_release_update_from_every_published_release_validates(
     stale_cache: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    release_checkout: Callable[[str], Path],
 ) -> None:
     """Every published release must migrate current and stale display caches.
 
@@ -353,7 +370,7 @@ def test_release_update_from_every_published_release_validates(
     )
 
     # git archive fails for a missing tag; an incomplete fetch cannot skip a source.
-    checkout = build_release_checkout(release_tag, tmp_path / "release")
+    checkout = release_checkout(release_tag)
     root = tmp_path / "update"
     capture = capture_release_update_with(checkout, root, stale_cache=stale_cache)
     merge_branch_id = capture.pop("merge_branch_id")

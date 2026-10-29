@@ -45,7 +45,6 @@ function Fixture() {
       <NodeChat
         graphTarget={{ kind: "main" }}
         project={project}
-        runScope={["repo"]}
         tasks={tasks}
         chatId={chatId}
         presentation="workspace"

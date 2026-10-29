@@ -831,8 +831,11 @@ provisioning requests and central paths. Repositories take optional GitHub
 `source` (blank/null means server-only) and `count_as_project_truth` (default true).
 Responses expose `source_kind`, nullable repository/GitHub identity, and truth
 choice. `POST /api/projects/{id}/repository-requests` accepts `add_repository`
-(alias, optional source, machine alias, truth choice) or `connect_repository`
-(alias, source). Existing project membership gates reads and requester confirmation.
+(alias, exactly one of a GitHub `source` or an existing folder `path`, truth
+choice defaulting to false) or `connect_repository` (alias, source). An add always
+lands on the project's base machine, so it names none; Settings offers no empty
+server-only add. A folder must not overlap another project repository; Connect
+refuses an adopted folder and its Settings row has no `can_connect`. Existing project membership gates reads and requester confirmation.
 Add commits membership/truth through a human transition bound to the reviewed
 manifest/head; Connect preserves the manifest.
 
@@ -884,7 +887,10 @@ retains more width. Tabs cannot be reordered.
 Each tab retains bounded in-session view, panel, scroll, selection, draft, and
 exact Runs-route state. Every project view writes its route, and leaving a tab
 remembers the exact route it left, so returning lands on that page even when the
-tab's snapshot is gone (for example after a backend restart). Activating a tab is
+tab's snapshot is gone (for example after a backend restart). Within a project,
+each view tab reopens the sub-view the viewer last had open there (Research its
+graph, Artifacts its Paper, Agents the chat it was left on while that chat still
+exists, else its board), remembered per project in browser storage. Activating a tab is
 cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
 left, and the last close returns to the index.
@@ -1256,7 +1262,7 @@ wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 `GET /api/providers/logins` lists machine accounts, dependent project machines,
 secret-free credential summaries, labels, supported sign-in methods, and active
 sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
-uses: each execution profile's provider on its `run_on` machine, plus any
+uses: each execution profile's provider on the base machine, plus any
 account holding this project's parked work (queued tasks, provider-auth
 recoveries, the current failed Experiment turn, undelivered watcher groups). A
 machine no profile runs on raises no notice. Signed-out accounts get one notice
@@ -1500,6 +1506,17 @@ read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
 
+Settings' Repos rows show each repository's **Agents can write** box, checked
+for members of `project_truth_scope` and fixed on for the state repository.
+`PUT /api/projects/{id}/repositories/{alias}/writable` (`{writable}`) appends the
+human approval that changes that membership and returns the project snapshot.
+A personal project's Add repo form posts a folder to
+`POST /api/projects/{id}/repositories` and has no GitHub mode; a team's uses the
+repository request below;
+`PUT /api/projects/{id}/settings` no longer takes a default run scope, and no
+composer or launch dialog selects repositories, except the single writable
+repository a worktree uses.
+
 Team repository descriptors include `source` (`github` or `server_only`),
 nullable `github_identity`, and `can_connect`, from `effective_repositories`;
 only a server-only team repository has `can_connect` set. The display
@@ -1521,9 +1538,12 @@ re-checks them before it returns, so the returned card shows the new routes.
 `POST /api/space/machines/{machine_id}/compute/check` re-runs the route probes
 and reach now. Both settle an undecided job manager, even on a card no project
 uses yet. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
-finds the executable on the machine and records it on the card. A card
-in use by any project, or whose use cannot be established, cannot be deleted,
-and host and account never change. A team create with a blank account fills it
+finds the executable on the machine and records it on the card. A card carries a boolean
+`deletable`: true only when every project can be read and no repository
+lives on any alias bound to it, including each project’s base. Delete detaches
+the machine from every listing project before deleting the card. If detaching
+fails, the error is returned and the card stays. Host and account never change.
+A team create with a blank account fills it
 from the login check or refuses with 422 and a `detail.code` of
 `authentication_failed`, `host_key_unknown` (with the fingerprint),
 `host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes
