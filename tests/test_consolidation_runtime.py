@@ -10,6 +10,7 @@ import pytest
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
+from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.storage.artifact_models import Artifact
 
 from .helpers import (
@@ -757,6 +758,9 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch,
     )
     # The launched turn committed its Patch; the process died before the hold.
     runtime.store.record_agent_task_receipt(run.operation_id, "agent_launch", {})
+    # A long turn's later receipts must not make it read as never launched.
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
+        runtime.store.record_agent_task_receipt(run.operation_id, f"pressure-{index}", {})
     append_fixture_patch(runtime.service, patch)
     runtime.store.fail_agent_task(run.operation_id, "Provider failed after Apply")
 

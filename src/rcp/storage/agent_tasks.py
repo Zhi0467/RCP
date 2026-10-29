@@ -130,6 +130,8 @@ def _origin_bound_edit(request: Mapping[str, object]) -> bool:
 
 
 _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
+    # Settlement reads a missing launch as "never launched, committed nothing".
+    "agent_launch",
     "operation_admitted",
     "operation_dispatch_attempt",
     "operation_dispatch_failed_before_start",
