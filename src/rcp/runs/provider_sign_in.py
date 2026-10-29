@@ -125,14 +125,6 @@ class ProviderSignInRunner:
             raise ProviderLoginRefused("This provider login has been removed.", status_code=409)
         return state
 
-    def refusal(self, provider: str, host: str, *, login_id: str = MACHINE_LOGIN_ID) -> str | None:
-        return self.accounts.refusal(LoginKey(provider, host, login_id))
-
-    def account_state(
-        self, provider: str, host: str, *, login_id: str = MACHINE_LOGIN_ID
-    ) -> ProviderLoginStateRecord:
-        return self.accounts.account_state(LoginKey(provider, host, login_id))
-
     def observe_failure(
         self,
         provider: str,
@@ -360,12 +352,12 @@ class ProviderSignInRunner:
     def start_sign_in(
         self, provider: str, host: str, *, member_id: str, login_id: str = MACHINE_LOGIN_ID
     ) -> ProviderSignInStatus:
+        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         if "device_code" not in profile_for(provider).authentication.methods:
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
             )
         # Resolved before the lock: it may probe the machine over SSH.
-        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         binary, _ = self.provider_binary(provider, host)
         member = self.store.space_user(member_id)
         with self._lock:
@@ -658,12 +650,12 @@ class ProviderSignInRunner:
         member_id: str,
         login_id: str = MACHINE_LOGIN_ID,
     ) -> ProviderLoginStateRecord:
+        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         auth = profile_for(provider).authentication
         if "token_entry" not in auth.methods:
             raise ProviderLoginRefused(
                 "Token entry is not supported by this provider.", status_code=422
             )
-        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         binary, binaries = self.provider_binary(provider, host)
         with self.launcher.credential_gate.hold_blocking(LoginKey(provider, host, login_id)):
             self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
@@ -714,11 +706,11 @@ class ProviderSignInRunner:
     def sign_out(
         self, provider: str, host: str, *, member_id: str, login_id: str = MACHINE_LOGIN_ID
     ) -> ProviderLoginStateRecord:
+        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         if not profile_for(provider).authentication.supports_sign_out:
             raise ProviderLoginRefused(
                 "Sign-out is not supported by this provider.", status_code=422
             )
-        self.require_login(LoginKey(provider, host, login_id), member_id=member_id)
         binary, binaries = self.provider_binary(provider, host)
         with self.launcher.credential_gate.hold_blocking(LoginKey(provider, host, login_id)):
             self.require_login(LoginKey(provider, host, login_id), member_id=member_id)

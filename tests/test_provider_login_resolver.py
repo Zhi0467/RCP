@@ -22,20 +22,20 @@ def accounts(tmp_path, monkeypatch):
     return ProviderAccounts(store, credentials)
 
 
-def _login(accounts, provider, *, own=False, machine=False):
+def _login(accounts, provider, *, own=False, machine=False, member="member"):
     store = accounts.store
     login_id = (
         ""
         if machine
         else store.add_provider_login(
-            provider, "", member_id="member" if own else None, added_by="member"
+            provider, "", member_id=member if own else None, added_by=member
         ).login_id
     )
     key = LoginKey(provider, "", login_id)
-    store.mark_provider_login_verified(key, member_id="member", detail="ok")
+    store.mark_provider_login_verified(key, member_id=member, detail="ok")
     if provider == "claude":
         accounts.credentials.store_token(
-            "claude", "", "test-token", member_id="member", now=store.now(), login_id=login_id
+            "claude", "", "test-token", member_id=member, now=store.now(), login_id=login_id
         )
     return key
 
@@ -74,26 +74,6 @@ def _task(
             )
 
 
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-@pytest.mark.parametrize(
-    "setting,expected",
-    [
-        ("own", "own"),
-        ("own_then_shared", "own"),
-        ("shared_then_own", "shared"),
-        ("shared", "shared"),
-    ],
-)
-def test_new_session_uses_first_available_source(accounts, provider, setting, expected):
-    own = _login(accounts, provider, own=True)
-    shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting("member", provider, "", setting)
-    assert accounts.resolve_login(provider, "", "member") == (
-        {"own": own, "shared": shared}[expected],
-        None,
-    )
-
-
 @pytest.mark.parametrize(
     "setting,first_source",
     [
@@ -109,41 +89,6 @@ def test_refusal_names_first_source(accounts, setting, first_source):
     assert isinstance(refusal, LoginRefusal)
     assert refusal.source == first_source
     assert reason is None
-
-
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-@pytest.mark.parametrize("condition", ["limited", "signed_out", "draining"])
-def test_continued_session_moves_or_stays_bound(accounts, provider, condition):
-    own = _login(accounts, provider, own=True)
-    shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting("member", provider, "", "own_then_shared")
-    if condition == "limited":
-        _limit(accounts, own)
-    elif condition == "signed_out":
-        accounts.store.mark_provider_login_signed_out(
-            own, member_id="member", source="sign_out", detail="out"
-        )
-    else:
-        accounts.store.set_provider_login_draining(own)
-    result, reason = accounts.resolve_login(
-        provider,
-        "",
-        "member",
-        previous_login=own,
-        bound_login=own,
-        previous_authorized_by="member",
-        previous_provider_started_at=accounts.store.now(),
-    )
-    if provider == "codex":
-        assert reason is None
-        if condition == "signed_out":
-            assert isinstance(result, LoginRefusal)
-            assert result.login == own
-        else:
-            assert result == own
-    else:
-        assert result == shared
-        assert reason == ("limited" if condition == "limited" else "unhealthy")
 
 
 @pytest.mark.parametrize("setting", ["own", "own_then_shared", "shared_then_own", "shared"])
@@ -216,12 +161,12 @@ def test_lru_ties_machine_then_added_time_and_sticky_reuse(accounts, monkeypatch
     monkeypatch.setattr(accounts.store, "now", lambda: later.isoformat())
     second = _login(accounts, "codex")
     for i in range(3):
-        _task(accounts.store, str(i), machine, session=None)
+        _task(accounts.store, str(i), machine, session=None, member=None)
     for i, expected in enumerate((machine, first, second)):
         assert accounts.resolve_login(
             "codex", "", "member", dry_run=False, operation_id=str(i)
         ) == (expected, None)
-        assert accounts.store.agent_task_login_id(str(i)) == expected.login_id
+        assert accounts.store.agent_task(str(i)).login_id == expected.login_id
     assert accounts.resolve_login("codex", "", "member", previous_login=second) == (second, None)
 
 
@@ -289,9 +234,14 @@ def test_session_helpers_only_use_provider_started_matching_turns(accounts):
     )
 
 
+@pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize(
     "setting,limited_source,expected",
     [
+        ("own", None, "own"),
+        ("own_then_shared", None, "own"),
+        ("shared_then_own", None, "shared"),
+        ("shared", None, "shared"),
         ("own", "own", "own"),
         ("own_then_shared", "own", "shared"),
         ("shared_then_own", "shared", "own"),
@@ -301,17 +251,17 @@ def test_session_helpers_only_use_provider_started_matching_turns(accounts):
     ],
 )
 def test_fresh_session_prefers_free_source_and_uses_limited_when_necessary(
-    accounts, setting, limited_source, expected
+    accounts, provider, setting, limited_source, expected
 ):
     keys = {
-        "own": _login(accounts, "claude", own=True),
-        "shared": _login(accounts, "claude", machine=True),
+        "own": _login(accounts, provider, own=True),
+        "shared": _login(accounts, provider, machine=True),
     }
-    accounts.store.set_provider_login_setting("member", "claude", "", setting)
+    accounts.store.set_provider_login_setting("member", provider, "", setting)
     for source, key in keys.items():
         if limited_source in {source, "both"}:
             _limit(accounts, key)
-    assert accounts.resolve_login("claude", "", "member") == (keys[expected], None)
+    assert accounts.resolve_login(provider, "", "member") == (keys[expected], None)
 
 
 def test_limited_shared_session_moves_to_free_shared_login(accounts):

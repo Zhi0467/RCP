@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
-import subprocess
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from rcp.agents.provider_accounts import ProviderAccounts
-from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.config import Manifest, load_manifest
-from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
+from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
 from rcp.storage.models import LoginKey
-from rcp.transport.ssh import ssh_arguments
 
 if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
@@ -428,33 +424,9 @@ _CLEANUP_PENDING = "Sign-in removed. Remote credential deletion is pending; RCP 
 
 def _delete_removed_credential(store: AppStore, key: LoginKey) -> None:
     """Delete only the credential. Session folders and provider state survive."""
-    credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
-    if key.provider == "claude":
-        credentials.delete_token(key.provider, key.host, key.login_id)
-        remote_path = f".config/rcp/logins/{key.login_id}/claude-setup-token"
-    elif key.provider == "codex":
-        (
-            credentials.account_dir(key.provider, key.host, key.login_id)
-            / "codex-home"
-            / "auth.json"
-        ).unlink(missing_ok=True)
-        remote_path = f".rcp/provider-homes/codex/{key.login_id}/auth.json"
-    else:
-        raise ValueError("This provider has no added credentials.")
-    detail = "Sign-in removed."
-    if key.host:
-        try:
-            result = subprocess.run(
-                ssh_arguments(key.host, 'rm -f -- "$HOME"/' + shlex.quote(remote_path)),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS,
-            )
-            if result.returncode:
-                detail = _CLEANUP_PENDING
-        except (OSError, subprocess.TimeoutExpired):
-            detail = _CLEANUP_PENDING
+    detail = (
+        "Sign-in removed." if cleanup_provider_login_credential(store, key) else _CLEANUP_PENDING
+    )
     with store.connection() as connection:
         connection.execute(
             "UPDATE provider_login_states SET detail=? WHERE provider=? AND host=? AND login_id=?",

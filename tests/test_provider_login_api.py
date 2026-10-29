@@ -537,6 +537,27 @@ def test_add_own_conflict_owner_actions_and_remove_rules(member_login_api):
     assert runner.credentials.token("claude", "", login_id) is None
 
 
+@pytest.mark.parametrize(("provider", "action"), [("claude", "sign-in"), ("codex", "token")])
+def test_authorization_precedes_unsupported_method(member_login_api, provider, action):
+    client, store, _, viewer = member_login_api
+    row = store.add_provider_login(provider, "", member_id="alice", added_by="alice")
+    body = (
+        {"login_id": row.login_id, "token": "private-token"}
+        if action == "token"
+        else {"login_id": row.login_id}
+    )
+    route = f"/api/providers/{provider}/logins/{action}"
+    assert client.post(route, json=body).status_code == 422
+    store.finish_provider_login_removal(LoginKey(provider, "", row.login_id))
+    assert client.post(route, json=body).status_code == 409
+    viewer["id"] = "bob"
+    response = client.post(route, json=body)
+    assert response.status_code == 403
+    assert "alice" not in response.text and row.login_id not in response.text
+    body["login_id"] = "00000000-0000-4000-8000-000000000001"
+    assert client.post(route, json=body).status_code == 404
+
+
 @pytest.mark.parametrize("setting", ["own", "own_then_shared", "shared_then_own", "shared"])
 def test_setting_round_trip(member_login_api, setting):
     client, store, runner, viewer = member_login_api

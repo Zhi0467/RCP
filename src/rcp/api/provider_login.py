@@ -212,7 +212,6 @@ def verify_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    _authorize_login(sign_ins.store, provider, body, member.user_id)
     try:
         state = sign_ins.verify(
             provider, body.host, member_id=member.user_id, login_id=body.login_id
@@ -237,7 +236,6 @@ def start_provider_sign_in(
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
     member = get_identity_access(request).acting_user(request)
-    _authorize_login(sign_ins.store, provider, body, member.user_id)
     try:
         return sign_ins.start_sign_in(
             provider, body.host, member_id=member.user_id, login_id=body.login_id
@@ -285,7 +283,6 @@ def save_provider_token(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    _authorize_login(sign_ins.store, provider, body, member.user_id)
     try:
         state = sign_ins.save_token(
             provider, body.host, body.token, member_id=member.user_id, login_id=body.login_id
@@ -310,7 +307,6 @@ def sign_out_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    _authorize_login(sign_ins.store, provider, body, member.user_id)
     try:
         state = sign_ins.sign_out(
             provider, body.host, member_id=member.user_id, login_id=body.login_id
@@ -335,22 +331,6 @@ class ProviderLoginSettingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     host: str = ""
     setting: ProviderLoginSetting
-
-
-def _authorize_login(
-    store: AppStore,
-    provider: str,
-    body: ProviderAccountRequest | ProviderTokenRequest,
-    member_id: str,
-) -> None:
-    try:
-        state = store.provider_login_state(LoginKey(provider, body.host, body.login_id))
-    except ValueError as exc:
-        raise HTTPException(404, "Unknown provider login.") from exc
-    if state.member_id is not None and state.member_id != member_id:
-        raise HTTPException(403, "Only the owner may change this sign-in.")
-    if state.removed_at:
-        raise HTTPException(409, "This provider login has been removed.")
 
 
 def _managed_host(store: AppStore, provider: str, host: str) -> None:
@@ -462,9 +442,11 @@ def remove_provider_login(
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
-    _authorize_login(store, provider, body, member.user_id)
     key = LoginKey(provider, body.host, body.login_id)
-    state = store.provider_login_state(key)
+    try:
+        state = sign_ins.require_login(key, member_id=member.user_id)
+    except ProviderLoginRefused as exc:
+        raise _refused(exc) from exc
     if not body.login_id:
         raise HTTPException(422, "The machine sign-in cannot be removed.")
     if state.member_id:

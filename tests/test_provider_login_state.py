@@ -259,7 +259,7 @@ def test_assignment_clock_does_not_invalidate_settings(tmp_path):
             "SELECT generation FROM resource_versions WHERE scope='' AND resource='settings' AND entity=''"
         ).fetchone()[0]
     assert before == after
-    assert store.agent_task_login_id("task") == MACHINE_LOGIN_ID
+    assert store.agent_task("task").login_id == MACHINE_LOGIN_ID
 
 
 @pytest.mark.parametrize(("kind", "default"), [("team", "own"), ("personal", "shared")])

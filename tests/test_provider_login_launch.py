@@ -10,21 +10,11 @@ from rcp.background import AgentTaskExecution
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
 
-from .test_provider_login_resolver import _limit, _task
-from .test_provider_login_resolver import _login as _resolver_login
+from .test_provider_login_resolver import _limit, _login, _task
 from .test_provider_login_resolver import accounts as accounts
 
 MEMBER = "00000000-0000-4000-8000-000000000001"
 SPACE = "00000000-0000-4000-8000-000000000002"
-
-
-def _login(accounts, provider, **kwargs):
-    key = _resolver_login(accounts, provider, **kwargs)
-    with accounts.store.connection() as connection:
-        connection.execute(
-            "UPDATE provider_login_states SET member_id=? WHERE member_id='member'", (MEMBER,)
-        )
-    return key
 
 
 def _started_task(
@@ -115,7 +105,7 @@ async def _launch(
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize("event", ["limited", "unhealthy", "draining"])
 async def test_real_launch_moves_claude_and_binds_codex(accounts, tmp_path, provider, event):
-    own = _login(accounts, provider, own=True)
+    own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
     accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
     _started_task(accounts, "previous", own)
@@ -157,7 +147,7 @@ async def test_real_launch_moves_claude_and_binds_codex(accounts, tmp_path, prov
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 async def test_gate_recheck_falls_back_only_for_unbound_work(accounts, tmp_path, provider):
-    own = _login(accounts, provider, own=True)
+    own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
     accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
     _started_task(accounts, "previous", own)
@@ -176,7 +166,7 @@ async def test_gate_recheck_falls_back_only_for_unbound_work(accounts, tmp_path,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lineage", ["transport_auto_retry", "provider_login_lineage"])
 async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
-    own = _login(accounts, "claude", own=True)
+    own = _login(accounts, "claude", own=True, member=MEMBER)
     shared = _login(accounts, "claude", machine=True)
     accounts.store.set_provider_login_setting(MEMBER, "claude", "", "shared")
     _started_task(accounts, "parent", own)
@@ -191,7 +181,7 @@ async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
 
 @pytest.mark.asyncio
 async def test_pre_provider_failure_does_not_supply_previous_login(accounts, tmp_path):
-    own = _login(accounts, "claude", own=True)
+    own = _login(accounts, "claude", own=True, member=MEMBER)
     shared = _login(accounts, "claude", machine=True)
     accounts.store.set_provider_login_setting(MEMBER, "claude", "", "shared")
     _started_task(accounts, "never_started", own, started=False)
@@ -205,7 +195,7 @@ async def test_pre_provider_failure_does_not_supply_previous_login(accounts, tmp
 
 @pytest.mark.asyncio
 async def test_removed_codex_binding_is_session_refused(accounts, tmp_path):
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=MEMBER)
     _started_task(accounts, "previous", own)
     accounts.store.finish_provider_login_removal(own)
     execution, selected, outcome, _ = await _launch(accounts, tmp_path, own)
@@ -216,7 +206,7 @@ async def test_removed_codex_binding_is_session_refused(accounts, tmp_path):
 
 @pytest.mark.asyncio
 async def test_codex_fork_uses_source_login(accounts, tmp_path):
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=MEMBER)
     shared = _login(accounts, "codex", machine=True)
     accounts.store.set_provider_login_setting(MEMBER, "codex", "", "shared")
     _started_task(accounts, "source", own)
@@ -230,7 +220,7 @@ async def test_codex_fork_uses_source_login(accounts, tmp_path):
 async def test_launch_capture_fences_only_its_login(accounts, tmp_path):
     from rcp.background import BackgroundAgentTasks
 
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=MEMBER)
     shared = _login(accounts, "codex", machine=True)
     accounts.store.set_provider_login_setting(MEMBER, "codex", "", "own")
     execution, selected, _, _ = await _launch(accounts, tmp_path, own, session=None)
@@ -258,7 +248,7 @@ async def test_launcher_releases_failed_gate_before_reselection(
     from rcp.agents import ProviderReadiness
     from rcp.agents.provider_environment import ProviderProcessEnvironment
 
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=MEMBER)
     other = _login(accounts, "codex", machine=True)
     launcher = AgentLauncher(accounts=accounts)
     held = []
@@ -315,7 +305,7 @@ async def test_launcher_releases_failed_gate_before_reselection(
 def test_readiness_cache_and_invalidation_are_per_login(accounts, monkeypatch):
     from rcp.agents import ProviderReadiness
 
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=MEMBER)
     other = _login(accounts, "codex", machine=True)
     launcher = AgentLauncher(accounts=accounts)
     probes = []
@@ -365,7 +355,7 @@ async def test_turn_boundary_records_setting_move_reason(
 ):
     from datetime import datetime, timedelta
 
-    own = _login(accounts, provider, own=True)
+    own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
     previous = shared if reason == "preferred_source_available" else own
     expected = own if reason == "preferred_source_available" else shared

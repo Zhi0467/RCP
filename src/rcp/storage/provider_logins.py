@@ -433,15 +433,6 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             )
         return True
 
-    def agent_task_login_id(self, operation_id: str) -> str | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT login_id FROM graph_runs WHERE operation_id=?", (operation_id,)
-            ).fetchone()
-        if row is None:
-            raise ValueError("Unknown agent task.")
-        return row[0]
-
     def record_provider_login_refusal(self, operation_id: str, key: LoginKey) -> None:
         """Retain the concrete refused binding without advancing the assignment clock."""
         with self.connection() as connection:
