@@ -379,3 +379,39 @@ test("the coach stages answer comments and files as chat does and sends them wit
     .waitFor({ state: "detached" });
   assert.equal(await page.locator(".paper-coach .chat-composer .chat-attachment-chip").count(), 0);
 });
+
+test("a coach turn carrying only a project reference names its attachment scope", async (t) => {
+  const turn = {
+    operation_id: "t1",
+    kind: "paper_coach",
+    native_session_id: "s1",
+    request: { message: "Review the introduction", session_id: null },
+    result: { messages: ["Done."] },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    active: false,
+    attempt: 1,
+  };
+  const { page } = await open(t, {
+    width: 1280,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+  });
+  await coach(page);
+  const message = page.getByRole("textbox", { name: "Message" });
+  await message.click();
+  await page.evaluate(async () => {
+    const { referenceUrl } = await import("/src/core/projectReferences.ts");
+    const link = referenceUrl("p", { kind: "main" }, { kind: "paper", file_id: "d1" });
+    const data = new DataTransfer();
+    data.setData("text/plain", `See ${link}`);
+    document.activeElement.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+    );
+  });
+  await page.locator(".paper-coach .chat-composer .chat-attachment-chips").waitFor();
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  const [started] = await page.evaluate(() => window.paperCoachFixture.started);
+  assert.deepEqual(started.request.references, [{ kind: "paper", file_id: "d1" }]);
+  assert.equal(typeof started.request.attachment_scope_id, "string");
+  assert.equal(started.request.attachment_set_id, undefined);
+});

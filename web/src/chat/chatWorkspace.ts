@@ -1,7 +1,7 @@
 import { memberDraftKey } from "../core/draftStorage.ts";
 import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
+import type { ComposerTurnFields } from "./composerAttachments.tsx";
 import type {
-  ProjectReferenceSelector,
   AgentRunConfig,
   AgentTask,
   AgentTaskKind,
@@ -210,9 +210,8 @@ export interface ConversationTurnSubmission {
   sessionId: string | null;
   mode: ConversationMode;
   artifactContext?: ArtifactContextRequest | null;
-  references?: ProjectReferenceSelector[];
-  attachmentSetId?: string | null;
-  attachmentClientId?: string | null;
+  /** The composer's staged files and references, as `turnFields()` gives them. */
+  attachments?: ComposerTurnFields;
   skills?: SkillDefaults;
   providerSkillNames?: string[];
   worktree?: boolean;
@@ -238,14 +237,8 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
     ...(submission.worktreeIntegration
       ? { worktree_integration: submission.worktreeIntegration }
       : {}),
-    ...(submission.references?.length ? { references: submission.references } : {}),
+    ...submission.attachments,
     ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
-    ...(submission.attachmentSetId && submission.attachmentClientId
-      ? {
-          attachment_set_id: submission.attachmentSetId,
-          attachment_client_id: submission.attachmentClientId,
-        }
-      : {}),
     invoked_workflow_ids: skills.workflow_ids,
     invoked_skill_ids: skills.skill_ids,
     invoked_provider_skill_names: submission.providerSkillNames ?? [],

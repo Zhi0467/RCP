@@ -654,7 +654,6 @@ export function NodeChat({
   // A Work turn also needs the provider's Work probe; Discuss does not.
   const providerReady = launchProviderReady(project, config, mode === "work");
   const chatTitle = node?.title || conversationTitle || project.name;
-  const attachmentClientId = composer.clientId;
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
   const annotationsComplete = comments.complete;
@@ -1483,9 +1482,7 @@ export function NodeChat({
         sessionId,
         mode,
         artifactContext,
-        references: references.map((item) => item.selector),
-        attachmentSetId: readyAttachments.length ? attachmentSetId : null,
-        attachmentClientId: readyAttachments.length ? attachmentClientId : null,
+        attachments: composer.turnFields(),
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: mode === "work" && worktree.chosen,

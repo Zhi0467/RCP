@@ -11,7 +11,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agents/agentTasks";
+import { coachConversation, isActiveTask, reconstructTaskTranscript } from "../agents/agentTasks";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -50,12 +50,13 @@ import { assembleChatTurn } from "../chat/chatInput";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
 
-function sessionConfig(session: WritingSession): AgentRunConfig {
+/** A session's agent pick; the coach always runs on its profile's machine, the base. */
+function sessionConfig(session: WritingSession, baseMachine: string): AgentRunConfig {
   return {
     provider: session.provider,
     model: session.model === "provider-default" ? "" : session.model,
     reasoning: session.reasoning ?? "medium",
-    run_on: session.execution_machine,
+    run_on: baseMachine,
   };
 }
 
@@ -81,10 +82,12 @@ export function PaperCoach({
   /** Where History and New chat sit: the Paper view row, while the coach shows. */
   toolbar: HTMLElement | null;
 }) {
+  const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [fresh, setFresh] = useState(false);
-  const [pendingTask, setPendingTask] = useState<AgentTask | null>(null);
+  // Turns started here, kept from admission until the task list carries them.
+  const [started, setStarted] = useState<AgentTask[]>([]);
   const [config, setConfig] = useState<AgentRunConfig>(() =>
     profileRunConfig(project.agent_profiles.paper_coach),
   );
@@ -121,11 +124,8 @@ export function PaperCoach({
     onError: setError,
   });
   const text = assembleChatTurn(message, comments.annotations);
-  // Files upload into this draft's own attachment scope; an admitted turn takes the next.
-  const [attachmentScope, setAttachmentScope] = useState(() => crypto.randomUUID());
   const composer = useComposerAttachments({
     project,
-    scopeId: attachmentScope,
     referencesKey: null,
     onError: setError,
   });
@@ -156,27 +156,33 @@ export function PaperCoach({
   const attach = (session: WritingSession) => {
     setSessionId(session.native_session_id);
     setFresh(false);
-    setPendingTask(null);
-    setConfig(sessionConfig(session));
+    setStarted([]);
+    setConfig(sessionConfig(session, baseMachine));
     setHistoryOpen(false);
     setError(null);
   };
   const mergedTasks = useMemo(
-    () =>
-      pendingTask && !tasks.some((task) => task.operation_id === pendingTask.operation_id)
-        ? [...tasks, pendingTask]
-        : tasks,
-    [tasks, pendingTask],
+    () => [
+      ...tasks,
+      ...started.filter((turn) => !tasks.some((task) => task.operation_id === turn.operation_id)),
+    ],
+    [tasks, started],
   );
-  const currentSessionId =
+  const openedSession =
     sessionId ??
     (!fresh
-      ? (pendingTask?.native_session_id ??
-        mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
+      ? (mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
           ?.native_session_id ??
         sessions[0]?.native_session_id ??
         null)
       : null);
+  const conversation = coachConversation(
+    mergedTasks,
+    openedSession,
+    started.map((task) => task.operation_id),
+  );
+  // The session the next turn resumes: the newest turn's, as in chat.
+  const currentSessionId = conversation.sessionId;
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );
@@ -184,19 +190,14 @@ export function PaperCoach({
   useEffect(() => {
     if (selectedSession && configuredSession.current !== selectedSession.native_session_id) {
       configuredSession.current = selectedSession.native_session_id;
-      setConfig(sessionConfig(selectedSession));
+      setConfig(sessionConfig(selectedSession, baseMachine));
     }
-  }, [selectedSession]);
-  const sessionTasks = currentSessionId
-    ? relatedCoachTasks(mergedTasks, currentSessionId)
-    : pendingTask
-      ? [pendingTask]
-      : [];
+  }, [selectedSession, baseMachine]);
+  const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
-  // The provider session the next turn resumes: the newest turn's, else the attached one.
   const freshProviderSession = providerSwitchStartsFreshSession(
     sessionTasks,
-    sessionTasks.at(-1)?.native_session_id ?? currentSessionId,
+    currentSessionId,
     config.provider,
   );
   const transcript = reconstructTaskTranscript(sessionTasks);
@@ -228,24 +229,16 @@ export function PaperCoach({
         session_id: currentSessionId,
         paper_apply_directly: applyDirectly,
         ...skillInvocationFields(skills.selection, skills.providerSkillNames),
-        ...(composer.references.length
-          ? { references: composer.references.map((item) => item.selector) }
-          : {}),
-        ...(composer.ready.length && composer.attachmentSetId
-          ? {
-              attachment_set_id: composer.attachmentSetId,
-              attachment_client_id: composer.clientId,
-              attachment_scope_id: attachmentScope,
-            }
-          : {}),
+        ...composer.turnFields(),
       });
-      setPendingTask(task);
-      setFresh(false);
+      // The conversation follows this turn, even into the fresh session a provider
+      // switch starts, and stays anchored where it opened.
+      setSessionId(openedSession);
+      setStarted((current) => [...current, task]);
       setMessage("");
       skills.reset();
       composer.clear();
       comments.clear();
-      setAttachmentScope(crypto.randomUUID());
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -273,7 +266,7 @@ export function PaperCoach({
             : {}),
         },
       );
-      setPendingTask(next);
+      setStarted((current) => [...current, next]);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -340,7 +333,7 @@ export function PaperCoach({
               onClick={() => {
                 setSessionId(null);
                 setFresh(true);
-                setPendingTask(null);
+                setStarted([]);
                 setConfig(profileRunConfig(project.agent_profiles.paper_coach));
                 skills.reset();
                 setError(null);

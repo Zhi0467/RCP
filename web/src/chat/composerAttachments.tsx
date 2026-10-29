@@ -22,12 +22,26 @@ import {
   type DraftReference,
 } from "../core/projectReferences";
 import { ReferenceChip } from "../core/ReferenceChip";
-import type { ChatAttachmentDescriptor, ProjectArtifact, ProjectSnapshot } from "../core/types";
+import type {
+  ChatAttachmentDescriptor,
+  ProjectArtifact,
+  ProjectReferenceSelector,
+  ProjectSnapshot,
+} from "../core/types";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { ProjectReferencePicker } from "./ProjectReferencePicker";
 
 /** A composer's files and project references for its next turn: chat and the Paper coach
- * share this whole flow, uploads included. Files upload into `scopeId`'s attachment set. */
+ * share this whole flow, uploads included. Files upload into the scope's attachment set:
+ * the chat's own id, or a draft scope this hook owns and renews after each admitted turn. */
+
+/** The attachment fields a turn request carries; the server claims them from the scope. */
+export interface ComposerTurnFields {
+  references?: ProjectReferenceSelector[];
+  attachment_set_id?: string;
+  attachment_client_id?: string;
+  attachment_scope_id?: string;
+}
 
 type AttachmentStatus = "preparing" | "ready" | "error";
 
@@ -171,13 +185,15 @@ export function useComposerAttachments({
   onError,
 }: {
   project: ProjectSnapshot;
-  /** The chat, or the coach's own draft scope, whose attachment set the files join. */
-  scopeId: string;
+  /** The chat whose attachment set the files join; omitted, each draft has its own. */
+  scopeId?: string;
   /** Where unsent references persist for this viewer, or null to keep them in memory. */
   referencesKey: string | null;
   onError: (message: string | null) => void;
 }) {
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
+  const scope = scopeId ?? draftScope;
   const [references, setReferences] = useState<DraftReference[]>(() =>
     parseReferenceDraft(readStorage(referencesKey)),
   );
@@ -280,7 +296,7 @@ export function useComposerAttachments({
       try {
         const result = await uploadChatAttachment(
           apiBase,
-          scopeId,
+          scope,
           item.file,
           clientId,
           attachmentSetIdRef.current,
@@ -290,7 +306,7 @@ export function useComposerAttachments({
         if (cancelledIdsRef.current.delete(item.localId)) {
           await removeChatAttachment(
             apiBase,
-            scopeId,
+            scope,
             result.attachment_set_id,
             result.attachment.attachment_id,
             clientId,
@@ -341,7 +357,7 @@ export function useComposerAttachments({
     if (setId && item.descriptor) {
       void removeChatAttachment(
         apiBase,
-        scopeId,
+        scope,
         setId,
         item.descriptor.attachment_id,
         clientId,
@@ -438,6 +454,17 @@ export function useComposerAttachments({
       event.preventDefault();
   };
 
+  /** The next turn's attachment fields: what is staged, and the scope that holds it. */
+  const turnFields = (): ComposerTurnFields => {
+    const files = ready.length && attachmentSetId;
+    if (!files && !references.length) return {};
+    return {
+      ...(references.length ? { references: references.map((item) => item.selector) } : {}),
+      ...(files ? { attachment_set_id: attachmentSetId, attachment_client_id: clientId } : {}),
+      attachment_scope_id: scope,
+    };
+  };
+
   /** After an admitted turn: the turn owns its files and references now. */
   const clear = useCallback(() => {
     setAttachments([]);
@@ -445,6 +472,7 @@ export function useComposerAttachments({
     setPickerOpen(false);
     setAttachmentSetId(null);
     attachmentSetIdRef.current = null;
+    setDraftScope(crypto.randomUUID());
   }, []);
 
   return {
@@ -469,6 +497,7 @@ export function useComposerAttachments({
     insertReferenceText,
     dropTarget,
     paste,
+    turnFields,
     clear,
   };
 }
