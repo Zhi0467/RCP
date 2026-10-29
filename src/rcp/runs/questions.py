@@ -32,6 +32,7 @@ from rcp.runs.work_experiment_commands import (
     work_experiment_allowed,
 )
 from rcp.storage import AppStore
+from rcp.storage.lessons import lesson_command_actions
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 
 if TYPE_CHECKING:
@@ -172,8 +173,13 @@ def discuss_command_handler(
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
 ) -> WorkCommandHandler:
-    """Discuss resolves questions and explicitly granted history reads."""
+    """Discuss resolves questions, lessons and explicitly granted history reads."""
+    lesson_actions = (
+        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
+    )
     verbs = {"ask"} if discuss_ask_authorized(execution) else set()
+    if lesson_actions:
+        verbs.add("lesson")
     from rcp.runs.agent_names import resolve_agent_name_state
 
     if resolve_agent_name_state(execution).get("can_self_name"):
@@ -181,7 +187,12 @@ def discuss_command_handler(
     if graph_read_scope is not None:
         verbs.update(graph_read_scope.verbs)
     return WorkCommandHandler(
-        execution, None, frozenset(verbs), service=service, graph_read_scope=graph_read_scope
+        execution,
+        None,
+        frozenset(verbs),
+        service=service,
+        graph_read_scope=graph_read_scope,
+        lesson_actions=lesson_actions,
     )
 
 
@@ -315,6 +326,7 @@ class WorkCommandHandler:
     mailbox: RunStageMailbox | None = None
     #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
+    lesson_actions: tuple[str, ...] = ()
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         def refuse(message: str, code: str | None = None) -> CommandResponse:
@@ -396,7 +408,11 @@ class WorkCommandHandler:
                 or identity.authority != "broker"
                 or identity.task_id != execution.operation_id
             ):
-                return refuse("Lessons require this Work turn's broker authority.")
+                return refuse("Lessons require this turn's broker authority.")
+            if request.arguments.action not in self.lesson_actions:
+                return refuse(
+                    "This turn does not authorize that lesson action.", "lesson_edit_not_authorized"
+                )
             return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, ApplyCommandRequest) and self.consolidation_apply is not None:
             return self.consolidation_apply(request, identity)
@@ -547,6 +563,9 @@ def work_command_handler(
 ) -> WorkCommandHandler:
     from rcp.runs.consolidation import is_consolidation
 
+    lesson_actions = (
+        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
+    )
     if is_consolidation(execution):
         return WorkCommandHandler(
             execution,
@@ -557,6 +576,7 @@ def work_command_handler(
             service,
             graph_read_scope,
             mailbox,
+            lesson_actions=lesson_actions,
         )
     from rcp.runs.agent_names import resolve_agent_name_state
 
@@ -588,4 +608,5 @@ def work_command_handler(
         service=service,
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,
+        lesson_actions=lesson_actions,
     )

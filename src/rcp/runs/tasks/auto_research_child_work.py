@@ -252,7 +252,7 @@ def _auto_research_child_work_contract(
 
     allowed_verbs = _child_turn_verbs(turn)
     lesson_usage = (
-        lesson_command_usage(edit_authorized=False, client=COMMAND_CLIENT)
+        lesson_command_usage(actions=("add",), client=COMMAND_CLIENT)
         if "lesson" in allowed_verbs
         else ""
     )

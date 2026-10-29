@@ -187,6 +187,7 @@
   flex-basis: 100%;
   flex-direction: row;
   justify-content: space-between;
+  min-width: 0;
 }
 .chat-composer-tools {
   align-items: center;

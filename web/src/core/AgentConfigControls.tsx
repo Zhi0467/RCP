@@ -224,7 +224,7 @@ export function AgentConfigControls({
           </select>
         </label>
         {runtime && (
-          <label className={runtime.locked ? "agent-machine-fixed" : undefined}>
+          <label className={runtime.locked ? "agent-runtime-fixed" : undefined}>
             <span>
               Runtime {runtime.locked ? <LockKeyhole size={12} aria-hidden="true" /> : null}
             </span>

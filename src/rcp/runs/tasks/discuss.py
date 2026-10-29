@@ -66,6 +66,7 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
+from rcp.runs.lesson_commands import lesson_command_usage
 from rcp.runs.lessons import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
@@ -133,6 +134,10 @@ def _discuss_execution_instructions(
     from rcp.runs.agent_names import name_command_usage
 
     instructions = []
+    if "lesson" in handler.allowed_verbs:
+        instructions.append(
+            lesson_command_usage(actions=handler.lesson_actions, client=COMMAND_CLIENT)
+        )
     if "name" in handler.allowed_verbs:
         instructions.append(name_command_usage(COMMAND_CLIENT))
     if "ask" in handler.allowed_verbs:

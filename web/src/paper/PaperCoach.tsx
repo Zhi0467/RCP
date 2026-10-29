@@ -11,7 +11,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { isActiveTask, reconstructTaskTranscript, relatedCoachTasks } from "../agents/agentTasks";
+import { coachConversation, isActiveTask, reconstructTaskTranscript } from "../agents/agentTasks";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -22,7 +22,7 @@ import { api } from "../core/api";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { returnSends } from "../ui/composerKeys";
 import { MarkdownAnswer } from "../core/chatMarkdown";
-import { SkillPicker, useSkillPicker } from "../core/SkillPicker";
+import { useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import type {
   AgentRunConfig,
@@ -32,30 +32,24 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
-import { providerSwitchStartsFreshSession } from "../chat/chatWorkspace";
-import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
-import {
-  ComposerAddPicker,
-  ComposerAttachmentChips,
-  useComposerAttachments,
-  type InsertReferenceText,
-} from "../chat/composerAttachments";
+import { ChatComposer } from "../chat/ChatComposer";
+import { useComposerAttachments } from "../chat/composerAttachments";
 import {
   AnswerCommentButton,
   AnswerCommentLayers,
-  StagedAnswerComments,
   useAnswerComments,
 } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
 
-function sessionConfig(session: WritingSession): AgentRunConfig {
+/** A session's agent pick; the coach always runs on its profile's machine, the base. */
+function sessionConfig(session: WritingSession, baseMachine: string): AgentRunConfig {
   return {
     provider: session.provider,
     model: session.model === "provider-default" ? "" : session.model,
     reasoning: session.reasoning ?? "medium",
-    run_on: session.execution_machine,
+    run_on: baseMachine,
   };
 }
 
@@ -81,10 +75,12 @@ export function PaperCoach({
   /** Where History and New chat sit: the Paper view row, while the coach shows. */
   toolbar: HTMLElement | null;
 }) {
+  const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [fresh, setFresh] = useState(false);
-  const [pendingTask, setPendingTask] = useState<AgentTask | null>(null);
+  // Turns started here, kept from admission until the task list carries them.
+  const [started, setStarted] = useState<AgentTask[]>([]);
   const [config, setConfig] = useState<AgentRunConfig>(() =>
     profileRunConfig(project.agent_profiles.paper_coach),
   );
@@ -121,22 +117,13 @@ export function PaperCoach({
     onError: setError,
   });
   const text = assembleChatTurn(message, comments.annotations);
-  // Files upload into this draft's own attachment scope; an admitted turn takes the next.
-  const [attachmentScope, setAttachmentScope] = useState(() => crypto.randomUUID());
   const composer = useComposerAttachments({
     project,
-    scopeId: attachmentScope,
     referencesKey: null,
+    input: textarea,
+    message: { get: () => message, set: setMessage },
     onError: setError,
   });
-  const insertReferenceText: InsertReferenceText = (pasted, fileCount, insertPlainText) =>
-    composer.insertReferenceText(pasted, {
-      fileCount,
-      insertPlainText,
-      input: textarea.current,
-      current: message,
-      update: setMessage,
-    });
   const taskRevision = tasks
     .filter((task) => task.kind === "paper_coach")
     .map((task) => `${task.operation_id}:${task.updated_at}`)
@@ -156,27 +143,33 @@ export function PaperCoach({
   const attach = (session: WritingSession) => {
     setSessionId(session.native_session_id);
     setFresh(false);
-    setPendingTask(null);
-    setConfig(sessionConfig(session));
+    setStarted([]);
+    setConfig(sessionConfig(session, baseMachine));
     setHistoryOpen(false);
     setError(null);
   };
   const mergedTasks = useMemo(
-    () =>
-      pendingTask && !tasks.some((task) => task.operation_id === pendingTask.operation_id)
-        ? [...tasks, pendingTask]
-        : tasks,
-    [tasks, pendingTask],
+    () => [
+      ...tasks,
+      ...started.filter((turn) => !tasks.some((task) => task.operation_id === turn.operation_id)),
+    ],
+    [tasks, started],
   );
-  const currentSessionId =
+  const openedSession =
     sessionId ??
     (!fresh
-      ? (pendingTask?.native_session_id ??
-        mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
+      ? (mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
           ?.native_session_id ??
         sessions[0]?.native_session_id ??
         null)
       : null);
+  const conversation = coachConversation(
+    mergedTasks,
+    openedSession,
+    started.map((task) => task.operation_id),
+  );
+  // The session the next turn resumes: the newest turn's, as in chat.
+  const currentSessionId = conversation.sessionId;
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );
@@ -184,21 +177,11 @@ export function PaperCoach({
   useEffect(() => {
     if (selectedSession && configuredSession.current !== selectedSession.native_session_id) {
       configuredSession.current = selectedSession.native_session_id;
-      setConfig(sessionConfig(selectedSession));
+      setConfig(sessionConfig(selectedSession, baseMachine));
     }
-  }, [selectedSession]);
-  const sessionTasks = currentSessionId
-    ? relatedCoachTasks(mergedTasks, currentSessionId)
-    : pendingTask
-      ? [pendingTask]
-      : [];
+  }, [selectedSession, baseMachine]);
+  const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
-  // The provider session the next turn resumes: the newest turn's, else the attached one.
-  const freshProviderSession = providerSwitchStartsFreshSession(
-    sessionTasks,
-    sessionTasks.at(-1)?.native_session_id ?? currentSessionId,
-    config.provider,
-  );
   const transcript = reconstructTaskTranscript(sessionTasks);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
@@ -218,6 +201,7 @@ export function PaperCoach({
   const send = async () => {
     if (!text || composer.unready || activeTask || submitting) return;
     if (!comments.requireComplete()) return;
+    composer.closeMenu();
     setSubmitting(true);
     setError(null);
     try {
@@ -228,24 +212,16 @@ export function PaperCoach({
         session_id: currentSessionId,
         paper_apply_directly: applyDirectly,
         ...skillInvocationFields(skills.selection, skills.providerSkillNames),
-        ...(composer.references.length
-          ? { references: composer.references.map((item) => item.selector) }
-          : {}),
-        ...(composer.ready.length && composer.attachmentSetId
-          ? {
-              attachment_set_id: composer.attachmentSetId,
-              attachment_client_id: composer.clientId,
-              attachment_scope_id: attachmentScope,
-            }
-          : {}),
+        ...composer.turnFields(),
       });
-      setPendingTask(task);
-      setFresh(false);
+      // The conversation follows this turn, even into the fresh session a provider
+      // switch starts, and stays anchored where it opened.
+      setSessionId(openedSession);
+      setStarted((current) => [...current, task]);
       setMessage("");
       skills.reset();
       composer.clear();
       comments.clear();
-      setAttachmentScope(crypto.randomUUID());
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -273,7 +249,7 @@ export function PaperCoach({
             : {}),
         },
       );
-      setPendingTask(next);
+      setStarted((current) => [...current, next]);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -340,7 +316,7 @@ export function PaperCoach({
               onClick={() => {
                 setSessionId(null);
                 setFresh(true);
-                setPendingTask(null);
+                setStarted([]);
                 setConfig(profileRunConfig(project.agent_profiles.paper_coach));
                 skills.reset();
                 setError(null);
@@ -443,42 +419,39 @@ export function PaperCoach({
         )}
         {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
       </div>
-      <div
-        className={`chat-composer${error ? " paper-failure" : ""}${composer.dragging ? " is-dragging-files" : ""}`}
-        {...composer.dropTarget(composer.addFiles, insertReferenceText)}
-      >
-        <SkillPicker {...skills.props} />
-        {freshProviderSession && (
-          <ProviderSwitchHint provider={readiness?.label || config.provider} />
-        )}
-        <StagedAnswerComments comments={comments} />
-        <ComposerAttachmentChips composer={composer} />
-        <textarea
-          ref={textarea}
-          aria-label="Message"
-          value={message}
-          onChange={(event) => {
-            setMessage(event.target.value);
-            skills.readMessage(event.target.value);
-            setError(null);
-          }}
-          onPaste={(event) => composer.paste(event, composer.addFiles, insertReferenceText)}
-          onKeyDown={(event) => {
-            if (skills.handleKeyDown(event)) return;
-            if (returnSends(event)) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
-        <div className="chat-send">
-          <div className="chat-composer-tools">
-            <ComposerAddPicker
-              composer={composer}
-              disabled={composer.full || composer.preparing || submitting}
-              onAttach={composer.addFiles}
-              onPickReference={composer.addReference}
-            />
+      <ChatComposer
+        project={project}
+        config={config}
+        tasks={sessionTasks}
+        sessionId={currentSessionId}
+        mode="discuss"
+        composer={composer}
+        comments={comments}
+        skills={skills.props}
+        addDisabled={composer.full || composer.preparing || submitting}
+        className={error ? "paper-failure" : undefined}
+        field={
+          <textarea
+            ref={textarea}
+            aria-label="Message"
+            value={message}
+            onChange={(event) => {
+              setMessage(event.target.value);
+              skills.readMessage(event.target.value);
+              setError(null);
+            }}
+            onPaste={composer.paste}
+            onKeyDown={(event) => {
+              if (skills.handleKeyDown(event)) return;
+              if (returnSends(event)) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+        }
+        tools={
+          <>
             <AgentConfigChip
               project={project}
               value={config}
@@ -508,38 +481,38 @@ export function PaperCoach({
                 </button>
               ))}
             </div>
-          </div>
-          <div className="chat-send-actions">
-            {activeTask?.can_pause ? (
-              <button
-                className="icon-button primary chat-send-button"
-                aria-label="Stop coach"
-                title={error || undefined}
-                onClick={() => void stop(activeTask)}
-              >
-                <Square size={14} />
-              </button>
-            ) : (
-              <button
-                className="icon-button primary chat-send-button"
-                aria-label={error ? "Retry message" : "Send coach message"}
-                title={error || undefined}
-                disabled={
-                  !text ||
-                  !comments.complete ||
-                  composer.unready ||
-                  Boolean(activeTask) ||
-                  submitting ||
-                  !launchProviderReady(project, config)
-                }
-                onClick={() => void send()}
-              >
-                {error ? <RotateCcw size={16} /> : <Send size={16} />}
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+          </>
+        }
+        actions={
+          activeTask?.can_pause ? (
+            <button
+              className="icon-button primary chat-send-button"
+              aria-label="Stop coach"
+              title={error || undefined}
+              onClick={() => void stop(activeTask)}
+            >
+              <Square size={14} />
+            </button>
+          ) : (
+            <button
+              className="icon-button primary chat-send-button"
+              aria-label={error ? "Retry message" : "Send coach message"}
+              title={error || undefined}
+              disabled={
+                !text ||
+                !comments.complete ||
+                composer.unready ||
+                Boolean(activeTask) ||
+                submitting ||
+                !launchProviderReady(project, config)
+              }
+              onClick={() => void send()}
+            >
+              {error ? <RotateCcw size={16} /> : <Send size={16} />}
+            </button>
+          )
+        }
+      />
       {configOpen && (
         <div className="paper-agent-popover">
           <button

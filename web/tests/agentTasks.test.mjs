@@ -8,6 +8,7 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
+  coachConversation,
   isNewestOfTurnClass,
   resolvedChatSessionId,
   orderTranscriptLines,
@@ -969,4 +970,50 @@ test("a later artifact edit leaves Retry on the newest failed turn", () => {
   assert.equal(isNewestOfTurnClass(turn, tasks), true);
   assert.equal(isNewestOfTurnClass(edit, tasks), true);
   assert.equal(isNewestOfTurnClass(tasks[0], tasks), false);
+});
+
+test("a coach conversation follows a provider switch into its fresh session and keeps its history", () => {
+  const earlier = task({
+    operation_id: "earlier",
+    kind: "paper_coach",
+    native_session_id: "codex-session",
+    request: { session_id: null, provider: "codex" },
+  });
+  const other = task({
+    operation_id: "other",
+    kind: "paper_coach",
+    native_session_id: "unrelated",
+    created_at: "2026-07-28T00:00:01Z",
+  });
+  // The server clears session_id when the provider changes; the turn opens a new session.
+  const switched = task({
+    operation_id: "switched",
+    kind: "paper_coach",
+    native_session_id: null,
+    request: { session_id: null, provider: "claude" },
+    created_at: "2026-07-28T00:00:02Z",
+  });
+  const admitted = coachConversation([earlier, other, switched], "codex-session", ["switched"]);
+  assert.deepEqual(
+    admitted.tasks.map((item) => item.operation_id),
+    ["earlier", "switched"],
+  );
+
+  const settled = { ...switched, native_session_id: "claude-session" };
+  const next = task({
+    operation_id: "next",
+    kind: "paper_coach",
+    native_session_id: "claude-session",
+    request: { session_id: "claude-session" },
+    created_at: "2026-07-28T00:00:03Z",
+  });
+  const followed = coachConversation([earlier, other, settled], "codex-session", ["switched"]);
+  assert.equal(followed.sessionId, "claude-session");
+  assert.deepEqual(
+    coachConversation([earlier, other, settled, next], "codex-session", [
+      "switched",
+      "next",
+    ]).tasks.map((item) => item.operation_id),
+    ["earlier", "switched", "next"],
+  );
 });

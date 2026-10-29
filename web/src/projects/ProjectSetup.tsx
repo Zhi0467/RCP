@@ -95,13 +95,13 @@ const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }
 
 // The provider is filled from the registry once it answers; the backend lists
 // its default first. Hardcoding one here is what this whole change removes.
-const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
+// Every agent runs where canonical state lives, so the request adds that machine.
+type AgentChoice = Omit<SetupAgentProfile, "location" | "host">;
+const defaultAgentProfile = (model = ""): AgentChoice => ({
   provider: "",
   runtime: "",
   model,
   reasoning: "medium",
-  location: "local",
-  host: "",
 });
 
 export function ProjectSetup({
@@ -212,7 +212,7 @@ function PersonalProjectSetup({
     },
   ]);
   const [stateRepository, setStateRepository] = useState("research");
-  const [agents, setAgents] = useState<SetupAgents>({
+  const [agents, setAgents] = useState<Record<AgentExecutionProfile, AgentChoice>>({
     seed: defaultAgentProfile(),
     refresh: defaultAgentProfile(),
     node_chat: defaultAgentProfile(),
@@ -251,7 +251,7 @@ function PersonalProjectSetup({
                       runtime: readinessFor(known, fallback)?.default_runtime ?? "",
                     },
               ]),
-            ) as SetupAgents,
+            ) as typeof current,
         );
       })
       .catch(() => setProviders([]));
@@ -326,12 +326,8 @@ function PersonalProjectSetup({
     return null;
   };
 
-  const updateAgent = (surface: AgentExecutionProfile, patch: Partial<SetupAgentProfile>) => {
-    setAgents((current) => {
-      const next = { ...current[surface], ...patch };
-      if (patch.location === "local") next.host = "";
-      return { ...current, [surface]: next };
-    });
+  const updateAgent = (surface: AgentExecutionProfile, patch: Partial<AgentChoice>) => {
+    setAgents((current) => ({ ...current, [surface]: { ...current[surface], ...patch } }));
     setError(null);
   };
 
@@ -817,9 +813,7 @@ function PersonalProjectSetup({
             number="D"
             label="Agent roles"
             value={agentExecutionProfiles
-              .map(({ id, label }) => {
-                return `${label}: ${agents[id].provider} @ ${canonicalExecution.location === "ssh" ? canonicalExecution.host || "remote" : "local"}`;
-              })
+              .map(({ id, label }) => `${label}: ${agents[id].provider}`)
               .join(" · ")}
           />
         </aside>

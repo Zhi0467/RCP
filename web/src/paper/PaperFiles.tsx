@@ -7,6 +7,12 @@ import { downloadPaper } from "./paperDownload";
 import { PaperTreeMenu, type PaperTreeAction, type PaperTreeTarget } from "./PaperTreeMenu";
 
 type TreeFolder = { path: string; name: string; children: (TreeFolder | PaperFile)[] };
+/** A new or renamed file (`file` null for new), or a new or renamed folder (`from` null for new). */
+type PathEdit =
+  | { mode: "file"; file: PaperFile | null; path: string }
+  | { mode: "folder"; from: string | null; path: string };
+
+const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
 
 /** Folders exist through their files' paths, plus any this browser just created. */
 function buildTree(files: PaperFile[], extraFolders: string[]): TreeFolder {
@@ -15,14 +21,14 @@ function buildTree(files: PaperFile[], extraFolders: string[]): TreeFolder {
   const folder = (path: string): TreeFolder => {
     const known = folders.get(path);
     if (known) return known;
-    const parent = folder(path.split("/").slice(0, -1).join("/"));
+    const parent = folder(parentOf(path));
     const created: TreeFolder = { path, name: path.split("/").at(-1)!, children: [] };
     parent.children.push(created);
     folders.set(path, created);
     return created;
   };
   for (const path of extraFolders) folder(path);
-  for (const file of files) folder(file.path.split("/").slice(0, -1).join("/")).children.push(file);
+  for (const file of files) folder(parentOf(file.path)).children.push(file);
   const name = (entry: TreeFolder | PaperFile) =>
     "file_id" in entry ? entry.path.split("/").at(-1)! : entry.name;
   for (const entry of folders.values())
@@ -49,12 +55,8 @@ export function PaperFiles({
   onFold: () => void;
   onChanged: () => void;
 }) {
-  /** `from` is the file or folder path being renamed, or null for a new one. */
-  const [edit, setEdit] = useState<{
-    mode: "file" | "folder";
-    from: PaperFile | string | null;
-    path: string;
-  } | null>(null);
+  const [edit, setEdit] = useState<PathEdit | null>(null);
+  const editing = edit && (edit.mode === "file" ? edit.file : edit.from);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [newFolders, setNewFolders] = useState<string[]>([]);
   const [replacing, setReplacing] = useState<{
@@ -67,7 +69,7 @@ export function PaperFiles({
     const input = pathInput.current;
     input?.focus();
     input?.setSelectionRange(input.value.length, input.value.length);
-  }, [edit?.mode, edit?.from]);
+  }, [edit?.mode, editing]);
   const [deleting, setDeleting] = useState<PaperTreeTarget | null>(null);
   type Action = "path" | "upload" | "delete" | "download";
   type Failure = { message: string; retry: () => Promise<void> };
@@ -109,8 +111,8 @@ export function PaperFiles({
     const path = target?.path.trim().replace(/\/+$/, "");
     if (!target || !path) return;
     if (target.mode === "folder") {
-      const from = target.from as string | null;
-      const parent = path.split("/").slice(0, -1).join("/");
+      const from = target.from;
+      const parent = parentOf(path);
       void perform("path", async () => {
         if (from && files.some((file) => under(file.path, from)))
           await api(`${apiBase}/paper/folders/rename`, {
@@ -129,7 +131,7 @@ export function PaperFiles({
       });
       return;
     }
-    const file = target.from as PaperFile | null;
+    const file = target.file;
     void perform("path", async () => {
       const receipt = await api<{ file_ids: string[]; revision: number }>(
         `${apiBase}/paper/files${file ? `/${encodeURIComponent(file.file_id)}/rename` : ""}`,
@@ -138,7 +140,7 @@ export function PaperFiles({
           body: JSON.stringify({ path, ...(!file ? { kind: "text" } : {}) }),
         },
       );
-      expand(path.split("/").slice(0, -1).join("/"));
+      expand(parentOf(path));
       setEdit(null);
       if (!file) onSelect(receipt.file_ids[0], receipt.revision);
     });
@@ -155,7 +157,7 @@ export function PaperFiles({
         { method: existing ? "PUT" : "POST", body },
       );
       setReplacing(null);
-      expand(path.split("/").slice(0, -1).join("/"));
+      expand(parentOf(path));
       onSelect(receipt.file_ids[0], receipt.revision);
     });
   const removeTarget = (target: PaperTreeTarget) =>
@@ -182,7 +184,11 @@ export function PaperFiles({
     if (action === "new-file" || action === "new-folder") {
       clearFailure("path");
       if (folder) expand(folder);
-      setEdit({ mode: action === "new-file" ? "file" : "folder", from: null, path: prefix });
+      setEdit(
+        action === "new-file"
+          ? { mode: "file", file: null, path: prefix }
+          : { mode: "folder", from: null, path: prefix },
+      );
     } else if (action === "upload") {
       uploadFolder.current = folder;
       upload.current?.click();
@@ -190,7 +196,7 @@ export function PaperFiles({
       clearFailure("path");
       setEdit(
         target.kind === "file"
-          ? { mode: "file", from: target.file, path: target.file.path }
+          ? { mode: "file", file: target.file, path: target.file.path }
           : { mode: "folder", from: folder, path: folder },
       );
     } else if (action === "delete") {
