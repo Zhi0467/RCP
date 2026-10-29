@@ -264,7 +264,10 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         archived: state.archivedChats,
       };
     else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
-    else if (path.endsWith("/digest"))
+    else if (path.endsWith("/digest") && options.digest) {
+      await options.digest.gate;
+      json = options.digest.value;
+    } else if (path.endsWith("/digest"))
       json = {
         cursor: 0,
         mark: null,
@@ -299,6 +302,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
             : null,
       };
     }, state.health);
+  if (options.initScript) await page.addInitScript(options.initScript);
   await page.goto(`${origin}/#/projects/demo?view=overview`);
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
@@ -333,6 +337,45 @@ for (const initialFreshness of ["stale", "fresh"]) {
     },
   );
 }
+
+test("Overview rows first show where they stay when the digest arrives late", async (t) => {
+  const digest = Promise.withResolvers();
+  const { page, errors } = await openDemoProject(t, "fresh", {
+    digest: {
+      gate: digest.promise,
+      value: {
+        cursor: 2,
+        mark: null,
+        target: "main",
+        needs_you: [],
+        changed: [{ source_key: "k", label: "Changed node", edits: 1, node_ids: [] }],
+        reports: [],
+        changed_node_ids: [],
+        count: 1,
+      },
+    },
+    initScript: () => {
+      // Every distinct top at which the rows were visible, frame by frame.
+      window.__rowTops = [];
+      const tick = () => {
+        const rows = document.querySelector(".overview-questions");
+        if (rows?.checkVisibility({ visibilityProperty: true })) {
+          const top = Math.round(rows.getBoundingClientRect().top);
+          if (window.__rowTops.at(-1) !== top) window.__rowTops.push(top);
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    },
+  });
+  await page.locator(".overview-questions").waitFor({ state: "attached" });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  digest.resolve();
+  await page.locator(".digest-card").waitFor();
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.equal((await page.evaluate(() => window.__rowTops)).length, 1);
+  assert.deepEqual(errors, []);
+});
 
 // Drives the page's own identity module, as a failed request or poll would.
 const reverify = (page) =>
