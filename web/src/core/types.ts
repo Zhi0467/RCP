@@ -2872,6 +2872,8 @@ export interface StartEpisodeRequest {
   browser_requested?: boolean;
   mode: "auto_research";
   code_worktree?: boolean | null;
+  /** The code worktree's one repository; naming it turns the worktree on. */
+  worktree_repository?: string | null;
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;

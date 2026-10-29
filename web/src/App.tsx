@@ -3228,6 +3228,7 @@ function MemberApp({
       launchConfig?: AgentRunConfig,
       branchName: string | null = null,
       bulletinEnabled = true,
+      worktreeRepository: string | null = null,
     ): Promise<Episode> => {
       if (autoResearchRefusal) throw new Error(autoResearchRefusal);
       const finishTaskStart = beginTaskStart();
@@ -3247,8 +3248,13 @@ function MemberApp({
             invocation_ceiling: invocationCeiling,
             starting_instruction: startingInstruction,
             branch_name: branchName,
-            // Omitted, the server turns code isolation on only where it is eligible.
-            ...(codeWorktree ? {} : { code_worktree: false }),
+            // A named repository turns code isolation on for it; omitted, the
+            // server turns it on only where it is eligible.
+            ...(codeWorktree
+              ? worktreeRepository
+                ? { worktree_repository: worktreeRepository }
+                : {}
+              : { code_worktree: false }),
             // Omitted, the server uses the Settings orchestrator profile.
             ...(launchConfig
               ? {
@@ -3298,6 +3304,7 @@ function MemberApp({
     launchConfig?: AgentRunConfig,
     branchName: string | null = null,
     bulletinEnabled = true,
+    worktreeRepository: string | null = null,
   ) => {
     reportAutoResearchStartError(null);
     setAutoResearchBranchRefusal(null);
@@ -3311,6 +3318,7 @@ function MemberApp({
         launchConfig,
         branchName,
         bulletinEnabled,
+        worktreeRepository,
       );
     } catch (error) {
       setAutoResearchBranchRefusal(branchNameRefusal(error));
@@ -5655,6 +5663,7 @@ function MemberApp({
           launchConfig,
           branchName,
           bulletinEnabled,
+          worktreeRepository,
         ) =>
           void authorizeAutoResearch(
             invocationCeiling,
@@ -5664,6 +5673,7 @@ function MemberApp({
             launchConfig,
             branchName,
             bulletinEnabled,
+            worktreeRepository,
           )
         }
         branchNameRefusal={autoResearchBranchRefusal}

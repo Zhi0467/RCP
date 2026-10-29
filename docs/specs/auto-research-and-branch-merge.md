@@ -164,7 +164,9 @@ reserves its isolation ownership at admission. Later Experiments there share it.
 
 Auto-research always isolates its graph. Code isolation defaults on only with
 one repository, Git 2.38+, and no overlapping writable shared-checkout grant.
-Explicit ineligible choices are refused. The root owns the optional worktree.
+When several repositories are writable on the orchestrator's machine, the start
+dialog's Code worktree option picks one, and the run writes only that one. With
+none, the option is off and disabled. Explicit ineligible choices are refused. The root owns the optional worktree.
 Children, continuations, and human-started Experiments there share the immutable
 [isolation binding](conversations-episodes-and-watchers.md#episode-isolation).
 Without code isolation, they keep ordinary repository scope. Neither choice
