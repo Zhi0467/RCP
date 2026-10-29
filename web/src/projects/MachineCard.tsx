@@ -689,9 +689,9 @@ export function HiddenFolders({
       {defaults.length > 0 && (
         <ul aria-label="Default hidden paths">
           {defaults.map((path) => (
-            <li key={path} data-hidden-default="">
+            // The list's name says these are defaults; each row says it only on hover.
+            <li key={path} data-hidden-default="" title="Default">
               <code>{path}</code>
-              <span>Default</span>
             </li>
           ))}
         </ul>
