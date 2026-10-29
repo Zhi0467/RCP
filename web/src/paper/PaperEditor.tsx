@@ -79,6 +79,7 @@ export function PaperEditor({
   onDecide,
   focusChange,
   maxBytes,
+  onCursorLine,
 }: {
   owner: PaperDocument;
   maxBytes?: number;
@@ -86,6 +87,8 @@ export function PaperEditor({
   changes: PaperChange[];
   onDecide: (id: string, action: "accept" | "reject") => void;
   focusChange: PaperChange | null;
+  /** The cursor's line once it settles, for a preview that follows it. */
+  onCursorLine?: (line: number) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -96,6 +99,13 @@ export function PaperEditor({
   const decide = useRef(onDecide);
   decide.current = onDecide;
   const [position, setPosition] = useState({ line: 1, column: 1 });
+  const cursorLine = useRef(onCursorLine);
+  cursorLine.current = onCursorLine;
+  useEffect(() => {
+    // Typing and arrowing settle before the preview moves.
+    const timer = setTimeout(() => cursorLine.current?.(position.line), 250);
+    return () => clearTimeout(timer);
+  }, [position.line]);
   const [step, setStep] = useState(0);
   const report = (state: EditorState) => {
     const head = state.selection.main.head;

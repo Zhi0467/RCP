@@ -99,6 +99,11 @@ export function PaperWorkspace({
   const writingPane = useRef<HTMLDivElement>(null);
   // The coach's History and New chat join the row that switches the Paper view.
   const [panelBar, setPanelBar] = useState<HTMLElement | null>(null);
+  // The open file's settled cursor line; the preview follows it through SyncTeX.
+  const [cursor, setCursor] = useState<{ file: string | null; line: number }>({
+    file: null,
+    line: 1,
+  });
   const [history, setHistory] = useState(false);
   const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
   const [actionError, setActionError] = useState<{
@@ -448,6 +453,7 @@ export function PaperWorkspace({
               changes={changeFeed.changes}
               focusChange={focusChange}
               onDecide={(id, action) => void perform(() => act(id, action))}
+              onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
           ) : file?.kind === "binary" ? (
             <a
@@ -494,6 +500,7 @@ export function PaperWorkspace({
                 onOpenFile={setSelected}
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
+                cursorLine={cursor.file === file.file_id ? cursor.line : 1}
               />
             ) : (
               <PaperPreview
@@ -504,6 +511,7 @@ export function PaperWorkspace({
                 onOpenFile={setSelected}
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
+                cursorLine={cursor.file === file.file_id ? cursor.line : 1}
               />
             ))}
         </div>
