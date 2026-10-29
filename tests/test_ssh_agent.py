@@ -96,14 +96,24 @@ def test_provisioned_key_loads_into_running_account_agent(
 
 def test_account_lock_and_verified_orphan_recovery(agent_home):
     owner = ssh_agent.BackendSSHAgent(agent_home / "credentials", home=agent_home)
-    contender = ssh_agent.BackendSSHAgent(agent_home / "credentials", home=agent_home)
+    contender = ssh_agent.BackendSSHAgent(agent_home / "b", home=agent_home)
+    keys = [key(agent.credentials_root / "projects/p/r/id_ed25519") for agent in (owner, contender)]
     owner.start()
     try:
         pid = owner._pid
         assert pid is not None
         contender.start()
         assert contender._pid is None
+        contender.stop()
         assert ssh_agent.agent_status(agent_home) == "running"
+        listed = ssh_agent._run(["ssh-add", "-l"], str(owner.socket))
+        assert listed.returncode == 0 and len(listed.stdout.splitlines()) == 2
+        evidence = ssh_agent.confirm_key_evidence(
+            private_key_paths=tuple(map(str, keys)),
+            kind="deploy_key",
+            agent_socket=str(owner.socket),
+        )
+        assert all(item.agent_confirmed and item.visibility == "hidden" for item in evidence)
         # Simulate backend death, retaining only the separately owned daemon.
         os.close(owner._lock)
         owner._lock = None
