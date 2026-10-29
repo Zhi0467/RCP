@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rcp import limits
 from rcp.__main__ import build_parser
 from rcp.core.models import DependencyStatus, MissingProgram
 from rcp.server_ops import backup as backup_owner
@@ -37,6 +38,7 @@ from rcp.server_ops.doctor import (
     release_relationship,
 )
 from rcp.server_ops.layout import ServerLayout, server_service_unit_text
+from rcp.server_ops.service_errors import ErrorSignature, group_errors, journal_entries
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -494,6 +496,91 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
     assert problems == ["service account linger is not enabled; rerun rcp server install"]
 
 
+# Captured shape of v0.4.35's nightly consolidation failure: six minute-by-minute
+# `Consolidation dispatch failed for <uuid>` records with their tracebacks, between
+# uvicorn access lines, as `journalctl --output=json` prints them.
+_JOURNAL_SAMPLE = (
+    Path(__file__).parent / "fixtures/service_journal/consolidation_launch_failure.jsonl"
+).read_text(encoding="utf-8")
+
+
+def _journal_lines(*, records: int | None = None, errors: bool = True) -> str:
+    """The sample cut after `records` error records, or with every error line dropped."""
+    kept: list[str] = []
+    seen = 0
+    for line in _JOURNAL_SAMPLE.splitlines(keepends=True):
+        message = json.loads(line)["MESSAGE"]
+        seen += message.startswith("ERROR ")
+        if records is not None and seen > records:
+            break
+        if errors or message.startswith("INFO:"):
+            kept.append(line)
+    return "".join(kept)
+
+
+def _inspect_service_errors(
+    tmp_path: Path, stdout: str, returncode: int = 0
+) -> tuple[list[str], tuple[str, ...], list[tuple[str, ...]]]:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: tuple[str, ...], *, cwd: Path | None = None):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout, "")
+
+    problems: list[str] = []
+    warnings = LinuxServerDoctorMachine(_layout(tmp_path), runner=runner)._inspect_service_errors(
+        problems.append
+    )
+    return problems, warnings, calls
+
+
+def test_doctor_groups_the_captured_journal_into_one_recurring_problem(tmp_path: Path) -> None:
+    groups = group_errors(journal_entries(_JOURNAL_SAMPLE, max_chars=len(_JOURNAL_SAMPLE)))
+
+    assert [group.signature for group in groups] == [
+        ErrorSignature("rcp.consolidation", "ValueError", "launch_admitted")
+    ]
+    assert groups[0].count == 6 >= limits.SERVER_DOCTOR_RECURRING_ERROR_COUNT
+    first_error = next(
+        entry
+        for entry in map(json.loads, _JOURNAL_SAMPLE.splitlines())
+        if entry["MESSAGE"].startswith("ERROR ")
+    )
+    assert groups[0].first_seen == datetime.fromtimestamp(
+        int(first_error["__REALTIME_TIMESTAMP"]) / 1_000_000, UTC
+    )
+
+    problems, warnings, calls = _inspect_service_errors(tmp_path, _JOURNAL_SAMPLE)
+
+    assert len(problems) == 1 and warnings == ()
+    # Only the service's own unit is read, through the doctor runner.
+    assert [argv[:2] for argv in calls] == [("journalctl", "--unit=rcp.service")]
+    exit_code, output, _ = _run_doctor(_report(problems=tuple(problems)), machine_readable=True)
+    final = json.loads(output.splitlines()[-1])["step"]
+    fields = {item["name"]: item["value"] for item in final["fields"]}
+    assert exit_code == 1
+    assert final["state"] == "failed"
+    assert fields["problems"] == problems[0]
+    assert fields["service_log_warnings"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "returncode", "warning_count"),
+    [
+        pytest.param(_journal_lines(records=1), 0, 1, id="single-occurrence"),
+        pytest.param(_journal_lines(errors=False), 0, 0, id="clean"),
+        pytest.param("", 1, 1, id="unreadable"),
+    ],
+)
+def test_doctor_reports_rare_or_unreadable_service_errors_as_warnings(
+    tmp_path: Path, stdout: str, returncode: int, warning_count: int
+) -> None:
+    problems, warnings, _ = _inspect_service_errors(tmp_path, stdout, returncode)
+
+    assert problems == []
+    assert len(warnings) == warning_count
+
+
 def test_doctor_reports_a_missing_required_program_from_the_registry(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     missing = DependencyStatus(
@@ -529,7 +616,10 @@ def test_doctor_reports_a_missing_required_program_from_the_registry(tmp_path: P
 def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     tmp_path: Path,
     hidden_reason,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The service journal is read only on Linux; a lone error is a warning.
+    monkeypatch.setattr(server_doctor, "sys", SimpleNamespace(platform="linux"))
     runtime_temp = tempfile.TemporaryDirectory(prefix="rcpd-", dir="/tmp")
     runtime_dir = Path(runtime_temp.name)
     layout = replace(
@@ -595,7 +685,9 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             operations=SERVER_CONTROL_OPERATIONS,
         )
 
-    runner = _HealthyRunner(layout=layout, commit=COMMIT, pid=metadata.pid)
+    runner = _HealthyRunner(
+        layout=layout, commit=COMMIT, pid=metadata.pid, journal=_journal_lines(records=1)
+    )
     from rcp.core.models import HiddenReadStatus
 
     security = server_doctor.AgentSecurityReadiness(
@@ -664,6 +756,12 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     assert security_fields["ssh_agent_status"] == "running"
     assert security_fields["hidden_read_status"] == security.hidden_read.status
     assert security_fields["hidden_read_warnings"] == (hidden_reason or "none")
+    final_fields = {
+        item["name"]: item["value"]
+        for item in json.loads(output.splitlines()[-1])["step"]["fields"]
+    }
+    assert len(report.service_log_warnings) == 1
+    assert final_fields["service_log_warnings"] == report.service_log_warnings[0]
     assert report.overall_state == "healthy", report.problems
     assert report.problems == ()
     assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT
@@ -683,11 +781,13 @@ class _HealthyRunner:
         commit: str,
         pid: int,
         systemd_overrides: dict[str, str] | None = None,
+        journal: str = "",
     ) -> None:
         self.layout = layout
         self.commit = commit
         self.pid = pid
         self.systemd_overrides = systemd_overrides or {}
+        self.journal = journal
 
     def __call__(
         self,
@@ -713,6 +813,8 @@ class _HealthyRunner:
         if argv[0] == "loginctl":
             linger = self.systemd_overrides.get("Linger", "yes")
             return subprocess.CompletedProcess(argv, 0, linger + "\n", "")
+        if argv[0] == "journalctl":
+            return subprocess.CompletedProcess(argv, 0, self.journal, "")
         if argv[0] == "git":
             if "remote" in argv:
                 return subprocess.CompletedProcess(

@@ -437,6 +437,14 @@ SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS = 0.2
 SERVER_CONTROL_STOP_TIMEOUT_SECONDS = 5.0
 SERVER_WEB_BUILD_MAX_FILES = 8192
 SERVER_WEB_BUILD_MAX_BYTES = 512 * 1024 * 1024
+# Doctor reads at most the newest entries and characters of rcp.service's journal
+# within the window. A minute-by-minute failure fills the count in five minutes;
+# a once-a-night failure stays a warning.
+SERVER_DOCTOR_LOG_WINDOW_SECONDS = 24 * 60 * 60
+SERVER_DOCTOR_LOG_MAX_ENTRIES = 20_000
+SERVER_DOCTOR_LOG_MAX_CHARS = 16 * 1024 * 1024
+SERVER_DOCTOR_RECURRING_ERROR_COUNT = 5
+SERVER_DOCTOR_LOG_MAX_SIGNATURES = 5
 
 # Online team-server backup capture. Entry and diagnostic limits fail a capture
 # visibly; they never truncate scientific history and call the result complete.

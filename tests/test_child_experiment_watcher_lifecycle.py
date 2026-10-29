@@ -13,6 +13,7 @@ from rcp.service import RunRequest
 from rcp.storage import AppStore, WatcherContinuation
 from rcp.watchers import WatcherPoller
 
+from .helpers import fake_launch_admitted
 from .test_auto_research_children_storage import (
     _auto_parent,
     _experiment_route,
@@ -86,7 +87,7 @@ def _waiting_child(tmp_path, monkeypatch, *, child_ceiling=10):
         launches.append(operation_id)
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(tasks, "launch_admitted", record_launch)
+    fake_launch_admitted(monkeypatch, tasks, record_launch)
 
     def deliver(group):
         ids = [item.watcher_id for item in group]

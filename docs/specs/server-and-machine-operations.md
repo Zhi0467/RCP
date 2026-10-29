@@ -188,6 +188,22 @@ provider output and stderr stay on the task row, never in journald, because they
 may contain secrets. [agents/launcher.py](../../src/rcp/agents/launcher.py) owns
 this boundary.
 
+### Recurring service errors
+
+On Linux, doctor reads `rcp.service`'s own journal over a recent window. It uses
+the same account and runner as its `systemctl` reads, and reads no other unit.
+It groups `ERROR` and `CRITICAL` log records by logger, exception type and the
+function of the traceback's final frame. Message text never forms the key or
+leaves doctor, because it can carry ids, paths and secrets. A signature seen
+often enough in the window is a problem with its count and first time seen.
+A rarer one is a `service_log_warnings` entry. An unreadable journal is one
+warning and never fails doctor. The desktop app has no service journal and skips
+the read. [server_ops/service_errors.py](../../src/rcp/server_ops/service_errors.py)
+owns parsing and grouping. `limits.py` owns the window, the count, the entry and
+character caps and the number of signatures shown.
+**Why:** after an update, a background failure that retried every minute
+appeared only in the journal while doctor reported healthy.
+
 ### Compute backend probe
 
 Compute probing is a service-socket operation that persists independent route
