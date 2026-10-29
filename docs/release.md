@@ -1,48 +1,11 @@
 # Build, tag, and release
 
-CI builds the RCP and independent supervisor wheels in one prerelease per
-successful merge to `main`. A human can promote that build without rebuilding
-it, and a daily workflow prunes old build prereleases. The installed supervisor
-consumes only promoted release artifacts through [the team server guide](server.md).
+This guide gives procedures for human maintainers. Release rules and recovery belong to
+[server operations](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery).
 
-## The two events
+## Find a build
 
-A **build** is automatic. A **release** is a human decision. They are separate
-so that merging often costs nothing and releasing stays deliberate.
-
-| | Build | Release |
-| --- | --- | --- |
-| Trigger | every merge to `main` | a human promotes one build |
-| Name | `build/<N>`, `<N>` is the CI run number | `vX.Y.Z` |
-| GitHub | prerelease | release; the newest one is `stable` |
-| Contents | RCP and supervisor wheels, their hashed lock exports, SHA-256 manifest | the same files, re-attached, never rebuilt |
-| Kept | fourteen days | forever |
-| Who acts | nobody | a human, never an agent |
-
-## What happens on a merge
-
-1. CI runs lint, pytest on 3.11 and 3.12, old-data upgrade, installed upgrade,
-   web checks, and a macOS web build. Publication requires all of them to pass.
-   The old-data job also fails a change that adds a storage migration unless a
-   fixture frozen at the previous schema exists.
-2. The candidate packaging job builds the wheels once on PRs and main. The app
-   version is `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
-   `src/rcp/__init__.py`. It independently builds `supervisor/` without stamping
-   its version, exports locked runtime dependencies with hashes, checks the
-   complete asset set, and writes the SHA-256 manifest.
-3. The installed upgrade matrix installs every supported stable release's
-   promoted wheels on a fresh Ubuntu runner and drives supervisor update,
-   application rollback, a complete subsequent backup, and successful retry
-   against those candidate bytes. The `old-data upgrade` check aggregates migration
-   and installed tests; discovery, packaging or journey failures fail it.
-   See the [qualification boundary](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery)
-   for the test-only artifact selection and port substitutions.
-4. On main, `build` downloads and publishes the qualified artifacts as prerelease
-   `build/<N>` without rebuilding them. A later merge never cancels an earlier
-   main run; every merge that passes CI gets its own build.
-
-Find a build under the repository's Releases page, filtered to prereleases, or
-with:
+Find a green main-branch build and check its exact commit:
 
 ```bash
 gh release list --repo Zhi0467/RCP --limit 1000 --json tagName,isPrerelease --jq '.[] | select(.tagName | startswith("build/")) | .tagName'
@@ -50,126 +13,91 @@ gh release list --repo Zhi0467/RCP --limit 1000 --json tagName,isPrerelease --jq
 
 ### If a build's publish step fails
 
-If publishing creates `build/<N>` but fails before every asset uploads, delete
-the partial release and tag, then re-run the failed job:
+After checking that the release is incomplete, delete its partial release and tag
+and re-run the failed publishing job:
 
 ```bash
 gh release delete build/<N> --cleanup-tag --yes
 ```
 
-The workflow refuses to overwrite an existing release so a partial or changed
-asset set cannot silently replace the build's original byte identity.
-
 ## Bump the version before you release
 
-`src/rcp/__init__.py` holds the **next intended** version. Promotion refuses a
-build whose base version differs from the tag you ask for, so:
-
-1. Change `__version__` to the version you intend to release. The bump may
-   ride in any pull request, including the one carrying the change.
-2. Merge it. The build that results carries that base version.
-3. Promote that build, or any later one with the same base version.
-
-## Promote a build to stable
-
-Pick the build. Confirm on GitHub that its CI run is green and that its commit
-is the one you mean. Then run the promotion workflow:
-
-```bash
-gh workflow run promote.yml --repo Zhi0467/RCP -f build=<N> -f tag=v<X.Y.Z>
-```
-
-The workflow verifies the base version, creates release `v<X.Y.Z>` pointing at
-the build's commit, and re-attaches the build's assets unchanged. If the version
-does not match the tag, or a release or Git tag with that name already exists,
-it stops with a plain message and creates nothing. After creating the release it
-confirms the tag resolves to the build's commit and removes the release again if
-it does not. The new release is now `stable`.
-
-Only a human promotes. An agent may prepare the version-bump pull request and
-may tell you which build is green; it does not run the workflow.
-
-## How servers pick it up
-
-Servers follow the newest non-prerelease release (`stable`) unless the installed
-config pins an explicit `vX.Y.Z`. `sudo rcp server update` reviews and confirms
-the exact promoted manifest, then protects current data, prepares the candidate,
-checks migration and application reads, and switches through the independent
-supervisor. `sudo rcp server supervisor update` separately updates that
-root-owned coordinator. Historical releases without the complete asset set or
-required application maintenance contract refuse; updates never fall back to
-main, a prerelease, or an intermediate source build.
-
-## Retention
-
-A scheduled workflow deletes `build/<N>` prereleases older than fourteen days
-and cleans up their tags. A build that was promoted lives on as its release;
-the prerelease entry may still be pruned. If you need to reproduce a build
-older than fourteen days, promote it before it ages out, or rebuild the commit
-locally and accept that the bytes will not be the tested ones.
-
-## Supervisor versions
-
-The independently buildable `supervisor/` uv project carries its own version in
-`supervisor/src/rcp_supervisor/__init__.py`. It imports no RCP code and currently
-has no runtime dependencies; its lock export still accompanies its wheel.
-Change this version when supervisor logic changes, independently of the RCP
-build number. Every new build carries both wheels, `requirements.lock.txt`,
-`supervisor-requirements.lock.txt`, and `manifest.sha256`. Promotion accepts a
-complete historical three-asset build but refuses a partial supervisor pair.
-The supervisor's fetch command refuses historical releases without supervisor
-assets rather than selecting another release.
-
-The [operations spec](specs/server-and-machine-operations.md#selection-and-startup-guard)
-owns startup recovery and durable selection. A wheel alone does not qualify reboot
-recovery; open qualification work belongs in a GitHub issue.
+Update `src/rcp/__init__.py` in a PR. Match the native versions in
+`web/package.json`, `web/package-lock.json`, `web/src-tauri/Cargo.toml`, and
+`web/src-tauri/Cargo.lock`.
+Merge it before selecting the build to promote. For supervisor changes, bump
+`supervisor/src/rcp_supervisor/__init__.py` independently.
 
 ## What to check before promoting
 
-- The build's CI run is green on all jobs, including the aggregate old-data upgrade check.
-- `__version__` in that build equals the tag you intend.
-- The desktop app you are about to publish works. Build it from that build
-  without publishing anything, then download and open it:
+Check that all CI jobs, including **old-data upgrade**, passed and that the
+build's base version matches the intended `vX.Y.Z` tag. Review release notes for
+operator-visible changes, prerequisites and migration time.
 
-  ```bash
-  gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
-  gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
-  ditto -x -k desktop-assets/RCP-v<X.Y.Z>-macos-arm64.zip .
-  mv RCP.app "RCP Candidate.app"
-  ```
+Build and download a desktop candidate from that build:
 
-  Keep it out of `/Applications`, which holds only the released `RCP.app`.
+```bash
+gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
+gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
+ditto -x -k desktop-assets/RCP-v<X.Y.Z>-macos-arm64.zip .
+mv RCP.app "RCP Candidate.app"
+```
 
-  Test it with a throwaway data directory; see
-  [docs/desktop.md](desktop.md#build-and-test-a-release-candidate). Then pass
-  that run to promotion with `-f desktop_candidate_run=<run-id>`, so the
-  companion release publishes the bytes you tested. Promotion checks that the
-  run is a successful candidate built from the same build. Without it,
-  promotion builds the app afresh and says so in its run summary.
-- Each team server you will update accepts the build's update preparation.
-  CI seeds its own data, so it cannot see records that only real use has
-  written. Run the build's update rehearsal before promoting. On the server,
-  as the service account:
+Keep it outside `/Applications` and follow the
+[disposable candidate checks](desktop.md#build-and-test-a-release-candidate).
+Record the successful candidate run id for promotion.
 
-  ```bash
-  D=$(mktemp -d /home/rcp/rcp-rehearsal-XXXXXX)
-  gh release download build/<N> --repo Zhi0467/RCP -D "$D" -p 'rcp-*.whl' -p requirements.lock.txt
-  umask 077; export PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR="$D/uv-cache"
-  uv venv -q "$D/venv" --python 3.12
-  uv pip install -q --python "$D/venv" -r "$D/requirements.lock.txt"
-  uv pip install -q --python "$D/venv" --no-deps "$D"/rcp-*.whl
-  "$D/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - <<EOF
-  {"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$D/out"}
-  EOF
-  rm -rf "$D"
-  ```
+Rehearse the candidate against copies of each team's data before promotion.
+Run as the server service account. The command leaves the service running:
 
-  The service keeps running. The command copies SQLite and local project roots,
-  then runs preparation and application proof on copies. A `ready` result may
-  include backup warnings naming projects omitted from proof. Review those
-  warnings. Migration, identity, path safety, and proven-project mismatches
-  still refuse. The temporary directory holds all rehearsal output.
-- The release notes, if you write any, name behavior changes an operator would
-  notice: new prerequisites, changed commands, migration time.
-- A frozen fixture for each schema change is enforced by CI's old-data job, per
-  [the persistence compatibility contract](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint).
+```bash
+RCP_REHEARSAL_DIR=$(mktemp -d /home/rcp/rcp-rehearsal-XXXXXX)
+gh release download build/<N> --repo Zhi0467/RCP -D "$RCP_REHEARSAL_DIR" -p 'rcp-*.whl' -p requirements.lock.txt
+umask 077
+export PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR="$RCP_REHEARSAL_DIR/uv-cache"
+uv venv -q "$RCP_REHEARSAL_DIR/venv" --python 3.12
+uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" -r "$RCP_REHEARSAL_DIR/requirements.lock.txt"
+uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" --no-deps "$RCP_REHEARSAL_DIR"/rcp-*.whl
+"$RCP_REHEARSAL_DIR/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - <<EOF_REHEARSAL
+{"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$RCP_REHEARSAL_DIR/out"}
+EOF_REHEARSAL
+```
+
+Inspect the result and any backup warnings, including omitted projects. Retain
+needed diagnostics before removing this exact temporary directory:
+
+```bash
+rm -rf "$RCP_REHEARSAL_DIR"
+```
+
+See [application proof](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint)
+for the qualification boundary. A green seeded CI run cannot prove real records.
+
+## Promote a build to stable
+
+Only a human runs promotion. Supply the successful candidate run to publish
+its tested bytes:
+
+```bash
+gh workflow run promote.yml --repo Zhi0467/RCP \
+  -f build=<N> -f tag=v<X.Y.Z> -f desktop_candidate_run=<run-id>
+```
+
+Omitting `desktop_candidate_run` builds the companion afresh. Check the workflow
+summary and the published release before telling operators to update.
+
+## How servers pick it up
+
+Follow [server update](server.md#update-the-server-release) and, if requested,
+the separate supervisor update command there.
+
+## Retention
+
+Promote a build you need to keep before the retention window in
+[`packaging/release_build.py`](../packaging/release_build.py) expires.
+
+## Supervisor versions
+
+Check the selected release contains both wheels, both hashed dependency lock
+exports and `manifest.sha256`. Follow [startup recovery](specs/server-and-machine-operations.md#selection-and-startup-guard)
+when checking an installed supervisor. A wheel alone does not prove reboot recovery.
