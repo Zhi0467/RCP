@@ -32,6 +32,25 @@ export function replaceTeamConnectionView(
   return updated;
 }
 
+const checkingView = (connection: TeamConnectionMetadata): TeamConnectionView => ({
+  connection,
+  state: "checking",
+  error: null,
+});
+
+// Saved rows outlive the index: the listing starts with the app, and the last
+// views are kept, so the index paints its team rows on its first frame instead
+// of growing under the projects above Runs. A failed early listing is reported
+// by the index's own listing.
+let shownViews: TeamConnectionView[] | null = null;
+if (isDesktopRuntime())
+  void listDesktopTeamConnections().then(
+    (saved) => {
+      shownViews ??= saved.map(checkingView);
+    },
+    () => {},
+  );
+
 export function createTeamReconciliationTracker() {
   let active = true;
   const attempts = new Map<string, number>();
@@ -61,20 +80,29 @@ export function TeamSpaceGroups({
   onCloseAdd: () => void;
 }) {
   const desktop = isDesktopRuntime();
-  const [connections, setConnections] = useState<TeamConnectionView[]>([]);
-  const [loading, setLoading] = useState(desktop);
+  const [connections, setConnections] = useState<TeamConnectionView[]>(() => shownViews ?? []);
+  const [loading, setLoading] = useState(desktop && shownViews === null);
   const [listError, setListError] = useState<string | null>(null);
   const reconciliation = useRef(createTeamReconciliationTracker());
 
   const updateConnection = useCallback((next: TeamConnectionView) => {
     setConnections((current) => replaceTeamConnectionView(current, next));
   }, []);
+  useEffect(() => {
+    if (desktop) shownViews = connections;
+  }, [connections, desktop]);
 
   const reconcile = useCallback(
     async (connection: TeamConnectionMetadata) => {
       const tracker = reconciliation.current;
       const attempt = tracker.begin(connection.connection_id);
-      updateConnection({ connection, state: "checking", error: null });
+      // A known-available row stays as it is while it is checked again.
+      setConnections((current) =>
+        current.find((view) => view.connection.connection_id === connection.connection_id)
+          ?.state === "available"
+          ? current
+          : replaceTeamConnectionView(current, checkingView(connection)),
+      );
       try {
         const session = await establishDesktopTeamSession(connection.connection_id);
         if (!tracker.isCurrent(connection.connection_id, attempt)) return null;
@@ -103,7 +131,14 @@ export function TeamSpaceGroups({
     void listDesktopTeamConnections()
       .then(async (saved) => {
         if (stopped) return;
-        setConnections(saved.map((connection) => ({ connection, state: "checking", error: null })));
+        setConnections((current) =>
+          saved.map((connection) => {
+            const known = current.find(
+              (view) => view.connection.connection_id === connection.connection_id,
+            );
+            return known ? { ...known, connection } : checkingView(connection);
+          }),
+        );
         await Promise.allSettled(saved.map((connection) => reconcile(connection)));
       })
       .catch((error) => {
@@ -215,8 +250,9 @@ export function TeamConnectionGroup({
             <RefreshCw size={14} aria-hidden="true" /> Reconnect
           </button>
         )}
-        {state === "available" && (
-          <button type="button" onClick={onOpenSpace}>
+        {/* Held in place while checking, so the header keeps its height. */}
+        {state !== "unavailable" && (
+          <button type="button" disabled={state === "checking"} onClick={onOpenSpace}>
             Open team space
           </button>
         )}
