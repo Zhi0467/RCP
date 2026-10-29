@@ -3660,11 +3660,6 @@ button.agent-provider-label {
   display: grid;
   gap: 8px;
 }
-.agent-board-empty {
-  color: var(--muted);
-  font-size: var(--type-2xs);
-  margin: 4px 2px;
-}
 .agent-board-drop-line {
   background: var(--cobalt);
   border-radius: 2px;
