@@ -9,6 +9,7 @@ from rcp.agents import AgentEvent, AgentLauncher
 from rcp.runs.tasks.coach import _resolved_coach_request, stream_coach
 from rcp.service import CoachRequest
 
+from .helpers import store_test_claude_token
 from .test_coach_suggestions import coach as coach
 from .test_coach_suggestions import execution_for
 
@@ -25,6 +26,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     coach, provider, model, reasoning, expected_session
 ):
     service, _live, data = coach
+    store_test_claude_token(service.paper.store)
     launches = []
 
     class Launcher:

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.config import Manifest, RepositoryConfig
 from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
@@ -364,6 +363,9 @@ class ConversationIndexer:
         """Include retained session homes even after their login was removed."""
         if self.login_store is None:
             return []
+        # rcp.agents imports rcp.transport, which imports this module.
+        from rcp.agents.provider_environment import ProviderCredentialStore
+
         credentials = ProviderCredentialStore.for_data_dir(self.login_store.path.parent)
         with self.login_store.connection() as connection:
             rows = connection.execute(
