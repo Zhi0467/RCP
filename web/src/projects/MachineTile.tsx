@@ -41,7 +41,7 @@ export function MachineTile({
         <Server size={16} />
       </span>
       <strong>
-        {name}
+        <span className="machine-tile-name">{name}</span>
         {base && <em className="machine-tile-base">Base</em>}
       </strong>
       <span className="machine-tile-host">
