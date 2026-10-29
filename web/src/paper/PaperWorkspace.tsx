@@ -131,7 +131,7 @@ export function PaperWorkspace({
     busy: coachSubmitting,
     sources: [
       transcriptSource(coachTranscript),
-      { root: previewPane, resolve: resolvePreviewSelection },
+      { root: previewPane, origin: previewPane, resolve: resolvePreviewSelection },
     ],
     message: coachMessage,
     onError: setCoachError,
@@ -168,16 +168,19 @@ export function PaperWorkspace({
     <>
       {panel[0].toUpperCase() + panel.slice(1)}
       {panel === "coach" && waiting > 0 && (
-        <span className="paper-comment-count" aria-hidden="true">
-          {waiting}
-        </span>
+        <>
+          <span className="paper-comment-count" aria-hidden="true">
+            {waiting}
+          </span>
+          <span className="visually-hidden">, {waiting} waiting</span>
+        </>
       )}
     </>
   );
   const segmentMark = (panel: "write" | "preview" | "coach") =>
     panel === "coach"
       ? {
-          className: coachError ? "paper-failure" : undefined,
+          className: coachError ? "paper-coach-segment paper-failure" : "paper-coach-segment",
           title: coachError ?? (waiting > 0 ? "Comments waiting for Coach" : undefined),
         }
       : {};

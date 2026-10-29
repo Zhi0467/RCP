@@ -342,6 +342,8 @@ test("the coach stages answer comments and files as chat does and sends them wit
     },
   });
   await coach(page);
+  const segment = page.locator(".paper-desktop-segments button", { hasText: "Coach" });
+  const width = (await segment.boundingBox()).width;
   // The picker stays editable inside an existing coach session.
   assert.equal(
     await page.locator(".paper-coach .chat-composer-tools .agent-config-chip").isDisabled(),
@@ -360,6 +362,9 @@ test("the coach stages answer comments and files as chat does and sends them wit
   // The Coach segment counts the waiting comment, so it shows while the preview is open.
   const waiting = page.locator(".paper-desktop-segments .paper-comment-count");
   assert.equal(await waiting.textContent(), "1");
+  // The count rides on the segment's corner without resizing it, and is read out.
+  assert.equal((await segment.boundingBox()).width, width);
+  assert.match(await segment.evaluate((el) => el.textContent), /1 waiting/);
   // A reload keeps the waiting comment in this tab.
   await page.reload();
   await coach(page);
@@ -429,8 +434,20 @@ test("a comment opened from the preview closes when another file is shown", asyn
   await page.mouse.down();
   await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 });
   await page.mouse.up();
+  const select = async () => {
+    await page.mouse.move(box.x + 1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.up();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+  };
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+  await comment.waitFor();
+  // Closing it returns focus to the preview it came from, not the hidden Coach.
+  await comment.press("Escape");
+  await page.waitForFunction(() => document.activeElement?.closest(".paper-right-pane"));
+  await select();
   await comment.waitFor();
   await page.locator(".paper-file", { hasText: "other.md" }).click();
   await comment.waitFor({ state: "detached", timeout: 5000 });

@@ -296,14 +296,35 @@
   }
 }
 /* Comments waiting for the coach, counted on its Paper view segment. */
+/* The count sits on the Coach segment's corner, so the segment keeps its width. */
+.segmented button.paper-coach-segment {
+  position: relative;
+}
 .paper-comment-count {
+  animation: paper-comment-count-in 0.16s ease-out;
   background: var(--cobalt);
   border-radius: 999px;
   color: var(--accent-ink);
   font: 700 10px/16px var(--ui);
   min-width: 16px;
   padding: 0 4px;
+  pointer-events: none;
+  position: absolute;
+  right: -6px;
   text-align: center;
+  top: -7px;
+  z-index: 1;
+}
+@keyframes paper-comment-count-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-comment-count {
+    animation: none;
+  }
 }
 .segmented button.paper-failure {
   box-shadow: inset 3px 0 0 var(--coral);

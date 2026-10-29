@@ -51,6 +51,8 @@ interface SelectedAnswerComment {
 /** A part of the page whose selections can be commented on. */
 export interface SelectionSource {
   root: RefObject<HTMLElement | null>;
+  /** Where focus returns once a comment from here is staged or dismissed; the message field if unset. */
+  origin?: RefObject<HTMLElement | null>;
   /** The commentable part of the selection, its quote, and where it came from; null if none. */
   resolve(
     selection: Selection,
@@ -177,6 +179,7 @@ type SelectionOffer = {
   range: Range;
   quote: string;
   where?: string;
+  origin?: HTMLElement | null;
   position: ChatAnnotationComposerPosition;
 };
 
@@ -188,9 +191,11 @@ function measureSelectionOffer(
   const selection = window.getSelection();
   if (!selection) return null;
   let match: ReturnType<SelectionSource["resolve"]> = null;
+  let origin: HTMLElement | null = null;
   for (const source of sources) {
     const root = source.root.current;
     match = root ? source.resolve(selection, root) : null;
+    origin = source.origin?.current ?? null;
     if (match) break;
   }
   if (!match) return null;
@@ -204,6 +209,7 @@ function measureSelectionOffer(
   );
   return {
     ...match,
+    origin,
     position: chatSelectionCommentPosition(
       { firstLine, bottom: range.getBoundingClientRect().bottom },
       metrics,
@@ -452,7 +458,8 @@ export function useAnswerComments({
     range,
     quote: selectedText,
     where,
-  }: Pick<SelectionOffer, "range" | "quote" | "where">) => {
+    origin,
+  }: Pick<SelectionOffer, "range" | "quote" | "where" | "origin">) => {
     if (busy) return;
     if (!selectedText) return;
     if (selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) {
@@ -476,6 +483,7 @@ export function useAnswerComments({
       anchor: { left: rect.left, right: rect.right, top: rect.top },
       position: null,
       ...(where ? { where } : {}),
+      origin,
     });
     focusComment();
   };
