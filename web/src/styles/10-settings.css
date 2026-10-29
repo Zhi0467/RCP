@@ -3583,7 +3583,9 @@ button.agent-provider-label {
 .machine-power-controls {
   padding: 16px 20px 18px;
 }
+/* The toggles sit side by side and wrap, so they borrow no list row separator. */
 .machine-power-controls .settings-repository {
+  border-bottom: 0;
   flex: 1 1 180px;
 }
 .machine-power-controls .tag {
