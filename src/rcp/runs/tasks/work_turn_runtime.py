@@ -128,6 +128,7 @@ class WorkValidatorMailboxLifecycle:
     command_handler: CommandHandler | None = None
     # The verbs this mailbox enforces, set by the owner that resolved them.
     allowed_verbs: frozenset[str] | None = None
+    lesson_actions: tuple[str, ...] | None = None
     _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def detach(self) -> None:

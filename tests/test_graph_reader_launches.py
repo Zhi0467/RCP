@@ -88,17 +88,6 @@ class _HistoryLauncher:
         assert response.result["to_head"] == (
             f"{scope.target.key}@{self.service.history.state().revision}"
         )
-        for branch in scope.branches:
-            response = await handler(
-                history_request(
-                    "graph_log",
-                    id="hyp/replanning-restores-plasticity",
-                    at=f"branch:{branch.name}@head",
-                ),
-                identity,
-            )
-            assert response.status == "ok", response
-            assert response.result["at_head"].startswith(f"branch:{branch.id}@")
         if self.kind in {"discuss", "paper_coach"}:
             response = await handler(_apply_request("forbidden"), identity)
             assert response.status == "invalid", response
@@ -132,44 +121,22 @@ def test_graph_reader_master_commands_and_committed_observation(
     if kind == "paper_coach":
         wire_saved_paper(service)
     if kind != "seed":
-        append_fixture_patch(service, seed_patch())
-    if kind != "seed":
         from .test_history_forks import fork_metadata
 
-        parent = service.history.create_branch(
+        append_fixture_patch(service, seed_patch())
+        branch = service.history.create_branch(
             fork_metadata(service.history, service.history.head_ref()).model_copy(
                 update={"project_id": service._project_id, "authorized_by": authorized_human(app)}
             )
         )
-        child = service.history.create_branch(
-            fork_metadata(service.history, parent.head_ref()).model_copy(
-                update={"project_id": service._project_id, "authorized_by": authorized_human(app)}
-            )
+        service.paper.store.create_graph_branch(
+            project_id=service._project_id,
+            branch_id=branch.branch_id,
+            owner_episode_id=None,
+            parent_head=branch.branch_metadata().effective_parent_head,
+            created_by="human:test",
+            name="vla-if",
         )
-        for branch, name in ((parent, "vla-if"), (child, "child-branch")):
-            service.paper.store.create_graph_branch(
-                project_id=service._project_id,
-                branch_id=branch.branch_id,
-                owner_episode_id=None,
-                parent_head=branch.branch_metadata().effective_parent_head,
-                created_by="human:test",
-                name=name,
-            )
-        scope = GraphReadScope.resolve(
-            service._project_id, service.history, store=service.paper.store
-        )
-        assert [item.model_dump() for item in scope.branches] == [
-            {
-                "name": "vla-if",
-                "id": parent.branch_id,
-                "parent": "main",
-            },
-            {
-                "name": "child-branch",
-                "id": child.branch_id,
-                "parent": "vla-if",
-            },
-        ]
     input_revision = service.history.state().revision
     launcher = _HistoryLauncher(service, history_handlers, kind=kind, succeed=succeed)
 

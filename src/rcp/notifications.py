@@ -34,6 +34,7 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.transition_event_reconciliation import AcceptedGraphBoundary
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed, RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
+from rcp.storage.consolidation import target_label
 
 _LOG = logging.getLogger(__name__)
 _TERMINAL = {"completed", "stopped", "failed"}
@@ -396,7 +397,7 @@ class NotificationSender:
                 reason="consolidation",
             )
             if run is not None:
-                name = self.store.branch_names(project.project_id).get(run.target, run.target[:8])
+                name = target_label(run.target, self.store.branch_names(project.project_id))
                 notification["project_name"] = f"{project.name} · {name}"
             notification["observed_blocked_reason"] = event
             self.store.observe_consolidation_notification(event, notification)

@@ -335,6 +335,23 @@ def test_branch_names_resolve_at_command_time(history_query, monkeypatch, verb):
         assert refused.result["code"] == "graph_history_query_invalid"
 
 
+def test_branch_id_takes_precedence_over_another_branch_name(history_query, monkeypatch):
+    from .test_history_forks import fork_metadata
+
+    service, scope, branch = history_query
+    other = service.history.create_branch(
+        fork_metadata(service.history, service.history.head_ref())
+    )
+    names = {branch.branch_id: "named-branch", other.branch_id: branch.branch_id}
+    monkeypatch.setattr(service.paper.store, "branch_names", lambda project: names)
+    response = handle_graph_history_command(
+        service, scope, request("graph_log", id="ev/long", at=f"branch:{branch.branch_id}@head")
+    )
+    assert response.status == "ok"
+    assert response.result["at_head"] == f"branch:{branch.branch_id}@2"
+    assert response.result["entries"]
+
+
 def test_branch_inventory_respects_fork_read_scope(history_query):
     from .test_history_forks import fork_metadata
 

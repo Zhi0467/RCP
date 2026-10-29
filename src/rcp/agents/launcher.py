@@ -1550,7 +1550,7 @@ class AgentLauncher:
         launched_at = started_at
         # The one trace of this process outside the task row. Identifiers only:
         # provider output can carry token-shaped values and never reaches the
-        # journal (docs/server.md, "Inspect and stop the service").
+        # journal (docs/specs/server-and-machine-operations.md#machine-authority-and-the-operator-surface).
         logger.info(
             "provider process started provider=%s capability=%s runtime=%s host=%s "
             "executable=%s pid=%s%s operation=%s",

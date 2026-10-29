@@ -27,14 +27,19 @@ from rcp.api.tasks import (
     start_agent_task,
 )
 from rcp.consolidation import next_occurrence
-from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import CONSOLIDATION_RECENT_NIGHTS, EVIDENCE_FLAG_ADDRESS_BATCH_MAX
 from rcp.projects import ProjectCatalog
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
 from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
 from rcp.storage.client_requests import ClientRequestConflict
-from rcp.storage.consolidation import ConsolidationRun, ConsolidationSchedule, ConsolidationTarget
+from rcp.storage.consolidation import (
+    ConsolidationRun,
+    ConsolidationSchedule,
+    ConsolidationTarget,
+    target_label,
+    target_ref,
+)
 from rcp.storage.evidence_flags import EvidenceFlagError, address_request_route
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -87,9 +92,7 @@ def item_response(run: ConsolidationRun, branch_names: dict[str, str]) -> dict:
     return {
         "run_id": run.run_id,
         "graph_target": run.graph_target.model_dump(mode="json"),
-        "graph_branch_name": "main"
-        if run.target == "main"
-        else branch_names.get(run.target, run.target[:8]),
+        "graph_branch_name": target_label(run.target, branch_names),
         "kind": run.kind,
         "occurrence_date": run.occurrence_date,
         "created_at": run.created_at,
@@ -414,11 +417,7 @@ def _address_evidence_flags(
                     target_id = flags[0]["target"]
                     if any(flag["target"] != target_id for flag in flags):
                         raise EvidenceFlagError("flag_target_mismatch")
-                    target = (
-                        GraphTargetRef()
-                        if target_id == "main"
-                        else GraphTargetRef(kind="branch", branch_id=target_id)
-                    )
+                    target = target_ref(target_id)
                     if flags[0]["state"] == "open":
                         service = get_graph_service(
                             catalog, project_id, target.branch_id, initialize=False, write=True
