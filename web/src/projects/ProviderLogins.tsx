@@ -644,9 +644,14 @@ export function SignInCard({
       act: () => setMenu("confirm-remove"),
     },
   ].filter((item): item is { id: string; label: string; act: () => void } => Boolean(item));
-  // A running sign-in or a removal has nothing else to offer until it ends.
+  // A running sign-in, token entry or a removal has nothing else to offer until it ends.
   const hasMenu =
-    actions && row.managed && state !== "draining" && state !== "signing_in" && items.length > 0;
+    actions &&
+    row.managed &&
+    !entering &&
+    state !== "draining" &&
+    state !== "signing_in" &&
+    items.length > 0;
 
   let body: ReactNode;
   if (state === "draining") {
@@ -723,6 +728,16 @@ export function SignInCard({
           >
             {busy === "token" ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}
           </button>
+          <button
+            className="icon-button compact"
+            type="button"
+            data-sign-in-action="cancel-token"
+            aria-label="Cancel"
+            title="Cancel"
+            onClick={() => onEntering(false)}
+          >
+            <X size={14} />
+          </button>
         </form>
       ) : actions && row.managed ? (
         <button
@@ -746,10 +761,11 @@ export function SignInCard({
       </span>
     );
   } else {
+    const checkedAt = row.token?.verified_at ?? row.changed_at;
     body = row.managed ? (
       <span
         className="sign-in-state"
-        title={`Signed in · checked ${formatServerTimestamp(row.token?.verified_at ?? row.changed_at)}`}
+        title={checkedAt ? `Signed in · checked ${formatServerTimestamp(checkedAt)}` : "Signed in"}
       >
         Ready
       </span>

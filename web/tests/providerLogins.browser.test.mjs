@@ -181,6 +181,10 @@ test("card actions sit behind ⋯; removing from shared confirms with the bound 
   await bo.locator(".sign-in-token").waitFor();
   await bo.locator("input").press("Escape");
   await bo.locator(".sign-in-token").waitFor({ state: "detached" });
+  // A phone has no Escape key, so the entry also has its own cancel.
+  await bo.locator('[data-sign-in-action="sign-in"]').click();
+  await bo.locator('[data-sign-in-action="cancel-token"]').click();
+  await bo.locator(".sign-in-token").waitFor({ state: "detached" });
 
   await bo.locator('[data-sign-in-action="more"]').click();
   assert.deepEqual(
@@ -346,6 +350,8 @@ test("every card state fits a phone without sideways scrolling", async (t) => {
   ]) {
     const { page, errors } = await openSignIns(t, { viewport, query: `theme=${theme}` });
     await card(page, "codex", "").locator("code").waitFor();
+    // Token entry is the widest card body.
+    await card(page, "claude", "bo").locator('[data-sign-in-action="sign-in"]').click();
     const overflow = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
       client: document.documentElement.clientWidth,
