@@ -70,7 +70,6 @@ import {
   originRunConfig,
   latestPersistedConversationMode,
   parseConversationMode,
-  providerSwitchStartsFreshSession,
   startConversationTurn,
   toggleConversationMode,
   type ConversationTurnSubmission,
@@ -647,11 +646,6 @@ export function NodeChat({
   }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const sessionId = resolvedChatSessionId(relatedTasks);
-  const freshProviderSession = providerSwitchStartsFreshSession(
-    relatedTasks,
-    sessionId,
-    config.provider,
-  );
   // A follow-up joins the running turn, so the composer shows that turn's mode.
   const steeringMode = steeringTask ? parseConversationMode(steeringTask.request.mode) : null;
   const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
@@ -2374,9 +2368,12 @@ export function NodeChat({
           {...composer.dropTarget()}
         >
           <SkillPicker {...skills.props} />
-          {freshProviderSession && (
-            <ProviderSwitchHint provider={readiness?.label || config.provider} />
-          )}
+          <ProviderSwitchHint
+            project={project}
+            config={config}
+            tasks={relatedTasks}
+            sessionId={sessionId}
+          />
           <StagedAnswerComments comments={comments} />
           <ComposerAttachmentChips composer={composer} />
           <ComposerTextarea

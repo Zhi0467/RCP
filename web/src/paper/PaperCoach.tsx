@@ -32,7 +32,6 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
-import { providerSwitchStartsFreshSession } from "../chat/chatWorkspace";
 import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import {
   ComposerAddPicker,
@@ -188,11 +187,6 @@ export function PaperCoach({
   }, [selectedSession, baseMachine]);
   const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
-  const freshProviderSession = providerSwitchStartsFreshSession(
-    sessionTasks,
-    currentSessionId,
-    config.provider,
-  );
   const transcript = reconstructTaskTranscript(sessionTasks);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
@@ -435,9 +429,12 @@ export function PaperCoach({
         {...composer.dropTarget()}
       >
         <SkillPicker {...skills.props} />
-        {freshProviderSession && (
-          <ProviderSwitchHint provider={readiness?.label || config.provider} />
-        )}
+        <ProviderSwitchHint
+          project={project}
+          config={config}
+          tasks={sessionTasks}
+          sessionId={currentSessionId}
+        />
         <StagedAnswerComments comments={comments} />
         <ComposerAttachmentChips composer={composer} />
         <textarea
