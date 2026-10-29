@@ -34,7 +34,7 @@ export function ResizeHandle({
       aria-valuemax={maximum}
       aria-valuemin={minimum}
       aria-valuenow={Math.round(width)}
-      className={className}
+      className={`resize-handle ${className}`}
       onKeyDown={(event) => {
         if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
           event.preventDefault();

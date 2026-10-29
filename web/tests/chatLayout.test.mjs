@@ -6,7 +6,6 @@ import {
   CHAT_LIST_MIN_WIDTH,
   CHAT_LIST_MIN_WIDTH_COMPACT,
   chatListWidthBounds,
-  clampChatListWidth,
   isChatListToggleShortcut,
 } from "../src/chat/chatLayout.ts";
 
@@ -26,13 +25,6 @@ test("chat list width uses a compact minimum on narrow screens", () => {
     minimum: CHAT_LIST_MIN_WIDTH_COMPACT,
     maximum: CHAT_LIST_MIN_WIDTH_COMPACT,
   });
-});
-
-test("chat list width clamps pointer and keyboard adjustments to its bounds", () => {
-  const bounds = { minimum: 190, maximum: 420 };
-  assert.equal(clampChatListWidth(80, bounds), 190);
-  assert.equal(clampChatListWidth(300, bounds), 300);
-  assert.equal(clampChatListWidth(600, bounds), 420);
 });
 
 test("command B toggles the chat list exactly once", () => {

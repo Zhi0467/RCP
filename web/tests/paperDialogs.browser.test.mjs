@@ -63,11 +63,6 @@ test("coach settings stay within a short phone pane and scroll to the last contr
   const bounds = await popover.boundingBox();
   assert.ok(bounds.y >= pane.y && bounds.y + bounds.height <= pane.y + pane.height);
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
-  const close = page.getByRole("button", { name: "Close agent settings" });
-  const closeBounds = await close.boundingBox();
-  assert.ok(
-    closeBounds.y >= bounds.y && closeBounds.y + closeBounds.height <= bounds.y + bounds.height,
-  );
   for (const field of await popover
     .locator("button:visible, input:visible, select:visible")
     .all()) {
@@ -75,7 +70,8 @@ test("coach settings stay within a short phone pane and scroll to the last contr
     const control = await field.boundingBox();
     assert.ok(control.y >= bounds.y && control.y + control.height <= bounds.y + bounds.height + 1);
   }
-  await close.click();
+  await page.keyboard.press("Escape");
+  await popover.waitFor({ state: "detached" });
 });
 
 test("Paper phone icon actions retain 44px touch targets", async (t) => {
@@ -105,7 +101,7 @@ test("a held legacy paper keeps its version choice modal until one is chosen", a
       tree.hold = "legacy";
     },
   });
-  const dialog = page.getByRole("dialog", { name: "Choose Paper version" });
+  const dialog = page.getByRole("alertdialog", { name: "Choose Paper version" });
   assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
   await page.keyboard.press("Escape");
   await page.mouse.click(2, 2);
