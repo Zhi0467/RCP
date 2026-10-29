@@ -284,7 +284,14 @@ function ProviderPanel({
       if (!added.sign_in && methods.includes("token_entry")) setEntering(added.login_id);
       await onChanged();
     } catch (cause) {
-      setFailure({ message: errorMessage(cause), retry: () => void add(tray) });
+      // The login may exist even though its sign-in did not start; show it so
+      // its own card offers Sign in, instead of adding another one.
+      const reload = () => {
+        setFailure(null);
+        void onChanged();
+      };
+      setFailure({ message: errorMessage(cause), retry: reload });
+      void onChanged();
     } finally {
       setAdding(null);
     }

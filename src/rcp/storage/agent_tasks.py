@@ -153,6 +153,11 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "graph_pass_baseline",
     "question_answer_offered",
     "question_answer_acknowledged",
+    # Login binding evidence: a Codex session resumes only in its login's home,
+    # and a limit retry or inherited lineage must survive a restart.
+    "provider_runtime_selected",
+    "provider_login_lineage",
+    "provider_login_limit_retry",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES

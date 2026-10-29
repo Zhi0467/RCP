@@ -321,3 +321,13 @@ def test_limited_shared_session_moves_to_free_shared_login(accounts):
     assert accounts.resolve_login(
         "claude", "", "member", previous_login=previous, previous_authorized_by="member"
     ) == (alternative, "limited")
+
+
+def test_codex_binding_survives_receipt_retention(accounts):
+    from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+
+    key = _login(accounts, "codex")
+    _task(accounts.store, "bound", key, started=accounts.store.now())
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 5):
+        accounts.store.record_agent_task_receipt("bound", f"summary-{index}", {}, tier="summary")
+    assert accounts.bound_login("codex", "", "session") == key
