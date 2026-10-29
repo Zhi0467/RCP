@@ -606,10 +606,10 @@ export function SignInCard({
   const shown = { ...row, sign_in: signIn };
   const state = cardState(shown);
   const disabled = writesDisabled || busy !== null;
-  // A failed device sign-in is the card's failure too.
+  // A failed device sign-in is the card's failure too, until the login signs in.
   const failed =
     failure ??
-    (signIn?.state === "failed" && starter
+    (signIn?.state === "failed" && starter && row.state !== "signed_in"
       ? {
           message: signIn.detail ?? "",
           retry: () => {
