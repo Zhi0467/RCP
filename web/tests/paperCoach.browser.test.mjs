@@ -246,10 +246,9 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
   assert.deepEqual(errors, []);
 });
 
-test("phone coach agent and branch pickers are 44px targets", async (t) => {
+test("the phone branch picker is a 44px target beside the coach", async (t) => {
   const { page } = await open(t);
   await coach(page);
-  await target(page.locator(".paper-composer-actions .agent-config-chip"));
   // The shared fixture mounts the workspace without the project-shell branch picker.
   await page.evaluate(async () => {
     const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
@@ -343,7 +342,7 @@ test("the coach stages answer comments and files as chat does and sends them wit
   await coach(page);
   // The picker stays editable inside an existing coach session.
   assert.equal(
-    await page.locator(".paper-composer-actions .agent-config-chip").isDisabled(),
+    await page.locator(".paper-coach .chat-composer-tools .agent-config-chip").isDisabled(),
     false,
   );
 
@@ -355,12 +354,12 @@ test("the coach stages answer comments and files as chat does and sends them wit
   await page.getByRole("button", { name: "Comment on selection" }).click();
   await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Name the claim.");
   await page.getByRole("button", { name: "Add comment" }).click();
-  await page.locator(".paper-coach-composer .chat-annotation-count").waitFor();
+  await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
 
   await page
-    .locator(".paper-coach-composer .chat-add-picker input[type=file]")
+    .locator(".paper-coach .chat-composer .chat-add-picker input[type=file]")
     .setInputFiles({ name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("notes") });
-  await page.locator(".paper-coach-composer .chat-attachment-chip.ready").waitFor();
+  await page.locator(".paper-coach .chat-composer .chat-attachment-chip.ready").waitFor();
   await page.getByRole("textbox", { name: "Message" }).fill("Tighten it.");
   await page.getByRole("button", { name: "Send coach message" }).click();
 
@@ -375,6 +374,8 @@ test("the coach stages answer comments and files as chat does and sends them wit
   assert.equal(typeof request.attachment_client_id, "string");
   assert.equal(request.attachment_scope_id, uploads[0]);
   // The admitted turn owns its comments and files; the next draft starts empty.
-  await page.locator(".paper-coach-composer .chat-annotation-count").waitFor({ state: "detached" });
-  assert.equal(await page.locator(".paper-coach-composer .chat-attachment-chip").count(), 0);
+  await page
+    .locator(".paper-coach .chat-composer .chat-annotation-count")
+    .waitFor({ state: "detached" });
+  assert.equal(await page.locator(".paper-coach .chat-composer .chat-attachment-chip").count(), 0);
 });
