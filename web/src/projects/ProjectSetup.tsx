@@ -208,7 +208,6 @@ function PersonalProjectSetup({
       location: "local",
       path: "",
       host: "",
-      default_read: true,
     },
   ]);
   const [stateRepository, setStateRepository] = useState("research");
@@ -258,7 +257,6 @@ function PersonalProjectSetup({
   }, []);
 
   const stateRepo = repositories.find((repo) => repo.alias === stateRepository) ?? repositories[0];
-  const defaultRead = repositories.filter((repo) => repo.default_read);
   const canonicalExecution = {
     location: stateRepo.location,
     host: stateRepo.location === "ssh" ? stateRepo.host.trim() : "",
@@ -311,9 +309,6 @@ function PersonalProjectSetup({
       return "Every repository needs an absolute path.";
     if (repositories.some((repo) => repo.location === "ssh" && !repo.host.trim())) {
       return "Every SSH repository needs a host.";
-    }
-    if (!repositories.some((repo) => repo.default_read)) {
-      return "Select at least one repository for default agent reads.";
     }
     if (!aliases.includes(stateRepository)) return "Choose a canonical state repository.";
     if (targetStep < 2) return null;
@@ -409,7 +404,6 @@ function PersonalProjectSetup({
         location: "local",
         path: "",
         host: "",
-        default_read: true,
       },
     ]);
   };
@@ -802,15 +796,6 @@ function PersonalProjectSetup({
           />
           <LedgerItem
             number="C"
-            label="Raw prompt inputs"
-            value={
-              defaultRead.length
-                ? defaultRead.map((repo) => repo.alias || "unnamed").join(", ")
-                : "None selected"
-            }
-          />
-          <LedgerItem
-            number="D"
             label="Agent roles"
             value={agentExecutionProfiles
               .map(({ id, label }) => `${label}: ${agents[id].provider}`)
@@ -1267,14 +1252,6 @@ export function RepositoryEditor({
         </div>
       </div>
       <footer>
-        <label className="check-control">
-          <input
-            type="checkbox"
-            checked={repository.default_read}
-            onChange={(event) => onChange({ default_read: event.target.checked })}
-          />
-          <strong>Default raw input</strong>
-        </label>
         <label className="radio-control">
           <input
             type="radio"

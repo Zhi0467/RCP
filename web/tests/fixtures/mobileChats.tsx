@@ -116,7 +116,6 @@ function Fixture() {
               "The agreed layout of every trajectory bundle: compressed rollouts, token ids, labels, and the JSON metadata that names them.",
           },
         } as never)}
-        runScope={[]}
         tasks={[]}
         watchers={[]}
         graphChangesDisabled={false}

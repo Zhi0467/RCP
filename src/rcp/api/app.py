@@ -28,6 +28,7 @@ from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
 from rcp.agents.git_access import provider_git_access
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
@@ -855,8 +856,7 @@ def create_app(
                 execution,
                 patch_text,
                 run_truth_scope=list(
-                    context.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope
+                    context.request.run_truth_scope or write_repositories(service.history.state())
                 ),
                 profile="orchestrator",
                 source_operation_id=context.task.operation_id,
@@ -2709,7 +2709,7 @@ def _auto_research_worker_request(
         reasoning=arguments.reasoning,
         kind="project_chat" if arguments.project else "node_chat",
     )
-    return _resolved_graph_request(
+    resolved = _resolved_graph_request(
         service,
         "project_chat" if arguments.project else "node_chat",
         RunRequest(
@@ -2725,6 +2725,12 @@ def _auto_research_worker_request(
             reasoning=reasoning,
         ),
     )
+    # A worker writes no more than the orchestrator was authorized to write.
+    if _context.request.run_truth_scope:
+        resolved = resolved.model_copy(
+            update={"run_truth_scope": list(_context.request.run_truth_scope)}
+        )
+    return resolved
 
 
 def default_data_dir() -> Path:

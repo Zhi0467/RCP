@@ -648,7 +648,6 @@ def validate_proposal(
     project_truth_scope: Iterable[str],
     repository_aliases: Iterable[str],
     machine_aliases: Iterable[str] | None,
-    default_run_truth_scope: Iterable[str],
     state_repository: str | None,
     validation_mode: Literal["admission", "replay"] = "replay",
     include_card_flags: bool = False,
@@ -720,7 +719,6 @@ def validate_proposal(
         project_truth_scope=project_truth_scope,
         repository_aliases=repository_aliases,
         machine_aliases=machine_aliases,
-        default_run_truth_scope=default_run_truth_scope,
         state_repository=state_repository,
         validation_mode=validation_mode,
         context_patch=context_patch,
@@ -1164,7 +1162,6 @@ def _validate_proposal_ops(
     project_truth_scope: Iterable[str],
     repository_aliases: Iterable[str],
     machine_aliases: Iterable[str] | None,
-    default_run_truth_scope: Iterable[str],
     state_repository: str | None,
     validation_mode: Literal["admission", "replay"],
     context_patch: Patch | None,
@@ -1173,6 +1170,8 @@ def _validate_proposal_ops(
     # Imported lazily because the operation registry reaches this module.
     from rcp.core.validation.context import OpContext
     from rcp.core.validation.patch import _validate_operations
+
+    readable = set(repository_aliases)
 
     if validation_mode == "admission" and context_patch is not None:
         for operation in proposal.ops:
@@ -1185,6 +1184,7 @@ def _validate_proposal_ops(
                         context_patch,
                         report,
                         writer=writer,
+                        repositories=readable,
                     )
 
     synthetic_state = state.model_copy(
@@ -1213,9 +1213,8 @@ def _validate_proposal_ops(
         report=replay_report,
         revision=revision,
         project_truth_scope=set(project_truth_scope),
-        repositories=set(repository_aliases),
+        repositories=readable,
         machines=set(machine_aliases) if machine_aliases is not None else None,
-        default_run_truth_scope=set(default_run_truth_scope),
         state_repository=state_repository,
         mode=validation_mode,
         reference_patch=context_patch,

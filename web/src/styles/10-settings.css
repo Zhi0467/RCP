@@ -550,17 +550,6 @@
   margin-bottom: 8px;
   text-transform: uppercase;
 }
-.run-dialog .scope-trigger {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  min-height: 48px;
-  padding: 7px 11px;
-}
-.run-dialog .scope-popover {
-  left: 0;
-  right: auto;
-}
 .run-history-degraded {
   color: var(--walnut);
   display: block;
@@ -753,6 +742,18 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-config-options .browser-consent {
   font-size: var(--type-xs);
 }
+/* The code worktree's repository choice stays on its checkbox's line. */
+.agent-config-options .code-worktree-choice {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  min-width: 0;
+}
+.agent-config-options .code-worktree-choice select {
+  font-size: var(--type-xs);
+  min-width: 0;
+  width: auto;
+}
 .agent-config-options input[type="checkbox"] {
   flex: none;
   margin: 0;
@@ -865,9 +866,9 @@ button.agent-provider-label {
 .chat-header-menu-list {
   min-width: 200px;
 }
-/* The branch and repository pickers open from ordinary rows of this menu: its
+/* The branch picker opens from an ordinary row of this menu: its
    type and hover, the current value muted, and a trailing chevron. */
-.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
+.chat-header-menu-list .branch-picker-trigger {
   align-items: center;
   display: flex;
   font-weight: inherit;
@@ -875,40 +876,11 @@ button.agent-provider-label {
   min-width: 0;
   width: 100%;
 }
-.chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) > svg:last-child {
+.chat-header-menu-list .branch-picker-trigger > svg:last-child {
   color: var(--muted);
   height: 13px;
   margin-left: auto;
   width: 13px;
-}
-.chat-scope-control {
-  border-top: 1px solid var(--line);
-  margin-top: 4px;
-  padding-top: 4px;
-}
-.chat-scope-control .scope-trigger > span {
-  display: flex;
-  flex: 1;
-  gap: 12px;
-  justify-content: space-between;
-  min-width: 0;
-}
-.chat-scope-control .scope-trigger .eyebrow {
-  color: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  letter-spacing: normal;
-  text-transform: none;
-  white-space: nowrap;
-}
-.chat-scope-control .scope-trigger strong {
-  color: var(--muted);
-  font-size: inherit;
-  font-weight: inherit;
-  margin-top: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .agent-role-stack {
@@ -4012,7 +3984,13 @@ button.agent-provider-label {
 .repository-requests {
   display: grid;
   gap: 12px;
-  margin-top: 16px;
+  margin: 16px 20px 20px;
+}
+.repository-requests .setup-actions {
+  background: none;
+  border: 0;
+  min-height: 0;
+  padding: 0;
 }
 
 .repository-requests fieldset {

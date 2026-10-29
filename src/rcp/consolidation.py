@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
+from rcp.agents.project_repositories import write_repositories
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
@@ -242,7 +243,7 @@ class ConsolidationPoller:
             model=profile.model,
             reasoning=profile.reasoning,
             run_on=profile.run_on,
-            run_truth_scope=list(service.manifest.project.truth_scope),
+            run_truth_scope=write_repositories(service.history.state()),
             chat_scope="project",
             chat_id=consolidation_chat_id(schedule.project_id, graph_target.branch_id or "main"),
             session_id=None,

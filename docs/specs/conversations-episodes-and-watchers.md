@@ -228,8 +228,8 @@ A generic `watcher_wake` is a new logical turn, clears handoffs and uses the wak
 prompt node. Experiment and child wakes keep their own policies. Shared master
 restoration, deltas and replacement are owned by
 [continuation prompts](providers-and-containment.md#continuation-prompts).
-The chat master supplies graph target/head, focus, run-scope repositories, selected
-packages and non-secret compute metadata. Separate Discuss/Work contracts grant
+The chat master supplies graph target/head, focus, every project repository with
+the turn's writable set, selected packages and non-secret compute metadata. Separate Discuss/Work contracts grant
 only the mode named on each turn. Resumes include the unchanged human message,
 logical turn id, artifact directory and changed values. Baselines commit only
 after mechanical success and bind provider, host, session, project, target,
@@ -248,8 +248,9 @@ Auto-research child route.
 ## Conversation worktrees
 
 Before a conversation has a Work turn, its composer may select **Work in a
-worktree**. The first ticked Work turn binds exactly one run-scope repository on
-the execution machine. RCP persists an immutable binding before creation:
+worktree**, choosing one writable repository on the execution machine when more
+than one qualifies. The first ticked Work turn binds that repository; every later
+turn of the chat writes only it, while still reading every project repository. RCP persists an immutable binding before creation:
 project/chat/focus, repository alias, machine and execution host, canonical shared
 and worktree paths, Git common metadata directory, real worktree and starting
 branch names, and starting commit.
@@ -420,8 +421,8 @@ state is separate. Children, Add N turns and human Experiments on its branch use
 `isolation_owner_episode_id`, never a second binding, and must match its host.
 Truth membership is unchanged.
 
-Code isolation requires one run-scope repository and Git 2.38+ on the execution
-host. A grant covering the shared checkout makes it ineligible. Every launch
+Code isolation requires one writable repository on the run machine, named by the
+launch, and Git 2.38+ on the execution host. A grant covering the shared checkout makes it ineligible. Every launch
 rechecks grants and binding; Work/orchestration write the worktree, not the shared
 checkout. Resume, Retry and restart retain it; missing/moved worktrees fail.
 

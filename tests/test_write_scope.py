@@ -56,6 +56,7 @@ def _resolve_local(
     app_data_dir: Path | None = None,
     repository_inventory: list[RegisteredRepositoryRoot] | None = None,
     machine_writable_paths: list[str] | None = None,
+    truth_scope: list[str] | None = None,
 ):
     selected = aliases or ["repo-a"]
     stage = stage_root or tmp_path / "stage"
@@ -64,6 +65,7 @@ def _resolve_local(
     workspace.mkdir(parents=True, exist_ok=True)
     return resolve_project_write_scope(
         manifest=manifest,
+        truth_scope=manifest.project.truth_scope if truth_scope is None else truth_scope,
         project_id=project_id,
         execution_machine="laptop",
         capability="work_auto",
@@ -161,6 +163,7 @@ def test_a_scope_without_repositories_gets_no_grants(manifest: Manifest, tmp_pat
     (stage / "workspace").mkdir(parents=True)
     scope = resolve_project_write_scope(
         manifest=manifest,
+        truth_scope=manifest.project.truth_scope,
         project_id="project",
         execution_machine="laptop",
         capability="orchestrate",
@@ -853,6 +856,7 @@ def _resolve_remote(
 ):
     return resolve_project_write_scope(
         manifest=manifest,
+        truth_scope=manifest.project.truth_scope,
         project_id="project",
         execution_machine="laptop",
         capability="orchestrate",
@@ -921,6 +925,7 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
 
     scope = resolve_project_write_scope(
         manifest=remote,
+        truth_scope=remote.project.truth_scope,
         project_id="project",
         execution_machine="laptop",
         capability="work_auto",

@@ -135,7 +135,6 @@ def _validate_patch(
         project_truth_scope=scope,
         repositories=set(context.repository_aliases or scope),
         machines=set(context.machine_aliases) if context.machine_aliases is not None else None,
-        default_run_truth_scope=set(context.default_run_truth_scope or ()),
         state_repository=context.state_repository,
         mode=context.mode,
         experiment_control_node_id=control_node_id,
@@ -581,11 +580,12 @@ def _validate_declared_scope(ctx: OpContext) -> None:
             f"Run scope contains repositories outside project truth scope: {sorted(outside)}.",
             ctx.revision,
         )
-    read_outside = set(patch.repositories_read) - run_scope
+    # Every agent reads every project repository; only writes follow the truth scope.
+    read_outside = set(patch.repositories_read) - ctx.repositories
     if read_outside:
         ctx.report.reject(
             "read-outside-run-scope",
-            f"Patch read repositories outside its run scope: {sorted(read_outside)}.",
+            f"Patch read repositories outside this project: {sorted(read_outside)}.",
             ctx.revision,
         )
 

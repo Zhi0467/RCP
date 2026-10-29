@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rcp.agents.context import ChatContext
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.write_scope import (
     _ExecutionPathSemantics,
     _reject_broad_repository_root,
@@ -122,18 +123,11 @@ def _chat_busy(store: AppStore, project_id: str, chat_id: str) -> bool:
 
 
 def _repository(service: ProjectService, request: RunRequest):
-    aliases = (
-        request.run_truth_scope
-        if request.run_truth_scope is not None
-        else service.manifest.agent.default_run_truth_scope
-    )
+    aliases = request.run_truth_scope or []
     if len(aliases) != 1:
         raise ValueError("Work in a worktree requires exactly one repository in the run scope.")
     alias = aliases[0]
-    truth_scope = (
-        service.history.state().project_truth_scope or service.manifest.project.truth_scope
-    )
-    if alias not in truth_scope:
+    if alias not in write_repositories(service.history.state()):
         raise ValueError("The worktree repository is outside this project's truth scope.")
     repository = service.manifest.repository_map[alias]
     if repository.machine != request.run_on:
@@ -351,6 +345,11 @@ def admit_conversation_worktree(
         if request.worktree_integration:
             raise ValueError("Integration requires a bound conversation worktree.")
         return request
+    if request.worktree and request.run_truth_scope != [binding.repository_alias]:
+        raise ValueError("This conversation's worktree is bound to another repository.")
+    # A bound chat writes only its worktree's repository.
+    request = request.model_copy(update={"run_truth_scope": [binding.repository_alias]})
+    assert request.chat_id is not None
     validate_worktree_binding(service, request, binding, store)
     facts = None
     if binding.status == "creating":
@@ -579,7 +578,13 @@ def project_conversation_worktree(
             )
             response.can_choose = True
             return response
-        validate_worktree_binding(service, request, binding, store)
+        # A bound chat's repository is its binding's, whatever the page last picked.
+        validate_worktree_binding(
+            service,
+            request.model_copy(update={"run_truth_scope": [binding.repository_alias]}),
+            binding,
+            store,
+        )
         if binding.status != "ready":
             raise ValueError("Worktree creation is unfinished. Send the first Work turn again.")
         facts = worktree_command(

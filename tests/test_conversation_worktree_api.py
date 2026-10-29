@@ -55,7 +55,7 @@ class _ChatLauncher:
             assert str(root) in inputs
         if request.message == "edit notes":
             assert scope is not None
-            assert scope.repository_roots == [str(root)]
+            assert str(root) in scope.repository_roots
             (root / "notes.txt").write_text(f"edit in {request.chat_id}\n")
         self.launches.append(
             {
@@ -153,9 +153,10 @@ def harness(manifest, tmp_path):
 
 def test_chooser_requires_one_repository_and_first_work_turn(harness):
     chat = str(uuid.uuid4())
-    response = harness.controls(chat)
+    response = harness.controls(chat, run_truth_scope=["repo-a"])
     assert response.status_code == 200
     assert response.json()["can_choose"]
+    assert not harness.controls(chat).json()["can_choose"]
     multiple = harness.controls(chat, run_truth_scope=["repo-a", "repo-b"]).json()
     assert multiple["show_chooser"] and not multiple["can_choose"]
     assert "exactly one repository" in multiple["unavailable_reason"]
@@ -185,7 +186,11 @@ def test_http_binding_discuss_restart_and_other_chat_keep_exact_roots(harness):
     other = str(uuid.uuid4())
     harness.turn(other, message="edit notes")
     assert harness.store.conversation_worktree(harness.project_id, other) is None
-    assert harness.launcher.launches[-1]["scope"].repository_roots == [str(harness.repository)]
+    # An unbound chat writes every repository the project's agents can write.
+    assert set(harness.launcher.launches[-1]["scope"].repository_roots) == {
+        str(harness.repository),
+        harness.manifest.repository_map["repo-b"].path,
+    }
     assert (worktree / "notes.txt").read_text() == f"edit in {chat}\n"
     restarted = _Harness(harness.manifest, harness.data_dir)
     try:

@@ -89,7 +89,6 @@ interface Props {
   nodes: Record<string, GraphNode>;
   graphTarget: GraphTargetRef;
   glossaryIndex: GlossaryIndex;
-  runScope: string[];
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
@@ -383,7 +382,6 @@ export function ChatsWorkspace({
   nodes,
   graphTarget,
   glossaryIndex,
-  runScope,
   tasks,
   watchers,
   graphChangesDisabled,
@@ -1190,7 +1188,6 @@ export function ChatsWorkspace({
             headerActions={headerActions}
             headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
-            runScope={runScope}
             tasks={selectedOrchestratorTurns?.tasks ?? []}
             historyMessages={selectedOrchestratorTurns?.history}
             watchers={orchestratorWatchers}
@@ -1239,7 +1236,6 @@ export function ChatsWorkspace({
             headerActions={headerActions}
             headerMenuItems={headerMenuItems}
             headerState={selectedStatus?.state}
-            runScope={runScope}
             tasks={tasks}
             watchers={watchers}
             historyMessages={chatTranscripts.get(selected.chatId)?.messages}

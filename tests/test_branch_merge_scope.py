@@ -223,12 +223,13 @@ def test_merge_provenance_uses_current_project_membership(sourced_branch, remove
         assert harness.service.history.head_ref() == before
     assert harness.branch.merge_receipts() == []
 
+    # A run that writes only repo-a may still cite any project repository it read.
     report = validate_patch(
         harness.branch.base_state(),
         branch_patch.model_copy(update={"run_truth_scope": ["repo-a"]}),
         ValidationContext(["repo-a", "repo-b"]),
     )
-    assert "source-outside-run-scope" in {message.code for message in report.messages}
+    assert "source-outside-run-scope" not in {message.code for message in report.messages}
 
 
 @pytest.mark.parametrize("sourced_branch", ["node", "proposal"], indirect=True)

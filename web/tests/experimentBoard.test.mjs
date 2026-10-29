@@ -1186,7 +1186,6 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
         graphTarget: { kind: "branch", branch_id: "parent-episode" },
         node: branchNode,
         nodes: { [branchNode.id]: branchNode },
-        runScope: ["repo"],
         tasks: [],
         historyMessages: [
           {
@@ -1247,7 +1246,7 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
     assert.doesNotMatch(html, /aria-keyshortcuts/);
     assert.doesNotMatch(html, /type="file"/);
     assert.doesNotMatch(html, /chat-add-file/);
-    assert.doesNotMatch(html, /chat-new-session|scope-trigger/);
+    assert.doesNotMatch(html, /chat-new-session/);
     assert.match(html, /<button type="button" disabled="">/);
   });
 });
@@ -1267,7 +1266,6 @@ test("a branch chat uses its explicit target before it has any tasks", () => {
     },
     graphTarget,
     node: experiment,
-    runScope: [],
     tasks: [],
     chatId: "branch-chat",
     readOnly: true,

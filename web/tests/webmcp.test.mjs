@@ -1292,7 +1292,6 @@ test("conversation inspection returns bounded transcript, latest result, and cur
   assert.equal(inspected.send_options.workflows_truncated, false);
   assert.equal(inspected.send_options.skills_total, 1);
   assert.equal(inspected.send_options.skills_truncated, false);
-  assert.equal(inspected.send_options.run_truth_scope_truncated, false);
 });
 
 test("conversation inspection stays within its result budget at every declared list bound", async () => {
@@ -1618,7 +1617,6 @@ test("conversation Send resumes the exact saved route and returns after durable 
     {
       kind: "node_chat",
       config: { provider: "codex", model: "", reasoning: "high", run_on: "local" },
-      runTruthScope: ["plasticity"],
       nodeId: "hyp-1",
       message: "Compare the next replicate.",
       chatId: "chat-1",

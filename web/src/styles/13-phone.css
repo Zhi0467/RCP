@@ -131,7 +131,7 @@
   .agent-list-filters button,
   .agent-status-chip,
   .chat-header-menu-list > button,
-  .chat-header-menu-list :is(.branch-picker-trigger, .scope-trigger) {
+  .chat-header-menu-list .branch-picker-trigger {
     height: auto;
     min-height: 44px;
   }

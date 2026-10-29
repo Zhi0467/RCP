@@ -259,7 +259,10 @@ Missing hiding support never blocks launch: Settings/doctor show the reason,
 prompts state the effective scope, and no per-turn badge or trace is added.
 
 RCP derives `ProjectWriteScope` from manifests, catalog, repository pointers,
-lineage and run scope, never from client/provider requests. It binds project,
+lineage and the admitted write set, never from client/provider requests. The
+admitted aliases must lie inside the graph's truth scope at launch, so a
+repository a human unticked after admission is no longer a write root; every
+other project repository stays readable context only. It binds project,
 execution host/account, capability, exact stage/workspace, admitted aliases and
 canonical roots, protected paths and a stable fingerprint. Prompts render it.
 

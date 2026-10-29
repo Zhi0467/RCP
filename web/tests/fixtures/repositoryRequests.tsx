@@ -16,10 +16,12 @@ function render() {
     ) : (
       <RepositoryRequests
         project={project}
+        spaceKind="team"
         baseMachineId="base"
         disabled={false}
         connectAlias={location.search === "?connect" ? "state" : null}
         onCloseConnect={() => {}}
+        onAdded={() => {}}
       />
     ),
   );

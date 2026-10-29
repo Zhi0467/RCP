@@ -17,7 +17,6 @@ def test_contract_names_direct_provider_roots_and_project_watermark(manifest) ->
 
     context = assembler.assemble(
         state,
-        run_truth_scope=["repo-a"],
         source_roots=roots,
         source_errors=["codex root is unavailable"],
     )

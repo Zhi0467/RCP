@@ -124,7 +124,6 @@ test("transcript sources preserve node branch and outgoing requests carry only s
     config: {},
     message: "inspect",
     kind: "project_chat",
-    runTruthScope: [],
     nodeId: null,
     chatId: "c",
     sessionId: null,

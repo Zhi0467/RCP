@@ -129,7 +129,6 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
 /** The staged edits for this project, or the manifest's values when none exist. */
 function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
   const saved = {
-    scope: project.default_run_truth_scope,
     autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
     profiles: profilesFrom(project),
     skillDefaults: skillDefaultsFrom(project),
@@ -145,7 +144,6 @@ function stagedOrSaved(project: ProjectSnapshot, actorId: string | null) {
   // Merge over the manifest's profiles so a surface added since the draft was
   // written is still present.
   return {
-    scope: staged.scope,
     autoResearchInvocationCeiling:
       staged.autoResearchInvocationCeiling ?? saved.autoResearchInvocationCeiling,
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
@@ -178,7 +176,6 @@ export function ProjectSettings({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- restore once per project; a snapshot refresh must not reset the form
   const restoredSettings = useMemo(() => stagedOrSaved(project, actorId), [project.id]);
   const [connectAlias, setConnectAlias] = useState<string | null>(null);
-  const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
     () => restoredSettings.autoResearchInvocationCeiling,
   );
@@ -196,6 +193,7 @@ export function ProjectSettings({
   );
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
+  const [writableSaving, setWritableSaving] = useState<string | null>(null);
   const [clearingCaches, setClearingCaches] = useState(false);
   const spaceMachines = useSpaceMachines();
   // A settings watermark move (another tab's card edit, a route check) brings a
@@ -226,11 +224,11 @@ export function ProjectSettings({
   // — a finished background run, a cache clear — handed down a new object
   // carrying byte-identical settings.
   useEffect(() => {
-    setScope(restoredSettings.scope);
     setAutoResearchInvocationCeiling(restoredSettings.autoResearchInvocationCeiling);
     setProfiles(restoredSettings.profiles);
     setSkillDefaults(restoredSettings.skillDefaults);
     setSaving(false);
+    setWritableSaving(null);
     setClearingCaches(false);
     setInspectedPackage(null);
     setStatus(null);
@@ -248,7 +246,6 @@ export function ProjectSettings({
   const baseline = useMemo(
     () =>
       settingsFingerprint({
-        scope: project.default_run_truth_scope,
         autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
         skillDefaults: skillDefaultsFrom(project),
@@ -256,7 +253,6 @@ export function ProjectSettings({
     [project],
   );
   const current = settingsFingerprint({
-    scope,
     autoResearchInvocationCeiling,
     profiles,
     skillDefaults,
@@ -275,7 +271,6 @@ export function ProjectSettings({
           key,
           serializeSettingsDraft({
             version: 4,
-            scope,
             autoResearchInvocationCeiling,
             profiles,
             skillDefaults,
@@ -309,16 +304,24 @@ export function ProjectSettings({
   const workflowCatalog = skillCatalog.filter((entry) => entry.kind === "workflow");
   const directSkillCatalog = skillCatalog.filter((entry) => entry.kind === "skill");
 
-  const toggleRepository = (alias: string) => {
+  // Agents can write: a human approval, applied at once rather than staged for Save.
+  const setRepositoryWritable = async (alias: string, writable: boolean) => {
+    if (writesDisabled || writableSaving) return;
+    setWritableSaving(alias);
     setStatus(null);
-    setScope((currentScope) => {
-      if (!currentScope.includes(alias)) return [...currentScope, alias];
-      if (currentScope.length === 1) {
-        setStatus({ kind: "error", text: "Keep at least one repository in the default read set." });
-        return currentScope;
-      }
-      return currentScope.filter((item) => item !== alias);
-    });
+    try {
+      const saved = await api<ProjectSnapshot>(
+        `${apiBase}/repositories/${encodeURIComponent(alias)}/writable`,
+        { method: "PUT", body: JSON.stringify({ writable }) },
+      );
+      if (!requestIsCurrent()) return;
+      onSaved(saved);
+    } catch (caught) {
+      if (!requestIsCurrent()) return;
+      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
+    } finally {
+      if (requestIsCurrent()) setWritableSaving(null);
+    }
   };
 
   const toggleSkillDefault = (entry: SkillCatalogEntry) => {
@@ -374,7 +377,6 @@ export function ProjectSettings({
   );
 
   const reset = () => {
-    setScope(project.default_run_truth_scope);
     setAutoResearchInvocationCeiling(project.default_auto_research_invocation_ceiling);
     setProfiles(profilesFrom(project));
     setSkillDefaults(savedSkillDefaults);
@@ -386,7 +388,6 @@ export function ProjectSettings({
     setSaving(true);
     setStatus(null);
     const body: ProjectSettingsRequest = {
-      default_run_truth_scope: scope,
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
       agent_profiles: profiles,
       skill_defaults: skillDefaults,
@@ -500,18 +501,22 @@ export function ProjectSettings({
         <div className="settings-repositories">
           {project.repositories.map((repository) => {
             const machine = machineByAlias[repository.machine];
-            const selected = scope.includes(repository.alias);
             const canonical = repository.alias === project.state_repository;
+            const selected = canonical || project.project_truth_scope.includes(repository.alias);
             return (
               <label
                 className={selected ? "settings-repository selected" : "settings-repository"}
                 key={repository.alias}
+                title="Agents can write"
               >
                 <input
                   type="checkbox"
+                  aria-label={`Agents can write ${repository.alias}`}
                   checked={selected}
-                  disabled={writesDisabled}
-                  onChange={() => toggleRepository(repository.alias)}
+                  disabled={writesDisabled || canonical || writableSaving !== null}
+                  onChange={(event) =>
+                    void setRepositoryWritable(repository.alias, event.target.checked)
+                  }
                 />
                 <span className="settings-check">{selected && <Check size={12} />}</span>
                 <span className="settings-repository-copy">
@@ -542,22 +547,24 @@ export function ProjectSettings({
             );
           })}
         </div>
-        {spaceKind === "team" && (
-          <RepositoryRequests
-            key={project.id}
-            project={project}
-            baseMachineId={
-              spaceMachines.machines
-                ? (spaceMachineForProject(spaceMachines.machines, project.id, {
-                    alias: baseMachine(project),
-                  })?.machine_id ?? null)
-                : null
-            }
-            disabled={writesDisabled}
-            connectAlias={connectAlias}
-            onCloseConnect={() => setConnectAlias(null)}
-          />
-        )}
+        <RepositoryRequests
+          key={project.id}
+          project={project}
+          spaceKind={spaceKind}
+          baseMachineId={
+            spaceMachines.machines
+              ? (spaceMachineForProject(spaceMachines.machines, project.id, {
+                  alias: baseMachine(project),
+                })?.machine_id ?? null)
+              : null
+          }
+          disabled={writesDisabled}
+          connectAlias={connectAlias}
+          onCloseConnect={() => setConnectAlias(null)}
+          onAdded={(saved) => {
+            if (requestIsCurrent()) onSaved(saved);
+          }}
+        />
       </article>
 
       <section className="settings-section provider-path-settings">

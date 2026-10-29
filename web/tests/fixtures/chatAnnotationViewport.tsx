@@ -72,7 +72,6 @@ createRoot(document.getElementById("root")!).render(
         graphTarget={{ kind: "main" }}
         project={project as never}
         node={null}
-        runScope={["repo"]}
         tasks={[]}
         historyMessages={historyMessages as never}
         chatId="viewport-regression"

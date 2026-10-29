@@ -292,7 +292,6 @@ function Fixture() {
             project={project}
             node={chat}
             nodes={graph.nodes}
-            runScope={["repo"]}
             tasks={tasks}
             chatId="ordinary-review-chat"
             presentation="workspace"

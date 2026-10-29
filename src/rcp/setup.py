@@ -1469,6 +1469,25 @@ def _replay_failure_detail(existing: ExistingResearchPreview) -> str:
     )
 
 
+def require_git_work_tree(host: str, path: str) -> None:
+    """A folder added as a repository: the root of a Git work tree with a commit."""
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        argv = ["git", "-C", path, *arguments]
+        if host:
+            return _ssh(host, argv)
+        try:
+            return subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(argv, 255, "", str(exc))
+
+    root = git("rev-parse", "--show-prefix")
+    if root.returncode != 0 or root.stdout.strip():
+        raise ValueError(f"{path} is not the top folder of a Git repository.")
+    if git("rev-parse", "--verify", "--quiet", "HEAD^{commit}").returncode != 0:
+        raise ValueError(f"The Git repository at {path} has no commit yet.")
+
+
 def _ssh(host: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
     command = shlex.join(arguments)
     try:

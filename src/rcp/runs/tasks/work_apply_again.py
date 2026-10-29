@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Literal, cast
 
+from rcp.agents.project_repositories import write_repositories
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS
 from rcp.runs.chat import _append_chat_graph_receipt
@@ -142,7 +143,7 @@ def apply_work_graph_update_again(
                 None,
                 patch_text,
                 run_truth_scope=list(
-                    request.run_truth_scope or service.manifest.agent.default_run_truth_scope
+                    request.run_truth_scope or write_repositories(service.history.state())
                 ),
                 source_operation_id=operation_id,
                 cancelled=lambda: time.monotonic() > deadline,

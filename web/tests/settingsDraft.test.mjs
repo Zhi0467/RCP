@@ -96,7 +96,6 @@ test("v1 settings drafts migrate the campaign default into the current episode f
     ),
     {
       version: 4,
-      scope: ["repo"],
       profiles: {},
       autoResearchInvocationCeiling: 14,
     },
@@ -220,8 +219,8 @@ test("settings compare by value, not by the order the backend listed the keys", 
 
 test("settings compare keeps list order, which the researcher chose", () => {
   assert.notEqual(
-    settingsFingerprint({ scope: ["a", "b"] }),
-    settingsFingerprint({ scope: ["b", "a"] }),
+    settingsFingerprint({ ids: ["a", "b"] }),
+    settingsFingerprint({ ids: ["b", "a"] }),
   );
 });
 
@@ -237,5 +236,6 @@ test("machine settings an older draft staged load without them", () => {
       accessHintEdits: { cluster: "module load cuda" },
     }),
   );
-  assert.deepEqual(draft, { version: 4, scope: ["repo"], profiles: {} });
+  // The run scope a draft once staged is dropped too: agents read every repository.
+  assert.deepEqual(draft, { version: 4, profiles: {} });
 });

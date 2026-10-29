@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from rcp.agents.project_repositories import write_repositories
 from rcp.control import (
     ExperimentControlState,
     ExperimentOperationalState,
@@ -150,8 +151,9 @@ def resolve_experiment_node_work_request(
             "model": profile.model,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
+            # A start derived from an authorized turn keeps that turn's write set.
             "run_truth_scope": list(
-                request.run_truth_scope or service.manifest.agent.default_run_truth_scope
+                request.run_truth_scope or write_repositories(service.history.state())
             ),
         }
     )

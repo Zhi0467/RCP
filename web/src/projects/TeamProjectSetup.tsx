@@ -88,7 +88,6 @@ interface TeamRepositoryDraft {
   nameEdited: boolean;
   source: string;
   machine_alias: string;
-  default_read: boolean;
 }
 
 const steps = [
@@ -142,7 +141,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       nameEdited: false,
       source: "",
       machine_alias: "server",
-      default_read: true,
     },
   ]);
   const [stateRepository, setStateRepository] = useState("research");
@@ -380,9 +378,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     }
     if (!repositoryAliases.includes(stateRepository)) {
       return "Choose a canonical state repository.";
-    }
-    if (!repositories.some((repository) => repository.default_read)) {
-      return "Select at least one repository for default agent reads.";
     }
     if (targetStep < 2) return null;
     if (
@@ -782,7 +777,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                     nameEdited: false,
                     source: "",
                     machine_alias: machines[0]?.alias ?? "",
-                    default_read: true,
                   },
                 ]);
               }}
@@ -1169,14 +1163,6 @@ function TeamRepositoryEditor({
       </div>
       {!repository.source.trim() && <p>Server only · Its code is not backed up.</p>}
       <footer>
-        <label className="check-control">
-          <input
-            type="checkbox"
-            checked={repository.default_read}
-            onChange={(event) => onChange({ default_read: event.target.checked })}
-          />
-          <strong>Default raw input</strong>
-        </label>
         <label className="radio-control">
           <input
             type="radio"
