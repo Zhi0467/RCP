@@ -31,8 +31,12 @@ Merge it before selecting the build to promote. For supervisor changes, bump
 ## What to check before promoting
 
 Check that all CI jobs, including **old-data upgrade**, passed and that the
-build's base version matches the intended `vX.Y.Z` tag. Review release notes for
-operator-visible changes, prerequisites and migration time.
+build's base version matches the intended `vX.Y.Z` tag. Each **installed upgrade**
+job seeds a previous release with a coach on its own machine, an ended Experiment
+and a queued nightly consolidation. After the update the candidate must serve the
+space-wide reads before any project opens, launch-validate every queued turn and
+admit one due consolidation. Review release notes for operator-visible changes,
+prerequisites and migration time.
 
 Run the egm drift sweep: one `egm-codebase-details` review per file in
 `docs/specs/` plus `docs/design.md`. Fix confirmed drift before promoting.

@@ -1039,7 +1039,7 @@ async def _verify_candidate(
             log.phase = "space reads after projects open"
             await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
             log.phase = "due consolidation"
-            await asyncio.to_thread(_verify_due_consolidation, app, overlay)
+            await asyncio.to_thread(_verify_due_consolidation, app, _captured_project_ids(overlay))
             log.phase = "shutdown"
         refusal = log.refusal(_captured_project_ids(overlay))
         if refusal is not None:
@@ -1288,14 +1288,14 @@ class _RehearsalLaunches:
         return launch.record if isinstance(launch, AdmittedLaunch) else launch
 
 
-def _verify_due_consolidation(app: FastAPI, overlay: RehearsalOverlay) -> None:
-    """Launch copied queued consolidations, then admit each schedule at its due time.
+def _verify_due_consolidation(app: FastAPI, captured: set[str]) -> None:
+    """Launch queued consolidations of `captured` projects, then admit each schedule when due.
 
-    Real admission writes the copied rows; the engine's own launch validation
-    reads them back. Only the provider process is left out.
+    Real admission writes the rows; the engine's own launch validation reads them
+    back. Only the provider process is left out. Installed-upgrade CI also runs
+    this on the upgraded live data.
     """
 
-    captured = _captured_project_ids(overlay)
     tasks: BackgroundAgentTasks = app.state.background_tasks
     store = tasks.store
 
