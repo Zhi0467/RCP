@@ -1273,8 +1273,12 @@ class _RehearsalLaunches:
         from rcp.runs.provider_login import AdmissionRefused
 
         record = self._tasks.store.agent_task(operation_id)
-        if record is None or record.project_id not in self._captured:
+        if record is None:
             raise KeyError(operation_id)
+        if record.project_id not in self._captured:
+            # An omitted project is warned about, not proved; a raise here would
+            # log an ERROR that refuses the whole update.
+            return record
         try:
             launch = self._tasks.validate_admitted_launch(operation_id)
         except AdmissionRefused:
