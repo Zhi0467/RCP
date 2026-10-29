@@ -1029,6 +1029,12 @@ async def _verify_candidate(
             if overlay.display_caches:
                 log.phase = "space reads before projects open"
                 await _verify_aggregate_reads(client, overlay, opened, sorted(users_by_id))
+                # A copied cache can lag its history after a failed refresh, and the
+                # project route serves it as it is; the replay proof reads a fresh one.
+                for project in overlay.projects:
+                    app.state.catalog._cached_snapshot_path(project.project_id).unlink(
+                        missing_ok=True
+                    )
             log.phase = "project reads"
             for project in overlay.projects:
                 headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
