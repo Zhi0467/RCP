@@ -519,7 +519,6 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs import recorded_settlement
     from rcp.runs.remote_finalization import recorded_finalizer
-    from rcp.runs.shared import _sse
     from rcp.runs.tasks import coach as coach_module
 
     from .test_auto_research_stream import _LocalBackedRemoteStage
@@ -557,15 +556,17 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
         output = kwargs["write_dirs"][0] / "files" / "paper.md"
         output.parent.mkdir()
         output.write_text("Proposed after the drop\n")
-        yield _sse(AgentEvent(event="session", session_id="remote-native"))
+        # Like a controller crash, the live side never learns the native session.
         kwargs["outcome"].remote_result_pending = True
+        return
+        yield
 
     monkeypatch.setattr(coach_module, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr(recorded_settlement, "RemoteRunStage", RemoteStage)
     monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
     monkeypatch.setattr(coach_module, "_stream_agent_events", link_lost)
     execution = execution_for(service)
-    request = CoachRequest(message="Edit the paper")
+    request = CoachRequest(message="Edit the paper", provider="codex")
 
     await run_coach(service, None, data, execution=execution, request=request)
     assert service.paper_changes.groups(service.paper.project_id) == []
@@ -584,5 +585,7 @@ async def test_remote_round_left_by_a_lost_link_settles_from_its_recorded_pass(
         )
     ]
     assert settled[-1].event == "done"
+    assert [event.text for event in settled if event.event == "answer"] == ["Done"]
     groups = service.paper_changes.groups(service.paper.project_id)
     assert [group.changes[0].after for group in groups] == ["Proposed after the drop\n"]
+    assert [session.native_session_id for session in service.paper.sessions()] == ["remote-native"]

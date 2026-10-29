@@ -339,6 +339,40 @@ def _record_invalid_changes(
         )
 
 
+async def _record_writing_session(
+    service: ProjectService,
+    paper: PaperService,
+    request: CoachRequest,
+    *,
+    runtime_id: str,
+    native_session_id: str,
+    execution_machine: str,
+) -> None:
+    assert request.provider is not None  # Admission resolves the provider.
+    existing = next(
+        (item for item in paper.sessions() if item.native_session_id == native_session_id), None
+    )
+    intro_hash, graph_revision, research_hash = await asyncio.to_thread(service.pointer_hashes)
+    now = datetime.now(UTC)
+    paper.record_session(
+        WritingSession(
+            provider=request.provider,
+            runtime_id=runtime_id,
+            native_session_id=native_session_id,
+            execution_machine=execution_machine,
+            project_id=paper.project_id,
+            title=existing.title if existing else request.message[:72],
+            model=request.model or "provider-default",
+            reasoning=request.reasoning,
+            created_at=existing.created_at if existing else now,
+            last_resumed_at=now,
+            introduction_hash_examined=intro_hash,
+            graph_revision_examined=graph_revision,
+            research_md_hash_examined=research_hash,
+        )
+    )
+
+
 async def finalize_recorded_coach_result(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -384,6 +418,19 @@ async def finalize_recorded_coach_result(
         return
     for frame in absorb_recorded_events(outcome, verdict):
         yield frame
+    # The live stream forwards the coach's reply as it comes; recovery forwards it here.
+    for answer in outcome.answers:
+        yield _sse(AgentEvent(event="answer", text=answer))
+    if outcome.session_id:
+        # A controller that died mid-turn never reached the live stream's session record.
+        await _record_writing_session(
+            service,
+            service.paper,
+            request,
+            runtime_id=recorded.runtime_id,
+            native_session_id=outcome.session_id,
+            execution_machine=request.run_on or "",
+        )
     if outcome.failed:
         return
     if not outcome.completed:
@@ -902,24 +949,13 @@ async def _stream_coach(
 
     async def _record_coach_session() -> None:
         assert native_session_id is not None
-        intro_hash, graph_revision, research_hash = await asyncio.to_thread(service.pointer_hashes)
-        now = datetime.now(UTC)
-        paper.record_session(
-            WritingSession(
-                provider=request.provider,
-                runtime_id=actual_runtime_id,
-                native_session_id=native_session_id,
-                execution_machine=profile.run_on,
-                project_id=paper.project_id,
-                title=existing.title if existing else request.message[:72],
-                model=request.model or "provider-default",
-                reasoning=request.reasoning,
-                created_at=existing.created_at if existing else now,
-                last_resumed_at=now,
-                introduction_hash_examined=intro_hash,
-                graph_revision_examined=graph_revision,
-                research_md_hash_examined=research_hash,
-            )
+        await _record_writing_session(
+            service,
+            paper,
+            request,
+            runtime_id=actual_runtime_id,
+            native_session_id=native_session_id,
+            execution_machine=profile.run_on,
         )
 
     try:

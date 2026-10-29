@@ -3998,14 +3998,6 @@
                     "endColumn": 47,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 41,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/runs/tasks/compute_commands.py": [
