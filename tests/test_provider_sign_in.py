@@ -1063,3 +1063,35 @@ def test_interrupted_sign_ins_and_missing_tokens_reset_each_login_independently(
     reset = runner.accounts.reset_logins_without_credentials()
     assert [state.login_id for state in reset] == [keys[1].login_id]
     assert runner.store.provider_login_state(LoginKey("claude", "", "")).generation == 0
+
+
+def test_shared_removal_synchronously_settles_device_sign_in(tmp_path, monkeypatch):
+    from rcp.runs.provider_login import remove_shared_login
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    row = runner.store.add_provider_login("codex", "", added_by="member")
+    key = LoginKey("codex", "", row.login_id)
+    started = runner.start_sign_in("codex", "", member_id="member", login_id=key.login_id)
+    _status_when(runner, started.attempt_id, lambda status: status.user_code is not None)
+    removed = remove_shared_login(
+        runner.store,
+        runner.launcher,
+        key,
+        cancel_sign_in=runner.cancel_login_sign_in,
+        member_id="member",
+    )
+    assert removed.removed_at is not None
+    assert runner.sign_in_status(started.attempt_id).state == "failed"
+    assert started.attempt_id not in runner._logins
+    runner.cancel_login_sign_in(key)
+    with pytest.raises(ProviderLoginRefused):
+        runner.verify("codex", "", member_id="member", login_id=key.login_id)
+
+
+def test_runner_recovery_finishes_shared_drain(tmp_path, monkeypatch):
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    row = runner.store.add_provider_login("codex", "", added_by="member")
+    key = LoginKey("codex", "", row.login_id)
+    runner.store.set_provider_login_draining(key)
+    runner.reconcile_recovery()
+    assert runner.store.provider_login_state(key).removed_at is not None

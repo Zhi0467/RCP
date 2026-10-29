@@ -449,8 +449,8 @@ def member_login_api(tmp_path, monkeypatch):
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id=viewer["id"])),
     )
     monkeypatch.setattr(
-        provider_login.provider_login_actions,
-        "resume_provider_setting",
+        runner,
+        "resume_setting",
         lambda *args: {"checked": 2},
     )
     app = FastAPI()
@@ -612,14 +612,16 @@ def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api,
     key = LoginKey("claude", "", added["login_id"])
     calls = []
 
-    def remove(sign_ins, login, *, member_id):
-        assert sign_ins is runner
+    def remove(login_store, launcher, login, *, cancel_sign_in, member_id):
+        assert login_store is store
+        assert launcher is runner.launcher
+        assert cancel_sign_in == runner.cancel_login_sign_in
         calls.append((login, member_id))
         return store.set_provider_login_draining(login)
 
-    monkeypatch.setattr(provider_login.provider_login_actions, "remove_shared_login", remove)
+    monkeypatch.setattr(provider_login.provider_login, "remove_shared_login", remove)
     monkeypatch.setattr(
-        provider_login.provider_login_actions,
+        provider_login.provider_login,
         "bound_running_count",
         lambda _store, login: 2 if login == key else 0,
     )

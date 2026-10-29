@@ -26,6 +26,7 @@ from rcp.limits import (
 )
 from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
+from rcp.runs.provider_login import reconcile_login_removals
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
 from rcp.storage import AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, ProviderLoginStateRecord
@@ -104,11 +105,13 @@ class ProviderSignInRunner:
         self._recovery_lock = threading.Lock()
         self._sign_ins: dict[str, ProviderSignInStatus] = {}
         self._logins: dict[str, tuple[subprocess.Popen[str], DeviceLogin]] = {}
+        self._settled: dict[str, threading.Event] = {}
         self._verifying: set[str] = set()
         self._canceled: dict[str, str | None] = {}
         self._recovered: dict[LoginKey, int] = {}
         self._resume_counts: dict[LoginKey, dict[str, int]] = {}
         self.resume_account: Callable[[LoginKey], dict[str, int]] | None = None
+        self.resume_setting: Callable[[str, str, str], dict[str, int]] | None = None
 
     def require_login(self, key: LoginKey, *, member_id: str) -> ProviderLoginStateRecord:
         """Reject unknown, removed, or another member's login before touching credentials."""
@@ -151,7 +154,7 @@ class ProviderSignInRunner:
             self.store.provider_login_state(LoginKey(provider, host, login_id)).generation
             == generation
         ):
-            self.launcher.invalidate_readiness(provider, host=host)
+            self.launcher.invalidate_readiness(provider, host=host, login_id=login_id)
         return True
 
     def provider_binary(self, provider: str, host: str) -> tuple[str, set[str]]:
@@ -229,6 +232,7 @@ class ProviderSignInRunner:
         Recovery uses existing idempotent task claims and episode reconciliation.
         The memory cache avoids repeated scans, but is not the recovery authority.
         """
+        reconcile_login_removals(self.store, self.launcher)
         if self.resume_account is None:
             return
         with self._recovery_lock:
@@ -347,9 +351,11 @@ class ProviderSignInRunner:
         self, provider: str, host: str, binaries: set[str], *, login_id: str = MACHINE_LOGIN_ID
     ) -> None:
         self.store.delete_provider_readiness_snapshots(LoginKey(provider, host, login_id))
-        self.launcher.invalidate_readiness(provider, host=host)
+        self.launcher.invalidate_readiness(provider, host=host, login_id=login_id)
         for binary in binaries:
-            self.launcher.invalidate_readiness(provider, host=host, binary=binary)
+            self.launcher.invalidate_readiness(
+                provider, host=host, binary=binary, login_id=login_id
+            )
 
     def start_sign_in(
         self, provider: str, host: str, *, member_id: str, login_id: str = MACHINE_LOGIN_ID
@@ -378,6 +384,7 @@ class ProviderSignInRunner:
                 started_by_display_name=member.display_name if member else member_id,
             )
             self._sign_ins[status.attempt_id] = status
+            self._settled[status.attempt_id] = threading.Event()
         threading.Thread(
             target=self._run_sign_in,
             args=(status, binary),
@@ -449,6 +456,19 @@ class ProviderSignInRunner:
             grace.daemon = True
             grace.start()
         return status
+
+    def cancel_login_sign_in(self, key: LoginKey) -> None:
+        """Finish a pending attempt's credential work before removal takes its gate."""
+        with self._lock:
+            status = self._running(key.provider, key.host, login_id=key.login_id)
+            if status is None:
+                return
+            settled = self._settled[status.attempt_id]
+        # Completion may have claimed verification since the lookup. In that
+        # case cancellation is refused, but removal still waits for settlement.
+        with contextlib.suppress(ProviderLoginRefused):
+            self.cancel_sign_in(status.attempt_id)
+        settled.wait()
 
     def _device_login(
         self,
@@ -598,6 +618,7 @@ class ProviderSignInRunner:
                     raise
                 finally:
                     self._cleanup_removed_login(LoginKey(provider, host, login_id))
+            self._settled[status.attempt_id].set()
             self.reconcile_recovery()
             self._update(
                 status.attempt_id,
@@ -621,6 +642,7 @@ class ProviderSignInRunner:
                 finished_at=self.store.now(),
             )
         finally:
+            self._settled[status.attempt_id].set()
             # Nothing outlives the attempt: a stale marker would refuse the next
             # cancellation, and a stale cancellation would end an unrelated one.
             with self._lock:

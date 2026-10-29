@@ -121,3 +121,34 @@ def test_project_response_refreshes_viewer_logins_without_rewriting_shared_cache
     } == {key.login_id}
     after = app.state.catalog.cached_snapshot(project_id)
     assert before["provider_logins"] == after["provider_logins"]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, existing):
+    store = AppStore(tmp_path / "app.sqlite3", space_kind="team")
+    accounts = ProviderAccounts.for_store(store)
+    own = (
+        store.add_provider_login("codex", "", member_id="new-member", added_by="new-member")
+        if existing
+        else None
+    )
+    rows = ProjectService.provider_logins_for(
+        manifest, AgentLauncher(accounts=accounts), None, viewer_id="new-member"
+    )
+    codex = [row for row in rows if row["provider"] == "codex"]
+    assert len(codex) == 1
+    row = codex[0]
+    assert row["login_id"] == (own.login_id if own else None)
+    assert row["kind"] == "own"
+    assert row["owner_user_id"] == "new-member"
+    assert row["state"] == "signed_out"
+    assert row["host"] == ""
+    assert row["label"]
+    if existing:
+        return
+    assert all(
+        value in (None, [], 0)
+        for field, value in row.items()
+        if field not in {"provider", "host", "kind", "owner_user_id", "state", "label"}
+    )
+    assert not any(row.member_id == "new-member" for row in store.provider_logins("codex", ""))

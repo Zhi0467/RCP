@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
@@ -295,3 +296,85 @@ def test_unhealthy_bound_login_stays_discoverable_for_release(accounts):
         key, member_id="member", source="sign_out", detail="signed out"
     )
     assert resolved_task_login(accounts.store, record) == key
+
+
+@pytest.mark.parametrize("event", ["setting", "verify_own", "verify_shared"])
+def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, event):
+    from rcp.runs.provider_login import provider_login_changed
+    from rcp.storage import AgentTaskRecord, ProjectRecord
+    from rcp.watchers import WatcherDelivery
+
+    watcher_delivery = Mock(spec=WatcherDelivery)
+    store = accounts.store
+    member = fabricated_authorizer()
+    store.upsert_project(
+        ProjectRecord(
+            project_id="project",
+            locator="unused",
+            name="project",
+            state_location="unused",
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    store.set_provider_login_setting(member.user_id, "codex", "", "own")
+    task = AgentTaskRecord(
+        operation_id="parked",
+        project_id="project",
+        kind="project_chat",
+        status="queued",
+        request={"provider": "codex", "run_on": "local"},
+        login_id=None,
+        authorized_by=member,
+        stage_host="",
+        stage_root="unused",
+        created_at=store.now(),
+        updated_at=store.now(),
+        status_message="",
+    )
+    store.create_agent_task(task)
+    assert resolved_task_login(store, task) is None
+    background = BackgroundAgentTasks(store, _unused_stream)
+    launched = []
+    monkeypatch.setattr(background, "launch_admitted", launched.append)
+    if event == "verify_own":
+        row = store.add_provider_login(
+            "codex", "", member_id=member.user_id, added_by=member.user_id
+        )
+        key = LoginKey("codex", "", row.login_id)
+    else:
+        key = LoginKey("codex", "", "")
+    store.mark_provider_login_verified(key, member_id=member.user_id, detail="verified")
+    if event != "verify_own":
+        # A shared verify cannot release work while only Own is enabled.
+        provider_login_changed(
+            background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
+        )
+        assert launched == []
+        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
+    if event == "setting":
+        provider_login_changed(
+            background,
+            member_id=member.user_id,
+            provider="codex",
+            host="",
+            reconcile_episodes=lambda: 0,
+            watcher_delivery=watcher_delivery,
+        )
+    else:
+        provider_login_changed(
+            background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
+        )
+    assert launched == ["parked"]
+    assert resolved_task_login(store, store.agent_task("parked")) == key
+
+
+@pytest.mark.parametrize("kind", ["shared", "own", "machine"])
+def test_row_reports_bound_count_before_removal(accounts, kind):
+    from rcp.provider_login_rows import provider_login_row
+
+    key = _login(accounts, "codex", own=kind == "own", machine=kind == "machine")
+    _turn(accounts, key, status="running")
+    row = provider_login_row(accounts.store, accounts.credentials, None, key, viewer_id="member")
+    assert row["draining_since"] is None
+    assert row["bound_running"] == (1 if kind == "shared" else 0)

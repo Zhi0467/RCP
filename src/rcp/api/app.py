@@ -1516,11 +1516,20 @@ def create_app(
 
         return checked
 
-    from rcp.runs.provider_login_actions import resume_provider_account
+    from rcp.runs.provider_login import provider_login_changed
 
-    provider_sign_ins.resume_account = lambda login: resume_provider_account(
+    provider_sign_ins.resume_account = lambda login: provider_login_changed(
         background_tasks,
-        login,
+        key=login,
+        reconcile_episodes=reconcile_episodes,
+        watcher_delivery=watcher_delivery,
+    )
+
+    provider_sign_ins.resume_setting = lambda member_id, provider, host: provider_login_changed(
+        background_tasks,
+        member_id=member_id,
+        provider=provider,
+        host=host,
         reconcile_episodes=reconcile_episodes,
         watcher_delivery=watcher_delivery,
     )

@@ -22,7 +22,7 @@ from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.provider_login_rows import provider_login_row
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
-from rcp.runs import provider_login_actions
+from rcp.runs import provider_login
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
     ProviderSignInRunner,
@@ -415,9 +415,8 @@ def set_provider_login_setting(
         raise HTTPException(422, "Personal spaces use shared sign-ins.")
     store.set_provider_login_setting(member.user_id, provider, body.host, body.setting)
     try:
-        resumed = provider_login_actions.resume_provider_setting(
-            sign_ins, member.user_id, provider, body.host
-        )
+        assert sign_ins.resume_setting is not None
+        resumed = sign_ins.resume_setting(member.user_id, provider, body.host)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     return {**_setting_item(store, member.user_id, provider, body.host), "resumed": resumed}
@@ -476,9 +475,15 @@ def remove_provider_login(
     if state.member_id:
         raise HTTPException(403, "Only shared sign-ins can be removed.")
     try:
-        state = provider_login_actions.remove_shared_login(sign_ins, key, member_id=member.user_id)
+        state = provider_login.remove_shared_login(
+            store,
+            sign_ins.launcher,
+            key,
+            cancel_sign_in=sign_ins.cancel_login_sign_in,
+            member_id=member.user_id,
+        )
         count = (
-            provider_login_actions.bound_running_count(store, key)
+            provider_login.bound_running_count(store, key)
             if state.draining_since and not state.removed_at
             else 0
         )

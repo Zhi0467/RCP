@@ -1066,6 +1066,10 @@ also supplies project notices, resolving new launches for the viewer and retaini
 parked Codex session bindings. Other members' own rows redact detail, source and
 token metadata. Device codes and URLs appear only for the attempt starter.
 Project responses attach these rows after reading the shared display cache.
+A refused own source without a stored login appears as a signed-out own notice
+with null `login_id`, the viewer's ID, provider label and host; other fields are
+empty. Its action opens Settings, Sign-ins. Every added shared row reports its
+bound running count even before draining; machine and own rows report zero.
 
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
@@ -1106,7 +1110,9 @@ repair corrections retain their parent's login. Unhealthy bound work waits; a
 removed Codex binding refuses the session. Draining logins admit no new choices
 but remain usable by bound work until their running tasks and unpaused episodes
 end. Removal retains session files and deletes only credentials; unreachable
-remote cleanup remains pending for reconciliation.
+remote cleanup remains pending for reconciliation. Removal synchronously settles
+any pending device sign-in before taking the credential gate. The sign-in runner's
+recovery pass also reconciles drains and pending cleanup.
 
 The credential gate rechecks the selected login. An unbound launch may release
 the gate and resolve once more. A bound refusal carries a typed `provider_auth`
@@ -1125,7 +1131,9 @@ uses ordinary Retry.
 
 Login-keyed release selects recoveries, queued work, Experiment retries and
 watcher groups by binding or member setting. Verified credentials and changed
-settings use the same release helper. Unbound authentication failures release
+settings use the same release helper. Tasks with no selected login re-resolve the
+member setting on a setting change or verification of an allowed source. Unbound
+authentication failures release
 after settlement records their park when another allowed login is available.
 Provider login, Git transport, SSH access and RCP membership remain distinct
 authorities. Transport/configuration/ordinary failures do not sign out a login.

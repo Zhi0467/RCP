@@ -105,7 +105,7 @@ from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.changes import PaperChanges
 from rcp.paper.projection import publication_badge
-from rcp.provider_login_rows import provider_login_row
+from rcp.provider_login_rows import missing_own_login_row, provider_login_row
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
     PROVIDER_IDS,
@@ -1183,9 +1183,12 @@ def agent_login_accounts(
         task_ids = {
             task.operation_id
             for task in store.agent_tasks(project_id)
-            if task.request.get("provider") == "codex"
-            and task.failure_kind == "provider_auth"
-            and task.can_retry
+            if task.status == "queued"
+            or (
+                task.request.get("provider") == "codex"
+                and task.failure_kind == "provider_auth"
+                and task.can_retry
+            )
         }
         for work in parked_provider_work(store, project_id, lambda: manifest).values():
             task_ids.update(task_id for _, task_id in work.recoveries)
@@ -1278,6 +1281,7 @@ class ProjectService:
             manifest,
             cache_root,
             app_chat_origin=app_chat_origin,
+            login_store=paper.store,
         )
         self._index_lock = threading.Lock()
         self._indexes: dict[str, ConversationIndex] = {}
@@ -1929,7 +1933,7 @@ class ProjectService:
             return []
         store = launcher.accounts.store
         accounts = agent_login_accounts(manifest, store, project_id, viewer_id=viewer_id)
-        return [
+        rows = [
             provider_login_row(
                 store,
                 launcher.accounts.credentials,
@@ -1945,6 +1949,23 @@ class ProjectService:
             for key in sorted(accounts)
             if profile_for(key.provider).authentication.manages_login
         ]
+        if viewer_id is not None:
+            pairs = {
+                (profile.provider, provider_login_host(manifest, profile.run_on))
+                for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
+            }
+            for provider, host in sorted(pairs):
+                selected, _ = launcher.accounts.resolve_login(provider, host, viewer_id)
+                if (
+                    isinstance(selected, LoginRefusal)
+                    and selected.login is None
+                    and selected.source == "own"
+                    and not any(
+                        row.member_id == viewer_id for row in store.provider_logins(provider, host)
+                    )
+                ):
+                    rows.append(missing_own_login_row(provider, host, viewer_id))
+        return rows
 
     @staticmethod
     def readiness_for(
@@ -1978,12 +1999,9 @@ class ProjectService:
             provider: ProviderId,
             binary: str | None,
         ) -> dict[str, object]:
-            kwargs: dict[str, object] = {"host": host}
-            if binary is not None:
-                kwargs["binary"] = binary
-            if refresh:
-                kwargs["refresh"] = True
-            readiness = launcher.readiness(provider, **kwargs)
+            readiness = launcher.readiness(
+                provider, host=host, binary=binary, refresh=refresh, login_id=MACHINE_LOGIN_ID
+            )
             if refresh and provider_skills is not None:
                 try:
                     provider_skills.refresh(provider, host, binary, readiness, reuse_cached=False)

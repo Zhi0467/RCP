@@ -6,6 +6,7 @@ import socket
 import threading
 
 import httpx
+import pytest
 import uvicorn
 
 from rcp.agents import AgentEvent, ProviderReadiness
@@ -20,7 +21,10 @@ from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task,
 from .test_provider_sign_in import _fake_codex
 
 
-def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_path, monkeypatch):
+@pytest.mark.parametrize("added", [False, True])
+def test_served_device_login_recovers_queued_work_without_polling(
+    manifest, tmp_path, monkeypatch, added
+):
     data = tmp_path / "served-data"
     monkeypatch.setenv("RCP_DATA_DIR", str(data))
     binary_dir = tmp_path / "fake-provider"
@@ -100,9 +104,22 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
                 ).status_code
                 == 200
             )
-            response = client.post("/api/providers/codex/logins/sign-in", json={"host": ""})
+            setting = client.put(
+                "/api/providers/codex/logins/setting", json={"host": "", "setting": "shared"}
+            )
+            assert setting.status_code == 200, setting.text
+            assert "checked" in setting.json()["resumed"]
+            if added:
+                response = client.post(
+                    "/api/providers/codex/logins/add", json={"host": "", "kind": "shared"}
+                )
+            else:
+                response = client.post("/api/providers/codex/logins/sign-in", json={"host": ""})
             assert response.status_code == 200, response.text
-            login_id = response.json()["attempt_id"]
+            status = response.json()["sign_in"] if added else response.json()
+            login_id = status["attempt_id"]
+            account_id = status["login_id"]
+            assert bool(account_id) == added
             wait_until(lambda: services.provider_sign_ins.sign_in_status(login_id).user_code)
             # Navigation away and disconnection happen before device completion.
             page = client.get("/")
@@ -125,6 +142,13 @@ def test_served_device_login_recovers_queued_work_without_polling(manifest, tmp_
             status = client.get(f"/api/providers/codex/logins/sign-in/{login_id}")
             assert status.status_code == 200 and status.json()["state"] == "succeeded"
             assert "checked" in status.json()["resumed"]
+            if added:
+                removed = client.post(
+                    "/api/providers/codex/logins/remove", json={"login_id": account_id}
+                )
+                assert removed.status_code == 200, removed.text
+                assert removed.json()["removed_at"] is not None
+                assert removed.json()["bound_running"] == 0
         assert calls == [queued.operation_id]
     finally:
         server.should_exit = True

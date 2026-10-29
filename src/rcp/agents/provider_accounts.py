@@ -49,7 +49,7 @@ def account_login_refusal(
     ):
         return profile.authentication.missing_credential_detail
     if state.state == "signed_out":
-        return f"{profile.label} is signed out. Sign in in Settings, Provider logins."
+        return f"{profile.label} is signed out. Sign in in Settings, Sign-ins."
     return None
 
 
@@ -280,7 +280,7 @@ class ProviderAccounts:
                 source,
                 "This sign-in was removed. Start a new chat."
                 if removed_bound_session
-                else f"{profile_for(provider).label} sign-in is unavailable. Sign in in Settings, Provider logins.",
+                else f"{profile_for(provider).label} sign-in is unavailable. Sign in in Settings, Sign-ins.",
                 fixed,
                 "session_refused" if removed_bound_session else "provider_auth",
             ), None
@@ -337,7 +337,7 @@ class ProviderAccounts:
         if chosen is None:
             label = "your sign-in" if sources[0] == "own" else "the shared sign-ins"
             return LoginRefusal(
-                sources[0], f"No usable login in {label}. Open Settings, Provider logins."
+                sources[0], f"No usable login in {label}. Open Settings, Sign-ins."
             ), None
         selected = key_for(chosen)
         if previous_login is None or selected == previous_login:

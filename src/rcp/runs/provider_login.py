@@ -125,8 +125,7 @@ def parked_provider_work(
 
 def resume_provider_account(
     background: BackgroundAgentTasks,
-    key: LoginKey | str,
-    host: str | None = None,
+    key: LoginKey,
     *,
     reconcile_episodes: Callable[[], int] = lambda: 0,
     watcher_delivery: WatcherDelivery | None = None,
@@ -135,8 +134,6 @@ def resume_provider_account(
     """Release this account's parked work and run the ordinary episode poll once."""
 
     store = background.store
-    if isinstance(key, str):
-        key = LoginKey(key, host or "", "")
     accounts = ProviderAccounts.for_store(store)
     if accounts.refusal(key):
         return {"checked": 0}
