@@ -354,7 +354,20 @@ def _v0433_coach_row():
     }
 
 
-@pytest.mark.parametrize("legacy_row", [_v0433_coach_row], ids=["v0.4.33-paper-coach"])
+def _v0429_compute_chat_row():
+    # v0.4.29 froze the turn's compute selection into every RunRequest.
+    stored = _work_request("legacy-compute").model_dump(mode="json")
+    stored["active_compute_ids"] = ["gpu"]
+    profile = {"id": "gpu", "name": "GPU", "kind": "ssh", "ssh_target": "a@gpu", "access_hint": ""}
+    stored["resolved_compute_context"] = {"active": [profile]}
+    return {"request": stored}
+
+
+@pytest.mark.parametrize(
+    "legacy_row",
+    [_v0433_coach_row, _v0429_compute_chat_row],
+    ids=["v0.4.33-paper-coach", "v0.4.29-compute-chat"],
+)
 def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row) -> None:
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
