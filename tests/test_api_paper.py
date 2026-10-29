@@ -128,29 +128,25 @@ def test_folder_actions_cover_every_file_under_the_folder_and_only_those(manifes
             assert missing.status_code == 404
 
 
-def test_a_folder_delete_refuses_a_member_that_moved_after_it_was_read(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_a_folder_action_refuses_a_file_added_after_its_files_were_read(manifest, tmp_path):
+    from rcp.paper import PaperOp
+
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    live = app.state.paper_live
+    snapshot = live.snapshot
+
+    async def stale_snapshot(project_id, revision=None):
+        # A peer adds a file under the folder between the read and the admitted mutation.
+        read = await snapshot(project_id, revision)
+        await live.apply(project_id, [PaperOp(kind="create", path="draft/late.md")], "peer", {})
+        live.snapshot = snapshot
+        return read
+
     with signed_in_client(app) as client:
         prefix = f"/api/projects/{app.state.default_project_id}/paper"
-        moved = client.post(prefix + "/files", json={"path": "draft/kept.md"}).json()
-        live = app.state.paper_live
-        stale = live.run_sync(live.snapshot(app.state.default_project_id))
-        file_id = moved["file_ids"][0]
-        assert (
-            client.post(
-                prefix + f"/files/{file_id}/rename", json={"path": "elsewhere/kept.md"}
-            ).status_code
-            == 200
-        )
-
-        async def stale_snapshot(_project_id, revision=None):
-            return stale
-
-        monkeypatch.setattr(live, "snapshot", stale_snapshot)
-        assert client.post(prefix + "/folders/delete", json={"path": "draft"}).status_code == 409
-        monkeypatch.undo()
-        assert [file["path"] for file in client.get(prefix + "/tree").json()["files"]] == [
-            "elsewhere/kept.md"
-        ]
+        assert client.post(prefix + "/files", json={"path": "draft/intro.md"}).status_code == 200
+        live.snapshot = stale_snapshot
+        refused = client.post(prefix + "/folders/delete", json={"path": "draft"})
+        assert refused.status_code == 409, refused.text
+        paths = {file["path"] for file in client.get(prefix + "/tree").json()["files"]}
+        assert paths == {"draft/intro.md", "draft/late.md"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import zipfile
 from pathlib import PurePosixPath
@@ -140,19 +141,29 @@ async def delete_file(file_id: str, request: Request, project_id: str = _member)
 
 
 async def _folder_ops(request: Request, project_id: str, folder: str, op) -> Receipt:
-    """Apply one operation per file under `folder` as a single revision, or refuse."""
+    """Apply one operation per file under `folder` as a single revision, or refuse.
+
+    The files are read before admission, so the mutation re-checks that the folder still
+    holds exactly those files at those paths; a concurrent move or addition refuses it."""
     live = get_paper_live(request)
     tree = await live.snapshot(project_id)
-    members = [file for file in tree.files if file.path.startswith(f"{folder}/")]
-    if not members:
+    files = [file for file in tree.files if file.path.startswith(f"{folder}/")]
+    if not files:
         raise HTTPException(404, "Paper folder not found")
-    ops = [op(file) for file in members]
-    # Membership was read outside the write lock: refuse if any member moved or vanished.
-    checks = [{"file_id": file.file_id, "path": file.path} for file in members]
+    checks = [
+        {"folder": folder, "file_ids": [file.file_id for file in files]},
+        *({"file_id": file.file_id, "path": file.path} for file in files),
+    ]
     return await paper_mutation(
         request,
         project_id,
-        lambda: live.apply(project_id, ops, _actor(request), {"checks": checks}, checkpoint=True),
+        lambda: live.apply(
+            project_id,
+            [op(file) for file in files],
+            _actor(request),
+            {"checks": checks},
+            checkpoint=True,
+        ),
     )
 
 
@@ -271,17 +282,22 @@ async def folder_archive(path: str, request: Request, project_id: str = _member)
     if not files:
         raise HTTPException(404, "Paper folder not found")
     name = PurePosixPath(path).name
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file in files:
-            archive.writestr(
-                f"{name}/{file.path[len(path) + 1 :]}",
-                (file.text or "").encode()
-                if file.kind == "text"
-                else tree._blobs[file.blob_sha256 or ""],
-            )
+
+    def compress() -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for file in files:
+                archive.writestr(
+                    f"{name}/{file.path[len(path) + 1 :]}",
+                    (file.text or "").encode()
+                    if file.kind == "text"
+                    else tree._blobs[file.blob_sha256 or ""],
+                )
+        return buffer.getvalue()
+
+    # Compressing a large tree must not stall the loop that serves live edits.
     return Response(
-        buffer.getvalue(),
+        await asyncio.to_thread(compress),
         media_type="application/zip",
         headers={
             "X-Content-Type-Options": "nosniff",
