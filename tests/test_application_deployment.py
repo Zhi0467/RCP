@@ -1489,7 +1489,7 @@ def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
         )
 
 
-def _seed_experiment_run_with_old_display_cache(request, state) -> None:
+def _seed_experiment_run_with_old_display_cache(request, state, *, live: bool) -> None:
     """A live server whose Runs list reads a cache 0.4.34 wrote, coach on its own machine."""
     from rcp.core.authority import AuthorizedHuman
     from rcp.service import RunRequest
@@ -1542,6 +1542,9 @@ def _seed_experiment_run_with_old_display_cache(request, state) -> None:
             )
         )
         store.complete_agent_task(operation_id, applied_revision=None, result={})
+        if not live:
+            store.request_episode_stop(episode_id)
+            store.mark_episode_stop_skipped(episode_id)
         cache = app.state.catalog._cached_snapshot_path(project_id)
     finally:
         store.close()
@@ -1550,11 +1553,13 @@ def _seed_experiment_run_with_old_display_cache(request, state) -> None:
     cache.write_text(json.dumps(envelope), encoding="utf-8")
 
 
-def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path):
+@pytest.mark.parametrize("live", [True, False])
+def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path, live):
     # 0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal
     # carries the live caches and reads Runs before any project open rebuilds them.
+    # An ended loop on such a cache is only logged, so the log check catches it.
     request, state, _ = captured
-    _seed_experiment_run_with_old_display_cache(request, state)
+    _seed_experiment_run_with_old_display_cache(request, state, live=live)
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
 
 
