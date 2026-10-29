@@ -788,6 +788,25 @@ def test_changed_branch_runs_while_fresh_and_unchanged_branches_skip(runtime):
     )
 
 
+def test_branch_run_takes_its_own_write_scope_after_main_widens(runtime):
+    state_repository = runtime.service.manifest.state.repository
+    added = next(
+        alias for alias in runtime.service.manifest.repository_map if alias != state_repository
+    )
+    human = runtime.schedule.authorized_by
+    runtime.service.set_repository_writable(added, False, authorized_by=human)
+    branch = _active_branch(runtime, "forked-before-widening")
+    runtime.service.set_repository_writable(added, True, authorized_by=human)
+    runtime.poller.poll_once()
+    runs = {run.target: run for run in runtime.store.consolidation_runs()}
+    scopes = {
+        target: runtime.store.agent_task(run.operation_id).request["run_truth_scope"]
+        for target, run in runs.items()
+    }
+    assert added in scopes["main"]
+    assert scopes[branch.branch_id] == list(branch.state().project_truth_scope)
+
+
 def test_target_coverage_settles_independently(runtime):
     branch = _active_branch(runtime, "independent")
     runtime.poller.poll_once()

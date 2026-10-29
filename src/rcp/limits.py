@@ -773,6 +773,8 @@ PAPER_COMPILE_RESULT_LIMIT = 32
 PAPER_COMPILE_POLL_SECONDS = 0.1
 PAPER_COMPILE_DOWNLOAD_TIMEOUT_SECONDS = 120
 PAPER_COMPILE_MAX_ASSET_BYTES = 64 * 1024 * 1024
+# Decompressed SyncTeX a compile may parse to let the preview follow the cursor.
+PAPER_SYNCTEX_MAX_BYTES = 64 * 1024 * 1024
 
 # PAPER_CHANGES: bounded coach output and persisted card previews (S3).
 PAPER_CHANGES_MAX_FILES = 256

@@ -12,6 +12,7 @@ from rcp.paper import PaperSnapshot
 from rcp.paper.compile import PaperCompiler, root_candidates
 from rcp.paper.engines import EngineStore
 from rcp.paper.models import PaperFile
+from rcp.paper.synctex import synctex_map
 from tests.helpers import async_wait_until
 
 
@@ -128,14 +129,23 @@ class NoEngine:
 
 
 @pytest.mark.asyncio
-async def test_a_chosen_root_compiles_only_if_it_reaches_the_open_file(tmp_path):
+async def test_an_open_root_compiles_itself_even_when_another_root_includes_it(tmp_path):
     compiler = PaperCompiler(SubfileLive(), NoEngine(), tmp_path)
-    ambiguous = await compiler.compile("project", "section.tex")
-    assert ambiguous.candidates == ["main.tex", "section.tex"]
-    chosen = await compiler.compile("project", "section.tex", root_path="section.tex")
-    assert (chosen.status, chosen.root_path) == ("unavailable", "section.tex")
-    stray = await compiler.compile("project", "section.tex", root_path="other.tex")
-    assert stray.candidates == ["main.tex", "section.tex"]
+    for chosen in (None, "main.tex"):
+        result = await compiler.compile("project", "section.tex", root_path=chosen)
+        assert (result.status, result.root_path) == ("unavailable", "section.tex")
+
+
+def test_synctex_maps_each_files_lines_to_their_first_pdf_mark():
+    # Recorded from pinned Tectonic 0.17 `--synctex` on the two sources beside it.
+    # Page 1 ships while TeX reads two.tex line 1, so its frame carries that line.
+    fixture = Path(__file__).parent / "fixtures" / "paper_synctex"
+    mapping = synctex_map((fixture / "two_file.synctex").read_text(), Path("/TREE"))
+    assert set(mapping) == {"main.tex", "sections/two.tex"}
+    first_line, page, y = mapping["sections/two.tex"][0]
+    assert (first_line, page) == (1, 2)
+    assert 72 < y < 792
+    assert [entry[1] for entry in mapping["main.tex"] if entry[0] == 3] == [1]
 
 
 @pytest.mark.asyncio
@@ -218,6 +228,7 @@ async def test_real_pinned_tectonic_compile(tmp_path):
     result = await compiler.compile("project", "file")
     assert result.status == "ok", result.log_tail
     assert compiler.pdf("project", result.compile_id).startswith(b"%PDF-")
+    assert result.synctex["paper.tex"]
     await compiler.close()
 
 
