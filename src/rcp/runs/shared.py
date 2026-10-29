@@ -26,6 +26,7 @@ from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, Ru
 from rcp.agents.context import CoachContext
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, HiddenReadScope, Patch
@@ -964,13 +965,107 @@ async def _stream_agent_events(
             return
     assert request.provider is not None
     login_key = LoginKey(request.provider, execution_host, MACHINE_LOGIN_ID)
+    accounts = ProviderAccounts.for_store(execution.store) if execution is not None else None
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    bound_session = session_id or fork.get("fork_session_id")
+    previous = (
+        accounts.previous_login(
+            request.provider,
+            execution_host,
+            session_id,
+            exclude_operation_id=execution.operation_id,
+        )
+        if accounts is not None and execution is not None and session_id
+        else None
+    )
+    bound_login = (
+        accounts.bound_login(request.provider, execution_host, bound_session)
+        if accounts is not None and bound_session and request.provider == "codex"
+        else None
+    )
+    # Further provider passes inside this task retain the turn's captured login.
+    lineage_login = execution.login_key if execution is not None else None
+    if (
+        lineage_login is None
+        and accounts is not None
+        and execution is not None
+        and task is not None
+        and task.parent_operation_id
+    ):
+        parent = execution.store.agent_task(task.parent_operation_id)
+        if (
+            parent is not None
+            and parent.login_id is not None
+            and parent.request.get("provider") == request.provider
+            and (parent.stage_host or "") == execution_host
+            and (
+                execution.store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
+                or execution.store.agent_task_has_receipt(
+                    task.operation_id, "provider_login_lineage"
+                )
+            )
+        ):
+            lineage_login = LoginKey(request.provider, execution_host, parent.login_id)
+
+    def assign_login() -> LoginKey | LoginRefusal:
+        nonlocal login_key
+        assert accounts is not None and execution is not None and request.provider is not None
+        resolved, reason = accounts.resolve_login(
+            request.provider,
+            execution_host,
+            task.authorized_by.user_id if task is not None and task.authorized_by else None,
+            lineage_login=lineage_login,
+            bound_login=bound_login,
+            previous_login=previous.login if previous else None,
+            previous_provider_started_at=previous.provider_started_at if previous else None,
+            previous_authorized_by=previous.authorized_by if previous else None,
+            dry_run=False,
+            operation_id=execution.operation_id,
+        )
+        if isinstance(resolved, LoginRefusal):
+            if resolved.login is not None:
+                execution.login_key = resolved.login
+                execution.store.record_provider_login_refusal(
+                    execution.operation_id, resolved.login
+                )
+            execution.launch_refused = resolved.failure_kind == "session_refused"
+            if not execution.launch_refused:
+                execution.provider_auth_refused = resolved.login or login_key
+            return resolved
+        login_key = resolved
+        execution.login_key = resolved
+        if previous is not None and resolved != previous.login and reason is not None:
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "provider_login_switched",
+                {"from": previous.login.login_id, "to": resolved.login_id, "reason": reason},
+            )
+        return resolved
+
     if execution is not None:
+        resolved = await asyncio.to_thread(assign_login)
+        if isinstance(resolved, LoginRefusal):
+            outcome.failed = True
+            yield _sse(AgentEvent(event="error", text=resolved.detail))
+            return
         execution.login_generation = execution.store.provider_login_state(login_key).generation
 
+    reselected = False
+
+    async def login_unavailable(failed_login: LoginKey) -> LoginKey | None:
+        nonlocal reselected
+        assert execution is not None
+        if lineage_login is None and bound_login is None and not reselected:
+            reselected = True
+            resolved = await asyncio.to_thread(assign_login)
+            if isinstance(resolved, LoginKey):
+                return resolved
+        if not execution.launch_refused and execution.provider_auth_refused is None:
+            execution.provider_auth_refused = failed_login
+        return None
+
     async def capture_login_generation() -> None:
-        # Read again under the credential gate: a Verify that landed while this
-        # launch waited for the gate bumped the generation, and this process runs
-        # on the credential it verified, so its failure must count against it.
+        # Read under the gate for the final selected login, after any re-resolution.
         if execution is not None:
             execution.login_generation = (
                 await asyncio.to_thread(execution.store.provider_login_state, login_key)
@@ -1020,6 +1115,8 @@ async def _stream_agent_events(
             binary=binary,
             runtime_id=(execution.runtime_id or None) if execution is not None else None,
             before_start=capture_login_generation if execution is not None else None,
+            login_key=login_key,
+            login_unavailable=login_unavailable if execution is not None else None,
             supervise_remote=supervise_remote,
             supervisor_path=supervisor_path,
             operation_id=execution.operation_id if execution is not None else None,

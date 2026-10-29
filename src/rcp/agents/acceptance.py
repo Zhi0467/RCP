@@ -124,8 +124,9 @@ class AcceptanceAgentLauncher(AgentLauncher):
         host: str = "",
         binary: str | None = None,
         refresh: bool = False,
+        login_id: str = MACHINE_LOGIN_ID,
     ) -> ProviderReadiness:
-        del binary, refresh
+        del binary, refresh, login_id
         profile = profile_for(provider)
         if host:
             return ProviderReadiness(
@@ -173,6 +174,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
         capability: AgentCapability,
         binary: str | None = None,
         runtime_id: str | None = None,
+        login_key: LoginKey | None = None,
+        login_unavailable: Callable[[LoginKey], Awaitable[LoginKey | None]] | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
         supervisor_path: str | None = None,
@@ -205,6 +208,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     binary=binary,
                     runtime_id=runtime_id,
                     before_start=before_start,
+                    login_key=login_key,
+                    login_unavailable=login_unavailable,
                     supervise_remote=supervise_remote,
                     supervisor_path=supervisor_path,
                     operation_id=operation_id,
@@ -257,7 +262,9 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return
 
         if before_start is not None:
-            hold = await self.credential_gate.hold(LoginKey(provider, host, MACHINE_LOGIN_ID))
+            hold = await self.credential_gate.hold(
+                login_key or LoginKey(provider, host, MACHINE_LOGIN_ID)
+            )
             try:
                 await before_start()
             finally:

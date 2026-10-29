@@ -1019,8 +1019,10 @@ loads with the list ignored, and the next manifest write drops it.
 ### Team execution accounts and credentials
 
 The backend owns team provider calls. Local runs use the service account;
-remote runs use the exact profile's configured SSH account and its provider
-state. No account switching or alternate provider homes are created.
+remote runs use the exact profile's configured SSH account. Provider logins do
+not change that OS account. Added Codex logins use separate credential/session
+homes; Claude logins share native sessions and change only the token.
+[Login state and failure](#login-state-and-failure) owns turn selection.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
@@ -1061,23 +1063,43 @@ refuse explicitly; status GET is read-only. Sign-out records a new generation,
 
 ### Login state and failure
 
-One durable `(provider, host)` login row stores `signed_in`/`signed_out` and a
-generation. Provider-owned revoked-login evidence classifies `provider_auth`
-across turns, wakes, workers, reports, recovery and probes. Only the generation
-captured at launch can revoke the account; late failures cannot revoke a repaired
-login. Claude recognizes its remote missing-token fence and declares no unobserved
-native revocation signatures.
+Each login has a durable `(provider, host, login_id)` row with signed-in state
+and a generation. The empty login ID names the machine sign-in. Admission dry-runs
+the member's ordered own/shared setting before allocating a task or debiting an
+episode. Episode turns use the episode's authorizer. Launch resolves again inside
+the assignment transaction, writing the task login and advancing the shared LRU
+clock. A changed session login records `provider_login_switched` with its previous
+and new IDs and the resolver's reason.
 
-Signed-out or missing-required-credential accounts refuse paid admission before
-task creation/budget debit. Queued tasks remain queued, reconcilers retain their
-inputs, and auth recoveries remain blocked. Readiness, Retry and server checks
-read that same state. Verify runs a minimal authenticated request under the gate.
-Success increments generation, invalidates readiness and releases account-bound
-recovery, queued work, mail, lifecycle/watcher inputs, reports and eligible
-Experiment Retry once. Ordinary episode reconciliation retains other accounts'
-fences. Authentication failures sign out; transport/configuration/ordinary failures
-do not. Errors direct members to Settings, Provider logins, without exposing
-credentials or prescribing shell login commands.
+Claude resolves at each turn boundary. Codex sessions, including forks, retain
+the login that owns their native session. Transport reattempts and initial graph
+repair corrections retain their parent's login. Unhealthy bound work waits; a
+removed Codex binding refuses the session. Draining logins admit no new choices
+but remain usable by bound work until their running tasks and unpaused episodes
+end. Removal retains session files and deletes only credentials; unreachable
+remote cleanup remains pending for reconciliation.
+
+The credential gate rechecks the selected login. An unbound launch may release
+the gate and resolve once more. A bound refusal carries a typed `provider_auth`
+flag; classification never infers that refusal from error text. Provider-owned
+revoked-login evidence fences only the login and generation captured at launch.
+A late failure cannot revoke a verified credential. After restart, an unavailable
+captured generation cannot authorize a new fence.
+
+Settlement marks a login limited from the existing `session_limit` classification.
+A later successful turn or Verify clears the mark; an overlapping older turn
+cannot clear newer evidence. Lapse changes fresh-session selection only. An
+unbound episode may retry once per session and limited login when resolution
+finds a different login without a limit mark. A durable receipt prevents restart
+from rearming that retry; Auto-research retains its recovery owner and Experiment
+uses ordinary Retry.
+
+Login-keyed release selects recoveries, queued work, Experiment retries and
+watcher groups by binding or member setting. Verified credentials and changed
+settings use the same release helper. Unbound authentication failures release
+after settlement records their park when another allowed login is available.
+Provider login, Git transport, SSH access and RCP membership remain distinct
+authorities. Transport/configuration/ordinary failures do not sign out a login.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
 native paths, locally or in the remote interactive login shell. An explicit path

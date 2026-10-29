@@ -58,7 +58,10 @@ def start_episode_report(
         report_request = EpisodeReportRunRequest.model_validate(existing.request)
         try:
             tasks.admit_provider_task(
-                episode.project_id, report_request, execution_host=report_request.execution_host
+                episode.project_id,
+                report_request,
+                execution_host=report_request.execution_host,
+                authorized_by=episode.authorized_by,
             )
         except AdmissionRefused:
             return None

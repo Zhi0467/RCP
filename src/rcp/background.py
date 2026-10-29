@@ -15,8 +15,7 @@ from typing import Protocol, cast, get_args
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.git_access import ProviderGitAccess
-from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.config import load_manifest
@@ -105,7 +104,7 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.storage.chat_forks import ChatForkRefused
-from rcp.storage.models import MACHINE_LOGIN_ID, AgentTaskAlreadyContinued, LoginKey
+from rcp.storage.models import AgentTaskAlreadyContinued, LoginKey
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
@@ -258,6 +257,8 @@ class AgentTaskExecution:
     runtime_id: str = ""
     git_access: ProviderGitAccess | None = None
     login_generation: int = 0
+    login_key: LoginKey | None = None
+    provider_auth_refused: LoginKey | None = None
     stage_host: str | None = None
     stage_root: str | None = None
     write_scope_fingerprint: str | None = None
@@ -481,6 +482,8 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         *,
         execution_host: str | None = None,
+        authorized_by: AuthorizedHuman | None = None,
+        lineage_login: LoginKey | None = None,
         isolation_episode_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
     ) -> None:
@@ -510,12 +513,30 @@ class BackgroundAgentTasks:
                 if project is None:
                     raise KeyError(project_id)
                 host = provider_login_host(load_manifest(project.locator), request.run_on)
-        if reason := account_login_refusal(
-            self.store,
-            ProviderCredentialStore.for_data_dir(self.store.path.parent),
-            LoginKey(request.provider, host, MACHINE_LOGIN_ID),
-        ):
-            raise ProviderSignedOut(reason)
+        accounts = ProviderAccounts.for_store(self.store)
+        session_id = getattr(request, "session_id", None)
+        bound_session_id = session_id or getattr(request, "fork_session_id", None)
+        previous = (
+            accounts.previous_login(request.provider, host, session_id, exclude_operation_id="")
+            if session_id
+            else None
+        )
+        resolved, _ = accounts.resolve_login(
+            request.provider,
+            host,
+            authorized_by.user_id if authorized_by else None,
+            lineage_login=lineage_login,
+            bound_login=(
+                accounts.bound_login(request.provider, host, bound_session_id)
+                if bound_session_id and request.provider == "codex"
+                else None
+            ),
+            previous_login=previous.login if previous else None,
+            previous_provider_started_at=previous.provider_started_at if previous else None,
+            previous_authorized_by=previous.authorized_by if previous else None,
+        )
+        if isinstance(resolved, LoginRefusal):
+            raise ProviderSignedOut(resolved.detail)
         if self.dependency_checker is not None and (
             reason := self.dependency_checker.launch_refusal(host)
         ):
@@ -819,10 +840,10 @@ class BackgroundAgentTasks:
             )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
-        preflight_experiment_episode_recovery(self, previous, request=original)
         request = original.model_copy(
             update={"session_id": previous.native_session_id, **skill_update(skills)}
         )
+        preflight_experiment_episode_recovery(self, previous, request=request)
         continuation: AgentTaskContinuation = (
             "graph_repair"
             if self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
@@ -900,7 +921,6 @@ class BackgroundAgentTasks:
                 run_on=run_on,
                 skills=skills,
             )
-        preflight_experiment_episode_recovery(self, previous, request=original)
         graph_repair = (
             self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
         )
@@ -977,6 +997,7 @@ class BackgroundAgentTasks:
                 raise ValueError(detail)
             assert previous.native_session_id is not None
             request = request.model_copy(update={"session_id": previous.native_session_id})
+            preflight_experiment_episode_recovery(self, previous, request=request)
             return self._create_and_spawn(
                 previous.project_id,
                 previous.kind,
@@ -999,6 +1020,7 @@ class BackgroundAgentTasks:
         )
         if retry_same_provider:
             request = request.model_copy(update={"session_id": previous.native_session_id})
+            preflight_experiment_episode_recovery(self, previous, request=request)
             return self._create_and_spawn(
                 previous.project_id,
                 previous.kind,
@@ -1487,13 +1509,6 @@ class BackgroundAgentTasks:
         """
 
         self._require_startup_effects_open("provider task admission")
-        self.admit_provider_task(
-            project_id,
-            request,
-            execution_host=(stage_host or "") if stage_root else None,
-            isolation_episode_id=parent.episode_id if parent else None,
-            graph_target=parent.graph_target if parent else graph_target,
-        )
         episode: EpisodeRecord | None = None
         task_graph_target = (
             parent.graph_target if parent is not None else graph_target or GraphTargetRef()
@@ -1535,6 +1550,29 @@ class BackgroundAgentTasks:
                 raise ValueError("The Experiment continuation lost its episode parent.")
         elif auto_research_mail_delivery is not None or auto_research_wake_admission is not None:
             raise ValueError("Only Auto-research may use Auto-research wake admission.")
+        self.admit_provider_task(
+            project_id,
+            request,
+            authorized_by=authorized_by,
+            lineage_login=(
+                LoginKey(request.provider, stage_host or "", parent.login_id)
+                if parent is not None
+                and parent.login_id is not None
+                and request.provider is not None
+                and request.provider == parent.request.get("provider")
+                and (stage_host or "") == (parent.stage_host or "")
+                and (
+                    claim_graph_repair_parent
+                    or self.store.agent_task_has_receipt(
+                        parent.operation_id, "transport_auto_retry"
+                    )
+                )
+                else None
+            ),
+            execution_host=(stage_host or "") if stage_root else None,
+            isolation_episode_id=parent.episode_id if parent else None,
+            graph_target=parent.graph_target if parent else graph_target,
+        )
         if task_graph_capable(kind, request) and authorized_by is None:
             raise ValueError("A patch-capable agent task requires a human authorizer snapshot.")
         if authorized_by is None:
@@ -1710,6 +1748,14 @@ class BackgroundAgentTasks:
                     task_record,
                     continuation_cause=continuation,
                 )
+        if claim_graph_repair_parent:
+            assert parent is not None
+            self.store.record_agent_task_receipt(
+                record.operation_id,
+                "provider_login_lineage",
+                {"parent_operation_id": parent.operation_id},
+                tier="diagnostic",
+            )
         # Only a fresh wake admission (watcher, lifecycle, or mail) takes the
         # exact-wake launcher.  A retry or resume keeps its parent's wake_cause for
         # the turn's input but reuses the paid allocation, which the wake validator
@@ -1813,9 +1859,29 @@ class BackgroundAgentTasks:
             self.store.fail_agent_task(record.operation_id, str(exc))
             return self._require_operation(record.operation_id)
 
+        lineage_login = None
+        if record.parent_operation_id:
+            parent_login = self.store.agent_task(record.parent_operation_id)
+            if (
+                parent_login is not None
+                and parent_login.login_id is not None
+                and request.provider == parent_login.request.get("provider")
+                and (record.stage_host or "") == (parent_login.stage_host or "")
+                and (
+                    self.store.agent_task_has_receipt(operation_id, "provider_login_lineage")
+                    or self.store.agent_task_has_receipt(
+                        parent_login.operation_id, "transport_auto_retry"
+                    )
+                )
+            ):
+                lineage_login = LoginKey(
+                    str(request.provider), record.stage_host or "", parent_login.login_id
+                )
         self.admit_provider_task(
             record.project_id,
             request,
+            authorized_by=record.authorized_by,
+            lineage_login=lineage_login,
             execution_host=(record.stage_host or "") if record.stage_root else None,
         )
 
@@ -2412,6 +2478,8 @@ class BackgroundAgentTasks:
 
         if execution.launch_refused:
             return "session_refused"
+        if execution.provider_auth_refused is not None:
+            return "provider_auth"
         provider = request.provider
         profile = None
         if isinstance(provider, str) and provider:
@@ -2428,16 +2496,15 @@ class BackgroundAgentTasks:
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
             link_lost_before_provider=exit is None and execution.stage_unreachable,
         )
-        if kind == "provider_auth" and provider:
-            host = execution.stage_host or ""
+        if kind == "provider_auth" and execution.login_key is not None:
             record_provider_failure(
                 self.store,
-                LoginKey(provider, host, MACHINE_LOGIN_ID),
+                execution.login_key,
                 generation=execution.login_generation,
                 evidence=error,
                 source="turn",
             )
-            state = self.store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
+            state = self.store.provider_login_state(execution.login_key)
             if state.state == "signed_in" and state.generation > execution.login_generation:
                 # The startup gate is released once the provider speaks, so a member
                 # can verify the account before this turn reports the old login's
@@ -2499,6 +2566,14 @@ class BackgroundAgentTasks:
             store=self.store,
             control=AgentProcessControl(),
             runtime_id=record.runtime_id,
+            login_key=(
+                LoginKey(str(record.request["provider"]), record.stage_host or "", record.login_id)
+                if record.request.get("provider") and record.login_id is not None
+                else None
+            ),
+            # A restart lost the captured generation. Never revoke a credential
+            # using the current generation as if it belonged to the old turn.
+            login_generation=-1,
             stage_host=record.stage_host,
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
@@ -2980,7 +3055,10 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
+        from rcp.runs.provider_login import settle_provider_login
+
         if isinstance(request, EpisodeReportRunRequest):
+            settle_provider_login(self, record)
             return
         try:
             self._auto_retry_transport_loss(record)
@@ -3018,6 +3096,8 @@ class BackgroundAgentTasks:
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )
+
+        settle_provider_login(self, record)
 
     async def _consume(
         self,

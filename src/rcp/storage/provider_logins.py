@@ -442,6 +442,16 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             raise ValueError("Unknown agent task.")
         return row[0]
 
+    def record_provider_login_refusal(self, operation_id: str, key: LoginKey) -> None:
+        """Retain the concrete refused binding without advancing the assignment clock."""
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE graph_runs SET login_id=? WHERE operation_id=?",
+                (key.login_id, operation_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Unknown agent task.")
+
     def assign_provider_login(
         self, operation_id: str, select: Callable[[sqlite3.Connection], LoginKey | None]
     ) -> LoginKey | None:

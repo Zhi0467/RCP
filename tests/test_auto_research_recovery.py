@@ -24,6 +24,7 @@ from rcp.runs.auto_research_recovery import (
     reconcile_auto_research_task_settlement,
     reconcile_due_auto_research_recoveries,
 )
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
@@ -765,7 +766,7 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
-    with pytest.raises(ValueError, match="signed out"):
+    with pytest.raises(ProviderSignedOut):
         tasks.retry(root.operation_id)
     assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 0
     assert store.auto_research_recovery(recovery.recovery_id) == recovery
@@ -851,7 +852,7 @@ def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Pat
     store.mark_provider_login_failed(
         LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
     )
-    with pytest.raises(ValueError, match="signed out"):
+    with pytest.raises(ProviderSignedOut):
         tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
 
     after = store.auto_research_recovery("task:root")

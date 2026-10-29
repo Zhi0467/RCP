@@ -3111,7 +3111,12 @@ def test_a_turn_the_provider_explained_is_never_blamed_on_the_link(
     store.record_agent_task_receipt(
         task.operation_id, "provider_exit", exit_payload, tier="diagnostic"
     )
-    execution = SimpleNamespace(stage_host="gpu.example.edu", launch_refused=False)
+    execution = SimpleNamespace(
+        stage_host="gpu.example.edu",
+        launch_refused=False,
+        provider_auth_refused=None,
+        login_key=None,
+    )
     request = tasks._request_from_record(store.agent_task(task.operation_id))
 
     assert (
@@ -3274,6 +3279,7 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     observed = []
 
     async def stream(_project, _kind, _request, execution):
+        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
             LoginKey("codex", "", MACHINE_LOGIN_ID)
         ).generation
@@ -3296,6 +3302,7 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     store = _store(tmp_path)
 
     async def stream(_project, _kind, _request, execution):
+        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
             LoginKey("codex", "", MACHINE_LOGIN_ID)
         ).generation
@@ -3615,6 +3622,8 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
             stage_unreachable=stage_unreachable,
             login_generation=0,
             launch_refused=False,
+            provider_auth_refused=None,
+            login_key=None,
         )
         return tasks._failure_kind(task.operation_id, request, execution, error)  # type: ignore[arg-type]
 

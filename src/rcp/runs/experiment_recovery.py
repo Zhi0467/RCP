@@ -218,16 +218,12 @@ def retry_experiment_loop(
         if value is not None
     }
     request = RunRequest.model_validate({**baseline, **requested_config})
-    tasks.admit_provider_task(
-        previous.project_id,
-        request,
-        execution_host=(previous.stage_host or "") if previous.stage_root else None,
-    )
     config_changed = any(
         requested_config.get(field, baseline.get(field)) != baseline.get(field)
         for field in requested_config
     )
     if config_changed:
+        preflight_experiment_episode_recovery(tasks, previous, request=request)
         estimate, samples = tasks.store.agent_task_estimate(
             previous.project_id,
             previous.kind,
@@ -276,11 +272,15 @@ def retry_experiment_loop(
     elif owned_checkpoint and stage_root:
         stage = Path(stage_root)
         stage_available = stage.is_dir() and not stage.is_symlink()
+    recovery_request = request.model_copy(
+        update={"session_id": session_id if owned_checkpoint and stage_available is True else None}
+    )
+    preflight_experiment_episode_recovery(tasks, previous, request=recovery_request)
     if owned_checkpoint and stage_available is True:
         return tasks._create_and_spawn(
             previous.project_id,
             previous.kind,
-            request.model_copy(update={"session_id": session_id}),
+            recovery_request,
             parent=previous,
             continuation="retry",
             estimate_seconds=previous.estimate_seconds,
@@ -400,6 +400,7 @@ def preflight_experiment_episode_recovery(
     tasks.admit_provider_task(
         record.project_id,
         original,
+        authorized_by=record.authorized_by,
         execution_host=(record.stage_host or "") if record.stage_root else None,
     )
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)

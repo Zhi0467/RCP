@@ -18,7 +18,6 @@ from rcp.storage import (
     EpisodeStatus,
     EpisodeWrapupState,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 
 class _EpisodeProjectionParent(Protocol):
@@ -285,11 +284,10 @@ def load_episode_health(
     ],
 ]:
     """Read local episode inputs, then apply the shared policy as one batch."""
-    from rcp.agents.provider_accounts import account_login_refusal
-    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 
     inputs = []
-    credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
+    accounts = ProviderAccounts.for_store(store)
     reported = store.reported_episode_ids([episode.episode_id for episode in episodes])
     for episode in episodes:
         tasks = [
@@ -331,12 +329,17 @@ def load_episode_health(
         blocked = (
             wrapup is not None
             and wrapup.provider is not None
-            and account_login_refusal(
-                store,
-                credentials,
-                LoginKey(wrapup.provider, wrapup.execution_host or "", MACHINE_LOGIN_ID),
+            and isinstance(
+                accounts.resolve_login(
+                    wrapup.provider,
+                    wrapup.execution_host or "",
+                    episode.authorized_by.user_id if episode.authorized_by else None,
+                    bound_login=accounts.bound_login(
+                        wrapup.provider, wrapup.execution_host or "", wrapup.native_session_id or ""
+                    ),
+                )[0],
+                LoginRefusal,
             )
-            is not None
         )
         inputs.append(
             EpisodeHealthInput(

@@ -143,9 +143,12 @@ def demand_inputs(tmp_path, monkeypatch):
             e.episode_id: health[e.episode_id] for e in episodes if e.episode_id in health
         },
     )
-    monkeypatch.setattr(power.ProviderCredentialStore, "for_data_dir", lambda _: object())
-    refusal = Mock(return_value=None)
-    monkeypatch.setattr(power, "account_login_refusal", refusal)
+    refusal = Mock(return_value=(None, None))
+    monkeypatch.setattr(
+        power.ProviderAccounts,
+        "for_store",
+        lambda _: SimpleNamespace(resolve_login=refusal, bound_login=lambda *args: None),
+    )
     return SimpleNamespace(
         store=store,
         background=background,
@@ -193,9 +196,18 @@ def test_episode_demand_is_only_for_home_space(demand_inputs):
 )
 def test_task_demand_rows(demand_inputs, status, refused, expected):
     demand_inputs.tasks.append(
-        SimpleNamespace(status=status, request={"provider": "codex"}, stage_host="")
+        SimpleNamespace(
+            status=status,
+            request={"provider": "codex"},
+            stage_host="",
+            authorized_by=None,
+            native_session_id=None,
+        )
     )
-    demand_inputs.refusal.return_value = "signed_out" if refused else None
+    demand_inputs.refusal.return_value = (
+        power.LoginRefusal("shared", "signed_out") if refused else None,
+        None,
+    )
     assert power.demand_snapshot(demand_inputs.store, demand_inputs.background) == (
         ["task"] if expected else []
     )

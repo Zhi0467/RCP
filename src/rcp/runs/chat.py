@@ -1751,6 +1751,7 @@ def reconcile_chat_question_answers(
                     background_tasks.admit_provider_task(
                         origin_task.project_id,
                         RunRequest.model_validate(origin_task.request),
+                        authorized_by=origin_task.authorized_by,
                         execution_host=(
                             (origin_task.stage_host or "") if origin_task.stage_root else None
                         ),

@@ -192,7 +192,10 @@ def continue_auto_research(
             "now, so its session cannot be resumed. Start a new Auto-research episode instead."
         )
     tasks.admit_provider_task(
-        source.project_id, previous_root, execution_host=binding.stage_host or ""
+        source.project_id,
+        previous_root.model_copy(update={"session_id": binding.native_session_id}),
+        authorized_by=authorized_by,
+        execution_host=binding.stage_host or "",
     )
     episode_id = str(uuid.uuid4())
     operation_id = str(uuid.uuid4())
@@ -388,7 +391,7 @@ def reserve_auto_research(
         authorized_by=authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(project_id, run_request)
+    tasks.admit_provider_task(project_id, run_request, authorized_by=authorized_by)
     stored_episode, stored_task = tasks.store.create_auto_research_episode_with_root_task(
         episode,
         AutoResearchStateRecord(
@@ -649,7 +652,10 @@ def start_auto_research_turn(
     elif wake_admission is not None:
         raise ValueError("Only an Auto-research watcher wake may use wake admission.")
     tasks.admit_provider_task(
-        episode.project_id, request, execution_host=(stage_host or "") if stage_root else None
+        episode.project_id,
+        request,
+        authorized_by=episode.authorized_by,
+        execution_host=(stage_host or "") if stage_root else None,
     )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
@@ -978,7 +984,11 @@ def start_auto_research_child_work(
         updated_at=now,
     )
     tasks.admit_provider_task(
-        episode.project_id, request, graph_target=target, isolation_episode_id=episode.episode_id
+        episode.project_id,
+        request,
+        authorized_by=episode.authorized_by,
+        graph_target=target,
+        isolation_episode_id=episode.episode_id,
     )
     _, stored = tasks.store.create_auto_research_child_work(
         route,
@@ -1191,6 +1201,7 @@ def _start_auto_research_child_work_wake(
     tasks.admit_provider_task(
         episode.project_id,
         request,
+        authorized_by=episode.authorized_by,
         graph_target=current.graph_target,
         isolation_episode_id=episode.episode_id,
     )
@@ -1487,7 +1498,9 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(route.project_id, request, graph_target=target)
+    tasks.admit_provider_task(
+        route.project_id, request, authorized_by=parent.authorized_by, graph_target=target
+    )
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,
@@ -1735,11 +1748,6 @@ def retry_auto_research_task(
         original = AutoResearchRunRequest.model_validate(
             {**original.model_dump(mode="json"), **rebound}
         )
-    tasks.admit_provider_task(
-        previous.project_id,
-        original,
-        execution_host=(previous.stage_host or "") if previous.stage_root else None,
-    )
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
     owned_checkpoint = bool(
         previous.native_session_id and previous.stage_root and tasks._session_is_rcp_owned(previous)
@@ -1748,6 +1756,14 @@ def retry_auto_research_task(
         continuation_unavailable or not owned_checkpoint
     )
     starts_fresh = bool(rebound) or clean_orchestrator_retry
+    tasks.admit_provider_task(
+        previous.project_id,
+        original.model_copy(
+            update={"session_id": None if starts_fresh else previous.native_session_id}
+        ),
+        authorized_by=previous.authorized_by,
+        execution_host=(previous.stage_host or "") if previous.stage_root else None,
+    )
     logical_problem = (
         "the saved continuation context is unavailable"
         if continuation_unavailable
