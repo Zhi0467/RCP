@@ -115,6 +115,24 @@ def test_chat_lesson_commands_recheck_live_membership(store, mode):  # noqa: F81
     assert len(store.list_lessons("project")) == 1
 
 
+def test_lesson_commands_refuse_a_turn_without_its_human(store):  # noqa: F811
+    from rcp.service import RunRequest, resolve_dispatch_authority
+    from rcp.storage.lessons import LessonError
+
+    chat = RunRequest(chat_scope="project", chat_id="chat", message="m", mode="work")
+    authority = resolve_dispatch_authority("project_chat", chat)
+    assert authority is not None
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET dispatch_authority_json=?,authorized_space_id=NULL,"
+            "authorized_user_id=NULL,authorized_display_name=NULL WHERE operation_id='turn'",
+            (authority.model_dump_json(),),
+        )
+    with pytest.raises(LessonError) as refused:
+        store.execute_lesson_command("project", "turn", "add", key="k", text="tip")
+    assert refused.value.code == "lesson_forbidden"
+
+
 @pytest.mark.parametrize("mode", ["experiment", "episode", "child_work_episode", "child_work"])
 def test_episode_chat_is_add_only(store, mode):  # noqa: F811
     from rcp.service import RunRequest, resolve_dispatch_authority

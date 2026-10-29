@@ -1,7 +1,7 @@
 import { Ellipsis, type LucideIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { rovingFocusTarget } from "../core/rovingFocus";
+import { popoverRows, rovingFocusTarget } from "../core/rovingFocus";
 import { popoverPlacement, type PopoverPlacement } from "./popoverPlacement";
 
 export interface OverflowMenuItem {
@@ -12,13 +12,7 @@ export interface OverflowMenuItem {
 }
 
 /** The menu's rows: its items, then the triggers of the pickers it holds, not their options. */
-function menuRows(menu: HTMLElement | null) {
-  return [
-    ...(menu?.querySelectorAll<HTMLButtonElement>(
-      "button[role=menuitem]:not(:disabled), button[aria-expanded]:not(:disabled)",
-    ) ?? []),
-  ];
-}
+const MENU_ROWS = "button[role=menuitem]:not(:disabled), button[aria-expanded]:not(:disabled)";
 
 /**
  * A "⋯" button and its menu: items, then any inline controls. `portal` renders
@@ -64,7 +58,7 @@ export function OverflowMenu({
     };
   }, [open, portal]);
   useEffect(() => {
-    if (shown) menuRows(list.current)[0]?.focus();
+    if (shown) popoverRows(list.current, MENU_ROWS)[0]?.focus();
   }, [shown]);
   useEffect(() => {
     if (!open) return;
@@ -94,7 +88,11 @@ export function OverflowMenu({
       onKeyDown={(event) => {
         // A nested picker that handled the key moves within its own layer.
         if (event.defaultPrevented) return;
-        const next = rovingFocusTarget(menuRows(list.current), event.target, event.key);
+        const next = rovingFocusTarget(
+          popoverRows(list.current, MENU_ROWS),
+          event.target,
+          event.key,
+        );
         if (!next) return;
         event.preventDefault();
         next.focus();

@@ -78,17 +78,12 @@ export function ProjectHistoryDrawer({
                 </span>
               </button>
             ))}
-            {tasks.length === 0 && <span className="quiet-empty">No Agent tasks yet.</span>}
           </nav>
 
           <div className="run-inspector-detail">
-            <section aria-label="Project revision summaries">
+            <section aria-label="Project revision summaries" aria-busy={loading || undefined}>
               <h4>Project revisions</h4>
-              {loading ? (
-                <div className="quiet-empty" role="status">
-                  Loading project revisions…
-                </div>
-              ) : error ? (
+              {loading ? null : error ? (
                 <div className="quiet-empty" role="alert">
                   {error}
                 </div>
@@ -117,9 +112,7 @@ export function ProjectHistoryDrawer({
                     ),
                   )}
                 </ol>
-              ) : (
-                <div className="quiet-empty">No project revisions yet.</div>
-              )}
+              ) : null}
             </section>
           </div>
         </div>

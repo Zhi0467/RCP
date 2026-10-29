@@ -9,6 +9,8 @@ from rcp.runs.branch_merge_context import load_branch_merge_context
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from tests.test_owned_merge_storage import _owned_merge
 
+from .helpers import fake_launch_admitted
+
 
 @pytest.mark.parametrize("no_change_receipt", [False, True])
 def test_failed_bound_merge_never_retries_without_a_destination_patch(
@@ -41,9 +43,9 @@ def test_failed_bound_merge_never_retries_without_a_destination_patch(
     failed = store.agent_task(task.operation_id)
     assert failed is not None
     meter = store.episode_budget_meter(harness.episode.episode_id)
-    monkeypatch.setattr(
+    fake_launch_admitted(
+        monkeypatch,
         harness.app.state.background_tasks,
-        "launch_admitted",
         lambda *_args: pytest.fail("Failed merge launched without canonical delivery proof"),
     )
     result = recover_branch_merge_task(harness.app.state.background_tasks, harness.service, failed)

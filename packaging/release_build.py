@@ -222,6 +222,38 @@ def check_promotion(wheel: Path, tag: str) -> None:
         )
 
 
+def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) -> None:
+    """Accept only passing copied-data rehearsals of these exact assets and the tested app."""
+    try:
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReleaseBuildError(f"could not read qualification receipt: {exc}") from exc
+    # The receipt is public in the run inputs and summary, so it admits no
+    # rehearsal warnings, which can name projects and hosts.
+    if (
+        not isinstance(value, dict)
+        or value.keys() != {"version", "desktop_candidate_run", "rehearsals"}
+        or value["version"] != 1
+    ):
+        raise ReleaseBuildError("qualification receipt must be a version 1 object")
+    if (
+        not desktop_candidate_run.isdecimal()
+        or value.get("desktop_candidate_run") != desktop_candidate_run
+    ):
+        raise ReleaseBuildError("qualification receipt names another desktop candidate run")
+    rehearsals = value.get("rehearsals")
+    if not isinstance(rehearsals, list) or not rehearsals:
+        raise ReleaseBuildError("qualification receipt holds no copied-data rehearsal")
+    digest = _digest(manifest)
+    for number, rehearsal in enumerate(rehearsals, start=1):
+        if not isinstance(rehearsal, dict) or rehearsal.keys() != {"manifest_sha256", "status"}:
+            raise ReleaseBuildError(f"rehearsal {number} must hold only its digest and status")
+        if rehearsal["manifest_sha256"] != digest:
+            raise ReleaseBuildError(f"rehearsal {number} did not install this build's assets")
+        if rehearsal["status"] != "ready":
+            raise ReleaseBuildError(f"rehearsal {number} did not pass")
+
+
 def _timestamp(value: Any, field: str) -> datetime:
     if not isinstance(value, str):
         raise ReleaseBuildError(f"release {field} must be a timestamp")
@@ -316,6 +348,11 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     promotion.add_argument("--wheel", type=Path, required=True)
     promotion.add_argument("--tag", required=True)
 
+    receipt = subparsers.add_parser("check-receipt")
+    receipt.add_argument("receipt", type=Path)
+    receipt.add_argument("--manifest", type=Path, required=True)
+    receipt.add_argument("--desktop-candidate-run", required=True)
+
     stale = subparsers.add_parser("select-stale-builds")
     stale.add_argument("--releases", type=Path, required=True)
     stale.add_argument("--now", required=True)
@@ -345,6 +382,12 @@ def main(argv: list[str] | None = None) -> int:
             check_assets(arguments.directory, require_supervisor=arguments.require_supervisor)
         elif arguments.command == "check-promotion":
             check_promotion(arguments.wheel, arguments.tag)
+        elif arguments.command == "check-receipt":
+            check_receipt(
+                arguments.receipt,
+                arguments.manifest,
+                desktop_candidate_run=arguments.desktop_candidate_run,
+            )
         elif arguments.command == "select-stale-builds":
             for tag_name in select_stale_builds(arguments.releases, arguments.now, arguments.days):
                 print(tag_name)

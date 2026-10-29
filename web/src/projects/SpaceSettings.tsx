@@ -112,9 +112,10 @@ function SpaceMachineList({
         <h2>Machines</h2>
       </header>
       {error && <div className="settings-error">{error}</div>}
-      <div className="provider-machine-list">
-        {machines === null && !error && <div className="settings-empty">Loading…</div>}
-        {machines?.length === 0 && <div className="settings-empty">No machines yet.</div>}
+      <div
+        className="provider-machine-list"
+        aria-busy={machines === null && !error ? true : undefined}
+      >
         {machines?.map((machine) => (
           <MachineCard
             key={machine.machine_id}

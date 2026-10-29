@@ -26,7 +26,8 @@ An unresolved run leaves that target's occurrence owed without blocking others.
 Expired authorization starts nothing. Departed authorizers, refused work, paused
 resumable chat, unavailable history, or unresolved launch configuration produce
 failure rows. They advance the occurrence, never coverage. If no non-consolidation
-revision followed the covered head, the occurrence records `skipped`. A branch's
+revision followed the covered head, the occurrence records `skipped`. Commits
+of a run that failed count as non-consolidation, so the next night checks them. A branch's
 initial coverage is its immutable fork revision, so inherited work alone does
 not trigger it. Otherwise one turn is admitted on that target.
 
@@ -34,6 +35,10 @@ Only success advances coverage. It covers the input head and subsequent revision
 from that operation, never concurrent work. Immediately before the first launch,
 RCP rechecks the authorization id, expiry, membership, and write admission.
 This includes release after sign-in and startup recovery.
+A queued turn whose stored row fails launch validation fails, so its run settles
+as a failure row and the target's next occurrence is free. Any other launch error
+leaves the turn queued for the next poll and adds a warning event to the turn
+whenever the error changes, not on every poll.
 Started turns settle under their captured authority. Apply still checks live
 membership.
 
@@ -47,7 +52,9 @@ artifacts. Branch ownership grants no orchestrator authority. The official
 workflow and dependencies resolve through the skill registry independently of
 project defaults and appear in the launch receipt.
 
-The command client offers `validate`, keyed `apply`, `lesson`, and `flag`.
+The command client offers `validate`, keyed `apply`, `flag`, `bulletin` (a run with
+no episode always holds it), `lesson` when lesson actions resolve, and the graph
+history reads when a read scope exists.
 It refuses watcher handoff. Apply persists immutable bytes and their digest under
 the operation and key. It returns the committed revision.
 Identical retries replay. Changed bytes under the same key are refused.
@@ -141,11 +148,12 @@ Identical keys replay. Changed arguments are refused.
 Only one open or addressing flag is allowed per project, target, Evidence, and kind.
 Duplicates return the existing flag.
 
-After every successful or replayed Apply and at settlement, RCP raises idempotent
-`consolidation_added` notices for current Evidence created by that Patch's receipt,
-not a graph diff. Agent keys cannot use the reserved `rcp:` prefix or raise this
-kind. Failure to record a hold produces a warning without undoing Apply.
-Unreadable canonical receipts leave settlement pending until verification succeeds.
+After every successful or replayed Apply, keyed or final, and at settlement, RCP
+raises idempotent `consolidation_added` notices for current Evidence that the run's
+canonical Patches on its target created, not a graph diff. Agent keys cannot use
+the reserved `rcp:` prefix or raise this kind. Failure to record a hold produces a
+warning without undoing Apply. Unreadable canonical history leaves a launched run's
+settlement pending until verification succeeds.
 
 The selected target's open or addressing flags appear in Inbox.
 `consolidation_added` and `unverified` are notice-only. They offer no Address action
@@ -163,12 +171,13 @@ reject empty or duplicate ids, non-open flags, notice-only kinds, mixed targets,
 and absent or retired Evidence. One finding uses node Work.
 Multiple findings share one project Work turn.
 Sorted locks and one task transaction bind all flags or none.
-The request key and exact ids survive failed Web attempts and replay their own
-turn after settlement. Every still-bound flag follows batch settlement and recovery.
+The request key and exact ids survive a 5xx or network failure and replay their
+own turn after settlement; a refusal lets Retry pick a fresh batch. Every still-bound flag follows batch settlement and recovery.
 
 A succeeded Address turn with outcome `done` closes its flags if no graph update
 was rejected or unavailable. A partial or could-not outcome, failure, interruption,
-or Stop reopens the flags and retains the chat. Another Address starts a new turn.
+or Stop reopens the flags and retains the chat. Another Address starts a new turn
+in a new chat and replaces the flag's chat link.
 Resume or Retry returns the flags to addressing unless they were dismissed or
 rebound. Startup follows the latest recovery bindings and settles ended turns.
 It adapts older request receipts. Dismiss closes flags for all members.
@@ -188,7 +197,9 @@ Members also manage lessons in Settings.
 
 Child Work, Experiment, and Auto-research roots and workers may only add lessons.
 Consolidation may manage all notes, including human-owned ones.
-It reports every change. Seed, Refresh, and branch merge have no lesson commands.
+It reports every change. A note's author is its last editor, but an agent's
+edit keeps a human-owned note human-owned, so it still leads `lessons.md`.
+Seed, Refresh, and branch merge have no lesson commands.
 Discuss gains no graph or Apply authority. Resolved handler actions render usage
 from parser option records.
 **Why:** ordinary chat acts for its member on operational notes.

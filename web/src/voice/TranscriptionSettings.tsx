@@ -171,7 +171,10 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
   const voiceConnection =
     settings?.connections.find((connection) => connection.purposes.includes("voice")) ?? null;
   return (
-    <section className="settings-section transcription-settings">
+    <section
+      className="settings-section transcription-settings"
+      aria-busy={settings === null && !error ? true : undefined}
+    >
       <header>
         <span>
           <AudioLines size={16} />
@@ -179,7 +182,6 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
         <h2>Dictation and voice</h2>
         <span className="transcription-owner">Only you</span>
       </header>
-      {settings === null && !error ? <p className="provider-login-intro">Loading…</p> : null}
       {settings ? (
         <>
           <h3 className="transcription-group">Dictation</h3>

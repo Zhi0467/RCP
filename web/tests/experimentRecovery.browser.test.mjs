@@ -297,7 +297,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         else if (path.endsWith("/readiness")) json = project();
         else if (path.endsWith("/tasks")) json = recovered ? [next, previous] : [previous];
         else if (path.endsWith("/episodes")) json = [episode()];
-        else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
+        else if (path.endsWith("/chats")) json = { items: [], total: 0 };
         else if (path.endsWith("/chat-reads"))
           json = {
             baseline: "2026-01-01T00:00:00+00:00",

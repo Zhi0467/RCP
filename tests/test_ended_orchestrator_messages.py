@@ -12,7 +12,12 @@ from rcp.runs.auto_research import auto_research_exhaustion_signal, auto_researc
 from rcp.runs.auto_research_admission import continue_auto_research
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
-from tests.helpers import create_named_app, signed_in_client, wait_for_task
+from tests.helpers import (
+    create_named_app,
+    fake_launch_admitted,
+    signed_in_client,
+    wait_for_task,
+)
 from tests.test_episode_api import _sse, create_terminal_auto_episode
 
 
@@ -31,9 +36,7 @@ def _ended_app(manifest, tmp_path, monkeypatch, *, launch=False):
     )
     # Inspect the committed launch inputs before any provider is started.
     if not launch:
-        monkeypatch.setattr(
-            tasks, "launch_admitted", lambda operation_id: store.agent_task(operation_id)
-        )
+        fake_launch_admitted(monkeypatch, tasks)
     return (
         app,
         store,

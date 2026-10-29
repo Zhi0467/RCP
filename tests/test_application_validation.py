@@ -677,3 +677,24 @@ async def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_a
         responses[base + "/tree"] = httpx.Response(404)
         with pytest.raises(CandidateRehearsalRefused):
             await rehearsal_module._paper_read_proof(client, "project", headers={})
+
+
+def test_candidate_log_allows_only_expected_warnings_about_uncopied_projects() -> None:
+    import logging
+
+    copied, uncopied = str(uuid.uuid4()), str(uuid.uuid4())
+    ((name, template),) = rehearsal_module._EXPECTED_WARNINGS
+
+    def refusal(level: int, project_id: str, msg: str = template) -> str | None:
+        log = rehearsal_module._PhaseLog()
+        log.emit(
+            logging.LogRecord(
+                name, level, __file__, 1, msg, ("live", "main", project_id, "x"), None
+            )
+        )
+        return log.refusal({copied})
+
+    assert refusal(logging.WARNING, uncopied) is None
+    assert refusal(logging.WARNING, copied) is not None
+    assert refusal(logging.ERROR, uncopied) is not None
+    assert refusal(logging.WARNING, uncopied, msg="Other %s %s %s %s") is not None

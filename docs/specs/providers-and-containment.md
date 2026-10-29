@@ -29,11 +29,12 @@ Manifest settings and skills select execution details and methods, not capabilit
 The launcher reads each execution machine card's `provider_autocompact` at
 launch using provider-owned validation and CLI rendering; unset values preserve
 CLI defaults. `provider_shell_timeout` accepts whole minutes from 2 through 120,
-with a default of 2 minutes for Claude, OpenCode and Codex. A turn with a staged
-command mailbox resolves its configured shell timeout once at staging and carries
+with a default of 2 minutes for Claude, OpenCode and Codex. A Discuss, Work, or
+Experiment turn resolves its configured shell timeout once at staging and carries
 that value through every launch, including Patch corrections. Unset remains
-unset even if the card changes later. Launches without a staged mailbox resolve
-it once at launch.
+unset even if the card changes later. Every other launch, Seed/Refresh, branch
+merge, orchestrator, child Work, and coach corrections included, resolves it at
+that launch.
 
 Claude renders configured `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`
 into the `--settings` JSON's `env`, preserving other entries and overriding
@@ -82,7 +83,7 @@ the host's `/tmp`. The account's real `~/.ssh` and `~/.config/gcloud` are bound
 writable and persist, created with mode 0700 when missing, so a member can run
 `gcloud auth login` and `gcloud compute config-ssh` in the terminal. Inside
 `~/.ssh`, `known_hosts`, `known_hosts2`, `authorized_keys`, `authorized_keys2`
-and existing `id_*` files stay read-only, so a terminal can neither trust a host
+(created empty with mode 0600 when missing) and existing `id_*` files stay read-only, so a terminal can neither trust a host
 nor grant a login as the service account.
 **Why:** members set up machine routes from the terminal; a throwaway home
 discarded the keys and the sign-in. A Google sign-in saved there is readable by
@@ -415,7 +416,9 @@ name the already-open session and invocation directory, starting with `goto`.
 `delete-data` also removes logins. Continuations send explicit off/unavailable.
 
 The CLI tool directory prefixes PATH; SSH uses the host's PATH after login-shell
-initialization, never the controller's. Codex retains `shell_environment_policy={}`.
+initialization, never the controller's. Codex's `shell_environment_policy`
+inherits the environment, sets nothing, and excludes the hidden-read
+credential-name globs.
 Owners release grants even on prompt failures. Detached remote work retains its
 lease until settlement proves the provider stopped; restart restores routing and
 adopts pending leases. Settlement records browser status before deferred cleanup,
@@ -448,7 +451,7 @@ when an additional read directory or a legacy workspace contains it. The literal
 client directory is escaped for gitignore matching; intentional hidden-read globs
 keep their glob semantics. These denies merge with the launch's hidden-read
 settings. A browser grant separately adds
-`Bash(playwright-cli:*)`. Public WebSearch and WebFetch remain available under
+`Bash(playwright-cli:*)` and the artifact preview command. Public WebSearch and WebFetch remain available under
 the provider contract. Discuss, Seed and Refresh receive their read context as
 `Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
 `acceptEdits` an added directory is also editable, which would hand Discuss
@@ -508,7 +511,7 @@ protected graph-history client receives a narrow allowance when its broker gate
 is present. Discuss and ingestion may edit only their workspace and their own
 write folders. Ingestion has no shell. Discuss denies `*`, allowing only
 `python3 -I -S <staged-client-path> *` when its broker gate names that client, and
-`playwright-cli *` when the human granted the browser. Final edit denies protect the
+`playwright-cli *` and the artifact preview command when the human granted the browser. Final edit denies protect the
 client directory itself and all descendants in split and legacy stages.
 Without a broker gate, including artifact edits, there is no client allowance.
 Command selection and launch configuration derive the same rules, including on resumed sessions.
@@ -779,7 +782,7 @@ input, never authority to change scope, budget or protected beliefs.
 Work and Experiment, including correction, bind their broker to the live provider
 process tree on the execution host. Prior turns cannot gain new authority;
 validate-only credentials refuse keyed commands. The helper's `launch` verb and
-scheduler route are owned by [compute jobs](compute-jobs.md); `lesson` is owned by
+scheduler route are owned by [machines and compute](machines-and-compute.md); `lesson` is owned by
 [graph consolidation](graph-consolidation-and-lessons.md).
 
 Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
@@ -881,8 +884,8 @@ stage for the Patch, then hand validation errors back to the same live session
 for at most two scratch-only rounds. A reused stage still holds the previous
 attempt's `patch.json`, so RCP fingerprints that file before each correction
 launch and refuses an unchanged one, handing the unchanged-file diagnostic
-forward rather than revalidating the same bytes. A graph-level rejection is never
-retried. Work instead repairs through same-access `work_patch_correction`, which
+forward rather than revalidating the same bytes. A graph-level rejection takes
+the same correction rounds. Work instead repairs through same-access `work_patch_correction`, which
 retains the original native session and write scope and changes only the
 instruction.
 
@@ -1050,8 +1053,9 @@ invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.
 Any authorized member may sign in/out; durable actions record the member.
 
-Routes under `/api/providers/{provider}/logins` provide `sign-in`, status
-`sign-in/{login_id}`, `token`, `verify` and `sign-out`. Unsupported interactions
+`GET /api/providers/logins` lists every provider's accounts. Routes under
+`/api/providers/{provider}/logins` provide `sign-in`, status
+`sign-in/{login_id}`, its `cancel`, `token`, `verify` and `sign-out`. Unsupported interactions
 refuse explicitly; status GET is read-only. Sign-out records a new generation,
 `source="sign_out"` and actor and fences admission.
 
@@ -1175,6 +1179,11 @@ with no recorded stop as waiting for their remote result. Reconciliation handles
   deletion read it the same way. A lost link's `provider_exit` receipt keeps
   ssh's stderr, the only record of why the link ended.
 - Already consumed/settled pass: do nothing.
+
+Each pass settles its tasks one at a time. A task whose saved request cannot be
+decoded fails with that reason, since no retry can fix it. Any other error while
+preparing a task's settlement hands its claim back, puts the error on the task's
+status message, and leaves it for the next pass; the other tasks still settle.
 
 Normal shutdown detaches a supervised remote turn after prompt delivery: it ends
 the local SSH stream without signalling the remote process or recording Pause.
@@ -1424,7 +1433,7 @@ an unknown lease is a no-op. Readiness does not run queued cleanup.
 ## Bulletin commands and context
 
 The target-local Bulletin is untrusted operational hearsay, never graph or
-launch authority. Work-capable runs (Work, Experiment, child Work, and the
+launch authority. Work-capable runs (Work, Experiment, child Work, Graph consolidation, and the
 Auto-research orchestrator and worker) hold the `bulletin` verb while the owning
 episode's Bulletin is on; only Auto-research start can turn it off, and a run
 with no episode always holds it. Holding it means `bulletin --read [--cursor C] [--channel C]`,
@@ -1465,8 +1474,9 @@ Mentioning an agent grants no capability and launches nothing.
 
 The mentions section holds only open mentions, from every channel of the
 project, each naming its channel: a member may mention an agent from any
-channel. A mention stays open until the agent posts later in the same thread;
-the agent's own posts never count. A reply, edit, or delete lands in the channel
+channel. A mention stays open until the agent posts in the same thread after the
+mentioning post's last edit; the agent's own posts never count, and a deleted
+thread root closes its mentions. A reply, edit, or delete lands in the channel
 of the post it names. A read and a new post default to the agent's own channel; `--channel`
 accepts main or any project branch name/id, resolved the same way for both, so a
 branch agent can read main's posts and links. Reads keep their existing authority. Agents prefer their own channel and

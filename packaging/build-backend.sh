@@ -12,6 +12,8 @@ fi
 
 cd "$project_root"
 npm --prefix web run build
+# Older builds left a one-file executable at the folder's path.
+rm -rf "$script_dir/dist/rcp-backend"
 uv run pyinstaller \
   --clean \
   --noconfirm \
@@ -19,8 +21,8 @@ uv run pyinstaller \
   --workpath "$script_dir/build" \
   "$script_dir/rcp_backend.spec"
 
-backend="$script_dir/dist/rcp-backend"
-if [ ! -x "$backend" ]; then
+backend="$script_dir/dist/rcp-backend/rcp-backend"
+if [ ! -x "$backend" ] || [ ! -d "$script_dir/dist/rcp-backend/_internal" ]; then
   echo "PyInstaller did not produce $backend" >&2
   exit 1
 fi

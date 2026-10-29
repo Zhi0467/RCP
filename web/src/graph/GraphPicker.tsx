@@ -21,7 +21,7 @@ import {
   typedBranchName,
 } from "../core/branchNames";
 import { sameGraphTarget } from "../core/graphTarget";
-import { rovingFocusTarget } from "../core/rovingFocus";
+import { popoverRows, rovingFocusTarget } from "../core/rovingFocus";
 import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
 import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
@@ -65,12 +65,7 @@ type Branch = Extract<GraphRef, { kind: "branch" }>;
 const POPOVER_WIDTH = 360;
 
 /** The popover's choosable rows: each branch name and New branch. */
-function rowButtons(popover: HTMLElement | null) {
-  return [
-    ...(popover?.querySelectorAll<HTMLButtonElement>("button.branch-picker-name:not(:disabled)") ??
-      []),
-  ];
-}
+const BRANCH_ROWS = "button.branch-picker-name:not(:disabled)";
 
 export function GraphPicker({
   refs,
@@ -162,7 +157,7 @@ export function GraphPicker({
   // The popover is portaled to the end of the page, so focus moves into it on open.
   useEffect(() => {
     if (!open) return;
-    const rows = rowButtons(list.current);
+    const rows = popoverRows(list.current, BRANCH_ROWS);
     (rows.find((row) => row.getAttribute("aria-current") === "true") ?? rows[0])?.focus();
   }, [open]);
 
@@ -331,7 +326,7 @@ export function GraphPicker({
                 return;
               }
               const next = rovingFocusTarget(
-                rowButtons(event.currentTarget),
+                popoverRows(event.currentTarget, BRANCH_ROWS),
                 event.target,
                 event.key,
               );

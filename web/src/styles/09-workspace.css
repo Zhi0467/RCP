@@ -712,6 +712,9 @@
   max-width: 1180px;
   padding: 58px 48px 90px;
 }
+.overview-page[aria-busy="true"] {
+  visibility: hidden;
+}
 .overview-heading {
   align-items: flex-end;
   border-bottom: 1px solid var(--line-strong);
@@ -846,10 +849,6 @@
   font-size: var(--type-2xl);
   font-weight: 500;
   margin: 0;
-}
-.digest-heading small {
-  color: var(--muted);
-  font-size: var(--type-sm);
 }
 .digest-groups {
   display: grid;

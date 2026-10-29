@@ -13,7 +13,7 @@ from rcp.service import ChatSummary, RunRequest
 from rcp.transport import StateUnavailable
 from tests.helpers import signed_in_client
 
-from .helpers import create_named_app
+from .helpers import create_named_app, fake_launch_admitted
 
 
 def test_chat_append_and_projection_preserve_unicode_line_separators(manifest, tmp_path):
@@ -629,9 +629,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
                 root_task.operation_id,
             ),
         )
-    monkeypatch.setattr(
-        tasks, "launch_admitted", lambda operation_id: store.agent_task(operation_id)
-    )
+    fake_launch_admitted(monkeypatch, tasks)
     # Messaging the ended orchestrator continues the chain; its opening turn delivers the mail.
     sent = client.post(
         f"/api/projects/{project_id}/episodes/{root.episode_id}/messages",

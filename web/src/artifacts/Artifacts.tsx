@@ -208,6 +208,7 @@ export function Artifacts({
     <section
       className="view-panel artifacts-view"
       aria-label="Artifacts"
+      aria-busy={entries === null && loading ? true : undefined}
       style={error ? { border: "1px solid var(--danger, #b42318)" } : undefined}
     >
       <div className="view-heading artifacts-heading">
@@ -222,14 +223,10 @@ export function Artifacts({
             store.invalidate(resourceKeyId(profile.key));
           }}
         >
-          <RefreshCw size={14} />
+          <RefreshCw size={14} className={loading && !error ? "spin" : undefined} />
         </button>
       </div>
-      {entries === null ? (
-        loading && <p role="status">Loading artifacts…</p>
-      ) : !error && entries.length === 0 ? (
-        <p>No saved artifacts or reports yet.</p>
-      ) : groups.length === 1 ? (
+      {entries === null || entries.length === 0 ? null : groups.length === 1 ? (
         list(groups[0].key, entries, false)
       ) : (
         <BranchGroupList

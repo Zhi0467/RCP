@@ -26,7 +26,13 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.storage import AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task, wait_until, write_local_test_manifest
+from .helpers import (
+    fabricated_authorizer,
+    fake_launch_admitted,
+    wait_for_task,
+    wait_until,
+    write_local_test_manifest,
+)
 
 
 def _sse(event: AgentEvent) -> str:
@@ -638,7 +644,7 @@ def test_recovery_admission_whose_launch_fails_records_a_durable_receipt(
     def refuse_launch(_operation_id):
         raise RuntimeError("simulated launch refusal")
 
-    monkeypatch.setattr(tasks, "launch_admitted", refuse_launch)
+    fake_launch_admitted(monkeypatch, tasks, refuse_launch)
     reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at)
 
     child = store.auto_research_task_recovery_child(root.operation_id)

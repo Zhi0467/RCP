@@ -2364,6 +2364,17 @@ class ProjectCatalog:
         self,
         project_id: str,
     ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
+        try:
+            return self._decode_cached_snapshot_locked(project_id)
+        except (TypeError, AttributeError):
+            # The file is outside data: a value of the wrong JSON type is a corrupt
+            # cache that its readers degrade and rebuild, not a failed read.
+            return "invalid", None
+
+    def _decode_cached_snapshot_locked(
+        self,
+        project_id: str,
+    ) -> tuple[Literal["missing", "invalid", "valid"], dict[str, object] | None]:
         project_id = self._canonical_project_id(project_id)
         self._cached_snapshot_patch_heads.pop(project_id, None)
         path = self._cached_snapshot_path(project_id)
@@ -2857,7 +2868,6 @@ class ProjectDisplayCache:
             }
             for machine in manifest_machines
         ]
-        payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         _stamp_display_signals(payload)
         return payload
 
@@ -3085,14 +3095,13 @@ class ProjectDisplayCache:
             if service is None:
                 raise RuntimeError("The closed stream's project service is no longer loaded.")
             generation = self._catalog.reserve_cached_snapshot_generation(project_id)
-            cache_status, cached = self._catalog.cached_snapshot_status(project_id)
+            cache_status, _cached = self._catalog.cached_snapshot_status(project_id)
             if cache_status == "missing":
                 record = self._store.project(project_id)
                 if record is None or record.revision is None:
                     return
-                raise ValueError("The expected project display snapshot is missing.")
-            if cached is None:
-                raise ValueError("The existing project display snapshot is invalid.")
+            # A missing or invalid cache is rebuilt from canonical state like a valid one,
+            # so aggregate reads recover once the turn closes.
             materialization = service.history.materialize(write_outputs=False)
             snapshot = self.complete_snapshot(
                 project_id,

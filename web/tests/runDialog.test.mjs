@@ -308,7 +308,7 @@ test("a never-run Experiment shows only its next episode limit", () => {
     /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
   )?.[0];
   assert.match(waiting, /\bdisabled(?:=|\s|>)/);
-  assert.match(loading, /role="status" aria-busy="true"/);
+  assert.match(loading, /class="experiment-control[^"]*" aria-busy="true"/);
   // A failed inventory leaves overlap unknown but never holds Run.
   const offered = unavailable.match(
     /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,

@@ -11,14 +11,15 @@ One agent is one Agents-board conversation (`chat_id`). Its name is the stored
 `chat_display.title` for that project and conversation, shared by the board,
 transcript responses, and Bulletin. Creation uses the first Markdown heading
 in the first message when present, otherwise the whole message, with whitespace
-collapsed, cut to `AGENT_NAME_MAX_CHARS` (35), and trailing spaces trimmed. An
+collapsed, cut after the last whole word within `AGENT_NAME_MAX_CHARS` (35); a
+single longer word is cut at 35. An empty name becomes "Chat". An
 empty node-chat message uses the node id, then "Chat". An Auto-research chain
 starts with its branch name, cut the same way. Graph consolidation starts as
 "Graph consolidation", explicitly seeded by its admission owner, and cannot
 self-name. Later turns and branch renames do not regenerate names.
 Existing conversations receive the same initial name during migration; human
 renames are preserved, and every stored name longer than the cap, human renames
-included, is cut the same way. Transcript-only legacy conversations are seeded through
+included, is cut at 35 characters with trailing spaces trimmed. Transcript-only legacy conversations are seeded through
 the same storage owner when first read; cached summaries refresh their stored
 name independently of task target matching.
 
@@ -376,7 +377,8 @@ bytes/hashes/paths. Attachments are untrusted context, not sole durable Evidence
 provenance.
 
 Project references may name stored artifacts/reports, graph nodes on their source
-target, or the saved paper introduction. Drag, pasted reference links and the
+target, or the saved Paper: the whole tree or one file, each file its own
+attachment within the attachment count and size limits. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
 They share attachment caps and add no roots or target authority. Prompts list
@@ -428,7 +430,7 @@ checkout. Resume, Retry and restart retain it; missing/moved worktrees fail.
 
 Human Merge reserves the isolation owner across all admissions until landing,
 verification and cleanup finish. Live turns must settle. The
-[compute gate](compute-jobs.md#episode-merge-and-removal-gate) owns job checks and
+[compute gate](machines-and-compute.md#episode-merge-and-removal-gate) owns job checks and
 confirmation. Scheduler work without helper rows is represented by active or
 degraded external watchers, or stopped watchers without completion; graph
 conditions do not block removal. Confirmed jobs reach the merge agent. Unfinished
@@ -506,8 +508,9 @@ drawer: the same continuation, with the turns it left unused.
 Fresh human Run may pick provider/model/reasoning, defaulting to node_chat;
 machine stays with that profile. Continuations keep the source binding. Children
 use the orchestrator's explicit pick, otherwise Settings. Starts and
-reauthorization do not gate on compute readiness; [compute jobs](compute-jobs.md)
-owns probes and cancellation.
+reauthorization do not gate on compute readiness;
+[machines and compute](machines-and-compute.md#readiness-and-setup) owns probes and
+cancellation.
 
 Run creates no ExperimentAttempt: attempts are semantic bookkeeping, not budget
 or admission. Nonblank initial goals remain exact; blank input gets a fallback.
@@ -686,8 +689,11 @@ forgets a finished job, therefore cannot hold its episode shut.
 Shell completion reports operational liveness, not scientific success. The
 Experiment watcher-state file and generic Work wake message, including child
 Work, retain the shell watcher's log-path evidence and ordinary coalescing and
-claim path. The [compute jobs spec](compute-jobs.md) owns direct scheduler
+claim path. The [machines and compute spec](machines-and-compute.md) owns direct scheduler
 submission, generic helper launch, and human cancellation.
+A completed observation whose wake fails or is deferred stays pending and offered
+on every poll. Its watcher's current error names the latest reason, and the claim
+that finally wakes it clears that error.
 
 A human may also retire one live Experiment observer directly once its episode
 carries a durable ending. While the episode can still take a graceful **Stop
@@ -746,8 +752,9 @@ human reauthorization. Continuation episodes reopen their predecessor's question
 without changing origin provenance. Only Stop withdraws an episode's cards: an
 ending turn may ask several questions, and its human answers them after the
 ending, the last open card naming the turns that continue the episode. In the
-continuation's creation transaction, unreceived, unclaimed answers are claimed by
-invocation 1 when its binding passes the answer-wake origin checks. Its first
+continuation's creation transaction, unreceived, unclaimed answers, oldest first
+up to the 32-record question snapshot cap, are claimed by invocation 1 when its
+binding passes the answer-wake origin checks. The rest wait for later answer wakes. Its first
 question snapshot carries those answers without spending another invocation.
 The human-started continuation keeps its own prompt text and message identity;
 claimed answers retain their separate, stable question-answer message identities

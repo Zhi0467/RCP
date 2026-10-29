@@ -88,6 +88,9 @@ class ConsolidationPoller:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._poll_lock = threading.Lock()
+        # The last retryable launch error recorded per task, so a lasting failure
+        # adds one event rather than one per poll.
+        self._launch_errors: dict[str, str] = {}
 
     def start(self) -> None:
         if self.is_running():
@@ -118,22 +121,28 @@ class ConsolidationPoller:
             self.reconcile_outcomes()
             if seconds_until_automatic_launch() > 0:
                 return
-            for run in self.store.consolidation_runs(unsettled_only=True):
-                if run.operation_id:
-                    task = self.store.agent_task(run.operation_id)
-                    if task is not None and task.status == "queued":
-                        self._launch(task.operation_id)
-            now = datetime.fromisoformat(self.clock())
-            for schedule in self.store.consolidation_schedules():
-                if (
-                    datetime.fromisoformat(schedule.next_due_at) > now
-                    or datetime.fromisoformat(schedule.expires_at) <= now
-                ):
-                    continue
-                try:
-                    self._handle_due(schedule, now)
-                except Exception:
-                    logger.exception("Consolidation admission failed for %s", schedule.project_id)
+            self.dispatch_due(datetime.fromisoformat(self.clock()))
+
+    def dispatch_due(self, now: datetime) -> None:
+        """Launch queued runs, then admit and launch every schedule due at `now`.
+
+        The update rehearsal calls this on copied state at each due instant.
+        """
+        for run in self.store.consolidation_runs(unsettled_only=True):
+            if run.operation_id:
+                task = self.store.agent_task(run.operation_id)
+                if task is not None and task.status == "queued":
+                    self._launch(task.operation_id)
+        for schedule in self.store.consolidation_schedules():
+            if (
+                datetime.fromisoformat(schedule.next_due_at) > now
+                or datetime.fromisoformat(schedule.expires_at) <= now
+            ):
+                continue
+            try:
+                self._handle_due(schedule, now)
+            except Exception:
+                logger.exception("Consolidation admission failed for %s", schedule.project_id)
 
     def _handle_due(self, schedule: ConsolidationSchedule, now: datetime) -> None:
         targets = [("main", "main", None)] + [
@@ -189,10 +198,12 @@ class ConsolidationPoller:
             service = self.service_for(schedule.project_id)
             failure_code = "history_unavailable"
             input_head, steps = _target_steps(service, graph_target)
+            # Only a reported run checked its own commits; a failed run's edits
+            # still need the next night.
             consolidation_operations = {
                 run.operation_id
                 for run in self.store.consolidation_runs(schedule.project_id)
-                if run.operation_id is not None
+                if run.operation_id is not None and run.kind == "report"
             }
             covered = coverage.covered_head
             changed = covered is None or any(
@@ -276,10 +287,7 @@ class ConsolidationPoller:
             graph_target=graph_target,
             kind="project_chat",
             status="queued",
-            request={
-                **request.model_dump(mode="json"),
-                "graph_target": graph_target.model_dump(mode="json"),
-            },
+            request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Waiting for nightly graph consolidation.",
@@ -292,10 +300,22 @@ class ConsolidationPoller:
             run = self.store.consolidation_run_for_operation(operation_id)
             if run is None:
                 raise ValueError("consolidation_binding_required")
+            self.store.drop_consolidation_request_target(operation_id)
             self.tasks.launch_admitted(operation_id)
-        except Exception:
+            self._launch_errors.pop(operation_id, None)
+        except (TypeError, ValueError) as exc:
+            # Launch validation judged the durable row, which no later pass changes.
+            # Failing the task lets outcome reconciliation settle the run visibly.
+            logger.warning("Consolidation task %s cannot launch: %s", operation_id, exc)
+            self.store.fail_agent_task(operation_id, str(exc))
+        except Exception as exc:
             # Admission is already durable. A later pass retries exactly this task.
             logger.exception("Consolidation dispatch failed for %s", operation_id)
+            message = f"Launch failed and will be retried: {exc}"
+            if self._launch_errors.get(operation_id) != message:
+                # Remember only a recorded event, so a failed write is tried again.
+                self.store.record_agent_task_event(operation_id, message, level="warning")
+                self._launch_errors[operation_id] = message
 
     def reconcile_outcomes(self) -> None:
         for run in self.store.consolidation_runs(unsettled_only=True):

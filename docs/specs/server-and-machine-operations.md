@@ -34,9 +34,10 @@ injection. It is not a separate account or a hostile same-account sandbox.
 
 ## External dependencies
 
-[dependencies.py](../../src/rcp/dependencies.py) owns presence, roles, platforms
-and whether a dependency is required or optional. Installation, doctor and
-machine cards share this registry. Missing required tools cause launch refusal.
+[dependencies.py](../../src/rcp/dependencies.py) owns roles, platforms and
+whether a dependency is required or optional.
+[dependency_check.py](../../src/rcp/dependency_check.py) checks machines against
+it. Installation, doctor and machine cards share this registry. Missing required tools cause launch refusal.
 Optional gaps name their feature and its visible limitation. Feature-specific
 versions stay with their concrete owners.
 
@@ -188,6 +189,22 @@ provider output and stderr stay on the task row, never in journald, because they
 may contain secrets. [agents/launcher.py](../../src/rcp/agents/launcher.py) owns
 this boundary.
 
+### Recurring service errors
+
+On Linux, doctor reads `rcp.service`'s own journal over a recent window. It uses
+the same account and runner as its `systemctl` reads, and reads no other unit.
+It groups `ERROR` and `CRITICAL` log records by logger, exception type and the
+function of the traceback's final frame. Message text never forms the key or
+leaves doctor, because it can carry ids, paths and secrets. A signature seen
+often enough in the window is a problem with its count and first time seen.
+A rarer one is a `service_log_warnings` entry. An unreadable journal is one
+warning and never fails doctor. The desktop app has no service journal and skips
+the read. [server_ops/service_errors.py](../../src/rcp/server_ops/service_errors.py)
+owns parsing and grouping. `limits.py` owns the window, the count, the entry and
+character caps and the number of signatures shown.
+**Why:** after an update, a background failure that retried every minute
+appeared only in the journal while doctor reported healthy.
+
 ### Compute backend probe
 
 Compute probing is a service-socket operation that persists independent route
@@ -226,8 +243,8 @@ automatic launches until wake stabilizes.
 
 Demand holds `caffeinate` for the backend lifetime without root or lasting
 state. Display sleep and screen locking do not release it. Lid closure or OS
-emergencies may. Locally owned episodes count when they are active, recovering,
-stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
+emergencies may. Locally owned episodes count when they are starting, active,
+recovering, stopping or wrapping up. Admitted tasks, nonidle runtime and scheduled transport
 retries also count. Human-only waits, ended work, sign-in-blocked tasks and
 armed watchers alone do not. Failed reads retain the hold and log a failure
 rather than infer completion.
@@ -276,6 +293,14 @@ Only a human promotes a release.
 and commit. It refuses existing tags or releases. It copies the same assets
 without rebuilding. Historical complete asset sets remain promotable. A partial
 supervisor pair causes refusal. Installation requires supervisor assets.
+Promotion also refuses without a passing qualification receipt. Each receipt
+entry is one [update rehearsal](#application-boundary-and-local-checkpoint) on
+copied team data. It holds only its status, which must be `ready`, and the
+SHA-256 of this build's `manifest.sha256`. The receipt is public, so any other
+field refuses. It names the desktop candidate run, which must be
+the run promotion publishes. The CI gates, including the browser journey, are
+already implied: a `build/<N>` exists only after they pass. **Why:** 0.4.35
+passed CI but broke on real records.
 [Build pruning](../../.github/workflows/prune-builds.yml) removes only expired
 build prereleases and tags under `STALE_BUILD_DAYS`. Stable releases stay
 retained. **Why:** build expiry bounds CI artifacts while promotion preserves
@@ -343,6 +368,32 @@ imported history and startup recovery with the application lifespan. A migration
 check alone is insufficient. Rollback runs the old binary's own fenced proof
 without making it parse the candidate's newer schema.
 
+Both copied-state checks start from the live display caches, which backup
+omits. Before any project opens, and again after every project has opened,
+each member reads the Runs list, the space and project Experiment indexes,
+resource watermarks and each project's consolidation Inbox. Any non-200 read,
+or an Experiment index row that cannot read a copied project, refuses. **Why:** project opens rebuild caches, so only a cold read finds old
+cached bytes that a space-wide read cannot use. A restore has no caches to
+carry and makes only the second pass.
+
+Due consolidation then runs on the copy with the fence still closed. Copied
+queued runs launch first. Then the copied clock advances to each schedule's next
+due time, so real admission writes new rows. Every launch of a copied project
+goes through the engine's own pre-spawn validation, `validate_admitted_launch`,
+and stops where a provider would start. A validation error, a run that never
+reached validation, or a new run with an error code refuses. Provider sign-in
+and machine programs are not part of the copy, so their deferral is accepted.
+Watchers and other scheduled dispatch are not exercised.
+
+The candidate check also captures each application log record at WARNING or
+worse, with the check phase that logged it. Any such record refuses, naming
+the phase, logger and message. The one exception is a short commented
+allowlist in
+[application_validation.py](../../src/rcp/server_ops/application_validation.py).
+An allowlisted warning still refuses when it names a copied project. **Why:**
+the 0.4.35 consolidation failure showed only in the log, and an ended
+Experiment on an unusable cache is only logged.
+
 Projection upgrades verify the baseline digest, remove retired fields and fill
 only proven deterministic defaults. They preserve explicit values, unknown keys,
 edge layers and serializer-owned operations. Display caches upgrade or replay
@@ -362,9 +413,21 @@ CI qualifies published stable releases at or above the floor and frozen
 fixtures, using production installation and update owners, populated old data
 and offline scratch. Failure injection verifies rollback and old-code use before
 retry. Pull requests install the floor and the newest four releases; main
-installs every one. The aggregate gate promotes those same bytes. It does not
+installs every one. After the committed update, the candidate's service journal
+must hold no ERROR line or traceback, and the seeded question follow-up must
+still read as succeeded. The aggregate gate promotes those same bytes. It does not
 prove arbitrary installations, provider authentication, remote-root behavior or
 reboot recovery.
+
+The web suite's
+[release-upgrade browser journey](../../web/tests/releaseUpgrade.browser.test.mjs)
+serves the data the update rehearsal just passed, beside a fresh personal space.
+A member signs in to both, then opens the team Runs list before any project,
+the project, Runs, Inbox, a chat and the saved artifacts, and returns to the
+personal space. The cold Runs list must list the Experiment on the old cache.
+Any failed response other than the signed-out identity probe, failed request,
+console error or page error fails it. A failure keeps `evidence.json` with both
+server logs.
 
 The privileged checkpoint copier preserves metadata, links, special nodes and
 cross-root hardlinks on each filesystem. Process connections do not survive.
@@ -445,7 +508,8 @@ Write proof creates, reads and removes a request-scoped ref to existing history.
 An empty source instead uses the announced initial `Start RCP project` commit
 and reads back the non-forced push. Retry reuses the recorded commit.
 Conflicting pushes need human repair. Server-only setup creates the same initial
-history without a remote, key or push. Its code is explicitly not backed up.
+history without a remote, key or push. Its code is explicitly not backed up;
+backup and doctor list it as a warning, not a problem.
 **Why:** Git-backed research can start without GitHub, while research archives
 remain separate from source code. Restore recreates empty server-only checkouts.
 Adopted folders must already exist at their recorded path and commit.

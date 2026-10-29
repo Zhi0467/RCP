@@ -44,13 +44,13 @@ jobs:
       - run: uv run pre-commit run --all-files --show-diff-on-failure
 
   python-shard:
-    name: pytest (py${{ matrix.python-version }}, ${{ matrix.shard }}/2)
+    name: pytest (py${{ matrix.python-version }}, ${{ matrix.shard }}/3)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
@@ -79,7 +79,7 @@ jobs:
       # every collected test exactly once.
       - run: uv run pytest --durations=50
         env:
-          RCP_TEST_SHARD: ${{ matrix.shard }}/2
+          RCP_TEST_SHARD: ${{ matrix.shard }}/3
 
   # Source tests cannot prove that runtime resources survive freezing. Run the
   # same packaged-agent journey used by the macOS candidate on PRs too.

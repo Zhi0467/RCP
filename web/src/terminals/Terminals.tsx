@@ -96,6 +96,7 @@ export function Terminals({ projectId }: { projectId: string }) {
     <section
       className="view-panel terminals-view"
       aria-label="Terminals"
+      aria-busy={loading || undefined}
       style={error || loadError ? { border: "1px solid var(--danger, #b42318)" } : undefined}
     >
       <div className="view-heading">
@@ -107,11 +108,10 @@ export function Terminals({ projectId }: { projectId: string }) {
           disabled={(loading && !loadError) || pending}
           onClick={() => void refreshProbes()}
         >
-          <RefreshCw size={14} />
+          <RefreshCw size={14} className={loading && !loadError ? "spin" : undefined} />
         </button>
       </div>
       {endedReason && <p role="status">{endedReason}</p>}
-      {loading && <p role="status">Loading terminals…</p>}
       <div className={`terminals-layout${sessions.length || active ? " has-sessions" : ""}`}>
         <aside className="terminal-rail" aria-label="Terminal sessions and repositories">
           {sessions.map((session) => (
