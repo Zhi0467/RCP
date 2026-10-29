@@ -17,7 +17,9 @@ test("PDF keeps its reading position and old canvases during replacement, render
           import PaperPdf from '/src/paper/PaperPdf.tsx';
           import '/src/paper/paper-preview.css';
           const root = createRoot(document.getElementById('root'));
-          window.preview = url => root.render(<PaperPdf url={url} />);
+          const bar = document.createElement('header');
+          document.body.prepend(bar);
+          window.preview = url => root.render(<PaperPdf url={url} toolbar={bar} />);
           window.preview('/first.pdf');`;
       },
     },
@@ -111,13 +113,17 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
           import { createRoot } from 'react-dom/client';
           import { PaperPreview } from '/src/paper/PaperPreview.tsx';
           const root = createRoot(document.getElementById('root'));
+          // The Paper header row: fixed height, like .paper-bar.
+          const bar = document.createElement('header');
+          bar.style.cssText = 'display:flex;align-items:center;height:48px';
+          document.body.prepend(bar);
           const files = [
             {file_id:'main',path:'main.typ',format:'typst',kind:'text',sha256:'a'},
             {file_id:'part',path:'part.typ',format:'typst',kind:'text',sha256:'b'},
             {file_id:'md',path:'sections/main.md',format:'markdown',kind:'text',sha256:'c'},
             {file_id:'methods',path:'sections/methods.md',format:'markdown',kind:'text',sha256:'d'}
           ];
-          window.show = (id, broken=false) => root.render(<PaperPreview projectId="p" file={files.find(f=>f.file_id===id)} tree={{files,saved_revision:1}} text={id==='md' ? '[Methods](methods.md) [External](https://example.org) [Bad](mailto:test@example.org)' : broken ? '#bad' : id==='main' ? '#include "part.typ"' : 'Part'} active onOpenFile={id=>window.opened=id} />);
+          window.show = (id, broken=false) => root.render(<PaperPreview projectId="p" file={files.find(f=>f.file_id===id)} tree={{files,saved_revision:1}} text={id==='md' ? '[Methods](methods.md) [External](https://example.org) [Bad](mailto:test@example.org)' : broken ? '#bad' : id==='main' ? '#include "part.typ"' : 'Part'} active onOpenFile={id=>window.opened=id} toolbar={bar} />);
           window.show('main');`;
       },
     },
@@ -204,8 +210,7 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
   assert.equal(after.y, before.y);
   const log = await page.getByLabel("View compile log").boundingBox();
   const download = await page.getByLabel("Download PDF").boundingBox();
-  assert.equal(log.y, download.y);
-  assert.ok(log.height >= 44);
+  assert.equal(log.y + log.height / 2, download.y + download.height / 2);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
 });

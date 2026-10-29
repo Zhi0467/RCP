@@ -25,6 +25,7 @@ import {
 } from "./typstPreview";
 
 import { PaperDialog } from "./PaperDialog";
+import { panelTools } from "./panelTools";
 import { usePreviewText } from "./usePreviewText";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
@@ -114,6 +115,7 @@ export function PaperPreview({
   text,
   active,
   onOpenFile,
+  toolbar,
 }: {
   projectId: string;
   file: PaperFile;
@@ -122,6 +124,8 @@ export function PaperPreview({
   /** A hidden preview stays mounted but does no compile work. */
   active: boolean;
   onOpenFile?: (fileId: string) => void;
+  /** The header slot the preview's actions render into, while the preview is the shown panel. */
+  toolbar: HTMLElement | null;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -311,21 +315,28 @@ export function PaperPreview({
   if (file.format === "pdf")
     return (
       <Suspense fallback={<LoaderCircle className="spin" size={16} />}>
-        <PaperPdf url={assetUrl(projectId, file)} name={file.path.split("/").at(-1)} />
+        <PaperPdf
+          url={assetUrl(projectId, file)}
+          name={file.path.split("/").at(-1)}
+          toolbar={toolbar}
+        />
       </Suspense>
     );
   if (!engine)
     return file.kind === "text" ? (
       <pre className="paper-plain-preview">{text}</pre>
     ) : (
-      <a
-        className="icon-button"
-        href={paperRawUrl(projectId, file.file_id)}
-        download
-        aria-label="Download file"
-      >
-        <Download size={16} />
-      </a>
+      panelTools(
+        toolbar,
+        <a
+          className="icon-button"
+          href={paperRawUrl(projectId, file.file_id)}
+          download
+          aria-label="Download file"
+        >
+          <Download size={16} />
+        </a>,
+      )
     );
 
   const actions = (
@@ -380,7 +391,7 @@ export function PaperPreview({
 
   return (
     <div className={`paper-compiled-preview${error ? " paper-failed" : ""}`} aria-busy={loading}>
-      {!pdf && <div className="paper-preview-actions paper-preview-empty">{actions}</div>}
+      {!pdf && panelTools(toolbar, actions)}
       {showLog && error && (
         <PaperDialog label="Compile log" onClose={() => setShowLog(false)}>
           <header className="paper-bar">
@@ -415,6 +426,7 @@ export function PaperPreview({
             key={`${projectId}:${pdfRoot}`}
             scrollKey={`${projectId}:${pdfRoot}`}
             actions={actions}
+            toolbar={toolbar}
             url={pdf}
             name={`${(selectedRoot || file.path)
               .split("/")

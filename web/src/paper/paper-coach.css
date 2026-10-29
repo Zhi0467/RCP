@@ -3,14 +3,6 @@
   min-width: 0;
   position: relative;
 }
-/* History and New chat sit at the end of the row that switches the Paper view. */
-.paper-coach-bar {
-  margin-left: auto;
-}
-.paper-coach-toolbar {
-  display: flex;
-  gap: 6px;
-}
 /* The coach's few tools keep one row. */
 .paper-coach .chat-composer-tools {
   flex-wrap: nowrap;

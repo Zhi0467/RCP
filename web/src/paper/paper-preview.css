@@ -33,34 +33,6 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.paper-preview-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: nowrap;
-  height: 56px;
-  box-sizing: border-box;
-  flex-shrink: 0;
-  min-width: 0;
-  padding: 4px 12px 8px;
-}
-/* Before a PDF exists, the actions (install, compiling, log) are the pane's centred empty state. */
-.paper-preview-empty {
-  flex: 1;
-  height: auto;
-  justify-content: center;
-}
-.paper-preview-actions .icon-button {
-  min-height: 44px;
-  min-width: 44px;
-  flex-shrink: 0;
-}
-.paper-preview-actions select {
-  min-width: 0;
-  max-width: 100%;
-  margin-right: auto;
-}
 .paper-pdf-pages {
   margin: 0 10px 10px;
   padding: 16px;

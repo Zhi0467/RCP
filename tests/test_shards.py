@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,12 +9,15 @@ from .shards import parse_shard, shard_items
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
-def test_shards_run_every_test_once_and_keep_files_whole(count: int) -> None:
-    items = [
-        SimpleNamespace(nodeid=f"tests/test_{name}.py::test_{index}")
-        for name, size in [("a", 5), ("b", 3), ("c", 3), ("d", 1)]
-        for index in range(size)
-    ]
+def test_shards_run_every_test_once_and_keep_files_whole(count: int, tmp_path: Path) -> None:
+    items = []
+    for name, size in [("a", 5), ("b", 3), ("c", 3), ("d", 1)]:
+        path = tmp_path / f"test_{name}.py"
+        path.write_text("#" * size * 100)
+        items += [
+            SimpleNamespace(nodeid=f"tests/test_{name}.py::test_{index}", path=path)
+            for index in range(size)
+        ]
     kept = [shard_items(items, shard, count)[0] for shard in range(1, count + 1)]  # type: ignore[arg-type]
 
     assert sorted(item.nodeid for part in kept for item in part) == sorted(
