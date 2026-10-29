@@ -1383,41 +1383,31 @@ def read_backup_outcome(
         outcome = BackupRunOutcome.model_validate_json(payload)
     except ValueError as exc:
         raise ValueError("backup status is invalid") from exc
-    diagnostics_path = layout.server_root / _DIAGNOSTICS_NAME
-    try:
-        diagnostics_path.lstat()
-    except FileNotFoundError:
-        return outcome  # Old sources have no diagnostic sidecar.
-    diagnostics = json.loads(
-        _read_private_file(
-            diagnostics_path,
-            expected_uid=os.geteuid() if expected_uid is None else expected_uid,
-            maximum=BACKUP_RECEIPT_MAX_BYTES,
-        )
-    )
-    if not isinstance(diagnostics, dict) or set(diagnostics) != {"operation_id", "problems"}:
-        raise ValueError("backup diagnostics are invalid")
-    if diagnostics["operation_id"] != outcome.operation_id:
-        return outcome
-    if not isinstance(diagnostics["problems"], list):
-        raise ValueError("backup diagnostics are invalid")
     return BackupRunOutcome.model_validate(
         {
             **outcome.model_dump(),
-            "problems": tuple(diagnostics["problems"]),
-            "warnings": _read_backup_warnings(layout, outcome.operation_id, expected_uid),
+            "problems": _read_run_sidecar(
+                layout.server_root / _DIAGNOSTICS_NAME,
+                "problems",
+                outcome.operation_id,
+                expected_uid,
+            ),
+            "warnings": _read_run_sidecar(
+                layout.server_root / _WARNINGS_NAME, "warnings", outcome.operation_id, expected_uid
+            ),
         }
     )
 
 
-def _read_backup_warnings(
-    layout: ServerLayout, operation_id: str, expected_uid: int | None
+def _read_run_sidecar(
+    path: Path, key: str, operation_id: str, expected_uid: int | None
 ) -> tuple[str, ...]:
-    path = layout.server_root / _WARNINGS_NAME
+    """Read one list a run wrote beside its status; empty for another run or an older release."""
+
     try:
         path.lstat()
     except FileNotFoundError:
-        return ()  # Written by releases before backup warnings.
+        return ()
     payload = json.loads(
         _read_private_file(
             path,
@@ -1427,11 +1417,11 @@ def _read_backup_warnings(
     )
     if (
         not isinstance(payload, dict)
-        or set(payload) != {"operation_id", "warnings"}
-        or not isinstance(payload["warnings"], list)
+        or set(payload) != {"operation_id", key}
+        or not isinstance(payload[key], list)
     ):
-        raise ValueError("backup warnings are invalid")
-    return tuple(payload["warnings"]) if payload["operation_id"] == operation_id else ()
+        raise ValueError(f"{path.name} is invalid")
+    return tuple(payload[key]) if payload["operation_id"] == operation_id else ()
 
 
 @contextmanager

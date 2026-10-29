@@ -589,6 +589,12 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     assert backup.read_backup_outcome(layout).problems == ()
     diagnostics_path.unlink()
     assert backup.read_backup_outcome(layout).problems == ()
+    warnings_path = tmp_path / "backup-warnings.json"
+    warnings_path.write_text(
+        json.dumps({"operation_id": outcome.operation_id, "warnings": [], "extra": 1})
+    )
+    with pytest.raises(ValueError):
+        backup.read_backup_outcome(layout)
 
 
 @pytest.mark.parametrize("remote_reader", [False, True], ids=("local", "remote"))
