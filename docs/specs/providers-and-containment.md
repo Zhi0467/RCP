@@ -1103,6 +1103,10 @@ classifies `provider_auth` across turns, wakes, workers, reports, recovery and
 probes. Only the generation captured at launch can revoke that login; late
 failures cannot revoke a repaired login. Claude recognizes its remote
 missing-token fence and declares no unobserved native revocation signatures.
+An own login is unique per provider, host and member while `removed_at IS NULL`;
+removal retains the historical row and its member attribution, and permits a new
+own login. Assignment clocks do not publish resource versions; member login
+settings do.
 
 Claude resolves at each turn boundary. Codex sessions, including forks, retain
 the login that owns their native session. Transport reattempts and initial graph

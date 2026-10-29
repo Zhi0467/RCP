@@ -49,7 +49,7 @@ def migrate_per_member_provider_logins(connection: sqlite3.Connection) -> None:
             FROM provider_login_states_old""")
         connection.execute("DROP TABLE provider_login_states_old")
     connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS provider_login_states_member
-        ON provider_login_states(provider, host, member_id) WHERE member_id IS NOT NULL""")
+        ON provider_login_states(provider, host, member_id) WHERE member_id IS NOT NULL AND removed_at IS NULL""")
     connection.execute("""CREATE TABLE IF NOT EXISTS provider_login_assignments (
         provider TEXT NOT NULL, host TEXT NOT NULL, login_id TEXT NOT NULL,
         last_assigned_at TEXT, limited_at TEXT, PRIMARY KEY(provider, host, login_id))""")
@@ -167,7 +167,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             if (
                 member_id is not None
                 and connection.execute(
-                    "SELECT 1 FROM provider_login_states WHERE provider=? AND host=? AND member_id=?",
+                    "SELECT 1 FROM provider_login_states WHERE provider=? AND host=? AND member_id=? AND removed_at IS NULL",
                     (provider, host, member_id),
                 ).fetchone()
             ):

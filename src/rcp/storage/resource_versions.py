@@ -564,7 +564,7 @@ def install_provider_login_versions(connection: sqlite3.Connection) -> None:
     """Rebuilt login/cache tables and member settings publish Settings changes."""
     for event in ("insert", "update", "delete"):
         connection.execute(f"DROP TRIGGER IF EXISTS resource_graph_runs_{event}")
-    _install_task_progress(connection)
+    _install_task_progress(connection, _BRANCH_TASK_CHAT)
     for table in (
         "provider_login_states",
         "provider_readiness_snapshots",

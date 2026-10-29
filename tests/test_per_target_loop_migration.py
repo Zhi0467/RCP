@@ -100,13 +100,14 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     previous = _legacy_database(path)
     episode = previous.episode("live-main")
     task = previous.agent_task("live-task")
+    assert task is not None and task.login_id is None
     watcher = previous.watcher("live-watcher")
     budget = previous.episode_budget_meter("live-main")
     previous.close()
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        64,
+        65,
         (
             "per_target_experiment_loops_v1",
             "client_requests_v1",
@@ -129,6 +130,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             "episode_question_versions_v1",
             "paper_live_v1",
             "consolidation_targets_v1",
+            "per_member_provider_logins_v1",
         ),
     )
     readonly.close()
@@ -139,7 +141,8 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
         )
     upgraded = AppStore(path)
     assert upgraded.episode("live-main") == episode
-    assert upgraded.agent_task("live-task") == task
+    # Migration 65 binds all historical tasks to the machine sign-in.
+    assert upgraded.agent_task("live-task") == task.model_copy(update={"login_id": ""})
     assert upgraded.watcher("live-watcher") == watcher
     assert upgraded.episode_budget_meter("live-main") == budget
     route = upgraded.auto_research_child_experiment("never-launched")
