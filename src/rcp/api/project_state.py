@@ -295,7 +295,9 @@ def project_readiness(
         service = catalog.loaded_service(record.project_id)
         manifest = service.manifest if service is not None else load_manifest(record.locator)
         viewer = get_identity_access(request).acting_user(request)
-        return ProjectService.viewer_readiness(snapshot, manifest, catalog.launcher, viewer.user_id)
+        return ProjectService.viewer_readiness(
+            snapshot, manifest, catalog.launcher, viewer.user_id, refresh=refresh
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:

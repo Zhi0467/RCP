@@ -1973,39 +1973,50 @@ class ProjectService:
         manifest: Manifest,
         launcher: AgentLauncher,
         viewer_id: str,
+        *,
+        refresh: bool = False,
     ) -> dict[str, object]:
-        """Readiness is cached per project; whether a launch has a login is the viewer's.
+        """Readiness is cached per project; the login a launch would use is the viewer's.
 
-        For a provider RCP signs in, `authenticated` says whether the viewer's
-        setting resolves a usable login on that machine, not whether the machine
-        sign-in alone is healthy.
+        For a provider RCP signs in, the entry describes the login the viewer's
+        setting resolves on that machine: an added login is probed itself (its
+        models can differ from the machine sign-in's), and a refusal reads as
+        not authenticated.
         """
         machines = snapshot.get("provider_readiness")
-        if launcher.accounts is None or not isinstance(machines, dict):
+        accounts = launcher.accounts
+        if accounts is None or not isinstance(machines, dict):
             return snapshot
-        resolved: dict[str, dict[str, object]] = {}
+
+        def entry(host: str, provider: str, readiness: object) -> object:
+            if not isinstance(readiness, dict) or not (
+                profile_for(provider).authentication.manages_login
+            ):
+                return readiness
+            login, _ = accounts.resolve_login(provider, host, viewer_id)
+            if not isinstance(login, LoginKey):
+                return {**readiness, "authenticated": False}
+            if login.login_id == MACHINE_LOGIN_ID:
+                return {**readiness, "authenticated": True}
+            return launcher.readiness(
+                provider,
+                host=host,
+                binary=launcher.provider_binary(provider, host),
+                refresh=refresh,
+                login_id=login.login_id,
+            ).model_dump(mode="json")
+
+        resolved: dict[str, object] = {}
         for alias, providers in machines.items():
             machine = manifest.machine_map.get(alias)
-            if machine is None or not isinstance(providers, dict):
-                resolved[alias] = providers
-                continue
-            resolved[alias] = {
-                provider: (
-                    {
-                        **readiness,
-                        "authenticated": isinstance(
-                            launcher.accounts.resolve_login(
-                                provider, machine.host or "", viewer_id
-                            )[0],
-                            LoginKey,
-                        ),
-                    }
-                    if isinstance(readiness, dict)
-                    and profile_for(provider).authentication.manages_login
-                    else readiness
-                )
-                for provider, readiness in providers.items()
-            }
+            resolved[alias] = (
+                {
+                    provider: entry(machine.host or "", provider, readiness)
+                    for provider, readiness in providers.items()
+                }
+                if machine is not None and isinstance(providers, dict)
+                else providers
+            )
         return {**snapshot, "provider_readiness": resolved}
 
     @staticmethod

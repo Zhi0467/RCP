@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from rcp.agents import AgentLauncher
@@ -77,7 +79,7 @@ def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
     assert LoginKey("codex", "", "") not in selected
 
 
-def test_readiness_authentication_follows_the_viewer_login(manifest, tmp_path):
+def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     store.mark_provider_login_signed_out(
@@ -89,14 +91,24 @@ def test_readiness_authentication_follows_the_viewer_login(manifest, tmp_path):
     )
     store.set_provider_login_setting("viewer", "codex", "", "own")
     store.set_provider_login_setting("other", "codex", "", "shared")
-    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False}}}}
+    probed = []
 
-    def authenticated(viewer):
-        snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, viewer)
-        return snapshot["provider_readiness"]["laptop"]["codex"]["authenticated"]
+    def readiness(provider, *, host, binary, refresh, login_id):
+        probed.append((provider, login_id, refresh))
+        return SimpleNamespace(
+            model_dump=lambda **_: {"authenticated": True, "models": [{"id": login_id}]}
+        )
 
-    assert authenticated("viewer") is True
-    assert authenticated("other") is False
+    monkeypatch.setattr(launcher, "readiness", readiness)
+    monkeypatch.setattr(launcher, "provider_binary", lambda *_: "codex")
+    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False, "models": []}}}}
+    snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, "viewer", refresh=True)
+    assert snapshot["provider_readiness"]["laptop"]["codex"]["models"] == [{"id": own.login_id}]
+    assert probed == [("codex", own.login_id, True)]
+    # Shared resolves only the signed-out machine sign-in: refused, nothing probed.
+    other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
+    assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
+    assert len(probed) == 1
 
 
 def test_report_admission_uses_episode_authorizer_login(tmp_path):
