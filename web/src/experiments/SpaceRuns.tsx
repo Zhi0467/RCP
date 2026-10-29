@@ -96,9 +96,6 @@ export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {
     <section className="space-runs" aria-labelledby="space-runs-title">
       <header className="space-runs-header">
         <h2 id="space-runs-title">Runs</h2>
-        <span>
-          {groups.needsAction.length} needs action · {groups.inProgress.length} in progress
-        </span>
         <label className="show-archived-runs">
           <input
             type="checkbox"
@@ -112,7 +109,6 @@ export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {
       <div className="space-runs-sections">
         <RunSection
           title="Needs action"
-          empty="Nothing needs you right now."
           entries={groups.needsAction}
           theme={theme}
           onOpen={onOpen}
@@ -120,35 +116,29 @@ export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {
         />
         <RunSection
           title="In progress"
-          empty="No run is in flight."
           entries={groups.inProgress}
           theme={theme}
           onOpen={onOpen}
           onArchive={onArchive}
         />
         <section className="space-runs-completed" aria-label="Completed runs">
-          <header>
+          <header title="Last 7 days">
             <h3>Completed</h3>
             <span>{groups.completed.length}</span>
           </header>
-          {groups.completed.length === 0 ? (
-            <p className="space-runs-empty">No completed runs in the last 7 days.</p>
-          ) : (
-            groups.completedByMode.map((group) => (
-              <CompletedGroup
-                {...group}
-                theme={theme}
-                onOpen={onOpen}
-                onArchive={onArchive}
-                key={group.mode}
-              />
-            ))
-          )}
+          {groups.completedByMode.map((group) => (
+            <CompletedGroup
+              {...group}
+              theme={theme}
+              onOpen={onOpen}
+              onArchive={onArchive}
+              key={group.mode}
+            />
+          ))}
         </section>
         {showArchived && (
           <RunSection
             title="Archived"
-            empty="No archived runs."
             entries={entries.filter((entry) => entry.archived)}
             theme={theme}
             onOpen={onOpen}
@@ -162,14 +152,12 @@ export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {
 
 function RunSection({
   title,
-  empty,
   entries,
   theme,
   onOpen,
   onArchive,
 }: {
   title: string;
-  empty: string;
   entries: SpaceRunIndexEntry[];
   theme: ResolvedTheme;
   onOpen: Props["onOpen"];
@@ -181,9 +169,7 @@ function RunSection({
         <h3>{title}</h3>
         <span>{entries.length}</span>
       </header>
-      {entries.length === 0 ? (
-        <p className="space-runs-empty">{empty}</p>
-      ) : (
+      {entries.length > 0 && (
         <RunRows entries={entries} theme={theme} onOpen={onOpen} onArchive={onArchive} />
       )}
     </section>

@@ -429,6 +429,10 @@ button.research-chip:focus-visible {
   font-family: var(--mono);
   font-size: var(--type-3xs);
 }
+/* Counts read 0 until branch loops arrive; hide them rather than flash 0. */
+.episode-ledger-sections[aria-busy="true"] > .operating-section > header span {
+  visibility: hidden;
+}
 .operating-section > div {
   display: grid;
   gap: 8px;
@@ -439,12 +443,6 @@ button.research-chip:focus-visible {
 }
 .episode-ledger-section.in-progress > header {
   border-bottom-color: color-mix(in srgb, var(--teal) 42%, var(--line));
-}
-.episode-ledger-empty {
-  color: var(--muted);
-  font: var(--type-sm)/1.5 var(--ui);
-  margin: 0;
-  padding: 12px 2px;
 }
 .episode-type-groups {
   display: grid;
