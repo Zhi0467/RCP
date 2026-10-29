@@ -126,6 +126,8 @@ async def stream_episode_report_run(
         capability: AgentCapability = "work_auto"
         write_scope = resolve_project_write_scope(
             manifest=service.manifest,
+            # The report writes only its stage, never a repository.
+            truth_scope=[],
             project_id=turn.task.project_id,
             execution_machine=turn.request.run_on,
             capability=capability,

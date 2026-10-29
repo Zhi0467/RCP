@@ -241,6 +241,7 @@ def test_merge_refuses_work_before_creating_its_repository_worktree(
             "mode": "work",
             "message": "Revise the branch.",
             "worktree": True,
+            "run_truth_scope": ["repo-a"],
         },
     )
     assert response.status_code == 409, response.text

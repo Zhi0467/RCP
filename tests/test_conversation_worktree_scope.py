@@ -64,6 +64,7 @@ def _resolve(
     workspace.mkdir(parents=True, exist_ok=True)
     return resolve_project_write_scope(
         manifest=manifest,
+        truth_scope=manifest.project.truth_scope,
         project_id="project",
         execution_machine="laptop",
         capability=capability,

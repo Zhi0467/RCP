@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from rcp.agents.project_repositories import admitted_write_repositories
 from rcp.config import AgentExecutionProfile, AgentSurface
 from rcp.providers import profile_for
 from rcp.runs.auto_research import AutoResearchRunRequest
@@ -33,8 +34,10 @@ def _resolved_graph_request(
             "model": profile.model,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
-            "run_truth_scope": list(
-                request.run_truth_scope or service.manifest.agent.default_run_truth_scope
+            "run_truth_scope": admitted_write_repositories(
+                service.history.state(),
+                request.run_truth_scope,
+                worktree=request.worktree or request.code_worktree,
             ),
         }
     )

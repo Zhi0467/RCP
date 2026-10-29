@@ -19,13 +19,15 @@ from rcp.agents.continuation_prompt import (
     compose,
     master_key,
 )
-from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import GroupContext
+from rcp.agents.project_repositories import sibling_repository_paths
 from rcp.agents.write_scope import ProjectWriteScope
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
+    from rcp.storage import AppStore
 from rcp.compute_jobs.job_managers import job_manager_rules
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
@@ -87,11 +89,29 @@ def render_group_context(context: GroupContext | None) -> str:
         "You can read the available other projects as you read your own: their graph and research.md "
         "files, repositories, and graph history including branches (pass --project with the project id). "
         "You cannot write to them.\n"
+        + _group_read_refs_line(context)
         + "```json\n"
         + json.dumps({"group_context": context.model_dump(mode="json")}, ensure_ascii=False)
         + "\n```"
     )
 
+
+def _group_read_refs_line(context: GroupContext) -> str:
+    # The same refs RCP stamps as this run's read scope.
+    refs = sorted(sibling_repository_paths(context))
+    if not refs:
+        return ""
+    return (
+        "Name another project's repository you read in `repositories_read` by its ref: "
+        + ", ".join(f"`{ref}`" for ref in refs)
+        + ".\n"
+    )
+
+
+REPOSITORIES_READ_RULE = (
+    "Record in `repositories_read` each repository you read: this project's by alias, another "
+    "project's by the ref the Project group section lists."
+)
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
 RCP maintains one project-global research graph — questions, hypotheses, experiments, evidence,
@@ -191,12 +211,16 @@ def chat_master_contract_key(*, ontology_extensions: bool, owner: str | None = N
 def _tidy(
     text: str,
     *,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     command_client: str = "",
 ) -> str:
     """Collapse the blank runs that empty optional sections leave behind."""
 
-    return graph_read_contract(re.sub(r"\n{3,}", "\n\n", text), graph_read_scope, command_client)
+    return graph_read_contract(
+        re.sub(r"\n{3,}", "\n\n", text),
+        graph_read_prompt,
+        command_client,
+    )
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -321,19 +345,40 @@ def _command_client_rule(command_client: str) -> str:
     )
 
 
-def graph_read_contract(content: str, scope: GraphReadScope | None, command_client: str) -> str:
-    """Finish a master with the same resolved grant its command dispatcher enforces.
+class GraphReadPrompt:
+    """One launch's branch identities, shared by its master text and recorded values."""
 
-    Owners use this when their contract does not pass through ``_tidy``. Retained
-    masters and inline continuations bypass finalization; they keep delta semantics.
-    """
+    def __init__(self, scope: GraphReadScope | None, store: AppStore | None):
+        self.scope = scope
+        self.values = (
+            {
+                "branches": [
+                    branch.model_dump(mode="json") for branch in readable_branches(scope, store)
+                ]
+            }
+            if scope is not None and store is not None
+            else {}
+        )
 
-    if scope is None:
+
+def graph_read_contract(content: str, prompt: GraphReadPrompt | None, command_client: str) -> str:
+    """Finish a master using the launch snapshot that also supplies its values."""
+
+    if prompt is None or prompt.scope is None:
         return content
-    return "\n\n".join([content, render_graph_history(scope, command_client)])
+    return "\n\n".join(
+        [
+            content,
+            render_graph_history(
+                prompt.scope, command_client, branches=prompt.values.get("branches", [])
+            ),
+        ]
+    )
 
 
-def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
+def render_graph_history(
+    scope: GraphReadScope, command_client: str, *, branches: list[dict[str, object]] | None = None
+) -> str:
     """Render the exact read grant used by this launch's command dispatcher."""
 
     forms = {
@@ -341,9 +386,7 @@ def render_graph_history(scope: GraphReadScope, command_client: str) -> str:
         "graph_log": "[--project <project id>] <id> [--at <head>]",
     }
     calls = "\n".join(f"- `{command_client} {verb} {forms[verb]}`" for verb in sorted(scope.verbs))
-    branch_list = "\nBranches: " + json.dumps(
-        [branch.model_dump(mode="json") for branch in scope.branches], separators=(",", ":")
-    )
+    branch_list = "\nBranches: " + json.dumps(branches or [], separators=(",", ":"))
     return (
         "## Graph history queries\n\n"
         f"Project: `{scope.project_id}`. Readable targets: {scope.readable_targets}; "
@@ -914,7 +957,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v12"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v18"
+WORK_POLICY_VERSION = "work-v19"
 
 
 class PromptFactory:
@@ -1066,7 +1109,7 @@ class PromptFactory:
         execution_instructions: str = "",
         auto_research_child_boundary: str = "",
         discuss_execution_instructions: str = "",
-        graph_read_scope: GraphReadScope | None = None,
+        graph_read_prompt: GraphReadPrompt | None = None,
     ) -> str:
         """Render the one master a conversation session holds for both modes.
 
@@ -1160,12 +1203,12 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
 {work}
 {auto_research_child_boundary}
 """,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_read_prompt,
             command_client=command_client,
         )
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v5"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v6"
 
     @staticmethod
     def graph_task_contract(
@@ -1284,7 +1327,8 @@ Output contract:
   intents in the authority contract, using that intent's matching operation shape. Only
   `status_change` carries an `evidence_edge` cause. `card.decision_needed` names the exact change in
   plain prose, never only "Approve or reject".
-- Record `repositories_read` honestly; RCP supplies the authorized run truth scope.
+- Record in `repositories_read` each listed repository you read, by its alias. RCP supplies the
+  run's write and read scopes.
 - Your final response should briefly confirm that the patch file was written and plainly name any
   needed ontology vocabulary or Hypothesis scope left empty for lack of a cited boundary.
 
@@ -1405,7 +1449,7 @@ Boundary:
         attachments: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
-        graph_read_scope: GraphReadScope | None = None,
+        graph_read_prompt: GraphReadPrompt | None = None,
     ) -> str:
         """Render the Work contract a session starts from.
 
@@ -1537,7 +1581,7 @@ Operational authority:
 Graph Patch (optional):
 - Write one only when the work changes research state; no Patch is a normal result.
 - Write one semantic Patch to `{patch_path}` using only the fields in `{output_schema_path}`. It is
-  the only graph-change channel RCP reads. Record `repositories_read` honestly.
+  the only graph-change channel RCP reads. {REPOSITORIES_READ_RULE}
 - Write `change_summary` as one plain sentence per graph change, naming concepts by title (never ids,
   operation names, or counts) and stating only what the Patch records.
 - Describe the graph change in the reply. RCP shows whether it applied beside the reply, so do not
@@ -1548,7 +1592,7 @@ Graph Patch (optional):
 {render_agent_graph_authority_contract()}
 
 {watch_rules}""",
-            graph_read_scope=None if embedded else graph_read_scope,
+            graph_read_prompt=None if embedded else graph_read_prompt,
             command_client=command_client,
         )
 

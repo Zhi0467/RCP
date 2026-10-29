@@ -115,7 +115,6 @@ function conversationRefusal(
   latestTask: AgentTask | null,
   relatedTasks: AgentTask[],
   taskStartPending: boolean,
-  runTruthScope: string[],
   providerReady: boolean,
   projectGraphTarget?: GraphTargetRef,
   conversationGraphTarget?: GraphTargetRef,
@@ -128,7 +127,6 @@ function conversationRefusal(
   const paused = resumablePausedChatTask(relatedTasks);
   if (paused) return paused.status_message || "Resume or retry the paused turn before sending.";
   if (taskStartPending) return "Another task start is already being submitted.";
-  if (!runTruthScope.length) return "This conversation has no repository scope.";
   if (!providerReady) return "The configured provider is not ready on its execution machine.";
   return null;
 }
@@ -190,8 +188,6 @@ async function resolveProjectConversationContext(
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
-  const runTruthScope =
-    latestTask?.request.run_truth_scope ?? project.default_run_truth_scope ?? [];
   return {
     transcript,
     surface,
@@ -202,13 +198,11 @@ async function resolveProjectConversationContext(
     config,
     readiness,
     providerReady,
-    runTruthScope,
     sessionId: resolvedChatSessionId(relatedTasks),
     refusal: conversationRefusal(
       latestTask,
       relatedTasks,
       taskStartPending,
-      runTruthScope,
       providerReady,
       project.graph_target,
       transcript.graph_target,
@@ -240,7 +234,6 @@ export async function inspectProjectConversation(
     config,
     readiness,
     providerReady,
-    runTruthScope,
     sessionId,
     refusal,
   } = context;
@@ -296,8 +289,6 @@ export async function inspectProjectConversation(
       can_send: refusal === null,
       refusal_reason: refusal,
       modes: ["discuss", "work"],
-      run_truth_scope: runTruthScope.slice(0, 8),
-      run_truth_scope_truncated: runTruthScope.length > 8,
       stable_session_id: sessionId,
       provider: config.provider,
       provider_label: readiness?.label ?? config.provider,
@@ -534,15 +525,13 @@ export async function conversationSendTarget(
     reasoning: profile.reasoning,
     run_on: profile.run_on,
   };
-  const runTruthScope = existing?.runTruthScope ?? project.default_run_truth_scope ?? [];
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   // Why a Send here would be refused, known before any confirmation card is shown.
   const refusal =
-    existing?.refusal ??
-    conversationRefusal(null, [], taskStartPending, runTruthScope, providerReady);
-  return { existing, node, surface, config, runTruthScope, refusal };
+    existing?.refusal ?? conversationRefusal(null, [], taskStartPending, providerReady);
+  return { existing, node, surface, config, refusal };
 }
 
 export async function sendProjectConversationMessage(
@@ -570,7 +559,7 @@ export async function sendProjectConversationMessage(
     stringListInput(input, "workflow_ids"),
   );
   const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
-  const { existing, node, surface, config, runTruthScope, refusal } = await conversationSendTarget(
+  const { existing, node, surface, config, refusal } = await conversationSendTarget(
     project,
     tasks,
     input,
@@ -588,7 +577,6 @@ export async function sendProjectConversationMessage(
     {
       kind: surface,
       config,
-      runTruthScope,
       nodeId: node?.id ?? null,
       message,
       chatId,

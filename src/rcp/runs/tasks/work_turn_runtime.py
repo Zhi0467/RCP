@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
 from dataclasses import asdict, dataclass, field
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -23,6 +24,8 @@ from rcp.agents.command_protocol import CommandResponse
 from rcp.agents.context import ChatContext
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.project_repositories import RepositoryReadScope
+from rcp.agents.prompts import GraphReadPrompt
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
@@ -199,9 +202,17 @@ class WorkTurn:
     data_dir: Path | None = None
     graph_read_scope: GraphReadScope | None = None
 
+    @cached_property
+    def graph_read_prompt(self) -> GraphReadPrompt:
+        return GraphReadPrompt(self.graph_read_scope, self.service.paper.store)
+
     @property
     def run_truth_scope(self) -> list[str]:
         return self.context.run_truth_scope
+
+    @property
+    def read_scope(self) -> RepositoryReadScope:
+        return self.context.read_scope
 
     @property
     def continuation(self) -> AgentTaskContinuation:
@@ -278,6 +289,8 @@ class WorkFinalizationContext:
     request: RunRequest
     execution: AgentTaskExecution | None
     run_truth_scope: list[str]
+    # None only for a turn retained before reads were stamped.
+    read_scope: RepositoryReadScope | None
     workspace: Path
     local_stage: Path | None
     remote_stage: RemoteRunStage | None

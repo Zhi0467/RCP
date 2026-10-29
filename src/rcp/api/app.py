@@ -28,6 +28,8 @@ from rcp import __version__
 from rcp.agents import AcceptanceAgentLauncher, AgentLauncher, ProviderReadiness
 from rcp.agents.command_protocol import SpawnArguments
 from rcp.agents.git_access import provider_git_access
+from rcp.agents.group_context import build_group_context
+from rcp.agents.project_repositories import resolve_read_scope, write_repositories
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
@@ -826,12 +828,19 @@ def create_app(
         execution_machine = service.manifest.machine_map.get(request.run_on)
         if execution_machine is None:
             raise ValueError(f"unknown execution machine: {request.run_on}")
+        # Resolved once for this launch, from the group its prompt shows.
+        read_scope = resolve_read_scope(
+            service._project_id,
+            service.manifest.repositories,
+            build_group_context(service, execution.store, execution_machine.alias),
+        )
 
         def validate_auto_research_patch(context, arguments) -> AutoResearchCommandEffectResult:
             validated = _validate_work_patch_live(
                 service,
                 arguments.patch,
                 run_truth_scope=list(context.request.run_truth_scope or ()),
+                read_scope=read_scope,
                 source_operation_id=context.task.operation_id,
                 profile=("orchestrator" if context.request.role == "orchestrator" else "ordinary"),
             )
@@ -855,9 +864,9 @@ def create_app(
                 execution,
                 patch_text,
                 run_truth_scope=list(
-                    context.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope
+                    context.request.run_truth_scope or write_repositories(service.history.state())
                 ),
+                read_scope=read_scope,
                 profile="orchestrator",
                 source_operation_id=context.task.operation_id,
                 source_effect_id=source_effect_id,
@@ -2709,7 +2718,7 @@ def _auto_research_worker_request(
         reasoning=arguments.reasoning,
         kind="project_chat" if arguments.project else "node_chat",
     )
-    return _resolved_graph_request(
+    resolved = _resolved_graph_request(
         service,
         "project_chat" if arguments.project else "node_chat",
         RunRequest(
@@ -2725,6 +2734,12 @@ def _auto_research_worker_request(
             reasoning=reasoning,
         ),
     )
+    # A worker writes no more than the orchestrator was authorized to write.
+    if _context.request.run_truth_scope:
+        resolved = resolved.model_copy(
+            update={"run_truth_scope": list(_context.request.run_truth_scope)}
+        )
+    return resolved
 
 
 def default_data_dir() -> Path:

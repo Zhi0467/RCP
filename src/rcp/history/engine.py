@@ -292,7 +292,6 @@ class ProjectHistoryEngine:
                 scope_failure.model_dump(mode="json") if scope_failure else None,
                 sorted(context.repository_aliases or ()),
                 sorted(context.machine_aliases or ()),
-                sorted(context.default_run_truth_scope or ()),
                 context.state_repository,
             ],
             sort_keys=True,

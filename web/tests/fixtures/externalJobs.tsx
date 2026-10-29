@@ -201,7 +201,6 @@ function WatcherFixture() {
         graphTarget={{ kind: "main" }}
         project={project as never}
         node={experiment as never}
-        runScope={["repo"]}
         tasks={[]}
         watchers={watchers as never}
         chatId="watcher-chat"

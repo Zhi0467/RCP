@@ -80,7 +80,6 @@ function Fixture() {
         graphTarget={{ kind: "main" }}
         key={generation}
         project={project as never}
-        runScope={["repo"]}
         tasks={[task] as never}
         historyMessages={history}
         chatId="steering-chat"

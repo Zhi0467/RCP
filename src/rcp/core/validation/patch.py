@@ -135,7 +135,6 @@ def _validate_patch(
         project_truth_scope=scope,
         repositories=set(context.repository_aliases or scope),
         machines=set(context.machine_aliases) if context.machine_aliases is not None else None,
-        default_run_truth_scope=set(context.default_run_truth_scope or ()),
         state_repository=context.state_repository,
         mode=context.mode,
         experiment_control_node_id=control_node_id,
@@ -407,7 +406,7 @@ def _validate_identity_shape(ctx: OpContext) -> None:
             "Identity patches cannot carry graph operations.",
             ctx.revision,
         )
-    if patch.run_truth_scope or patch.repositories_read:
+    if patch.run_truth_scope or patch.repositories_read or patch.run_read_scope is not None:
         ctx.report.reject(
             "identity-has-run-scope",
             "Identity patches cannot carry raw repository scope.",
@@ -561,7 +560,7 @@ def _validate_declared_scope(ctx: OpContext) -> None:
     if patch.kind == "identity":
         return
     if patch.kind == "approval":
-        if patch.run_truth_scope or patch.repositories_read:
+        if patch.run_truth_scope or patch.repositories_read or patch.run_read_scope is not None:
             ctx.report.reject(
                 "approval-has-run-scope",
                 "Human approval patches cannot carry raw repository scope.",
@@ -581,11 +580,15 @@ def _validate_declared_scope(ctx: OpContext) -> None:
             f"Run scope contains repositories outside project truth scope: {sorted(outside)}.",
             ctx.revision,
         )
-    read_outside = set(patch.repositories_read) - run_scope
+    # Reads follow the scope RCP stamped at collection, never the live group, so a
+    # sibling leaving the group later cannot change this verdict. A Patch without a
+    # stamp may read any repository of this project.
+    readable = ctx.repositories if patch.run_read_scope is None else set(patch.run_read_scope)
+    read_outside = set(patch.repositories_read) - readable
     if read_outside:
         ctx.report.reject(
             "read-outside-run-scope",
-            f"Patch read repositories outside its run scope: {sorted(read_outside)}.",
+            f"Patch read repositories outside its read scope: {sorted(read_outside)}.",
             ctx.revision,
         )
 

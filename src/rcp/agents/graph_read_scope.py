@@ -41,7 +41,6 @@ class ReadableBranch(BaseModel):
 class GraphReadScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    branches: tuple[ReadableBranch, ...] = ()
     group_context: GroupContext | None = None
     project_id: str
     # The run's own target; a head reference without a target resolves here.
@@ -57,8 +56,6 @@ class GraphReadScope(BaseModel):
         project_id: str,
         history: HistoryManager | BranchHistoryManager,
         group_context: GroupContext | None = None,
-        *,
-        store: AppStore,
     ) -> GraphReadScope:
         target = history.graph_target
         scope = cls(project_id=project_id, target=target, group_context=group_context)
@@ -72,23 +69,15 @@ class GraphReadScope(BaseModel):
                     ceilings.append(parent)
                     metadata = generations[parent.target.key].source.metadata
                 scope = scope.model_copy(update={"ancestry_ceilings": tuple(ceilings)})
-        # Identity only: a head revision here would change with every commit and
-        # resend the list to every session; agents read heads through graph_log.
-        records = store.graph_branches(project_id)
-        names = {branch.branch_id: branch.name for branch in records}
-        branches = [
-            ReadableBranch(
-                name=branch.name,
-                id=branch.branch_id,
-                parent=branch_label(branch.parent_head.target.branch_id, names),
-            )
-            for branch in records
-            if scope.readable(project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id))
-        ]
-        return scope.model_copy(update={"branches": tuple(branches)})
+        return scope
 
-    def branch_values(self) -> list[dict[str, Any]]:
-        return [branch.model_dump(mode="json") for branch in self.branches]
+    @model_validator(mode="before")
+    @classmethod
+    def discard_legacy_branches(cls, value: Any) -> Any:
+        # Old mailbox checkpoints included prompt context in the saved authority.
+        if isinstance(value, dict) and "branches" in value:
+            return {key: item for key, item in value.items() if key != "branches"}
+        return value
 
     @model_validator(mode="after")
     def validate_group_project(self) -> GraphReadScope:
@@ -127,3 +116,21 @@ class GraphReadScope(BaseModel):
                 for head in self.ancestry_ceilings
             ]
         )
+
+
+def readable_branches(scope: GraphReadScope, store: AppStore) -> list[ReadableBranch]:
+    """Prompt identities, filtered by authority without becoming part of it."""
+
+    records = store.graph_branches(scope.project_id)
+    names = {branch.branch_id: branch.name for branch in records}
+    return [
+        ReadableBranch(
+            name=branch.name,
+            id=branch.branch_id,
+            parent=branch_label(branch.parent_head.target.branch_id, names),
+        )
+        for branch in records
+        if scope.readable(
+            scope.project_id, GraphTargetRef(kind="branch", branch_id=branch.branch_id)
+        )
+    ]

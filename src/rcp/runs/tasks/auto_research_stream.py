@@ -58,7 +58,8 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
-from rcp.agents.prompts import render_group_context
+from rcp.agents.project_repositories import resolve_read_scope, write_repositories
+from rcp.agents.prompts import GraphReadPrompt, render_group_context
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -165,7 +166,6 @@ from rcp.transport import (
     RunLockCancelled,
     RunStageMailbox,
     StateUnavailable,
-    repository_access,
 )
 from rcp.transport.run_stage import remote_stage_name
 
@@ -316,7 +316,7 @@ async def stream_auto_research_orchestrator_run(
             service, execution.store, turn.request.run_on or ""
         )
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context, store=service.paper.store
+            turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
         lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
@@ -604,7 +604,7 @@ async def stream_auto_research_worker_run(
             schema,
         )
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context, store=service.paper.store
+            turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
         lesson_actions = lesson_command_actions(execution.store, turn.task.operation_id)
@@ -1207,21 +1207,11 @@ def _auto_research_context(
     stage: _WorkerStage,
 ) -> ChatContext:
     state = service.history.state()
-    selected = request.run_truth_scope or service.manifest.agent.default_run_truth_scope
-    access = {
-        alias: repository_access(
-            service.manifest.repository_map[alias],
-            service.manifest.machine_map[service.manifest.repository_map[alias].machine],
-        )
-        for alias in selected
-        if alias in service.manifest.repository_map
-    }
     context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
         graph_target=service.history.graph_target,
         node_id=None,
-        run_truth_scope=request.run_truth_scope,
-        repository_access=access,
+        writable=request.run_truth_scope,
     )
     state_machine = service.manifest.base_machine
     if state_machine != request.run_on:
@@ -1640,8 +1630,10 @@ def _orchestrator_prompt(
         compute_profiles=compute_profiles,
     )
 
-    if graph_read_scope is not None:
-        values["branches"] = graph_read_scope.branch_values()
+    graph_prompt = GraphReadPrompt(
+        graph_read_scope, service.paper.store if graph_read_scope else None
+    )
+    values.update(graph_prompt.values)
 
     snapshot, dismissal_ids = auto_research_question_snapshot(
         execution.store,
@@ -1688,7 +1680,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
             child_profiles=child_profiles,
             compute_profiles=compute_profiles,
         )
@@ -1722,7 +1714,7 @@ def _orchestrator_prompt(
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
         )
 
     def continuation_parts() -> list[str]:
@@ -1833,8 +1825,10 @@ def _worker_prompt(
         compute_profiles=compute_profiles,
     )
 
-    if graph_read_scope is not None:
-        values["branches"] = graph_read_scope.branch_values()
+    graph_prompt = GraphReadPrompt(
+        graph_read_scope, service.paper.store if graph_read_scope else None
+    )
+    values.update(graph_prompt.values)
 
     def render_master() -> str:
         return auto_research_worker_task_contract(
@@ -1855,7 +1849,7 @@ def _worker_prompt(
             messages_path=messages_path,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
-            graph_read_scope=graph_read_scope,
+            graph_read_prompt=graph_prompt,
             compute_profiles=compute_profiles,
         )
 
@@ -2188,7 +2182,13 @@ async def _settle_worker_patch(
                     execution,
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
-                    or service.manifest.agent.default_run_truth_scope,
+                    or write_repositories(service.history.state()),
+                    # A recorded pass has no live group; it reads only this project.
+                    read_scope=resolve_read_scope(
+                        service._project_id,
+                        service.manifest.repositories,
+                        correction.group_context if correction is not None else None,
+                    ),
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )
@@ -2263,7 +2263,7 @@ async def _settle_worker_patch(
         # The launch's group, which the reused read_dirs were built from.
         context.group_context = correction.group_context
         graph_read_scope = GraphReadScope.resolve(
-            turn.task.project_id, service.history, context.group_context, store=service.paper.store
+            turn.task.project_id, service.history, context.group_context
         )
         correction_head = prepare_graph_observation(
             execution,

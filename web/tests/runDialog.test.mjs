@@ -101,7 +101,6 @@ test("seed and refresh runs offer one empty, labelled additional-message field",
       open: true,
       kind: "seed",
       project,
-      initialScope: ["repo"],
       busy: false,
       onClose() {},
       onRun() {},
@@ -119,7 +118,6 @@ test("a closed run dialog renders no message field", () => {
       open: false,
       kind: "seed",
       project,
-      initialScope: ["repo"],
       busy: false,
       onClose() {},
       onRun() {},
@@ -616,7 +614,6 @@ test("conversation watcher status and wake attribution stay operational", () => 
   const props = {
     project,
     node: null,
-    runScope: ["repo"],
     tasks: [],
     activeTask: null,
     historyMessages: [
@@ -705,7 +702,6 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
   const props = {
     project,
     node,
-    runScope: ["repo"],
     tasks: [],
     historyMessages: [],
     chatId: "new-session-chat",
@@ -768,7 +764,6 @@ test("long human chat messages render a bounded preview control", () => {
     React.createElement(NodeChat, {
       project,
       node: null,
-      runScope: ["repo"],
       tasks: [],
       activeTask: null,
       historyMessages: [
@@ -863,7 +858,6 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     React.createElement(NodeChat, {
       project,
       node: null,
-      runScope: ["repo"],
       tasks: [activeTask],
       activeTask,
       historyMessages: [],
@@ -927,7 +921,6 @@ test("a running watcher wake or episode turn shows its Activity row before any a
       React.createElement(NodeChat, {
         project,
         node: null,
-        runScope: ["repo"],
         tasks: [running],
         activeTask: running,
         historyMessages: [],
@@ -954,7 +947,6 @@ test("retry keeps the original task boundary and exposes provider configuration"
       kind: "seed",
       mode: "retry",
       project,
-      initialScope: ["repo"],
       initialConfig: {
         provider: "codex",
         model: "",
@@ -977,7 +969,6 @@ test("Experiment provider switch exposes provider controls and no machine choice
       kind: "node_chat",
       mode: "retry",
       project,
-      initialScope: ["repo"],
       initialConfig: {
         provider: "codex",
         model: "",
@@ -1005,7 +996,6 @@ test("every switch dialog holds its submit until the binding actually changes", 
         kind,
         mode: "retry",
         project,
-        initialScope: ["repo"],
         initialConfig: config ?? initialConfig,
         busy: false,
         onClose() {},
@@ -1350,7 +1340,6 @@ test("A locked Auto-research child keeps its transcript and Runs route without a
     nodes: {},
     graphTarget,
     glossaryIndex: { entriesByInitial: new Map() },
-    runScope: [],
     tasks: [],
     watchers: [],
     graphChangesDisabled: false,
@@ -1408,7 +1397,6 @@ test("a selected inventory row cannot mount the composer on another target", () 
     board: false,
     nodes: {},
     glossaryIndex: { entriesByInitial: new Map() },
-    runScope: [],
     tasks: [],
     watchers: [],
     graphChangesDisabled: false,

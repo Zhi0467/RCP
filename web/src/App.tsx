@@ -110,6 +110,7 @@ import {
 import { isActiveTask } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
 import { loadChatTranscript } from "./chat/chatApi";
+import { worktreeRepositoryChoices } from "./chat/worktreeRepositories";
 import {
   bindArtifactResourceStore,
   closeArtifactViewer,
@@ -1020,7 +1021,6 @@ function MemberApp({
   const {
     view,
     trustView,
-    runScope,
     selectedNode,
     companionNode,
     detailFocusTokens,
@@ -1039,7 +1039,6 @@ function MemberApp({
     restoreProjectSelection,
     resetProjectSelection,
     applyCanonicalProject,
-    replaceRunScope,
     applyRouteSelection,
     changeView,
     openTab,
@@ -1424,7 +1423,6 @@ function MemberApp({
     ? {
         ...serializeProjectSessionTabState(projectSession),
         projectHeaderCollapsed,
-        runScope,
         selectedNodeId: selectedNode?.id ?? null,
         companionNodeId: companionNode?.id ?? null,
         detailFocusTokens,
@@ -3051,6 +3049,15 @@ function MemberApp({
         // profile's machine.
         const profile = project.agent_profiles.node_chat;
         const agent = launchConfig ?? profile;
+        // Only a code worktree names its one repository; the server stamps every other scope.
+        const { worktree_repository: pickedRepository, ...isolationFields } = isolation ?? {};
+        const worktreeRepositories = worktreeRepositoryChoices(project, profile.run_on);
+        const worktreeRepository =
+          pickedRepository && worktreeRepositories.includes(pickedRepository)
+            ? pickedRepository
+            : worktreeRepositories.length === 1
+              ? worktreeRepositories[0]
+              : null;
         const task = await startExperimentRun(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
           {
@@ -3058,12 +3065,14 @@ function MemberApp({
             model: agent.model || null,
             reasoning: agent.reasoning,
             run_on: profile.run_on,
-            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+            ...(isolation?.code_worktree && worktreeRepository
+              ? { run_truth_scope: [worktreeRepository] }
+              : {}),
             chat_id: chatId,
             // Omitted unless the human reauthorized an explicit count; the
             // backend then keeps the Experiment node's own limit.
             ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
-            ...isolation,
+            ...isolationFields,
             browser_requested: browserRequested,
             // A blank message lets the backend write the canonical start goal.
             ...(message?.trim() ? { message } : {}),
@@ -3125,7 +3134,6 @@ function MemberApp({
       refreshProjectExperimentLoops,
       refreshEpisodes,
       reload,
-      runScope,
       setFloatingChat,
       showExperiment,
     ],
@@ -3186,15 +3194,13 @@ function MemberApp({
     [project, startExperiment],
   );
 
-  const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
+  const runAgent = async (config: AgentRunConfig, message: string | null) => {
     if (!project || taskStarting || mutationsDisabled) return;
     const runKind = project.last_refresh_at ? "refresh" : "seed";
-    replaceRunScope(scope);
     try {
       await startAgentTask(runKind, {
         ...config,
         model: config.model || null,
-        run_truth_scope: scope,
         message,
       });
       closeRunDialog();
@@ -3818,13 +3824,11 @@ function MemberApp({
     project: null,
     tasks: [],
     conversationSource: webMcpConversationSource,
-    runScope: [],
   });
   voicePageRef.current = {
     project: webMcpProject,
     tasks,
     conversationSource: webMcpConversationSource,
-    runScope,
   };
   const voice = useVoiceAgent({
     ready: backendSessionReady,
@@ -4361,13 +4365,6 @@ function MemberApp({
         ? null
         : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
     : null;
-  const selectedExperimentControl = selectedExperimentRunId
-    ? selectedExperimentUsesIndex
-      ? (selectedTargetExperiment?.control ?? null)
-      : selectedMainRouteIsStale
-        ? null
-        : (presentedExperimentControl[selectedExperimentRunId] ?? null)
-    : null;
   const selectedExperimentNodes = Object.fromEntries(
     selectedExperimentExecution.nodes.map((node) => [node.id, node]),
   );
@@ -4388,7 +4385,6 @@ function MemberApp({
           node={selectedExperimentNode}
           nodes={selectedExperimentNodes}
           glossaryIndex={glossaryIndex}
-          runScope={selectedExperimentControl?.operational?.session?.run_truth_scope ?? runScope}
           tasks={selectedExperimentExecution.tasks}
           watchers={selectedExperimentExecution.watchers}
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
@@ -5359,9 +5355,6 @@ function MemberApp({
                     projectSettingsSavedProject(saved, current, retention),
                   );
                 else void reload();
-                // The saved snapshot carries the new default; the session may still
-                // hold the pre-save branch snapshot while its reload is in flight.
-                replaceRunScope(saved.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -5377,7 +5370,6 @@ function MemberApp({
               nodes={presentedGraph.nodes}
               graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
-              runScope={runScope}
               tasks={tasks}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
@@ -5606,7 +5598,6 @@ function MemberApp({
                 conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
                   ?.title
               }
-              runScope={runScope}
               tasks={tasks}
               watchers={watchers}
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
@@ -5643,10 +5634,9 @@ function MemberApp({
         open={runDialogOpen}
         kind={runKind}
         project={project}
-        initialScope={runScope}
         busy={taskStarting}
         onClose={closeRunDialog}
-        onRun={(config, scope, message) => void runAgent(config, scope, message)}
+        onRun={(config, message) => void runAgent(config, message)}
       />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
@@ -5690,7 +5680,6 @@ function MemberApp({
           mode="retry"
           kind={retryProfileKind(retryTask)}
           project={project}
-          initialScope={retryTask.request.run_truth_scope || project.default_run_truth_scope}
           initialConfig={retryConfig}
           busy={taskActionId === retryTask.operation_id}
           onClose={closeRetryTask}

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.command_protocol import MergeAnswersCommandRequest
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.agents.project_repositories import write_repositories
 from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.core.models import BranchMergeReceipt
 from rcp.core.transition_models import GraphTargetRef
@@ -190,6 +191,7 @@ async def stream_branch_merge_task(
             code = episode_code_merge(service, execution.store, episode)
         write_scope = resolve_project_write_scope(
             manifest=service.manifest,
+            truth_scope=write_repositories(service.history.state()),
             project_id=task.project_id,
             execution_machine=request.run_on,
             capability="orchestrate",
@@ -355,9 +357,7 @@ async def stream_branch_merge_task(
         if recorded is not None and (turn_plan := recorded_turn_plan(execution, stage)):
             # The answers left on the stage belong to the plan that turn was given.
             plan, recorded_promotions = turn_plan
-        graph_read_scope = GraphReadScope.resolve(
-            task.project_id, destination_history, store=service.paper.store
-        )
+        graph_read_scope = GraphReadScope.resolve(task.project_id, destination_history)
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,
@@ -558,7 +558,7 @@ def resume_branch_merge_command_mailbox(
         command_handler=_merge_command_handler(
             checks,
             project,
-            GraphReadScope.resolve(task.project_id, history, store=project.paper.store),
+            GraphReadScope.resolve(task.project_id, history),
         ),
     )
 

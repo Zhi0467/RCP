@@ -79,7 +79,6 @@ function Fixture() {
       <NodeChat
         graphTarget={{ kind: "main" }}
         project={project as never}
-        runScope={["repo"]}
         tasks={tasks as never}
         historyMessages={fresh ? undefined : (history as never)}
         chatId="send-chat"

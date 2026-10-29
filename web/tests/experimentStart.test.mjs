@@ -301,6 +301,10 @@ test("the real start handler selects its returned isolated episode beside a live
   let finished = 0;
   const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
   const { beginTaskPublication } = await server.ssrLoadModule("/src/agents/taskActions.ts");
+  const { worktreeRepositoryChoices } = await server.ssrLoadModule(
+    "/src/chat/worktreeRepositories.ts",
+  );
+  const bodies = [];
   const start = await callbackFromSource("../src/App.tsx", "startExperiment", {
     store: new ResourceStore(),
     beginTaskPublication,
@@ -308,8 +312,10 @@ test("the real start handler selects its returned isolated episode beside a live
       id: "project-one",
       experiment_control: { [loop.node_id]: { can_start: false, isolated_start_reasons: [] } },
       agent_profiles: { node_chat: {} },
-      default_run_truth_scope: [],
+      repositories: [],
+      project_truth_scope: [],
     },
+    worktreeRepositoryChoices,
     isControlNode: () => true,
     mutationsDisabled: false,
     experimentStartRequiresSync: false,
@@ -319,10 +325,12 @@ test("the real start handler selects its returned isolated episode beside a live
       finished += 1;
     },
     window: { crypto: { randomUUID: () => "fresh-chat" } },
-    runScope: [],
     apiBase: "/api/projects/project-one",
     graphPath: (path) => path,
-    startExperimentRun: async () => task,
+    startExperimentRun: async (_path, body) => {
+      bodies.push(body);
+      return task;
+    },
     experimentStartTarget,
     sameGraphTarget,
     isActiveGraph: () => true,
@@ -338,6 +346,8 @@ test("the real start handler selects its returned isolated episode beside a live
     await start({ id: loop.node_id, type: "experiment" }, undefined, { graph_isolation: true }),
     task,
   );
+  // Without a code worktree the server stamps the write set; the start names none.
+  assert.equal("run_truth_scope" in bodies[0], false);
   assert.deepEqual(selection.selectedExperimentRoute, {
     experiment_id: loop.node_id,
     episode_id: task.episode_id,

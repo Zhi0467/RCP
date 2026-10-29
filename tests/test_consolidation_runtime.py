@@ -236,6 +236,7 @@ def test_next_night_skips_own_successful_commits_but_retries_failed_run(
         execution,
         agent_patch_json(refresh_patch().model_copy(update={"run_truth_scope": scope})),
         run_truth_scope=scope,
+        read_scope=None,
         source_effect_id="nightly-commit",
     )
     assert failure is None
@@ -286,6 +287,7 @@ def test_paused_run_settles_commits_and_releases_chat_and_next_occurrence(runtim
         execution,
         agent_patch_json(refresh_patch().model_copy(update={"run_truth_scope": scope})),
         run_truth_scope=scope,
+        read_scope=None,
         source_effect_id="commit-before-pause",
     )
     assert failure is None
@@ -611,6 +613,7 @@ def test_keyed_apply_failure_requires_canonical_commit_before_success(
             execution,
             text,
             run_truth_scope=list(runtime.service.manifest.project.truth_scope),
+            read_scope=None,
             source_effect_id=effect,
         )
         assert failure is None and result.status == "applied"

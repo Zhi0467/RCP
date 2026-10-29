@@ -149,7 +149,12 @@ never rebases it. See [Forks](auto-research-and-branch-merge.md#forks) and
 RCP stamps `producer` (`human`, `agent`, or reserved `system` for identity and
 migration), authorizer (`space_id`, `user_id`, display-name snapshot), agent
 profile and task, episode where applicable, and source operation and effect
-identities. Agents cannot supply their own authority. Branch Patches name the
+identities. Agents cannot supply their own authority. A collected agent Patch
+also carries `run_read_scope` beside `run_truth_scope`. It lists the repository
+refs the run could read. Admission checks `repositories_read` against that stamp,
+never the live group, so a sibling leaving the group later changes no verdict. A
+Patch written before the stamp has none. It keeps its exact bytes and transition
+id, and it may read any repository of its project. Branch Patches name the
 target. A main merge also records the source branch, episode, base, and head.
 It records the prepared main head, merge task, and human dispatcher too.
 Summary prose cannot replace those identities.

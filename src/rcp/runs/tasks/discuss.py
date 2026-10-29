@@ -24,6 +24,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
+    GraphReadPrompt,
     _command_client_rule,
     chat_master_contract_key,
     graph_read_contract,
@@ -761,9 +762,7 @@ async def stream_discuss_run(
             project_id = service._project_id
             if project_id is None:
                 raise ValueError("Graph history reads require a canonical project identity.")
-            read_scope = GraphReadScope.resolve(
-                project_id, service.history, context.group_context, store=service.paper.store
-            )
+            read_scope = GraphReadScope.resolve(project_id, service.history, context.group_context)
             context = context.model_copy(
                 update=stage_branch_read_context(context, service, local_stage, remote_stage)
             )
@@ -821,16 +820,18 @@ async def stream_discuss_run(
             )
             if context.group_context is not None:
                 read_dirs.extend(context.group_context.read_dirs())
-            attachment_pointers = stage_turn_attachments(
+            attachment_pointers, attachment_dirs = stage_turn_attachments(
                 data_dir,
                 request.attachment_batch_id,
                 request.attachments,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                read_dirs=read_dirs,
-                additional=[artifact_context_pointer.pointer]
-                if artifact_context_pointer is not None
-                else None,
+            )
+            if artifact_context_pointer is not None:
+                attachment_pointers.append(artifact_context_pointer.pointer)
+                attachment_dirs.append(Path(str(artifact_context_pointer.pointer["path"])).parent)
+            read_dirs.extend(
+                directory for directory in attachment_dirs if directory not in read_dirs
             )
             if reusing_checkpoint and not request.session_id:
                 raise ValueError(
@@ -864,8 +865,8 @@ async def stream_discuss_run(
                 experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
-            if graph_read_scope is not None:
-                discuss_values["branches"] = graph_read_scope.branch_values()
+            graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store)
+            discuss_values.update(graph_prompt.values)
             handler = discuss_command_handler(
                 execution, service=service, graph_read_scope=graph_read_scope
             )
@@ -989,7 +990,9 @@ async def stream_discuss_run(
                     )
                     if patch_inputs is not None:
                         contract = graph_read_contract(
-                            contract, graph_read_scope, patch_inputs.command_client
+                            contract,
+                            graph_prompt,
+                            patch_inputs.command_client,
                         )
                     return contract + "\n\n" + browser_prompt_line(browser_grant)
 
@@ -1098,7 +1101,7 @@ async def stream_discuss_run(
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
                     discuss_execution_instructions=instructions,
-                    graph_read_scope=graph_read_scope,
+                    graph_read_prompt=graph_prompt,
                 )
                 prompt, contract_path = _prepare_discuss_chat_prompt(
                     execution,

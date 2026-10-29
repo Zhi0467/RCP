@@ -114,7 +114,8 @@ async def stage_work_turn(
     its worktree. ``compute_episode_id`` is the episode compute commands bill.
     ``prepare_handoffs`` clears or stages the owner's handoff files and its
     result is returned third. ``start_validator_mailbox`` is called as
-    ``(service, staged, *, execution, budget, compute_commands, run_truth_scope)``.
+    ``(service, staged, *, execution, budget, compute_commands, run_truth_scope,
+    read_scope, graph_read_scope)``.
     Without ``stage_patch_inputs`` the turn gets one brokered Patch mailbox;
     without ``select_skills`` the request's own skill selection is staged.
     """
@@ -284,7 +285,6 @@ async def stage_work_turn(
             write_scope.project_id,
             service.history,
             context.group_context,
-            store=service.paper.store,
         )
         validator_lifecycle = start_validator_mailbox(
             service,
@@ -293,6 +293,7 @@ async def stage_work_turn(
             budget=validator_budget,
             compute_commands=compute_commands,
             run_truth_scope=context.run_truth_scope,
+            read_scope=context.read_scope,
             graph_read_scope=graph_read_scope,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
@@ -315,17 +316,17 @@ async def stage_work_turn(
             label=skill_bundle_label(skill_selection),
             reuse_existing=True,
         )
-        attachment_pointers = stage_turn_attachments(
+        attachment_pointers, attachment_dirs = stage_turn_attachments(
             data_dir,
             request.attachment_batch_id,
             request.attachments,
             local_stage=local_stage,
             remote_stage=remote_stage,
-            read_dirs=read_dirs,
-            additional=[artifacts.pointer]
-            if artifacts is not None and artifacts.pointer is not None
-            else None,
         )
+        if artifacts is not None and artifacts.pointer is not None:
+            attachment_pointers.append(artifacts.pointer)
+            attachment_dirs.append(Path(str(artifacts.pointer["path"])).parent)
+        read_dirs.extend(directory for directory in attachment_dirs if directory not in read_dirs)
         repositories: list[dict[str, object]] = [
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories

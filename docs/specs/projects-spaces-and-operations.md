@@ -285,8 +285,28 @@ shell history is written. Terminals add no graph mutation or manifest permission
 
 The project manifest names repository aliases, paths paired with execution
 machines/hosts, truth-scope membership, provider roots, and execution profiles.
-Project truth scope is human-authored canonical membership. Run scope is a
-nonempty contextual subset; it does not change project truth.
+Project truth scope is human-authored canonical membership, and the graph's
+`project_truth_scope` is its one source: `agents/project_repositories.py` reads
+it for every launch, and the manifest's `project.truth_scope` is only a mirror
+the history manager writes, as is the legacy `agent.default_run_truth_scope`.
+Every agent reads every project repository; the truth scope names the ones
+Work-like runs may write. Settings' **Agents can write** box on a repository row,
+and the same box when adding one, is that membership: toggling it appends one
+human approval `set_project_truth_scope`, never a manifest edit. There is no
+per-turn repository selection. Admission stamps each task's `run_truth_scope`
+with the whole truth scope, except that a worktree (a chat's, or an Experiment's
+code worktree) names its one writable repository on the run machine. Older
+tasks and Patches keep the narrower scope they recorded: a resume, retry,
+continuation, Experiment watcher start or Auto-research worker keeps its
+authorized write set, never the current truth scope, while still reading every
+repository, and old records replay unchanged.
+
+A personal project adds a repository directly with
+`POST /api/projects/{id}/repositories`: a Git work tree root with at least one
+commit on the base machine, overlapping no project repository, published as the
+same human approval a team add completes with (descriptor plus truth choice).
+Personal projects have no clone path, so their Add repo form offers only a
+folder; team projects add through a setup request, below.
 
 A repository's alias is its only identifier, so the Web calls it the name.
 Setup suggests it from the source: a chosen folder's name, a GitHub
@@ -297,17 +317,21 @@ human types a name. A project with one repository shows no name field in the
 setup wizard, so its name is always derived; the field appears once a second
 repository makes the names need to differ. Existing aliases never change.
 
-A Patch declares the repositories its run read. Task contracts name repositories
-by path while scope is a list of aliases, so RCP accepts either spelling and
-records each read by its manifest alias, resolving a path at or under a
-registered root to that root. A declared repository outside run scope is still
-rejected.
+A Patch declares the repositories its run read in `repositories_read`, each by
+ref: a bare alias names this project's repository and `<project_id>:<alias>` a
+group sibling's (`agents/project_repositories.py` owns the encoding). Task
+contracts name repositories by path, so RCP accepts a ref, this project's id with
+an alias, or a path at or under a repository root shown to the run, and records
+the ref. RCP stamps the run's resolved read scope on the collected Patch
+([Patch provenance](graph-history-and-transitions.md#patch-provenance)); a read
+outside it is rejected. A Patch may cite any project repository as
+`source_refs`.
 
-Every graph-capable run receives the complete graph and canonical research
-rendering for its exact graph target plus only its selected raw repository
-pointers. Work-like write containment separately permits exact admitted
-repositories on the execution machine; context and write permission are not the
-same thing.
+Every graph-capable run, the Paper coach and group-context siblings receive
+pointers to every project repository. Work-like write containment separately
+permits exactly the admitted writable repositories on the execution machine,
+checked again at launch against the graph's current truth scope; context and
+write permission are not the same thing.
 
 Provisioning storage represents a repository source as a GitHub reference or
 null (server only). Requests can create a team project, receive a transfer, add

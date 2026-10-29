@@ -1,3 +1,5 @@
+import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
+import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
@@ -252,16 +254,35 @@ export function DetailDrawer({
     code_worktree: false,
   });
   const [experimentBranch, setExperimentBranch] = useState("");
+  // The worktree's one repository: a writable one on the Experiment's machine.
+  const worktreeRepositories = project
+    ? worktreeRepositoryChoices(project, project.agent_profiles.node_chat.run_on)
+    : [];
+  const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<string | null>(null);
+  const worktreeRepository =
+    worktreeRepositoryPick && worktreeRepositories.includes(worktreeRepositoryPick)
+      ? worktreeRepositoryPick
+      : (worktreeRepositories[0] ?? null);
   const codeWorktreeToggle = (
-    <label>
-      <input
-        type="checkbox"
-        checked={(inheritedIsolation ?? isolation).code_worktree}
-        disabled={Boolean(inheritedIsolation)}
-        onChange={(event) => setIsolation({ ...isolation, code_worktree: event.target.checked })}
-      />
-      Code worktree
-    </label>
+    <span className="code-worktree-choice">
+      <label>
+        <input
+          type="checkbox"
+          checked={(inheritedIsolation ?? isolation).code_worktree}
+          disabled={Boolean(inheritedIsolation)}
+          onChange={(event) => setIsolation({ ...isolation, code_worktree: event.target.checked })}
+        />
+        Code worktree
+      </label>
+      {(inheritedIsolation ?? isolation).code_worktree && (
+        <WorktreeRepositoryPicker
+          repositories={worktreeRepositories}
+          value={worktreeRepository}
+          disabled={false}
+          onChange={setWorktreeRepositoryPick}
+        />
+      )}
+    </span>
   );
   const newBranchNameValid =
     inheritedIsolation || !isolation.graph_isolation || branchNameValid(experimentBranch);
@@ -822,10 +843,13 @@ export function DetailDrawer({
                       }
                       onClick={() =>
                         onRunExperiment(
-                          inheritedIsolation ??
-                            (isolation.graph_isolation
-                              ? { ...isolation, branch_name: branchNameRequest(experimentBranch) }
-                              : isolation),
+                          {
+                            ...(inheritedIsolation ??
+                              (isolation.graph_isolation
+                                ? { ...isolation, branch_name: branchNameRequest(experimentBranch) }
+                                : isolation)),
+                            worktree_repository: worktreeRepository,
+                          },
                           browserRequested,
                           launchConfig,
                           startMessage,

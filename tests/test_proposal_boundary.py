@@ -895,18 +895,16 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
 
 
 @pytest.mark.parametrize(
-    ("run_scope", "repositories_read", "expected_code"),
+    ("truth_repository", "expected_code"),
     [
-        (["repo-a"], ["repo-a"], "source-outside-run-scope"),
-        # A cited repository inside RCP-supplied run scope needs no separate
-        # self-reported read record, including when carrying existing provenance.
-        (["repo-a", "repo-b"], ["repo-a"], None),
+        ("repo-z", "source-outside-run-scope"),
+        # Agents read every project repository, so one they may not write is citable.
+        ("repo-b", None),
     ],
 )
-def test_content_proposal_source_refs_retain_originating_agent_scope(
+def test_content_proposal_source_refs_name_a_project_repository(
     manifest,
-    run_scope: list[str],
-    repositories_read: list[str],
+    truth_repository: str,
     expected_code: str | None,
 ) -> None:
     state = _state_with_decision(manifest)
@@ -918,7 +916,7 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
                 "source_refs": [
                     {
                         "machine": "laptop",
-                        "truth_repository": "repo-b",
+                        "truth_repository": truth_repository,
                         "source": "codex",
                         "session_id": "session-source-scope",
                         "record_uuid": "record-source-scope",
@@ -931,11 +929,9 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
         ),
         base_rev=state.revision,
     )
-    patch = _agent_patch(proposal).model_copy(
-        update={"run_truth_scope": run_scope, "repositories_read": repositories_read}
-    )
+    patch = _agent_patch(proposal)
 
-    report = validate_patch(state, patch, ValidationContext(["repo-a", "repo-b"]))
+    report = validate_patch(state, patch, ValidationContext(["repo-a"], ["repo-a", "repo-b"]))
 
     if expected_code is None:
         assert not report.rejected, [message.message for message in report.messages]

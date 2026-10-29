@@ -14,8 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents.continuation_prompt import MasterRef, graph_head_delta
-from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.prompts import graph_read_contract
+from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import HeadSpec
 from rcp.runs.shared import _stage_or_reuse_task_input, _stage_task_contract
@@ -81,12 +80,12 @@ def start_session_master(
     key: str,
     content: str,
     values: Mapping[str, object] | None = None,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     command_client: str = "",
 ) -> MasterRef:
     """Record and stage the master a new native session starts from."""
 
-    content = graph_read_contract(content, graph_read_scope, command_client)
+    content = graph_read_contract(content, graph_read_prompt, command_client)
     record_session_master(execution.store, execution.operation_id, content, key, values)
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, session_master_label(label_prefix, content), content
@@ -104,7 +103,7 @@ def continuation_session_master(
     key: str,
     render: Callable[[], str],
     values: Mapping[str, object] | None = None,
-    graph_read_scope: GraphReadScope | None = None,
+    graph_read_prompt: GraphReadPrompt | None = None,
     command_client: str = "",
     force_bootstrap: bool = False,
 ) -> MasterRef:
@@ -135,7 +134,7 @@ def continuation_session_master(
             path=path, bootstrap=False, values=recorded_master_values(execution.store, operation_id)
         )
     content = render()
-    content = graph_read_contract(content, graph_read_scope, command_client)
+    content = graph_read_contract(content, graph_read_prompt, command_client)
     record_session_master(execution.store, execution.operation_id, content, key, values)
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, session_master_label(label_prefix, content), content

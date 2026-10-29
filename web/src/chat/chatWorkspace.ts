@@ -203,7 +203,6 @@ export function conversationAgentConfig(
 export interface ConversationTurnSubmission {
   kind: ChatKind;
   config: AgentRunConfig;
-  runTruthScope: string[];
   nodeId: string | null;
   message: string;
   chatId: string;
@@ -214,6 +213,8 @@ export interface ConversationTurnSubmission {
   attachments?: ComposerTurnFields;
   skills?: SkillDefaults;
   providerSkillNames?: string[];
+  /** The repository a first worktree turn checks out; the server stamps every other scope. */
+  worktreeRepository?: string | null;
   worktree?: boolean;
   worktreeIntegration?: WorktreeIntegrationOption["id"];
 }
@@ -227,13 +228,19 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   return {
     ...submission.config,
     model: submission.config.model || null,
-    run_truth_scope: submission.runTruthScope,
     node_id: submission.nodeId,
     message,
     chat_id: submission.chatId,
     session_id: submission.sessionId,
     mode: submission.mode,
-    ...(submission.worktree ? { worktree: true } : {}),
+    ...(submission.worktree
+      ? {
+          worktree: true,
+          ...(submission.worktreeRepository
+            ? { run_truth_scope: [submission.worktreeRepository] }
+            : {}),
+        }
+      : {}),
     ...(submission.worktreeIntegration
       ? { worktree_integration: submission.worktreeIntegration }
       : {}),

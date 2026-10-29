@@ -6,18 +6,16 @@ import {
   launchProviderReady,
   profileRunConfig,
 } from "../core/AgentConfigControls";
-import { RepositoryScope } from "../chat/RepositoryScope";
 
 interface Props {
   open: boolean;
   kind: AgentExecutionProfile;
   project: ProjectSnapshot;
-  initialScope: string[];
   initialConfig?: AgentRunConfig;
   mode?: "start" | "retry";
   busy: boolean;
   onClose: () => void;
-  onRun: (config: AgentRunConfig, scope: string[], message: string | null) => void;
+  onRun: (config: AgentRunConfig, message: string | null) => void;
 }
 
 /** Whose binding this dialog is about to change, in that run's own words. */
@@ -31,23 +29,20 @@ export function RunDialog({
   open,
   kind,
   project,
-  initialScope,
   initialConfig,
   mode = "start",
   busy,
   onClose,
   onRun,
 }: Props) {
-  const [scope, setScope] = useState(initialScope);
   const [config, setConfig] = useState(() => profileRunConfig(project.agent_profiles[kind]));
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setScope(initialScope);
     setConfig(initialConfig || profileRunConfig(project.agent_profiles[kind]));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the form when it opens or the project changes, not when a profile refresh arrives mid-edit
-  }, [open, initialConfig, initialScope, kind, project.id]);
+  }, [open, initialConfig, kind, project.id]);
 
   useEffect(() => {
     if (open) setMessage("");
@@ -91,16 +86,6 @@ export function RunDialog({
     childProfile &&
     (childProfile.provider !== config.provider || childProfile.effective_model !== selectedModel),
   );
-  const crossMachineRepositories = project.repositories.filter(
-    (repository) => scope.includes(repository.alias) && repository.machine !== config.run_on,
-  );
-  const machinesByAlias = new Map(project.machines.map((machine) => [machine.alias, machine]));
-  const hostlessRepositories = crossMachineRepositories.filter(
-    (repository) => !machinesByAlias.get(repository.machine)?.host.trim(),
-  );
-  const sshRepositories = crossMachineRepositories.filter((repository) =>
-    Boolean(machinesByAlias.get(repository.machine)?.host.trim()),
-  );
 
   return (
     <div
@@ -133,29 +118,17 @@ export function RunDialog({
           </button>
         </header>
         {mode === "start" && (
-          <>
-            <div className="run-dialog-section">
-              <span className="field-label">Truth input subset</span>
-              <RepositoryScope
-                repositories={project.repositories}
-                projectScope={project.project_truth_scope}
-                stateRepository={project.state_repository}
-                selected={scope}
-                onChange={setScope}
+          <div className="run-dialog-section">
+            <label className="node-edit-field">
+              <span>Additional message (optional)</span>
+              <textarea
+                rows={4}
+                value={message}
+                disabled={busy}
+                onChange={(event) => setMessage(event.target.value)}
               />
-            </div>
-            <div className="run-dialog-section">
-              <label className="node-edit-field">
-                <span>Additional message (optional)</span>
-                <textarea
-                  rows={4}
-                  value={message}
-                  disabled={busy}
-                  onChange={(event) => setMessage(event.target.value)}
-                />
-              </label>
-            </div>
-          </>
+            </label>
+          </div>
         )}
         <AgentConfigControls
           project={project}
@@ -184,44 +157,14 @@ export function RunDialog({
             </span>
           </div>
         )}
-        {hostlessRepositories.length > 0 && (
-          <div className="run-staging-warning">
-            <TriangleAlert size={16} />
-            <span>
-              <strong>
-                {hostlessRepositories.map((repository) => repository.alias).join(", ")} cannot be
-                read from {config.run_on}.
-              </strong>
-              {" Their machines have no SSH host; remove them from this run."}
-            </span>
-          </div>
-        )}
-        {sshRepositories.length > 0 && (
-          <div className="run-staging-warning">
-            <TriangleAlert size={16} />
-            <span>
-              <strong>
-                {sshRepositories.map((repository) => repository.alias).join(", ")} will be read over
-                SSH at their declared paths.
-              </strong>
-              {" Repositories are never copied."}
-            </span>
-          </div>
-        )}
         <footer>
           <button className="button secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button
             className="button primary"
-            disabled={
-              busy ||
-              (mode === "start" && scope.length === 0) ||
-              switchSelectionUnchanged ||
-              !providerReady ||
-              hostlessRepositories.length > 0
-            }
-            onClick={() => onRun(config, scope, message.trim() || null)}
+            disabled={busy || switchSelectionUnchanged || !providerReady}
+            onClick={() => onRun(config, message.trim() || null)}
           >
             <Play size={14} />{" "}
             {mode === "retry"

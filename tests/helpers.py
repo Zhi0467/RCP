@@ -19,6 +19,7 @@ from httpx import AsyncClient
 from pydantic import TypeAdapter
 
 from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.project_repositories import RepositoryReadScope
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks
@@ -90,6 +91,14 @@ class _UncheckedWriteAuthority(WriteAuthority):
         self, receipt: BranchMergeReceipt, *, project_id: str | None
     ) -> None:
         pass
+
+
+def read_scope_of(*aliases: str) -> RepositoryReadScope:
+    """A launch read scope naming only this project's repositories."""
+
+    return RepositoryReadScope(
+        project_id="project", paths={alias: f"/{alias}" for alias in aliases}
+    )
 
 
 def unchecked_write_authority() -> WriteAuthority:

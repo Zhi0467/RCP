@@ -349,6 +349,74 @@ def update_project_settings(
     return snapshot
 
 
+class AddRepositoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=48)
+    path: str = Field(min_length=1, max_length=4096)
+    count_as_project_truth: bool = False
+
+
+@router.post(
+    "/api/projects/{project_id}/repositories",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def add_project_repository(
+    project_id: str,
+    body: AddRepositoryRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
+) -> dict[str, object]:
+    """A personal project adds a Git folder on its base machine; team adds use a request."""
+
+    if store.space_kind == "team":
+        raise HTTPException(status_code=409, detail="Team projects add repositories by request.")
+    human = identity_access.require_patch_capable_identity(request)
+    try:
+        return project_display_cache.add_existing_repository(
+            project_id, body.alias, body.path, body.count_as_project_truth, authorized_by=human
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class RepositoryWritableRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    writable: bool
+
+
+@router.put(
+    "/api/projects/{project_id}/repositories/{alias}/writable",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def set_repository_writable(
+    project_id: str,
+    alias: str,
+    body: RepositoryWritableRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    project_display_cache: DisplayCacheDependency,
+) -> dict[str, object]:
+    """Agents can write: one repository's truth-scope membership, changed by a human."""
+
+    human = identity_access.require_patch_capable_identity(request)
+    try:
+        return project_display_cache.set_repository_writable(
+            project_id, alias, body.writable, authorized_by=human
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Repository not found") from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 class AddProjectMachineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
