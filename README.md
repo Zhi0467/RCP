@@ -1,5 +1,9 @@
 # RCP
 
+Coding-agent sessions end, and findings get buried in separate chats.
+Unverified claims can get repeated as facts.
+RCP keeps one durable research graph; only a human can promote a claim to project truth.
+
 **A control panel for research done with coding agents.** RCP turns your Codex
 and Claude Code sessions into one durable research graph of questions,
 hypotheses, experiments, evidence, and decisions. Agents propose; you decide.
@@ -9,11 +13,8 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
 
 ## Who it's for today
 
-- **Agents:** Codex, Claude Code, and OpenCode.
-- **Platforms:** macOS 13+ on Apple Silicon for the desktop app; Ubuntu 22.04
-  or 24.04 LTS on x86-64 for the web app and team server.
-- **Install:** the macOS app with one command, or from source with the steps
-  below. RCP shows a notice when a newer release is out.
+- Researchers who run experiments with Codex, Claude Code, or OpenCode.
+- Lab teams who want a shared record of questions, evidence, and decisions.
 
 ## Set up with your agent
 
@@ -40,10 +41,13 @@ access, then send:
   a human approves one, promotes a claim to project truth, or authorizes an
   autonomous episode.
 - **Bounded autonomy.** One click starts an Experiment or an Auto-research
-  episode from the graph or a graph branch, with a budget and a Stop. Watchers,
-  recovery, and visual reports keep running without an open tab, and the phone
-  UI shows them. A nightly pass merges duplicate nodes, and agents keep short
-  operational lessons for later runs.
+  episode from the graph or a graph branch, with a budget and a Stop.
+
+## More features
+
+- **Work between sessions.** Watchers, recovery, and visual reports keep running
+  without an open tab, and the phone UI shows them. A nightly pass merges
+  duplicate nodes, and agents keep short operational lessons for later runs.
 - **Artifacts in the reply.** Agents put pages, charts, and images right in
   their reply, running and interactive. Live pages redraw while a job runs.
   Select text or an image region to comment, and the agent that made it
@@ -69,6 +73,11 @@ access, then send:
 <img src="docs/media/phone.gif" alt="The phone layout: digest, Inbox, research paths, and runs" width="300">
 
 ## Install and run
+
+The desktop app requires macOS 13+ on Apple Silicon. The web app and team server
+support Ubuntu 22.04 or 24.04 LTS on x86-64.
+Install the macOS app with one command, or build from source with the steps below.
+RCP shows a notice when a newer release is out.
 
 **macOS app.** Paste this into Terminal, from an admin account:
 
