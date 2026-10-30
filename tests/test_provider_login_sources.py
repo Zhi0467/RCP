@@ -9,63 +9,10 @@ import pytest
 from rcp import provider_skills
 from rcp.agents import ProviderReadiness
 from rcp.agents.provider_accounts import ProviderAccounts
-from rcp.agents.provider_environment import ProviderCredentialStore, ProviderProcessEnvironment
+from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.sources.indexer import ConversationIndexer
 from rcp.storage import AppStore
 from rcp.storage.models import LoginKey
-
-
-@pytest.mark.parametrize("removed", [False, True])
-def test_indexer_reads_added_codex_home(manifest, tmp_path: Path, removed: bool) -> None:
-    store = AppStore(tmp_path / "app.sqlite3")
-    row = store.add_provider_login("codex", "", added_by="member")
-    key = LoginKey("codex", "", row.login_id)
-    if removed:
-        store.finish_provider_login_removal(key)
-    home = ProviderCredentialStore.for_data_dir(tmp_path).account_dir(*key) / "codex-home"
-    root = home / "sessions"
-    root.mkdir(parents=True)
-    source = root / "retained.jsonl"
-    source.write_text(
-        json.dumps(
-            {
-                "type": "session_meta",
-                "payload": {
-                    "id": "added-session",
-                    "cwd": manifest.repository_map["repo-a"].path,
-                },
-            }
-        )
-        + "\n"
-        + json.dumps(
-            {
-                "type": "response_item",
-                "payload": {
-                    "id": "answer",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": "retained answer"}],
-                },
-            }
-        )
-        + "\n"
-    )
-    indexer = ConversationIndexer(manifest, login_store=store)
-    session = next(item for item in indexer.build().sessions if item.session_id == "added-session")
-    assert session.path == str(source)
-    assert any(record.text == "retained answer" for record in indexer.read_records(session))
-    assert str(root) not in manifest.sources.codex_roots
-
-
-def test_remote_added_roots_use_login_host(manifest, tmp_path: Path) -> None:
-    store = AppStore(tmp_path / "app.sqlite3")
-    row = store.add_provider_login("codex", "worker", added_by="member")
-    store.add_provider_login("codex", "other-worker", added_by="member")
-    indexer = ConversationIndexer(manifest, login_store=store)
-    assert indexer.added_codex_session_roots("worker") == [
-        f"~/.rcp/provider-homes/codex/{row.login_id}/sessions"
-    ]
 
 
 @pytest.mark.parametrize("machine_usable", [False, True])

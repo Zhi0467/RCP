@@ -154,13 +154,6 @@ def resume_provider_account(
         ):
             return member_id is None and resolved_task_login(store, task, host=key.host) == key
         authorizer = task.authorized_by.user_id if task.authorized_by else None
-        session = task.native_session_id or str(task.request.get("fork_session_id") or "")
-        if profile_for(key.provider).sessions_bound_to_login and session:
-            bound = accounts.bound_login(key.provider, key.host, session)
-            return (
-                member_id is None
-                and (bound or resolved_task_login(store, task, host=key.host)) == key
-            )
         if member_id is not None and authorizer != member_id:
             return False
         if authorizer is None or not profile_for(key.provider).authentication.manages_login:
@@ -209,7 +202,7 @@ def resume_provider_account(
 def resolved_task_login(
     store: AppStore, task: AgentTaskRecord, *, host: str | None = None
 ) -> LoginKey | None:
-    """Dry-run a turn boundary, retaining Codex's session binding."""
+    """Dry-run a turn boundary with the session's stay-put login preference."""
     provider = str(task.request.get("provider") or "")
     if not provider:
         return None
@@ -220,14 +213,13 @@ def resolved_task_login(
         host,
         task.authorized_by.user_id if task.authorized_by else None,
         session_id=task.native_session_id,
-        fork_session_id=str(task.request.get("fork_session_id") or ""),
         task=task,
         inherit_parent=task.status == "queued",
     )
     if isinstance(result, LoginKey):
         return result
-    # Keep a parked binding discoverable while it is unhealthy. Release still
-    # checks usability and re-resolves unbound work before dispatch.
+    # Keep a parked machine login discoverable while it is unhealthy. Release
+    # still checks usability and re-resolves before dispatch.
     return result.login or (
         LoginKey(provider, host, task.login_id) if task.login_id is not None else None
     )
@@ -280,9 +272,6 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
     limited = background._failure_classified_as(record, "session_limit")
     if starts and (limited or record.status == "succeeded"):
         store.set_provider_login_limit(key, provider_started_at=min(starts), limited=limited)
-    # A Codex turn without a named session is still free to choose another login.
-    if profile_for(provider).sessions_bound_to_login and record.native_session_id:
-        return
     chosen = resolved_task_login(store, record)
     if chosen is None:
         return
@@ -330,30 +319,15 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
 
 
 def bound_running_count(store: AppStore, key: LoginKey) -> int:
-    """Count running turns and running unpaused Codex episodes retaining this login."""
+    """Count running turns on this login; a later turn may continue on any login."""
     with store.connection() as connection:
-        rows = connection.execute(
-            "SELECT operation_id, episode_id, native_session_id, status FROM graph_runs "
+        row = connection.execute(
+            "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? AND COALESCE(stage_host,'')=? "
-            "AND login_id=? ORDER BY rowid DESC",
+            "AND login_id=? AND status IN ('running', 'pausing')",
             key,
-        ).fetchall()
-    running = sum(row["status"] in {"running", "pausing"} for row in rows)
-    if not profile_for(key.provider).sessions_bound_to_login:
-        return running
-    episodes: set[str] = set()
-    seen_sessions: set[str] = set()
-    for row in rows:
-        session = row["native_session_id"]
-        if not session or session in seen_sessions:
-            continue
-        seen_sessions.add(session)
-        if row["status"] == "paused" or not row["episode_id"]:
-            continue
-        episode = store.episode(row["episode_id"])
-        if episode is not None and episode.status == "running" and not episode.stop_requested_at:
-            episodes.add(episode.episode_id)
-    return running + len(episodes)
+        ).fetchone()
+    return int(row[0])
 
 
 def remove_shared_login(

@@ -409,8 +409,6 @@ class ProviderProfile:
     #: How this provider's native session files look; see `remote.py`. None
     #: when RCP does not index its sessions.
     session_format: SessionFormat | None = None
-    #: Native sessions live in the login home and cannot change credentials.
-    sessions_bound_to_login: bool = False
     #: Credential-only cleanup paths relative to an added login's local account directory.
     login_credential_files: tuple[str, ...] = ()
     #: Execution-home-relative cleanup paths, with a UUID4 {login_id} placeholder.

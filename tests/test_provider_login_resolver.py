@@ -187,20 +187,40 @@ def test_concurrent_assignments_choose_different_logins(accounts):
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_lineage_ignores_setting_and_drain_until_removed(accounts, provider):
+def test_lineage_ignores_setting_and_drain_while_usable(accounts, provider):
     shared = _login(accounts, provider)
     own = _login(accounts, provider, own=True)
+    other = _login(accounts, provider, own=True, member="other")
     accounts.store.set_provider_login_setting("member", provider, "", "own")
     accounts.store.set_provider_login_draining(shared)
     assert accounts.resolve_login(provider, "", "member", lineage_login=shared) == (shared, None)
+    assert accounts.resolve_login(provider, "", "member", lineage_login=other)[0] == own
     accounts.store.finish_provider_login_removal(shared, member_id="member")
-    # A removed parent login can never come back, so it stops pinning the task.
     assert accounts.resolve_login(provider, "", "member", lineage_login=shared)[0] == own
-    if provider == "codex":
-        bound, reason = accounts.resolve_login(provider, "", "member", bound_login=shared)
-        assert isinstance(bound, LoginRefusal)
-        assert bound.failure_kind == "session_refused"
-        assert reason is None
+
+
+def test_codex_session_on_signed_out_shared_login_continues_on_own_login(accounts):
+    machine = _login(accounts, "codex", machine=True)
+    own = _login(accounts, "codex", own=True)
+    other = _login(accounts, "codex", own=True, member="other")
+    start = datetime.fromisoformat(accounts.store.now()) - timedelta(minutes=5)
+    # Rows as v0.4.36 wrote them: earlier turns ran on the machine login.
+    _task(accounts.store, "earlier", machine, started=start.isoformat())
+    _task(accounts.store, "queued", machine, session="session")
+    accounts.store.mark_provider_login_signed_out(
+        machine, member_id=None, source="restore", detail="expired"
+    )
+    accounts.store.set_provider_login_setting("member", "codex", "", "own_then_shared")
+    assert accounts.resolve_launch_login(
+        "codex", "", "member", session_id="session", exclude_operation_id="queued"
+    ) == (own, "unhealthy")
+    # Another member's own login is usable but never this member's.
+    accounts.store.mark_provider_login_signed_out(
+        own, member_id="member", source="restore", detail="out"
+    )
+    resolved, _ = accounts.resolve_launch_login("codex", "", "member", session_id="session")
+    assert isinstance(resolved, LoginRefusal)
+    assert accounts.refusal(other) is None
 
 
 def test_opencode_and_legacy_authorizer_use_machine(accounts):
@@ -223,7 +243,6 @@ def test_session_helpers_only_use_provider_started_matching_turns(accounts):
         LoginKey("codex", "other", ""),
         started=(start + timedelta(seconds=2)).isoformat(),
     )
-    assert accounts.bound_login("codex", "", "session") == first
     previous = accounts.previous_login("codex", "", "session", exclude_operation_id="unstarted")
     assert previous is not None
     assert previous.login == last
@@ -275,11 +294,12 @@ def test_limited_shared_session_moves_to_free_shared_login(accounts):
     ) == (alternative, "limited")
 
 
-def test_codex_binding_survives_receipt_retention(accounts):
+def test_previous_login_survives_receipt_retention(accounts):
     from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 
     key = _login(accounts, "codex")
     _task(accounts.store, "bound", key, started=accounts.store.now())
     for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 5):
         accounts.store.record_agent_task_receipt("bound", f"summary-{index}", {}, tier="summary")
-    assert accounts.bound_login("codex", "", "session") == key
+    previous = accounts.previous_login("codex", "", "session", exclude_operation_id="")
+    assert previous is not None and previous.login == key

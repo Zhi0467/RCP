@@ -2078,6 +2078,23 @@ def create_app(
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
                 await asyncio.to_thread(reconcile_question_answers)
+                # Work parked on a login that is now unusable resolves to whichever
+                # signed-in login the queue picks, without waiting for a sign-in event.
+                from rcp.runs.provider_login import resume_provider_account
+
+                for state in store.provider_login_states():
+                    login = LoginKey(state.provider, state.host, state.login_id)
+                    try:
+                        await asyncio.to_thread(
+                            resume_provider_account,
+                            background_tasks,
+                            login,
+                            watcher_delivery=watcher_delivery,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not release parked work for %s at startup: %s", login, exc
+                        )
                 if member_removal_coordinator is not None:
                     await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
                 protected_roots = _protected_run_stage_roots(store, "")

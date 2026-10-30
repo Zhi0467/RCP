@@ -1,4 +1,4 @@
-"""Added Codex logins share configuration while keeping independent session homes."""
+"""Added Codex logins share configuration and one session store with the machine home."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.providers.codex.homes import SHARED_FILES, prepare_home
+from rcp.providers.codex.homes import SHARED_FILES, SHARED_SESSIONS, prepare_home
 from rcp.storage.models import MACHINE_LOGIN_ID
 
 
@@ -18,8 +18,9 @@ def test_home_links_and_regular_file_conflict(tmp_path: Path) -> None:
     machine.mkdir()
     home = prepare_home(tmp_path / "added", machine)
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
-    assert {name: (home / name).readlink() for name in SHARED_FILES} == {
-        name: machine / name for name in SHARED_FILES
+    shared = SHARED_FILES + SHARED_SESSIONS
+    assert {name: (home / name).readlink() for name in shared} == {
+        name: machine / name for name in shared
     }
     assert prepare_home(home, machine) == home
     config = home / "config.toml"
@@ -29,6 +30,45 @@ def test_home_links_and_regular_file_conflict(tmp_path: Path) -> None:
         prepare_home(home, machine)
     assert config.read_text() == "owned by Codex"
     assert not config.is_symlink()
+
+
+def test_existing_sessions_move_to_the_machine_store(tmp_path: Path) -> None:
+    machine = tmp_path / "machine"
+    (machine / "sessions/2026/10/01").mkdir(parents=True)
+    (machine / "sessions/2026/10/01/rollout-same.jsonl").write_text("same\n")
+    (machine / "session_index.jsonl").write_text('{"id":"a"}\n')
+    home = tmp_path / "added"
+    (home / "sessions/2026/10/01").mkdir(parents=True)
+    (home / "sessions/2026/10/01/rollout-own.jsonl").write_text("own\n")
+    (home / "sessions/2026/10/01/rollout-same.jsonl").write_text("same\n")
+    (home / "archived_sessions").mkdir()
+    (home / "archived_sessions/rollout-old.jsonl").write_text("old\n")
+    (home / "session_index.jsonl").write_text('{"id":"a"}\n{"id":"b"}\n')
+
+    prepare_home(home, machine)
+    prepare_home(home, machine)
+
+    assert (home / "sessions/2026/10/01/rollout-own.jsonl").read_text() == "own\n"
+    assert (machine / "sessions/2026/10/01/rollout-own.jsonl").read_text() == "own\n"
+    assert (machine / "archived_sessions/rollout-old.jsonl").read_text() == "old\n"
+    assert (machine / "session_index.jsonl").read_text().splitlines() == [
+        '{"id":"a"}',
+        '{"id":"b"}',
+    ]
+    assert all((home / name).is_symlink() for name in SHARED_SESSIONS)
+
+
+def test_conflicting_session_file_is_never_overwritten(tmp_path: Path) -> None:
+    machine = tmp_path / "machine"
+    (machine / "sessions").mkdir(parents=True)
+    (machine / "sessions/rollout-x.jsonl").write_text("machine\n")
+    home = tmp_path / "added"
+    (home / "sessions").mkdir(parents=True)
+    (home / "sessions/rollout-x.jsonl").write_text("added\n")
+    with pytest.raises(FileExistsError, match="rollout-x.jsonl"):
+        prepare_home(home, machine)
+    assert (machine / "sessions/rollout-x.jsonl").read_text() == "machine\n"
+    assert (home / "sessions/rollout-x.jsonl").read_text() == "added\n"
 
 
 @pytest.mark.parametrize(

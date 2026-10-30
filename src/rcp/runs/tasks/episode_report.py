@@ -178,16 +178,13 @@ async def stream_episode_report_run(
                 request.provider,
                 stage.execution_host,
                 turn.episode.authorized_by.user_id if turn.episode.authorized_by else None,
-                bound_login=accounts.bound_login(
-                    request.provider, stage.execution_host, request.session_id
-                ),
             )
             if isinstance(resolved, LoginRefusal):
                 reason = resolved.detail
                 # The hidden allocation is durable; a credential block spends no
                 # new report attempt and leaves its existing wrap-up for recovery.
                 execution.store.fail_agent_task(
-                    execution.operation_id, reason, failure_kind=resolved.failure_kind
+                    execution.operation_id, reason, failure_kind="provider_auth"
                 )
                 yield _sse(AgentEvent(event="error", text=reason))
                 return

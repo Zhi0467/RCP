@@ -311,7 +311,7 @@ def test_probe_failure_updates_account_only_for_provider_auth(
 
 
 @pytest.mark.parametrize("binding", ["own", "session", "lineage"])
-def test_auto_research_retry_probes_authorizer_or_bound_added_login(tmp_path, monkeypatch, binding):
+def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkeypatch, binding):
     from rcp.agents import AgentEvent
     from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.background import BackgroundAgentTasks
@@ -334,7 +334,8 @@ def test_auto_research_retry_probes_authorizer_or_bound_added_login(tmp_path, mo
             own = _login(accounts, "codex", own=True, member=human.user_id)
             store.set_provider_login_setting(human.user_id, "codex", "", "own")
             key = own if binding == "own" else _login(accounts, "codex")
-            selected.append(key)
+            # A session's shared login outside the member's setting is not kept.
+            selected.append(own if binding == "session" else key)
             store.assign_provider_login(execution.operation_id, lambda _: key)
             store.record_agent_task_receipt(execution.operation_id, "provider_runtime_selected", {})
             if binding == "lineage":

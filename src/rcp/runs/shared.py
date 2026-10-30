@@ -972,7 +972,6 @@ async def _stream_agent_events(
             request.provider,
             execution_host,
             session_id=session_id,
-            fork_session_id=fork.get("fork_session_id"),
             exclude_operation_id=execution.operation_id,
             task=task,
             inherit_parent=True,
@@ -992,7 +991,6 @@ async def _stream_agent_events(
             execution_host,
             task.authorized_by.user_id if task is not None and task.authorized_by else None,
             lineage_login=inputs.lineage_login,
-            bound_login=inputs.bound_login,
             previous=inputs.previous,
             dry_run=False,
             operation_id=execution.operation_id,
@@ -1003,9 +1001,7 @@ async def _stream_agent_events(
                 execution.store.record_provider_login_refusal(
                     execution.operation_id, resolved.login
                 )
-            execution.launch_refused = resolved.failure_kind == "session_refused"
-            if not execution.launch_refused:
-                execution.provider_auth_refused = resolved.login or login_key
+            execution.provider_auth_refused = resolved.login or login_key
             return resolved
         login_key = resolved
         execution.login_key = resolved
@@ -1031,12 +1027,7 @@ async def _stream_agent_events(
     async def login_unavailable(failed_login: LoginKey) -> LoginKey | None:
         nonlocal reselected
         assert execution is not None
-        if (
-            inputs is not None
-            and inputs.lineage_login is None
-            and inputs.bound_login is None
-            and not reselected
-        ):
+        if inputs is not None and inputs.lineage_login is None and not reselected:
             reselected = True
             resolved = await asyncio.to_thread(assign_login)
             if isinstance(resolved, LoginKey):

@@ -519,7 +519,6 @@ class BackgroundAgentTasks:
             host,
             authorized_by.user_id if authorized_by else None,
             session_id=getattr(request, "session_id", None),
-            fork_session_id=getattr(request, "fork_session_id", None),
             lineage_login=lineage_login,
         )
         if isinstance(resolved, LoginRefusal):

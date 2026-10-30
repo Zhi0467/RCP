@@ -15,9 +15,7 @@ from .test_episode_api_serialization import _auto_episode, _begin_report, _branc
 
 
 @pytest.mark.parametrize("queued", [True, False])
-def test_notices_follow_viewer_setting_and_hide_bound_other_owner_details(
-    manifest, tmp_path, queued
-):
+def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest, tmp_path, queued):
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)
     accounts = ProviderAccounts.for_store(store)
@@ -27,6 +25,7 @@ def test_notices_follow_viewer_setting_and_hide_bound_other_owner_details(
         key, member_id="owner", source="sign_out", detail="private@example.test"
     )
     store.set_provider_login_setting("viewer", "codex", "", "shared")
+    store.set_provider_login_setting("owner", "codex", "", "own")
     now = store.now()
     task = AgentTaskRecord(
         operation_id="bound-task",
@@ -53,11 +52,8 @@ def test_notices_follow_viewer_setting_and_hide_bound_other_owner_details(
     launcher = AgentLauncher(accounts=accounts)
     rows = ProjectService.provider_logins_for(manifest, launcher, "project", viewer_id="viewer")
     codex = {row["login_id"]: row for row in rows if row["provider"] == "codex"}
-    assert set(codex) == {"", key.login_id}
-    assert codex[key.login_id]["owner_user_id"] == "owner"
-    assert codex[key.login_id]["detail"] is None
-    assert codex[key.login_id]["source"] is None
-    assert codex[key.login_id]["token"] is None
+    # The session ran on the owner's login, but its next turn resolves afresh.
+    assert set(codex) == {""}
     owner_rows = ProjectService.provider_logins_for(
         manifest, launcher, "project", viewer_id="owner"
     )

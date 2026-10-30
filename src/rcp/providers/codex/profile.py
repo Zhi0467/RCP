@@ -63,7 +63,6 @@ class CodexProfile(ProviderProfile):
         installer_env=("CODEX_NON_INTERACTIVE=1",),
     )
     session_format = CodexSessionFormat()
-    sessions_bound_to_login = True
     autocompact_hint = "a token count"
     legacy_runtime_id = "codex.exec-json.v1"
     default_runtime = "app-server"

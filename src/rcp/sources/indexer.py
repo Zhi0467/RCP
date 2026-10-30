@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,9 +34,6 @@ from rcp.sources.cache import (
 from rcp.sources.record_parsing import normalize_path, normalize_record, path_matches_roots
 from rcp.transport import state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
-
-if TYPE_CHECKING:
-    from rcp.storage import AppStore
 
 
 class ConversationRecord(BaseModel):
@@ -119,11 +116,9 @@ class ConversationIndexer:
         cache_root: Path | None = None,
         *,
         app_chat_origin: AppChatOrigin | None = None,
-        login_store: AppStore | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.manifest = manifest
-        self.login_store = login_store
         self.cache_root = cache_root
         state_repository = manifest.repository_map[manifest.state.repository]
         self.app_chat_origin = app_chat_origin or AppChatOrigin(
@@ -175,7 +170,6 @@ class ConversationIndexer:
             for profile in PROVIDERS.values()
             for root in profile.session_roots(self.manifest.sources, remote=False)
         ]
-        roots.extend(("codex", Path(root)) for root in self.added_codex_session_roots(""))
         repository_paths = [item.path for item in self.manifest.repositories]
         repository_path_key = tuple(repository_paths)
         if repository_path_key != self._local_metadata_repository_paths:
@@ -249,9 +243,6 @@ class ConversationIndexer:
                 for profile in PROVIDERS.values()
                 for root in profile.session_roots(self.manifest.sources, remote=True)
             ]
-            remote_roots.extend(
-                ("codex", root) for root in self.added_codex_session_roots(machine.host)
-            )
             for provider, root in remote_roots:
                 try:
                     remote_index = self._inspect_remote_root(
@@ -358,29 +349,6 @@ class ConversationIndexer:
             malformed_files=malformed,
             source_errors=source_errors,
         )
-
-    def added_codex_session_roots(self, host: str) -> list[str]:
-        """Include retained session homes even after their login was removed."""
-        if self.login_store is None:
-            return []
-        # rcp.agents imports rcp.transport, which imports this module.
-        from rcp.agents.provider_environment import ProviderCredentialStore
-
-        credentials = ProviderCredentialStore.for_data_dir(self.login_store.path.parent)
-        with self.login_store.connection() as connection:
-            rows = connection.execute(
-                "SELECT login_id FROM provider_login_states "
-                "WHERE provider = 'codex' AND host = ? AND login_id != '' ORDER BY login_id",
-                (host,),
-            ).fetchall()
-        return [
-            f"~/.rcp/provider-homes/codex/{row['login_id']}/sessions"
-            if host
-            else str(
-                credentials.account_dir("codex", host, row["login_id"]) / "codex-home" / "sessions"
-            )
-            for row in rows
-        ]
 
     def read_records(
         self,

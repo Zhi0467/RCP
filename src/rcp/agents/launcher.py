@@ -866,7 +866,6 @@ class AgentLauncher:
         refresh: bool = False,
         member_id: str | None = None,
         session_id: str | None = None,
-        fork_session_id: str | None = None,
         lineage_login: LoginKey | None = None,
         machine_readiness: ProviderReadiness | None = None,
     ) -> ProviderReadiness:
@@ -878,7 +877,6 @@ class AgentLauncher:
                 host,
                 member_id,
                 session_id=session_id,
-                fork_session_id=fork_session_id,
                 lineage_login=lineage_login,
             )
             if isinstance(resolved, LoginRefusal):
