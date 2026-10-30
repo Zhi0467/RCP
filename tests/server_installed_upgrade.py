@@ -590,12 +590,24 @@ def seed() -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     store = AppStore(DATA / "rcp.sqlite3")
+    # Releases before 0.4.36 name a login by provider and host, not by key.
+    if "key" in inspect.signature(store.mark_provider_login_verified).parameters:
+        from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+
+        codex, claude = (
+            (LoginKey(provider, "", MACHINE_LOGIN_ID),) for provider in ("codex", "claude")
+        )
+    else:
+        codex, claude = ("codex", ""), ("claude", "")
     store.mark_provider_login_verified(
-        "codex", "", member_id=fixture["member_id"], detail="Synthetic offline login fixture"
+        *codex, member_id=fixture["member_id"], detail="Synthetic offline login fixture"
     )
+    # A team member defaults to their own login since 0.4.36. The seeded
+    # Experiment runs on the machine's login, which they choose to share.
+    if hasattr(store, "set_provider_login_setting"):
+        store.set_provider_login_setting(fixture["member_id"], "codex", "", "shared")
     store.mark_provider_login_signed_out(
-        "claude",
-        "",
+        *claude,
         member_id=fixture["member_id"],
         source="sign_out",
         detail="A replacement login is awaiting verification.",
