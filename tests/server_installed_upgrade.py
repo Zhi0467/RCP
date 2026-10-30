@@ -590,12 +590,18 @@ def seed() -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     store = AppStore(DATA / "rcp.sqlite3")
+    # 0.4.36 keys a login by (provider, host, login_id); older releases take two arguments.
+    if "key" in inspect.signature(store.mark_provider_login_verified).parameters:
+        from rcp.storage.models import LoginKey
+
+        codex, claude = (LoginKey("codex", "", ""),), (LoginKey("claude", "", ""),)
+    else:
+        codex, claude = ("codex", ""), ("claude", "")
     store.mark_provider_login_verified(
-        "codex", "", member_id=fixture["member_id"], detail="Synthetic offline login fixture"
+        *codex, member_id=fixture["member_id"], detail="Synthetic offline login fixture"
     )
     store.mark_provider_login_signed_out(
-        "claude",
-        "",
+        *claude,
         member_id=fixture["member_id"],
         source="sign_out",
         detail="A replacement login is awaiting verification.",
