@@ -1024,7 +1024,8 @@ state. Provider logins do not change that OS account. Added Codex sign-ins have
 separate homes for credentials and sessions; their config, rules, skills and
 AGENTS.md link to the machine home, and sign-in, verification and logout use that
 same home. Claude logins share native sessions and change only the token.
-[Login state and failure](#login-state-and-failure) owns turn selection.
+[Member sign-in settings and selection](#member-sign-in-settings-and-selection)
+owns turn selection.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
@@ -1057,8 +1058,9 @@ unverified credential. A minimal real request must succeed before sign-in counts
 provider status only proves credential presence. Successful verification
 invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.
-Any authorized member may act on shared logins; only the owner may act on an own
-login. Durable actions record the member, except that a removal that drained
+Who may act on which login is set out under
+[selection](#member-sign-in-settings-and-selection). Durable actions record the
+member, except that a removal that drained
 finishes without one. Removed logins cannot be verified or
 receive tokens, including attempts completing after removal.
 
@@ -1074,7 +1076,8 @@ bound running count even before draining; machine and own rows report zero.
 
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
-`sign-out`; action bodies name `login_id`. Machine sign-ins cannot be removed.
+`sign-out`; action bodies name `login_id`, except `add`, which takes `kind` and
+returns the new ID (and, for a device-code provider, the started sign-in). Machine sign-ins cannot be removed.
 An own login has no remove action; only member removal fences it. Adding a second
 own login conflicts.
 Unsupported interactions refuse explicitly; status GET is read-only.
@@ -1093,7 +1096,8 @@ completion check, so the completing pass finds none of the member's turns
 running. A credential still under another member's running Codex session at
 completion is not retried. Pending removal retries remote deletion on each
 advance, returning unreached hosts in `provider_cleanup_unreached`, including the
-completing pass; unreachable hosts do not block completion. Restore's
+completing pass; unreachable hosts do not block completion, and once removal
+completes their credentials are not retried. Restore's
 stale-member removal uses the same cleanup.
 
 ### Member sign-in settings and selection
@@ -1142,7 +1146,8 @@ The resolver in `agents/provider_accounts.py` picks one login, first match wins:
 
 A switch receipt names the first applicable reason: `unhealthy`, `limited`,
 `sender_setting` (another member sent the turn), `setting_changed`, or
-`preferred_source_available`. RCP never starts a fresh session on a login change;
+`preferred_source_available`; `limited` reflects any recorded mark, lapsed or
+not. RCP never starts a fresh session on a login change;
 only the human Switch provider does that.
 
 **Why:** Least-recently-used spreads load over shared accounts, and staying put
@@ -1168,7 +1173,8 @@ records the `login_id` it ran on.
 
 ### Login state and failure
 
-Each login has a durable `(provider, host, login_id)` row with signed-in state
+Each login has a `(provider, host, login_id)` row (the machine sign-in's is
+written on first use; until then it reads as signed in, generation 0) with signed-in state
 and a generation. The empty login ID names the machine sign-in. Admission dry-runs
 the member's ordered own/shared setting before allocating a task or debiting an
 episode. Episode turns use the episode's authorizer. Launch resolves again inside
@@ -1178,16 +1184,18 @@ and new IDs and the resolver's reason. Provider-owned revoked-login evidence
 classifies `provider_auth` across turns, wakes, workers, reports, recovery and
 probes. Only the generation captured at launch can revoke that login; late
 failures cannot revoke a repaired login. Claude recognizes its remote
-missing-token fence and declares no unobserved native revocation signatures.
+missing-token fence and a 401 naming authentication or OAuth (observed
+2026-09-15).
 An own login is unique per provider, host and member while `removed_at IS NULL`;
 removal retains the historical row and its member attribution. Assignment clocks do not publish resource versions; member login
 settings do.
 
 Claude resolves at each turn boundary. Unhealthy bound work waits; a removed
-Codex binding refuses the session. Draining logins admit no new choices but remain
+Codex binding refuses the session. A transport reattempt or graph repair whose
+parent's login was removed parks as `provider_auth` until a human Retry. Draining logins admit no new choices but remain
 usable by bound work until its running turns end, and for Codex also its unpaused
-episodes. Removal retains session files and deletes only credentials; unreachable
-remote cleanup remains pending for reconciliation. Removal synchronously settles
+episodes. Removal retains session files and deletes only credentials; a shared removal's
+unreachable remote cleanup remains pending for reconciliation. Removal synchronously settles
 any pending device sign-in before taking the credential gate. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.
 
@@ -1213,8 +1221,7 @@ settings use the same release helper. Tasks with no selected login re-resolve th
 member setting on a setting change or verification of an allowed source. Unbound
 authentication failures release
 after settlement records their park when another allowed login is available.
-Provider login, Git transport, SSH access and RCP membership remain distinct
-authorities. Transport/configuration/ordinary failures do not sign out a login.
+Transport/configuration/ordinary failures do not sign out a login.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
 native paths, locally or in the remote interactive login shell. An explicit path

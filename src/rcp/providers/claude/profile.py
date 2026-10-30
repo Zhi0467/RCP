@@ -281,7 +281,6 @@ class ClaudeProfile(ProviderProfile):
 
         return ClaudeAuthentication()
 
-    # No credential failure signatures have been observed for Claude.
     id = "claude"
     label = "Claude"
     usage_profile = "claude.query.v1"
