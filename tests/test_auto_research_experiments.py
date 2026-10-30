@@ -427,7 +427,7 @@ def test_explicit_invocation_limit_over_total_allowance_is_pre_admission(
     assert admission is not None and admission.state == "accepted"
 
 
-def _ready_except_claude(provider, *, host="", binary=None, refresh=False):
+def _ready_except_claude(provider, *, host="", binary=None, refresh=False, login_id=""):
     return ProviderReadiness(
         provider=provider,
         installed=True,
@@ -1586,3 +1586,57 @@ def test_child_seat_catalog_matches_pick_enforcement_and_prompt_data(
                 service, provider=None, model="codex-model", reasoning=None, kind="project_chat"
             )
         assert refused.value.reason == "model_unknown"
+
+
+def test_child_profile_pick_and_catalog_use_authorizer_added_login(manifest, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from rcp.agents import AgentLauncher
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.api.app import _auto_research_worker_request
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.runs.auto_research import SpawnArguments
+    from rcp.runs.auto_research_admission import auto_research_child_seat_profile_choices
+
+    from .test_provider_login_resolver import _login
+
+    service, store, *_ = _setup(manifest, tmp_path)
+    human = fabricated_authorizer()
+    accounts = ProviderAccounts.for_store(store)
+    own = _login(accounts, "codex", own=True, member=human.user_id)
+    store.set_provider_login_setting(human.user_id, "codex", "", "own")
+    service.launcher = AgentLauncher(accounts=accounts)
+    seen = []
+
+    def ready(provider, *, login_id="", **kwargs):
+        seen.append((provider, login_id))
+        return ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=provider == "codex" and login_id == own.login_id,
+            models=[ModelChoice(id="added-model", label="Added", reasoning=["high"])],
+        )
+
+    monkeypatch.setattr(service.launcher, "readiness", ready)
+    context = SimpleNamespace(
+        child_graph_target=None,
+        episode=SimpleNamespace(graph_target=GraphTargetRef(), authorized_by=human),
+        request=SimpleNamespace(run_truth_scope=[]),
+    )
+    request = _auto_research_worker_request(
+        service,
+        context,
+        SpawnArguments(
+            instruction_file="instruction.txt",
+            project=True,
+            provider="codex",
+            model="added-model",
+            reasoning="high",
+        ),
+        "Inspect the result",
+        CHILD_EXPLICIT,
+    )
+    assert request.model == "added-model"
+    catalogs = auto_research_child_seat_profile_choices(service, member_id=human.user_id)
+    assert catalogs == {seat: {"codex": {"added-model": ["high"]}} for seat in ("node", "project")}
+    assert ("codex", "") not in seen

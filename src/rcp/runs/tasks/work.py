@@ -435,11 +435,20 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             "This turn cannot create watchers."
         )
     if "episode" in verbs:
+        authorizer = (
+            turn.execution.store.agent_task_authorizer(turn.execution.operation_id)
+            if turn.execution is not None
+            else None
+        )
         instructions.append(
             work_experiment_command_usage(
                 client or turn.patch_inputs.validator_staged.client_command(),
                 render_child_profile_choices(
-                    auto_research_child_profile_choices(turn.service, kind="node_chat")
+                    auto_research_child_profile_choices(
+                        turn.service,
+                        kind="node_chat",
+                        member_id=authorizer.user_id if authorizer else None,
+                    )
                 ),
             )
         )

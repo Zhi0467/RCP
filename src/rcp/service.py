@@ -25,6 +25,7 @@ from rcp.agents import (
     ChatContext,
     ContextAssembler,
     PromptFactory,
+    ProviderReadiness,
     RunContext,
     parse_agent_patch_json,
 )
@@ -1993,17 +1994,15 @@ class ProjectService:
                 profile_for(provider).authentication.manages_login
             ):
                 return readiness
-            login, _ = accounts.resolve_login(provider, host, viewer_id)
-            if not isinstance(login, LoginKey):
-                return {**readiness, "authenticated": False}
-            if login.login_id == MACHINE_LOGIN_ID:
-                return readiness  # the project's probe already checked this login
-            return launcher.readiness(
+            return launcher.member_readiness(
                 provider,
                 host=host,
                 binary=launcher.provider_binary(provider, host),
                 refresh=refresh,
-                login_id=login.login_id,
+                member_id=viewer_id,
+                machine_readiness=ProviderReadiness.model_validate(
+                    {"provider": provider, **readiness}
+                ),
             ).model_dump(mode="json")
 
         resolved: dict[str, object] = {}

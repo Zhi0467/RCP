@@ -409,6 +409,8 @@ class ProviderProfile:
     #: How this provider's native session files look; see `remote.py`. None
     #: when RCP does not index its sessions.
     session_format: SessionFormat | None = None
+    #: Native sessions live in the login home and cannot change credentials.
+    sessions_bound_to_login: bool = False
     #: The execution-host turn fence for each of this provider's runtime ids.
     turn_fences: dict[str, type[TurnFence]]
     #: What a machine card's auto-compact field accepts for this CLI; None
