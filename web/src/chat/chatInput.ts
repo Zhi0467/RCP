@@ -14,6 +14,8 @@ export interface StagedChatAnnotation {
   comment: string;
   /** Set for an artifact comment, with a selection or the whole artifact. */
   artifact?: StagedArtifactTarget;
+  /** Where the selection came from, such as a Paper file and line; sent with the quote. */
+  where?: string;
 }
 
 export interface StagedArtifactTarget {
@@ -27,6 +29,18 @@ export const MAX_CHAT_ANNOTATIONS = 50;
 export const MAX_ARTIFACT_SELECTIONS = 50;
 export const MAX_CHAT_ANNOTATION_TEXT_LENGTH = 4096;
 export const MAX_CHAT_ANNOTATION_COMMENT_LENGTH = 2048;
+export const MAX_CHAT_ANNOTATION_WHERE_LENGTH = 200;
+
+/** A location within the limit: whole trailing `, ` parts go first, so no number is cut. */
+export function boundChatAnnotationWhere(where: string): string {
+  const parts = where.split(", ");
+  while (parts.length > 1 && parts.join(", ").length > MAX_CHAT_ANNOTATION_WHERE_LENGTH)
+    parts.pop();
+  const kept = parts.join(", ");
+  return kept.length > MAX_CHAT_ANNOTATION_WHERE_LENGTH
+    ? `${kept.slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH - 1)}…`
+    : kept;
+}
 
 export interface ChatAnnotationAnchor {
   left: number;
@@ -68,7 +82,9 @@ export function replaceTextSpan(current: string, span: TextSpan, replacement: st
 
 export function assembleChatTurn(
   message: string,
-  annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact">>,
+  annotations: ReadonlyArray<
+    Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact" | "where">
+  >,
 ): string {
   const parts = [message.trim()];
   // Selected regions travel as artifact selections; whole-artifact comments
@@ -82,7 +98,8 @@ export function assembleChatTurn(
       continue;
     }
     if (!selectedText) continue;
-    parts.push(`${selectedText}\ncomment: ${comment}`);
+    const where = annotation.where?.trim();
+    parts.push(`${where ? `${where}:\n` : ""}${selectedText}\ncomment: ${comment}`);
   }
   return parts.filter(Boolean).join("\n\n");
 }
@@ -103,6 +120,16 @@ export function stagedArtifactContext(
         comment: annotation.comment.trim(),
       })),
   };
+}
+
+/** The staged comments left once `sent` went with a turn: any staged meanwhile stay. */
+export function unsentChatAnnotations(
+  current: StagedChatAnnotation[],
+  sent: ReadonlyArray<Pick<StagedChatAnnotation, "id">>,
+): StagedChatAnnotation[] {
+  const ids = new Set(sent.map((annotation) => annotation.id));
+  const next = current.filter((annotation) => !ids.has(annotation.id));
+  return next.length === current.length ? current : next;
 }
 
 export function stagedChatAnnotationsAreComplete(
@@ -130,7 +157,8 @@ export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnota
         candidate.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH ||
         typeof candidate.comment !== "string" ||
         candidate.comment.length > MAX_CHAT_ANNOTATION_COMMENT_LENGTH ||
-        (candidate.artifact !== undefined && !isStagedArtifactTarget(candidate.artifact))
+        (candidate.artifact !== undefined && !isStagedArtifactTarget(candidate.artifact)) ||
+        (candidate.where !== undefined && typeof candidate.where !== "string")
       )
         return [];
       return [
@@ -139,6 +167,9 @@ export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnota
           selectedText: candidate.selectedText,
           comment: candidate.comment,
           ...(candidate.artifact ? { artifact: candidate.artifact as StagedArtifactTarget } : {}),
+          ...(candidate.where
+            ? { where: boundChatAnnotationWhere(candidate.where as string) }
+            : {}),
         },
       ];
     });

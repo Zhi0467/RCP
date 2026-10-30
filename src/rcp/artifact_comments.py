@@ -97,7 +97,12 @@ listen(privatePort,'message',(event)=>{
     selectionActive=false;
     clearSelection?.();
   }
-  if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection?.();
+  // A comment that closed takes its text selection with it; a drag over text still
+  // highlighted would move the text instead of selecting.
+  if(event.data?.kind==='rcp-artifact-selection-clear'){
+    clearSelection?.();
+    document.getSelection()?.removeAllRanges();
+  }
 });
 """,
         wrapper_script="""let selectionEnabled=false;

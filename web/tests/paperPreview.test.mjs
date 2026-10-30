@@ -285,3 +285,22 @@ test("large Markdown preview waits until typing pauses", async (t) => {
   await page.clock.fastForward(1000);
   await page.waitForFunction(() => document.querySelector("output")?.textContent === "9");
 });
+
+test("reverse SyncTeX takes the nearest mark above the point on that page, across files", async () => {
+  const { synctexSource } = await import("../src/paper/synctex.ts");
+  const map = {
+    "main.tex": [
+      [1, 1, 72],
+      [40, 2, 300],
+    ],
+    "sections/results.tex": [
+      [3, 2, 120],
+      [8, 2, 500],
+    ],
+  };
+  assert.deepEqual(synctexSource(map, 2, 310), { path: "main.tex", line: 40 });
+  assert.deepEqual(synctexSource(map, 2, 299), { path: "sections/results.tex", line: 3 });
+  assert.deepEqual(synctexSource(map, 2, 120), { path: "sections/results.tex", line: 3 });
+  assert.equal(synctexSource(map, 2, 100), null);
+  assert.equal(synctexSource(map, 3, 700), null);
+});

@@ -119,6 +119,27 @@ test("an inline artifact fills its fixed frame, blends in dark mode, and selects
     const [selection] = await selections();
     assert.equal(selection?.selection?.kind, "box");
     assert.ok(selection.description.length > 0);
+    // Clearing a comment drops the page's text selection too; a drag over text still
+    // highlighted would move that text instead of selecting.
+    await artifact.evaluate(() => getSelection().selectAllChildren(document.getElementById("ink")));
+    await page.evaluate(() =>
+      document
+        .getElementById("embed")
+        .contentWindow.postMessage(
+          { type: "rcp-inline-selection-clear", version: 1 },
+          location.origin,
+        ),
+    );
+    await artifact.waitForFunction(() => getSelection().toString() === "", null, { timeout: 3000 });
+    // So do the page's own dismissals: Escape and a plain click on blank space.
+    const selectInk = () =>
+      artifact.evaluate(() => getSelection().selectAllChildren(document.getElementById("ink")));
+    await selectInk();
+    await artifact.locator("body").press("Escape");
+    await artifact.waitForFunction(() => getSelection().toString() === "", null, { timeout: 3000 });
+    await selectInk();
+    await page.mouse.click(box.x + 300, box.y + 100);
+    await artifact.waitForFunction(() => getSelection().toString() === "", null, { timeout: 3000 });
     await page.evaluate(() =>
       document
         .getElementById("embed")

@@ -13,3 +13,19 @@ export function synctexSpot(map: SyncTexMap, path: string, line: number): PdfSpo
   }
   return { page: found[1], y: found[2] };
 }
+
+/** The source line nearest above a PDF point: across every path, the mark on `page` with the largest `y` at or above it. */
+export function synctexSource(
+  map: SyncTexMap,
+  page: number,
+  y: number,
+): { path: string; line: number } | null {
+  let found: { path: string; line: number; y: number } | null = null;
+  for (const [path, marks] of Object.entries(map)) {
+    for (const [line, markPage, markY] of marks) {
+      if (markPage === page && markY <= y && (!found || markY > found.y))
+        found = { path, line, y: markY };
+    }
+  }
+  return found && { path: found.path, line: found.line };
+}

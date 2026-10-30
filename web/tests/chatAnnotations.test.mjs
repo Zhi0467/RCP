@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   chatAnnotationTextControlSelection,
+  boundChatAnnotationWhere,
   chatAnnotationViewportMetrics,
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
@@ -68,4 +69,13 @@ test("the composer follows the soft-keyboard viewport at every layout width", ()
     right: 0,
     bottom: 0,
   });
+});
+
+test("a long location loses whole trailing parts, never part of a number", () => {
+  const path = `chapters/${"x".repeat(150)}.tex`;
+  const where = `${path}, page 3, area 10-40% across and 20-60% down, near sections/a.tex line 412`;
+  assert.equal(boundChatAnnotationWhere(where), `${path}, page 3`);
+  assert.equal(boundChatAnnotationWhere("notes.md, line 4"), "notes.md, line 4");
+  const long = "y".repeat(300);
+  assert.equal(boundChatAnnotationWhere(`${long}, line 4`), `${long.slice(0, 199)}…`);
 });
