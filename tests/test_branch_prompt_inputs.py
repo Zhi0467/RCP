@@ -319,6 +319,8 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
     )
     graph_update = previous.result["graph_update"]
     assert isinstance(graph_update, dict) and graph_update["repairable"], previous.result
+    # An Experiment loop may launch its report right after the repair.
+    repair_prompt = len(launcher.prompts)
     repaired = client.post(f"{base}/tasks/{previous.operation_id}/repair-graph-update", json={})
     assert repaired.status_code == 202, repaired.text
     task = wait_for_task(store, repaired.json()["operation_id"])
@@ -328,9 +330,10 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
     assert isinstance(graph_update, dict) and graph_update["status"] == "applied", task.result
     blocks = [
         json.loads(value)
-        for value in re.findall(r"```json\n(.*?)\n```", launcher.prompts[-1], re.S)
+        for prompt in launcher.prompts[repair_prompt:]
+        for value in re.findall(r"```json\n(.*?)\n```", prompt, re.S)
     ]
-    pointers = next(block for block in blocks if "parent_graph_path" in block)
+    pointers = [block for block in blocks if "parent_graph_path" in block][-1]
     path = Path(pointers["parent_graph_path"])
     assert path.is_file() and path.stat().st_mode & 0o222 == 0
     assert json.loads(path.read_text()) == json.loads(
