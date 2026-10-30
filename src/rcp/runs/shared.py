@@ -872,6 +872,12 @@ async def _stream_agent_events(
     what a completed run, an answer, or a trace is worth in its own protocol.
     Owners that display provider answers directly can forward labelled events.
     """
+    from rcp.runs.codex_resume import record_refusal, start_context
+
+    if session_id is None:
+        history = start_context(execution, execution_host)
+        if history:
+            prompt += "\n\n" + history
     if execution is not None and write_scope is not None:
         from rcp.runs.episodes.isolation import validate_episode_launch
 
@@ -1197,6 +1203,14 @@ async def _stream_agent_events(
                     yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
                 continue
             if event.event == "error":
+                await asyncio.to_thread(
+                    record_refusal,
+                    execution,
+                    provider=request.provider,
+                    session_id=session_id or fork.get("fork_session_id"),
+                    host=execution_host,
+                    error=event.text,
+                )
                 outcome.failed = True
                 if event.failure_kind == "transport_lost" and execution is not None:
                     execution.stage_unreachable = True

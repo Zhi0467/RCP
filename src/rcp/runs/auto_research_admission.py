@@ -1751,11 +1751,12 @@ def retry_auto_research_task(
             {**original.model_dump(mode="json"), **rebound}
         )
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
+    native_resume_unavailable = tasks._native_resume_unavailable(previous)
     owned_checkpoint = bool(
         previous.native_session_id and previous.stage_root and tasks._session_is_rcp_owned(previous)
     )
     clean_orchestrator_retry = original.role == "orchestrator" and (
-        continuation_unavailable or not owned_checkpoint
+        continuation_unavailable or native_resume_unavailable or not owned_checkpoint
     )
     starts_fresh = bool(rebound) or clean_orchestrator_retry
     episode = auto_research_for_request(tasks, original.episode_id, original)
@@ -1772,7 +1773,9 @@ def retry_auto_research_task(
         execution_host=(previous.stage_host or "") if previous.stage_root else None,
     )
     logical_problem = (
-        "the saved continuation context is unavailable"
+        "the provider refused the saved native session"
+        if native_resume_unavailable
+        else "the saved continuation context is unavailable"
         if continuation_unavailable
         else "the prior task has no complete RCP-owned session and stage"
         if not owned_checkpoint
@@ -1829,7 +1832,11 @@ def retry_auto_research_task(
     if starts_fresh:
         session_id = None
         classification = (
-            "continuation_unavailable"
+            "login_switch"
+            if tasks.store.agent_task_has_receipt(previous.operation_id, "codex_resume_refused")
+            else "stale_session"
+            if native_resume_unavailable
+            else "continuation_unavailable"
             if continuation_unavailable
             else "checkpoint_missing"
             if not owned_checkpoint
@@ -1888,6 +1895,8 @@ def retry_auto_research_task(
         reason = (
             "the human changed its provider, model, or reasoning"
             if classification == "binding_changed"
+            else "Codex refused the saved transcript"
+            if classification == "login_switch"
             else "its prior continuation became unavailable"
         )
         tasks.store.record_agent_task_event(

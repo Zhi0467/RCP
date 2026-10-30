@@ -983,7 +983,15 @@ def _is_authorized_clean_orchestrator_retry(
         and receipt.payload.get("retry_required") is True
         for receipt in receipts
     )
-    if not session_limit and not continuation_unavailable:
+    native_resume_unavailable = any(
+        receipt.category == "codex_resume_refused"
+        or (
+            receipt.category == "provider_terminal_error"
+            and receipt.payload.get("classification") == "stale_session"
+        )
+        for receipt in receipts
+    ) or (bool(parent.error) and classify_terminal_error(parent.error or "") == "stale_session")
+    if not session_limit and not continuation_unavailable and not native_resume_unavailable:
         return False
 
     # A clean retry deliberately leaves the new task's session NULL so the

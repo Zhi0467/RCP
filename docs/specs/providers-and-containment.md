@@ -164,7 +164,8 @@ resume, a fork uses the profile's current runtime. Provider profiles
 render Codex `thread/fork` (with `excludeTurns: true`) or `exec fork`, Claude
 `--resume … --fork-session`, and OpenCode `--session … --fork`. The returned
 native session must differ from the source; subsequent turns resume that new
-identity. A failed fork never becomes a fresh session.
+identity. A failed fork keeps its source binding, except for the explicit Codex
+transcript refusal recovery below.
 
 Before Claude launches, its session-format owner copies the source transcript
 into the new cwd's native project directory on the execution host. The source
@@ -590,6 +591,22 @@ candidate against current state even if its bytes are unchanged.
 A launch without a native session sends the owner's full contract and records
 its exact bytes as the session master. Handoff, provider switch, clean Retry,
 progress handoff and fresh watcher notification are session starts.
+
+Codex first resumes or forks the requested transcript on the selected usable
+sign-in. An explicit `invalid_encrypted_content` refusal records `login_switch`
+and schedules one automatic Retry through the existing fresh-session path.
+The owner rebuilds its full contract and master. The start context adds the old
+rollout's canonical path on the execution host, under the machine Codex home's
+`sessions` or `archived_sessions` store. It treats that transcript as history,
+not current instructions. This applies to both Codex runtimes and local or SSH
+placement. No transcript is copied into a credential home or stripped of items.
+
+The failed turn records the refusal, source session, transcript path and retry.
+The fresh turn records its history pointer. A failed fresh attempt does not
+trigger another automatic transcript-refusal retry. Missing or ambiguous
+transcripts produce a visible lookup failure. Recovery retains existing authority guards: patch-only
+repair, origin-bound artifact edits, episode-owned children and reports do not
+gain a general full-task restart. Orchestrator recovery retains its allocation.
 
 A continuation sends its reason, new human input/skills/trigger/diagnostics,
 current restrictions, and stable values that differ from the master. Paths,

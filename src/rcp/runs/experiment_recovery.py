@@ -64,7 +64,7 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
                 continue
             problem = tasks.store.experiment_episode_recovery_context_problem(previous.operation_id)
             if problem is None:
-                if tasks._failure_is_stale_session(previous):
+                if tasks._native_resume_unavailable(previous):
                     problem = "the provider no longer has the saved session"
                 elif tasks._continuation_context_is_unavailable(previous):
                     problem = "the saved continuation context is unavailable"
@@ -248,7 +248,7 @@ def retry_experiment_loop(
     current_config = (original.provider, original.model, original.reasoning)
     # A session the provider says it no longer has is not a checkpoint. Resuming
     # it fails identically every time, so this turn starts clean instead.
-    stale_session = tasks._failure_is_stale_session(previous)
+    stale_session = tasks._native_resume_unavailable(previous)
     previous_checkpoint = bool(
         previous.native_session_id
         and previous.stage_root
@@ -294,7 +294,11 @@ def retry_experiment_loop(
         # Nothing is left to resume, so refusing would strand the episode on a
         # session the provider has already dropped. The handoff below starts it
         # clean and says why on the record rather than falling back silently.
-        reason = "the provider no longer has the saved session"
+        reason = (
+            "Codex refused the transcript's encrypted content"
+            if tasks.store.agent_task_has_receipt(previous.operation_id, "codex_resume_refused")
+            else "the provider no longer has the saved session"
+        )
     elif owned_checkpoint:
         reason = "the saved provider workspace is unavailable"
     else:
@@ -342,7 +346,14 @@ def retry_experiment_loop(
     tasks.store.record_agent_task_receipt(
         retried.operation_id,
         "native_resume_unavailable",
-        {"reason": reason},
+        {
+            "reason": reason,
+            "classification": "login_switch"
+            if tasks.store.agent_task_has_receipt(previous.operation_id, "codex_resume_refused")
+            else "stale_session"
+            if stale_session
+            else "checkpoint_unavailable",
+        },
         tier="diagnostic",
     )
     tasks.store.record_agent_task_event(

@@ -948,7 +948,7 @@ class BackgroundAgentTasks:
         same_execution_host = request.run_on == original.run_on
         # Resuming a session the provider has dropped fails the same way every
         # time; a fresh session is the only attempt that can succeed.
-        stale_session = self._failure_is_stale_session(previous)
+        stale_session = self._native_resume_unavailable(previous)
         continuation_context_unavailable = self._continuation_context_is_unavailable(previous)
         owned_checkpoint = (
             bool(previous.native_session_id)
@@ -1034,7 +1034,16 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
             authorized_by=authorized_by,
         )
-        if same_provider and stale_session:
+        if retried is not None and self.store.agent_task_has_receipt(
+            previous.operation_id, "codex_resume_refused"
+        ):
+            self.store.record_agent_task_receipt(
+                retried.operation_id,
+                "native_resume_skipped",
+                {"classification": "login_switch"},
+                tier="summary",
+            )
+        elif same_provider and stale_session:
             self.store.record_agent_task_receipt(
                 retried.operation_id,
                 "native_resume_skipped",
@@ -2446,7 +2455,17 @@ class BackgroundAgentTasks:
             return "session_refused"
         if execution.provider_auth_refused is not None:
             return "provider_auth"
+        from rcp.runs.codex_resume import record_refusal
+
         provider = request.provider
+        # Replayed remote journals reach settlement without the live stream loop.
+        record_refusal(
+            execution,
+            provider=provider or "",
+            session_id=request.session_id or getattr(request, "fork_session_id", None),
+            host=execution.stage_host or self._bound_execution_host(operation_id, request),
+            error=error,
+        )
         profile = None
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
@@ -3026,6 +3045,9 @@ class BackgroundAgentTasks:
         if isinstance(request, EpisodeReportRunRequest):
             settle_provider_login(self, record)
             return
+        from rcp.runs.codex_resume import retry_refused_resume
+
+        retry_refused_resume(self, record)
         try:
             self._auto_retry_transport_loss(record)
         except Exception as exc:
@@ -3372,10 +3394,12 @@ class BackgroundAgentTasks:
             parent_id = parent.parent_operation_id
         return tuple(feedback)
 
-    def _failure_is_stale_session(self, record: AgentTaskRecord) -> bool:
-        """The provider no longer holds the native session this task would resume."""
+    def _native_resume_unavailable(self, record: AgentTaskRecord) -> bool:
+        """The provider has dropped or explicitly refused this native transcript."""
 
-        return self._failure_classified_as(record, "stale_session")
+        return self._failure_classified_as(
+            record, "stale_session"
+        ) or self.store.agent_task_has_receipt(record.operation_id, "codex_resume_refused")
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
         classified_receipt = any(

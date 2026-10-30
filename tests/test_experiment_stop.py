@@ -1828,13 +1828,17 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     assert loop.loop_task_ids() != before
 
 
-def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("encrypted_refusal", [False, True])
+def test_a_stale_episode_session_retries_clean_rather_than_refusing(
+    manifest, tmp_path, monkeypatch, encrypted_refusal
+) -> None:
     """A bound session the provider has dropped leaves nothing to resume.
 
     Refusing here would strand the episode: Retry could never succeed and the
     diagnostic would ask for a provider change the failure does not call for.
     """
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1846,8 +1850,23 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
         stage,
         status="failed",
         status_message="The provider dropped the session.",
-        error="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+        error=(
+            "invalid_encrypted_content"
+            if encrypted_refusal
+            else "collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198"
+        ),
     )
+    if encrypted_refusal:
+        loop.store.record_agent_task_receipt(
+            "stale-wake",
+            "codex_resume_refused",
+            {
+                "reason": "login_switch",
+                "native_session_id": "native-session-abc",
+                "transcript_path": str(tmp_path / "rollout-source.jsonl"),
+                "host": "",
+            },
+        )
     loop.record_context_candidate("stale-wake")
     observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry("stale-wake", authorized_by=loop.authorizer)
@@ -1860,12 +1879,20 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
     assert request.provider == "codex"
     assert request.control_episode_id == loop.episode_id
     assert retried.parent_operation_id == "stale-wake"
-    reasons = [
-        receipt.payload.get("reason")
+    assert retried.episode_id == loop.episode_id
+    assert retried.native_session_id is None
+    receipts = [
+        receipt
         for receipt in loop.store.agent_task_receipts(retried.operation_id)
         if receipt.category == "native_resume_unavailable"
     ]
-    assert reasons == ["the provider no longer has the saved session"]
+    assert len(receipts) == 1
+    assert receipts[0].payload["classification"] == (
+        "login_switch" if encrypted_refusal else "stale_session"
+    )
+    assert (
+        loop.store.agent_task_has_receipt("stale-wake", "codex_resume_refused") is encrypted_refusal
+    )
 
 
 def test_a_revoked_login_is_recommended_a_sign_in_without_losing_its_controls(
