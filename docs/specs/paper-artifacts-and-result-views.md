@@ -132,15 +132,15 @@ location is cut from the end, which can drop the approximate source line. A loca
 describes the revision shown when the reader commented; the quote names the text
 if the file has changed since.
 
-Cancelling the selection inside the HTML frame, leaving comment mode, a reload
-after saving the file, or showing another file closes the comment box opened from
-the preview and keeps its text for the next selection; Escape or Cancel in the box
-discards it. While a Coach turn sends, or when the comment limit is reached, a box
-or HTML selection clears without opening a comment. Comments wait in the Coach
-composer and, as chat comments do, survive a reload of the tab. The Coach button
-shows their count and any Coach error, and they travel as text with the next Coach
-message. Coach turns carry no artifact context, since the Paper tree is the
-Coach's whole context.
+Cancelling the selection inside the HTML frame, leaving comment mode, or showing
+another file closes the comment box opened from the preview and keeps its text for
+the next selection; Escape or Cancel in the box discards it. A reload of the page
+keeps an open comment box, since its quote and place are already taken. While a
+Coach turn sends, or when the comment limit is reached, a box or HTML selection
+clears without opening a comment. Comments wait in the Coach composer and, as chat
+comments do, survive a reload of the tab. The Coach button shows their count and
+any Coach error, and they travel as text with the next Coach message. Coach turns
+carry no artifact context, since the Paper tree is the Coach's whole context.
 
 ## Writing coach
 

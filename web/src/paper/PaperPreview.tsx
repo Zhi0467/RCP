@@ -172,15 +172,6 @@ function HtmlPreview({
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
   // The clear of the comment the frame last opened; a cancel in the frame names it.
   const opened = useRef<(() => void) | null>(null);
-  // A reload erases the mark of the comment the page opened, so it closes that comment.
-  useEffect(
-    () => () => {
-      if (opened.current) onDirectCancel?.(opened.current);
-      opened.current = null;
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the page reloads
-    [shown.revision],
-  );
   const onLoad = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: () => {
