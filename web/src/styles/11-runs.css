@@ -316,6 +316,44 @@
   font-weight: 550;
   margin: 0;
 }
+.service-connection-list {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.service-connection {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.service-connection > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0 -12px;
+  padding: 10px 12px;
+}
+.service-connection > header strong {
+  font-family: var(--editorial);
+  font-size: var(--type-lg);
+  font-weight: 550;
+}
+.service-connection-detail {
+  color: var(--muted);
+  font-size: var(--type-sm);
+  line-height: 1.5;
+  margin: 0;
+}
+.service-connection-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .service-connection-uses {
   display: flex;
   flex-wrap: wrap;

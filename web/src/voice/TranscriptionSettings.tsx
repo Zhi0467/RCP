@@ -250,9 +250,9 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
             />
           ) : null}
           <h3 className="transcription-group">Your services</h3>
-          <div className="provider-login-list">
+          <div className="service-connection-list">
             {settings.connections.map((connection) => (
-              <article key={connection.id} className="provider-login-account">
+              <article key={connection.id} className="service-connection">
                 <header>
                   <strong title={`Verified ${formatServerTimestamp(connection.verified_at)}`}>
                     {connection.label}
@@ -268,11 +268,11 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                 </header>
                 <ConnectionModels connection={connection} voice={voice} />
                 {connection.preset === "custom" && connection.base_url ? (
-                  <p className="provider-login-detail">
+                  <p className="service-connection-detail">
                     <code>{connection.base_url}</code>
                   </p>
                 ) : null}
-                <div className="provider-login-actions">
+                <div className="service-connection-actions">
                   <button
                     className="button secondary compact"
                     type="button"
@@ -299,7 +299,7 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                 </div>
               </article>
             ))}
-            <div className="provider-login-actions">
+            <div className="service-connection-actions">
               <button
                 className="button compact"
                 type="button"
@@ -350,7 +350,7 @@ function ConnectionModels({
       { role: "thinking", id: voice.delegation_model },
       { role: "live", id: voice.live_model },
     );
-  if (!rows.length) return <p className="provider-login-detail">Not in use.</p>;
+  if (!rows.length) return <p className="service-connection-detail">Not in use.</p>;
   return (
     <dl className="service-connection-models">
       {rows.map(({ role, id }) => (
