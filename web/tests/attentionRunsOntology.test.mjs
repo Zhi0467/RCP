@@ -122,6 +122,7 @@ test("attention decoding validates shape and referenced graph member types", () 
     },
     stale_proposal_ids: [],
     refreshable_proposal_ids: [],
+    stale_edge_ids: [],
     decision_prior_choices: {},
   };
 
@@ -147,6 +148,7 @@ test("attention decoding validates shape and referenced graph member types", () 
           proposal_actions: { missing: [{ text: "Review." }] },
           stale_proposal_ids: [],
           refreshable_proposal_ids: [],
+          stale_edge_ids: [],
           decision_prior_choices: {},
         },
         state,

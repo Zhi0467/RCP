@@ -27,10 +27,10 @@ from rcp.api.tasks import (
     start_agent_task,
 )
 from rcp.consolidation import next_occurrence
+from rcp.core.validation.outcome_edges import is_current_evidence
 from rcp.limits import CONSOLIDATION_RECENT_NIGHTS, EVIDENCE_FLAG_ADDRESS_BATCH_MAX
 from rcp.projects import ProjectCatalog
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
-from rcp.runs.evidence_flag_commands import is_current_evidence
 from rcp.storage import AppStore
 from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.consolidation import (

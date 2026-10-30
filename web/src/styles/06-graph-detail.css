@@ -559,6 +559,9 @@
   padding: 8px;
   width: 100%;
 }
+.relation-map-peer.stale {
+  border-left: 3px solid var(--red);
+}
 .relation-map-node {
   align-items: flex-start;
   background: var(--sheet);
@@ -630,6 +633,22 @@ button.relation-map-node:hover {
   padding: 4px 7px;
   text-align: center;
   text-transform: uppercase;
+}
+.relation-map-edge-stale {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  max-width: 100%;
+}
+.relation-map-edge-stale .relation-map-edge-label {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  border-color: var(--red);
+  color: var(--red);
+}
+.relation-map-edge-refresh.failed {
+  border-color: var(--red);
+  color: var(--red);
 }
 .relation-map-edge-warning {
   align-items: flex-start;

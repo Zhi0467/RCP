@@ -1,4 +1,5 @@
 import { useEvidenceFlags } from "./EvidenceFlagContext";
+import { useStaleEdges } from "./StaleEdgeContext";
 import { branchName } from "../core/branchNames";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { ExperimentLoopMetadata } from "../experiments/ExperimentLoopMetadata";
@@ -199,6 +200,7 @@ export function DagView({
   ...editing
 }: DagProps) {
   const { nodeIds: flaggedNodeIds } = useEvidenceFlags();
+  const { staleEdgeIds } = useStaleEdges();
   const [toolbarMenu, setToolbarMenu] = useState<"layout" | "view" | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -979,7 +981,7 @@ export function DagView({
                     );
                   return (
                     <g
-                      className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""}`}
+                      className={`dag-edge-group ${edgeChanges.has(edge.id) ? `branch-${edgeChanges.get(edge.id)!.change}` : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-neutral" : ""} ${staleEdgeIds.has(edge.id) ? "is-stale" : ""}`}
                       key={edge.id}
                     >
                       <path className="dag-edge" d={geometry.path} markerEnd="url(#dag-arrow)" />

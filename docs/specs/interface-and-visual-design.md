@@ -147,6 +147,11 @@ Literal prose edits stage in the project draft and reset draft standing to
 asserted. They do not start chat. Artifact selections are not graph editing
 or Evidence shortcuts.
 
+A [stale assessment](graph-history-and-transitions.md#stale-assessments) has a
+red relation pill, and its peer box in node detail has a red left edge. Its DAG
+line and label are red. On main, one icon-only Refresh beside the pill opens the
+re-judging chat. A failure turns the icon red and puts the error on hover.
+
 Open or addressing Evidence flags mark their current nodes on the selected graph.
 The graph and research cards show a red left edge. Node detail adds one icon-only
 flag action that opens the Inbox. A flag on retired or absent Evidence keeps its

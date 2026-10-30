@@ -579,14 +579,15 @@ def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, sta
 
 
 def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
-    """The candidate's merge self-check accepts a branch the old release populated."""
+    """The candidate merges what an old release wrote on a branch, all of it."""
+    from rcp.core.models import graph_fields
     from rcp.core.transition_models import GraphTargetRef
-    from rcp.runs.branch_merge import merge_planning_context
+    from rcp.runs.branch_merge import commit_branch_merge_with_history, merge_planning_context
     from rcp.runs.branch_merge_admission import start_branch_merge
     from rcp.runs.branch_merge_context import load_branch_merge_context
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
     from rcp.runs.merge_contract import MergeAnswers
-    from rcp.runs.merge_patch import prepare_merge_candidate
+    from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
     from rcp.runs.merge_plan import plan_merge
     from rcp.storage import EpisodeRecord
 
@@ -647,11 +648,32 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     assert not plan.conflicts
     assert not plan.review_groups
     assert any(change.collection == "proposals" for change in plan.direct_changes)
-    prepared = prepare_merge_candidate(plan, MergeAnswers(answers={}, cards={}), service.history)
+    answers = MergeAnswers(answers={}, cards={})
+    prepared = prepare_merge_candidate(plan, answers, service.history)
     assert prepared.patch.transition is not None
     source_ids = set(context.branch_graph.proposals) - set(context.base_graph.proposals)
     assert source_ids
     assert source_ids <= set(prepared.projection.graph.proposals)
+
+    commit_branch_merge_with_history(
+        service.history,
+        build_merge_patch(plan, answers),
+        expected_main_head=plan.destination_head,
+    )
+    merged = service.history.state()
+    base, source = context.base_graph, context.branch_graph
+    # Every content field the old release changed on the branch is on main now.
+    for collection in ("nodes", "edges", "proposals", "glossary"):
+        before, after = getattr(base, collection), getattr(merged, collection)
+        for identity, item in getattr(source, collection).items():
+            assert identity in after, (collection, identity)
+            for field in graph_fields(type(item), role="content"):
+                value = getattr(item, field)
+                if identity not in before or getattr(before[identity], field) != value:
+                    assert getattr(after[identity], field) == value, (collection, identity, field)
+        for identity in before.keys() - getattr(source, collection).keys():
+            assert identity not in after, (collection, identity)
+    assert service.history.materialize(write_outputs=False).state == merged
 
 
 def _exercise_candidate_upgrade(

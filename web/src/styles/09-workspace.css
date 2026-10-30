@@ -1490,6 +1490,13 @@ a.digest-title:hover {
   stroke-linejoin: round;
   text-anchor: middle;
 }
+.dag-edge-group.is-stale .dag-edge {
+  stroke: var(--red);
+  stroke-width: 2;
+}
+.dag-edge-group.is-stale .dag-edge-label {
+  fill: var(--red);
+}
 .dag-node {
   --node-accent: var(--slate);
   /* Opaque at every emphasis, so a card always covers the edges under it. */

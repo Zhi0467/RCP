@@ -224,7 +224,18 @@ model at the lowest probed effort (the configured effort when no model catalog i
 cached). It also adds Evidence triage when Evidence caused the Proposal and the
 project enables that skill. Context names only the Proposal and moved dependencies.
 The agent withdraws the old Proposal and refiles it if it is still valid.
-A new filing still waits for a human.
+A new filing still waits for a human. When the cause edge is itself a
+[stale assessment](graph-history-and-transitions.md#stale-assessments), context
+lists it and the same turn re-judges it first. Re-judging later would make the
+refiled Proposal stale again.
+
+Human Refresh of a stale assessment from main starts the same light Work on its
+Evidence, with Evidence triage when the project enables it. It is keyed per edge
+and Evidence revision.
+Context names the edge, the Evidence, and the pending Proposals that cite the
+edge. The agent recreates or removes that one edge and changes nothing else.
+Evidence-to-Hypothesis edges are direct assertions, so neither refresh grants
+authority beyond ordinary Work.
 
 Replay-only and merge-only forms are not refreshable. These include multi-intent,
 standing, human-caused status, and accepted ordinary-node removal forms.
