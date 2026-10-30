@@ -558,3 +558,16 @@ def install_consolidation_resource_versions(connection: sqlite3.Connection) -> N
                 _bump("ROW.project_id", "chat", "ROW.chat_id", "ROW.chat_id IS NOT NULL")
             )
         _install(connection, table, statements)
+
+
+def install_provider_login_versions(connection: sqlite3.Connection) -> None:
+    """Rebuilt login/cache tables and member settings publish Settings changes."""
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER IF EXISTS resource_graph_runs_{event}")
+    _install_task_progress(connection, _BRANCH_TASK_CHAT)
+    for table in (
+        "provider_login_states",
+        "provider_readiness_snapshots",
+        "provider_login_settings",
+    ):
+        _install(connection, table, [_bump("''", "settings")])

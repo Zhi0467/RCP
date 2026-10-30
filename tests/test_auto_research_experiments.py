@@ -54,6 +54,7 @@ from rcp.storage import (
     AutoResearchExperimentAllowanceReached,
     ProjectRecord,
 )
+from rcp.storage.models import LoginKey
 from tests.helpers import unchecked_write_authority
 
 from .helpers import (
@@ -427,11 +428,11 @@ def test_explicit_invocation_limit_over_total_allowance_is_pre_admission(
     assert admission is not None and admission.state == "accepted"
 
 
-def _ready_except_claude(provider, *, host="", binary=None, refresh=False):
+def _ready_except_claude(login: LoginKey, *, binary=None, refresh=False):
     return ProviderReadiness(
-        provider=provider,
+        provider=login.provider,
         installed=True,
-        authenticated=provider != "claude",
+        authenticated=login.provider != "claude",
         models=[ModelChoice(id="reviewer", label="Reviewer", reasoning=["medium", "xhigh"])],
     )
 
@@ -1424,9 +1425,9 @@ def test_a_provider_switch_never_inherits_the_settings_effort(
         p for p in ("claude", "codex") if p != manifest.agent_profile("node_chat").provider
     )
 
-    def ready(provider, **_):
+    def ready(login: LoginKey, **_):
         return ProviderReadiness(
-            provider=provider, installed=True, authenticated=True, models=catalog
+            provider=login.provider, installed=True, authenticated=True, models=catalog
         )
 
     monkeypatch.setattr(service.launcher, "readiness", ready)
@@ -1453,8 +1454,10 @@ def test_a_model_that_takes_no_effort_drops_the_settings_effort(
         ModelChoice(id="plain", label="Plain", reasoning=[]),
     ]
 
-    def ready(name, **_):
-        return ProviderReadiness(provider=name, installed=True, authenticated=True, models=catalog)
+    def ready(login: LoginKey, **_):
+        return ProviderReadiness(
+            provider=login.provider, installed=True, authenticated=True, models=catalog
+        )
 
     monkeypatch.setattr(service.launcher, "readiness", ready)
     monkeypatch.setattr(service.launcher, "cached_readiness", ready)
@@ -1556,11 +1559,11 @@ def test_child_seat_catalog_matches_pick_enforcement_and_prompt_data(
     )
     service = _service(manifest, tmp_path)
 
-    def ready(provider, **_):
-        model = f"{provider}-model"
+    def ready(login: LoginKey, **_):
+        model = f"{login.provider}-model"
         return ProviderReadiness(
-            provider=provider,
-            installed=provider in {"codex", "claude"},
+            provider=login.provider,
+            installed=login.provider in {"codex", "claude"},
             authenticated=True,
             models=[ModelChoice(id=model, label=model, reasoning=[])],
         )
@@ -1586,3 +1589,57 @@ def test_child_seat_catalog_matches_pick_enforcement_and_prompt_data(
                 service, provider=None, model="codex-model", reasoning=None, kind="project_chat"
             )
         assert refused.value.reason == "model_unknown"
+
+
+def test_child_profile_pick_and_catalog_use_authorizer_added_login(manifest, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from rcp.agents import AgentLauncher
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.api.app import _auto_research_worker_request
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.runs.auto_research import SpawnArguments
+    from rcp.runs.auto_research_admission import auto_research_child_seat_profile_choices
+
+    from .test_provider_login_resolver import _login
+
+    service, store, *_ = _setup(manifest, tmp_path)
+    human = fabricated_authorizer()
+    accounts = ProviderAccounts.for_store(store)
+    own = _login(accounts, "codex", own=True, member=human.user_id)
+    store.set_provider_login_setting(human.user_id, "codex", "", "own")
+    service.launcher = AgentLauncher(accounts=accounts)
+    seen = []
+
+    def ready(login: LoginKey, **kwargs):
+        seen.append((login.provider, login.login_id))
+        return ProviderReadiness(
+            provider=login.provider,
+            installed=True,
+            authenticated=login.provider == "codex" and login.login_id == own.login_id,
+            models=[ModelChoice(id="added-model", label="Added", reasoning=["high"])],
+        )
+
+    monkeypatch.setattr(service.launcher, "readiness", ready)
+    context = SimpleNamespace(
+        child_graph_target=None,
+        episode=SimpleNamespace(graph_target=GraphTargetRef(), authorized_by=human),
+        request=SimpleNamespace(run_truth_scope=[]),
+    )
+    request = _auto_research_worker_request(
+        service,
+        context,
+        SpawnArguments(
+            instruction_file="instruction.txt",
+            project=True,
+            provider="codex",
+            model="added-model",
+            reasoning="high",
+        ),
+        "Inspect the result",
+        CHILD_EXPLICIT,
+    )
+    assert request.model == "added-model"
+    catalogs = auto_research_child_seat_profile_choices(service, member_id=human.user_id)
+    assert catalogs == {seat: {"codex": {"added-model": ["high"]}} for seat in ("node", "project")}
+    assert ("codex", "") not in seen

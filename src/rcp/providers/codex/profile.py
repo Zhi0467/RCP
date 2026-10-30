@@ -50,6 +50,8 @@ class CodexProfile(ProviderProfile):
 
         return CodexAuthentication()
 
+    login_credential_files = ("codex-home/auth.json",)
+    remote_login_credential_files = (".rcp/provider-homes/codex/{login_id}/auth.json",)
     id = "codex"
     label = "Codex"
     usage_profile = "codex.turn.v1"
@@ -61,6 +63,7 @@ class CodexProfile(ProviderProfile):
         installer_env=("CODEX_NON_INTERACTIVE=1",),
     )
     session_format = CodexSessionFormat()
+    sessions_bound_to_login = True
     autocompact_hint = "a token count"
     legacy_runtime_id = "codex.exec-json.v1"
     default_runtime = "app-server"
@@ -114,7 +117,7 @@ class CodexProfile(ProviderProfile):
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
-                if result.returncode:
+                if result.returncode or line.strip().lower() == "not logged in":
                     diagnostics.append(line)
                 continue
             if isinstance(value, dict) and (
@@ -135,6 +138,9 @@ class CodexProfile(ProviderProfile):
         return any(
             signature in reported
             for signature in (
+                # Observed 2026-10-29 without auth.json and from login status.
+                "401 unauthorized: missing bearer or basic authentication in header",
+                "not logged in",
                 "refresh_token_reused",
                 "refresh token was already used",
                 "token_revoked",

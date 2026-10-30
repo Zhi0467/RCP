@@ -167,7 +167,7 @@ sudo -u rcp -H /bin/bash -lc \
 ```
 
 On a browser-equipped machine with the intended Claude subscription, run
-`claude setup-token`; paste its token into **Provider logins → Claude → Sign in**.
+`claude setup-token`; paste its token into **Settings → the machine card → Sign-ins → Claude → Sign in**.
 Never put the token in command arguments, logs, issues or project files.
 
 ### OpenCode
@@ -193,7 +193,7 @@ sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
 ```
 
 For a stale pinned executable, use **Resolve** on its machine card, then repeat
-the project check. Repair failed login in **Provider logins**.
+the project check. Repair a failed login in the machine card's **Sign-ins**.
 
 ## 12. Add the team space in the desktop app
 

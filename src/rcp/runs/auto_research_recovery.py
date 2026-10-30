@@ -119,16 +119,6 @@ def reconcile_due_auto_research_recoveries(
             continue
         if operation_ids is not None and recovery.operation_id not in operation_ids:
             continue
-        task = store.agent_task(recovery.operation_id)
-        if task is not None:
-            try:
-                background.admit_provider_task(
-                    task.project_id,
-                    background._request_from_record(task),
-                    execution_host=(task.stage_host or "") if task.stage_root else None,
-                )
-            except AdmissionRefused:
-                continue
         try:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             if child is None:
@@ -138,6 +128,8 @@ def reconcile_due_auto_research_recoveries(
                 admitted_operation_id=child.operation_id,
                 expected_operation_id=recovery.operation_id,
             )
+        except AdmissionRefused:
+            continue
         except Exception as exc:
             child = store.auto_research_task_recovery_child(recovery.operation_id)
             task = store.agent_task(recovery.operation_id)

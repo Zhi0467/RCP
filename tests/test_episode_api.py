@@ -477,8 +477,8 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
     monkeypatch.setattr(
         service.launcher,
         "readiness",
-        lambda provider, **_kwargs: ProviderReadiness(
-            provider=provider,
+        lambda login, **_kwargs: ProviderReadiness(
+            provider=login.provider,
             installed=True,
             authenticated=True,
             path_state="resolved",
@@ -815,8 +815,8 @@ def test_clean_retry_stop_during_final_admission_abandons_and_settles(
     monkeypatch.setattr(
         service.launcher,
         "readiness",
-        lambda provider, **_kwargs: ProviderReadiness(
-            provider=provider,
+        lambda login, **_kwargs: ProviderReadiness(
+            provider=login.provider,
             installed=True,
             authenticated=True,
             path_state="resolved",

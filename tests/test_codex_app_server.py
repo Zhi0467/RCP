@@ -188,7 +188,7 @@ for line in sys.stdin:
 async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path) -> None:
     executable, capture = _fake_app_server(tmp_path)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
 
     events = [
         event
@@ -240,7 +240,7 @@ async def test_app_server_work_turn_carries_the_exact_project_permission_profile
 
     executable, capture = _fake_app_server(tmp_path, permission_profile="rcp_project")
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
     stage = tmp_path / "stage"
     stage.mkdir()
 
@@ -285,7 +285,7 @@ async def test_app_server_work_turn_stops_when_the_permission_profile_is_not_act
 
     executable, capture = _fake_app_server(tmp_path, permission_profile="workspace")
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
     stage = tmp_path / "stage"
     stage.mkdir()
 
@@ -338,7 +338,7 @@ def test_app_server_read_only_capability_rejects_a_project_write_scope(tmp_path:
 async def test_app_server_runtime_fails_loudly_on_interactive_request(tmp_path: Path) -> None:
     executable, _capture = _fake_app_server(tmp_path, request_approval=True)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
 
     events = [
         event
@@ -367,7 +367,7 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
 ) -> None:
     executable, _capture = _fake_app_server(tmp_path)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
     remote_commands: list[tuple[str, str]] = []
 
     def local_ssh(host: str, command: str, **_kwargs: object) -> list[str]:
@@ -407,7 +407,7 @@ async def test_app_server_falls_back_to_exec_only_before_prompt_delivery(
 ) -> None:
     executable, attempts = _fake_fallback_codex(tmp_path, fail_after_prompt=False)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
 
     events = [
         event
@@ -435,7 +435,7 @@ async def test_app_server_falls_back_to_exec_only_before_prompt_delivery(
 async def test_app_server_does_not_fallback_after_prompt_delivery(tmp_path: Path) -> None:
     executable, attempts = _fake_fallback_codex(tmp_path, fail_after_prompt=True)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
 
     events = [
         event
@@ -883,7 +883,7 @@ async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
         monkeypatch.setattr("rcp.agents.launcher.PROVIDER_SETUP_TIMEOUT_SECONDS", 1.0)
     executable, attempts = _stalling_codex(tmp_path, stall)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    launcher.readiness = lambda login, binary=None: _ready(executable)
 
     async def collect():
         return [

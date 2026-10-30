@@ -23,6 +23,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from tests.helpers import signed_in_client
 
 RESTORE_DIAGNOSTIC = "This work was stopped because RCP restored an older snapshot."
@@ -524,12 +525,20 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "app.sqlite3")
-    store.mark_provider_login_verified("codex", "", member_id="member", detail="verified")
-    store.mark_provider_login_verified("claude", "gpu.example", member_id="member", detail="ok")
+    store.mark_provider_login_verified(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+    )
+    store.mark_provider_login_verified(
+        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID), member_id="member", detail="ok"
+    )
     store.mark_provider_login_signed_out(
-        "claude", "", member_id="member", source="sign_out", detail="Signed out."
+        LoginKey("claude", "", MACHINE_LOGIN_ID),
+        member_id="member",
+        source="sign_out",
+        detail="Signed out.",
     )
     store.save_provider_readiness_snapshot(
+        LoginKey("codex", "", MACHINE_LOGIN_ID),
         ProviderReadinessSnapshotRecord(
             provider="codex",
             host="",
@@ -537,9 +546,9 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
             version="codex-cli 1.0.0",
             readiness_json="{}",
             probed_at=store.now(),
-        )
+        ),
     )
-    signed_out_before = store.provider_login_state("claude", "")
+    signed_out_before = store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID))
 
     store.detach_restored_lifecycle(
         diagnostic=RESTORE_DIAGNOSTIC,
@@ -548,8 +557,13 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
     )
 
     for provider, host in (("codex", ""), ("claude", "gpu.example")):
-        state = store.provider_login_state(provider, host)
+        state = store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
         assert state.state == "signed_out" and state.source == "restore"
         assert state.generation == 2 and state.changed_by is None
-    assert store.provider_login_state("claude", "") == signed_out_before
-    assert store.provider_readiness_snapshot("codex", "", "/usr/local/bin/codex") is None
+    assert store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID)) == signed_out_before
+    assert (
+        store.provider_readiness_snapshot(
+            LoginKey("codex", "", MACHINE_LOGIN_ID), "/usr/local/bin/codex"
+        )
+        is None
+    )

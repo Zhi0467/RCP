@@ -191,7 +191,7 @@ def start_watcher_notification(
             if not tasks._accepting_watcher_deliveries:
                 return
             try:
-                tasks.admit_provider_task(project_id, request)
+                tasks.admit_provider_task(project_id, request, authorized_by=record.authorized_by)
             except AdmissionRefused:
                 return
             if experiment_reauthorization:

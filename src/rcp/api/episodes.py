@@ -8,8 +8,7 @@ from typing import Literal
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rcp.agents.provider_accounts import account_login_refusal
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.api.dependencies import require_registered_project
 from rcp.core.models import AuthorizedHuman, EpisodeIsolationState, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -427,19 +426,18 @@ def serialize_episode(
         if episode.wrapup_state in {"pending", "running"}
         else None
     )
-    # The same refusal the report launch consults: a missing managed credential
-    # blocks the account whatever its durable row says.
-    report_login_blocked = (
-        wrapup is not None
-        and wrapup.provider is not None
-        and account_login_refusal(
-            store,
-            ProviderCredentialStore.for_data_dir(store.path.parent),
+    report_login_blocked = False
+    if wrapup is not None and wrapup.provider is not None:
+        accounts = ProviderAccounts.for_store(store)
+        host = wrapup.execution_host or ""
+        selected, _ = accounts.resolve_launch_login(
             wrapup.provider,
-            wrapup.execution_host or "",
+            host,
+            episode.authorized_by.user_id if episode.authorized_by else None,
+            session_id=wrapup.native_session_id,
+            exclude_operation_id=wrapup.allocation_operation_id or "",
         )
-        is not None
-    )
+        report_login_blocked = isinstance(selected, LoginRefusal)
     health, next_step, task_control, blocked_reason = project_episode_health(
         [
             EpisodeHealthInput(

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.launcher import work_like_launch_problem
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -56,6 +57,7 @@ from rcp.storage import (
     EpisodeRecord,
     WatcherContinuation,
 )
+from rcp.storage.models import LoginKey
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -192,7 +194,10 @@ def continue_auto_research(
             "now, so its session cannot be resumed. Start a new Auto-research episode instead."
         )
     tasks.admit_provider_task(
-        source.project_id, previous_root, execution_host=binding.stage_host or ""
+        source.project_id,
+        previous_root.model_copy(update={"session_id": binding.native_session_id}),
+        authorized_by=authorized_by,
+        execution_host=binding.stage_host or "",
     )
     episode_id = str(uuid.uuid4())
     operation_id = str(uuid.uuid4())
@@ -388,7 +393,7 @@ def reserve_auto_research(
         authorized_by=authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(project_id, run_request)
+    tasks.admit_provider_task(project_id, run_request, authorized_by=authorized_by)
     stored_episode, stored_task = tasks.store.create_auto_research_episode_with_root_task(
         episode,
         AutoResearchStateRecord(
@@ -649,7 +654,10 @@ def start_auto_research_turn(
     elif wake_admission is not None:
         raise ValueError("Only an Auto-research watcher wake may use wake admission.")
     tasks.admit_provider_task(
-        episode.project_id, request, execution_host=(stage_host or "") if stage_root else None
+        episode.project_id,
+        request,
+        authorized_by=episode.authorized_by,
+        execution_host=(stage_host or "") if stage_root else None,
     )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
@@ -978,7 +986,11 @@ def start_auto_research_child_work(
         updated_at=now,
     )
     tasks.admit_provider_task(
-        episode.project_id, request, graph_target=target, isolation_episode_id=episode.episode_id
+        episode.project_id,
+        request,
+        authorized_by=episode.authorized_by,
+        graph_target=target,
+        isolation_episode_id=episode.episode_id,
     )
     _, stored = tasks.store.create_auto_research_child_work(
         route,
@@ -1191,6 +1203,7 @@ def _start_auto_research_child_work_wake(
     tasks.admit_provider_task(
         episode.project_id,
         request,
+        authorized_by=episode.authorized_by,
         graph_target=current.graph_target,
         isolation_episode_id=episode.episode_id,
     )
@@ -1487,7 +1500,9 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(route.project_id, request, graph_target=target)
+    tasks.admit_provider_task(
+        route.project_id, request, authorized_by=parent.authorized_by, graph_target=target
+    )
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,
@@ -1735,11 +1750,6 @@ def retry_auto_research_task(
         original = AutoResearchRunRequest.model_validate(
             {**original.model_dump(mode="json"), **rebound}
         )
-    tasks.admit_provider_task(
-        previous.project_id,
-        original,
-        execution_host=(previous.stage_host or "") if previous.stage_root else None,
-    )
     continuation_unavailable = tasks._continuation_context_is_unavailable(previous)
     owned_checkpoint = bool(
         previous.native_session_id and previous.stage_root and tasks._session_is_rcp_owned(previous)
@@ -1748,6 +1758,19 @@ def retry_auto_research_task(
         continuation_unavailable or not owned_checkpoint
     )
     starts_fresh = bool(rebound) or clean_orchestrator_retry
+    episode = auto_research_for_request(tasks, original.episode_id, original)
+    lineage_login = ProviderAccounts.for_store(tasks.store).lineage_login(
+        original.provider, previous.stage_host or "", previous
+    )
+    tasks.admit_provider_task(
+        previous.project_id,
+        original.model_copy(
+            update={"session_id": None if starts_fresh else previous.native_session_id}
+        ),
+        authorized_by=episode.authorized_by,
+        lineage_login=lineage_login,
+        execution_host=(previous.stage_host or "") if previous.stage_root else None,
+    )
     logical_problem = (
         "the saved continuation context is unavailable"
         if continuation_unavailable
@@ -1825,7 +1848,9 @@ def retry_auto_research_task(
     )
     if service is not None:
         try:
-            _require_auto_research_retry_target_ready(service, request)
+            _require_auto_research_retry_target_ready(
+                service, request, authorized_by=episode.authorized_by, lineage_login=lineage_login
+            )
         except ValueError as exc:
             _settle_unusable_recovery_if_stopping(tasks, previous, str(exc))
             raise
@@ -1891,6 +1916,9 @@ def _settle_unusable_recovery_if_stopping(
 def _require_auto_research_retry_target_ready(
     service: ProjectService,
     request: AutoResearchRunRequest,
+    *,
+    authorized_by: AuthorizedHuman | None = None,
+    lineage_login: LoginKey | None = None,
 ) -> None:
     """Recheck the pinned provider target immediately before Retry allocation."""
 
@@ -1900,11 +1928,14 @@ def _require_auto_research_retry_target_ready(
     if machine is None:
         raise ValueError(f"unknown execution machine: {request.run_on}")
     binary = service.launcher.provider_binary(request.provider, machine.host)
-    readiness = service.launcher.readiness(
+    readiness = service.launcher.member_readiness(
         request.provider,
         host=machine.host,
         binary=binary,
         refresh=True,
+        member_id=authorized_by.user_id if authorized_by else None,
+        session_id=request.session_id,
+        lineage_login=lineage_login,
     )
     work_problem = (
         work_like_launch_problem(readiness)
@@ -1949,6 +1980,7 @@ def auto_research_child_profile_choices(
     providers: tuple[str, ...] = PROVIDER_IDS,
     *,
     kind: Literal["node_chat", "project_chat"] = "node_chat",
+    member_id: str | None = None,
 ) -> ChildProfileChoices:
     """The provider profiles an orchestrator may name for a child, by provider.
 
@@ -1964,7 +1996,9 @@ def auto_research_child_profile_choices(
     choices: ChildProfileChoices = {}
     for provider in providers:
         binary = service.launcher.provider_binary(provider, machine.host)
-        readiness = service.launcher.readiness(provider, host=machine.host, binary=binary)
+        readiness = service.launcher.member_readiness(
+            provider, host=machine.host, binary=binary, member_id=member_id
+        )
         if (
             readiness is None
             or not readiness.installed
@@ -1976,11 +2010,15 @@ def auto_research_child_profile_choices(
     return choices
 
 
-def auto_research_child_seat_profile_choices(service: ProjectService) -> ChildSeatProfileChoices:
+def auto_research_child_seat_profile_choices(
+    service: ProjectService, *, member_id: str | None = None
+) -> ChildSeatProfileChoices:
     """Resolve each seat's catalog through the same path that checks child picks."""
     return {
-        "node": auto_research_child_profile_choices(service, kind="node_chat"),
-        "project": auto_research_child_profile_choices(service, kind="project_chat"),
+        "node": auto_research_child_profile_choices(service, kind="node_chat", member_id=member_id),
+        "project": auto_research_child_profile_choices(
+            service, kind="project_chat", member_id=member_id
+        ),
     }
 
 
@@ -1991,6 +2029,7 @@ def require_auto_research_child_profile_pick(
     model: str | None,
     reasoning: str | None,
     kind: Literal["node_chat", "project_chat"] = "node_chat",
+    member_id: str | None = None,
 ) -> str | None:
     """Refuse an orchestrator's explicit child pick the child's machine cannot run.
 
@@ -2001,7 +2040,9 @@ def require_auto_research_child_profile_pick(
     if provider is None and model is None and reasoning is None:
         return reasoning
     picked = provider or service.manifest.agent_profile(kind).provider
-    models = auto_research_child_profile_choices(service, (picked,), kind=kind).get(picked)
+    models = auto_research_child_profile_choices(
+        service, (picked,), kind=kind, member_id=member_id
+    ).get(picked)
     if models is None:
         raise AutoResearchChildProfileInvalid(
             "provider_unready",

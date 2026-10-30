@@ -68,10 +68,14 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/project-invitations/{invitation_id}/{response}"),
     (("GET",), "/api/providers"),
     (("GET",), "/api/providers/logins"),
+    (("GET",), "/api/providers/logins/settings"),
+    (("PUT",), "/api/providers/{provider}/logins/setting"),
+    (("POST",), "/api/providers/{provider}/logins/add"),
+    (("POST",), "/api/providers/{provider}/logins/remove"),
     (("POST",), "/api/providers/{provider}/logins/verify"),
     (("POST",), "/api/providers/{provider}/logins/sign-in"),
-    (("GET",), "/api/providers/{provider}/logins/sign-in/{login_id}"),
-    (("POST",), "/api/providers/{provider}/logins/sign-in/{login_id}/cancel"),
+    (("GET",), "/api/providers/{provider}/logins/sign-in/{attempt_id}"),
+    (("POST",), "/api/providers/{provider}/logins/sign-in/{attempt_id}/cancel"),
     (("POST",), "/api/providers/{provider}/logins/token"),
     (("POST",), "/api/providers/{provider}/logins/sign-out"),
     (("GET",), "/api/service-connections"),
@@ -356,12 +360,12 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 296
+    assert len(_FROZEN_ROUTE_INVENTORY) == 300
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 292
+    assert sum(isinstance(route, APIRoute) for route in routes) == 296
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

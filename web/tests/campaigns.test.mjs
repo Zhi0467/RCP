@@ -809,41 +809,6 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
   const html = renderEpisodes([wrapping]);
 });
 
-test("the login notice names each signed-out account once and offers verification", async () => {
-  const { ProviderLoginNotice } = await server.ssrLoadModule(
-    "/src/projects/ProviderLoginNotice.tsx",
-  );
-  const states = [
-    {
-      provider: "codex",
-      host: "",
-      state: "signed_out",
-      generation: 0,
-      changed_at: "2026-09-14T00:00:00Z",
-      detail: "Please sign in again",
-    },
-    {
-      provider: "claude",
-      host: "remote.example",
-      state: "signed_in",
-      generation: 1,
-      changed_at: "2026-09-14T00:00:00Z",
-      detail: null,
-    },
-  ];
-  const html = renderMarkup(React.createElement(ProviderLoginNotice, { states }));
-
-  assert.doesNotMatch(html, /remote.example/);
-
-  // One phone disclosure, the check, and Dismiss; the full explanation stays in the DOM.
-  assert.equal((html.match(/<button/g) ?? []).length, 3);
-  assert.match(html, /aria-label="Dismiss"/);
-  assert.match(html, /class="compact-notice-toggle"[^>]*aria-expanded="false"/);
-  assert.match(html, /<span>Codex is signed out<\/span>/);
-  assert.match(html, /Sign it in from Settings, Provider logins/);
-  assert.match(html, /Already signed in\? Check again/);
-});
-
 test("merge controls render the server offer; an in-flight action disables them", () => {
   const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
   const running = renderEpisodes([

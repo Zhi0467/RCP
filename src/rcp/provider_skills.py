@@ -23,6 +23,7 @@ from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderSkill, ProviderSkillProbe, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport.ssh import ssh_arguments
 
 _REFRESH_COMPLETION_GRACE_SECONDS = 5.0
@@ -100,7 +101,7 @@ class ProviderSkillInventoryManager:
         *,
         timeout: float = 30.0,
         credential_gate: ProviderCredentialGate | None = None,
-        process_environment: Callable[[str, str], ProviderProcessEnvironment] | None = None,
+        process_environment: Callable[[LoginKey], ProviderProcessEnvironment] | None = None,
         accounts: ProviderAccounts | None = None,
     ) -> None:
         self.store = store
@@ -113,7 +114,7 @@ class ProviderSkillInventoryManager:
         # The launcher's environment builder, so a Claude skill probe runs on
         # the same stored token as a turn.
         self.process_environment = process_environment or (
-            lambda _provider, _host: ProviderProcessEnvironment()
+            lambda _key: ProviderProcessEnvironment()
         )
         self._lock = threading.Lock()
         self._pending_refreshes: dict[tuple[str, str, str], _PendingRefresh] = {}
@@ -160,11 +161,7 @@ class ProviderSkillInventoryManager:
         if owns_refresh:
             try:
                 try:
-                    if (
-                        not readiness.installed
-                        or not readiness.authenticated
-                        or not readiness.binary_path
-                    ):
+                    if not readiness.installed or not readiness.binary_path:
                         raise ValueError(
                             readiness.reason or "Provider is not ready for skill discovery."
                         )
@@ -174,6 +171,13 @@ class ProviderSkillInventoryManager:
                         )
                     if not readiness.version:
                         raise ValueError("Provider did not report a version during readiness.")
+
+                    if self.accounts is not None:
+                        self._probe_login(provider, host)
+                    elif not readiness.authenticated:
+                        raise ValueError(
+                            readiness.reason or "Provider is not ready for skill discovery."
+                        )
 
                     profile = profile_for(provider)
                     probe = profile.skill_probe(readiness.binary_path)
@@ -342,6 +346,28 @@ class ProviderSkillInventoryManager:
                 if pending.deadline <= deadline:
                     return False
 
+    def _probe_login(self, provider: str, host: str) -> LoginKey:
+        """Choose a healthy shared credential independently of machine readiness."""
+        key = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        if self.accounts is not None:
+            candidates = sorted(
+                self.store.provider_logins(provider, host),
+                key=lambda row: (row.login_id != MACHINE_LOGIN_ID, row.added_at or ""),
+            )
+            shared = [
+                LoginKey(provider, host, row.login_id)
+                for row in candidates
+                if row.member_id is None
+                and not row.draining_since
+                and self.accounts.refusal(LoginKey(provider, host, row.login_id)) is None
+            ]
+            if not shared:
+                raise ValueError(
+                    self.accounts.refusal(key) or "No usable shared sign-in for skill inventory."
+                )
+            key = shared[0]
+        return key
+
     def _run_probe(
         self,
         host: str,
@@ -349,11 +375,12 @@ class ProviderSkillInventoryManager:
         *,
         provider: str,
     ) -> object:
-        with self.credential_gate.hold_blocking(provider, host):
-            if self.accounts is not None and (reason := self.accounts.refusal(provider, host)):
+        key = self._probe_login(provider, host)
+        with self.credential_gate.hold_blocking(key):
+            if self.accounts is not None and (reason := self.accounts.refusal(key)):
                 raise ValueError(reason)
-            generation = self.store.provider_login_state(provider, host).generation
-            environment = self.process_environment(provider, host)
+            generation = self.store.provider_login_state(key).generation
+            environment = self.process_environment(key)
             env = environment.local_env if not host else None
             command = probe.command
             if probe.protocol == "jsonl":
@@ -372,7 +399,7 @@ class ProviderSkillInventoryManager:
                     env=env,
                 )
                 self._observe_failure(
-                    provider, host, generation, profile_for(provider).probe_failure_evidence(result)
+                    key, generation, profile_for(provider).probe_failure_evidence(result)
                 )
                 if result.returncode:
                     detail = result.stderr.strip() or f"skill probe exited {result.returncode}"
@@ -382,21 +409,22 @@ class ProviderSkillInventoryManager:
                 arguments,
                 requests=probe.messages,
                 env=env,
-                provider=provider,
-                host=host,
+                key=key,
                 generation=generation,
             )
 
-    def _observe_failure(self, provider: str, host: str, generation: int, evidence: str) -> None:
+    def _observe_failure(self, key: LoginKey, generation: int, evidence: str) -> None:
         if self.accounts is not None:
             failed = self.accounts.observe_failure(
-                provider, host, generation=generation, evidence=evidence, source="probe"
+                key,
+                generation=generation,
+                evidence=evidence,
+                source="probe",
             )
         else:
             failed = record_provider_failure(
                 self.store,
-                provider,
-                host,
+                key,
                 generation=generation,
                 evidence=evidence,
                 source="probe",
@@ -410,8 +438,7 @@ class ProviderSkillInventoryManager:
         *,
         requests: tuple[dict[str, object], ...],
         env: dict[str, str] | None = None,
-        provider: str,
-        host: str,
+        key: LoginKey,
         generation: int,
     ) -> object:
         started_at = time.monotonic()
@@ -449,8 +476,7 @@ class ProviderSkillInventoryManager:
                         messages,
                         request_id=request_id,
                         deadline=deadline,
-                        provider=provider,
-                        host=host,
+                        key=key,
                         generation=generation,
                     )
             return response
@@ -476,8 +502,7 @@ class ProviderSkillInventoryManager:
         *,
         request_id: object,
         deadline: float,
-        provider: str,
-        host: str,
+        key: LoginKey,
         generation: int,
     ) -> object:
         while True:
@@ -494,12 +519,12 @@ class ProviderSkillInventoryManager:
                 value = json.loads(line)
             except json.JSONDecodeError:
                 # The merged pipe carries plain provider/SSH diagnostics too.
-                self._observe_failure(provider, host, generation, line)
+                self._observe_failure(key, generation, line)
                 continue
-            evidence = profile_for(provider).probe_failure_evidence(
+            evidence = profile_for(key.provider).probe_failure_evidence(
                 subprocess.CompletedProcess([], 0, line, "")
             )
-            self._observe_failure(provider, host, generation, evidence)
+            self._observe_failure(key, generation, evidence)
             if not isinstance(value, dict) or value.get("id") != request_id:
                 continue
             if "error" in value:

@@ -118,6 +118,9 @@ test("a launch is refused for a missing login, and a Work-like one for a failed 
   assert.equal(launchProviderReady(withReadiness(workFailed), value), true);
   assert.equal(launchProviderReady(withReadiness(workFailed), value, true), false);
   assert.equal(launchProviderReady(withReadiness(ready), value, true), true);
+  // A continued session keeps its bound login; only the server can refuse it.
+  assert.equal(launchProviderReady(withReadiness({ installed: true }), value, false, true), true);
+  assert.equal(launchProviderReady(withReadiness({ installed: false }), value, false, true), false);
 });
 
 test("the provider re-check consumes the visible App-owned rejection", async () => {

@@ -14,8 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
-from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
@@ -174,16 +173,21 @@ async def stream_episode_report_run(
         inputs_path = _inputs_path(stage)
 
         while True:
-            if reason := account_login_refusal(
-                execution.store,
-                ProviderCredentialStore.for_data_dir(execution.store.path.parent),
+            accounts = ProviderAccounts.for_store(execution.store)
+            resolved, _ = accounts.resolve_login(
                 request.provider,
                 stage.execution_host,
-            ):
+                turn.episode.authorized_by.user_id if turn.episode.authorized_by else None,
+                bound_login=accounts.bound_login(
+                    request.provider, stage.execution_host, request.session_id
+                ),
+            )
+            if isinstance(resolved, LoginRefusal):
+                reason = resolved.detail
                 # The hidden allocation is durable; a credential block spends no
                 # new report attempt and leaves its existing wrap-up for recovery.
                 execution.store.fail_agent_task(
-                    execution.operation_id, reason, failure_kind="provider_auth"
+                    execution.operation_id, reason, failure_kind=resolved.failure_kind
                 )
                 yield _sse(AgentEvent(event="error", text=reason))
                 return
@@ -855,14 +859,16 @@ def _settle_provider_auth_failure(
     )
     if auth_error is None:
         return None
-    record_provider_failure(
-        execution.store,
-        request.provider,
-        execution_host,
-        generation=execution.login_generation,
-        evidence=auth_error,
-        source="report",
-    )
+    # A recorded result recovered after restart has no in-memory generation
+    # capture. Park it, but never fence a credential verified since its launch.
+    if execution.login_key is not None:
+        record_provider_failure(
+            execution.store,
+            execution.login_key,
+            generation=execution.login_generation,
+            evidence=auth_error,
+            source="report",
+        )
     execution.store.record_episode_report_attempt_error(
         attempt.attempt_id, auth_error, provider_auth=True
     )

@@ -11,6 +11,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.providers import ModelChoice
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
+from rcp.storage.models import LoginKey
 from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_for_task
@@ -220,20 +221,16 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     readiness_calls: list[tuple[str, str, str | None, bool]] = []
 
     def unreachable_readiness(
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
+        login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((provider, host, binary, refresh))
+        readiness_calls.append((login.provider, login.host, binary, refresh))
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=False,
             authenticated=False,
             binary_path=binary,
             path_state="unreachable",
-            reason=f"{host} is unreachable, so {binary} could not be checked.",
+            reason=f"{login.host} is unreachable, so {binary} could not be checked.",
         )
 
     monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
@@ -265,20 +262,16 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     readiness_calls.clear()
 
     def unauthenticated_readiness(
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
+        login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((provider, host, binary, refresh))
+        readiness_calls.append((login.provider, login.host, binary, refresh))
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=False,
             binary_path=binary,
             path_state="resolved",
-            reason=f"{provider} is not authenticated on {host}.",
+            reason=f"{login.provider} is not authenticated on {login.host}.",
         )
 
     monkeypatch.setattr(service.launcher, "readiness", unauthenticated_readiness)
@@ -309,15 +302,11 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     tasks.stream = recovered_stream
 
     def ready(
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
+        login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((provider, host, binary, refresh))
+        readiness_calls.append((login.provider, login.host, binary, refresh))
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             binary_path=binary,
@@ -465,8 +454,8 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
     monkeypatch.setattr(
         service.launcher,
         "readiness",
-        lambda provider, *, host="", binary=None, refresh=False: ProviderReadiness(
-            provider=provider,
+        lambda login, *, binary=None, refresh=False: ProviderReadiness(
+            provider=login.provider,
             installed=True,
             authenticated=True,
             models=[ModelChoice(id="reviewer", label="Reviewer", reasoning=["medium", "xhigh"])],

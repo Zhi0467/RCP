@@ -1,72 +1,169 @@
 import type {
-  ProviderCredentialSummary,
   ProviderLoginAccount,
+  ProviderLoginSettingValue,
   ProviderLoginState,
-  ProviderSignInStatus,
 } from "../core/types";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** One of a member's two groups: their own login, or the machine's shared logins. */
+export type Tray = "own" | "shared";
 
-/** The execution account as a human names it, with the project machines that use it. */
-export function accountLabel(
-  account: Pick<ProviderLoginAccount, "host" | "machines">,
-  spaceKind: "personal" | "team",
-): string {
-  const where = account.host || (spaceKind === "team" ? "Team server" : "Local machine");
-  const aliases = account.machines.filter((alias) => alias !== account.host);
-  return aliases.length ? `${where} (${aliases.join(", ")})` : where;
+/** How one stored setting draws: tray order, switches, and what Swap would store. */
+export interface TrayLayout {
+  order: [Tray, Tray];
+  on: Record<Tray, boolean>;
+  /** The only group that is on; its switch cannot turn off. */
+  locked: Tray | null;
+  /** The value Swap stores; null when one group is on and Swap is disabled. */
+  swap: ProviderLoginSettingValue | null;
 }
 
-/** How a stored credential stands; any expiry is an estimate. */
-export function tokenNote(token: ProviderCredentialSummary, now: Date): string {
-  if (!token.estimated_expiry_at)
-    return `Token saved by ${token.pasted_by}, ${token.verified_at ? "verified" : "not verified yet"}.`;
-  const expiry = new Date(token.estimated_expiry_at);
-  const daysLeft = Math.floor((expiry.getTime() - now.getTime()) / DAY_MS);
-  const verified = token.verified_at ? "verified" : "not verified yet";
-  if (daysLeft < 0) {
-    return `Setup token saved by ${token.pasted_by}, ${verified}; its estimated lifetime ended. Paste a new one if turns fail.`;
-  }
-  return `Setup token saved by ${token.pasted_by}, ${verified}; expected to last about ${daysLeft} more days.`;
+const LAYOUTS: Record<ProviderLoginSettingValue, TrayLayout> = {
+  own_then_shared: {
+    order: ["own", "shared"],
+    on: { own: true, shared: true },
+    locked: null,
+    swap: "shared_then_own",
+  },
+  shared_then_own: {
+    order: ["shared", "own"],
+    on: { own: true, shared: true },
+    locked: null,
+    swap: "own_then_shared",
+  },
+  own: { order: ["own", "shared"], on: { own: true, shared: false }, locked: "own", swap: null },
+  shared: {
+    order: ["shared", "own"],
+    on: { own: false, shared: true },
+    locked: "shared",
+    swap: null,
+  },
+};
+
+export function trayLayout(setting: ProviderLoginSettingValue): TrayLayout {
+  return LAYOUTS[setting];
 }
 
-/** The one line a member reads while a device-code sign-in runs or after it ends. */
-export function signInNote(status: ProviderSignInStatus): string {
-  if (status.state === "succeeded") return "Signed in and verified with one authenticated request.";
-  if (status.state === "failed")
-    return status.detail ? `Sign-in failed: ${status.detail}` : "Sign-in failed.";
-  if (status.user_code && status.verification_url) {
-    return "Open the link below, sign in there, and enter this code. This page finishes on its own.";
-  }
-  return "Asking the provider for a device code…";
+/**
+ * The value a switch stores, or null when it would leave both groups off. Turning
+ * the other group back on stores "the group that is on, then the other".
+ */
+export function switchedSetting(
+  setting: ProviderLoginSettingValue,
+  tray: Tray,
+  on: boolean,
+): ProviderLoginSettingValue | null {
+  const layout = LAYOUTS[setting];
+  if (layout.on[tray] === on) return setting;
+  if (!on) return layout.locked === tray ? null : tray === "own" ? "shared" : "own";
+  return tray === "own" ? "shared_then_own" : "own_then_shared";
 }
 
-/** One sentence that says what a signed-out account needs, without naming internals. */
-export function signedOutNote(state: {
-  label?: string;
+export type CardState = "draining" | "signing_in" | "signed_out" | "limited" | "ready";
+
+/** The one state a sign-in card shows: Draining, Signing in, Signed out, Limited, Ready. */
+export function cardState(
+  row: Pick<ProviderLoginAccount, "draining_since" | "sign_in" | "state" | "limited_at">,
+): CardState {
+  if (row.draining_since) return "draining";
+  if (row.sign_in?.state === "pending") return "signing_in";
+  if (row.state === "signed_out") return "signed_out";
+  if (row.limited_at) return "limited";
+  return "ready";
+}
+
+/** A device code is shown to the member who started the sign-in, never to anyone else. */
+export function showsDeviceCode(
+  signIn: ProviderLoginAccount["sign_in"],
+  viewerUserId: string | null,
+): boolean {
+  return Boolean(
+    signIn &&
+    viewerUserId &&
+    signIn.started_by === viewerUserId &&
+    signIn.user_code &&
+    signIn.verification_url,
+  );
+}
+
+/** One provider's logins on one host, split the way the Sign-ins panel draws them. */
+export interface ProviderSignIns {
   provider: string;
-  host: string;
-  detail: string | null;
-}): string {
-  const reason = state.detail ? ` ${state.detail.replace(/\.*$/, "")}.` : "";
-  return `${signedOutSummary(state)}.${reason}`;
+  label: string;
+  managed: boolean;
+  /** The viewer's own login. */
+  own: ProviderLoginAccount | null;
+  /** The machine sign-in first, then added shared logins in the order listed. */
+  shared: ProviderLoginAccount[];
+  /** Other members' own logins. */
+  members: ProviderLoginAccount[];
 }
 
-/** The one-line form a phone shows until the notice is expanded. */
-export function signedOutSummary(state: {
-  label?: string;
-  provider: string;
-  host: string;
-}): string {
-  const named = state.label ?? state.provider;
-  const provider = named.charAt(0).toUpperCase() + named.slice(1);
-  return `${provider} is signed out${state.host ? ` on ${state.host}` : ""}`;
+export function signInsForHost(
+  rows: readonly ProviderLoginAccount[],
+  host: string,
+  viewerUserId: string | null,
+): ProviderSignIns[] {
+  const byProvider = new Map<string, ProviderSignIns>();
+  for (const row of rows) {
+    if (row.host !== host) continue;
+    let entry = byProvider.get(row.provider);
+    if (!entry) {
+      entry = {
+        provider: row.provider,
+        label: row.label,
+        managed: row.managed,
+        own: null,
+        shared: [],
+        members: [],
+      };
+      byProvider.set(row.provider, entry);
+    }
+    if (row.kind === "shared") entry.shared.push(row);
+    else if (viewerUserId && row.owner_user_id === viewerUserId) entry.own = row;
+    else entry.members.push(row);
+  }
+  for (const entry of byProvider.values()) {
+    entry.shared.sort((a, b) => Number(b.login_id === "") - Number(a.login_id === ""));
+  }
+  return [...byProvider.values()];
 }
 
-type SignOut = Pick<ProviderLoginState, "provider" | "host" | "generation">;
+/** Members row: n other members signed in on their own login, of m other members. */
+export function membersSignedIn(
+  members: readonly Pick<ProviderLoginState, "state">[],
+  otherMemberCount: number,
+): { signedIn: number; of: number } {
+  return {
+    signedIn: members.filter((row) => row.state === "signed_in").length,
+    of: otherMemberCount,
+  };
+}
 
-// One sign-out of one account. Only a sign-in or sign-out starts a new
+/** The notice row for another member's own login names them and offers nothing. */
+export function waitsOnOtherMember(
+  row: Pick<ProviderLoginState, "kind" | "owner_user_id">,
+  viewerUserId: string | null,
+): boolean {
+  return row.kind === "own" && row.owner_user_id !== viewerUserId;
+}
+
+type LoginKey = Pick<ProviderLoginState, "provider" | "host"> & { login_id: string | null };
+
+export const loginKey = (row: LoginKey) => `${row.provider}:${row.host}:${row.login_id}`;
+
+export const sameLogin = (a: LoginKey, b: LoginKey) =>
+  a.provider === b.provider && a.host === b.host && a.login_id === b.login_id;
+
+type SignOut = LoginKey & Pick<ProviderLoginState, "generation">;
+
+// One sign-out of one login. Only a sign-in or sign-out starts a new
 // generation; another failure of the same sign-out keeps it, so a dismissal holds.
-export const signOutKey = (state: SignOut) => `${state.provider}:${state.host}:${state.generation}`;
+export const signOutKey = (state: SignOut) => `${loginKey(state)}:${state.generation}`;
 export const loginNoticeDismissKey = (state: SignOut) =>
   `login-notice-dismissed:${signOutKey(state)}`;
+
+/** A provider id as a person reads it when the row carries no label. */
+export function providerLabel(row: Pick<ProviderLoginState, "label" | "provider">): string {
+  const named = row.label ?? row.provider;
+  return named.charAt(0).toUpperCase() + named.slice(1);
+}

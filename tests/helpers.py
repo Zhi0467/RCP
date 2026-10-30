@@ -258,9 +258,16 @@ def write_local_test_manifest(directory: Path) -> Path:
 
 def store_test_claude_token(store: AppStore, host: str = "") -> None:
     """Give fake Claude execution an explicit managed credential."""
+    # Imported here: release-update bases import this module with older `rcp`.
+    from rcp.storage.models import MACHINE_LOGIN_ID
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
-        "claude", host, "test-setup-token", member_id="fixture-member", now=store.now()
+        "claude",
+        host,
+        "test-setup-token",
+        member_id="fixture-member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
 
 

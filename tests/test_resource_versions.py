@@ -246,6 +246,7 @@ _EXEMPT_TABLES = {
     "project_transfer_requests": "transfer",
     "project_transfer_restore_reentries": "transfer",
     "project_transfer_uploads": "transfer",
+    "provider_login_assignments": "launch selection clocks; deliberately no view invalidation",
     "resource_deadlines": "watermarks",
     "resource_versions": "watermarks",
     "resource_watermark_epoch": "watermarks",
@@ -284,6 +285,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
         | set(_EPISODE_TABLES)
         | set(_TASK_TABLES)
         | {
+            "provider_login_settings",
             "graph_runs",
             "graph_branches",
             "bulletin_posts",
@@ -315,6 +317,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
                 "SELECT name, tbl_name FROM sqlite_master WHERE type='trigger'"
             )
         }
+        assert "provider_login_assignments" not in triggers.values()
         for table in owners:
             for event in ("insert", "update", "delete"):
                 assert triggers[f"resource_{table}_{event}"] == table

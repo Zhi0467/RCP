@@ -135,6 +135,7 @@ class AppStoreBase:
         (62, "episode_question_versions_v1"),
         (63, "paper_live_v1"),
         (64, "consolidation_targets_v1"),
+        (65, "per_member_provider_logins_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -967,6 +968,14 @@ class AppStoreBase:
             version=64,
             name="consolidation_targets_v1",
             migration=migrate_consolidation_targets,
+        )
+        from rcp.storage.provider_logins import migrate_per_member_provider_logins
+
+        self._run_storage_schema_migration(
+            connection,
+            version=65,
+            name="per_member_provider_logins_v1",
+            migration=migrate_per_member_provider_logins,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

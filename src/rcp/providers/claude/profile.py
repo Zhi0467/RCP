@@ -281,7 +281,8 @@ class ClaudeProfile(ProviderProfile):
 
         return ClaudeAuthentication()
 
-    # No credential failure signatures have been observed for Claude.
+    login_credential_files = ("setup-token", "setup-token.json")
+    remote_login_credential_files = (".config/rcp/logins/{login_id}/claude-setup-token",)
     id = "claude"
     label = "Claude"
     usage_profile = "claude.query.v1"

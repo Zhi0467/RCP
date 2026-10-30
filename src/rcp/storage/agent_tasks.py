@@ -153,6 +153,11 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "graph_pass_baseline",
     "question_answer_offered",
     "question_answer_acknowledged",
+    # Login binding evidence: a Codex session resumes only in its login's home,
+    # and a limit retry or inherited lineage must survive a restart.
+    "provider_runtime_selected",
+    "provider_login_lineage",
+    "provider_login_limit_retry",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
@@ -1220,12 +1225,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
-                parent_operation_id, runtime_id, native_session_id, stage_host,
+                parent_operation_id, runtime_id, native_session_id, login_id, stage_host,
                 history_only, stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
                 authorized_user_id, authorized_display_name, visible, failure_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -1246,6 +1251,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.parent_operation_id,
                 record.runtime_id,
                 record.native_session_id,
+                record.login_id,
                 record.stage_host,
                 int(record.history_only),
                 record.stage_root,

@@ -40,6 +40,9 @@ import type {
   ProjectDeletionPreview,
   ProviderId,
   ProviderLoginAccount,
+  ProviderLoginSetting,
+  ProviderLoginSettings,
+  ProviderLoginSettingValue,
   ProviderLoginState,
   ProviderSignInStatus,
   ProviderResumeSummary,
@@ -900,66 +903,103 @@ export function loadProviderLogins(): Promise<ProviderLoginAccount[]> {
   return api("/api/providers/logins");
 }
 
-export function startProviderSignIn(provider: string, host: string): Promise<ProviderSignInStatus> {
-  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-in`, {
-    method: "POST",
-    body: JSON.stringify({ host }),
+const providerLoginsPath = (provider: string, route: string) =>
+  `/api/providers/${encodeURIComponent(provider)}/logins/${route}`;
+
+const postProviderLogin = <T>(provider: string, route: string, body: object): Promise<T> =>
+  api(providerLoginsPath(provider, route), { method: "POST", body: JSON.stringify(body) });
+
+/** Add a shared login, or the caller's own; Codex answers with a started device sign-in. */
+export function addProviderLogin(
+  provider: string,
+  host: string,
+  kind: "shared" | "own",
+): Promise<{
+  login_id: string;
+  state: ProviderLoginState;
+  sign_in: ProviderSignInStatus | null;
+}> {
+  return postProviderLogin(provider, "add", { host, kind });
+}
+
+export function removeProviderLogin(
+  provider: string,
+  host: string,
+  loginId: string,
+): Promise<{
+  state: ProviderLoginState;
+  draining_since: string | null;
+  removed_at: string | null;
+  bound_running: number;
+}> {
+  return postProviderLogin(provider, "remove", { host, login_id: loginId });
+}
+
+export function loadProviderLoginSettings(): Promise<ProviderLoginSettings> {
+  return api("/api/providers/logins/settings");
+}
+
+export function saveProviderLoginSetting(
+  provider: string,
+  host: string,
+  setting: ProviderLoginSettingValue,
+): Promise<ProviderLoginSetting & { resumed: ProviderResumeSummary }> {
+  return api(providerLoginsPath(provider, "setting"), {
+    method: "PUT",
+    body: JSON.stringify({ host, setting }),
   });
+}
+
+export function startProviderSignIn(
+  provider: string,
+  host: string,
+  loginId: string,
+): Promise<ProviderSignInStatus> {
+  return postProviderLogin(provider, "sign-in", { host, login_id: loginId });
 }
 
 export function providerSignInStatus(
   provider: string,
-  loginId: string,
+  attemptId: string,
 ): Promise<ProviderSignInStatus> {
-  return api(
-    `/api/providers/${encodeURIComponent(provider)}/logins/sign-in/${encodeURIComponent(loginId)}`,
-  );
+  return api(providerLoginsPath(provider, `sign-in/${encodeURIComponent(attemptId)}`));
 }
 
 export function cancelProviderSignIn(
   provider: string,
-  loginId: string,
+  attemptId: string,
 ): Promise<ProviderSignInStatus> {
-  return api(
-    `/api/providers/${encodeURIComponent(provider)}/logins/sign-in/${encodeURIComponent(
-      loginId,
-    )}/cancel`,
-    { method: "POST" },
-  );
+  return api(providerLoginsPath(provider, `sign-in/${encodeURIComponent(attemptId)}/cancel`), {
+    method: "POST",
+  });
 }
 
 export function saveProviderToken(
   provider: string,
   host: string,
+  loginId: string,
   token: string,
 ): Promise<{ state: ProviderLoginState; resumed: ProviderResumeSummary }> {
-  return api(`/api/providers/${encodeURIComponent(provider)}/logins/token`, {
-    method: "POST",
-    body: JSON.stringify({ host, token }),
-  });
+  return postProviderLogin(provider, "token", { host, login_id: loginId, token });
 }
 
 export function signOutProvider(
   provider: string,
   host: string,
+  loginId: string,
 ): Promise<{ state: ProviderLoginState }> {
-  return api(`/api/providers/${encodeURIComponent(provider)}/logins/sign-out`, {
-    method: "POST",
-    body: JSON.stringify({ host }),
-  });
+  return postProviderLogin(provider, "sign-out", { host, login_id: loginId });
 }
 
 export function verifyProviderLogin(
   provider: string,
   host: string,
+  loginId: string,
 ): Promise<{
   state: ProviderLoginState;
   resumed: ProviderResumeSummary;
 }> {
-  return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
-    method: "POST",
-    body: JSON.stringify({ host }),
-  });
+  return postProviderLogin(provider, "verify", { host, login_id: loginId });
 }
 
 export function loadServiceConnections(): Promise<ServiceConnections> {

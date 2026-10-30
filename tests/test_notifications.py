@@ -357,8 +357,10 @@ def test_proposal_and_reopened_attention_have_distinct_occurrences(manifest, tmp
 
 
 def test_wrapup_sign_in_changes_observation_without_changing_health(tmp_path, monkeypatch):
+    from rcp.agents.provider_accounts import LoginRefusal
     from rcp.api.episodes import serialize_episode
     from rcp.storage import AppStore
+    from rcp.storage.models import LoginKey
 
     from .test_episode_api_serialization import _begin_report, _branch_summary, _project
 
@@ -372,11 +374,15 @@ def test_wrapup_sign_in_changes_observation_without_changing_health(tmp_path, mo
     _begin_report(store, episode, root, ending="completed")
     blocked = [False]
 
-    def refusal(*args):
-        return "blocked" if blocked[0] else None
+    def resolve_login(_accounts, provider, host, member_id, **kwargs):
+        assert member_id == episode.authorized_by.user_id
+        if blocked[0]:
+            return LoginRefusal(source="shared", detail="blocked"), None
+        return LoginKey(provider, host, ""), None
 
-    monkeypatch.setattr("rcp.agents.provider_accounts.account_login_refusal", refusal)
-    monkeypatch.setattr("rcp.api.episodes.account_login_refusal", refusal)
+    monkeypatch.setattr(
+        "rcp.agents.provider_accounts.ProviderAccounts.resolve_login", resolve_login
+    )
     observed_at = store.now()
     monkeypatch.setattr(store, "now", lambda: observed_at)
     sender.run_pass()

@@ -1750,7 +1750,13 @@ def reconcile_chat_question_answers(
                     # other path; a refusal leaves the answer unclaimed.
                     background_tasks.admit_provider_task(
                         origin_task.project_id,
-                        RunRequest.model_validate(origin_task.request),
+                        RunRequest.model_validate(
+                            {
+                                **origin_task.request,
+                                "session_id": question.origin.native_session_id,
+                            }
+                        ),
+                        authorized_by=origin_task.authorized_by,
                         execution_host=(
                             (origin_task.stage_host or "") if origin_task.stage_root else None
                         ),

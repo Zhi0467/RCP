@@ -1,5 +1,6 @@
 import type { ModelChoice, ProviderReadiness } from "../core/types";
-import type { ProviderLoginState } from "../core/types";
+import type { ProjectLoginNotice, ProviderLoginState } from "../core/types";
+import { sameLogin } from "./providerLoginsModel.ts";
 
 /**
  * Turning the backend provider registry into select options.
@@ -122,16 +123,27 @@ export function modelChange(
 
 /**
  * Overlay the live account states on the project's own account list. The
- * project snapshot says which accounts this project uses; the live list says
- * what each is now. Nothing outside the project's accounts is shown.
+ * project snapshot says which logins this project uses; the live list says
+ * what each is now, matched by provider, host and login. Nothing outside the
+ * project's logins is shown.
  */
 export function mergeProviderLogins(
-  projectLogins: ProviderLoginState[],
+  projectLogins: ProjectLoginNotice[],
   live: ProviderLoginState[] | null,
-): ProviderLoginState[] {
+): ProjectLoginNotice[] {
   if (!live) return projectLogins;
+  // A missing own sign-in has no id yet; once added, it is the owner's own row.
+  const added = (entry: ProjectLoginNotice) =>
+    entry.login_id === null
+      ? live.find(
+          (state) =>
+            state.provider === entry.provider &&
+            state.host === entry.host &&
+            state.kind === "own" &&
+            state.owner_user_id === entry.owner_user_id,
+        )
+      : undefined;
   return projectLogins.map(
-    (entry) =>
-      live.find((state) => state.provider === entry.provider && state.host === entry.host) ?? entry,
+    (entry) => live.find((state) => sameLogin(state, entry)) ?? added(entry) ?? entry,
   );
 }

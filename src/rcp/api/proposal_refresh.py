@@ -34,6 +34,7 @@ from rcp.runs.proposal_refresh import (
     proposal_refresh_message,
     proposal_refresh_skill_ids,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -98,8 +99,7 @@ def refresh_proposal(
             }
             machine = service.manifest.machine_map[profile.run_on]
             readiness = service.launcher.cached_readiness(
-                profile.provider,
-                host=machine.host,
+                LoginKey(profile.provider, machine.host, MACHINE_LOGIN_ID),
                 binary=service.launcher.provider_binary(profile.provider, machine.host),
             )
             efforts = next(

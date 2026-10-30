@@ -20,6 +20,7 @@ from rcp.providers import (
     profile_for,
     runtime_label,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -95,21 +96,23 @@ def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None
     launcher = AgentLauncher()
     calls: list[tuple[str, str, str | None]] = []
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
-        calls.append((provider, host, binary))
-        return _ready_capability(provider, binary=binary or "/opt/agents/codex")
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
+        calls.append((login.provider, login.host, binary))
+        return _ready_capability(login.provider, binary=binary or "/opt/agents/codex")
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
 
-    first = launcher.readiness("codex", binary="/opt/agents/codex")
-    second = launcher.readiness("codex", binary="/opt/agents/codex")
+    first = launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
+    second = launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
     refreshed = launcher.readiness(
-        "codex",
-        binary="/opt/agents/codex",
-        refresh=True,
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex", refresh=True
     )
-    launcher.invalidate_readiness("codex", binary="/opt/agents/codex")
-    after_invalidation = launcher.readiness("codex", binary="/opt/agents/codex")
+    launcher.invalidate_readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+    )
+    after_invalidation = launcher.readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+    )
 
     assert first == second == refreshed == after_invalidation
     assert calls == [
@@ -125,19 +128,17 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
     release = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         entered.set()
         assert release.wait(timeout=2)
-        return _ready_capability(provider, binary=binary or "/opt/agents/codex")
+        return _ready_capability(login.provider, binary=binary or "/opt/agents/codex")
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary="/opt/agents/codex",
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
         )
         assert entered.wait(timeout=1)
         # Prove the second caller joined the in-flight probe: without this it can
@@ -156,9 +157,7 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
 
         in_flight.completed = _JoinedEvent()
         second = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary="/opt/agents/codex",
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
         )
         assert joined.wait(timeout=2)
         release.set()
@@ -173,27 +172,27 @@ def test_invalidation_during_probe_does_not_restore_stale_capability(monkeypatch
     release = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if calls == 1:
             entered.set()
             assert release.wait(timeout=2)
-        return _ready_capability(provider, binary=binary or "/opt/agents/codex")
+        return _ready_capability(login.provider, binary=binary or "/opt/agents/codex")
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     with ThreadPoolExecutor(max_workers=1) as executor:
         first = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary="/opt/agents/codex",
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
         )
         assert entered.wait(timeout=1)
-        launcher.invalidate_readiness("codex", binary="/opt/agents/codex")
+        launcher.invalidate_readiness(
+            LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+        )
         release.set()
         assert first.result().authenticated is True
 
-    launcher.readiness("codex", binary="/opt/agents/codex")
+    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
     assert calls == 2
 
 
@@ -202,17 +201,17 @@ def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
     calls = 0
     ready = True
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if ready:
             return _ready_capability(
-                provider,
+                login.provider,
                 binary=binary or "/opt/agents/codex",
                 path_state="resolved" if binary else "unconfigured",
             )
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=False,
             binary_path=binary,
@@ -221,28 +220,34 @@ def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
 
-    launcher.readiness("codex")
-    launcher.readiness("codex")
+    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
     assert calls == 1
 
     ready = False
-    first_failure = launcher.readiness("claude", binary="/opt/agents/claude")
-    second_failure = launcher.readiness("claude", binary="/opt/agents/claude")
+    first_failure = launcher.readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+    )
+    second_failure = launcher.readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+    )
     assert first_failure == second_failure
     assert calls == 2
 
     ready = True
     refreshed = launcher.readiness(
-        "claude",
-        binary="/opt/agents/claude",
-        refresh=True,
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude", refresh=True
     )
     assert refreshed.authenticated is True
     assert calls == 3
 
     ready = False
-    launcher.invalidate_readiness("claude", binary="/opt/agents/claude")
-    after_invalidation = launcher.readiness("claude", binary="/opt/agents/claude")
+    launcher.invalidate_readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+    )
+    after_invalidation = launcher.readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+    )
     assert after_invalidation.authenticated is False
     assert calls == 4
 
@@ -470,7 +475,7 @@ def test_failed_version_command_does_not_publish_stderr_as_a_version(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness("codex")
+    readiness = AgentLauncher().readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
 
     assert readiness.installed is True
     assert readiness.authenticated is True
@@ -505,7 +510,7 @@ def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness("claude")
+    readiness = AgentLauncher().readiness(LoginKey("claude", "", MACHINE_LOGIN_ID))
 
     assert readiness.binary_path == str(binary)
     assert readiness.installed is True
@@ -535,7 +540,7 @@ def test_local_provider_discovery_keeps_a_stable_symlink_path(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness("claude")
+    readiness = AgentLauncher().readiness(LoginKey("claude", "", MACHINE_LOGIN_ID))
 
     assert readiness.binary_path == str(command)
 
@@ -569,7 +574,9 @@ def test_stale_recorded_path_never_falls_back_to_path(
         lambda _provider: (_ for _ in ()).throw(AssertionError("PATH fallback is forbidden")),
     )
 
-    readiness = AgentLauncher().readiness("codex", binary="/missing/recorded/codex")
+    readiness = AgentLauncher().readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/missing/recorded/codex"
+    )
 
     assert readiness.path_state == "missing"
     assert readiness.binary_path == "/missing/recorded/codex"
@@ -582,7 +589,9 @@ def test_local_recorded_path_without_execute_permission_is_denied(tmp_path: Path
     binary.write_text("#!/bin/sh\n", encoding="utf-8")
     binary.chmod(0o644)
 
-    readiness = AgentLauncher().readiness("codex", binary=str(binary))
+    readiness = AgentLauncher().readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(binary)
+    )
 
     assert readiness.path_state == "denied"
     assert readiness.binary_path == str(binary)
@@ -593,7 +602,9 @@ def test_local_recorded_path_without_execute_permission_is_denied(tmp_path: Path
 def test_local_recorded_path_that_is_not_a_file_is_denied(tmp_path: Path) -> None:
     from rcp.agents.launcher import AgentLauncher
 
-    readiness = AgentLauncher().readiness("codex", binary=str(tmp_path))
+    readiness = AgentLauncher().readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(tmp_path)
+    )
 
     assert readiness.path_state == "denied"
     assert readiness.binary_path == str(tmp_path)
@@ -615,9 +626,7 @@ def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
     readiness = AgentLauncher().readiness(
-        "codex",
-        host="gpu.example",
-        binary="/opt/agent/bin/codex",
+        LoginKey("codex", "gpu.example", MACHINE_LOGIN_ID), binary="/opt/agent/bin/codex"
     )
 
     assert readiness.path_state == "resolved"
@@ -653,9 +662,7 @@ def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
     readiness = AgentLauncher().readiness(
-        "codex",
-        host="gpu.example",
-        binary="/opt/Agent Tools/codex",
+        LoginKey("codex", "gpu.example", MACHINE_LOGIN_ID), binary="/opt/Agent Tools/codex"
     )
 
     assert readiness.path_state == path_state
@@ -709,10 +716,16 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
     # the human to go install something on a machine that never answered.
     launcher = AgentLauncher()
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 255))
-    assert launcher.readiness("codex", host="offline").path_state == "unreachable"
+    assert (
+        launcher.readiness(LoginKey("codex", "offline", MACHINE_LOGIN_ID)).path_state
+        == "unreachable"
+    )
 
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 1))
-    assert launcher.readiness("codex", host="online").path_state == "unconfigured"
+    assert (
+        launcher.readiness(LoginKey("codex", "online", MACHINE_LOGIN_ID)).path_state
+        == "unconfigured"
+    )
 
     # Discovery that did not run at all is named as such, not as a missing install.
     monkeypatch.setattr(
@@ -722,7 +735,7 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
             [], 127, "", "bash: python3: command not found"
         ),
     )
-    broken = launcher.readiness("codex", host="no-python")
+    broken = launcher.readiness(LoginKey("codex", "no-python", MACHINE_LOGIN_ID))
     assert broken.path_state == "unconfigured" and not broken.installed
     assert (
         broken.reason

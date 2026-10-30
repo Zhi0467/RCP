@@ -16,6 +16,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AppStore
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport import (
     RemoteRunStage,
     StateMissing,
@@ -100,12 +101,12 @@ def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
         return launcher_module._ProbeNoVerdict(command, 255, "", "ssh could not start")
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
-    first = launcher.readiness("codex", host=HOST)
+    first = launcher.readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID))
     assert first.path_state == "unreachable" and not first.authenticated
     assert first.link_lost is ssh_ran
-    assert launcher.cached_readiness("codex", host=HOST) is None
+    assert launcher.cached_readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID)) is None
     probed = len(probes)
-    launcher.readiness("codex", host=HOST)
+    launcher.readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID))
     assert len(probes) > probed
 
 

@@ -250,59 +250,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
   }
 });
 
-test("a served login notice parks verification, shows failure, then clears after success", async () => {
-  const liveServer = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "error",
-    server: { host: "127.0.0.1", port: 0, hmr: false },
-  });
-  let browser;
-  try {
-    await liveServer.listen();
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
-    page.on("console", (message) => {
-      if (message.type() === "error" && !message.text().includes("409"))
-        errors.push(message.text());
-    });
-    let finishProbe;
-    let requests = 0;
-    await page.route("**/api/providers/codex/logins/verify", async (route) => {
-      requests += 1;
-      assert.deepEqual(route.request().postDataJSON(), { host: "" });
-      await new Promise((resolve) => {
-        finishProbe = resolve;
-      });
-      await route.fulfill(
-        requests === 1
-          ? { status: 409, json: { detail: "Please sign in again" } }
-          : { json: { state: { state: "signed_in", generation: 1 }, resumed: {} } },
-      );
-    });
-    await page.goto(
-      `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
-    );
-    await page.getByRole("button", { name: "Already signed in? Check again" }).click();
-    assert.equal(await page.getByRole("button", { name: "Checking…" }).isDisabled(), true);
-    finishProbe();
-    await page.getByRole("alert").waitFor();
-    assert.equal(await page.getByRole("alert").textContent(), "Please sign in again");
-    await page.getByRole("button", { name: "Already signed in? Check again" }).click();
-    await page.getByRole("button", { name: "Checking…" }).waitFor();
-    finishProbe();
-    await page.getByRole("status").waitFor({ state: "detached" });
-    assert.equal(requests, 2);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser?.close();
-    await liveServer.close();
-  }
-});
-
-test("a phone collapses the login notice to one line that expands to its full text and check", async () => {
+test("a served login notice is one row whose action opens its sign-ins, on a phone too", async () => {
   const liveServer = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
@@ -313,32 +261,37 @@ test("a phone collapses the login notice to one line that expands to its full te
     await liveServer.listen();
     browser = await chromium.launch({ headless: true });
     const errors = [];
-    const open = async (viewport) => {
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 1280, height: 800 },
+    ]) {
       const page = await browser.newPage({ viewport });
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
       await page.goto(
         `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/providerLogin.html`,
       );
-      await page.getByRole("status").waitFor();
-      return page;
-    };
-    const check = (page) => page.getByRole("button", { name: "Already signed in? Check again" });
-
-    const phone = await open({ width: 390, height: 844 });
-    const summary = phone.getByRole("button", { name: "Codex is signed out" });
-    assert.equal(await summary.getAttribute("aria-expanded"), "false");
-    assert.ok((await phone.getByRole("status").boundingBox()).height < 60);
-    assert.equal(await check(phone).isVisible(), false);
-    // The full explanation stays in the document while collapsed.
-    assert.match(await phone.getByRole("status").textContent(), /Provider logins/);
-    await summary.click();
-    assert.equal(await summary.getAttribute("aria-expanded"), "true");
-    assert.equal(await check(phone).isVisible(), true);
-    assert.equal(await phone.getByText(/Sign it in from Settings/).isVisible(), true);
-
-    const desktop = await open({ width: 1280, height: 800 });
-    assert.equal(await desktop.locator(".compact-notice-toggle").isVisible(), false);
-    assert.equal(await check(desktop).isVisible(), true);
+      const rows = page.locator("[data-login-notice]");
+      await rows.first().waitFor();
+      assert.deepEqual(
+        await rows.evaluateAll((items) => items.map((item) => item.dataset.loginNotice)),
+        ["open", "other-member"],
+      );
+      for (const row of await rows.all()) assert.ok((await row.boundingBox()).height < 60);
+      assert.equal(await page.locator("[data-login-notice-action]").count(), 1);
+      await page.locator('[data-login-notice-action="open-sign-ins"]').click();
+      assert.deepEqual(await page.evaluate(() => window.openedSignIns), [
+        { provider: "codex", host: "" },
+      ]);
+      const width = await page.evaluate(() => [
+        document.documentElement.scrollWidth,
+        document.documentElement.clientWidth,
+      ]);
+      assert.ok(width[0] <= width[1]);
+      await page.close();
+    }
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
@@ -378,14 +331,14 @@ test("an open space landing refreshes login notices with its Runs poll", async (
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/appearance.html`,
     );
     await firstLoad;
-    assert.equal(
-      await page.getByRole("button", { name: "Already signed in? Check again" }).count(),
-      0,
-    );
+    assert.equal(await page.locator("[data-login-notice]").count(), 0);
     states = [
       {
         provider: "codex",
         host: "",
+        login_id: "",
+        kind: "shared",
+        owner_user_id: null,
         state: "signed_out",
         generation: 0,
         changed_at: "2026-09-14T00:00:00Z",
@@ -394,10 +347,7 @@ test("an open space landing refreshes login notices with its Runs poll", async (
       },
     ];
     await page.evaluate(() => window.refreshSpaceRuns());
-    await page.getByRole("button", { name: "Already signed in? Check again" }).waitFor();
-    const timestamp = page.locator(".provider-login-notice time");
-    assert.equal(await timestamp.getAttribute("datetime"), states[0].changed_at);
-    assert.notEqual(await timestamp.textContent(), states[0].changed_at);
+    await page.locator('[data-login-notice="open"]').waitFor();
     assert.equal(requests, 2);
     assert.deepEqual(errors, []);
   } finally {

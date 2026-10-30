@@ -83,6 +83,8 @@ TRANSFER_GLOBAL_TABLES = frozenset(
     {
         "provider_skill_inventories",
         "provider_login_states",
+        "provider_login_assignments",
+        "provider_login_settings",
         "provider_readiness_snapshots",
         # Rebuildable per-server refresh state never travels with a project.
         "resource_versions",

@@ -116,6 +116,7 @@ def reconcile_experiment_question_answers(
             tasks.admit_provider_task(
                 record.project_id,
                 request,
+                authorized_by=record.authorized_by,
                 execution_host=(record.stage_host or "") if record.stage_root else None,
             )
             admitted = store.create_experiment_question_invocation(

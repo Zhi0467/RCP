@@ -42,6 +42,7 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
     ProjectRecord,
 )
+from rcp.storage.models import LoginKey
 from tests.helpers import signed_in_client
 
 
@@ -63,13 +64,12 @@ class _FakeLauncher:
 
     def readiness(
         self,
-        provider: str,
+        login: LoginKey,
         *,
-        host: str = "",
         binary: str | None = None,
         refresh: bool = False,
     ) -> ProviderReadiness:
-        self.readiness_calls.append((provider, host, binary, refresh))
+        self.readiness_calls.append((login.provider, login.host, binary, refresh))
         return self.readiness_result.model_copy(deep=True)
 
 

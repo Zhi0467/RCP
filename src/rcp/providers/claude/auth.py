@@ -20,6 +20,7 @@ from rcp.transport.ssh import ssh_arguments
 
 if TYPE_CHECKING:
     from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.storage.models import ProviderLoginStateRecord
 
 
 class ClaudeAuthentication(ProviderAuthentication):
@@ -47,6 +48,16 @@ class ClaudeAuthentication(ProviderAuthentication):
     # the signed-out notice read as two instructions.
     missing_credential_detail = "No Claude setup token is saved."
 
+    def token_path(self, login_id: str) -> str:
+        from rcp.agents.provider_environment import validate_login_id
+
+        validate_login_id(login_id)
+        return (
+            f"~/.config/rcp/logins/{login_id}/claude-setup-token"
+            if login_id
+            else self.remote_token_path
+        )
+
     def verification_succeeded(self, result: subprocess.CompletedProcess[str]) -> bool:
         from rcp.providers.claude.profile import ClaudeProfile
 
@@ -56,12 +67,21 @@ class ClaudeAuthentication(ProviderAuthentication):
             and not ClaudeProfile().probe_failure_evidence(output).strip()
         )
 
-    def credential_available(self, credentials: ProviderCredentialStore, host: str) -> bool:
-        return credentials.token(self.credential_namespace, host) is not None
+    def credential_available(
+        self,
+        credentials: ProviderCredentialStore,
+        host: str,
+        login_id: str,
+        *,
+        login_state: ProviderLoginStateRecord | None = None,
+    ) -> bool:
+        return credentials.token(self.credential_namespace, host, login_id) is not None
 
-    def credential_metadata(self, credentials: ProviderCredentialStore, host: str) -> dict | None:
-        record = credentials.token_record(self.credential_namespace, host)
-        if record is None or not self.credential_available(credentials, host):
+    def credential_metadata(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
+    ) -> dict | None:
+        record = credentials.token_record(self.credential_namespace, host, login_id)
+        if record is None or not self.credential_available(credentials, host, login_id):
             return None
         metadata = record.model_dump()
         try:
@@ -74,12 +94,12 @@ class ClaudeAuthentication(ProviderAuthentication):
         return metadata
 
     def process_environment(
-        self, credentials: ProviderCredentialStore, host: str
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
     ) -> ProviderProcessEnvironment:
         if host:
             return ProviderProcessEnvironment(
-                remote_prefix=self.remote_token_prefix()
-                if self.credential_available(credentials, host)
+                remote_prefix=self.remote_token_prefix(self.token_path(login_id))
+                if self.credential_available(credentials, host, login_id)
                 else None
             ).with_variables(self.process_variables, remote=True)
         environment = {
@@ -87,7 +107,7 @@ class ClaudeAuthentication(ProviderAuthentication):
             for name, value in os.environ.items()
             if name not in self.conflicting_variables
         }
-        token = credentials.token(self.credential_namespace, host)
+        token = credentials.token(self.credential_namespace, host, login_id)
         environment.pop(self.token_variable, None)
         if token:
             environment[self.token_variable] = token
@@ -118,9 +138,9 @@ class ClaudeAuthentication(ProviderAuthentication):
             "else printf '%s\\n' 'RCP managed credential is missing' >&2; exit 1; fi"
         )
 
-    def remote_token_placement_command(self) -> str:
+    def remote_token_placement_command(self, path: str | None = None) -> str:
         """Write the token read from stdin to the remote account, mode 0600 in a 0700 directory."""
-        path = self.remote_token_path
+        path = path or self.remote_token_path
         quoted = _quote_home_relative(path)
         directory = _quote_home_relative(str(Path(path).parent))
         temporary = quoted + ".tmp"
@@ -133,6 +153,7 @@ class ClaudeAuthentication(ProviderAuthentication):
         self,
         credentials: ProviderCredentialStore,
         host: str,
+        login_id: str,
         token: str,
         *,
         member_id: str,
@@ -144,23 +165,30 @@ class ClaudeAuthentication(ProviderAuthentication):
             token,
             member_id=member_id,
             now=now,
+            login_id=login_id,
         )
 
-    def prepare_verification(self, credentials: ProviderCredentialStore, host: str) -> None:
+    def prepare_verification(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
+    ) -> None:
         if host:
             self._remote(
                 host,
-                self.remote_token_placement_command(),
-                token=credentials.token(self.credential_namespace, host),
+                self.remote_token_placement_command(self.token_path(login_id)),
+                token=credentials.token(self.credential_namespace, host, login_id),
             )
 
-    def verified(self, credentials: ProviderCredentialStore, host: str, *, now: str) -> None:
-        credentials.mark_token_verified(self.credential_namespace, host, now=now)
+    def verified(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str, *, now: str
+    ) -> None:
+        credentials.mark_token_verified(self.credential_namespace, host, login_id, now=now)
 
-    def sign_out(self, credentials: ProviderCredentialStore, host: str, binary: str) -> None:
-        credentials.delete_token(self.credential_namespace, host)
+    def sign_out(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
+    ) -> None:
+        credentials.delete_token(self.credential_namespace, host, login_id)
         if host:
-            self._remote(host, f"rm -f {_quote_home_relative(self.remote_token_path)}")
+            self._remote(host, f"rm -f {_quote_home_relative(self.token_path(login_id))}")
 
     @staticmethod
     def _remote(host: str, command: str, *, token: str | None = None) -> None:

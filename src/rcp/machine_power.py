@@ -22,8 +22,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rcp.agents.provider_accounts import account_login_refusal
-from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.config import load_manifest
 from rcp.episode_health import load_episode_health
 from rcp.limits import (
@@ -93,7 +92,7 @@ def demand_snapshot(store, background) -> list[str]:
         for value in health.values()
     ):
         reasons.append("episode")
-    credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
+    accounts = ProviderAccounts.for_store(store)
     for project in projects:
         for task in store.active_project_agent_tasks(project.project_id):
             if task.status in {"running", "pausing"}:
@@ -109,9 +108,18 @@ def demand_snapshot(store, background) -> list[str]:
                         if run_on not in {None, "local"}
                         else ""
                     )
-                if (
-                    not provider
-                    or account_login_refusal(store, credentials, provider, host) is None
+                if not provider or not isinstance(
+                    accounts.resolve_login(
+                        provider,
+                        host,
+                        task.authorized_by.user_id if task.authorized_by else None,
+                        bound_login=accounts.bound_login(
+                            provider,
+                            host,
+                            task.native_session_id or str(task.request.get("session_id") or ""),
+                        ),
+                    )[0],
+                    LoginRefusal,
                 ):
                     reasons.append("task")
                     break

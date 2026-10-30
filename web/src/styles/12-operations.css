@@ -966,11 +966,6 @@
   }
 }
 
-.provider-login-notice-since {
-  opacity: 0.75;
-  font-size: 0.85em;
-}
-
 .terminals-layout {
   display: grid;
   gap: 18px;

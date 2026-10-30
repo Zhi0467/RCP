@@ -31,6 +31,7 @@ from rcp.core.models import HiddenReadScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
 ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"
@@ -117,18 +118,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return tuple(self._launch_records)
 
     def readiness(
-        self,
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
+        self, login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
         del binary, refresh
-        profile = profile_for(provider)
-        if host:
+        profile = profile_for(login.provider)
+        if login.host:
             return ProviderReadiness(
-                provider=provider,
+                provider=login.provider,
                 label=f"Acceptance {profile.label}",
                 installed=False,
                 authenticated=False,
@@ -136,12 +132,12 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 path_state="unreachable",
                 reason=(
                     "Acceptance-agent mode is local-only and refuses to impersonate "
-                    f"a provider on {host}."
+                    f"a provider on {login.host}."
                 ),
                 models=list(profile.declared),
             )
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             label=f"Acceptance {profile.label}",
             installed=True,
             authenticated=True,
@@ -172,6 +168,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
         capability: AgentCapability,
         binary: str | None = None,
         runtime_id: str | None = None,
+        login_key: LoginKey | None = None,
+        login_unavailable: Callable[[LoginKey], Awaitable[LoginKey | None]] | None = None,
         before_start: Callable[[], Awaitable[None]] | None = None,
         supervise_remote: bool = False,
         supervisor_path: str | None = None,
@@ -204,6 +202,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     binary=binary,
                     runtime_id=runtime_id,
                     before_start=before_start,
+                    login_key=login_key,
+                    login_unavailable=login_unavailable,
                     supervise_remote=supervise_remote,
                     supervisor_path=supervisor_path,
                     operation_id=operation_id,
@@ -256,7 +256,9 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return
 
         if before_start is not None:
-            hold = await self.credential_gate.hold(provider, host)
+            hold = await self.credential_gate.hold(
+                login_key or LoginKey(provider, host, MACHINE_LOGIN_ID)
+            )
             try:
                 await before_start()
             finally:

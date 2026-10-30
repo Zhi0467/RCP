@@ -193,7 +193,11 @@ class AutoResearchExperimentCoordinator:
         try:
             # Checked outside the lock: an uncached pick probes its provider CLI.
             launch_reasoning = require_auto_research_child_profile_pick(
-                service, provider=provider, model=model, reasoning=reasoning
+                service,
+                provider=provider,
+                model=model,
+                reasoning=reasoning,
+                member_id=parent.authorized_by.user_id if parent.authorized_by else None,
             )
             with self.operation_lock(parent.project_id):
                 locked_allowance = self.store.auto_research_experiment_allowance(

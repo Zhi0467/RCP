@@ -550,8 +550,8 @@ profile decides each of these explicitly rather than inheriting them:
    indexing its history.
 2. Turn end: the event its fence reads, or a wrapper line when the CLI prints
    none. Both the local decoder and the remote fence must end on it.
-3. Login: an `auth.py` when RCP manages sign-in. Without one, Provider logins
-   shows a note with the CLI's own login command.
+3. Login: an `auth.py` when RCP manages sign-in. Without one, the Sign-ins
+   fold shows a note with the CLI's own login command.
 4. Models: probed efforts may be empty, and every stored reasoning field must
    accept that.
 5. Version floor: the CLI version whose containment was probed, applied to every
@@ -561,7 +561,7 @@ Containment is proved against the real CLI at that floor: config precedence,
 path bases, and anything that can rewrite the rules, such as plugins. Tests that
 cover every provider iterate `PROVIDER_IDS`; only tests of one provider's
 protocol name it. Before merge, drive the served app through Discuss, Work,
-Provider logins, and the model picker, locally and on an SSH execution machine.
+Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
@@ -1020,7 +1020,12 @@ loads with the list ignored, and the next manifest write drops it.
 
 The backend owns team provider calls. Local runs use the service account;
 remote runs use the exact profile's configured SSH account and its provider
-state. No account switching or alternate provider homes are created.
+state. Provider logins do not change that OS account. Added Codex sign-ins have
+separate homes for credentials and sessions; their config, rules, skills and
+AGENTS.md link to the machine home, and sign-in, verification and logout use that
+same home. Claude logins share native sessions and change only the token.
+[Member sign-in settings and selection](#member-sign-in-settings-and-selection)
+owns turn selection.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
@@ -1045,39 +1050,196 @@ separate processes and unnecessary probes are avoided. Codex mid-turn refresh
 races remain possible; verified sign-in is the recovery.
 
 The account lifecycle owner serializes sign-in, verify and sign-out under the
-gate through durable publication. Concurrent device sign-ins join one operation.
+gate through durable publication, keyed by `(provider, host, login_id)`. A second
+device sign-in on that login returns 409 and names the starter. The per-attempt
+status and cancel routes answer only the starter (404 for anyone else).
 Replacement first publishes a signed-out fence, so interruption cannot admit an
 unverified credential. A minimal real request must succeed before sign-in counts;
 provider status only proves credential presence. Successful verification
 invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.
-Any authorized member may sign in/out; durable actions record the member.
+Who may act on which login is set out under
+[selection](#member-sign-in-settings-and-selection). Durable actions record the
+member, except that a removal that drained finishes without one and member
+removal records the departing member. Removed logins cannot be verified or
+receive tokens, including attempts completing after removal; a credential such an
+attempt wrote is deleted, or left pending for reconciliation.
 
-`GET /api/providers/logins` lists every provider's accounts. Routes under
-`/api/providers/{provider}/logins` provide `sign-in`, status
-`sign-in/{login_id}`, its `cancel`, `token`, `verify` and `sign-out`. Unsupported interactions
-refuse explicitly; status GET is read-only. Sign-out records a new generation,
-`source="sign_out"` and actor and fences admission.
+`GET /api/providers/logins` lists each nonremoved login on a listed host. The shared row mapper
+also supplies project notices, resolving new launches for the viewer and retaining
+parked Codex session bindings. Other members' own rows redact detail, source and
+token metadata. Device codes and URLs appear only for the attempt starter.
+Project responses attach these rows after reading the shared display cache.
+A refused own source without a stored login appears as a signed-out own notice
+with null `login_id`, the viewer's ID, provider label and host; other fields are
+empty. Its action opens Settings, Sign-ins. Every added shared row reports its
+bound running count even before draining; machine and own rows report zero.
+
+Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
+`sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
+`sign-out`; action bodies name `login_id`, except `add`, which takes `kind` and
+returns the new ID (and, for a device-code provider, the started sign-in). If
+that sign-in cannot start, the login stays, signed out, and the refusal carries no
+ID; its card offers Sign in. Machine sign-ins cannot be removed.
+An own login has no remove action; only member removal fences it. Adding a second
+own login conflicts.
+Unsupported interactions refuse explicitly; status GET is read-only.
+Sign-out records a new generation, `source="sign_out"` and actor.
+
+`GET /api/providers/logins/settings` returns the viewer's effective settings:
+host row, migration fallback `*`, then the built-in default. PUT
+`/api/providers/{provider}/logins/setting` accepts only `own`, `own_then_shared`,
+`shared_then_own` or `shared`. Personal and team spaces follow the same rules;
+only the built-in default differs. OpenCode has no added login or setting. No agent command reaches these routes.
+
+Member removal fences and retains own login rows, deletes member settings and
+removes credentials without deleting sessions. Shared logins stay. A credential
+under a running turn, whoever's turn it is, is kept until that turn ends; each advance cleans after its
+completion check, so the completing pass finds none of the member's turns
+running. Pending removal retries remote deletion on each
+advance, returning unreached hosts in `provider_cleanup_unreached`, including the
+completing pass; unreachable hosts do not block completion. Fencing also marks
+each own login draining, so after completion the removal reconciler retries any
+credential still pending, as for a shared removal. Restore's stale-member
+removal fences the copied rows while preparing and deletes credentials only
+after both restore boundaries are confirmed, because the archived deployment may
+still be running.
+
+### Member sign-in settings and selection
+
+Each machine keeps a set of shared logins per provider: the machine sign-in
+(`login_id = ""`, the OS account's own CLI login for Codex and OpenCode, the
+stored token for Claude) plus every login a member added as shared. Each member
+may also add one own login per provider and machine. Shared logins belong to the
+machine: any member may add, sign in, verify, sign out or remove them, except
+that the machine sign-in cannot be removed. Only the owner acts on an own login.
+OpenCode has only its machine sign-in, because RCP does not sign it in.
+
+Each member has one setting per `(provider, host)`: `own`, `own_then_shared`,
+`shared_then_own` or `shared`. It names which sources are on and the order they
+are tried; "both off" cannot be stored. Lookup is the host's row, then the
+member's `*` row, then the built-in default: `own` in a team space, `shared` in a
+personal one. The upgrade wrote `*` = `own_then_shared` for every team member
+not being removed, so their work kept using the shared logins. There is no team or
+owner default: a new team member must add their own login or turn Shared on.
+
+The member is the task's authorizer: the sender for chats, Work, Discuss and the
+paper coach; the episode's `authorized_by` for Auto-research, Experiment turns
+and reports; the origin task's member for watcher wakes; the schedule's for
+consolidation; the presser for a human Resume or Retry, except episode tasks;
+the original task's member for transport reattempts and automatic recovery.
+
+Viewer readiness, Auto-research Retry preflight, and child-profile checks and
+prompt catalogs probe the authorizing member's resolved login. Retry uses the
+same session binding and lineage resolution as admission. A fresh probe's
+recognized authentication failure durably signs out that login, including an
+implicit machine login, so subsequent selection can use another eligible shared
+login. Provider profiles own the failure signatures.
+
+The resolver in `agents/provider_accounts.py` picks one login, first match wins:
+
+1. A task without an authorizer, and every OpenCode task, uses the machine
+   sign-in. A transport reattempt or the initial `graph_repair` correction keeps
+   its parent's login, and later provider passes in one task keep the turn's.
+2. A continued Codex session, including a fork, watcher wake or paper coach
+   session, keeps the login of the earliest provider-started task in that
+   session, because the session lives in that login's home.
+3. Otherwise walk the sources the setting turns on, in its order, and take the
+   first with an assignable login (usable and not draining) without the limit
+   mark. For a continued session, a mark on another login that lapsed without
+   evidence still counts, so a running session never moves on a lapse. When every
+   allowed login is limited, a continued session keeps its previous login while
+   it is assignable and the sender's setting allows it; otherwise take the first
+   source with any assignable login.
+4. Inside the shared source, keep the session's previous login while it is
+   assignable, allowed and not limited; otherwise take the one assigned longest ago,
+   preferring unmarked ones, ties to the machine sign-in, then the oldest add.
+5. Refuse, naming the setting's first source.
+
+A switch receipt names the first applicable reason: `unhealthy`, `limited`,
+`sender_setting` (another member sent the turn), `setting_changed`, or
+`preferred_source_available`; `limited` reflects any recorded mark, lapsed or
+not. RCP never starts a fresh session on a login change;
+only the human Switch provider does that.
+
+**Why:** Least-recently-used spreads load over shared accounts, and staying put
+keeps the provider's prompt cache. The limit mark only orders choices because RCP
+cannot know when a vendor limit lifts; its lapse,
+`PROVIDER_LOGIN_LIMIT_HINT_SECONDS` (5 hours), is a guess.
+
+| Provider | Machine sign-in | Added login, local | Added login, remote |
+| --- | --- | --- | --- |
+| Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
+| Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<account dir>/logins/<login_id>/codex-home` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
+
+An added Codex home links `config.toml`, `rules`, `skills` and `AGENTS.md` to the
+machine Codex home; `providers/codex/homes.py` creates it (mode 0700) locally and
+over SSH and reports a link that became a regular file instead of overwriting it.
+Sessions are not linked. The session indexer reads added homes; agents'
+`source_roots` do not list them, and hidden read hides them. Only the local
+machine sign-in keeps the cross-process credential lock file.
+
+Every member's agents run as the same OS account, so any agent can read any
+token in `providers/` and any added home; hidden read is cooperative. Each task
+records the `login_id` it ran on.
 
 ### Login state and failure
 
-One durable `(provider, host)` login row stores `signed_in`/`signed_out` and a
-generation. Provider-owned revoked-login evidence classifies `provider_auth`
-across turns, wakes, workers, reports, recovery and probes. Only the generation
-captured at launch can revoke the account; late failures cannot revoke a repaired
-login. Claude recognizes its remote missing-token fence and declares no unobserved
-native revocation signatures.
+Each login has a `(provider, host, login_id)` row (the machine sign-in's is
+written on first use; until then its stored default is signed in, generation 0) with signed-in state
+and a generation. The empty login ID names the machine sign-in. Admission dry-runs
+the member's ordered own/shared setting before allocating a task or debiting an
+episode. Episode turns use the episode's authorizer. Launch resolves again inside
+the assignment transaction, writing the task login and advancing the shared LRU
+clock. A changed session login records `provider_login_switched` with its previous
+and new IDs and the resolver's reason. Provider-owned revoked-login evidence
+classifies `provider_auth` across turns, wakes, workers, reports, recovery and
+probes. Only the generation captured at launch can revoke that login; late
+failures cannot revoke a repaired login. A turn whose login was repaired
+meanwhile fails as an ordinary provider error that recovery retries, not
+`provider_auth`, so nobody is asked to sign in again. Claude recognizes its remote
+missing-token fence and a 401 naming authentication or OAuth (observed
+2026-09-15).
+An own login is unique per provider, host and member while `removed_at IS NULL`;
+removal retains the historical row and its member attribution. Assignment clocks do not publish resource versions; member login
+settings do.
 
-Signed-out or missing-required-credential accounts refuse paid admission before
-task creation/budget debit. Queued tasks remain queued, reconcilers retain their
-inputs, and auth recoveries remain blocked. Readiness, Retry and server checks
-read that same state. Verify runs a minimal authenticated request under the gate.
-Success increments generation, invalidates readiness and releases account-bound
-recovery, queued work, mail, lifecycle/watcher inputs, reports and eligible
-Experiment Retry once. Ordinary episode reconciliation retains other accounts'
-fences. Authentication failures sign out; transport/configuration/ordinary failures
-do not. Errors direct members to Settings, Provider logins, without exposing
-credentials or prescribing shell login commands.
+Claude resolves at each turn boundary. A continued Codex session keeps its
+bound login whatever the sender's setting or the login's owner, so a member's
+turn may run on another member's own login. Unhealthy bound work waits; a removed
+Codex binding refuses the session. A removed parent login stops pinning its
+transport reattempt or graph repair, which then resolves like a new turn (a Codex
+session bound to that login still refuses). Draining logins admit no new choices but remain
+usable by bound work until its running turns end, and for Codex also its unpaused
+episodes. Removal retains session files and deletes only credentials; unreachable remote
+cleanup remains pending for reconciliation. Shared removal synchronously settles
+any pending device sign-in before taking the credential gate; member removal does
+not, and relies on the late-credential rule above. The sign-in runner's
+recovery pass also reconciles drains and pending cleanup.
+
+The credential gate rechecks the selected login. An unbound launch may release
+the gate and resolve once more. A bound refusal carries a typed `provider_auth`
+flag; classification never infers that refusal from error text. After restart,
+an unavailable
+captured generation cannot authorize a new fence.
+
+Settlement marks a login limited from the existing `session_limit` classification.
+A later successful turn or Verify clears the mark; an overlapping older turn
+cannot clear newer evidence. The mark lapses after
+`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`; a continued session still counts a lapsed
+mark on any login other than its previous one. An
+unbound episode may retry once per session and limited login when resolution
+finds a different login without a limit mark. A durable receipt prevents restart
+from rearming that retry; Auto-research retains its recovery owner and Experiment
+uses ordinary Retry.
+
+Login-keyed release selects recoveries, queued work, Experiment retries and
+watcher groups by binding or member setting. Verified credentials and changed
+settings use the same release helper. Tasks with no selected login re-resolve the
+member setting on a setting change or verification of an allowed source. Unbound
+authentication failures release
+after settlement records their park when another allowed login is available.
+Transport/configuration/ordinary failures do not sign out a login.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
 native paths, locally or in the remote interactive login shell. An explicit path

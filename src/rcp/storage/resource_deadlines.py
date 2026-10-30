@@ -92,15 +92,7 @@ def migrate_resource_deadlines(connection: sqlite3.Connection) -> None:
         owner="row.project_id",
         deadline="(julianday(row.expires_at)-2440587.5)*86400.0",
     )
-    _install_deadline(
-        connection,
-        table="provider_readiness_snapshots",
-        resource="settings",
-        owner="json_array(row.provider,row.host,row.binary)",
-        scope="''",
-        deadline="(julianday(row.probed_at)-2440587.5)*86400.0 + "
-        f"{HIDDEN_READ_READINESS_TTL_SECONDS}",
-    )
+    install_provider_readiness_deadline(connection)
     connection.execute(
         "CREATE TRIGGER resource_deadline_questions_delete AFTER DELETE ON questions "
         "BEGIN DELETE FROM resource_deadlines WHERE scope=OLD.project_id "
@@ -147,3 +139,24 @@ def record_question_activity(
             "AND entity='' AND owner=?",
             (project_id, f"question_activity:{question_id}"),
         )
+
+
+def install_provider_readiness_deadline(connection: sqlite3.Connection) -> None:
+    """Install the readiness cache owner key for the schema being migrated."""
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(provider_readiness_snapshots)")
+    }
+    owner = (
+        "json_array(row.provider,row.host,row.login_id,row.binary)"
+        if "login_id" in columns
+        else "json_array(row.provider,row.host,row.binary)"
+    )
+    _install_deadline(
+        connection,
+        table="provider_readiness_snapshots",
+        resource="settings",
+        owner=owner,
+        scope="''",
+        deadline="(julianday(row.probed_at)-2440587.5)*86400.0 + "
+        f"{HIDDEN_READ_READINESS_TTL_SECONDS}",
+    )

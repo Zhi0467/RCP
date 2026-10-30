@@ -10,6 +10,7 @@ from rcp.providers import ModelChoice
 from rcp.service import CoachRequest, ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
+from rcp.storage.models import LoginKey
 from tests.helpers import unchecked_write_authority
 
 
@@ -107,16 +108,16 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     machine = manifest.machine_map[manifest.agent_profile("project_chat").run_on]
     probed: list[tuple[str, str, str | None]] = []
 
-    def cached_readiness(provider: str, *, host: str = "", binary: str | None = None):
-        probed.append((provider, host, binary))
-        if provider == "opencode":
+    def cached_readiness(login: LoginKey, *, binary: str | None = None):
+        probed.append((login.provider, login.host, binary))
+        if login.provider == "opencode":
             return ProviderReadiness(
                 provider="opencode",
                 installed=True,
                 authenticated=True,
                 models=[ModelChoice(id="opencode/big-pickle", label="Big Pickle", reasoning=[])],
             )
-        if provider != "codex":
+        if login.provider != "codex":
             return None
         return ProviderReadiness(
             provider="codex",

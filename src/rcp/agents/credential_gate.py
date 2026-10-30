@@ -46,6 +46,7 @@ from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 
 def remaining_startup_hold(started_at: float) -> float:
@@ -139,11 +140,11 @@ class ProviderCredentialGate:
         # launcher and an unguarded read-then-create would hand two startups
         # separate locks for one credential.
         self._guard = threading.Lock()
-        self._locks: dict[tuple[str, str], threading.Lock] = {}
+        self._locks: dict[LoginKey, threading.Lock] = {}
         #: Named so a test never takes a lock in the human's own home.
         self._account_lock_root = account_lock_root or _DEFAULT_ACCOUNT_LOCK_ROOT
 
-    async def hold(self, provider: str, host: str) -> CredentialStartupHold:
+    async def hold(self, key: LoginKey) -> CredentialStartupHold:
         """Wait for exclusive use of this credential's startup window.
 
         The key is the credential's identity, not the turn's: one provider login
@@ -159,7 +160,7 @@ class ProviderCredentialGate:
         startups that did not need it.
         """
 
-        claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
+        claim = _Claim(self._lock_for(key), self._account_lock_path(key))
         while True:
             # `to_thread` cannot be cancelled, so each attempt is bounded and
             # shielded, and the claim below decides who owns a win. Short
@@ -175,7 +176,7 @@ class ProviderCredentialGate:
                 return CredentialStartupHold(claim.lock, across_processes=claim.descriptor)
 
     @contextmanager
-    def hold_blocking(self, provider: str, host: str) -> Iterator[None]:
+    def hold_blocking(self, key: LoginKey) -> Iterator[None]:
         """Hold the credential across a synchronous provider probe.
 
         Readiness and skill inventory run provider executables on worker
@@ -185,7 +186,7 @@ class ProviderCredentialGate:
         precede its authentication, while an exited probe cannot.
         """
 
-        claim = _Claim(self._lock_for(provider, host), self._account_lock_path(provider, host))
+        claim = _Claim(self._lock_for(key), self._account_lock_path(key))
         while not claim.try_acquire():
             pass
         try:
@@ -195,22 +196,25 @@ class ProviderCredentialGate:
                 _drop_account_lock(claim.descriptor)
             claim.lock.release()
 
-    def _account_lock_path(self, provider: str, host: str) -> Path | None:
+    def _account_lock_path(self, key: LoginKey) -> Path | None:
         """Where this OS account's lock for one provider login lives.
 
         Remote execution has no such file: the credential sits on the other
         machine and only a lock taken there would mean anything, which is an
         SSH round trip per launch. Remote launches keep in-process
-        serialization only.
+        serialization only. Added logins belong to one data directory and
+        also need only the in-process lock.
         """
 
-        if host:
+        if key.host or key.login_id != MACHINE_LOGIN_ID:
             return None
-        return self._account_lock_root / f"{provider}.lock"
+        return self._account_lock_root / f"{key.provider}.lock"
 
-    def _lock_for(self, provider: str, host: str) -> threading.Lock:
+    def _lock_for(self, key: LoginKey) -> threading.Lock:
         with self._guard:
-            return self._locks.setdefault((provider, host.strip().lower()), threading.Lock())
+            return self._locks.setdefault(
+                LoginKey(key.provider, key.host.strip().lower(), key.login_id), threading.Lock()
+            )
 
 
 class _Claim:
@@ -288,7 +292,7 @@ def _take_account_lock(path: Path | None) -> int | None:
     directory. The OS releases this lock when its holder exits, so a crashed
     holder never strands the login.
 
-    Only remote execution has no account lock to take. Contention retries;
+    Remote and added logins have no account lock to take. Contention retries;
     filesystem failures refuse the startup instead of bypassing the lock.
     """
 

@@ -44,6 +44,7 @@ from rcp.providers import (
 from rcp.server_ops.models import redact_server_text
 from rcp.ssh_validation import validate_ssh_destination
 from rcp.storage import ProjectProvisioningRequestRecord, ProjectRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport import StateWorkspace, remote_repository_browser
 from rcp.transport.remote_compute_probe import classify_ssh_failure
@@ -601,8 +602,7 @@ class ProjectSetupManager:
         for host in sorted(machine_hosts):
             for provider in PROVIDER_IDS:
                 readiness_cache[(provider, host)] = self.launcher.readiness(
-                    provider,
-                    host=host,
+                    LoginKey(provider, host, MACHINE_LOGIN_ID)
                 )
         agent_readiness: dict[str, ProviderReadiness] = {}
         for surface in _SETUP_AGENT_EXECUTION_PROFILES:
@@ -610,7 +610,9 @@ class ProjectSetupManager:
             host = profile.host if profile.location == "ssh" else ""
             key = (profile.provider, host)
             if key not in readiness_cache:
-                readiness_cache[key] = self.launcher.readiness(profile.provider, host=host)
+                readiness_cache[key] = self.launcher.readiness(
+                    LoginKey(profile.provider, host, MACHINE_LOGIN_ID)
+                )
             readiness = readiness_cache[key]
             agent_readiness[surface] = readiness
             checks.append(
@@ -632,7 +634,7 @@ class ProjectSetupManager:
         execution_host = request.execution.host if request.execution.location == "ssh" else ""
         providers = {
             provider: readiness_cache.get((provider, execution_host))
-            or self.launcher.readiness(provider, host=execution_host)
+            or self.launcher.readiness(LoginKey(provider, execution_host, MACHINE_LOGIN_ID))
             for provider in PROVIDER_IDS
         }
 
@@ -738,7 +740,9 @@ class ProjectSetupManager:
                         provider: readiness.binary_path
                         for provider in PROVIDER_IDS
                         if (
-                            readiness := self.launcher.readiness(provider, host=machine.host)
+                            readiness := self.launcher.readiness(
+                                LoginKey(provider, machine.host, MACHINE_LOGIN_ID)
+                            )
                         ).installed
                         and readiness.binary_path
                     }

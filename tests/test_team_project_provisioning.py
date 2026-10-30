@@ -52,6 +52,7 @@ from rcp.storage import (
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
 )
+from rcp.storage.models import LoginKey
 
 
 class _Launcher:
@@ -67,14 +68,13 @@ class _Launcher:
 
     def readiness(
         self,
-        provider: str,
+        login: LoginKey,
         *,
-        host: str = "",
         binary: str | None = None,
         refresh: bool = False,
     ) -> ProviderReadiness:
-        assert provider == "codex"
-        assert host in {"", "gpu.example"}
+        assert login.provider == "codex"
+        assert login.host in {"", "gpu.example"}
         assert binary in {None, "/usr/local/bin/codex"}
         assert refresh is True
         return ProviderReadiness(

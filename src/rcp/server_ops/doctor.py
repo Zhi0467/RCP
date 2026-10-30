@@ -1715,7 +1715,7 @@ def provider_login_summary(database: Path) -> str:
     try:
         rows = connection.execute(
             "SELECT provider, host, state, source, changed_at FROM provider_login_states "
-            "ORDER BY provider, host"
+            "WHERE removed_at IS NULL ORDER BY provider, host, login_id"
         ).fetchall()
     except sqlite3.Error:
         return "unavailable"

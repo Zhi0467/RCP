@@ -2260,6 +2260,7 @@ class AgentTaskRecord(BaseModel):
     #: The umbrella provider name surfaces show; the runtime is a detail.
     provider_label: str = ""
     native_session_id: str | None = None
+    login_id: str | None = None
     #: What the provider reported live about this turn; display only.
     agent_status: AgentStatus | None = None
     history_only: bool = False
@@ -3770,13 +3771,45 @@ def _retention_reference_time(as_of: datetime | None) -> datetime:
     return current.astimezone(UTC)
 
 
+MACHINE_LOGIN_ID = ""
+ProviderLoginSetting = Literal["own", "own_then_shared", "shared_then_own", "shared"]
+
+
+class LoginKey(NamedTuple):
+    provider: str
+    host: str
+    login_id: str
+
+
+class ProviderLoginAssignmentRecord(BaseModel):
+    provider: str
+    host: str
+    login_id: str
+    last_assigned_at: str | None = None
+    limited_at: str | None = None
+
+
+class ProviderLoginSettingRecord(BaseModel):
+    user_id: str
+    provider: str
+    host: str
+    setting: ProviderLoginSetting
+    changed_at: str = ""
+
+
 class ProviderLoginStateRecord(BaseModel):
-    """Whether one machine account's shared provider login is known to be alive."""
+    """One shared or member-owned login, including retained removal history."""
 
     model_config = ConfigDict(extra="forbid")
 
     provider: str
     host: str
+    login_id: str = MACHINE_LOGIN_ID
+    member_id: str | None = None
+    added_by: str | None = None
+    added_at: str | None = None
+    draining_since: str | None = None
+    removed_at: str | None = None
     state: Literal["signed_in", "signed_out"] = "signed_in"
     generation: int = 0
     detail: str | None = None
@@ -3796,6 +3829,7 @@ class ProviderReadinessSnapshotRecord(BaseModel):
 
     provider: str
     host: str
+    login_id: str = MACHINE_LOGIN_ID
     binary: str
     version: str
     readiness_json: str
@@ -3856,6 +3890,11 @@ class SpaceMachineRecord(BaseModel):
 
 __all__ = [
     "SpaceMachineRecord",
+    "MACHINE_LOGIN_ID",
+    "LoginKey",
+    "ProviderLoginSetting",
+    "ProviderLoginSettingRecord",
+    "ProviderLoginAssignmentRecord",
     "ProviderLoginStateRecord",
     "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",

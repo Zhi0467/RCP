@@ -628,3 +628,76 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
                 archive.extractfile(f"artifacts/{entry.artifact_id}/{entry.file_id}").read()
                 == b"page"
             )
+
+
+def test_restore_removed_member_fences_own_logins_and_keeps_shared(
+    restore_request, tmp_path, monkeypatch
+):
+    from rcp.storage.models import LoginKey
+
+    value, _, previous = restore_request
+    proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
+    root = Path(proof.capture_root)
+    database = root / "rcp.sqlite3"
+    database.chmod(0o600)
+    store = AppStore(database)
+    stale = store.preprovision_team_member("Departed member")
+    own = store.add_provider_login(
+        "codex", "worker.example", member_id=stale.user_id, added_by=stale.user_id
+    )
+    shared = store.add_provider_login("codex", "worker.example", added_by=stale.user_id)
+    store.set_provider_login_setting(stale.user_id, "codex", "worker.example", "own")
+    store.close()
+    manifest = _archive_manifest(value)
+    snapshot = manifest.sqlite_snapshot.model_copy(
+        update={
+            "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
+            "size_bytes": database.stat().st_size,
+        }
+    )
+    manifest = manifest.model_copy(
+        update={
+            "sqlite_snapshot": snapshot,
+            "total_bytes": manifest.total_bytes
+            - manifest.sqlite_snapshot.size_bytes
+            + snapshot.size_bytes,
+        }
+    )
+    _write_archive(value, manifest, root)
+    value["remove_stale_member"] = stale.user_id
+    cleanups = []
+
+    def unreachable(_store, key):
+        cleanups.append(key)
+        return False
+
+    monkeypatch.setattr("rcp.runs.provider_login.cleanup_provider_login_credential", unreachable)
+    review = prepare_restore(RestorePrepareRequest(**value))
+    # Reviewing a restore never reaches a host: the old deployment may still run.
+    assert cleanups == []
+    result = prepare_restore(_confirm(value, review, tmp_path / "removed-member-ready"))
+    assert result["status"] == "prepared"
+    assert result["provider_cleanup_unreached"] == ["worker.example"]
+    own_key = LoginKey("codex", "worker.example", own.login_id)
+    assert cleanups == [own_key]
+    roots = result["roots"]
+    assert isinstance(roots, list)
+    candidate = AppStore(Path(roots[0]["payload"]) / "rcp.sqlite3")
+    removed_member = candidate.space_user(stale.user_id)
+    assert removed_member is not None
+    assert removed_member.removed_at is not None
+    assert candidate.provider_login_state(own_key).removed_at is not None
+    assert (
+        candidate.provider_login_state(
+            LoginKey("codex", "worker.example", shared.login_id)
+        ).removed_at
+        is None
+    )
+    with candidate.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM provider_login_settings WHERE user_id = ?", (stale.user_id,)
+            ).fetchone()[0]
+            == 0
+        )
+    candidate.close()

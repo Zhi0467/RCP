@@ -11,6 +11,7 @@ import pytest
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 _WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
 
@@ -52,7 +53,7 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
     binary = _claude_binary(tmp_path, work_ready=work_ready)
     launcher = AgentLauncher()
 
-    readiness = launcher.readiness("claude", binary=str(binary))
+    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.authenticated
     assert readiness.work_like_available is work_ready
     # A Work-only fault never becomes the general readiness reason: `reason` also
@@ -63,15 +64,20 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
         assert readiness.work_like_reason is None
     else:
         assert _WORK_PROBE_REASON in readiness.work_like_reason
-    assert launcher.readiness("claude", binary=str(binary)) == readiness
+    assert (
+        launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+        == readiness
+    )
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
-    launcher.readiness("claude", binary=str(binary), refresh=True)
+    launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
     assert (tmp_path / "probes").read_text().splitlines() == ["probe", "probe"]
 
 
 def test_unauthenticated_provider_does_not_probe_work_readiness(tmp_path: Path) -> None:
     binary = _claude_binary(tmp_path, authenticated=False)
-    readiness = AgentLauncher().readiness("claude", binary=str(binary))
+    readiness = AgentLauncher().readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert not readiness.authenticated
     assert readiness.work_like_available is None
     assert readiness.work_like_reason is None
@@ -121,7 +127,7 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
         return subprocess.CompletedProcess(command, 0, "2.1.266", "")
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness("claude", binary=str(binary), host=host)
+    readiness = launcher.readiness(LoginKey("claude", host, MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.work_like_available is None
     assert _WORK_PROBE_REASON not in (readiness.work_like_reason or "")
     if host:
@@ -152,8 +158,8 @@ async def test_first_provider_error_contains_stderr_cause(
     monkeypatch.setattr(
         launcher,
         "readiness",
-        lambda provider, **kwargs: ProviderReadiness(
-            provider=provider, installed=True, authenticated=True, binary_path=str(binary)
+        lambda login, **kwargs: ProviderReadiness(
+            provider=login.provider, installed=True, authenticated=True, binary_path=str(binary)
         ),
     )
     # The task engine stops consuming on the first error. Exercise that exact edge.
@@ -210,16 +216,16 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
     service = SimpleNamespace(
         manifest=SimpleNamespace(machine_map={"remote-1": machine}),
         launcher=SimpleNamespace(
-            readiness=lambda *_args, **_kwargs: blocked,
+            member_readiness=lambda *_args, **_kwargs: blocked,
             provider_binary=lambda _provider, _host: "/bin/claude",
         ),
     )
-    request = SimpleNamespace(provider="claude", run_on="remote-1")
+    request = SimpleNamespace(provider="claude", run_on="remote-1", session_id=None)
     with pytest.raises(ValueError, match="unknown permission mode"):
         _require_auto_research_retry_target_ready(service, request)
 
     service.launcher = SimpleNamespace(
-        readiness=lambda *_args, **_kwargs: blocked.model_copy(
+        member_readiness=lambda *_args, **_kwargs: blocked.model_copy(
             update={"work_like_available": True, "work_like_reason": None}
         ),
         provider_binary=lambda _provider, _host: "/bin/claude",
@@ -233,14 +239,21 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     store = AppStore(tmp_path / "login.sqlite3")
     launcher = AgentLauncher(login_state=store.provider_login_state)
     binary = _claude_binary(tmp_path, work_ready=True)
-    assert launcher.readiness("claude", binary=str(binary)).authenticated
+    assert launcher.readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    ).authenticated
     store.mark_provider_login_failed(
-        "claude", "", generation=0, detail="observed provider failure", source="turn"
+        LoginKey("claude", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="observed provider failure",
+        source="turn",
     )
-    readiness = launcher.readiness("claude", binary=str(binary))
+    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert not readiness.authenticated
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
-    assert not launcher.cached_readiness("claude", binary=str(binary)).authenticated
+    assert not launcher.cached_readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    ).authenticated
 
 
 @pytest.mark.parametrize("path", ["auth", "catalog", "work"])
@@ -272,7 +285,9 @@ def test_probe_failure_updates_account_only_for_provider_auth(
     monkeypatch.setattr(profile, "models", lambda result: [])
 
     def probe(host, command, **kwargs):
-        assert not launcher.credential_gate._lock_for("codex", "").acquire(False)
+        assert not launcher.credential_gate._lock_for(
+            LoginKey("codex", "", MACHINE_LOGIN_ID)
+        ).acquire(False)
         return subprocess.CompletedProcess(
             command,
             1 if command[-1] == path else 0,
@@ -281,8 +296,92 @@ def test_probe_failure_updates_account_only_for_provider_auth(
         )
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness("codex", binary=str(binary), refresh=True)
-    assert (store.provider_login_state("codex", "").state == "signed_out") is blocked
+    readiness = launcher.readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+    )
+    assert (
+        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+    ) is blocked
     if blocked:
         assert not readiness.authenticated
-        assert store.provider_readiness_snapshot("codex", "", str(binary)) is None
+        assert (
+            store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), str(binary))
+            is None
+        )
+
+
+@pytest.mark.parametrize("binding", ["own", "session", "lineage"])
+def test_auto_research_retry_probes_authorizer_or_bound_added_login(tmp_path, monkeypatch, binding):
+    from rcp.agents import AgentEvent
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.background import BackgroundAgentTasks
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.runs.auto_research import AutoResearchStartRequest
+    from rcp.runs.auto_research_admission import start_auto_research
+
+    from .helpers import fabricated_authorizer, wait_for_task, wait_until
+    from .test_auto_research_recovery import _install_recovery_callback, _sse, _store
+    from .test_provider_login_resolver import _login
+
+    store = _store(tmp_path)
+    accounts = ProviderAccounts.for_store(store)
+    selected = []
+
+    async def stream(_project, _kind, request, execution):
+        execution.checkpoint_stage("", str(tmp_path))
+        if execution.continuation == "fresh":
+            human = store.agent_task_authorizer(execution.operation_id)
+            own = _login(accounts, "codex", own=True, member=human.user_id)
+            store.set_provider_login_setting(human.user_id, "codex", "", "own")
+            key = own if binding == "own" else _login(accounts, "codex")
+            selected.append(key)
+            store.assign_provider_login(execution.operation_id, lambda _: key)
+            store.record_agent_task_receipt(execution.operation_id, "provider_runtime_selected", {})
+            if binding == "lineage":
+                store.record_agent_task_receipt(execution.operation_id, "transport_auto_retry", {})
+            if binding == "session":
+                yield _sse(AgentEvent(event="session", session_id="bound-session"))
+            yield _sse(AgentEvent(event="error", text="temporary provider failure"))
+            return
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    episode, root = start_auto_research(
+        tasks,
+        "project",
+        AutoResearchStartRequest(
+            invocation_ceiling=4, run_truth_scope=["repo"], provider="codex", run_on="local"
+        ),
+        authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
+        episode_id="auto_research",
+        operation_id="root",
+    )
+    wait_for_task(store, root.operation_id, expect="failed")
+    wait_until(lambda: root.operation_id not in tasks._workers)
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
+    )
+    launcher = AgentLauncher(accounts=accounts)
+    seen = []
+
+    def ready(login: LoginKey, **kwargs):
+        seen.append(login.login_id)
+        return ProviderReadiness(
+            provider=login.provider,
+            installed=True,
+            authenticated=login.login_id == selected[0].login_id,
+        )
+
+    monkeypatch.setattr(launcher, "readiness", ready)
+    service = SimpleNamespace(
+        launcher=launcher, manifest=SimpleNamespace(machine_map={"local": SimpleNamespace(host="")})
+    )
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
+    retried = tasks.retry_auto_research(root.operation_id, service=service)
+    wait_for_task(store, retried.operation_id, expect="succeeded")
+    assert seen == [selected[0].login_id]
+    assert retried.authorized_by == episode.authorized_by
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before

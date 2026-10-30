@@ -30,6 +30,7 @@ from rcp.server_ops.models import (
     ServerStep,
     redact_server_text,
 )
+from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.service_connections import ServiceConnections, member_connection_lock
 from rcp.storage import AppStore, MemberRemovalPreviewRecord
@@ -212,17 +213,24 @@ class MemberRemovalCoordinator:
             fence_episodes_for_removed_member(self.store, self.background, member_id)
         except (KeyError, RuntimeError, ValueError) as exc:
             errors.append(f"episodes: {type(exc).__name__}")
-
         after = self.store.member_removal_preview(member_id)
         if not after.active_task_ids and not after.active_episode_ids:
             ServiceConnections(self.store, member_id).remove_member_data()
             self.store.complete_member_removal(member_id)
             after = self.store.member_removal_preview(member_id)
+        # After the completion check, so the pass that completes removal has none
+        # of this member's turns running and deletes every credential it can reach.
+        provider_cleanup_unreached = (
+            cleanup_member_provider_logins(self.store, member_id)
+            if before.member.removed_at is None
+            else ()
+        )
         snapshot = self._snapshot(after)
         step = self._result_step(snapshot, errors=errors)
         return ServerControlMemberAdvanceResult(
             **self._identity_fields(),
             confirmed_boundary_sha256=boundary_sha256,
+            provider_cleanup_unreached=provider_cleanup_unreached,
             snapshot=snapshot,
             step=step,
         )

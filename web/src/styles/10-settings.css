@@ -4008,3 +4008,312 @@ button.agent-provider-label {
 .repository-add-path .button {
   flex: 0 0 auto;
 }
+
+/* Sign-ins: each provider is one raised panel holding two sunken trays of
+   raised cards. Left to right is the order work tries the trays. */
+.sign-ins-panels {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+.machine-sign-ins.failed {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+.sign-ins-panel {
+  background: var(--aqua-surface, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--aqua-raised, 0 1px 3px rgb(0 0 0 / 12%));
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px 10px;
+}
+.sign-ins-panel.failed {
+  box-shadow:
+    inset 3px 0 0 var(--red),
+    var(--aqua-raised, 0 1px 3px rgb(0 0 0 / 12%));
+}
+.sign-ins-panel > header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 28px;
+}
+.sign-ins-panel > header strong {
+  font-size: var(--type-sm);
+}
+.sign-ins-trays {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+.sign-ins-trays:has(> .sign-ins-tray:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sign-ins-tray {
+  align-content: start;
+  background: var(--aqua-field, var(--paper));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--aqua-inset, inset 0 1px 3px rgb(0 0 0 / 12%));
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px 8px;
+  transition: opacity 160ms ease;
+}
+.sign-ins-tray > header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-height: 26px;
+}
+.sign-ins-tray > header strong {
+  font-size: var(--type-2xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sign-ins-tray.off {
+  opacity: 0.55;
+}
+.sign-ins-tray.off .sign-in-card {
+  box-shadow: none;
+}
+.sign-ins-cards {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+/* A switch: a sunken track with a raised knob. */
+.sign-ins-switch {
+  appearance: none;
+  background: var(--aqua-field, var(--paper));
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  box-shadow: var(--aqua-inset, inset 0 1px 2px rgb(0 0 0 / 18%));
+  cursor: pointer;
+  flex: none;
+  height: 18px;
+  margin: 0;
+  position: relative;
+  transition: background 160ms ease;
+  width: 32px;
+}
+.sign-ins-switch::after {
+  background: var(--aqua-surface, var(--surface));
+  border-radius: 50%;
+  box-shadow: var(--aqua-raised, 0 1px 2px rgb(0 0 0 / 25%));
+  content: "";
+  height: 14px;
+  left: 1px;
+  position: absolute;
+  top: 1px;
+  transition: transform 160ms ease;
+  width: 14px;
+}
+.sign-ins-switch:checked {
+  background: var(--cobalt);
+}
+.sign-ins-switch:checked::after {
+  transform: translateX(14px);
+}
+.sign-ins-switch[aria-disabled="true"],
+.sign-ins-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.sign-ins-switch:focus-visible,
+.sign-ins-swap:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 2px;
+}
+.sign-ins-swap {
+  align-items: center;
+  align-self: center;
+  background: var(--aqua-surface, var(--surface));
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  box-shadow: var(--aqua-raised, 0 1px 3px rgb(0 0 0 / 15%));
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
+}
+.sign-ins-swap:active:not([aria-disabled="true"]) {
+  box-shadow: var(--aqua-inset, inset 0 1px 3px rgb(0 0 0 / 18%));
+}
+.sign-ins-swap[aria-disabled="true"] {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+.sign-ins-swap-narrow {
+  display: none;
+}
+/* One login. Raised when usable; flat and dashed when signed out. */
+.sign-in-card {
+  align-items: center;
+  background: var(--aqua-surface, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: var(--aqua-raised, 0 1px 2px rgb(0 0 0 / 12%));
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--type-2xs);
+  gap: 4px 8px;
+  min-height: 36px;
+  min-width: 0;
+  padding: 4px 6px 4px 10px;
+  position: relative;
+}
+.sign-in-card[data-card-state="signed_out"] {
+  background: transparent;
+  border-style: dashed;
+  box-shadow: none;
+}
+.sign-in-card[data-card-state="limited"] {
+  border-bottom: 3px solid var(--mustard);
+}
+.sign-in-card[data-card-state="draining"] {
+  color: var(--muted);
+}
+.sign-in-card.failed {
+  box-shadow:
+    inset 3px 0 0 var(--red),
+    var(--aqua-raised, 0 1px 2px rgb(0 0 0 / 12%));
+}
+.sign-in-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sign-in-name + .sign-in-state::before {
+  color: var(--muted);
+  content: "· ";
+}
+.sign-in-state {
+  color: var(--ink-soft);
+}
+/* The first trailing control takes the free space; the rest follow it. */
+.sign-in-card > :is(.button, .sign-in-token, .icon-button, .sign-in-more) {
+  margin-left: auto;
+}
+.sign-in-card
+  > :is(.button, .sign-in-token, .icon-button, .sign-in-more)
+  ~ :is(.button, .sign-in-token, .icon-button, .sign-in-more) {
+  margin-left: 0;
+}
+.sign-in-device {
+  align-items: center;
+  display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.sign-in-device > .icon-button {
+  margin-left: auto;
+}
+.sign-in-device a {
+  overflow-wrap: anywhere;
+}
+.sign-in-device code {
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: var(--type-xs) var(--mono);
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  user-select: all;
+}
+.sign-in-token {
+  display: flex;
+  flex: 1 1 160px;
+  gap: 6px;
+  min-width: 0;
+}
+.sign-in-token input {
+  background: var(--aqua-field, var(--paper));
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  box-shadow: var(--aqua-inset, none);
+  flex: 1 1 auto;
+  font: var(--type-3xs) var(--mono);
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  width: 0;
+}
+/* ⋯ shows on hover or focus; a device without hover always shows it. */
+.sign-in-more {
+  display: inline-flex;
+  opacity: 0;
+  position: relative;
+  transition: opacity 120ms ease;
+}
+.sign-in-card:hover .sign-in-more,
+.sign-in-more:focus-within {
+  opacity: 1;
+}
+@media (hover: none), (max-width: 560px) {
+  .sign-in-more {
+    opacity: 1;
+  }
+}
+.sign-in-more .agent-row-menu-list button {
+  white-space: nowrap;
+}
+.sign-in-more .danger {
+  color: var(--red);
+}
+.sign-in-more .tag {
+  margin-left: auto;
+}
+.sign-in-add {
+  align-items: center;
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: 7px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  min-height: 32px;
+}
+.sign-in-add:hover:not(:disabled) {
+  color: var(--ink);
+}
+.sign-ins-members > .sign-ins-cards {
+  margin-top: 6px;
+}
+@media (max-width: 560px) {
+  .sign-ins-trays {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sign-ins-swap {
+    justify-self: center;
+  }
+  .sign-ins-swap-wide {
+    display: none;
+  }
+  .sign-ins-swap-narrow {
+    display: inline;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sign-ins-tray,
+  .sign-ins-switch,
+  .sign-ins-switch::after,
+  .sign-in-more {
+    transition: none;
+  }
+}

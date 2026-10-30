@@ -46,6 +46,7 @@ from rcp.server_runtime import (
     metadata_path,
     web_build_identity,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -970,10 +971,15 @@ def test_provider_login_summary_reads_the_durable_state_read_only(tmp_path: Path
     database = tmp_path / "rcp.sqlite3"
     store = AppStore(database)
     failed = store.mark_provider_login_failed(
-        "codex", "", generation=0, detail="refresh_token_reused " + "x" * 400, source="turn"
+        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="refresh_token_reused " + "x" * 400,
+        source="turn",
     )
     verified = store.mark_provider_login_verified(
-        "claude", "gpu.example", member_id="member", detail="Authenticated request succeeded."
+        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="Authenticated request succeeded.",
     )
     summary = provider_login_summary(database)
     assert summary == (

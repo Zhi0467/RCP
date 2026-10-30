@@ -412,6 +412,7 @@ def start_artifact_edit(
         request,
         execution_host=edit.stage_host or "" if edit.stage_root else None,
         graph_target=origin.graph_target,
+        authorized_by=authorized_by,
     )
     kind = (
         "artifact_edit"

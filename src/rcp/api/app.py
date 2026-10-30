@@ -251,6 +251,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
 from rcp.transfer.target import (
@@ -1516,12 +1517,20 @@ def create_app(
 
         return checked
 
-    from rcp.runs.provider_login import resume_provider_account
+    from rcp.runs.provider_login import provider_login_changed
 
-    provider_sign_ins.resume_account = lambda provider, host: resume_provider_account(
+    provider_sign_ins.resume_account = lambda login: provider_login_changed(
         background_tasks,
-        provider,
-        host,
+        key=login,
+        reconcile_episodes=reconcile_episodes,
+        watcher_delivery=watcher_delivery,
+    )
+
+    provider_sign_ins.resume_setting = lambda member_id, provider, host: provider_login_changed(
+        background_tasks,
+        member_id=member_id,
+        provider=provider,
+        host=host,
         reconcile_episodes=reconcile_episodes,
         watcher_delivery=watcher_delivery,
     )
@@ -1690,7 +1699,9 @@ def create_app(
 
             def probe(provider: str, host: str, binary: str | None) -> None:
                 try:
-                    readiness = launcher.readiness(provider, host=host, binary=binary)
+                    readiness = launcher.readiness(
+                        LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary
+                    )
                 except Exception as exc:
                     # An unexpected readiness exception still has to finish
                     # this startup generation. Feeding the diagnostic through
@@ -2717,6 +2728,9 @@ def _auto_research_worker_request(
         raise ValueError("The worker seat must name an existing node on its target.")
     reasoning = require_auto_research_child_profile_pick(
         service,
+        member_id=_context.episode.authorized_by.user_id
+        if _context.episode.authorized_by
+        else None,
         provider=arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,

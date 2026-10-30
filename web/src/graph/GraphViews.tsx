@@ -124,7 +124,7 @@ import {
   type ExperimentRouteIdentity,
 } from "../experiments/experimentBoardModel";
 import type {
-  ProviderLoginState,
+  ProjectLoginNotice,
   Machine,
   AgentRunConfig,
   AgentTask,
@@ -1161,8 +1161,9 @@ interface ExecutionProps {
   providerLabels?: Record<string, string>;
   /** Offers the Experiment agent picker on each Run row. */
   project?: ProjectSnapshot;
-  providerLogins?: ProviderLoginState[];
-  onProviderLoginVerified?: () => void;
+  providerLogins?: ProjectLoginNotice[];
+  viewerUserId?: string | null;
+  onOpenSignIns?: (state: ProjectLoginNotice) => void;
   machines?: Machine[];
   computeApiBase?: string;
   onOpenSettings?: () => void;
@@ -1225,7 +1226,8 @@ export function ExecutionView({
   providerLabels = {},
   project,
   providerLogins = [],
-  onProviderLoginVerified,
+  viewerUserId = null,
+  onOpenSignIns,
   machines = [],
   computeApiBase = "",
   onOpenSettings,
@@ -1419,7 +1421,11 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
-      <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
+      <ProviderLoginNotice
+        states={providerLogins}
+        viewerUserId={viewerUserId}
+        onOpenSignIns={onOpenSignIns}
+      />
       {onOpenSettings && (
         <ComputeRouteNotice
           // One instance per project, so a check's result or error never

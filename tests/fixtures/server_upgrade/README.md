@@ -167,3 +167,8 @@ versions. It is built by the exact boundary source from
 consolidation gained per-graph-target coverage and runs (storage migration 64),
 ending at migration 63 with the live Paper tables. It is built by the exact
 boundary source from `pre-paper-live-v34-22089be`.
+
+`pre-member-provider-logins-v36-f78a922` retains the last shape before per-member
+provider logins (storage migration 65), ending at migration 64 after per-target
+consolidation. It is built by the exact boundary source from
+`pre-consolidation-targets-v35-ceaa0d7`.

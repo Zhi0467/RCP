@@ -50,7 +50,7 @@ from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
 from rcp.storage import AppStore
-from rcp.storage.models import SpaceMachineRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, SpaceMachineRecord
 from rcp.transport.ssh import control_directory_candidate
 
 logger = logging.getLogger(__name__)
@@ -293,7 +293,8 @@ def _machine_view(
     projects = usage.projects.get(machine.host, [])
     readiness = {
         provider: launcher.cached_readiness(
-            provider, host=machine.host, binary=machine.provider_paths.get(provider)
+            LoginKey(provider, machine.host, MACHINE_LOGIN_ID),
+            binary=machine.provider_paths.get(provider),
         )
         for provider in PROVIDER_IDS
         if launcher is not None
@@ -680,7 +681,9 @@ def update_space_machine(
     )
     for provider, path in (provider_paths or {}).items():
         for binary in {machine.provider_paths.get(provider), path} - {None}:
-            catalog.launcher.invalidate_readiness(provider, host=machine.host, binary=binary)
+            catalog.launcher.invalidate_readiness(
+                LoginKey(provider, machine.host, MACHINE_LOGIN_ID), binary=binary
+            )
     if compute_changed:
         # Checked now, so the card this returns already shows the new routes.
         _refresh_machine_probes(store, catalog, updated)
@@ -762,7 +765,8 @@ def resolve_space_machine_provider(
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Unknown provider") from exc
     launcher = catalog.launcher
-    discovered = launcher.readiness(provider, host=machine.host, refresh=True)
+    login = LoginKey(provider, machine.host, MACHINE_LOGIN_ID)
+    discovered = launcher.readiness(login, refresh=True)
     if discovered.path_state == "unreachable":
         raise HTTPException(
             status_code=422, detail=discovered.reason or f"{machine.name} is unreachable"
@@ -776,7 +780,11 @@ def resolve_space_machine_provider(
     updated = store.update_space_machine(
         machine_id, provider_paths={provider: discovered.binary_path}
     )
-    launcher.readiness(provider, host=machine.host, binary=discovered.binary_path, refresh=True)
+    launcher.readiness(
+        login,
+        binary=discovered.binary_path,
+        refresh=True,
+    )
     return _one_machine_view(
         store, updated, _visible_project_ids(request, identity_access, store), launcher
     )

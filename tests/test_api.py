@@ -90,6 +90,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.models import LoginKey
 from rcp.transport import (
     BatchPublishFailed,
     RunLockCancelled,
@@ -337,12 +338,12 @@ def test_provider_warmup_starts_after_health_is_available(app, monkeypatch) -> N
         lambda: [("codex", "", "/opt/agents/codex")],
     )
 
-    def readiness(provider: str, *, host: str = "", binary: str | None = None):
-        calls.append((provider, host, binary))
+    def readiness(login: LoginKey, *, binary: str | None = None):
+        calls.append((login.provider, login.host, binary))
         entered.set()
         assert release.wait(TASK_SETTLE_TIMEOUT)
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             binary_path=binary,
@@ -384,10 +385,10 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypat
     def mark(provider: str, host: str, binary: str | None):
         calls.append(("mark", provider, host, binary))
 
-    def readiness(provider: str, *, host: str = "", binary: str | None = None):
-        calls.append(("readiness", provider, host, binary))
+    def readiness(login: LoginKey, *, binary: str | None = None):
+        calls.append(("readiness", login.provider, login.host, binary))
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             version="test-version",
@@ -4173,6 +4174,7 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
         provider="claude",
     )
     store = app.state.background_tasks.store
+    store_test_claude_token(store)
     operation_id = "pause-without-native-checkpoint"
     now = store.now()
     store.create_agent_task(

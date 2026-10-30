@@ -36,6 +36,10 @@ from rcp.server_ops.backup_integrity import (
     database_schema_sha256,
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
+from rcp.server_ops.provider_cleanup import (
+    delete_member_provider_credentials,
+    fence_member_provider_logins,
+)
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
 
@@ -46,6 +50,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
+        "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
+        "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",
+        "402916087cede254a0718cd0ed8ce47444238fa3b62752cdfc6286927e03280f",
+        "4428e911a42b063fad2f3d5fe8f1d28cd8f96c2d41584a49c997a1dfab61ea57",
+        "6104d46919173c5796f4402954359ca83b9ed9a63fdcdf4189205c77d748b6c4",
+        "6fc41d1de162a40ba97127937c2c7a4ed58c373f7b09d4e1829c6edcaae15833",
+        "a7b2a68a69bd609761e19d5c1b740ea7741f3bb705580553f35cd7c8c525144c",
+        "a96a0b57f05f228390f1de1d0fb9fba6e24bd15212eebfb2410a30ed5c2b1cc4",
+        "b4bf07bdbdf37682f9f18a0ae4423dbbd6a408256820b17673810c2b9d282128",
+        "c0a56eb2e93a1e454164aede5ad0135946bcca05f366a2bf66aaf3b6f971c852",
+        "fc9a5bbdce66e833cb6de4f82f8bbc9130f8403680457c6c50eea80b0a59f3f6",
         # Per-target consolidation (v64): fresh, immutable fixtures, and in-place upgrades.
         "8e5862b1bfafe8a9e5556405639b6ec8a615a15532d7eee9d6a0c68f1e1806d1",
         "562caa199e8c92719449de5201884e41d3a4d41686b3faddd8c412af5e757adc",
@@ -1528,6 +1544,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             store.begin_member_removal(
                 request.remove_stale_member, expected_boundary_sha256=preview.boundary_sha256
             )
+            # Fencing changes only this copy; credentials wait for both confirmations.
+            fence_member_provider_logins(store, request.remove_stale_member)
             store.complete_member_removal(request.remove_stale_member)
         members = tuple(
             RestoreMemberRosterEntry(
@@ -1556,6 +1574,11 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 members,
                 message="Review the archived authority and retained member/token inventory, then confirm both exact boundaries.",
             )
+        provider_cleanup_unreached = (
+            delete_member_provider_credentials(store, request.remove_stale_member)
+            if request.remove_stale_member
+            else ()
+        )
     with instance_lock(data, timeout=0), closing(store), ExitStack() as snapshots:
         from rcp.server_ops.deployment import InspectRequest, inspect
 
@@ -1780,6 +1803,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         return {
             "version": 1,
             "status": "prepared",
+            "provider_cleanup_unreached": list(provider_cleanup_unreached),
             "boundary_sha256": boundary,
             "roots": roots,
             "extra_previous_roots": extra_previous,

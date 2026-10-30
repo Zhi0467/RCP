@@ -18,6 +18,7 @@ from rcp.provider_skills import (
 )
 from rcp.providers import ProviderSkillProbe, profile_for
 from rcp.storage import AppStore
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
 
 
@@ -421,7 +422,9 @@ def test_skill_probe_auth_failure_is_durable(tmp_path, monkeypatch, diagnostic, 
     )
     snapshot = manager.refresh("codex", "", "/test/claude", _ready("codex", "/test/claude"))
     assert snapshot.status == "unavailable"
-    assert (store.provider_login_state("codex", "").state == "signed_out") is blocked
+    assert (
+        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+    ) is blocked
 
 
 def test_third_provider_owns_skill_messages_over_shared_jsonrpc_transport(tmp_path, monkeypatch):

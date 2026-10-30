@@ -7,6 +7,7 @@ import {
 import { useMachinePower } from "./useMachinePower";
 import { machinePowerWarnings } from "./machinePower";
 import { ProviderLoginNotice } from "./ProviderLoginNotice";
+import { waitsOnOtherMember } from "./providerLoginsModel";
 import { api, loadProjectDeletionPreview, loadProviderLogins } from "../core/api";
 import {
   Check,
@@ -34,6 +35,7 @@ import type { ProjectTab } from "./projectTabs";
 import type { ResolvedTheme } from "../ui/theme";
 import type {
   MachinePowerStatus,
+  ProjectLoginNotice,
   ProviderLoginState,
   IdentityResponse,
   ProjectCard,
@@ -71,6 +73,7 @@ interface Props extends AppearancePickerProps {
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: () => void;
+  onOpenSignIns?: (state: ProjectLoginNotice) => void;
   voiceControl?: ReactNode;
   textScale?: TextScaleControl;
 }
@@ -349,6 +352,7 @@ export function ProjectLanding({
   onRequestIdentityName,
   onExitTeamSpace,
   onOpenSpaceSettings,
+  onOpenSignIns,
   voiceControl,
   textScale,
   themeChoice,
@@ -593,7 +597,14 @@ export function ProjectLanding({
       <main className="landing-main">
         <MachinePowerWarning status={machinePower.status} onOpenSettings={onOpenSpaceSettings} />
         {machinePower.error && <p role="alert">{machinePower.error}</p>}
-        <ProviderLoginNotice states={providerLogins} />
+        <ProviderLoginNotice
+          // Another member's own login is theirs to sign in, not this viewer's notice.
+          states={providerLogins.filter(
+            (state) => !waitsOnOtherMember(state, identity?.user.user_id ?? null),
+          )}
+          viewerUserId={identity?.user.user_id ?? null}
+          onOpenSignIns={onOpenSignIns}
+        />
         {loginError && <p role="alert">{loginError}</p>}
         <div
           className={`space-group-title-row${group && actions.failure?.id === group.id ? " group-failed" : ""}`}

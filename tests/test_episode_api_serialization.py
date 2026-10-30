@@ -27,6 +27,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .episode_report_helpers import stored_report
 
@@ -991,7 +992,10 @@ def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> No
     episode, root = _auto_episode(store, "signed-out-report")
     _begin_report(store, episode, root, ending="completed")
     store.mark_provider_login_failed(
-        "codex", "", generation=0, detail="Sign in again.", source="report"
+        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="Sign in again.",
+        source="report",
     )
     response = serialize_episode(
         store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
@@ -1009,7 +1013,9 @@ def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(t
     episode, root = _auto_episode(store, "tokenless-report")
     _begin_report(store, episode, root, ending="completed", provider="claude")
     # The durable row still says signed in; the token the launch needs is gone.
-    store.mark_provider_login_verified("claude", "", member_id="member", detail="Verified.")
+    store.mark_provider_login_verified(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
+    )
     response = serialize_episode(
         store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
     )
@@ -1042,7 +1048,10 @@ def test_provider_logins_cover_only_profile_machines(manifest, tmp_path) -> None
     )
     for provider, host in (("codex", "gpu.example"), ("claude", "agent.example")):
         store.mark_provider_login_failed(
-            provider, host, generation=0, detail="Sign in", source="turn"
+            LoginKey(provider, host, MACHINE_LOGIN_ID),
+            generation=0,
+            detail="Sign in",
+            source="turn",
         )
     accounts = _login_accounts(store, manifest)
     assert ("codex", "gpu.example") not in accounts
@@ -1056,7 +1065,10 @@ def test_provider_logins_keep_an_account_holding_queued_work(manifest, tmp_path)
     _project(store)
     manifest.machines.append(MachineConfig(alias="gpu", host="gpu.example"))
     store.mark_provider_login_failed(
-        "claude", "gpu.example", generation=0, detail="Sign in", source="turn"
+        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID),
+        generation=0,
+        detail="Sign in",
+        source="turn",
     )
     store.create_agent_task(
         AgentTaskRecord(

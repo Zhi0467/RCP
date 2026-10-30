@@ -10,6 +10,7 @@ from rcp.agents.provider_environment import ProviderProcessEnvironment
 
 if TYPE_CHECKING:
     from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.storage.models import ProviderLoginStateRecord
 
 
 @dataclass(frozen=True)
@@ -57,14 +58,23 @@ class ProviderAuthentication:
         """Whether RCP signs this provider in; otherwise the CLI's own login applies."""
         return bool(self.methods)
 
-    def credential_available(self, credentials: ProviderCredentialStore, host: str) -> bool:
+    def credential_available(
+        self,
+        credentials: ProviderCredentialStore,
+        host: str,
+        login_id: str,
+        *,
+        login_state: ProviderLoginStateRecord | None = None,
+    ) -> bool:
         return True
 
-    def credential_metadata(self, credentials: ProviderCredentialStore, host: str) -> dict | None:
+    def credential_metadata(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
+    ) -> dict | None:
         return None
 
     def process_environment(
-        self, credentials: ProviderCredentialStore, host: str
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
     ) -> ProviderProcessEnvironment:
         return ProviderProcessEnvironment()
 
@@ -84,6 +94,7 @@ class ProviderAuthentication:
         self,
         credentials: ProviderCredentialStore,
         host: str,
+        login_id: str,
         token: str,
         *,
         member_id: str,
@@ -91,14 +102,18 @@ class ProviderAuthentication:
     ) -> None:
         raise ValueError("Token entry is not supported by this provider.")
 
-    def prepare_verification(self, credentials: ProviderCredentialStore, host: str) -> None:
+    def prepare_verification(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str
+    ) -> None:
         pass
 
-    def verified(self, credentials: ProviderCredentialStore, host: str, *, now: str) -> None:
+    def verified(
+        self, credentials: ProviderCredentialStore, host: str, login_id: str, *, now: str
+    ) -> None:
         pass
 
     def sign_out(
-        self, credentials: ProviderCredentialStore, host: str, binary: str
+        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
     ) -> list[str] | None:
         raise ValueError("Sign-out is not supported by this provider.")
 

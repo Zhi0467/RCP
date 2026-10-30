@@ -1289,22 +1289,33 @@ ending, and report. One card represents the chain; Add N turns follows
 `episode_id`; its newest member is `current_episode_id`. Settled `not_started`
 wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
 
-`GET /api/providers/logins` lists machine accounts, dependent project machines,
-secret-free credential summaries, labels, supported sign-in methods, and active
-sign-ins. The project snapshot's `provider_logins` lists only accounts an agent
-uses: each execution profile's provider on the base machine, plus any
-account holding this project's parked work (queued tasks, provider-auth
-recoveries, the current failed Experiment turn, undelivered watcher groups). A
-machine no profile runs on raises no notice. Signed-out accounts get one notice
-on Runs/landing with provider, machine, time, bounded reason, Verify sign-in, a
-Settings link, and an icon-only dismiss that hides that sign-out on this device
-until the account signs out again. Space Settings offers only the
-backend's methods: device-code flow with polling, one-shot token entry verified
-by a real request, Verify, and Sign out. Verify is hidden while a token is unsent
-or a token-only account has none saved. Provider names never select UI behavior.
+`GET /api/providers/logins` lists every login, shared and own, on each space
+machine and project target host, with secret-free credential summaries, labels,
+supported sign-in methods, the space machine names on that host, and active
+sign-ins ([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
+The project snapshot's `provider_logins` lists, for the viewer, the login each
+agent's launch would use: each execution profile's provider on the base machine,
+resolved through the viewer's setting. Parked work (queued tasks,
+provider-auth recoveries, the current failed Experiment turn, undelivered
+watcher groups) adds its provider and host, resolved the same way; a parked
+Codex session keeps the login it is bound to. A refusal that names no login lists
+every login of the refused source. Two members can therefore see different rows.
+Apart from parked work, a machine no profile runs on raises no notice, and a provider whose login RCP
+does not manage adds no snapshot row. Runs merges these rows with the live Settings list, so a sign-in
+there clears the notice at once. The project landing instead reads the live list's
+rows marked `agent_used`, which spans every project the viewer belongs to, so it
+has no missing-own-login row.
+Each signed-out login raises the notice described with the Sign-ins fold below;
+its icon-only dismiss hides that sign-out on this device until the login signs
+out again (a missing-own-login row, until an own login exists). Space Settings offers only the backend's methods: device-code flow
+with polling and a Cancel icon for its starter, one-shot token entry verified by
+a real request, Check sign-in, Sign out, and, on added shared logins, Remove
+from shared, confirmed once with the login's running count. Check sign-in is hidden while a token is unsent or a token-only
+account has none saved. Provider names never select UI behavior.
 Generic routes reject unsupported actions/fields; GET only reads. Successful
 verification reconciles parked work even after leaving the page, with durable
-repair and no duplicate launches. Any signed-in member may act and is attributed.
+repair and no duplicate launches. Any signed-in member may act on a shared login;
+only the owner acts on an own login. Durable actions record the member.
 
 Personal macOS Space Settings reads `GET /api/machine-power`: idle-hold toggle,
 demand/status, opt-in lid-mode install, and Uninstall. `PUT` changes `idle_hold`
@@ -1535,8 +1546,8 @@ moves forward. Markers are not moved with a transferred project.
 Paper owns the co-edited file tree, LaTeX and Typst preview, and coach change
 cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
-server status (team spaces), machine cards with their names (renamed in place),
-provider logins, and the personal space's clear-all-caches. Project Settings owns
+server status (team spaces), machine cards with their names (renamed in place)
+and their Sign-ins fold, and the personal space's clear-all-caches. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
@@ -1562,6 +1573,42 @@ repositories, and team repositories whose provisioning evidence cannot be
 resolved, omit all three fields: nothing claims a server-only state or offers
 Connect without proof. These fields describe RCP-managed provisioning, not
 discovery of a personal checkout's Git remotes.
+
+Each machine card's **Sign-ins** fold shows one raised panel per provider. Inside
+it, two sunken trays, "Yours" and "Shared on <machine>", hold raised sign-in
+cards; left to right is the order the member's work tries them, and at phone
+width they stack top to bottom. Each tray header has a switch and a round swap
+button sits between the trays; each change writes the setting at once:
+
+| Stored value | Trays in order | Yours switch | Shared switch | Swap |
+| --- | --- | --- | --- | --- |
+| `own_then_shared` | Yours, Shared | on | on | stores `shared_then_own` |
+| `shared_then_own` | Shared, Yours | on | on | stores `own_then_shared` |
+| `own` | Yours, Shared | on, locked | off | disabled |
+| `shared` | Shared, Yours | off | on, locked | disabled |
+
+Turning the other group back on stores "the tray that is on, then the other". An
+off tray stays visible, faded. A ＋ slot ends the Shared tray, and the Yours tray
+while the member has no own login; adding starts a device sign-in at once or
+opens token entry on the new card. The machine's card is named "Machine sign-in";
+an added shared card is named by who added it, with the date on hover; the
+viewer's own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
+signing in (device code and link only to the starter; others see who), Signed out
+(flat and dashed, with no label; a Sign in button on the viewer's own and shared
+cards), Usage limit (amber edge; a limited login is still used
+when nothing else is free), or Ready. A failed action marks the card or panel
+with a red edge and one Retry icon whose hover is the error. Only the viewer's own and shared cards act: apart from Sign in, their actions sit
+behind a ⋯
+shown on hover and always on touch screens and at phone width, hidden while the
+card signs in, drains or takes a token. Explanations are hover text only.
+Personal and team spaces draw the same fold; a provider whose login RCP does not
+manage, such as OpenCode, shows only its machine sign-in card, without state or
+actions. A collapsed Members row, shown when the space has other members, counts
+their signed-in own logins. A signed-out login's notice is one row: key mark,
+provider, the host when remote, an icon (hover "Sign-ins") that opens this fold,
+and Dismiss. On Runs, work waiting on another member's own login names them
+instead of the icon; the landing page omits those rows. A failed list load marks
+the fold itself.
 
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
 card view carries its settings (`job_manager` of `slurm`, `none`, or null while

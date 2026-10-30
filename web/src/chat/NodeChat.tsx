@@ -635,7 +635,7 @@ export function NodeChat({
   const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
   modeRef.current = mode;
   // A Work turn also needs the provider's Work probe; Discuss does not.
-  const providerReady = launchProviderReady(project, config, mode === "work");
+  const providerReady = launchProviderReady(project, config, mode === "work", Boolean(sessionId));
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
