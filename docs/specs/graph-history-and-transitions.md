@@ -178,14 +178,16 @@ recorded `status` alone. Replay computes trace events under their named ruleset.
 
 ## Rule closure
 
-A closed backend registry gives each rule a stable id, typed trigger, deterministic
-read set, outputs, and order. Rules cannot depend on time, randomness, UI, provider
-output, or SQLite. Preparation applies initiating operations in order, appends
-generated operations, and evaluates to closure. A bounded firing guard rejects
-cycles, contradictory effects, or nontermination without partial append.
+One backend rule, `experiment.guidance-validity.v2`, generates operations; replay
+also accepts v1. It cannot depend on time, randomness, UI, provider output, or
+SQLite. Preparation applies initiating operations in order, then derives guidance
+actions in one pass and appends them. More than 128 generated actions reject the
+transition without partial append.
 
 Rules derive control and readiness, invalidate affected guidance, emit lifecycle
-events, and build final projections. Only open Blockers gate Experiments. Rules
+events, and build final projections. Open Blockers and governing Decisions that
+are undecided, lack a selected option, or have a pending Proposal gate
+Experiments. Rules
 do not write scientific prose, infer phases or Hypotheses, choose Decisions,
 create Evidence, approve Proposals, delete resolved Blockers, or serve layout.
 

@@ -10,7 +10,7 @@ human job controls.
 
 The base is the machine of the canonical state repository. Every agent profile
 runs beside that repository's `.research/`. Configuration rejects an off-base
-`run_on`.
+`run_on`, except the Paper Coach's, which loading rewrites to the base machine.
 [Manifest.base_machine and require_base_machine](../../src/rcp/config.py) own
 this rule. Provider launch routing is described by
 [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).

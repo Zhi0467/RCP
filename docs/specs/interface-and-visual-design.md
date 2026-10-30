@@ -293,8 +293,8 @@ main. It opens orchestrators in place. There is no graph filter or tags for bran
 or role. User tags remain. Children in the active lineage show Working or Done.
 Attention belongs to the orchestrator. Posting and ownership follow the API spec.
 
-Entry opens the board unless a link selects a chat. Its icon returns to the board.
-Leaving Agents resets it. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
+Entry opens the board unless a link selects a chat or a chat was left open in
+this project. Inside Agents, its tab returns to the board. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
 folding is per viewer.
 Cards show a logo or spinner, title, provider, model, effort, type, state, age,
 and offered recovery. Branch cards also show their source chat.
@@ -304,7 +304,7 @@ Clicking a card opens chat with the list folded and the composer focused.
 Mouse dragging, Alt+Up, or Alt+Down reorders cards within columns, with pins first.
 The order is stored per project in the browser.
 Cross-column moves only archive or restore eligible chats.
-Working chats cannot be archived. Branch episode cards open Runs and cannot move.
+Working chats cannot be archived.
 Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.
 

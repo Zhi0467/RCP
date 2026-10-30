@@ -152,8 +152,9 @@ After every successful or replayed Apply, keyed or final, and at settlement, RCP
 raises idempotent `consolidation_added` notices for current Evidence that the run's
 canonical Patches on its target created, not a graph diff. Agent keys cannot use
 the reserved `rcp:` prefix or raise this kind. Failure to record a hold produces a
-warning without undoing Apply. Unreadable canonical history leaves a launched run's
-settlement pending until verification succeeds.
+warning without undoing Apply. If the run's canonical Patches cannot be read,
+settlement waits. If history still cannot be verified at settlement, the run fails
+as `history_unavailable` without coverage.
 
 The selected target's open or addressing flags appear in Inbox.
 `consolidation_added` and `unverified` are notice-only. They offer no Address action
