@@ -21,6 +21,7 @@ from rcp.core.transition_models import (
     ProjectCountsProjection,
     ProposalActionLine,
 )
+from rcp.core.validation.outcome_edges import stale_edge_ids
 from rcp.core.validation.proposals import proposal_is_stale, proposal_refresh_refusal
 
 
@@ -76,6 +77,7 @@ def project_graph_attention(state: GraphState) -> GraphAttentionProjection:
             for proposal_id in stale_ids
             if proposal_refresh_refusal(state, state.proposals[proposal_id]) is None
         ],
+        stale_edge_ids=stale_edge_ids(state),
         decision_prior_choices=decision_prior_choices(state),
     )
 

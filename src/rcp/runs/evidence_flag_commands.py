@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from rcp.agents.command_protocol import CommandResponse, FlagCommandRequest
-from rcp.core.models import GraphState
 from rcp.core.operations import CreateNodesOperation
-from rcp.core.project_types import project_type_of
+from rcp.core.validation.outcome_edges import is_current_evidence
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS
 from rcp.service import ProjectService
 from rcp.storage import AppStore
@@ -16,17 +15,6 @@ from rcp.transport import StateUnavailable
 
 RCP_FLAG_KEY_PREFIX = "rcp:"
 _ADDED_FINDING = "Consolidation added this Evidence."
-
-
-def is_current_evidence(state: GraphState, node_id: str) -> bool:
-    """Flags are raised and addressed only on Evidence that is present and not retired."""
-    node = state.nodes.get(node_id)
-    project_type = project_type_of(state)
-    return (
-        node is not None
-        and project_type.is_outcome(node.type)
-        and getattr(node, project_type.lifecycle_field(node.type)) != project_type.retired_value
-    )
 
 
 def handle_flag(
