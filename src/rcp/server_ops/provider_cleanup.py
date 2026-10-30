@@ -35,33 +35,33 @@ def remove_remote_credential(provider: str, login_id: str) -> None:
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
     """Fence own logins, then delete credentials nothing runs on; return unreached hosts."""
-    from rcp.runs.provider_login import bound_running_count
+    from rcp.runs.provider_login import bound_running_count, delete_removed_credential
     from rcp.storage.models import LoginKey
 
     # Include removed rows: later advance passes must retry their credentials.
     with store.connection() as connection:
         rows = connection.execute(
-            "SELECT provider, host, login_id FROM provider_login_states WHERE member_id = ?",
+            "SELECT provider, host, login_id, removed_at FROM provider_login_states "
+            "WHERE member_id = ?",
             (member_id,),
         ).fetchall()
     logins = [LoginKey(row["provider"], row["host"], row["login_id"]) for row in rows]
-    for login in logins:
+    for row, login in zip(rows, logins, strict=True):
+        if row["removed_at"] is None:
+            # Draining marks the row for reconcile_login_removals, which retries a
+            # pending credential after member removal has completed.
+            store.set_provider_login_draining(login)
         store.finish_provider_login_removal(login, member_id=member_id)
     with store.connection() as connection:
         connection.execute("DELETE FROM provider_login_settings WHERE user_id = ?", (member_id,))
 
-    # A turn already running on a fenced login keeps its credential until it
-    # ends; a later advance pass deletes it.
-    return tuple(
-        sorted(
-            {
-                login.host
-                for login in logins
-                if not bound_running_count(store, login)
-                and not cleanup_provider_login_credential(store, login)
-            }
-        )
-    )
+    # A turn already running on a fenced login keeps its credential until it ends.
+    unreached: set[str] = set()
+    for login in logins:
+        running = bool(bound_running_count(store, login))
+        if not delete_removed_credential(store, login, defer=running) and not running:
+            unreached.add(login.host)
+    return tuple(sorted(unreached))
 
 
 def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:

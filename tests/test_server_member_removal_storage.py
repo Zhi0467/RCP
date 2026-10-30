@@ -384,6 +384,14 @@ def test_member_advance_reports_unreached_cleanup_even_on_completion(tmp_path, m
     assert coordinator.reconcile_pending() == ()
     coordinator.advance(bob.user_id, boundary_sha256=boundary)
     assert len(attempts) == 1
+    # After completion the removal reconciler, which runs at startup, retries it.
+    from rcp.agents import AgentLauncher
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.runs.provider_login import reconcile_login_removals
+
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    reconcile_login_removals(store, launcher)
+    assert len(attempts) == 2
 
 
 def test_pending_member_cleanup_retries_removed_login_credentials(tmp_path, monkeypatch) -> None:

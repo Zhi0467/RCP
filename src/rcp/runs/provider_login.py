@@ -398,7 +398,7 @@ def remove_shared_login(
     with launcher.credential_gate.hold_blocking(key):
         if not bound_running_count(store, key):
             store.finish_provider_login_removal(key, member_id=member_id)
-            _delete_removed_credential(store, key)
+            delete_removed_credential(store, key)
     return store.provider_login_state(key)
 
 
@@ -417,19 +417,22 @@ def reconcile_login_removals(store: AppStore, launcher: AgentLauncher) -> None:
             if bound_running_count(store, key):
                 continue
             store.finish_provider_login_removal(key)
-            _delete_removed_credential(store, key)
+            delete_removed_credential(store, key)
 
 
 _CLEANUP_PENDING = "Sign-in removed. Remote credential deletion is pending; RCP will retry."
 
 
-def _delete_removed_credential(store: AppStore, key: LoginKey) -> None:
-    """Delete only the credential. Session folders and provider state survive."""
-    detail = (
-        "Sign-in removed." if cleanup_provider_login_credential(store, key) else _CLEANUP_PENDING
-    )
+def delete_removed_credential(store: AppStore, key: LoginKey, *, defer: bool = False) -> bool:
+    """Delete only the credential, or with `defer` leave it pending; False if not deleted.
+
+    A pending row with `draining_since` set is what `reconcile_login_removals`
+    retries. Session folders and provider state survive.
+    """
+    deleted = not defer and cleanup_provider_login_credential(store, key)
     with store.connection() as connection:
         connection.execute(
             "UPDATE provider_login_states SET detail=? WHERE provider=? AND host=? AND login_id=?",
-            (detail, *key),
+            ("Sign-in removed." if deleted else _CLEANUP_PENDING, *key),
         )
+    return deleted

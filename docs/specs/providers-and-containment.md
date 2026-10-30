@@ -1093,11 +1093,11 @@ Member removal fences and retains own login rows, deletes member settings and
 removes credentials without deleting sessions. Shared logins stay. A credential
 under a running turn is kept until that turn ends; each advance cleans after its
 completion check, so the completing pass finds none of the member's turns
-running. A credential still under another member's running Codex session at
-completion is not retried. Pending removal retries remote deletion on each
+running. Pending removal retries remote deletion on each
 advance, returning unreached hosts in `provider_cleanup_unreached`, including the
-completing pass; unreachable hosts do not block completion, and once removal
-completes their credentials are not retried. Restore's
+completing pass; unreachable hosts do not block completion. Fencing also marks
+each own login draining, so after completion the removal reconciler retries any
+credential still pending, as for a shared removal. Restore's
 stale-member removal uses the same cleanup.
 
 ### Member sign-in settings and selection
@@ -1191,11 +1191,11 @@ removal retains the historical row and its member attribution. Assignment clocks
 settings do.
 
 Claude resolves at each turn boundary. Unhealthy bound work waits; a removed
-Codex binding refuses the session. A transport reattempt or graph repair whose
-parent's login was removed parks as `provider_auth` until a human Retry. Draining logins admit no new choices but remain
+Codex binding refuses the session. A removed parent login stops pinning its
+transport reattempt or graph repair, which then resolves like a new turn. Draining logins admit no new choices but remain
 usable by bound work until its running turns end, and for Codex also its unpaused
-episodes. Removal retains session files and deletes only credentials; a shared removal's
-unreachable remote cleanup remains pending for reconciliation. Removal synchronously settles
+episodes. Removal retains session files and deletes only credentials; unreachable remote
+cleanup remains pending for reconciliation. Removal synchronously settles
 any pending device sign-in before taking the credential gate. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.
 

@@ -633,7 +633,6 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
 def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     restore_request, tmp_path, monkeypatch
 ):
-    from rcp.server_ops import provider_cleanup
     from rcp.storage.models import LoginKey
 
     value, _, previous = restore_request
@@ -672,7 +671,7 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
         cleanups.append(key)
         return False
 
-    monkeypatch.setattr(provider_cleanup, "cleanup_provider_login_credential", unreachable)
+    monkeypatch.setattr("rcp.runs.provider_login.cleanup_provider_login_credential", unreachable)
     review = prepare_restore(RestorePrepareRequest(**value))
     result = prepare_restore(_confirm(value, review, tmp_path / "removed-member-ready"))
     assert result["status"] == "prepared"
