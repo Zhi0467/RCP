@@ -29,7 +29,6 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.report import ValidationReport
 from rcp.history import HistoryManager
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID
 
 if TYPE_CHECKING:
     import pytest
@@ -259,6 +258,8 @@ def write_local_test_manifest(directory: Path) -> Path:
 
 def store_test_claude_token(store: AppStore, host: str = "") -> None:
     """Give fake Claude execution an explicit managed credential."""
+    # Imported here: release-update bases import this module with older `rcp`.
+    from rcp.storage.models import MACHINE_LOGIN_ID
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
         "claude",
