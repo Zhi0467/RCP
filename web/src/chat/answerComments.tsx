@@ -451,17 +451,28 @@ export function useAnswerComments({
 
   const focusComment = () => window.requestAnimationFrame(() => commentRef.current?.focus());
 
+  /** Removes the mark of the outside selection the open comment came from. */
+  const releaseExternalSelection = () => {
+    externalSelectionClear.current?.();
+    externalSelectionClear.current = null;
+  };
+
   /** Opens the composer on `next`, replacing the open one; focus returns to `origin` when
    * it closes. The open comment's mark goes and its text carries over, as does text kept
    * from one closed for the reader, unless `draft` replaces it. */
   const openComposer = (
     next: AnswerCommentComposer,
-    { draft, origin }: { draft?: string; origin?: HTMLElement | null } = {},
+    {
+      draft,
+      origin,
+      clear,
+    }: { draft?: string; origin?: HTMLElement | null; clear?: () => void } = {},
   ) => {
-    const carried = composer?.step === "comment" ? comment : keptDraft.current;
+    // While any composer is open, `comment` holds its text, the kept text included.
+    const carried = composer ? comment : keptDraft.current;
     keptDraft.current = "";
-    externalSelectionClear.current?.();
-    externalSelectionClear.current = null;
+    releaseExternalSelection();
+    externalSelectionClear.current = clear ?? null;
     originRef.current = origin ?? null;
     setComment(draft ?? carried);
     onError(null);
@@ -526,8 +537,10 @@ export function useAnswerComments({
       next.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
         ? `${next.selectedText.slice(0, MAX_CHAT_ANNOTATION_TEXT_LENGTH - 1)}…`
         : next.selectedText;
-    openComposer({ ...next, step: "comment", selectedText, position: null }, { draft, origin });
-    externalSelectionClear.current = clear ?? null;
+    openComposer(
+      { ...next, step: "comment", selectedText, position: null },
+      { draft, origin, clear },
+    );
     focusComment();
   };
 
@@ -583,8 +596,7 @@ export function useAnswerComments({
     keptDraft.current = keepText ? comment : "";
     const origin = originRef.current;
     originRef.current = null;
-    externalSelectionClear.current?.();
-    externalSelectionClear.current = null;
+    releaseExternalSelection();
     setComposer(null);
     setComment("");
     if (focus) {

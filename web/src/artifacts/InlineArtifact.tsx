@@ -144,8 +144,6 @@ export function InlineArtifact({
   useEffect(() => {
     if (selectable || !commentModeRef.current) return;
     setCommentMode(false);
-    shell.cancel();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when commenting is withdrawn
   }, [selectable]);
   if (!artifact)
     return (
@@ -223,11 +221,7 @@ export function InlineArtifact({
                 : "Select a part of this artifact to comment on it"
             }
             aria-label={commentMode ? "Done commenting" : "Comment on a part"}
-            onClick={() => {
-              // Leaving comment mode clears the selection without a message from the frame.
-              if (commentMode) shell.cancel();
-              setCommentMode(!commentMode);
-            }}
+            onClick={() => setCommentMode(!commentMode)}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>

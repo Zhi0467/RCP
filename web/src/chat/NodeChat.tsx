@@ -1266,7 +1266,7 @@ export function NodeChat({
   const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
     const open =
       comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (open?.artifact_id === artifact.artifact_id) comments.closeComment();
+    if (open?.artifact_id === artifact.artifact_id) comments.closeComment({ keepText: true });
     const stale = annotations.filter(
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
     );

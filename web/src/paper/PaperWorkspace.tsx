@@ -248,14 +248,13 @@ export function PaperWorkspace({
   const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
-  // A comment opened from the preview, the one kind that names where it came from,
-  // points at the file shown then; showing another file closes it and keeps its text.
+  // A comment opened from the preview points at the file shown then; showing another
+  // file closes it and keeps its text. Naming where it came from stands in for "from
+  // the preview": Coach transcript comments carry no `where`.
   const openPreviewWhere =
     comments.composer?.step === "comment" ? comments.composer.where : undefined;
-  const openPreviewRef = useRef(openPreviewWhere);
-  openPreviewRef.current = openPreviewWhere;
   useEffect(() => {
-    if (openPreviewRef.current) comments.closeComment({ keepText: true });
+    if (openPreviewWhere) comments.closeComment({ keepText: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
   }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.

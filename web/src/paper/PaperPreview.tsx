@@ -200,11 +200,7 @@ function HtmlPreview({
               aria-pressed={commentMode}
               aria-label="Comment on the page"
               title="Comment on the page"
-              onClick={() => {
-                // Leaving comment mode clears the frame's mark, and with it the comment.
-                if (commentMode) shell.cancel();
-                setCommentMode(!commentMode);
-              }}
+              onClick={() => setCommentMode(!commentMode)}
             >
               <MessageSquarePlus size={16} />
             </button>

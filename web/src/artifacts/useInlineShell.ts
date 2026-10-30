@@ -21,19 +21,20 @@ interface InlineShellHandlers {
 }
 
 /** Talks to one inline viewer shell frame: reads its messages and keeps its comment mode.
+ * Leaving comment mode reports the frame's selection gone.
  *
- * Returns the frame's `onLoad`, which repeats the comment mode a reload forgot, and
- * `cancel`, which reports the frame's selection gone, as leaving comment mode does. */
+ * Returns the frame's `onLoad`, which repeats the comment mode a reload forgot. */
 export function useInlineShell(
   frame: RefObject<HTMLIFrameElement | null>,
   commentMode: boolean,
   handlers: InlineShellHandlers,
-): { onLoad: () => void; cancel: () => void } {
+): { onLoad: () => void } {
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
-  // Counts the frame's selections, so the clear of a replaced one leaves the new one alone.
+  // Counts the frame's selection messages, cancels included, so the clear of a
+  // replaced or cancelled selection does nothing to what the frame shows now.
   const selections = useRef(0);
   // The clear of the selection the frame shows, which a cancel names.
   const shown = useRef<(() => void) | null>(null);
@@ -96,7 +97,8 @@ export function useInlineShell(
     );
   useEffect(() => {
     postCommentMode(commentMode);
+    if (!commentMode) cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the frame ref is stable
   }, [commentMode]);
-  return { onLoad: () => postCommentMode(commentModeRef.current), cancel };
+  return { onLoad: () => postCommentMode(commentModeRef.current) };
 }
