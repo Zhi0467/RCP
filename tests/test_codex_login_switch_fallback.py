@@ -232,6 +232,30 @@ def test_fresh_or_unrelated_failure_never_requests_fallback(accounts, native_ses
     assert not accounts.store.agent_task_has_receipt("ordinary", REFUSAL)
 
 
+def test_remote_refusal_locates_transcript_in_login_shell(accounts, monkeypatch):
+    session = str(uuid4())
+    _task(accounts.store, "remote", LoginKey("codex", "worker", ""), session=session)
+    execution = AgentTaskExecution("remote", accounts.store, AgentProcessControl())
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        # A login shell may print before the answer.
+        return subprocess.CompletedProcess(argv, 0, 'motd\n"/home/u/.codex/sessions/r.jsonl"\n', "")
+
+    monkeypatch.setattr("rcp.runs.codex_resume.subprocess.run", run)
+    record_refusal(
+        execution,
+        provider="codex",
+        session_id=session,
+        host="worker",
+        error='{"code":"invalid_encrypted_content"}',
+    )
+    assert shlex.split(calls[0][-1])[:2] == ["bash", "-lic"]
+    receipt = next(r for r in accounts.store.agent_task_receipts("remote") if r.category == REFUSAL)
+    assert receipt.payload["transcript_path"] == "/home/u/.codex/sessions/r.jsonl"
+
+
 def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatch):
     from rcp.runs.tasks.discuss import stream_discuss_run
 

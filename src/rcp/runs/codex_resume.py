@@ -61,8 +61,9 @@ def _record_refusal(
             "import json, sys; print(json.dumps(locate_codex_transcript(sys.argv[1])))"
         )
         command = shlex.join(["python3", "-c", script, session_id])
+        # The same login shell that prepares the home sees its configured CODEX_HOME.
         result = subprocess.run(
-            ssh_arguments(host, command),
+            ssh_arguments(host, shlex.join(["bash", "-lic", command])),
             capture_output=True,
             text=True,
             timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
@@ -70,7 +71,9 @@ def _record_refusal(
         )
         if result.returncode:
             raise OSError("The refused Codex transcript could not be located on its host.")
-        path = json.loads(result.stdout)
+        # Login-shell startup may print first; the answer is the last line.
+        lines = result.stdout.strip().splitlines()
+        path = json.loads(lines[-1]) if lines else None
     else:
         path = locate_codex_transcript(session_id)
     if not isinstance(path, str) or not path:
