@@ -203,8 +203,8 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     assert fresh_request.message == request.message
     assert fresh_request.run_truth_scope == request.run_truth_scope
     assert json.dumps(str(transcript)) in start_context(execution, "")
-    with pytest.raises(ValueError):
-        start_context(execution, "other.invalid")
+    # A retry rebound to another machine starts without the unreadable pointer.
+    assert start_context(execution, "other.invalid") == ""
     retry_refused_resume(tasks, previous)
     retry_refused_resume(tasks, child)
     assert len(calls) == 1

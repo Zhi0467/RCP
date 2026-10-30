@@ -98,7 +98,8 @@ def start_context(execution: AgentTaskExecution | None, host: str) -> str:
     for receipt in execution.store.agent_task_receipts(task.parent_operation_id):
         if receipt.category == REFUSAL:
             if receipt.payload.get("host") != host:
-                raise ValueError("The old Codex transcript belongs to another execution host.")
+                # A retry rebound to another machine cannot read that host's file.
+                return ""
             path = receipt.payload["transcript_path"]
             context = (
                 f"Previous conversation transcript: {json.dumps(path)}. "
