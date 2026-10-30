@@ -1364,6 +1364,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         "proposal_actions": {},
         "stale_proposal_ids": [],
         "refreshable_proposal_ids": [],
+        "stale_edge_ids": [],
         "decision_prior_choices": {},
     }
     assert {

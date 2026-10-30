@@ -417,6 +417,53 @@ def _prepare_data(
                 ],
             )
         )
+        # Each collection the merge carries: new Evidence and its assessed edge, an
+        # edge removal and a glossary term, all written by this release.
+        branch.append(
+            Patch(
+                kind="refresh",
+                author="agent",
+                summary="Record a rerun and define its term.",
+                run_truth_scope=["paper"],
+                repositories_read=["paper"],
+                ops=[
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": "ev/recovery-rerun",
+                                "type": "evidence",
+                                "title": "A rerun kept every patch",
+                                "observation": "A second recovery kept every canonical patch.",
+                                "origin": "internal_run",
+                            }
+                        ],
+                    },
+                    {
+                        "op": "create_edges",
+                        "edges": [
+                            {
+                                "source": "ev/recovery-rerun",
+                                "target": "hyp/recovery-keeps-history",
+                                "relation": "supports",
+                                "explanation": "The rerun repeats the result.",
+                                "assessment": {"relevance": "direct", "weight": "moderate"},
+                            }
+                        ],
+                    },
+                    {"op": "remove_edges", "edge_ids": ["exp/recovery::blocked_by::blk/recovery"]},
+                    {
+                        "op": "upsert_glossary",
+                        "terms": [
+                            {
+                                "term": "Canonical patch",
+                                "plain_definition": "One recorded graph change.",
+                            }
+                        ],
+                    },
+                ],
+            )
+        )
         merge_branch_id = branch.branch_id
     operation_id = str(uuid.uuid4())
     chat_id = str(uuid.uuid4())

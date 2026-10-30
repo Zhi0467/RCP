@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from rcp.core import materialize
 from rcp.core.authority import WriteAuthority
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import RELATION_SPEC, GraphState, Patch, ProjectNode, graph_fields
@@ -343,7 +344,7 @@ def _merge_oracle(base, source, destination, plan, answers):
         for conflict in plan.conflicts
         if conflict.kind == "field"
     }
-    for collection in ("nodes", "edges"):
+    for collection in ("nodes", "edges", "proposals", "glossary"):
         before, left, right = (getattr(state, collection) for state in (base, source, destination))
         for identity in left.keys() | right.keys():
             node = left.get(identity) or right[identity]
@@ -369,12 +370,11 @@ def _merge_oracle(base, source, destination, plan, answers):
 
 
 def _assert_content(state, expected):
-    assert set(state.nodes) == {
-        identity for collection, identity, _ in expected if collection == "nodes"
-    }
-    assert set(state.edges) == {
-        identity for collection, identity, _ in expected if collection == "edges"
-    }
+    # The merge files its own review Proposals; every other collection is exact.
+    for collection in ("nodes", "edges", "glossary"):
+        assert set(getattr(state, collection)) == {
+            identity for kind, identity, _ in expected if kind == collection
+        }
     for (collection, identity, field), value in expected.items():
         assert getattr(getattr(state, collection)[identity], field) == value, (
             collection,
@@ -383,8 +383,22 @@ def _assert_content(state, expected):
         )
 
 
+def _agent_append(owner, operation_id, scope, *ops):
+    owner.append(
+        Patch(
+            kind="work",
+            author="agent",
+            summary="Generated agent change.",
+            source_operation_id=operation_id,
+            run_truth_scope=scope,
+            ops=list(ops),
+        ),
+        discard_on_reject=True,
+    )
+
+
 @pytest.mark.parametrize("seed", range(4))
-def test_generated_three_way_merge_preserves_content_through_approval(manifest, seed):
+def test_generated_three_way_merge_preserves_content_through_approval(manifest, seed, monkeypatch):
     rng = random.Random(seed)
     generator = _Generator(rng)
     nodes, edges = generator.merge_base()
@@ -457,7 +471,40 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
     for owner, standing in ((branch, "accepted"), (history, "contested")):
         for node in nodes:
             _append(owner, {"op": "set_standing", "node_id": node["id"], "standing": standing})
+    scope = sorted(manifest.project.truth_scope)
+    for owner, operation_id, side in (
+        (branch, "fixture-branch", "branch"),
+        (history, "fixture-seed", "destination"),
+    ):
+        term = {"term": f"{side} term {seed}", "plain_definition": f"Defined on the {side}."}
+        _agent_append(owner, operation_id, scope, {"op": "upsert_glossary", "terms": [term]})
+    # Fork filings carry their writer's stamps; one is stamped as a pre-rule-2
+    # release filed it. The merge refiles both under the destination's rule.
+    for rule, (node_id, field) in zip(
+        (1, 2),
+        ((f"hyp/branch{seed}", "rationale"), (f"rq/branch{seed}", "motivation")),
+        strict=True,
+    ):
+        with monkeypatch.context() as filing:
+            if rule == 1:
+                filing.setattr(materialize, "proposal_filing_dependency_rule", lambda *_, **__: 1)
+            proposal = {
+                "id": f"prop/fork{seed}-{rule}",
+                "title": "Sharpen the fork node",
+                "card": {"decision_needed": "Approve?"},
+                "ops": [
+                    {
+                        "op": "update_nodes",
+                        "intent": "content_change",
+                        "nodes": [{"id": node_id, "changes": {field: f"Fork {field} {seed}"}}],
+                    }
+                ],
+            }
+            _agent_append(
+                branch, "fixture-branch", scope, {"op": "create_proposals", "proposals": [proposal]}
+            )
     source, destination = branch.state(), history.state()
+    assert sorted(p.dependency_rule for p in source.proposals.values()) == [1, 2]
     assert set(node_coverage) == set(REQUIRED)
     assert set(relation_coverage) == {
         name for name, spec in RELATION_SPEC.items() if spec.authorable
@@ -477,7 +524,8 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
     expected = _merge_oracle(base, source, destination, plan, selected)
     _commit(history, branch, plan, selected)
     merged = history.state()
-    pending = list(merged.proposals.values())
+    assert {merged.proposals[identity].dependency_rule for identity in source.proposals} == {2}
+    pending = [p for p in merged.proposals.values() if p.id not in source.proposals]
     assert pending
     # Protected content and relation changes are still the destination's values.
     for proposal in pending:

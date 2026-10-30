@@ -398,7 +398,11 @@ raw-status branching.
 
 Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
 plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw,
-and its subset `refreshable_proposal_ids` that ordinary Work can re-file.
+and its subset `refreshable_proposal_ids` that ordinary Work can re-file, and
+`stale_edge_ids`, the
+[stale assessments](graph-history-and-transitions.md#stale-assessments).
+A display cache written before one of these staleness fields existed takes all
+three from the graph it carries.
 Proposal action lines include removed incident relations and `before`/`text`
 field values. Counts use that membership. Inbox, Overview, and Runs map the
 projection, never reapply predicates. Backend previews carry candidate membership;
@@ -1189,13 +1193,23 @@ owns fact-check behavior, flag lifecycle, and the Evidence to check Inbox rows.
 `POST .../proposals/{proposal_id}/refresh` (empty body; the id may contain
 slashes) returns `{"chat_id": string, "operation_id": string}`. It admits a
 light node Work chat on main on the Proposal's subject node, with a backend
-message holding the Proposal and its moved dependencies. Its request key is
+message holding the Proposal, its moved dependencies, and its stale cause edges.
+Its request key is
 derived from the Proposal, so any repeat by any member returns the first chat.
 Once that chat exists, every repeat returns it, whatever the Proposal's state.
 Before it does, a Proposal that is not pending, not stale, a form ordinary
 Work cannot file, or names no current node returns 409 with code `proposal_not_pending`,
 `proposal_not_stale`, `proposal_not_refileable`, or
 `proposal_target_unavailable`.
+
+`POST .../edges/{edge_id}/refresh` (body `{"evidence_rev": int}`, the
+Evidence revision the caller saw; the id may contain slashes) returns the same
+shape. It admits the same light chat on the edge's Evidence. Its key is derived
+from the edge id and that revision, so every repeat returns the first chat, even
+after the agent removed the edge. Before that chat exists, an absent edge or one
+that is not a [stale assessment](graph-history-and-transitions.md#stale-assessments)
+returns 409 `edge_not_stale`, and a revision the Evidence has moved past returns
+409 `edge_evidence_moved`.
 
 ## Application surfaces
 

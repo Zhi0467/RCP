@@ -63,6 +63,8 @@ class GraphAttentionProjection(_StrictTransitionModel):
     stale_proposal_ids: list[str] = Field(default_factory=list)
     # The stale ones ordinary Work can re-file; a form it cannot file is withdrawn instead.
     refreshable_proposal_ids: list[str] = Field(default_factory=list)
+    # Outcome-to-belief edges judged before their outcome last moved.
+    stale_edge_ids: list[str] = Field(default_factory=list)
     # Decision id -> the choice it still records, for the Decisions whose options
     # no longer offer it. Agents may reword options but never write
     # `selected_option`, so a reopened Decision routinely keeps a choice the

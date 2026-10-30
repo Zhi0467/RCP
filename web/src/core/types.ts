@@ -1304,6 +1304,7 @@ export function decodeGraphAttentionProjection(
     "proposal_actions",
     "stale_proposal_ids",
     "refreshable_proposal_ids",
+    "stale_edge_ids",
     "decision_prior_choices",
   ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
@@ -1315,7 +1316,8 @@ export function decodeGraphAttentionProjection(
       | "decisions_awaiting_choice_ids"
       | "open_blocker_ids"
       | "stale_proposal_ids"
-      | "refreshable_proposal_ids",
+      | "refreshable_proposal_ids"
+      | "stale_edge_ids",
   ): string[] => {
     const raw = value[field];
     if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
@@ -1371,6 +1373,7 @@ export function decodeGraphAttentionProjection(
     proposal_actions: proposalActions,
     stale_proposal_ids: readIds("stale_proposal_ids"),
     refreshable_proposal_ids: readIds("refreshable_proposal_ids"),
+    stale_edge_ids: readIds("stale_edge_ids"),
     decision_prior_choices: { ...(rawPriorChoices as Record<string, string>) },
   };
   if (
@@ -1382,6 +1385,11 @@ export function decodeGraphAttentionProjection(
   for (const proposalId of attention.pending_proposal_ids) {
     if (!graph.proposals[proposalId]) {
       throw new Error(`Project attention references missing Proposal ${proposalId}.`);
+    }
+  }
+  for (const edgeId of attention.stale_edge_ids) {
+    if (!graph.edges[edgeId]) {
+      throw new Error(`Project attention references missing edge ${edgeId}.`);
     }
   }
   for (const decisionId of attention.decisions_awaiting_choice_ids) {
@@ -1894,6 +1902,8 @@ export interface GraphAttentionProjection {
   stale_proposal_ids: string[];
   /** The stale ones ordinary Work can re-file; a form it cannot file offers Reject alone. */
   refreshable_proposal_ids: string[];
+  /** Outcome-to-belief edges judged before their Evidence last moved. */
+  stale_edge_ids: string[];
   /** Decision id -> the choice it records, when its options no longer offer it. */
   decision_prior_choices: Record<string, string>;
 }

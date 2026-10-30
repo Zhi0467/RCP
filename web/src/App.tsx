@@ -1,5 +1,6 @@
 import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
+import { StaleEdgeProvider } from "./graph/StaleEdgeContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
@@ -107,6 +108,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type ReactNode,
 } from "react";
 import { isActiveTask } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
@@ -146,6 +149,7 @@ import {
   loadMergePreview,
   mergeEpisodeToMain,
   continueEpisode,
+  refreshEdge,
   refreshProposal,
   sendEpisodeMessage,
   startEpisode,
@@ -4378,6 +4382,10 @@ function MemberApp({
     graphTarget.kind === "main" ? "main" : graphTarget.branch_id,
   );
   const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
+  const staleEdgeIds = new Set(presentedAttention.stale_edge_ids);
+  const refreshableEdgeIds = new Set(
+    graphTarget.kind === "main" ? canonicalAttention.stale_edge_ids : [],
+  );
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
@@ -4812,12 +4820,20 @@ function MemberApp({
     </>
   );
   return createElement(
-    EvidenceFlagProvider,
+    GraphMarkProviders,
     {
-      nodeIds: flaggedNodeIds,
-      onOpenInbox: () => {
-        clearNodeSelections();
-        changeView("attention");
+      flags: {
+        nodeIds: flaggedNodeIds,
+        onOpenInbox: () => {
+          clearNodeSelections();
+          changeView("attention");
+        },
+      },
+      staleEdges: {
+        staleEdgeIds,
+        refreshableEdgeIds,
+        onRefresh: async (edgeId: string, evidenceRev: number) =>
+          openChats((await refreshEdge(apiBase, edgeId, evidenceRev)).chat_id),
       },
     },
     <div className="app-shell overview-shell">
@@ -5783,6 +5799,23 @@ function MemberApp({
       {actorNameSurface}
       {reverificationSurface}
     </div>,
+  );
+}
+
+/** Graph marks every surface reads: open Evidence flags and stale assessments. */
+function GraphMarkProviders({
+  flags,
+  staleEdges,
+  children,
+}: {
+  flags: ComponentProps<typeof EvidenceFlagProvider>;
+  staleEdges: ComponentProps<typeof StaleEdgeProvider>;
+  children?: ReactNode;
+}) {
+  return (
+    <EvidenceFlagProvider {...flags}>
+      <StaleEdgeProvider {...staleEdges}>{children}</StaleEdgeProvider>
+    </EvidenceFlagProvider>
   );
 }
 

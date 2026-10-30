@@ -98,6 +98,7 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
         },
         "stale_proposal_ids": [],
         "refreshable_proposal_ids": [],
+        "stale_edge_ids": [],
         "decision_prior_choices": {},
     }
 
