@@ -398,7 +398,9 @@ raw-status branching.
 
 Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
 plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw,
-and its subset `refreshable_proposal_ids` that ordinary Work can re-file.
+and its subset `refreshable_proposal_ids` that ordinary Work can re-file, and
+`stale_edge_ids`, the
+[stale assessments](graph-history-and-transitions.md#stale-assessments).
 Proposal action lines include removed incident relations and `before`/`text`
 field values. Counts use that membership. Inbox, Overview, and Runs map the
 projection, never reapply predicates. Backend previews carry candidate membership;

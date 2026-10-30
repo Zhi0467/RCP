@@ -55,6 +55,24 @@ Old epistemic edges without assessments remain readable as unassessed.
 `research.md` lists an assessment under accepted research only when both the
 Hypothesis and the Evidence are accepted and the Evidence is not invalid.
 
+### Stale assessments
+
+An outcome-to-belief edge is stale when its Evidence is current and its
+`updated_rev` is past the edge's `created_rev`. Rewording the Evidence and
+judging its standing both move it, as they do for a Proposal that cites it.
+Retired Evidence marks no edge. Re-judging recreates the edge, which clears the
+mark. [The rule](../../src/rcp/core/validation/outcome_edges.py) is derived from
+the graph, so nothing is stored and replay is unchanged.
+
+Merge compares content only and restamps what it carries:
+
+- A fork that rewords Evidence and revises its edge lands current.
+- A fork that rewords Evidence and keeps the edge's content lands stale.
+- An edge the fork judged before main reworded its Evidence lands current.
+
+**Why:** a supports or contradicts edge read as current after its Evidence
+changed, and only the edge's judge could say whether it still held.
+
 ## Relations and control structure
 
 [RELATION_SPEC](../../src/rcp/core/models.py) owns the closed vocabulary and
@@ -321,6 +339,14 @@ Verify filing-field variation and older published-writer branches, not just curr
 fixtures: `tests/test_branch_merge*.py`, `tests/test_episode_merge.py`,
 `tests/test_history*.py`, `tests/test_agent_schema.py`,
 `tests/test_server_upgrade.py`, and `tests/test_application_deployment.py`.
+Two guards are structural:
+
+- The generated three-way merge in `tests/test_graph_invariants.py` files fork
+  Proposals under an older rule and checks every content field of nodes, edges,
+  Proposals and glossary against an oracle independent of the planner.
+  Declaring an engine stamp as content fails it.
+- The exact-base upgrade gate commits a branch each published release
+  populated, then checks that every content field it changed reached main.
 
 ## History reads
 
