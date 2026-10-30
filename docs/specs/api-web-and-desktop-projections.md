@@ -1295,20 +1295,22 @@ supported sign-in methods, the space machine names on that host, and active
 sign-ins ([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
 The project snapshot's `provider_logins` lists, for the viewer, the login each
 agent's launch would use: each execution profile's provider on the base machine,
-resolved through the viewer's setting, plus any login holding this project's
-parked work (queued tasks, provider-auth recoveries, the current failed
-Experiment turn, undelivered watcher groups). A refusal that names no login lists
+resolved through the viewer's setting. Parked work (queued tasks,
+provider-auth recoveries, the current failed Experiment turn, undelivered
+watcher groups) adds its provider and host, resolved the same way; a parked
+Codex session keeps the login it is bound to. A refusal that names no login lists
 every login of the refused source. Two members can therefore see different rows.
-A machine no profile runs on raises no notice, and a provider whose login RCP
+Apart from parked work, a machine no profile runs on raises no notice, and a provider whose login RCP
 does not manage adds no snapshot row. Runs merges these rows with the live Settings list, so a sign-in
 there clears the notice at once. The project landing instead reads the live list's
 rows marked `agent_used`, which spans every project the viewer belongs to, so it
 has no missing-own-login row.
 Each signed-out login raises the notice described with the Sign-ins fold below;
 its icon-only dismiss hides that sign-out on this device until the login signs
-out again. Space Settings offers only the backend's methods: device-code flow
-with polling, one-shot token entry verified by a real request, Check sign-in,
-and Sign out. Check sign-in is hidden while a token is unsent or a token-only
+out again (a missing-own-login row, until an own login exists). Space Settings offers only the backend's methods: device-code flow
+with polling and a Cancel icon for its starter, one-shot token entry verified by
+a real request, Check sign-in, Sign out, and, on added shared logins, Remove
+from shared, confirmed once with the login's running count. Check sign-in is hidden while a token is unsent or a token-only
 account has none saved. Provider names never select UI behavior.
 Generic routes reject unsupported actions/fields; GET only reads. Successful
 verification reconciles parked work even after leaving the page, with durable
@@ -1590,9 +1592,11 @@ off tray stays visible, faded. A ＋ slot ends the Shared tray, and the Yours tr
 while the member has no own login; adding starts a device sign-in at once or
 opens token entry on the new card. A card shows, first match wins, Being removed,
 signing in (device code and link only to the starter; others see who), Signed out
-(flat, dashed, Sign in), Usage limit (amber edge; a limited login is still used
+(flat and dashed, with no label; a Sign in button on the viewer's own and shared
+cards), Usage limit (amber edge; a limited login is still used
 when nothing else is free), or Ready. A failed action marks the card or panel
-with a red edge and one Retry icon whose hover is the error. Only the viewer's own and shared cards act: their actions sit behind a ⋯
+with a red edge and one Retry icon whose hover is the error. Only the viewer's own and shared cards act: apart from Sign in, their actions sit
+behind a ⋯
 shown on hover and always on touch screens and at phone width, hidden while the
 card signs in, drains or takes a token. Explanations are hover text only.
 Personal and team spaces draw the same fold; a provider whose login RCP does not

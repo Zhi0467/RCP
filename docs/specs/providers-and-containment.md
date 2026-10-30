@@ -1051,8 +1051,8 @@ races remain possible; verified sign-in is the recovery.
 
 The account lifecycle owner serializes sign-in, verify and sign-out under the
 gate through durable publication, keyed by `(provider, host, login_id)`. A second
-device sign-in on that login returns 409 and names the starter. Attempt status
-and cancellation are visible only to the starter (404 for anyone else).
+device sign-in on that login returns 409 and names the starter. The per-attempt
+status and cancel routes answer only the starter (404 for anyone else).
 Replacement first publishes a signed-out fence, so interruption cannot admit an
 unverified credential. A minimal real request must succeed before sign-in counts;
 provider status only proves credential presence. Successful verification
@@ -1060,11 +1060,12 @@ invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.
 Who may act on which login is set out under
 [selection](#member-sign-in-settings-and-selection). Durable actions record the
-member, except that a removal that drained
-finishes without one. Removed logins cannot be verified or
-receive tokens, including attempts completing after removal.
+member, except that a removal that drained finishes without one and member
+removal records the departing member. Removed logins cannot be verified or
+receive tokens, including attempts completing after removal; a credential such an
+attempt wrote is deleted, or left pending for reconciliation.
 
-`GET /api/providers/logins` lists each nonremoved login. The shared row mapper
+`GET /api/providers/logins` lists each nonremoved login on a listed host. The shared row mapper
 also supplies project notices, resolving new launches for the viewer and retaining
 parked Codex session bindings. Other members' own rows redact detail, source and
 token metadata. Device codes and URLs appear only for the attempt starter.
@@ -1077,7 +1078,9 @@ bound running count even before draining; machine and own rows report zero.
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
 `sign-out`; action bodies name `login_id`, except `add`, which takes `kind` and
-returns the new ID (and, for a device-code provider, the started sign-in). Machine sign-ins cannot be removed.
+returns the new ID (and, for a device-code provider, the started sign-in). If
+that sign-in cannot start, the login stays, signed out, and the refusal carries no
+ID; its card offers Sign in. Machine sign-ins cannot be removed.
 An own login has no remove action; only member removal fences it. Adding a second
 own login conflicts.
 Unsupported interactions refuse explicitly; status GET is read-only.
@@ -1097,8 +1100,10 @@ running. Pending removal retries remote deletion on each
 advance, returning unreached hosts in `provider_cleanup_unreached`, including the
 completing pass; unreachable hosts do not block completion. Fencing also marks
 each own login draining, so after completion the removal reconciler retries any
-credential still pending, as for a shared removal. Restore's
-stale-member removal uses the same cleanup.
+credential still pending, as for a shared removal. Restore's stale-member
+removal fences the copied rows while preparing and deletes credentials only
+after both restore boundaries are confirmed, because the archived deployment may
+still be running.
 
 ### Member sign-in settings and selection
 
@@ -1174,7 +1179,7 @@ records the `login_id` it ran on.
 ### Login state and failure
 
 Each login has a `(provider, host, login_id)` row (the machine sign-in's is
-written on first use; until then it reads as signed in, generation 0) with signed-in state
+written on first use; until then its stored default is signed in, generation 0) with signed-in state
 and a generation. The empty login ID names the machine sign-in. Admission dry-runs
 the member's ordered own/shared setting before allocating a task or debiting an
 episode. Episode turns use the episode's authorizer. Launch resolves again inside
@@ -1192,11 +1197,13 @@ settings do.
 
 Claude resolves at each turn boundary. Unhealthy bound work waits; a removed
 Codex binding refuses the session. A removed parent login stops pinning its
-transport reattempt or graph repair, which then resolves like a new turn. Draining logins admit no new choices but remain
+transport reattempt or graph repair, which then resolves like a new turn (a Codex
+session bound to that login still refuses). Draining logins admit no new choices but remain
 usable by bound work until its running turns end, and for Codex also its unpaused
 episodes. Removal retains session files and deletes only credentials; unreachable remote
-cleanup remains pending for reconciliation. Removal synchronously settles
-any pending device sign-in before taking the credential gate. The sign-in runner's
+cleanup remains pending for reconciliation. Shared removal synchronously settles
+any pending device sign-in before taking the credential gate; member removal does
+not, and relies on the late-credential rule above. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.
 
 The credential gate rechecks the selected login. An unbound launch may release
