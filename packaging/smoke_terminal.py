@@ -75,7 +75,8 @@ def verify(backend: Path, directory: Path) -> None:
             # Exercise foreground job control too; Bash must regain the PTY
             # after Ctrl-C before it can accept the next command.
             os.write(master, b"fg\n")
-            _read_until(master, rb"(?:\r?\n)sleep 120\r?\n")
+            # Bash 5 ends bracketed paste with a bare \r before the job's line.
+            _read_until(master, rb"[\r\n]sleep 120\r?\n")
             # Bash echoes the job before it hands it the terminal; a Ctrl-C
             # sent earlier reaches Bash and leaves the job running.
             deadline = time.monotonic() + TERMINAL_STOP_TIMEOUT_SECONDS
