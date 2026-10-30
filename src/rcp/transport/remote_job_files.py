@@ -9,10 +9,24 @@ import sys
 from pathlib import Path
 
 
+def _in_stage_retention(root: Path) -> bool:
+    """Whether stage retention (`remote_stage_root.sweep_stages`) could remove `root`:
+    at or inside `~/.rcp/stages`, or inside a legacy `/tmp/rcp-run.*` stage."""
+    real = Path(os.path.realpath(root))
+    stages = Path(os.path.realpath(Path.home() / ".rcp" / "stages"))
+    legacy = Path(os.path.realpath("/tmp"))
+    if real == stages or stages in real.parents:
+        return True
+    return legacy in real.parents and real.relative_to(legacy).parts[0].startswith("rcp-run.")
+
+
 def operate(operation: str, path: str, payload: str) -> str | None:
     target = Path(path)
     if operation == "resolve":
-        return str(target.expanduser())
+        root = target.expanduser()
+        if _in_stage_retention(root):
+            raise ValueError("compute jobs root must be outside stage retention")
+        return str(root)
     if operation == "prepare":
         # `parents=True` would give new parents, such as `~/.rcp`, the umask's mode.
         for parent in reversed(target.parents):
@@ -52,7 +66,11 @@ def operate(operation: str, path: str, payload: str) -> str | None:
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         return 2
-    print(json.dumps(operate(argv[1], argv[2], argv[3])))
+    try:
+        print(json.dumps(operate(argv[1], argv[2], argv[3])))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 

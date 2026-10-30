@@ -500,6 +500,36 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     assert all(command[1] == "-c" for command in calls)
 
 
+def test_jobs_root_refuses_stage_retention(tmp_path, monkeypatch):
+    import shlex
+    import sys
+
+    from rcp.compute_jobs.files import resolve_jobs_root
+    from rcp.transport.remote_job_files import operate
+    from rcp.transport.remote_stage_root import create_stage
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    stage = create_stage("", reuse=False)
+    for root in (Path(stage).parent, Path(stage) / "jobs", Path("/tmp/rcp-run.x/jobs")):
+        with pytest.raises(ValueError):
+            operate("resolve", str(root), "")
+    assert operate("resolve", "~/.rcp/jobs", "") == str(tmp_path / ".rcp/jobs")
+
+    # Through SSH the refusal reaches the probe diagnostic as a message, not a traceback.
+    monkeypatch.setattr(
+        "rcp.transport.ssh.ssh_arguments",
+        lambda _host, command: [sys.executable, *shlex.split(command)[1:]],
+    )
+    context = BackendContext(
+        execution_host="test-execution-account",
+        execution_machine="remote",
+        compute=MachineComputeConfig(jobs_root=stage),
+    )
+    with pytest.raises(RuntimeError) as refused:
+        resolve_jobs_root(context, tmp_path / "unused-local-data")
+    assert "\n" not in str(refused.value)
+
+
 @pytest.mark.parametrize("failure", ["unregistered", "unknown", "invalid handle"])
 def test_reconcile_row_failure_does_not_skip_other_jobs(
     launch_environment, tmp_path, manifest, monkeypatch, failure
