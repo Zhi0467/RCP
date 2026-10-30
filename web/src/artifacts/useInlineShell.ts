@@ -31,6 +31,8 @@ export function useInlineShell(
   commentModeRef.current = commentMode;
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
+  // Counts the frame's selections, so the clear of a replaced one leaves the new one alone.
+  const selections = useRef(0);
 
   useEffect(() => {
     const message = (event: MessageEvent) => {
@@ -44,6 +46,7 @@ export function useInlineShell(
         handlersRef.current.onPageError(value.kind === "error" ? value : null);
         return;
       }
+      const selection = ++selections.current;
       if (!value.selection) {
         handlersRef.current.onCancel();
         return;
@@ -62,11 +65,13 @@ export function useInlineShell(
               top: rect.top + box.y * rect.height,
             }
           : { left: rect.left, right: rect.right, top: rect.top + Math.min(rect.height, 48) },
-        clear: () =>
+        clear: () => {
+          if (selection !== selections.current) return;
           frame.current?.contentWindow?.postMessage(
             { type: "rcp-inline-selection-clear", version: 1 },
             window.location.origin,
-          ),
+          );
+        },
       });
     };
     window.addEventListener("message", message);

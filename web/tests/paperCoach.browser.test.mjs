@@ -460,3 +460,43 @@ test("a comment opened from the preview closes when another file is shown", asyn
   await select();
   assert.equal(await comment.inputValue(), "");
 });
+
+test("a new selection in the HTML page keeps the typed comment and its own mark", async (t) => {
+  const { page, context } = await open(t, {
+    width: 1280,
+    configure: ({ tree }) =>
+      tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 }),
+  });
+  // A stand-in shell that counts the clears the app sends it.
+  await context.route("**/files/f3/preview?*", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
+    }),
+  );
+  await page.locator(".paper-file", { hasText: "page.html" }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await page.getByRole("button", { name: "Comment on the page" }).click();
+  const shell = page.frame({ url: /\/files\/f3\/preview\?/ });
+  const post = (text) =>
+    shell.evaluate(
+      (text) =>
+        parent.postMessage(
+          {
+            type: "rcp-artifact-selection",
+            version: 1,
+            selection: { kind: "text", text, surrounding_text: "" },
+            description: "",
+          },
+          location.origin,
+        ),
+      text,
+    );
+  await post("First words");
+  const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+  await comment.fill("half written");
+  await post("Second words");
+  await page.getByText("Second words").first().waitFor();
+  assert.equal(await comment.inputValue(), "half written");
+  assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
+});

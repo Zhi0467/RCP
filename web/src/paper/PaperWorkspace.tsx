@@ -137,6 +137,8 @@ export function PaperWorkspace({
     onError: setCoachError,
   });
   const openPreviewComment = (comment: PreviewDirectComment) => {
+    // A new box or frame selection replaces the open comment but keeps its text.
+    const draft = comments.composer?.step === "comment" ? comments.comment : undefined;
     comments.externalSelectionClear.current?.();
     comments.externalSelectionClear.current = null;
     if (coachSubmitting || !comment.quote || !comments.roomForAnother()) {
@@ -144,14 +146,17 @@ export function PaperWorkspace({
       return;
     }
     comments.externalSelectionClear.current = comment.clear ?? null;
-    comments.openComposer({
-      step: "comment",
-      selectedText: comment.quote,
-      ...(comment.where ? { where: comment.where } : {}),
-      anchor: comment.anchor,
-      position: null,
-      origin: previewPane.current,
-    });
+    comments.openComposer(
+      {
+        step: "comment",
+        selectedText: comment.quote,
+        ...(comment.where ? { where: comment.where } : {}),
+        anchor: comment.anchor,
+        position: null,
+        origin: previewPane.current,
+      },
+      { draft },
+    );
     comments.focusComment();
   };
   // A selection cancelled inside the HTML frame closes the comment opened from it.
