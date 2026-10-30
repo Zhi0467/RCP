@@ -1528,6 +1528,7 @@ class AgentLauncher:
                     environment = environment.with_path_prefix(
                         browser_grant.path_prefix, remote=bool(host)
                     )
+            command = [*environment.command_prefix, *command]
             local_cwd: str | None = str(cwd)
             if host:
                 command = ssh_arguments(
@@ -2172,6 +2173,7 @@ class AgentLauncher:
         timeout: float = 10,
         environment: ProviderProcessEnvironment | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        command = [*(environment.command_prefix if environment else ()), *command]
         arguments = command
         if host:
             remote = (

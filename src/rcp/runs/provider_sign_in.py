@@ -454,7 +454,7 @@ class ProviderSignInRunner:
         canceled = self._take_cancellation(status.attempt_id)
         if canceled:
             raise canceled
-        argv = login.command(binary)
+        argv = [*environment.command_prefix, *login.command(binary)]
         arguments = (
             ssh_arguments(
                 status.host,

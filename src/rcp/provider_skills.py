@@ -382,7 +382,7 @@ class ProviderSkillInventoryManager:
             generation = self.store.provider_login_state(key).generation
             environment = self.process_environment(key)
             env = environment.local_env if not host else None
-            command = probe.command
+            command = [*environment.command_prefix, *probe.command]
             if probe.protocol == "jsonl":
                 command = ["sh", "-c", _FILE_BACKED_STDOUT, "sh", *command]
             arguments = command
