@@ -177,22 +177,47 @@ def render_sandbox_profile(policy):
     return "\n".join(lines) + "\n"
 
 
-def split_glob(pattern):
-    """A glob's literal parent and its last-component pattern."""
-    parent, name = pattern.rsplit("/", 1)
-    if glob.has_magic(re.sub(r"\[[*?[]\]", "", parent)):
-        raise ValueError("hidden glob wildcards must be in the last component")
-    return re.sub(r"\[([*?[])\]", r"\1", parent) or "/", name
+def glob_masks(pattern, *, home, persistent=False):
+    """Resolve wildcard parents, freezing their inventory against future secrets."""
+    parts = pattern.split("/")
+
+    def descend(parent, remaining):
+        if not os.path.isdir(parent):
+            return
+        name = remaining[0]
+        if len(remaining) == 1:
+            yield parent, name
+            return
+        magic = glob.has_magic(re.sub(r"\[[*?[]\]", "", name))
+        if magic:
+            # Keep today's children, but a login created after this sandbox starts
+            # must not introduce an unmasked credential through a new directory.
+            yield parent, None
+            children = [child for child in os.listdir(parent) if fnmatch.fnmatchcase(child, name)]
+        else:
+            children = [re.sub(r"\[([*?[])\]", r"\1", name)]
+        for child in children:
+            path = os.path.join(parent, child)
+            if not os.path.exists(path):
+                above_home = parent == "/" or home.startswith(parent.rstrip("/") + "/")
+                if not above_home and (parent != home or persistent):
+                    yield parent, glob.escape(child)
+            else:
+                yield from descend(path, remaining[1:])
+
+    yield from descend("/", parts[1:])
 
 
 def bwrap_argv(policy, command, *, executable="bwrap", persistent=False):
     # Each glob parent becomes an empty tmpfs with its other existing entries
     # bound back, so a match created later never appears inside.
     names = {}
+    home = os.path.realpath(policy.get("account_home") or os.path.expanduser("~"))
     for pattern in policy.get("hidden_globs", ()):
-        parent, name = split_glob(pattern)
-        if os.path.isdir(parent):
-            names.setdefault(os.path.realpath(parent), []).append(name)
+        for parent, name in glob_masks(pattern, home=home, persistent=persistent):
+            masks = names.setdefault(os.path.realpath(parent), [])
+            if name is not None:
+                masks.append(name)
     directories = {os.path.realpath(path) for path in policy.get("hidden_directories", ())}
     files = {os.path.realpath(path) for path in policy.get("hidden_files", ())}
     hidden = directories | files
@@ -202,7 +227,6 @@ def bwrap_argv(policy, command, *, executable="bwrap", persistent=False):
     # discard new files written there; deeper misses are rechecked at the next
     # command. A persistent browser daemon also masks at the home, so a credential
     # folder created mid-session never appears to it.
-    home = os.path.realpath(policy.get("account_home") or os.path.expanduser("~"))
     for path in hidden:
         if os.path.lexists(path):
             continue

@@ -617,6 +617,9 @@ def seed() -> None:
     from tests.server_upgrade_paper import seed_legacy_paper
 
     fixture["paper"] = seed_legacy_paper(DATA, fixture)
+    from tests.server_upgrade_codex import seed_codex_home
+
+    fixture["codex_home"] = seed_codex_home(DATA, fixture["member_id"])
     write_json(ROOT / "state/fixture.json", fixture)
 
 
@@ -675,6 +678,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         "server_installed_upgrade.py",
         "server_installed_upgrade_hook.py",
         "server_upgrade_paper.py",
+        "server_upgrade_codex.py",
         "server_upgrade_state.py",
         "server_upgrade_scratch.py",
         "supervisor_reboot_guest.py",
@@ -899,6 +903,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert_current_paper(request, fixture, session(fixture), current_paper)
     backup()
     candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
+    service([candidate_python, "-I", str(SCRIPT), "codex-home-upgrade"])
+    # The previous wheel must still follow the migrated links after rollback.
+    service([old_python, "-I", str(SCRIPT), "codex-home-rollback"])
     service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])
     candidate_artifact = json.loads((ROOT / "state/candidate-artifact.json").read_text())
     keep_artifact(fixture, candidate_artifact)
@@ -941,6 +948,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
                 "committed": True,
                 "project_served_after_update": rejected is not None,
             },
+            "codex_home": "upgrade and old-wheel lookup passed"
+            if fixture["codex_home"] is not None
+            else "base release predates added logins",
             "port": PORT,
         },
     )
@@ -957,6 +967,8 @@ def main() -> None:
         "seed-question-followup",
         "admit-consolidation",
         "check-launches",
+        "codex-home-upgrade",
+        "codex-home-rollback",
     }:
         if (
             sys.platform != "linux"
@@ -969,6 +981,13 @@ def main() -> None:
             setup()
         elif sys.argv[1] == "seed":
             seed()
+        elif sys.argv[1] in {"codex-home-upgrade", "codex-home-rollback"}:
+            from tests.server_upgrade_codex import check_codex_home
+
+            fixture = json.loads((ROOT / "state/fixture.json").read_text())
+            check_codex_home(
+                DATA, fixture["codex_home"], migrated=sys.argv[1] == "codex-home-upgrade"
+            )
         elif sys.argv[1] == "seed-question-followup":
             seed_followup()
         elif sys.argv[1] == "admit-consolidation":

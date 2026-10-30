@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import logging
+import os
 import shlex
 import subprocess
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rcp.agents.provider_environment import ProviderProcessEnvironment
@@ -176,11 +180,24 @@ class CodexAuthentication(ProviderAuthentication):
             return ProviderProcessEnvironment()
         if not host:
             home = prepare_home(directory / "codex-home")
-            return ProviderProcessEnvironment().with_variables(
-                {"CODEX_HOME": str(home)}, remote=False
+            return ProviderProcessEnvironment(
+                command_prefix=(
+                    sys.executable,
+                    *(() if getattr(sys, "frozen", False) else ("-m", "rcp")),
+                    "_codex-home-run",
+                    str(home),
+                )
+            ).with_variables(
+                {
+                    "CODEX_HOME": str(home),
+                    "RCP_CODEX_MACHINE_HOME": str(
+                        Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().absolute()
+                    ),
+                },
+                remote=False,
             )
-        home = f"~/.rcp/provider-homes/codex/{login_id}"
         source = importlib.resources.files("rcp.providers.codex").joinpath("homes.py").read_text()
+        home = f"~/.rcp/provider-homes/codex/{login_id}"
         command = shlex.join(["python3", "-c", source, home])
         result = subprocess.run(
             ssh_arguments(host, shlex.join(["bash", "-lic", command])),
@@ -191,8 +208,17 @@ class CodexAuthentication(ProviderAuthentication):
         )
         if result.returncode:
             raise ValueError(f"Could not prepare Codex home: {result.stderr.strip()}")
+        if result.stderr.strip():
+            # Login-shell output can contain secrets; expose the diagnostic, not its bytes.
+            logging.getLogger(__name__).warning(
+                "Codex home preparation reported a diagnostic; legacy migration may be deferred."
+            )
         return ProviderProcessEnvironment(
-            remote_prefix=f'export CODEX_HOME="$HOME"/.rcp/provider-homes/codex/{login_id}'
+            command_prefix=("python3", "-c", source, "--run", home),
+            remote_prefix=(
+                'export RCP_CODEX_MACHINE_HOME="${CODEX_HOME:-$HOME/.codex}"; '
+                f'export CODEX_HOME="$HOME"/.rcp/provider-homes/codex/{login_id}'
+            ),
         )
 
     def verification_succeeded(self, result: subprocess.CompletedProcess[str]) -> bool:

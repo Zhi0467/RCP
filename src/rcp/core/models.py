@@ -280,12 +280,12 @@ class HiddenReadScope(BaseModel):
 
     @field_validator("hidden_globs")
     @classmethod
-    def last_component_globs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        # A Linux wrapper hides future matches by masking the literal parent.
+    def nonrecursive_globs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        # Linux snapshots each wildcard parent; recursive directory walks are unsupported.
         for value in values:
             parent = re.sub(r"\[[*?[]\]", "", value.rsplit("/", 1)[0])
-            if any(char in parent for char in "*?["):
-                raise ValueError("hidden glob wildcards must be in the last path component")
+            if "**" in parent:
+                raise ValueError("hidden glob parents cannot be recursive")
         return values
 
     @field_validator("key_evidence")

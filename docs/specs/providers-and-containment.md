@@ -1021,9 +1021,9 @@ loads with the list ignored, and the next manifest write drops it.
 The backend owns team provider calls. Local runs use the service account;
 remote runs use the exact profile's configured SSH account and its provider
 state. Provider logins do not change that OS account. Added Codex sign-ins have
-separate homes for credentials and sessions; their config, rules, skills and
-AGENTS.md link to the machine home, and sign-in, verification and logout use that
-same home. Claude logins share native sessions and change only the token.
+separate homes for credentials. All other entries link to the machine home,
+and sign-in, verification and logout use that same added home. Claude logins share
+native sessions and change only the token.
 [Member sign-in settings and selection](#member-sign-in-settings-and-selection)
 owns turn selection.
 
@@ -1174,17 +1174,39 @@ cannot know when a vendor limit lifts; its lapse,
 | Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
 | Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<account dir>/logins/<login_id>/codex-home` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
 
-An added Codex home links `config.toml`, `rules`, `skills` and `AGENTS.md` to the
-machine Codex home; `providers/codex/homes.py` creates it (mode 0700) locally and
-over SSH and reports a link that became a regular file instead of overwriting it.
-It also links `sessions`, `archived_sessions` and `session_index.jsonl`, so every
-login on a host shares one session store and any login can resume any session
-(Codex finds a thread's rollout only under its own `CODEX_HOME`). A store written
-before the link moves into the machine store on the login's next launch, keeping
-relative paths and appending missing index lines; an identical file is dropped,
-and a different one stops the launch rather than being overwritten. The session
-indexer reads that one store through the machine Codex root. Only the local
-machine sign-in keeps the cross-process credential lock file.
+An added Codex home keeps only `auth.json` independent. Every other existing
+entry links to the machine Codex home, including configuration, skills, sessions,
+indexes, SQLite databases and caches. `providers/codex/homes.py` prepares the same
+layout locally and over SSH, with mode 0700. Known Codex stores are linked before
+first use. Later names are discovered on preparation. Startup prepares recorded
+added homes, including signed-out and removed logins, before recovery chooses a
+usable sign-in. Missing local homes are skipped. Unreachable remote homes are
+reported without preventing startup and retried on a later startup.
+
+Legacy rollouts move into the machine store at their relative paths. Missing
+session-index lines are appended; identical rollouts are deduplicated. A differing
+rollout is never overwritten. Other independent entries, including SQLite journals
+and replaced configuration links, move into retained snapshots beside the login
+home, under `<home-name>-retained`. Interrupted snapshots resume on preparation.
+Machine state wins; retained databases are not merged or silently discarded.
+The old config-only home preparation still follows the session links after rollback.
+
+Preparation holds the credential startup gate and an execution-host home lease.
+The execution wrapper inherits a shared lease through exec. For supervised SSH
+turns the supervisor holds it while its provider runs. Migration requires an
+exclusive lease. Older processes without a lease are checked through the execution
+account's process environments. If inspection
+fails or finds another process using that home, migration is visibly deferred;
+launch remains available. Preparation adds missing links but leaves independent
+entries alone while the home is live. A later preparation retries migration when
+the home is idle.
+A machine lock serializes migrations from different logins. SQLite's own WAL
+locking coordinates native writers; RCP does not merge their databases.
+
+The session indexer reads the machine Codex root. Hidden read denies `auth.json`
+in each login home; shared transcripts and other home state remain readable.
+Linux tool sandboxes hide login directories created after the sandbox starts.
+Only the local machine sign-in keeps the cross-process credential startup lock.
 
 Every member's agents run as the same OS account, so any agent can read any
 token in `providers/` and any added home; hidden read is cooperative. Each task

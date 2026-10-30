@@ -111,19 +111,22 @@ def hidden_read_defaults(
     """Credential roots name provider stores, never a deploy-key parent."""
     directories = list(credential_roots)
     directories.append(home + "/" + HIDDEN_READ_WRAPPER_ROOT)
-    directories.extend((home + "/.config/rcp/logins", home + "/.rcp/provider-homes"))
+    directories.append(home + "/.config/rcp/logins")
     files = [*provider_login_files, home + "/.config/rcp/claude-setup-token"]
-    globs = []
+    globs = [glob.escape(home) + "/.rcp/provider-homes/codex/*/auth.json"]
     for path in WEBKIT_READ_DENY_PATHS:
         (files if path.endswith(".binarycookies") else directories).append(home + path[1:])
     if control_socket_dir:
         directories.append(control_socket_dir)
     if app_data_dir:
-        # Globs vary only their last component, so a Linux wrapper can hide
-        # future matches too; wholly secret trees are plain directories.
+        # Codex homes hold shared runtime state; only their credentials are hidden.
         # Each provider's credential namespace and the command-mailbox checkpoints,
         # never the Git identities beside them.
-        directories.extend(app_data_dir + "/providers/" + provider for provider in PROVIDER_IDS)
+        directories.extend(
+            app_data_dir + "/providers/" + provider
+            for provider in PROVIDER_IDS
+            if provider != "codex"
+        )
         directories.extend(
             (
                 app_data_dir + "/providers/command-mailboxes",
@@ -133,6 +136,8 @@ def hidden_read_defaults(
         )
         globs.extend(
             (
+                glob.escape(app_data_dir) + "/providers/codex/*/codex-home/auth.json",
+                glob.escape(app_data_dir) + "/providers/codex/*/logins/*/codex-home/auth.json",
                 glob.escape(app_data_dir) + "/rcp.sqlite3*",
                 glob.escape(app_data_dir) + "/run-stage/backup-*",
             )
