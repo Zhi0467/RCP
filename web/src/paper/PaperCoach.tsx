@@ -492,7 +492,7 @@ export function PaperCoach({
                 composer.unready ||
                 Boolean(activeTask) ||
                 submitting ||
-                !launchProviderReady(project, config)
+                !launchProviderReady(project, config, false, Boolean(currentSessionId))
               }
               onClick={() => void send()}
             >
