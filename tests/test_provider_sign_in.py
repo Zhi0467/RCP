@@ -1045,6 +1045,36 @@ def test_verify_finishing_after_removal_cannot_revive_login(
     assert (home / "sessions").is_dir()
 
 
+def test_late_credential_after_removal_is_retried_by_reconciler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rcp.runs import provider_login
+
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    added = runner.store.add_provider_login("codex", "", added_by="member")
+    key = LoginKey("codex", "", added.login_id)
+    home = runner.credentials.account_dir(*key) / "codex-home"
+
+    def probe(_host, command, **_kwargs):
+        runner.store.set_provider_login_draining(key)
+        runner.store.finish_provider_login_removal(key)
+        (home / "auth.json").write_text("late native credential")
+        return subprocess.CompletedProcess(command, 0, "OK", "")
+
+    def unreached(*_args):
+        return False
+
+    cleanup = provider_login.cleanup_provider_login_credential
+    monkeypatch.setattr(runner.launcher, "_probe", probe)
+    monkeypatch.setattr(provider_login, "cleanup_provider_login_credential", unreached)
+    with pytest.raises(ProviderLoginRefused):
+        runner.verify("codex", "", login_id=added.login_id, member_id="member")
+    assert (home / "auth.json").exists()
+    monkeypatch.setattr(provider_login, "cleanup_provider_login_credential", cleanup)
+    provider_login.reconcile_login_removals(runner.store, runner.launcher)
+    assert not (home / "auth.json").exists()
+
+
 def test_interrupted_sign_ins_and_missing_tokens_reset_each_login_independently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

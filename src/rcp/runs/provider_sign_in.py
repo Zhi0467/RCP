@@ -26,8 +26,7 @@ from rcp.limits import (
 )
 from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
-from rcp.runs.provider_login import reconcile_login_removals
-from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
+from rcp.runs.provider_login import delete_removed_credential, reconcile_login_removals
 from rcp.storage import AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, ProviderLoginStateRecord
 from rcp.transport.ssh import ssh_arguments
@@ -266,8 +265,9 @@ class ProviderSignInRunner:
         """Discard a credential written by a provider after member removal fenced it."""
         if self.store.provider_login_state(key).removed_at is None:
             return
+        # A failed delete is recorded as pending, which reconcile_login_removals retries.
         try:
-            cleaned = cleanup_provider_login_credential(self.store, key)
+            cleaned = delete_removed_credential(self.store, key)
         except OSError:
             cleaned = False
         if not cleaned:

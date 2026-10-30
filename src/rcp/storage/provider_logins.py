@@ -240,6 +240,9 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current = self.provider_login_state(key, connection=connection)
+            if current.removed_at:
+                # Already fenced; its detail may be the pending-cleanup marker.
+                return current
             record = current.model_copy(
                 update={
                     "state": "signed_out",
