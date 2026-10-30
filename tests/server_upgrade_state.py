@@ -76,11 +76,7 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
     The candidate consolidates main and each branch. The previous release's
     queued run holds main, so only this branch makes the candidate admit a run.
     """
-    with request("/openapi.json") as response:
-        paths = json.load(response)["paths"]
-    # 0.4.17 to 0.4.24 list branches but cannot create one.
-    creates_branch = "post" in paths.get("/api/projects/{project_id}/graph-refs", {})
-    if not (fixture["upgrade_state"]["schedule"] and creates_branch):
+    if not fixture["upgrade_state"]["schedule"]:
         return None
     base = f"/api/projects/{fixture['project_id']}"
     with request(f"{base}/graph", cookie=cookie) as response:

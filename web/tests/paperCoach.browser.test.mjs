@@ -365,9 +365,11 @@ test("the coach stages answer comments and files as chat does and sends them wit
   // The count rides on the segment's corner without resizing it, and is read out.
   assert.equal((await segment.boundingBox()).width, width);
   assert.match(await segment.evaluate((el) => el.textContent), /1 waiting/);
-  // A reload keeps the waiting comment in this tab.
+  // A reload keeps the waiting comment in this tab. It names the segment
+  // "Coach 1 waiting", so the click finds the segment, not the bare name.
   await page.reload();
-  await coach(page);
+  await waiting.waitFor();
+  await segment.click();
   await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
   assert.equal(await waiting.textContent(), "1");
 
