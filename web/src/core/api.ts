@@ -1244,13 +1244,7 @@ export function refreshProposal(
   apiBase: string,
   proposalId: string,
 ): Promise<{ chat_id: string; operation_id: string }> {
-  return api(
-    `${apiBase}/proposals/${proposalId.split("/").map(encodeURIComponent).join("/")}/refresh`,
-    {
-      method: "POST",
-      body: JSON.stringify({}),
-    },
-  );
+  return startRefresh(apiBase, "proposals", proposalId);
 }
 
 /** Server-keyed per edge and Evidence revision, so a repeat reuses the first chat. */
@@ -1258,10 +1252,22 @@ export function refreshEdge(
   apiBase: string,
   edgeId: string,
 ): Promise<{ chat_id: string; operation_id: string }> {
-  return api(`${apiBase}/edges/${edgeId.split("/").map(encodeURIComponent).join("/")}/refresh`, {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
+  return startRefresh(apiBase, "edges", edgeId);
+}
+
+function startRefresh(
+  apiBase: string,
+  collection: "proposals" | "edges",
+  id: string,
+): Promise<{ chat_id: string; operation_id: string }> {
+  // Ids keep their slashes; the route takes the rest of the path.
+  return api(
+    `${apiBase}/${collection}/${id.split("/").map(encodeURIComponent).join("/")}/refresh`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    },
+  );
 }
 
 export function addressEvidenceFlag(
