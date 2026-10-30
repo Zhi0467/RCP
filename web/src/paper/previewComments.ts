@@ -88,13 +88,13 @@ function pdfWhere(
   return source ? `${where}, near ${source.path} line ${source.line}` : where;
 }
 
-/** A box's place in fractions of its page, image, or frame: `area 10-40% across, 20-60% down`.
+/** A box's place in fractions of its page, image, or frame: `area 10-40% across and 20-60% down`.
  *
  * Boxes send no pixels, so this is how the coach tells two boxes on one figure apart. */
 export function boxArea(box: { x: number; y: number; width: number; height: number }) {
   const span = (from: number, size: number) =>
     `${Math.round(from * 100)}-${Math.round((from + size) * 100)}%`;
-  return `area ${span(box.x, box.width)} across, ${span(box.y, box.height)} down`;
+  return `area ${span(box.x, box.width)} across and ${span(box.y, box.height)} down`;
 }
 
 /** A comment's quote from the text a box or frame selection holds, cut to the staged-comment limit. */

@@ -17,10 +17,10 @@ import {
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
   chatSelectionCommentPosition,
+  boundChatAnnotationWhere,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
-  MAX_CHAT_ANNOTATION_WHERE_LENGTH,
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
   unsentChatAnnotations,
@@ -554,7 +554,7 @@ export function useAnswerComments({
         selectedText: composer.selectedText,
         comment: text,
         ...(artifact ? { artifact } : {}),
-        ...(where ? { where: where.slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH) } : {}),
+        ...(where ? { where: boundChatAnnotationWhere(where) } : {}),
       },
     ]);
     setOpen(false);

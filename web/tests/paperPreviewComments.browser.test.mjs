@@ -197,7 +197,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   const box = await page.evaluate(() => window.comments.at(-1));
   assert.match(box.quote, /Hello world/);
   // The coach gets the box's place on the page, since no pixels are sent.
-  assert.match(box.where, /^figs\/doc\.pdf, page 2, area [0-2]-\d+% across, [0-2]-\d+% down$/);
+  assert.match(box.where, /^figs\/doc\.pdf, page 2, area [0-2]-\d+% across and [0-2]-\d+% down$/);
   assert.ok(box.anchor.right > box.anchor.left);
   assert.equal(await page.locator(".paper-select-box").count(), 1);
   await page.evaluate(() => window.comments.at(-1).clear());
@@ -293,7 +293,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   assert.equal(long.length, 4096);
   assert.ok(long.endsWith("…"));
   assert.equal(htmlBox.quote, "Plot");
-  assert.equal(htmlBox.where, "page.html, area 10-40% across, 20-60% down");
+  assert.equal(htmlBox.where, "page.html, area 10-40% across and 20-60% down");
   // A selection the frame cancels reports the clear of the comment it opened.
   await post(null);
   await page.waitForFunction(() => window.cancels.length === 1);

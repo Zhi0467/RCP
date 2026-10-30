@@ -31,6 +31,17 @@ export const MAX_CHAT_ANNOTATION_TEXT_LENGTH = 4096;
 export const MAX_CHAT_ANNOTATION_COMMENT_LENGTH = 2048;
 export const MAX_CHAT_ANNOTATION_WHERE_LENGTH = 200;
 
+/** A location within the limit: whole trailing `, ` parts go first, so no number is cut. */
+export function boundChatAnnotationWhere(where: string): string {
+  const parts = where.split(", ");
+  while (parts.length > 1 && parts.join(", ").length > MAX_CHAT_ANNOTATION_WHERE_LENGTH)
+    parts.pop();
+  const kept = parts.join(", ");
+  return kept.length > MAX_CHAT_ANNOTATION_WHERE_LENGTH
+    ? `${kept.slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH - 1)}…`
+    : kept;
+}
+
 export interface ChatAnnotationAnchor {
   left: number;
   right: number;
@@ -157,7 +168,7 @@ export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnota
           comment: candidate.comment,
           ...(candidate.artifact ? { artifact: candidate.artifact as StagedArtifactTarget } : {}),
           ...(candidate.where
-            ? { where: (candidate.where as string).slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH) }
+            ? { where: boundChatAnnotationWhere(candidate.where as string) }
             : {}),
         },
       ];
