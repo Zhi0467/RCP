@@ -437,7 +437,10 @@ async def stream_auto_research_orchestrator_run(
                 skill_pointers=orchestrator_skill_pointers,
                 write_scope=write_scope,
                 browser_grant=browser_grant,
-                child_profiles=auto_research_child_seat_profile_choices(service),
+                child_profiles=auto_research_child_seat_profile_choices(
+                    service,
+                    member_id=turn.task.authorized_by.user_id if turn.task.authorized_by else None,
+                ),
             )
             read_dirs = _chat_read_dirs(
                 context,

@@ -514,26 +514,13 @@ class BackgroundAgentTasks:
                     raise KeyError(project_id)
                 host = provider_login_host(load_manifest(project.locator), request.run_on)
         accounts = ProviderAccounts.for_store(self.store)
-        session_id = getattr(request, "session_id", None)
-        bound_session_id = session_id or getattr(request, "fork_session_id", None)
-        previous = (
-            accounts.previous_login(request.provider, host, session_id, exclude_operation_id="")
-            if session_id
-            else None
-        )
-        resolved, _ = accounts.resolve_login(
+        resolved, _ = accounts.resolve_launch_login(
             request.provider,
             host,
             authorized_by.user_id if authorized_by else None,
+            session_id=getattr(request, "session_id", None),
+            fork_session_id=getattr(request, "fork_session_id", None),
             lineage_login=lineage_login,
-            bound_login=(
-                accounts.bound_login(request.provider, host, bound_session_id)
-                if bound_session_id and request.provider == "codex"
-                else None
-            ),
-            previous_login=previous.login if previous else None,
-            previous_provider_started_at=previous.provider_started_at if previous else None,
-            previous_authorized_by=previous.authorized_by if previous else None,
         )
         if isinstance(resolved, LoginRefusal):
             raise ProviderSignedOut(resolved.detail)
@@ -1554,20 +1541,8 @@ class BackgroundAgentTasks:
             project_id,
             request,
             authorized_by=authorized_by,
-            lineage_login=(
-                LoginKey(request.provider, stage_host or "", parent.login_id)
-                if parent is not None
-                and parent.login_id is not None
-                and request.provider is not None
-                and request.provider == parent.request.get("provider")
-                and (stage_host or "") == (parent.stage_host or "")
-                and (
-                    claim_graph_repair_parent
-                    or self.store.agent_task_has_receipt(
-                        parent.operation_id, "transport_auto_retry"
-                    )
-                )
-                else None
+            lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
+                request.provider, stage_host or "", parent, graph_repair=claim_graph_repair_parent
             ),
             execution_host=(stage_host or "") if stage_root else None,
             isolation_episode_id=parent.episode_id if parent else None,

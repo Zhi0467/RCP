@@ -8,7 +8,7 @@ from typing import Literal
 
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.providers import profile_for
-from rcp.storage import AppStore
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.models import (
     MACHINE_LOGIN_ID,
     LoginKey,
@@ -179,6 +179,61 @@ class ProviderAccounts:
             LoginKey(provider, host, row["login_id"]), row["started"], row["authorized_user_id"]
         )
 
+    def lineage_login(
+        self,
+        provider: str | None,
+        host: str,
+        parent: AgentTaskRecord | None,
+        *,
+        graph_repair: bool = False,
+    ) -> LoginKey | None:
+        """Only transport reattempts and the initial graph repair retain a parent login."""
+        if (
+            parent is not None
+            and parent.login_id is not None
+            and provider is not None
+            and provider == parent.request.get("provider")
+            and host == (parent.stage_host or "")
+            and (
+                graph_repair
+                or self.store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
+            )
+        ):
+            return LoginKey(provider, host, parent.login_id)
+        return None
+
+    def resolve_launch_login(
+        self,
+        provider: str,
+        host: str,
+        member_id: str | None,
+        *,
+        session_id: str | None = None,
+        fork_session_id: str | None = None,
+        lineage_login: LoginKey | None = None,
+    ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
+        """Dry-run admission and readiness with the same session and lineage policy."""
+        previous = (
+            self.previous_login(provider, host, session_id, exclude_operation_id="")
+            if session_id
+            else None
+        )
+        bound_session = session_id or fork_session_id
+        return self.resolve_login(
+            provider,
+            host,
+            member_id,
+            lineage_login=lineage_login,
+            bound_login=(
+                self.bound_login(provider, host, bound_session)
+                if bound_session and profile_for(provider).sessions_bound_to_login
+                else None
+            ),
+            previous_login=previous.login if previous else None,
+            previous_provider_started_at=previous.provider_started_at if previous else None,
+            previous_authorized_by=previous.authorized_by if previous else None,
+        )
+
     def resolve_login(
         self,
         provider: str,
@@ -275,7 +330,10 @@ class ProviderAccounts:
         fixed = (
             machine
             if not profile_for(provider).authentication.manages_login or member_id is None
-            else (lineage_login or (bound_login if provider == "codex" else None))
+            else (
+                lineage_login
+                or (bound_login if profile_for(provider).sessions_bound_to_login else None)
+            )
         )
         if fixed is not None:
             state = self.store.provider_login_state(fixed, connection=connection)

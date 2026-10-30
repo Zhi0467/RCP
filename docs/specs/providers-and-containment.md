@@ -1129,6 +1129,13 @@ and reports; the origin task's member for watcher wakes; the schedule's for
 consolidation; the presser for a human Resume or Retry, except episode tasks;
 the original task's member for transport reattempts and automatic recovery.
 
+Viewer readiness, Auto-research Retry preflight, and child-profile checks and
+prompt catalogs probe the authorizing member's resolved login. Retry uses the
+same session binding and lineage resolution as admission. A fresh probe's
+recognized authentication failure durably signs out that login, including an
+implicit machine login, so subsequent selection can use another eligible shared
+login. Provider profiles own the failure signatures.
+
 The resolver in `agents/provider_accounts.py` picks one login, first match wins:
 
 1. A task without an authorizer, and every OpenCode task, uses the machine

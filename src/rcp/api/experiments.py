@@ -218,7 +218,11 @@ def start_work_experiment(
         raise ValueError(str(exc.detail)) from exc
     # An uncached pick probes its provider CLI, so it is checked outside the lock.
     reasoning = require_auto_research_child_profile_pick(
-        service, provider=start.provider, model=start.model, reasoning=start.reasoning
+        service,
+        provider=start.provider,
+        model=start.model,
+        reasoning=start.reasoning,
+        member_id=source.authorized_by.user_id,
     )
     authorizer = source.authorized_by
     with operation_lock(project_id):

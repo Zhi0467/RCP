@@ -29,7 +29,7 @@ from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.prompts import hidden_read_prompt
-from rcp.agents.provider_accounts import ProviderAccounts
+from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.provider_environment import (
     ProviderCredentialStore,
     ProviderProcessEnvironment,
@@ -875,6 +875,44 @@ class AgentLauncher:
             self._readiness_probes.pop(probe_key, None)
             probe.completed.set()
         return self._with_login_state(result, host, login_id)
+
+    def member_readiness(
+        self,
+        provider: str,
+        *,
+        host: str = "",
+        binary: str | None = None,
+        refresh: bool = False,
+        member_id: str | None = None,
+        session_id: str | None = None,
+        fork_session_id: str | None = None,
+        lineage_login: LoginKey | None = None,
+        machine_readiness: ProviderReadiness | None = None,
+    ) -> ProviderReadiness:
+        """Probe the login admission would select, without assigning a turn."""
+        login = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        if self.accounts is not None:
+            resolved, _ = self.accounts.resolve_launch_login(
+                provider,
+                host,
+                member_id,
+                session_id=session_id,
+                fork_session_id=fork_session_id,
+                lineage_login=lineage_login,
+            )
+            if isinstance(resolved, LoginRefusal):
+                readiness = machine_readiness or ProviderReadiness(
+                    provider=provider, installed=False, authenticated=False
+                )
+                return readiness.model_copy(
+                    update={"authenticated": False, "reason": resolved.detail}
+                )
+            login = resolved
+        if login.login_id == MACHINE_LOGIN_ID and machine_readiness is not None:
+            return machine_readiness
+        return self.readiness(
+            provider, host=host, binary=binary, refresh=refresh, login_id=login.login_id
+        )
 
     def cached_readiness(
         self,

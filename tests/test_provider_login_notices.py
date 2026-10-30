@@ -82,7 +82,11 @@ def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
 def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
-    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False, "models": []}}}}
+    cached = {
+        "provider_readiness": {
+            "laptop": {"codex": {"installed": True, "authenticated": False, "models": []}}
+        }
+    }
     store.set_provider_login_setting("other", "codex", "", "shared")
     # The machine login resolves, but the project's probe said it is signed out.
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
@@ -189,3 +193,57 @@ def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, ex
         if field not in {"provider", "host", "kind", "owner_user_id", "state", "label"}
     )
     assert not any(row.member_id == "new-member" for row in store.provider_logins("codex", ""))
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "returncode"),
+    [
+        ("Not logged in", 0),
+        ("Not logged in", 1),
+        ("401 Unauthorized: Missing bearer or basic authentication in header", 1),
+    ],
+)
+def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
+    manifest, tmp_path, monkeypatch, diagnostic, returncode
+):
+    import subprocess
+
+    from rcp.agents import ProviderReadiness
+
+    from .test_provider_login_resolver import _login
+
+    store = AppStore(tmp_path / "shared.sqlite3")
+    accounts = ProviderAccounts.for_store(store)
+    shared = _login(accounts, "codex")
+    store.set_provider_login_setting("viewer", "codex", "", "shared")
+    launcher = AgentLauncher(accounts=accounts)
+    machine = LoginKey("codex", "", "")
+    assert accounts.resolve_login("codex", "", "viewer")[0] == machine
+    monkeypatch.setattr(
+        launcher, "_configured_path_state", lambda *a, **kw: ("resolved", None, False)
+    )
+
+    def probe(host, command, **kwargs):
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, "codex 0.154.0", "")
+        return subprocess.CompletedProcess(command, returncode, diagnostic, "")
+
+    monkeypatch.setattr(launcher, "_probe", probe)
+    readiness = launcher.readiness("codex", binary="/test/codex", refresh=True)
+    assert not readiness.authenticated
+    assert store.provider_login_state(machine).state == "signed_out"
+    seen = []
+
+    def added_ready(provider, **kwargs):
+        seen.append(kwargs["login_id"])
+        return ProviderReadiness(provider=provider, installed=True, authenticated=True)
+
+    monkeypatch.setattr(launcher, "readiness", added_ready)
+    snapshot = ProjectService.viewer_readiness(
+        {"provider_readiness": {"laptop": {"codex": readiness.model_dump(mode="json")}}},
+        manifest,
+        launcher,
+        "viewer",
+    )
+    assert snapshot["provider_readiness"]["laptop"]["codex"]["authenticated"]
+    assert seen == [shared.login_id]

@@ -2725,6 +2725,9 @@ def _auto_research_worker_request(
         raise ValueError("The worker seat must name an existing node on its target.")
     reasoning = require_auto_research_child_profile_pick(
         service,
+        member_id=_context.episode.authorized_by.user_id
+        if _context.episode.authorized_by
+        else None,
         provider=arguments.provider,
         model=arguments.model,
         reasoning=arguments.reasoning,

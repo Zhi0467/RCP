@@ -211,16 +211,16 @@ def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_fa
     service = SimpleNamespace(
         manifest=SimpleNamespace(machine_map={"remote-1": machine}),
         launcher=SimpleNamespace(
-            readiness=lambda *_args, **_kwargs: blocked,
+            member_readiness=lambda *_args, **_kwargs: blocked,
             provider_binary=lambda _provider, _host: "/bin/claude",
         ),
     )
-    request = SimpleNamespace(provider="claude", run_on="remote-1")
+    request = SimpleNamespace(provider="claude", run_on="remote-1", session_id=None)
     with pytest.raises(ValueError, match="unknown permission mode"):
         _require_auto_research_retry_target_ready(service, request)
 
     service.launcher = SimpleNamespace(
-        readiness=lambda *_args, **_kwargs: blocked.model_copy(
+        member_readiness=lambda *_args, **_kwargs: blocked.model_copy(
             update={"work_like_available": True, "work_like_reason": None}
         ),
         provider_binary=lambda _provider, _host: "/bin/claude",
@@ -297,3 +297,78 @@ def test_probe_failure_updates_account_only_for_provider_auth(
             store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), str(binary))
             is None
         )
+
+
+@pytest.mark.parametrize("binding", ["own", "session", "lineage"])
+def test_auto_research_retry_probes_authorizer_or_bound_added_login(tmp_path, monkeypatch, binding):
+    from rcp.agents import AgentEvent
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.background import BackgroundAgentTasks
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.runs.auto_research import AutoResearchStartRequest
+    from rcp.runs.auto_research_admission import start_auto_research
+
+    from .helpers import fabricated_authorizer, wait_for_task, wait_until
+    from .test_auto_research_recovery import _install_recovery_callback, _sse, _store
+    from .test_provider_login_resolver import _login
+
+    store = _store(tmp_path)
+    accounts = ProviderAccounts.for_store(store)
+    selected = []
+
+    async def stream(_project, _kind, request, execution):
+        execution.checkpoint_stage("", str(tmp_path))
+        if execution.continuation == "fresh":
+            human = store.agent_task_authorizer(execution.operation_id)
+            own = _login(accounts, "codex", own=True, member=human.user_id)
+            store.set_provider_login_setting(human.user_id, "codex", "", "own")
+            key = own if binding == "own" else _login(accounts, "codex")
+            selected.append(key)
+            store.assign_provider_login(execution.operation_id, lambda _: key)
+            store.record_agent_task_receipt(execution.operation_id, "provider_runtime_selected", {})
+            if binding == "lineage":
+                store.record_agent_task_receipt(execution.operation_id, "transport_auto_retry", {})
+            if binding == "session":
+                yield _sse(AgentEvent(event="session", session_id="bound-session"))
+            yield _sse(AgentEvent(event="error", text="temporary provider failure"))
+            return
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    _install_recovery_callback(tasks)
+    episode, root = start_auto_research(
+        tasks,
+        "project",
+        AutoResearchStartRequest(
+            invocation_ceiling=4, run_truth_scope=["repo"], provider="codex", run_on="local"
+        ),
+        authorized_by=fabricated_authorizer(),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
+        episode_id="auto_research",
+        operation_id="root",
+    )
+    wait_for_task(store, root.operation_id, expect="failed")
+    wait_until(lambda: root.operation_id not in tasks._workers)
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
+    )
+    launcher = AgentLauncher(accounts=accounts)
+    seen = []
+
+    def ready(provider, *, login_id="", **kwargs):
+        seen.append(login_id)
+        return ProviderReadiness(
+            provider=provider, installed=True, authenticated=login_id == selected[0].login_id
+        )
+
+    monkeypatch.setattr(launcher, "readiness", ready)
+    service = SimpleNamespace(
+        launcher=launcher, manifest=SimpleNamespace(machine_map={"local": SimpleNamespace(host="")})
+    )
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
+    retried = tasks.retry_auto_research(root.operation_id, service=service)
+    wait_for_task(store, retried.operation_id, expect="succeeded")
+    assert seen == [selected[0].login_id]
+    assert retried.authorized_by == episode.authorized_by
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before

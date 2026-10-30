@@ -1172,6 +1172,9 @@ class AutoResearchCommandDispatcher:
 
                     require_auto_research_child_profile_pick(
                         self.service,
+                        member_id=context.episode.authorized_by.user_id
+                        if context.episode.authorized_by
+                        else None,
                         provider=child_arguments.provider,
                         model=child_arguments.model,
                         reasoning=child_arguments.reasoning,
