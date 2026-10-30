@@ -119,46 +119,50 @@ Paper links, and tree images.
 
 ### Commenting on the preview
 
-A native text selection in the preview offers the same Comment button and box as
-chat answers. A box or an HTML selection opens the box directly. Text selects
-natively, also on touch, except inside an HTML page, which takes a mouse or pen.
-With a mouse or pen, a drag that starts off text draws a box on a PDF page or
-image. An HTML page takes comments only in comment mode, a toggle in the panel
-header that starts off for each file shown, because it turns the page's drags into
-selections for comments.
+A native text selection in the preview offers the same Comment button and window
+as chat answers. A drawn area or an HTML selection opens the window directly.
+While a comment window is open, a native selection offers no Comment button. Text
+selects natively, also on touch, except inside an HTML page, which takes a mouse
+or pen. With a mouse or pen, a drag that starts off text draws an area on a PDF
+page or image. An HTML page takes comments only in comment mode, a toggle in the
+panel header that starts off for each file shown, because it turns the page's
+drags into selections for comments.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
 a source line from reverse SyncTeX when the compile has a map, which is
-approximate because the map keeps one mark per line; path for images and HTML. A
-box adds its area as percentages across and down: of the PDF page or image, or of
-the visible part of an HTML page, which is approximate. A long location drops
+approximate because the map keeps one mark per line; path for images and HTML. An
+area adds its place as percentages across and down: of the PDF page or image, or
+of the visible part of an HTML page, which is approximate. A long location drops
 whole trailing parts, the approximate source line first. A location carries no
 revision, so after later edits or a rename it can point at the wrong place with no
-signal; the quote is what names the text.
+signal; the quote is what names the text. Recording a revision was rejected: a
+Coach turn reads only the latest saved snapshot, so it could flag drift but not
+find the old place.
 
-A PDF box quotes the text-layer text inside it. An HTML box quotes the text, or
+A PDF area quotes the text-layer text inside it. An HTML area quotes the text, or
 else the label, of up to eight elements mostly inside it, or of the element that
-holds it, which can reach past the box. A box with neither quotes "Selected area",
-so a box over a figure in a Typst PDF, or on a LaTeX page outside the map, names
-only its page and area. A box or HTML quote longer than a comment allows is cut,
-ending in "…"; a longer native selection is refused. Boxes never send pixels,
-because a Coach turn takes text only; sending crops, as artifact comments do, was
-rejected for that reason.
+holds it, which can reach past the area. One with neither quotes "Selected area",
+so an area over a figure in a Typst PDF, or on a LaTeX page outside the map, names
+only its page and place. The HTML frame bounds its quotes itself, by bytes and
+without a marker. A longer PDF area quote is cut, ending in "…", and a native
+selection longer than a quote allows is refused. These are the chat composer's
+limits, kept and enforced in the browser (`web/src/chat/chatInput.ts`). Areas
+never send pixels: the Coach reads the source files from its snapshot, so text and
+place are enough, and a crop would add an upload to every comment.
 
 Cancelling the selection inside the HTML frame, including Escape there, leaving
-comment mode, or showing another file closes the comment box opened from the
-preview and keeps its text for the next selection; a new box or HTML selection
-carries it over. Escape or Cancel in the box discards it. A reload of the HTML
-frame keeps an open comment box, since its quote and place are already taken.
-While a Coach turn sends, or when the comment limit is reached, a box or HTML
-selection clears and the open comment stays. Comments wait in the Coach composer
-and, as chat comments do, survive a reload of the browser tab. The Coach button
-shows their count and any Coach error. They travel as text with the next Coach
-message, never as artifact context.
+comment mode, or showing another file closes the comment window opened from the
+preview and keeps its text for the next selection; a new area or HTML selection
+carries it over. Escape or Cancel in the window discards it. A reload of the HTML
+frame keeps an open comment window, since its quote and place are already taken.
+While a Coach turn sends, an area or HTML selection opens no comment. Comments
+wait in the Coach composer and, as chat comments do, survive a reload of the
+browser tab. The Coach button shows their count and any Coach error. They travel
+as text with the next Coach message, never as artifact context.
 
 Unlike the Coach transcript, the preview has no keyboard Comment button, and touch
-readers cannot comment on images or HTML pages, because a box needs a precise
+readers cannot comment on images or HTML pages, because an area needs a precise
 pointer; the Coach has no whole-file comment to fall back on. An HTML page runs
 scripts written by any member or the Coach in each viewer's browser under the
 sandbox rules, and its quotes come from the page itself.
@@ -407,8 +411,9 @@ visibility changes, and on a slow live interval. Live relay is one-way.
 Comment mode defaults off to preserve interaction. Readers can select with a
 mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
 one artifact and version in the composer. Admission refuses moved versions.
-Cancel, Escape, a new selection, or leaving comment mode closes the window.
-Version changes clear stale regions with a notice. Composer comments follow the
+Cancel or Escape in the window discards its text. A cancel in the frame, a new
+selection, or leaving comment mode closes or replaces the window and keeps the
+text for the next selection. Version changes clear stale regions with a notice. Composer comments follow the
 chat's mode and profile. They can combine attachments and references, including
 in Experiments. Read-only lineage children allow only Discuss comments without
 references. Both paths can publish tracked next versions. Keep follows viewer state.
