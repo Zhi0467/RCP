@@ -213,6 +213,11 @@ def reload_app() -> FastAPI:
 
 
 def main() -> None:
+    if len(sys.argv) >= 4 and sys.argv[1] == "_codex-home-run":
+        from rcp.providers.codex.homes import _run
+
+        _run(Path(sys.argv[2]), sys.argv[3:])
+        return
     if sys.argv[1:] == ["_terminal-shell"]:
         from rcp.terminals.pty_shell import main as terminal_shell
 

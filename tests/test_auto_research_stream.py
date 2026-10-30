@@ -1747,13 +1747,15 @@ def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["saved-stage", "pre-stage", "rebind"],
+    ["saved-stage", "pre-stage", "rebind", "login-switch"],
 )
 def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream(
     manifest,
     tmp_path,
     failure_point,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     service = _service(manifest, tmp_path)
     service, store, _auto_research, root, _worker = _setup_branch_auto_research(
         service,
@@ -1766,7 +1768,9 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         stage.mkdir(parents=True)
         store.checkpoint_agent_task(
             root.operation_id,
-            native_session_id="live-session" if failure_point == "rebind" else None,
+            native_session_id=(
+                "live-session" if failure_point in {"rebind", "login-switch"} else None
+            ),
             stage_host=None,
             stage_root=str(stage),
         )
@@ -1785,6 +1789,18 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     )
     root = store.agent_task(root.operation_id)
     assert root is not None
+    if failure_point == "login-switch":
+        store.record_agent_task_receipt(
+            root.operation_id,
+            "codex_resume_refused",
+            {
+                "reason": "login_switch",
+                "native_session_id": "live-session",
+                "transcript_path": str(tmp_path / "rollout.jsonl"),
+                "host": "",
+            },
+            tier="summary",
+        )
 
     def writer(_contract_text: str, workspace: Path) -> None:
         workspace.joinpath("patch.json").write_text(
@@ -1831,7 +1847,11 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     )
     assert clean_retry_receipt.payload == {
         "classification": (
-            "binding_changed" if failure_point == "rebind" else "checkpoint_missing"
+            "binding_changed"
+            if failure_point == "rebind"
+            else "login_switch"
+            if failure_point == "login-switch"
+            else "checkpoint_missing"
         ),
         "same_allocation": True,
         "actor_operation_id": root.operation_id,
@@ -1841,6 +1861,39 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     assert binding.current_operation_id == retry.operation_id
     assert binding.native_session_id == "replacement-session"
     assert binding.stage_root == str(stage)
+
+
+def test_orchestrator_encrypted_refusal_admits_clean_same_allocation(manifest, tmp_path) -> None:
+    service = _service(manifest, tmp_path)
+    _service_value, store, _episode, root, _worker = _setup_branch_auto_research(
+        service, tmp_path / "store", root_status="running"
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    store.checkpoint_agent_task(
+        root.operation_id, native_session_id="old-session", stage_root=str(stage), stage_host=None
+    )
+    store.fail_agent_task(root.operation_id, "invalid_encrypted_content")
+    store.record_agent_task_receipt(
+        root.operation_id, "codex_resume_refused", {"reason": "login_switch"}, tier="summary"
+    )
+    observed = []
+
+    async def stream(_project_id, _kind, request, execution):
+        turn = auto_research_stream_module._canonical_orchestrator_turn(execution, request)
+        observed.append(turn)
+        yield f"data: {AgentEvent(event='session', session_id='replacement').model_dump_json()}\n\n"
+        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
+
+    tasks = BackgroundAgentTasks(store, stream)
+    tasks.recover_at_startup()
+    retry = tasks.retry(root.operation_id)
+    retry = wait_for_task(store, retry.operation_id, expect="succeeded")
+    assert len(observed) == 1
+    assert observed[0].clean_session_retry
+    assert observed[0].request.session_id is None
+    assert observed[0].allocation_operation_id == root.operation_id
+    assert retry.native_session_id == "replacement"
 
 
 @pytest.mark.asyncio
@@ -3860,3 +3913,78 @@ def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
     )
 
     assert callable(restored["serve"])
+
+
+@pytest.mark.parametrize("entrypoint", ["retry", "retry_auto_research"])
+@pytest.mark.parametrize("scope", ["admission", "provider"])
+def test_worker_refused_transcript_human_retry_starts_fresh(
+    manifest, tmp_path, monkeypatch, entrypoint, scope
+):
+    from rcp.agents.launcher import ProviderReadiness
+    from rcp.runs.codex_resume import start_context
+
+    from .helpers import fake_launch_admitted
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = _service(manifest, tmp_path)
+    stage, service, store, episode, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
+    transcript = stage / "rollout.jsonl"
+    transcript.write_text("{}\n")
+    store.record_agent_task_receipt(
+        worker.operation_id,
+        "codex_resume_refused",
+        {
+            "reason": "login_switch",
+            "native_session_id": worker.native_session_id,
+            "transcript_path": str(transcript),
+            "host": "",
+        },
+    )
+    launcher = _WorkerLauncher(session_id="replacement-session")
+
+    async def stream(_project, _kind, request, execution):
+        async for frame in stream_auto_research_worker_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
+    monkeypatch.setattr(
+        service.launcher,
+        "member_readiness",
+        lambda *args, **kwargs: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True
+        ),
+    )
+    if scope == "admission":
+        fake_launch_admitted(monkeypatch, tasks)
+    retried = (
+        tasks.retry(worker.operation_id)
+        if entrypoint == "retry"
+        else tasks.retry_auto_research(worker.operation_id, service=service)
+    )
+    if scope == "admission":
+        execution = _execution(store, retried, continuation="retry")
+        turn = auto_research_stream_module._canonical_worker_turn(
+            execution, AutoResearchRunRequest.model_validate(retried.request)
+        )
+        assert turn.binding.native_session_id is None
+        assert turn.allocation_operation_id == worker.operation_id
+        assert turn.task.graph_target == worker.graph_target
+        assert str(transcript) in start_context(execution, "")
+        assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+        return
+    retried = wait_for_task(store, retried.operation_id, expect="succeeded")
+    assert launcher.requested_session_ids == [None]
+    assert str(transcript) in launcher.prompts[0]
+    assert retried.native_session_id == "replacement-session"
+    assert retried.graph_target == worker.graph_target
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before

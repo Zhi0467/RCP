@@ -43,6 +43,28 @@ if TYPE_CHECKING:
 _DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
 
 
+def is_encrypted_content_refusal(text: str) -> bool:
+    """Recognize Codex's transcript decryption failure, not a sign-in failure."""
+    return "invalid_encrypted_content" in text.lower()
+
+
+def _codex_error_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return ""
+    serialized = json.dumps(value, ensure_ascii=False)
+    message = value.get("message")
+    if not isinstance(message, str) or not message:
+        return serialized
+    # Both runtimes can put the machine-readable error in a nested object while
+    # leaving only a generic explanation in message. Keep the refusal observable
+    # after normalizing the vendor payload into the shared text event.
+    if is_encrypted_content_refusal(serialized) and not is_encrypted_content_refusal(message):
+        return f"invalid_encrypted_content: {message}"
+    return message
+
+
 class CodexProfile(ProviderProfile):
     @property
     def authentication(self) -> ProviderAuthentication:
@@ -63,7 +85,6 @@ class CodexProfile(ProviderProfile):
         installer_env=("CODEX_NON_INTERACTIVE=1",),
     )
     session_format = CodexSessionFormat()
-    sessions_bound_to_login = True
     autocompact_hint = "a token count"
     legacy_runtime_id = "codex.exec-json.v1"
     default_runtime = "app-server"
@@ -393,10 +414,7 @@ class CodexProfile(ProviderProfile):
             )
         if event_type in {"turn.failed", "error"}:
             error = value.get("error")
-            if isinstance(error, dict):
-                detail = error.get("message") or json.dumps(error, ensure_ascii=False)
-            else:
-                detail = error or value.get("message") or "Codex turn failed."
+            detail = _codex_error_text(error) or _codex_error_text(value) or "Codex turn failed."
             return ProviderStreamEvent(
                 event="error" if event_type == "turn.failed" else "message",
                 text=str(detail),

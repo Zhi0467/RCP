@@ -7,7 +7,6 @@ from unittest.mock import Mock
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.agents.provider_accounts import LoginRefusal
 from rcp.background import BackgroundAgentTasks
 from rcp.runs.provider_login import (
     bound_running_count,
@@ -78,11 +77,11 @@ def _episode(store, *, mode: EpisodeMode = "experiment_loop"):
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_drain_preserves_bound_codex_and_removes_after_episode_ends(accounts, provider):
+def test_idle_episode_does_not_hold_drain_and_sessions_survive(accounts, provider):
     store = accounts.store
     key = _login(accounts, provider)
     _episode(store)
-    task = _turn(accounts, key, status="succeeded", episode_id="episode")
+    _turn(accounts, key, status="succeeded", episode_id="episode")
     launcher = AgentLauncher()
     cancelled = []
     credentials = accounts.credentials
@@ -92,22 +91,10 @@ def test_drain_preserves_bound_codex_and_removes_after_episode_ends(accounts, pr
     (home / "session.jsonl").write_text("session")
     state = remove_shared_login(store, launcher, key, cancel_sign_in=cancelled.append)
     assert cancelled == [key]
-    assert state.draining_since is not None
-    assert (state.removed_at is None) == (provider == "codex")
+    assert state.draining_since is not None and state.removed_at is not None
     if provider == "codex":
-        assert bound_running_count(store, key) == 1
-        assert resolved_task_login(store, task) == key
-        with store.connection() as connection:
-            connection.execute("UPDATE episodes SET status='completed' WHERE episode_id='episode'")
-        reconcile_login_removals(store, launcher)
-        assert store.provider_login_state(key).removed_at is not None
         assert not (home / "auth.json").exists()
         assert (home / "session.jsonl").exists()
-        result, _ = accounts.resolve_login(
-            provider, "", fabricated_authorizer().user_id, bound_login=key
-        )
-        assert isinstance(result, LoginRefusal)
-        assert result.failure_kind == "session_refused"
 
 
 def test_paused_codex_episode_does_not_hold_drain(accounts):
@@ -180,9 +167,7 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     reloaded = reopened.agent_task(record.operation_id)
     assert reloaded is not None
     settle_provider_login(restarted, reloaded)
-    assert calls == (
-        [record.operation_id] if provider == "claude" and not alternative_lapsed else []
-    )
+    assert calls == ([] if alternative_lapsed else [record.operation_id])
     assert store.provider_login_assignment(own).limited_at is not None
 
 
@@ -207,9 +192,7 @@ def test_completed_turn_clears_limit_only_when_started_after_mark(accounts):
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_settlement_releases_parked_recovery_only_when_session_can_move(
-    accounts, monkeypatch, provider
-):
+def test_settlement_releases_parked_recovery_to_another_login(accounts, monkeypatch, provider):
     store = accounts.store
     _project(store)
     member = fabricated_authorizer().user_id
@@ -236,7 +219,7 @@ def test_settlement_releases_parked_recovery_only_when_session_can_move(
         status = connection.execute(
             "SELECT status FROM auto_research_recoveries WHERE recovery_id='recovery'"
         ).fetchone()[0]
-    assert status == ("pending" if provider == "claude" else "blocked")
+    assert status == "pending"
 
 
 def test_verify_shared_releases_unbound_work_even_when_resolver_prefers_own(accounts, monkeypatch):
@@ -260,13 +243,31 @@ def test_verify_shared_releases_unbound_work_even_when_resolver_prefers_own(acco
     assert calls == [record.operation_id]
 
 
-def test_unhealthy_bound_login_stays_discoverable_for_release(accounts):
-    key = _login(accounts, "codex")
-    record = _turn(accounts, key)
-    accounts.store.mark_provider_login_signed_out(
-        key, member_id="member", source="sign_out", detail="signed out"
-    )
-    assert resolved_task_login(accounts.store, record) == key
+def test_codex_work_parked_on_signed_out_shared_login_moves_to_own_login(accounts, monkeypatch):
+    from rcp.runs.provider_login import resume_provider_account
+
+    store = accounts.store
+    _project(store)
+    machine = _login(accounts, "codex", machine=True)
+    # Rows as v0.4.36 wrote them: the session's turns ran on the machine login.
+    _turn(accounts, machine, status="succeeded", operation_id="earlier")
+    queued = _turn(accounts, machine, status="queued", operation_id="queued")
+    assert queued.authorized_by is not None
+    member = queued.authorized_by.user_id
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET login_id=NULL WHERE operation_id='queued'")
+    store.mark_provider_login_signed_out(machine, member_id=None, source="restore", detail="401")
+    assert resolved_task_login(store, queued) == machine
+    own = _login(accounts, "codex", own=True, member=member)
+    store.set_provider_login_setting(member, "codex", "", "own_then_shared")
+    assert resolved_task_login(store, queued) == own
+    calls = []
+    background = BackgroundAgentTasks(store, _unused_stream)
+    fake_launch_admitted(monkeypatch, background, calls.append)
+    resume_provider_account(background, machine)
+    assert calls == []
+    resume_provider_account(background, own)
+    assert calls == ["queued"]
 
 
 @pytest.mark.parametrize("event", ["setting", "verify_own", "verify_shared"])

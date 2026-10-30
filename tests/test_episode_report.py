@@ -46,7 +46,7 @@ class _ReportLauncher:
         self.kwargs.append(kwargs)
         self.prompts.append(prompt)
         workspace = Path(kwargs["cwd"])
-        if outcome == "valid":
+        if outcome in {"valid", "pending"}:
             workspace.joinpath("episode-report.html").write_text(
                 "<html><body><figure>Evidence map</figure></body></html>",
                 encoding="utf-8",
@@ -61,6 +61,9 @@ class _ReportLauncher:
         if outcome == "auth":
             yield AgentEvent(event="error", text="refresh_token_reused")
             return
+        if outcome == "refused":
+            yield AgentEvent(event="error", text="invalid_encrypted_content")
+            return
         if outcome == "error":
             yield AgentEvent(event="session", session_id="native-session")
             yield AgentEvent(event="error", text="provider temporarily failed")
@@ -72,7 +75,13 @@ class _ReportLauncher:
         if outcome == "paused":
             yield AgentEvent(event="paused", text="provider interrupted")
             return
-        yield AgentEvent(event="session", session_id="native-session")
+        yield AgentEvent(
+            event="session",
+            session_id="native-session" if kwargs.get("session_id") else "fresh-session",
+        )
+        if outcome == "pending":
+            yield AgentEvent(event="remote_result_pending")
+            return
         yield AgentEvent(event="answer", text="Report written.")
         yield AgentEvent(event="done")
 
@@ -1277,3 +1286,128 @@ async def test_a_recorded_report_call_that_lost_its_sign_in_waits_for_verify(
 
     assert launcher.calls == 1
     assert store.agent_task(execution.operation_id).failure_kind == "provider_auth"
+
+
+async def assert_report_refusal_fallback(
+    manifest, tmp_path, monkeypatch, *, fails=False, recorded=False
+):
+    from rcp.runs.codex_resume import REFUSAL, RETRY
+
+    service, store, request, execution, stage = _setup_report(manifest, tmp_path)
+    transcript = tmp_path / "old-transcript.jsonl"
+    transcript.write_text('{"type":"session_meta"}\n')
+    monkeypatch.setattr(
+        "rcp.runs.codex_resume.locate_codex_transcript", lambda _session: str(transcript)
+    )
+    launcher = _ReportLauncher(
+        ["refused", "refused" if fails else "pending" if recorded else "valid"]
+    )
+    before = store.episode("episode")
+    graph_target = store.agent_task(execution.operation_id).graph_target
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+    if recorded:
+        from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
+
+        from .test_work_agent_io import _recorded_pass
+
+        assert [event.event for event in events] == ["remote_result_pending"]
+        provider_pass = _recorded_pass("", "Report written.", thread_id="fresh-session")
+        store.begin_remote_provider_pass(
+            execution.operation_id, "report-host", "/stage", provider_pass.pid_file, supervised=True
+        )
+        events = await _events(
+            finalize_recorded_episode_report_result(
+                service, launcher, request, tmp_path / "unused", execution, provider_pass
+            )
+        )
+        events = [event for event in events if event.event != "raw"]
+    assert [call["session_id"] for call in launcher.kwargs] == ["native-session", None]
+    assert all(Path(call["cwd"]) == stage for call in launcher.kwargs)
+    assert str(transcript) in launcher.prompts[1]
+    after = store.episode("episode")
+    assert after.invocations_used == before.invocations_used
+    assert after.report_attempts_used == 2
+    assert after.wrapup_state == ("failed" if fails else "ready")
+    assert [event.event for event in events] == (["error"] if fails else ["message", "done"])
+    receipts = store.agent_task_receipts(execution.operation_id)
+    for category in (REFUSAL, RETRY, "codex_history_context"):
+        assert len([receipt for receipt in receipts if receipt.category == category]) == 1
+    assert store.agent_task(execution.operation_id).graph_target == graph_target
+    return store, execution
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails, recorded", [(False, False), (True, False), (False, True)])
+async def test_report_refusal_uses_one_fresh_attempt(
+    manifest, tmp_path, monkeypatch, fails, recorded
+):
+    await assert_report_refusal_fallback(
+        manifest, tmp_path, monkeypatch, fails=fails, recorded=recorded
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", ["queued", "provider_auth"])
+async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
+    manifest, tmp_path, monkeypatch, recovery
+):
+    import asyncio
+
+    from rcp.runs.codex_resume import RETRY
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    transcript = tmp_path / "old-transcript.jsonl"
+    transcript.write_text('{"type":"session_meta"}\n')
+    monkeypatch.setattr(
+        "rcp.runs.codex_resume.locate_codex_transcript", lambda _session: str(transcript)
+    )
+    launcher = _ReportLauncher(
+        ["refused", "auth", "valid"] if recovery == "provider_auth" else ["refused", "valid"]
+    )
+    before = store.episode(request.episode_id)
+    if recovery == "queued":
+        mark_running = store.mark_episode_report_attempt_running
+
+        def interrupt_before_fresh_launch(attempt_id):
+            if store.episode_report_attempt(attempt_id).attempt_number == 2:
+                raise asyncio.CancelledError
+            return mark_running(attempt_id)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                store, "mark_episode_report_attempt_running", interrupt_before_fresh_launch
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await _events(stream_episode_report_run(service, launcher, request, execution))
+        queued = store.current_episode_report_attempt(request.episode_id)
+        assert queued.status == "queued"
+        retry = next(
+            r for r in store.agent_task_receipts(execution.operation_id) if r.category == RETRY
+        )
+        assert retry.payload["attempt_id"] == queued.attempt_id
+    else:
+        events = await _events(stream_episode_report_run(service, launcher, request, execution))
+        assert [event.event for event in events] == ["error"]
+        assert store.agent_task(execution.operation_id).failure_kind == "provider_auth"
+        store.mark_provider_login_verified(
+            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        )
+        store.requeue_interrupted_episode_report_allocation(request.episode_id)
+
+    restarted = AgentTaskExecution(execution.operation_id, store, AgentProcessControl())
+    restarted.stage_host = execution.stage_host
+    restarted.stage_root = execution.stage_root
+    events = await _events(stream_episode_report_run(service, launcher, request, restarted))
+    assert [event.event for event in events] == ["message", "done"]
+    assert [call["session_id"] for call in launcher.kwargs] == (
+        ["native-session", None, None] if recovery == "provider_auth" else ["native-session", None]
+    )
+    assert store.episode(request.episode_id).wrapup_state == "ready"
+    assert store.episode(request.episode_id).report_attempts_used == (
+        3 if recovery == "provider_auth" else 2
+    )
+    assert store.episode(request.episode_id).invocations_used == before.invocations_used
+    assert (
+        len([r for r in store.agent_task_receipts(execution.operation_id) if r.category == RETRY])
+        == 1
+    )

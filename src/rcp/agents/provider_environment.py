@@ -45,10 +45,12 @@ class ProviderProcessEnvironment:
     `local_env` is the complete environment for a local process, or None to
     inherit RCP's own. `remote_prefix` is a shell fragment the remote login shell
     runs before the provider command, or None when nothing is needed.
+    `command_prefix` wraps the executable on its execution host.
     """
 
     local_env: dict[str, str] | None = None
     remote_prefix: str | None = None
+    command_prefix: tuple[str, ...] = ()
 
     def with_variables(
         self, variables: dict[str, str], *, remote: bool
@@ -58,6 +60,7 @@ class ProviderProcessEnvironment:
             return self
         if remote:
             return ProviderProcessEnvironment(
+                command_prefix=self.command_prefix,
                 local_env=self.local_env,
                 remote_prefix="; ".join(
                     part
@@ -72,6 +75,7 @@ class ProviderProcessEnvironment:
                 ),
             )
         return ProviderProcessEnvironment(
+            command_prefix=self.command_prefix,
             local_env={
                 **(os.environ if self.local_env is None else self.local_env),
                 **variables,
@@ -84,6 +88,7 @@ class ProviderProcessEnvironment:
         if remote:
             prefix = f'export PATH={shlex.quote(directory)}:"$PATH"'
             return ProviderProcessEnvironment(
+                command_prefix=self.command_prefix,
                 local_env=self.local_env,
                 remote_prefix="; ".join(part for part in (self.remote_prefix, prefix) if part),
             )
@@ -103,11 +108,13 @@ class ProviderProcessEnvironment:
             )
             prefix = f'GIT_CONFIG_SYSTEM="$({command})" || exit $?; export GIT_CONFIG_SYSTEM'
             return ProviderProcessEnvironment(
+                command_prefix=self.command_prefix,
                 local_env=self.local_env,
                 remote_prefix="; ".join(part for part in (self.remote_prefix, prefix) if part),
             )
         path = write_git_identity(data_dir, identity)
         return ProviderProcessEnvironment(
+            command_prefix=self.command_prefix,
             local_env={
                 **(os.environ if self.local_env is None else self.local_env),
                 "GIT_CONFIG_SYSTEM": str(path),

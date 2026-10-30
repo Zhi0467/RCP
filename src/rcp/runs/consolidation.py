@@ -45,6 +45,32 @@ def is_consolidation(execution: AgentTaskExecution | None) -> bool:
     )
 
 
+def retry_refused_correction(execution: AgentTaskExecution | None) -> bool:
+    """A correction may replace its refused session inside the same bound run."""
+    from rcp.runs.codex_resume import REFUSAL, RETRY
+
+    if not is_consolidation(execution):
+        return False
+    assert execution is not None
+    store = execution.store
+    if not store.agent_task_has_receipt(
+        execution.operation_id, REFUSAL
+    ) or store.agent_task_has_receipt(execution.operation_id, RETRY):
+        return False
+    store.record_agent_task_receipt(
+        execution.operation_id,
+        RETRY,
+        {"reason": "login_switch", "attempt": 1},
+        tier="summary",
+    )
+    store.record_agent_task_event(
+        execution.operation_id,
+        "Codex refused the saved transcript. Correcting in a fresh session with its history file.",
+        level="warning",
+    )
+    return True
+
+
 def consolidation_covered_head(
     service: ProjectService,
     execution: AgentTaskExecution | None,

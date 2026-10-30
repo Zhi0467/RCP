@@ -872,6 +872,12 @@ async def _stream_agent_events(
     what a completed run, an answer, or a trace is worth in its own protocol.
     Owners that display provider answers directly can forward labelled events.
     """
+    from rcp.runs.codex_resume import record_refusal, start_context
+
+    if session_id is None:
+        history = start_context(execution, execution_host)
+        if history:
+            prompt += "\n\n" + history
     if execution is not None and write_scope is not None:
         from rcp.runs.episodes.isolation import validate_episode_launch
 
@@ -972,7 +978,6 @@ async def _stream_agent_events(
             request.provider,
             execution_host,
             session_id=session_id,
-            fork_session_id=fork.get("fork_session_id"),
             exclude_operation_id=execution.operation_id,
             task=task,
             inherit_parent=True,
@@ -992,7 +997,6 @@ async def _stream_agent_events(
             execution_host,
             task.authorized_by.user_id if task is not None and task.authorized_by else None,
             lineage_login=inputs.lineage_login,
-            bound_login=inputs.bound_login,
             previous=inputs.previous,
             dry_run=False,
             operation_id=execution.operation_id,
@@ -1003,9 +1007,7 @@ async def _stream_agent_events(
                 execution.store.record_provider_login_refusal(
                     execution.operation_id, resolved.login
                 )
-            execution.launch_refused = resolved.failure_kind == "session_refused"
-            if not execution.launch_refused:
-                execution.provider_auth_refused = resolved.login or login_key
+            execution.provider_auth_refused = resolved.login or login_key
             return resolved
         login_key = resolved
         execution.login_key = resolved
@@ -1031,12 +1033,7 @@ async def _stream_agent_events(
     async def login_unavailable(failed_login: LoginKey) -> LoginKey | None:
         nonlocal reselected
         assert execution is not None
-        if (
-            inputs is not None
-            and inputs.lineage_login is None
-            and inputs.bound_login is None
-            and not reselected
-        ):
+        if inputs is not None and not reselected:
             reselected = True
             resolved = await asyncio.to_thread(assign_login)
             if isinstance(resolved, LoginKey):
@@ -1206,6 +1203,14 @@ async def _stream_agent_events(
                     yield _sse(AgentEvent(event="raw", usage=event.usage, status=event.status))
                 continue
             if event.event == "error":
+                await asyncio.to_thread(
+                    record_refusal,
+                    execution,
+                    provider=request.provider,
+                    session_id=session_id or fork.get("fork_session_id"),
+                    host=execution_host,
+                    error=event.text,
+                )
                 outcome.failed = True
                 if event.failure_kind == "transport_lost" and execution is not None:
                     execution.stage_unreachable = True

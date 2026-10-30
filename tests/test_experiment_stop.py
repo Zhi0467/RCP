@@ -1828,13 +1828,17 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     assert loop.loop_task_ids() != before
 
 
-def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("encrypted_refusal", [False, True])
+def test_a_stale_episode_session_retries_clean_rather_than_refusing(
+    manifest, tmp_path, monkeypatch, encrypted_refusal
+) -> None:
     """A bound session the provider has dropped leaves nothing to resume.
 
     Refusing here would strand the episode: Retry could never succeed and the
     diagnostic would ask for a provider change the failure does not call for.
     """
 
+    monkeypatch.setenv("HOME", str(tmp_path))
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1846,8 +1850,23 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
         stage,
         status="failed",
         status_message="The provider dropped the session.",
-        error="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+        error=(
+            "invalid_encrypted_content"
+            if encrypted_refusal
+            else "collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198"
+        ),
     )
+    if encrypted_refusal:
+        loop.store.record_agent_task_receipt(
+            "stale-wake",
+            "codex_resume_refused",
+            {
+                "reason": "login_switch",
+                "native_session_id": "native-session-abc",
+                "transcript_path": str(tmp_path / "rollout-source.jsonl"),
+                "host": "",
+            },
+        )
     loop.record_context_candidate("stale-wake")
     observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry("stale-wake", authorized_by=loop.authorizer)
@@ -1860,12 +1879,20 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
     assert request.provider == "codex"
     assert request.control_episode_id == loop.episode_id
     assert retried.parent_operation_id == "stale-wake"
-    reasons = [
-        receipt.payload.get("reason")
+    assert retried.episode_id == loop.episode_id
+    assert retried.native_session_id is None
+    receipts = [
+        receipt
         for receipt in loop.store.agent_task_receipts(retried.operation_id)
         if receipt.category == "native_resume_unavailable"
     ]
-    assert reasons == ["the provider no longer has the saved session"]
+    assert len(receipts) == 1
+    assert receipts[0].payload["classification"] == (
+        "login_switch" if encrypted_refusal else "stale_session"
+    )
+    assert (
+        loop.store.agent_task_has_receipt("stale-wake", "codex_resume_refused") is encrypted_refusal
+    )
 
 
 def test_a_revoked_login_is_recommended_a_sign_in_without_losing_its_controls(
@@ -3197,3 +3224,118 @@ def test_stop_rejects_invalid_branch_before_persisting_intent(loop, branch_id) -
     )
     assert response.status_code == 404, response.text
     assert loop.store.episode(loop.episode_id).stop_requested_at is None
+
+
+@pytest.mark.parametrize("same_session", [True, False])
+def test_answered_question_waits_for_active_session_without_human_action(
+    manifest, tmp_path, monkeypatch, same_session
+):
+    from rcp.storage.question_models import QuestionOrigin
+
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"), invocation_ceiling=20)
+    loop.start_episode()
+    stage = tmp_path / "stage"
+    loop.bind_session(stage)
+    # Old-writer-shaped history: three paid turns, with the latest settled.
+    for invocation in (2, 3):
+        request = loop.root_request(invocation=invocation).model_copy(
+            update={"session_id": "native-session-abc", "trigger": "watcher"}
+        )
+        with loop.store.connection() as connection:
+            loop.store._insert_agent_task(
+                connection,
+                loop.task_record(
+                    request,
+                    operation_id=f"loop-{invocation}",
+                    episode_id=loop.episode_id,
+                    status="succeeded",
+                    status_message="Settled.",
+                    native_session_id="native-session-abc",
+                    stage_root=str(stage),
+                    authorized_by=loop.authorizer,
+                ),
+                continuation_cause="message_wake",
+            )
+    with loop.store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET invocations_used=3 WHERE episode_id=?", (loop.episode_id,)
+        )
+    question = loop.store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="episode",
+            project_id=loop.project_id,
+            owner_id=loop.episode_id,
+            operation_id="loop-3",
+            provider="codex",
+            native_session_id="native-session-abc",
+            stage_root=str(stage),
+            capability="work_auto",
+            write_scope_fingerprint="a" * 64,
+            graph_target=GraphTargetRef(),
+        ),
+        key="metric",
+        question="Which metric?",
+    )
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        mode="work",
+        chat_id=loop.chat_id,
+        chat_scope="node",
+        node_id=EXPERIMENT_ID,
+        message="Continue the discussion.",
+        session_id="native-session-abc" if same_session else "different-session",
+        run_truth_scope=["repo-a"],
+    )
+    loop.store.create_agent_task(
+        loop.task_record(
+            request,
+            operation_id="active-work",
+            status="running",
+            status_message="Working.",
+            native_session_id=request.session_id,
+            stage_root=str(stage),
+            authorized_by=loop.authorizer,
+        )
+    )
+    pending = loop.control()
+    assert pending["health"] == "needs_action"
+    assert pending["episode"]["blocked_reason"] == "question"
+    loop.store.answer_question(question.question_id, answer="Accuracy", resolved_by=loop.authorizer)
+    control = loop.control()
+    assert control["invocations_used"] == 3
+    assert control["invocation_ceiling"] == 20
+    assert control["health"] == ("agent_active" if same_session else "needs_action")
+    assert control["recommendation"] == ("wait" if same_session else "stop_and_restart")
+    assert control["run_section"] == ("running" if same_session else "actionable")
+    stored = loop.store.get_question(question.question_id)
+    assert stored.state == "answered" and stored.followup_operation_id is None
+    assert control["episode"]["blocked_reason"] is None
+    from .helpers import fake_launch_admitted
+
+    tasks = loop.app.state.background_tasks
+    launches = []
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *_args, **_kwargs: None)
+    fake_launch_admitted(monkeypatch, tasks, launches.append)
+    assert (
+        loop.app.state.reconcile_question_answers(loop.project_id)[question.question_id]
+        == "deferred"
+    )
+    assert launches == []
+    loop.store.complete_agent_task("active-work", applied_revision=None, result={})
+    tasks.on_task_settled(
+        loop.project_id,
+        "node_chat",
+        request,
+        AgentTaskExecution(
+            operation_id="active-work", store=loop.store, control=AgentProcessControl()
+        ),
+    )
+    delivered = loop.store.get_question(question.question_id)
+    assert launches == [delivered.followup_operation_id]
+    assert delivered.followup_operation_id is not None
+    assert (
+        loop.store.agent_task(delivered.followup_operation_id).native_session_id
+        == "native-session-abc"
+    )
+    assert loop.store.episode(loop.episode_id).invocations_used == 4

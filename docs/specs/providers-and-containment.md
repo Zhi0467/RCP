@@ -164,7 +164,8 @@ resume, a fork uses the profile's current runtime. Provider profiles
 render Codex `thread/fork` (with `excludeTurns: true`) or `exec fork`, Claude
 `--resume … --fork-session`, and OpenCode `--session … --fork`. The returned
 native session must differ from the source; subsequent turns resume that new
-identity. A failed fork never becomes a fresh session.
+identity. A failed fork keeps its source binding, except for the explicit Codex
+transcript refusal recovery below.
 
 Before Claude launches, its session-format owner copies the source transcript
 into the new cwd's native project directory on the execution host. The source
@@ -590,6 +591,30 @@ candidate against current state even if its bytes are unchanged.
 A launch without a native session sends the owner's full contract and records
 its exact bytes as the session master. Handoff, provider switch, clean Retry,
 progress handoff and fresh watcher notification are session starts.
+
+Codex first resumes or forks the requested transcript on the selected usable
+sign-in. An explicit `invalid_encrypted_content` refusal records `login_switch`
+and schedules one automatic Retry through the existing fresh-session path.
+The owner rebuilds its full contract and master. The start context adds the old
+rollout's canonical path on the execution host, under the machine Codex home's
+`sessions` or `archived_sessions` store. It treats that transcript as history,
+not current instructions. This applies to both Codex runtimes and local or SSH
+placement. No transcript is copied into a credential home or stripped of items.
+
+The failed turn records the refusal, source session, transcript path and retry.
+The fresh turn records its history pointer. A failed fresh attempt does not
+trigger another automatic transcript-refusal retry. Missing or ambiguous
+transcripts produce a visible lookup failure. Patch-only repair retains its authority guard.
+Origin-bound artifact edits use their existing fresh file-only edit path and keep
+the artifact and graph target. Reports retain their report-attempt budget,
+hidden allocation and stage. Queued or sign-in-blocked fresh calls retain ordinary
+recovery. Consolidation uses its existing correction loop,
+reopening the full contract on the same operation and graph target. A fresh
+report or consolidation retry cannot rearm the transcript fallback.
+Episode workers keep their exact-session automatic recovery guard. Their failed
+card offers Retry; a human Retry starts fresh with the history pointer, the same
+graph target and allocation, and no additional episode invocation debit.
+Orchestrator recovery also retains its allocation.
 
 A continuation sends its reason, new human input/skills/trigger/diagnostics,
 current restrictions, and stable values that differ from the master. Paths,
@@ -1021,9 +1046,9 @@ loads with the list ignored, and the next manifest write drops it.
 The backend owns team provider calls. Local runs use the service account;
 remote runs use the exact profile's configured SSH account and its provider
 state. Provider logins do not change that OS account. Added Codex sign-ins have
-separate homes for credentials and sessions; their config, rules, skills and
-AGENTS.md link to the machine home, and sign-in, verification and logout use that
-same home. Claude logins share native sessions and change only the token.
+separate homes for credentials. All other entries link to the machine home,
+and sign-in, verification and logout use that same added home. Claude logins share
+native sessions and change only the token.
 [Member sign-in settings and selection](#member-sign-in-settings-and-selection)
 owns turn selection.
 
@@ -1066,14 +1091,14 @@ receive tokens, including attempts completing after removal; a credential such a
 attempt wrote is deleted, or left pending for reconciliation.
 
 `GET /api/providers/logins` lists each nonremoved login on a listed host. The shared row mapper
-also supplies project notices, resolving new launches for the viewer and retaining
-parked Codex session bindings. Other members' own rows redact detail, source and
+also supplies project notices, resolving new launches and parked work for the
+viewer. Other members' own rows redact detail, source and
 token metadata. Device codes and URLs appear only for the attempt starter.
 Project responses attach these rows after reading the shared display cache.
 A refused own source without a stored login appears as a signed-out own notice
 with null `login_id`, the viewer's ID, provider label and host; other fields are
 empty. Its action opens Settings, Sign-ins. Every added shared row reports its
-bound running count even before draining; machine and own rows report zero.
+running-turn count even before draining; machine and own rows report zero.
 
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
@@ -1131,7 +1156,7 @@ the original task's member for transport reattempts and automatic recovery.
 
 Viewer readiness, Auto-research Retry preflight, and child-profile checks and
 prompt catalogs probe the authorizing member's resolved login. Retry uses the
-same session binding and lineage resolution as admission. A fresh probe's
+same session and lineage resolution as admission. A fresh probe's
 recognized authentication failure durably signs out that login, including an
 implicit machine login, so subsequent selection can use another eligible shared
 login. Provider profiles own the failure signatures.
@@ -1139,11 +1164,11 @@ login. Provider profiles own the failure signatures.
 The resolver in `agents/provider_accounts.py` picks one login, first match wins:
 
 1. A task without an authorizer, and every OpenCode task, uses the machine
-   sign-in. A transport reattempt or the initial `graph_repair` correction keeps
-   its parent's login, and later provider passes in one task keep the turn's.
-2. A continued Codex session, including a fork, watcher wake or paper coach
-   session, keeps the login of the earliest provider-started task in that
-   session, because the session lives in that login's home.
+   sign-in.
+2. A transport reattempt or the initial `graph_repair` correction keeps its
+   parent's login, and later provider passes in one task keep the turn's, while
+   that login is usable and is the member's own or shared, whatever the setting
+   or drain.
 3. Otherwise walk the sources the setting turns on, in its order, and take the
    first with an assignable login (usable and not draining) without the limit
    mark. For a continued session, a mark on another login that lapsed without
@@ -1154,12 +1179,14 @@ The resolver in `agents/provider_accounts.py` picks one login, first match wins:
 4. Inside the shared source, keep the session's previous login while it is
    assignable, allowed and not limited; otherwise take the one assigned longest ago,
    preferring unmarked ones, ties to the machine sign-in, then the oldest add.
-5. Refuse, naming the setting's first source.
+5. Refuse, naming the setting's first source. This is the only refusal: a
+   session's earlier login never blocks a usable one.
 
 A switch receipt names the first applicable reason: `unhealthy`, `limited`,
 `sender_setting` (another member sent the turn), `setting_changed`, or
 `preferred_source_available`; `limited` reflects any recorded mark, lapsed or
-not. RCP never starts a fresh session on a login change;
+not. A session's previous login is its latest provider-started turn's; a fork is
+a fresh choice. RCP never starts a fresh session on a login change;
 only the human Switch provider does that.
 
 **Why:** Least-recently-used spreads load over shared accounts, and staying put
@@ -1172,12 +1199,38 @@ cannot know when a vendor limit lifts; its lapse,
 | Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
 | Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<account dir>/logins/<login_id>/codex-home` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
 
-An added Codex home links `config.toml`, `rules`, `skills` and `AGENTS.md` to the
-machine Codex home; `providers/codex/homes.py` creates it (mode 0700) locally and
-over SSH and reports a link that became a regular file instead of overwriting it.
-Sessions are not linked. The session indexer reads added homes; agents'
-`source_roots` do not list them, and hidden read hides them. Only the local
-machine sign-in keeps the cross-process credential lock file.
+An added Codex home keeps only `auth.json` independent. Every other existing
+entry links to the machine Codex home, including configuration, skills, sessions,
+indexes, SQLite databases and caches. `providers/codex/homes.py` prepares the same
+layout locally and over SSH, with mode 0700. Known Codex stores are linked before
+first use. Later names are discovered on preparation. Startup prepares recorded
+added homes, including signed-out and removed logins, before recovery chooses a
+usable sign-in. Missing local homes are skipped. Unreachable remote homes are
+reported without preventing startup and retried on a later startup.
+
+Legacy rollouts move into the machine store at their relative paths. Missing
+session-index lines are appended; identical rollouts are deduplicated. A differing
+rollout is never overwritten. Other independent entries, including SQLite journals
+and replaced configuration links, move into retained snapshots beside the login
+home, under `<home-name>-retained`. Interrupted snapshots resume on preparation.
+Machine state wins; retained databases are not merged or silently discarded.
+The old config-only home preparation still follows the session links after rollback.
+
+Preparation holds the credential startup gate and an execution-host home lease.
+The execution wrapper inherits a shared lease through exec. For supervised SSH
+turns the supervisor holds it while its provider runs. Migration requires an
+exclusive lease. Older processes without a lease are checked through the execution
+account's process environments. If inspection
+fails or finds another process using that home, migration is visibly deferred;
+launch remains available. Preparation adds missing links but leaves independent
+entries alone while the home is live. A later preparation retries migration when
+the home is idle.
+A machine lock serializes migrations from different logins. SQLite's own WAL
+locking coordinates native writers; RCP does not merge their databases.
+
+The session indexer reads the machine Codex root. Hidden read still hides every
+added login home; agents read shared transcripts at their machine-home paths.
+Only the local machine sign-in keeps the cross-process credential startup lock.
 
 Every member's agents run as the same OS account, so any agent can read any
 token in `providers/` and any added home; hidden read is cooperative. Each task
@@ -1204,22 +1257,19 @@ An own login is unique per provider, host and member while `removed_at IS NULL`;
 removal retains the historical row and its member attribution. Assignment clocks do not publish resource versions; member login
 settings do.
 
-Claude resolves at each turn boundary. A continued Codex session keeps its
-bound login whatever the sender's setting or the login's owner, so a member's
-turn may run on another member's own login. Unhealthy bound work waits; a removed
-Codex binding refuses the session. A removed parent login stops pinning its
-transport reattempt or graph repair, which then resolves like a new turn (a Codex
-session bound to that login still refuses). Draining logins admit no new choices but remain
-usable by bound work until its running turns end, and for Codex also its unpaused
-episodes. Removal retains session files and deletes only credentials; unreachable remote
+Every provider resolves at each turn boundary, so a continued session moves to
+another allowed login when its previous one is unhealthy, removed, draining or
+limited, and never runs on another member's own login. A lineage login that
+became unusable or removed resolves the same way. Draining logins admit no new
+choices but remain usable by lineage work until its running turns end. Removal retains session files and deletes only credentials; unreachable remote
 cleanup remains pending for reconciliation. Shared removal synchronously settles
 any pending device sign-in before taking the credential gate; member removal does
 not, and relies on the late-credential rule above. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.
 
-The credential gate rechecks the selected login. An unbound launch may release
-the gate and resolve once more. A bound refusal carries a typed `provider_auth`
-flag; classification never infers that refusal from error text. After restart,
+The credential gate rechecks the selected login. Any launch may release the
+gate and resolve once more, including a lineage continuation. A refusal carries
+a typed `provider_auth` flag; classification never infers that refusal from error text. After restart,
 an unavailable
 captured generation cannot authorize a new fence.
 
@@ -1228,18 +1278,32 @@ A later successful turn or Verify clears the mark; an overlapping older turn
 cannot clear newer evidence. The mark lapses after
 `PROVIDER_LOGIN_LIMIT_HINT_SECONDS`; a continued session still counts a lapsed
 mark on any login other than its previous one. An
-unbound episode may retry once per session and limited login when resolution
+episode may retry once per session and limited login when resolution
 finds a different login without a limit mark. A durable receipt prevents restart
 from rearming that retry; Auto-research retains its recovery owner and Experiment
 uses ordinary Retry.
 
 Login-keyed release selects recoveries, queued work, Experiment retries and
-watcher groups by binding or member setting. Verified credentials and changed
-settings use the same release helper. Tasks with no selected login re-resolve the
-member setting on a setting change or verification of an allowed source. Unbound
-authentication failures release
-after settlement records their park when another allowed login is available.
+watcher groups by member setting. Verified credentials and changed settings use
+the same release helper, and startup runs it once for every login, so work parked
+on a login that stayed unusable moves to a usable one without a new sign-in. Tasks with no selected login re-resolve the
+member setting on a setting change or verification of an allowed source.
+Authentication failures release after settlement records their park when another
+allowed login is available. Ordinary Work turns retain their authorizer. With a
+complete owned checkpoint and available continuation context, recovery resumes
+the same session. Existing recovery rules govern handoff when that context is
+unavailable. One immediate
+authentication retry records a durable receipt.
+A failed retry stays parked until a sign-in or setting change releases it.
+An authorized Resume or Retry with no usable login remains queued. This also
+applies to Experiment, Auto-research and origin-bound artifact continuations.
+Waiting does not spend another episode invocation.
+A busy session defers admission; task settlement retries the deferred delivery.
 Transport/configuration/ordinary failures do not sign out a login.
+
+An answered Experiment question waiting for delivery is not awaiting human input.
+While another turn holds the same provider session on the same host, Runs shows
+agent activity and recommends waiting. Task settlement retries answer delivery.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
 native paths, locally or in the remote interactive login shell. An explicit path

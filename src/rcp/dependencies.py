@@ -318,10 +318,10 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     ),
     Dependency(
         "ps",
-        "Confirm process identity when stopping a run or keeping a Mac awake.",
+        "Confirm process identity for stops, Mac idle holds, and legacy Codex home migration.",
         optional_on=frozenset({"local", "remote"}),
-        feature="Confirming that a stopped run's provider process ended, and lid-closed mode on macOS.",
-        fallback="The stop is reported as unconfirmed, and lid-closed mode is released.",
+        feature="Stop confirmation, lid-closed mode, and migration of legacy Codex homes.",
+        fallback="The stop is unconfirmed, lid-closed mode is released, and legacy Codex home migration is deferred.",
         apt="procps",
     ),
     Dependency(
