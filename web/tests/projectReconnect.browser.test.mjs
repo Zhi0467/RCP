@@ -115,6 +115,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       proposal_actions: {},
       stale_proposal_ids: [],
       refreshable_proposal_ids: [],
+      stale_edge_ids: [],
       decision_prior_choices: {},
     },
     counts: {},

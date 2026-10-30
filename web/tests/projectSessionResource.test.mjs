@@ -45,6 +45,7 @@ test("cached graph selection is stable and local preview changes survive it", ()
       proposal_actions: {},
       stale_proposal_ids: [],
       refreshable_proposal_ids: [],
+      stale_edge_ids: [],
       decision_prior_choices: {},
     },
     experiment_control: {},
@@ -102,6 +103,7 @@ test("graph reads reject older revisions only within their accepted epoch", asyn
       proposal_actions: {},
       stale_proposal_ids: [],
       refreshable_proposal_ids: [],
+      stale_edge_ids: [],
       decision_prior_choices: {},
     },
   });

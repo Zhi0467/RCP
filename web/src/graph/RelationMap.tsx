@@ -1,5 +1,6 @@
 import { useEvidenceFlags } from "./EvidenceFlagContext";
-import { TriangleAlert, ExternalLink, Maximize2, X } from "lucide-react";
+import { useStaleEdges } from "./StaleEdgeContext";
+import { TriangleAlert, ExternalLink, Maximize2, RotateCw, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { edgeValidationFlags } from "./nodeDetail";
@@ -380,17 +381,29 @@ function RelationPeer({
   direction,
   onSelectNode,
 }: RelationPeerProps) {
+  const { staleEdgeIds } = useStaleEdges();
   const relationLabels = (
     <div className="relation-map-edges">
       {group.edges.map((edge) => {
         const flags = edgeValidationFlags(edge.id, validationMessages);
         const assessment = evidenceAssessmentPresentation(edge, allNodes);
+        const stale = staleEdgeIds.has(edge.id);
         return (
-          <div className={`relation-map-edge${flags.length > 0 ? " has-flag" : ""}`} key={edge.id}>
+          <div
+            className={`relation-map-edge${flags.length > 0 ? " has-flag" : ""}${stale ? " stale" : ""}`}
+            key={edge.id}
+          >
             <span className="relation-map-edge-arrow" aria-hidden="true">
               ↓
             </span>
-            <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
+            {stale ? (
+              <span className="relation-map-edge-stale">
+                <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
+                <RefreshEdgeButton edgeId={edge.id} />
+              </span>
+            ) : (
+              <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
+            )}
             {assessment === "legacy" && (
               <span className="relation-map-edge-warning">
                 <TriangleAlert size={12} />
@@ -447,12 +460,45 @@ function RelationPeer({
     </div>
   );
 
+  const stale = group.edges.some((edge) => staleEdgeIds.has(edge.id));
   return (
-    <div className="relation-map-peer">
+    <div className={`relation-map-peer${stale ? " stale" : ""}`}>
       {direction === "outgoing" && relationLabels}
       <NodeCard node={node} fallbackId={group.nodeId} onSelectNode={onSelectNode} />
       {direction === "incoming" && relationLabels}
     </div>
+  );
+}
+
+/** Offered only where the edge is stale on main; elsewhere the red mark stands alone. */
+function RefreshEdgeButton({ edgeId }: { edgeId: string }) {
+  const { refreshableEdgeIds, onRefresh } = useStaleEdges();
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  if (!refreshableEdgeIds.has(edgeId)) return null;
+  const run = async () => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onRefresh(edgeId);
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className={`icon-button relation-map-edge-refresh${failure ? " failed" : ""}`}
+      data-action="refresh"
+      aria-label="Refresh relation"
+      title={failure ?? "Refresh relation"}
+      disabled={busy}
+      onClick={() => void run()}
+    >
+      <RotateCw size={16} />
+    </button>
   );
 }
 

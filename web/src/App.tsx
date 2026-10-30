@@ -1,5 +1,6 @@
 import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
+import { StaleEdgeProvider } from "./graph/StaleEdgeContext";
 import { EvidenceFlagInbox } from "./projects/EvidenceFlagInbox";
 import { evidenceFlagRows } from "./projects/evidenceFlags";
 import { rememberOpenChat, rememberedChat, topTab } from "./core/viewTabs";
@@ -146,6 +147,7 @@ import {
   loadMergePreview,
   mergeEpisodeToMain,
   continueEpisode,
+  refreshEdge,
   refreshProposal,
   sendEpisodeMessage,
   startEpisode,
@@ -4378,6 +4380,10 @@ function MemberApp({
     graphTarget.kind === "main" ? "main" : graphTarget.branch_id,
   );
   const flaggedNodeIds = new Set(flagRows.flatMap((row) => (row.node ? [row.node.id] : [])));
+  const staleEdgeIds = new Set(presentedAttention.stale_edge_ids);
+  const refreshableEdgeIds = new Set(
+    graphTarget.kind === "main" ? canonicalAttention.stale_edge_ids : [],
+  );
   const consolidationCount =
     consolidationAttentionCount(openConsolidation, needsConsolidationRenewal) + flagRows.length;
   const attentionCount =
@@ -4820,887 +4826,900 @@ function MemberApp({
         changeView("attention");
       },
     },
-    <div className="app-shell overview-shell">
-      {acceptanceAgentSurface}
-      {voiceSurface}
-      {phone && (
-        <PhoneProjectBar
-          projectName={project.name}
-          branchPicker={branchPicker}
-          hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
-          onBack={returnToProjects}
-          dock={projectDock}
-          sync={syncControls}
-          menu={
-            <>
-              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
-              {autoResearchButton}
-              {projectUtilities}
-            </>
-          }
-        />
-      )}
-      {!phone && !projectHeaderCollapsed && (
-        <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
-          <div className="project-header-navigation">
-            <button className="project-back" onClick={returnToProjects} aria-label="All projects">
-              <ArrowLeft size={16} />
-            </button>
-            {projectDock}
-          </div>
-          <div className="project-header-actions" id="project-header-actions">
-            <div
-              className="project-header-group project-action-group"
-              role="group"
-              aria-label="Project actions"
-            >
-              {syncControls}
-              <button
-                className="button secondary"
-                disabled={projectReconciliation !== "authoritative"}
-                onClick={askAboutProject}
-              >
-                <MessageCircle size={14} /> Ask
-              </button>
-              {autoResearchButton}
-            </div>
-            <div
-              className="project-header-group project-utility-group"
-              role="group"
-              aria-label="Project utilities"
-            >
-              {projectUtilities}
-            </div>
-          </div>
-        </header>
-      )}
-
-      {!phone && (
-        <nav className="project-tabs" aria-label="Project panels">
-          {projectHeaderCollapsed && (
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-          )}
-          {/* Folded, the expand control sits beside the back arrow it came from. */}
-          <button
-            aria-expanded={!projectHeaderCollapsed}
-            aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
-            aria-label={
-              projectHeaderCollapsed ? "Expand project header" : "Collapse project header"
+    createElement(
+      StaleEdgeProvider,
+      {
+        staleEdgeIds,
+        refreshableEdgeIds,
+        onRefresh: async (edgeId: string) =>
+          openChats((await refreshEdge(apiBase, edgeId)).chat_id),
+      },
+      <div className="app-shell overview-shell">
+        {acceptanceAgentSurface}
+        {voiceSurface}
+        {phone && (
+          <PhoneProjectBar
+            projectName={project.name}
+            branchPicker={branchPicker}
+            hasDraft={draftChangeCount > 0 || behindDraftCount > 0}
+            onBack={returnToProjects}
+            dock={projectDock}
+            sync={syncControls}
+            menu={
+              <>
+                {showTrustFilter && <ViewPicker inline {...viewChoice} />}
+                {autoResearchButton}
+                {projectUtilities}
+              </>
             }
-            className="project-tabs-toggle"
-            title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-            onClick={toggleProjectHeader}
-          >
-            {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-          </button>
-          {projectHeaderCollapsed && (
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          )}
-          {navItems.map(renderNavItem)}
-          {/* Pinned to the strip's right edge so a long tab row scrolls under it. */}
-          <div className="project-tabs-trailing">
-            {showTrustFilter && <ViewPicker {...viewChoice} />}
-            {branchPicker}
-          </div>
-        </nav>
-      )}
-
-      {(projectReconciliation === "opening" || projectReconciliation === "reconciling") && (
-        <div className="branch-switch-progress" role="progressbar" aria-label="Loading branch" />
-      )}
-      {(dockedNodes.length > 0 || dockedArtifact) && (
-        <section className="node-window-dock" aria-label="Docked windows">
-          <div className="node-window-dock-label">
-            <Network size={14} />
-            <span>Docked</span>
-          </div>
-          <div className="node-window-dock-items">
-            {dockedArtifact && (
-              <button
-                className="node-window-dock-item"
-                type="button"
-                aria-label={`Restore ${dockedArtifact.title}`}
-                onClick={dockedArtifact.restore}
+          />
+        )}
+        {!phone && !projectHeaderCollapsed && (
+          <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
+            <div className="project-header-navigation">
+              <button className="project-back" onClick={returnToProjects} aria-label="All projects">
+                <ArrowLeft size={16} />
+              </button>
+              {projectDock}
+            </div>
+            <div className="project-header-actions" id="project-header-actions">
+              <div
+                className="project-header-group project-action-group"
+                role="group"
+                aria-label="Project actions"
               >
-                <FileText size={14} />
-                <span>{dockedArtifact.title}</span>
+                {syncControls}
+                <button
+                  className="button secondary"
+                  disabled={projectReconciliation !== "authoritative"}
+                  onClick={askAboutProject}
+                >
+                  <MessageCircle size={14} /> Ask
+                </button>
+                {autoResearchButton}
+              </div>
+              <div
+                className="project-header-group project-utility-group"
+                role="group"
+                aria-label="Project utilities"
+              >
+                {projectUtilities}
+              </div>
+            </div>
+          </header>
+        )}
+
+        {!phone && (
+          <nav className="project-tabs" aria-label="Project panels">
+            {projectHeaderCollapsed && (
+              <button
+                className="project-tabs-back project-back"
+                onClick={returnToProjects}
+                aria-label="All projects"
+              >
+                <ArrowLeft size={16} />
               </button>
             )}
-            {dockedNodes.map(({ nodeId, node }) => (
-              <button
-                className="node-window-dock-item"
-                key={nodeId}
-                type="button"
-                aria-label={`Restore ${node.title} node window`}
-                onClick={() => restoreDockedNode(nodeId)}
-              >
-                <span className={`node-window-dock-state ${node.standing}`} />
-                <span>{node.title}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
+            {/* Folded, the expand control sits beside the back arrow it came from. */}
+            <button
+              aria-expanded={!projectHeaderCollapsed}
+              aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
+              aria-label={
+                projectHeaderCollapsed ? "Expand project header" : "Collapse project header"
+              }
+              className="project-tabs-toggle"
+              title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
+              onClick={toggleProjectHeader}
+            >
+              {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
+            {projectHeaderCollapsed && (
+              <ProjectDock
+                className="project-tabs-project-dock"
+                tabs={openProjectTabs}
+                activeProjectId={projectId}
+                onActivate={activateProjectTab}
+                onClose={closeDockedProject}
+              />
+            )}
+            {navItems.map(renderNavItem)}
+            {/* Pinned to the strip's right edge so a long tab row scrolls under it. */}
+            <div className="project-tabs-trailing">
+              {showTrustFilter && <ViewPicker {...viewChoice} />}
+              {branchPicker}
+            </div>
+          </nav>
+        )}
 
-      <div className="project-notices">
-        {updateSurface}
-        {draftPreviewPending && (
-          <Banner
-            dismissKey={`staged-preview-pending:${project.id}:${graph.revision}`}
-            className="coverage-banner"
-            role="status"
-          >
-            <LoaderCircle className="spin" size={16} aria-hidden="true" />
-            <span>
-              <strong>Preparing staged transition preview.</strong>
-            </span>
-          </Banner>
+        {(projectReconciliation === "opening" || projectReconciliation === "reconciling") && (
+          <div className="branch-switch-progress" role="progressbar" aria-label="Loading branch" />
         )}
-        {draftPreviewConflict && (
-          <Banner
-            dismissKey={`staged-conflict:${graphSessionKey(project.id, graphTarget)}:${draftPreviewConflict}`}
-            className="coverage-banner validation-rejected"
-            role="alert"
-          >
-            <TriangleAlert size={16} aria-hidden="true" />
-            <span>
-              <strong>Staged transition conflict.</strong> {draftPreviewConflict} Your staged input
-              is kept;{" "}
-              {draftTransitionProjection
-                ? "the graph remains at the last valid staged projection."
-                : "the graph remains at canonical state."}
-            </span>
-          </Banner>
+        {(dockedNodes.length > 0 || dockedArtifact) && (
+          <section className="node-window-dock" aria-label="Docked windows">
+            <div className="node-window-dock-label">
+              <Network size={14} />
+              <span>Docked</span>
+            </div>
+            <div className="node-window-dock-items">
+              {dockedArtifact && (
+                <button
+                  className="node-window-dock-item"
+                  type="button"
+                  aria-label={`Restore ${dockedArtifact.title}`}
+                  onClick={dockedArtifact.restore}
+                >
+                  <FileText size={14} />
+                  <span>{dockedArtifact.title}</span>
+                </button>
+              )}
+              {dockedNodes.map(({ nodeId, node }) => (
+                <button
+                  className="node-window-dock-item"
+                  key={nodeId}
+                  type="button"
+                  aria-label={`Restore ${node.title} node window`}
+                  onClick={() => restoreDockedNode(nodeId)}
+                >
+                  <span className={`node-window-dock-state ${node.standing}`} />
+                  <span>{node.title}</span>
+                </button>
+              ))}
+            </div>
+          </section>
         )}
-        {!draftPreviewPending &&
-          !draftPreviewConflict &&
-          draftTransitionProjection &&
-          draftTransitionProjection.head.revision !== graph.revision && (
+
+        <div className="project-notices">
+          {updateSurface}
+          {draftPreviewPending && (
             <Banner
-              dismissKey={`staged-preview:${project.id}:${draftTransitionProjection.head.revision}`}
+              dismissKey={`staged-preview-pending:${project.id}:${graph.revision}`}
               className="coverage-banner"
               role="status"
             >
-              <GitBranch size={16} aria-hidden="true" />
-              {phone ? (
-                <span title={`Canonical state remains revision ${graph.revision} until Sync.`}>
-                  Staged preview · revision {draftTransitionProjection.head.revision}
-                </span>
-              ) : (
-                <span>
-                  <strong>Staged transition preview.</strong> Candidate revision{" "}
-                  {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
-                  {graph.revision} until Sync.
-                </span>
-              )}
+              <LoaderCircle className="spin" size={16} aria-hidden="true" />
+              <span>
+                <strong>Preparing staged transition preview.</strong>
+              </span>
             </Banner>
           )}
-        {episodeRefreshError && (
-          <button
-            className="button icon"
-            aria-label="Retry episode refresh"
-            title={episodeRefreshError}
-            style={{ outline: "1px solid var(--danger, #c44)" }}
-            onClick={() => void refreshEpisodes()}
-          >
-            ↻
-          </button>
-        )}
-        {!project.canonical_state.reachable && (
-          // A sync between outages moves the key, so the next outage shows again.
-          <Banner
-            dismissKey={`canonical-offline:${project.id}:${project.canonical_state.last_synced_at ?? ""}`}
-            className="coverage-banner state-offline"
-          >
-            <TriangleAlert size={16} />
-            <span>
-              <strong>Canonical state is offline.</strong> Sync is unavailable.
-            </span>
-          </Banner>
-        )}
-        {replayWarning && (
-          <Banner
-            dismissKey={`replay-degraded:${project.id}:${replayWarning}`}
-            className="coverage-banner replay-degraded"
-            role="alert"
-          >
-            <TriangleAlert size={16} />
-            <span>
-              <strong>Replay degraded.</strong> {replayWarning}
-            </span>
-          </Banner>
-        )}
-        {rejectedPatches.length > 0 && view === "attention" && (
-          // Its newest rejection names it, so a later rejected Patch shows again.
-          <Banner
-            dismissKey={`history-note:${graphSessionKey(project.id, graphTarget)}:${validationNoticeId(rejectedPatches.at(-1)!)}`}
-            className="coverage-banner validation-rejected"
-            role="status"
-          >
-            <TriangleAlert size={16} />
-            <span>
-              <strong>
-                History note: {rejectedPatches.length} operation
-                {rejectedPatches.length === 1 ? "" : "s"} rejected and not applied.
-              </strong>{" "}
-              RCP kept the attempted patch for audit, so the graph was unchanged. This is not an
-              Inbox decision. Reason: {rejectedPatches.at(-1)?.message}
-            </span>
-          </Banner>
-        )}
-      </div>
+          {draftPreviewConflict && (
+            <Banner
+              dismissKey={`staged-conflict:${graphSessionKey(project.id, graphTarget)}:${draftPreviewConflict}`}
+              className="coverage-banner validation-rejected"
+              role="alert"
+            >
+              <TriangleAlert size={16} aria-hidden="true" />
+              <span>
+                <strong>Staged transition conflict.</strong> {draftPreviewConflict} Your staged
+                input is kept;{" "}
+                {draftTransitionProjection
+                  ? "the graph remains at the last valid staged projection."
+                  : "the graph remains at canonical state."}
+              </span>
+            </Banner>
+          )}
+          {!draftPreviewPending &&
+            !draftPreviewConflict &&
+            draftTransitionProjection &&
+            draftTransitionProjection.head.revision !== graph.revision && (
+              <Banner
+                dismissKey={`staged-preview:${project.id}:${draftTransitionProjection.head.revision}`}
+                className="coverage-banner"
+                role="status"
+              >
+                <GitBranch size={16} aria-hidden="true" />
+                {phone ? (
+                  <span title={`Canonical state remains revision ${graph.revision} until Sync.`}>
+                    Staged preview · revision {draftTransitionProjection.head.revision}
+                  </span>
+                ) : (
+                  <span>
+                    <strong>Staged transition preview.</strong> Candidate revision{" "}
+                    {draftTransitionProjection.head.revision}; canonical state remains revision{" "}
+                    {graph.revision} until Sync.
+                  </span>
+                )}
+              </Banner>
+            )}
+          {episodeRefreshError && (
+            <button
+              className="button icon"
+              aria-label="Retry episode refresh"
+              title={episodeRefreshError}
+              style={{ outline: "1px solid var(--danger, #c44)" }}
+              onClick={() => void refreshEpisodes()}
+            >
+              ↻
+            </button>
+          )}
+          {!project.canonical_state.reachable && (
+            // A sync between outages moves the key, so the next outage shows again.
+            <Banner
+              dismissKey={`canonical-offline:${project.id}:${project.canonical_state.last_synced_at ?? ""}`}
+              className="coverage-banner state-offline"
+            >
+              <TriangleAlert size={16} />
+              <span>
+                <strong>Canonical state is offline.</strong> Sync is unavailable.
+              </span>
+            </Banner>
+          )}
+          {replayWarning && (
+            <Banner
+              dismissKey={`replay-degraded:${project.id}:${replayWarning}`}
+              className="coverage-banner replay-degraded"
+              role="alert"
+            >
+              <TriangleAlert size={16} />
+              <span>
+                <strong>Replay degraded.</strong> {replayWarning}
+              </span>
+            </Banner>
+          )}
+          {rejectedPatches.length > 0 && view === "attention" && (
+            // Its newest rejection names it, so a later rejected Patch shows again.
+            <Banner
+              dismissKey={`history-note:${graphSessionKey(project.id, graphTarget)}:${validationNoticeId(rejectedPatches.at(-1)!)}`}
+              className="coverage-banner validation-rejected"
+              role="status"
+            >
+              <TriangleAlert size={16} />
+              <span>
+                <strong>
+                  History note: {rejectedPatches.length} operation
+                  {rejectedPatches.length === 1 ? "" : "s"} rejected and not applied.
+                </strong>{" "}
+                RCP kept the attempted patch for audit, so the graph was unchanged. This is not an
+                Inbox decision. Reason: {rejectedPatches.at(-1)?.message}
+              </span>
+            </Banner>
+          )}
+        </div>
 
-      <main
-        className={view === "paper" ? "project-panel paper" : "project-panel"}
-        ref={panelRef}
-        inert={projectReconciliation !== "authoritative"}
-        aria-busy={projectReconciliation !== "authoritative"}
-      >
-        <Suspense
-          fallback={
-            <div className="project-view-loading" aria-label="Loading view">
-              <LoaderCircle className="spin" />
-            </div>
-          }
+        <main
+          className={view === "paper" ? "project-panel paper" : "project-panel"}
+          ref={panelRef}
+          inert={projectReconciliation !== "authoritative"}
+          aria-busy={projectReconciliation !== "authoritative"}
         >
-          {view === "overview" && (
-            <ProjectOverview
-              project={projectWithTransitionProjection(
-                project,
-                presentedGraph,
-                presentedExperimentControl,
-                presentedAttention,
-                presentedTransitionProjection?.primary_question ?? project.primary_question ?? null,
-                presentedTransitionProjection?.counts ?? project.counts,
-              )}
-              graph={presentedGraph}
-              pendingProposals={pendingProposals}
-              decisionsAwaitingChoice={attentionDecisions}
-              latestRevisionSummary={
-                latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
-              }
-              onNavigate={changeView}
-              digest={{
-                digest: projectDigest,
-                loaded: projectDigestLoaded,
-                targetName: branchName(projectGraphRefs, graphTarget),
-                error: projectDigestError,
-                catchingUp: projectDigestCatchingUp,
-                onCatchUp:
-                  graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
-                onOpenArtifact: (artifactId) => openArtifact({ projectId: project.id, artifactId }),
-              }}
-            />
-          )}
-          {view === "attention" && (
-            <div className="attention-page">
-              <div className="attention-main">
-                <AttentionOverview
-                  proposals={pendingProposals}
-                  decisions={attentionDecisions}
-                  blockers={openBlockers}
-                  consolidationCount={consolidationCount}
-                  onSelectNode={openNode}
-                />
-                <ProposalJudgmentSection
-                  proposals={pendingProposals}
-                  graph={attentionGraph}
-                  proposalActions={presentedAttention.proposal_actions}
-                  staleProposalIds={presentedAttention.stale_proposal_ids}
-                  refreshableProposalIds={
-                    graphTarget.kind === "main" ? canonicalAttention.refreshable_proposal_ids : []
-                  }
-                  onRefresh={async (proposal) =>
-                    (await refreshProposal(apiBase, proposal.id)).chat_id
-                  }
-                  onOpenChat={openChats}
-                  onOpenNode={openNodeById}
-                  glossaryIndex={glossaryIndex}
-                  draft={mutationsDisabled ? null : humanDraft}
-                  mutationsDisabled={mutationsDisabled}
-                  onDecision={(proposal, decision) =>
-                    updateHumanDraft((draft) =>
-                      stageProposalDecision(draft, graph, proposal.id, decision),
-                    )
-                  }
-                />
-                <EvidenceFlagInbox
-                  key={project.id}
-                  apiBase={apiBase}
-                  projectId={project.id}
-                  rows={flagRows}
-                  writesDisabled={!consolidation?.can_write}
-                  onChanged={updateEvidenceFlag}
-                  onOpenNode={openNode}
-                  onOpenChat={(chatId) => {
-                    if (graphTarget.kind === "main") return openChats(chatId);
-                    setPendingMainChat(chatId);
-                    window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
-                  }}
-                />
-                <ConsolidationInbox
-                  items={openConsolidation}
-                  schedule={consolidation?.schedule ?? null}
-                  needsRenewal={needsConsolidationRenewal}
-                  error={consolidationError}
-                  writesDisabled={!consolidation?.can_write}
-                  onOpenReport={(artifactId) => openArtifact({ projectId: project.id, artifactId })}
-                  onResolve={async (runId, action) => {
-                    await resolveConsolidationRun(apiBase, runId, action);
-                    refreshConsolidation();
-                  }}
-                  onOpenSettings={() => {
-                    changeView("settings");
-                    window.requestAnimationFrame(() =>
-                      document
-                        .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
-                        ?.scrollIntoView({ block: "center" }),
-                    );
-                  }}
-                />
-              </div>
-              <AttentionRail
-                decisions={attentionDecisions}
-                blockers={openBlockers}
-                onSelectNode={openNodeById}
-              />
-            </div>
-          )}
-          {view === "scientific" && (
-            <ResearchDrilldown
-              graph={presentedGraph}
-              trustView={trustView}
-              changedNodeIds={digestChangedNodes}
-              onSelectNode={openNode}
-              trailRef={activeResearchTrailRef!}
-            />
-          )}
-          {view === "dag" && (
-            <DagView
-              key={graphSessionKey(project.id, graphTarget)}
-              graphTarget={graphTarget}
-              branchChanges={project.graph_changes}
-              graphRefs={projectGraphRefs}
-              mergePaths={branchMergePaths}
-              onInspectTask={selectTaskInspector}
-              {...graphEditingProps}
-              graph={presentedGraph}
-              trustView={trustView}
-              viewportRef={activeDagViewportRef!}
-              relationFocusNodeId={dagRelationFocusId}
-              onClearRelationFocus={clearDagRelationFocus}
-              changedNodeIds={digestChangedNodes}
-              onSelectNode={openNode}
-            />
-          )}
-          {view === "artifacts" && (
-            <div className="artifacts-shell">
-              <ArtifactsSubnav
-                view={view}
-                filesActive={!activePin}
-                paperUnsynced={paper}
-                failed={Boolean(pinsResource.error)}
-                onChange={(next) => {
-                  setPinSelection(null);
-                  setRequestedPin(null);
-                  changeView(next);
-                }}
-              >
-                {pinTabs}
-              </ArtifactsSubnav>
-              {activePin ? (
-                <PinnedView
-                  key={`${pinScope}:${activePin.artifact_id}`}
-                  projectId={project.id}
-                  branchId={pinBranchId}
-                  pin={activePin}
-                  nodes={presentedGraph.nodes}
-                  ready={
-                    projectReconciliation === "authoritative" &&
-                    project.id === projectId &&
-                    sameGraphTarget(project.graph_target, graphTarget)
-                  }
-                  onOpenNode={openNodeById}
-                />
-              ) : (
-                <Artifacts
-                  graphRefs={projectGraphRefs ?? null}
-                  key={project.id}
-                  projectId={project.id}
-                  nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
-                  onOpenNode={openNodeById}
-                />
-              )}
-            </div>
-          )}
-          {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
-          {view === "execution" && (
-            <div className="combined-runs-view">
-              {experimentStartOverlap?.projectId === project.id && (
-                <ExperimentStartOverlap
-                  projectId={project.id}
-                  graphRefs={projectGraphRefs ?? null}
-                  loops={experimentStartOverlap.loops}
-                  onDismiss={() => setExperimentStartOverlap(null)}
-                />
-              )}
-              <ExecutionView
-                graphTarget={graphTarget}
-                graphRefs={projectGraphRefs ?? null}
-                providerLogins={runsProviderLogins}
-                viewerUserId={actorIdentity?.user.user_id ?? null}
-                onOpenSignIns={openSignIns}
-                machines={project.machines}
-                computeApiBase={apiBase}
-                onOpenSettings={() => changeView("settings")}
-                graph={presentedGraph}
-                episodes={episodes}
-                episodeAction={episodeAction}
-                tasks={projectTasks}
-                watchers={watchers}
-                experimentControl={presentedExperimentControl}
-                experimentEntriesLoaded={experimentLoopsLoaded}
-                experimentUnavailableLoops={experimentLoopsUnavailableRows}
-                experimentEntries={experimentLoops.filter(
-                  (entry) => entry.project_id === project.id,
-                )}
-                exactExperimentRoute={selectedExperimentRoute}
-                exactExperimentEntry={selectedTargetExperiment}
-                selectedExperimentId={selectedExperimentRunId}
-                focusExperimentId={focusExperimentRunId}
-                selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
-                runBusy={taskStarting}
-                stopBusyIds={experimentStopIds}
-                watcherCheckBusyId={watcherCheckId}
-                taskActionId={taskActionId}
-                selectedExperimentConversation={selectedExperimentConversation}
-                providerLabels={Object.fromEntries(
-                  Object.entries(project.providers).map(([id, provider]) => [
-                    id,
-                    provider.label || id,
-                  ]),
-                )}
-                mutationsDisabled={mutationsDisabled}
-                experimentStartsDisabled={experimentStartRequiresSync}
-                onInspectTask={selectTaskInspector}
-                onStopEpisode={requestEpisodeStop}
-                onArchiveEpisode={requestEpisodeArchive}
-                onMergeEpisode={requestEpisodeMerge}
-                onContinueEpisode={requestEpisodeContinuation}
-                onSendEpisodeMessage={messageEpisodeOrchestrator}
-                onOperateEpisodeTask={operateEpisodeOrchestratorTask}
-                onSwitchEpisodeProvider={chooseRetryTask}
-                onSelectExperiment={selectExperiment}
-                onOpenExperimentEntry={(entry) =>
-                  commitProjectOpen(project.id, experimentBoardRouteToken(entry))
-                }
-                onDetailFocused={clearExperimentFocus}
-                onOpenHistory={openProjectHistory}
-                project={project}
-                onRunExperiment={(
-                  node,
-                  invocationCeiling,
-                  browserRequested,
-                  launchConfig,
-                  message,
-                ) =>
-                  void runExperiment(
-                    node,
-                    invocationCeiling,
-                    undefined,
-                    browserRequested,
-                    launchConfig,
-                    message,
-                  )
-                }
-                onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
-                onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
-                onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
-                onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
-                onSwitchExperimentProvider={chooseRetryTask}
-                episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
-              />
-            </div>
-          )}
-          {view === "paper" && (
-            <div className="artifacts-shell">
-              <ArtifactsSubnav
-                view={view}
-                paperUnsynced={paper}
-                failed={Boolean(pinsResource.error)}
-                onChange={changeView}
-              >
-                {pinTabs}
-              </ArtifactsSubnav>
-              <PaperWorkspace
-                key={project.id}
-                apiBase={apiBase}
-                project={project}
-                tasks={projectTasks}
-                onStartTask={startAgentTask}
-                editorState={paperEditorStates.current.get(project.id)}
-                requestedFileId={requestedPaperFile}
-                onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
-              />
-            </div>
-          )}
-          {view === "settings" && (
-            <ProjectSettings
-              apiBase={apiBase}
-              project={project}
-              identity={actorIdentity}
-              onLeftProject={() => {
-                closeProjectRoute(project.id);
-                removeProject(project.id);
-                forgetProjectViewport(project.id);
-                setNotice({ kind: "info", text: "You left this project." });
-              }}
-              usage={usage}
-              onRefreshUsage={refreshUsage}
-              cacheClearDisabled={Boolean(activeTask)}
-              writesDisabled={mutationsDisabled}
-              spaceKind={verifiedHealth?.space_kind ?? "personal"}
-              onRefreshReadiness={refreshReadiness}
-              readinessRequest={{
-                pending: settingsResource.loading,
-                providerError: settingsResource.error ? String(settingsResource.error) : null,
-              }}
-              onMovePersonalProjectToTeam={movePersonalProjectToTeam}
-              consolidation={consolidation}
-              consolidationError={consolidationError}
-              onConsolidationChanged={refreshConsolidation}
-              onCacheMetricsChange={(cacheMetrics) => {
-                updateProject((current) =>
-                  current ? { ...current, cache_metrics: cacheMetrics } : current,
-                );
-              }}
-              onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
-                store.invalidate(resourceKeyId(settingsProfile(saved.id).key));
-                beginProjectSnapshotRequest(saved.id);
-                if (graphTarget.kind === "main")
-                  updateProject((current) =>
-                    projectSettingsSavedProject(saved, current, retention),
-                  );
-                else void reload();
-                setNotice({ kind: "info", text: "Project defaults synced." });
-              }}
-            />
-          )}
-          {view === "chats" && (
-            <ChatsWorkspace
-              project={project}
-              actorId={draftActorId}
-              conversations={inventoryConversations}
-              selectedChatId={selectedChatId}
-              board={agentsBoard}
-              onBoardChange={setAgentsBoard}
-              nodes={presentedGraph.nodes}
-              graphTarget={graphTarget}
-              glossaryIndex={glossaryIndex}
-              tasks={tasks}
-              watchers={watchers}
-              graphChangesDisabled={mutationsDisabled}
-              unreadChatIds={unreadChatIds}
-              chatTranscripts={chatTranscripts}
-              onSelect={(chatId) => {
-                const conversation = inventoryConversations.find((item) => item.chatId === chatId);
-                // An orchestrator opens in place from main; other chats open on their own graph.
-                if (
-                  conversation &&
-                  conversation.conversationKind !== "auto_research" &&
-                  !sameGraphTarget(conversation.graphTarget, graphTarget)
-                ) {
-                  window.location.hash = conversationHref(project.id, conversation);
-                  return;
-                }
-                selectListedConversation(chatId, conversation?.graphTarget);
-              }}
-              onOpenNode={openNodeById}
-              onStartTask={startAgentTask}
-              onResumeTask={(task) => void operateTask(task, "resume")}
-              onRetryTask={requestRetry}
-              onRefreshTask={refreshAgentTask}
-              onInspectTask={selectTaskInspector}
-              onOpenInbox={() => changeView("attention")}
-              onRepairGraphUpdate={repairGraphUpdate}
-              onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
-              onRemoveDraft={discardDraft}
-              orchestratorEpisodes={orchestratorEpisodes}
-              episodeAction={episodeAction}
-              onSendOrchestratorMessage={messageEpisodeOrchestrator}
-              archivedRevision={chatReads?.archived.join("\n")}
-              onArchiveChange={() =>
-                void refreshChatReads().catch((error) =>
-                  reportErrorNotice(
-                    `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                )
-              }
-              onNewSession={(conversation) => {
-                const node = conversation.nodeId
-                  ? (presentedGraph.nodes[conversation.nodeId] ?? null)
-                  : null;
-                selectChat(
-                  unsentConversation(conversations, conversation.kind, conversation.nodeId)
-                    ?.chatId ?? startConversation(conversation.kind, node, project.name),
-                );
-              }}
-            />
-          )}
-        </Suspense>
-      </main>
-
-      {phone && view !== "chats" && view !== "paper" && (
-        <PhoneAskButton
-          disabled={projectReconciliation !== "authoritative"}
-          onAsk={askAboutProject}
-        />
-      )}
-      {phone && (
-        <PhoneTabBar
-          primary={navItems.filter((item) => phonePrimaryViews.has(item.view)).map(renderNavItem)}
-          more={navItems.filter((item) => !phonePrimaryViews.has(item.view)).map(renderNavItem)}
-          moreActive={navItems.some(
-            (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
-          )}
-          moreBadge={
-            (chatsIndicator || paper) && (
-              <small className="phone-more-badge" aria-label="Updates in More" />
-            )
-          }
-        />
-      )}
-
-      {(
-        [
-          { slot: "original" as const, selected: selectedNode },
-          { slot: "companion" as const, selected: companionNode },
-        ] satisfies Array<{ slot: DetailWindowSlot; selected: GraphNode | null }>
-      ).map(({ slot, selected }) => {
-        if (!selected) return null;
-        const node = presentedGraph.nodes[selected.id] ?? selected;
-        const historical =
-          !presentedGraph.nodes[node.id] &&
-          project.graph_changes?.nodes.some(
-            (change) => change.node_id === node.id && change.change === "removed",
-          ) === true;
-        const experimentControl = historical ? null : experimentControlForNode(node);
-        return (
-          <DetailDrawer
-            key={`${slot}:${node.id}`}
-            experimentBranchNameRefusal={
-              experimentBranchRefusal?.nodeId === node.id ? experimentBranchRefusal.refusal : null
-            }
-            graphRefs={projectGraphRefs ?? null}
-            node={node}
-            projectId={project.id}
-            graphTarget={graphTarget}
-            historical={historical}
-            branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
-            mergePaths={branchMergePaths?.filter(
-              (path) => path.entity === "node" && path.id === node.id,
-            )}
-            onInspectTask={selectTaskInspector}
-            edges={Object.values(presentedGraph.edges)}
-            allNodes={presentedGraph.nodes}
-            glossaryIndex={glossaryIndex}
-            beliefTransitions={graph.belief_transitions}
-            validationMessages={graph.validation_messages}
-            ontology={presentedGraph.ontology}
-            priorChoiceOffBallot={presentedAttention.decision_prior_choices[node.id] ?? null}
-            sizeStorageKey={nodeDetailSizeStorageKey(graphSessionKey(project.id, graphTarget))}
-            detailSlot={slot}
-            focusRequestToken={detailFocusTokens[slot]}
-            mutationsDisabled={mutationsDisabled}
-            stagedNewNode={Boolean(humanDraft?.custom_nodes[node.id])}
-            onUpdateStagedNode={graphEditingProps.onUpdateStagedNode}
-            stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(node.id))}
-            hasStagedNodeChange={Boolean(humanDraft?.nodes[node.id])}
-            draftNodeChange={humanDraft?.nodes[node.id]}
-            canonicalNode={graph.nodes[node.id]}
-            behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
-            canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
-            experimentControl={experimentControl}
-            experimentEntries={experimentLoops}
-            experimentUnavailableLoops={experimentLoopsUnavailableRows}
-            experimentEntriesStatus={
-              // A failed latest request outranks an earlier successful load.
-              experimentLoopsUnavailable
-                ? "unavailable"
-                : experimentLoopsLoaded
-                  ? "loaded"
-                  : "loading"
-            }
-            experimentRunDisabled={experimentStartRequiresSync}
-            experimentRunBusy={taskStarting}
-            decisionChoiceStaged={Boolean(
-              humanDraft?.nodes[node.id]?.changes.selected_option !== undefined ||
-              humanDraft?.nodes[node.id]?.changes.status === "decided",
-            )}
-            onUnstage={() => {
-              updateHumanDraft((draft) => unstageCustomNode(draft, graph, node.id));
-              closeDetailSlot(slot);
-            }}
-            onRemove={() =>
-              updateHumanDraft((draft) =>
-                stageNodeRemoval(draft, graph, node.id, Boolean(experimentControl?.active)),
-              )
-            }
-            onUndoRemoval={() => updateHumanDraft((draft) => unstageNodeRemoval(draft, node.id))}
-            onClose={() => closeDetailSlot(slot)}
-            onDock={() => dockNode(node.id, slot)}
-            onBeginEdit={() =>
-              updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id), {
-                phase: "start",
-                key: node.id,
-              })
-            }
-            onStanding={(standing, amend) =>
-              updateHumanDraft(
-                (draft) => stageNodeStanding(draft, graph, node.id, standing),
-                amend ? { phase: "finish", key: node.id } : undefined,
-              )
-            }
-            onStage={(changes, amend) =>
-              updateHumanDraft(
-                (draft) => stageNodeEdit(draft, graph, node.id, changes),
-                amend ? { phase: "finish", key: node.id } : undefined,
-              )
-            }
-            onApplyField={(changes, fieldKey) =>
-              updateHumanDraft((draft) => stageNodeEdit(draft, graph, node.id, changes, [fieldKey]))
-            }
-            onDecisionChoice={(selectedOption) =>
-              updateHumanDraft((draft) =>
-                stageDecisionChoice(draft, graph, node.id, selectedOption),
-              )
-            }
-            project={project}
-            onRunExperiment={(isolation, browserRequested, launchConfig, message) =>
-              void runExperiment(
-                node,
-                undefined,
-                isolation,
-                browserRequested,
-                launchConfig,
-                message,
-              )
-            }
-            onResumeExperiment={(episodeId, turns) =>
-              void requestEpisodeContinuation(episodeId, turns).catch(() => undefined)
-            }
-            inheritedIsolation={
-              activeBranchEpisode
-                ? {
-                    graph_isolation: true,
-                    code_worktree: activeBranchEpisode.code_worktree,
-                    worktree_repository: activeBranchEpisode.checkout.repository_alias,
-                  }
-                : null
-            }
-            onOpenChat={() => {
-              const chatId = ensureConversation(conversations, "node_chat", node, project.name);
-              selectChat(chatId);
-              setFloatingChat({ chatId, nodeId: node.id });
-            }}
-            onOpenRelatedNode={(nodeId) => openRelatedNode(slot, nodeId)}
-            onSelectNode={openNodeById}
-          />
-        );
-      })}
-      {floatingChat && floatingChat.chatId !== selectedExperimentChatId && (
-        <DraggableWindow className="node-chat-window" kind="chat" resizable>
           <Suspense
             fallback={
-              <div className="project-view-loading" aria-label="Loading chat">
+              <div className="project-view-loading" aria-label="Loading view">
                 <LoaderCircle className="spin" />
               </div>
             }
           >
-            <NodeChat
-              key={floatingChat.chatId}
-              project={project}
-              actorId={draftActorId}
-              graphTarget={project.graph_target}
-              node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
-              nodes={presentedGraph.nodes}
-              glossaryIndex={glossaryIndex}
-              conversationTitle={
-                conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
-                  ?.title
-              }
-              tasks={tasks}
-              watchers={watchers}
-              historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
-              agentSetup={chatTranscripts.get(floatingChat.chatId)?.agent_setup}
-              chatId={floatingChat.chatId}
-              presentation="floating"
-              graphChangesDisabled={mutationsDisabled}
-              onStartTask={startAgentTask}
-              onResumeTask={(task) => void operateTask(task, "resume")}
-              onRetryTask={requestRetry}
-              onRefreshTask={refreshAgentTask}
-              onInspectTask={selectTaskInspector}
-              onOpenInbox={() => {
-                setFloatingChat(null);
-                changeView("attention");
-              }}
-              onRepairGraphUpdate={repairGraphUpdate}
-              onOpenNode={openNodeById}
-              onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
-              onNewSession={() => {
-                const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId =
-                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
-                  startConversation("node_chat", node, project.name);
-                selectChat(chatId);
-                setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
-              }}
-              onClose={() => setFloatingChat(null)}
-            />
+            {view === "overview" && (
+              <ProjectOverview
+                project={projectWithTransitionProjection(
+                  project,
+                  presentedGraph,
+                  presentedExperimentControl,
+                  presentedAttention,
+                  presentedTransitionProjection?.primary_question ??
+                    project.primary_question ??
+                    null,
+                  presentedTransitionProjection?.counts ?? project.counts,
+                )}
+                graph={presentedGraph}
+                pendingProposals={pendingProposals}
+                decisionsAwaitingChoice={attentionDecisions}
+                latestRevisionSummary={
+                  latestRevisionSummary?.to_revision === graph.revision
+                    ? latestRevisionSummary
+                    : null
+                }
+                onNavigate={changeView}
+                digest={{
+                  digest: projectDigest,
+                  loaded: projectDigestLoaded,
+                  targetName: branchName(projectGraphRefs, graphTarget),
+                  error: projectDigestError,
+                  catchingUp: projectDigestCatchingUp,
+                  onCatchUp:
+                    graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
+                  onOpenArtifact: (artifactId) =>
+                    openArtifact({ projectId: project.id, artifactId }),
+                }}
+              />
+            )}
+            {view === "attention" && (
+              <div className="attention-page">
+                <div className="attention-main">
+                  <AttentionOverview
+                    proposals={pendingProposals}
+                    decisions={attentionDecisions}
+                    blockers={openBlockers}
+                    consolidationCount={consolidationCount}
+                    onSelectNode={openNode}
+                  />
+                  <ProposalJudgmentSection
+                    proposals={pendingProposals}
+                    graph={attentionGraph}
+                    proposalActions={presentedAttention.proposal_actions}
+                    staleProposalIds={presentedAttention.stale_proposal_ids}
+                    refreshableProposalIds={
+                      graphTarget.kind === "main" ? canonicalAttention.refreshable_proposal_ids : []
+                    }
+                    onRefresh={async (proposal) =>
+                      (await refreshProposal(apiBase, proposal.id)).chat_id
+                    }
+                    onOpenChat={openChats}
+                    onOpenNode={openNodeById}
+                    glossaryIndex={glossaryIndex}
+                    draft={mutationsDisabled ? null : humanDraft}
+                    mutationsDisabled={mutationsDisabled}
+                    onDecision={(proposal, decision) =>
+                      updateHumanDraft((draft) =>
+                        stageProposalDecision(draft, graph, proposal.id, decision),
+                      )
+                    }
+                  />
+                  <EvidenceFlagInbox
+                    key={project.id}
+                    apiBase={apiBase}
+                    projectId={project.id}
+                    rows={flagRows}
+                    writesDisabled={!consolidation?.can_write}
+                    onChanged={updateEvidenceFlag}
+                    onOpenNode={openNode}
+                    onOpenChat={(chatId) => {
+                      if (graphTarget.kind === "main") return openChats(chatId);
+                      setPendingMainChat(chatId);
+                      window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
+                    }}
+                  />
+                  <ConsolidationInbox
+                    items={openConsolidation}
+                    schedule={consolidation?.schedule ?? null}
+                    needsRenewal={needsConsolidationRenewal}
+                    error={consolidationError}
+                    writesDisabled={!consolidation?.can_write}
+                    onOpenReport={(artifactId) =>
+                      openArtifact({ projectId: project.id, artifactId })
+                    }
+                    onResolve={async (runId, action) => {
+                      await resolveConsolidationRun(apiBase, runId, action);
+                      refreshConsolidation();
+                    }}
+                    onOpenSettings={() => {
+                      changeView("settings");
+                      window.requestAnimationFrame(() =>
+                        document
+                          .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
+                          ?.scrollIntoView({ block: "center" }),
+                      );
+                    }}
+                  />
+                </div>
+                <AttentionRail
+                  decisions={attentionDecisions}
+                  blockers={openBlockers}
+                  onSelectNode={openNodeById}
+                />
+              </div>
+            )}
+            {view === "scientific" && (
+              <ResearchDrilldown
+                graph={presentedGraph}
+                trustView={trustView}
+                changedNodeIds={digestChangedNodes}
+                onSelectNode={openNode}
+                trailRef={activeResearchTrailRef!}
+              />
+            )}
+            {view === "dag" && (
+              <DagView
+                key={graphSessionKey(project.id, graphTarget)}
+                graphTarget={graphTarget}
+                branchChanges={project.graph_changes}
+                graphRefs={projectGraphRefs}
+                mergePaths={branchMergePaths}
+                onInspectTask={selectTaskInspector}
+                {...graphEditingProps}
+                graph={presentedGraph}
+                trustView={trustView}
+                viewportRef={activeDagViewportRef!}
+                relationFocusNodeId={dagRelationFocusId}
+                onClearRelationFocus={clearDagRelationFocus}
+                changedNodeIds={digestChangedNodes}
+                onSelectNode={openNode}
+              />
+            )}
+            {view === "artifacts" && (
+              <div className="artifacts-shell">
+                <ArtifactsSubnav
+                  view={view}
+                  filesActive={!activePin}
+                  paperUnsynced={paper}
+                  failed={Boolean(pinsResource.error)}
+                  onChange={(next) => {
+                    setPinSelection(null);
+                    setRequestedPin(null);
+                    changeView(next);
+                  }}
+                >
+                  {pinTabs}
+                </ArtifactsSubnav>
+                {activePin ? (
+                  <PinnedView
+                    key={`${pinScope}:${activePin.artifact_id}`}
+                    projectId={project.id}
+                    branchId={pinBranchId}
+                    pin={activePin}
+                    nodes={presentedGraph.nodes}
+                    ready={
+                      projectReconciliation === "authoritative" &&
+                      project.id === projectId &&
+                      sameGraphTarget(project.graph_target, graphTarget)
+                    }
+                    onOpenNode={openNodeById}
+                  />
+                ) : (
+                  <Artifacts
+                    graphRefs={projectGraphRefs ?? null}
+                    key={project.id}
+                    projectId={project.id}
+                    nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                    onOpenNode={openNodeById}
+                  />
+                )}
+              </div>
+            )}
+            {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
+            {view === "execution" && (
+              <div className="combined-runs-view">
+                {experimentStartOverlap?.projectId === project.id && (
+                  <ExperimentStartOverlap
+                    projectId={project.id}
+                    graphRefs={projectGraphRefs ?? null}
+                    loops={experimentStartOverlap.loops}
+                    onDismiss={() => setExperimentStartOverlap(null)}
+                  />
+                )}
+                <ExecutionView
+                  graphTarget={graphTarget}
+                  graphRefs={projectGraphRefs ?? null}
+                  providerLogins={runsProviderLogins}
+                  viewerUserId={actorIdentity?.user.user_id ?? null}
+                  onOpenSignIns={openSignIns}
+                  machines={project.machines}
+                  computeApiBase={apiBase}
+                  onOpenSettings={() => changeView("settings")}
+                  graph={presentedGraph}
+                  episodes={episodes}
+                  episodeAction={episodeAction}
+                  tasks={projectTasks}
+                  watchers={watchers}
+                  experimentControl={presentedExperimentControl}
+                  experimentEntriesLoaded={experimentLoopsLoaded}
+                  experimentUnavailableLoops={experimentLoopsUnavailableRows}
+                  experimentEntries={experimentLoops.filter(
+                    (entry) => entry.project_id === project.id,
+                  )}
+                  exactExperimentRoute={selectedExperimentRoute}
+                  exactExperimentEntry={selectedTargetExperiment}
+                  selectedExperimentId={selectedExperimentRunId}
+                  focusExperimentId={focusExperimentRunId}
+                  selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
+                  runBusy={taskStarting}
+                  stopBusyIds={experimentStopIds}
+                  watcherCheckBusyId={watcherCheckId}
+                  taskActionId={taskActionId}
+                  selectedExperimentConversation={selectedExperimentConversation}
+                  providerLabels={Object.fromEntries(
+                    Object.entries(project.providers).map(([id, provider]) => [
+                      id,
+                      provider.label || id,
+                    ]),
+                  )}
+                  mutationsDisabled={mutationsDisabled}
+                  experimentStartsDisabled={experimentStartRequiresSync}
+                  onInspectTask={selectTaskInspector}
+                  onStopEpisode={requestEpisodeStop}
+                  onArchiveEpisode={requestEpisodeArchive}
+                  onMergeEpisode={requestEpisodeMerge}
+                  onContinueEpisode={requestEpisodeContinuation}
+                  onSendEpisodeMessage={messageEpisodeOrchestrator}
+                  onOperateEpisodeTask={operateEpisodeOrchestratorTask}
+                  onSwitchEpisodeProvider={chooseRetryTask}
+                  onSelectExperiment={selectExperiment}
+                  onOpenExperimentEntry={(entry) =>
+                    commitProjectOpen(project.id, experimentBoardRouteToken(entry))
+                  }
+                  onDetailFocused={clearExperimentFocus}
+                  onOpenHistory={openProjectHistory}
+                  project={project}
+                  onRunExperiment={(
+                    node,
+                    invocationCeiling,
+                    browserRequested,
+                    launchConfig,
+                    message,
+                  ) =>
+                    void runExperiment(
+                      node,
+                      invocationCeiling,
+                      undefined,
+                      browserRequested,
+                      launchConfig,
+                      message,
+                    )
+                  }
+                  onStopExperiment={(nodeId, episodeId) =>
+                    void stopExperimentLoop(nodeId, episodeId)
+                  }
+                  onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
+                  onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
+                  onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
+                  onSwitchExperimentProvider={chooseRetryTask}
+                  episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
+                />
+              </div>
+            )}
+            {view === "paper" && (
+              <div className="artifacts-shell">
+                <ArtifactsSubnav
+                  view={view}
+                  paperUnsynced={paper}
+                  failed={Boolean(pinsResource.error)}
+                  onChange={changeView}
+                >
+                  {pinTabs}
+                </ArtifactsSubnav>
+                <PaperWorkspace
+                  key={project.id}
+                  apiBase={apiBase}
+                  project={project}
+                  tasks={projectTasks}
+                  onStartTask={startAgentTask}
+                  editorState={paperEditorStates.current.get(project.id)}
+                  requestedFileId={requestedPaperFile}
+                  onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
+                />
+              </div>
+            )}
+            {view === "settings" && (
+              <ProjectSettings
+                apiBase={apiBase}
+                project={project}
+                identity={actorIdentity}
+                onLeftProject={() => {
+                  closeProjectRoute(project.id);
+                  removeProject(project.id);
+                  forgetProjectViewport(project.id);
+                  setNotice({ kind: "info", text: "You left this project." });
+                }}
+                usage={usage}
+                onRefreshUsage={refreshUsage}
+                cacheClearDisabled={Boolean(activeTask)}
+                writesDisabled={mutationsDisabled}
+                spaceKind={verifiedHealth?.space_kind ?? "personal"}
+                onRefreshReadiness={refreshReadiness}
+                readinessRequest={{
+                  pending: settingsResource.loading,
+                  providerError: settingsResource.error ? String(settingsResource.error) : null,
+                }}
+                onMovePersonalProjectToTeam={movePersonalProjectToTeam}
+                consolidation={consolidation}
+                consolidationError={consolidationError}
+                onConsolidationChanged={refreshConsolidation}
+                onCacheMetricsChange={(cacheMetrics) => {
+                  updateProject((current) =>
+                    current ? { ...current, cache_metrics: cacheMetrics } : current,
+                  );
+                }}
+                onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
+                  store.invalidate(resourceKeyId(settingsProfile(saved.id).key));
+                  beginProjectSnapshotRequest(saved.id);
+                  if (graphTarget.kind === "main")
+                    updateProject((current) =>
+                      projectSettingsSavedProject(saved, current, retention),
+                    );
+                  else void reload();
+                  setNotice({ kind: "info", text: "Project defaults synced." });
+                }}
+              />
+            )}
+            {view === "chats" && (
+              <ChatsWorkspace
+                project={project}
+                actorId={draftActorId}
+                conversations={inventoryConversations}
+                selectedChatId={selectedChatId}
+                board={agentsBoard}
+                onBoardChange={setAgentsBoard}
+                nodes={presentedGraph.nodes}
+                graphTarget={graphTarget}
+                glossaryIndex={glossaryIndex}
+                tasks={tasks}
+                watchers={watchers}
+                graphChangesDisabled={mutationsDisabled}
+                unreadChatIds={unreadChatIds}
+                chatTranscripts={chatTranscripts}
+                onSelect={(chatId) => {
+                  const conversation = inventoryConversations.find(
+                    (item) => item.chatId === chatId,
+                  );
+                  // An orchestrator opens in place from main; other chats open on their own graph.
+                  if (
+                    conversation &&
+                    conversation.conversationKind !== "auto_research" &&
+                    !sameGraphTarget(conversation.graphTarget, graphTarget)
+                  ) {
+                    window.location.hash = conversationHref(project.id, conversation);
+                    return;
+                  }
+                  selectListedConversation(chatId, conversation?.graphTarget);
+                }}
+                onOpenNode={openNodeById}
+                onStartTask={startAgentTask}
+                onResumeTask={(task) => void operateTask(task, "resume")}
+                onRetryTask={requestRetry}
+                onRefreshTask={refreshAgentTask}
+                onInspectTask={selectTaskInspector}
+                onOpenInbox={() => changeView("attention")}
+                onRepairGraphUpdate={repairGraphUpdate}
+                onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+                onRemoveDraft={discardDraft}
+                orchestratorEpisodes={orchestratorEpisodes}
+                episodeAction={episodeAction}
+                onSendOrchestratorMessage={messageEpisodeOrchestrator}
+                archivedRevision={chatReads?.archived.join("\n")}
+                onArchiveChange={() =>
+                  void refreshChatReads().catch((error) =>
+                    reportErrorNotice(
+                      `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                    ),
+                  )
+                }
+                onNewSession={(conversation) => {
+                  const node = conversation.nodeId
+                    ? (presentedGraph.nodes[conversation.nodeId] ?? null)
+                    : null;
+                  selectChat(
+                    unsentConversation(conversations, conversation.kind, conversation.nodeId)
+                      ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                  );
+                }}
+              />
+            )}
           </Suspense>
-        </DraggableWindow>
-      )}
-      <RunDialog
-        open={runDialogOpen}
-        kind={runKind}
-        project={project}
-        busy={taskStarting}
-        onClose={closeRunDialog}
-        onRun={(config, message) => void runAgent(config, message)}
-      />
-      <AutoResearchDialog
-        open={autoResearchDialogOpen}
-        // Continue's handlers skip silently while any episode action runs, so the
-        // dialog waits rather than closing over a message that was never sent.
-        busy={continueBranch !== null ? episodeAction !== null : episodeAction === "start"}
-        error={autoResearchStartError}
-        initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
-        project={project}
-        onClose={closeAutoResearchDialog}
-        onAuthorize={(
-          invocationCeiling,
-          startingInstruction,
-          codeWorktree,
-          browserRequested,
-          launchConfig,
-          branchName,
-          bulletinEnabled,
-          worktreeRepository,
-        ) =>
-          void authorizeAutoResearch(
+        </main>
+
+        {phone && view !== "chats" && view !== "paper" && (
+          <PhoneAskButton
+            disabled={projectReconciliation !== "authoritative"}
+            onAsk={askAboutProject}
+          />
+        )}
+        {phone && (
+          <PhoneTabBar
+            primary={navItems.filter((item) => phonePrimaryViews.has(item.view)).map(renderNavItem)}
+            more={navItems.filter((item) => !phonePrimaryViews.has(item.view)).map(renderNavItem)}
+            moreActive={navItems.some(
+              (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
+            )}
+            moreBadge={
+              (chatsIndicator || paper) && (
+                <small className="phone-more-badge" aria-label="Updates in More" />
+              )
+            }
+          />
+        )}
+
+        {(
+          [
+            { slot: "original" as const, selected: selectedNode },
+            { slot: "companion" as const, selected: companionNode },
+          ] satisfies Array<{ slot: DetailWindowSlot; selected: GraphNode | null }>
+        ).map(({ slot, selected }) => {
+          if (!selected) return null;
+          const node = presentedGraph.nodes[selected.id] ?? selected;
+          const historical =
+            !presentedGraph.nodes[node.id] &&
+            project.graph_changes?.nodes.some(
+              (change) => change.node_id === node.id && change.change === "removed",
+            ) === true;
+          const experimentControl = historical ? null : experimentControlForNode(node);
+          return (
+            <DetailDrawer
+              key={`${slot}:${node.id}`}
+              experimentBranchNameRefusal={
+                experimentBranchRefusal?.nodeId === node.id ? experimentBranchRefusal.refusal : null
+              }
+              graphRefs={projectGraphRefs ?? null}
+              node={node}
+              projectId={project.id}
+              graphTarget={graphTarget}
+              historical={historical}
+              branchChange={project.graph_changes?.nodes.find(
+                (change) => change.node_id === node.id,
+              )}
+              mergePaths={branchMergePaths?.filter(
+                (path) => path.entity === "node" && path.id === node.id,
+              )}
+              onInspectTask={selectTaskInspector}
+              edges={Object.values(presentedGraph.edges)}
+              allNodes={presentedGraph.nodes}
+              glossaryIndex={glossaryIndex}
+              beliefTransitions={graph.belief_transitions}
+              validationMessages={graph.validation_messages}
+              ontology={presentedGraph.ontology}
+              priorChoiceOffBallot={presentedAttention.decision_prior_choices[node.id] ?? null}
+              sizeStorageKey={nodeDetailSizeStorageKey(graphSessionKey(project.id, graphTarget))}
+              detailSlot={slot}
+              focusRequestToken={detailFocusTokens[slot]}
+              mutationsDisabled={mutationsDisabled}
+              stagedNewNode={Boolean(humanDraft?.custom_nodes[node.id])}
+              onUpdateStagedNode={graphEditingProps.onUpdateStagedNode}
+              stagedForRemoval={Boolean(humanDraft?.removed_node_ids.includes(node.id))}
+              hasStagedNodeChange={Boolean(humanDraft?.nodes[node.id])}
+              draftNodeChange={humanDraft?.nodes[node.id]}
+              canonicalNode={graph.nodes[node.id]}
+              behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
+              canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
+              experimentControl={experimentControl}
+              experimentEntries={experimentLoops}
+              experimentUnavailableLoops={experimentLoopsUnavailableRows}
+              experimentEntriesStatus={
+                // A failed latest request outranks an earlier successful load.
+                experimentLoopsUnavailable
+                  ? "unavailable"
+                  : experimentLoopsLoaded
+                    ? "loaded"
+                    : "loading"
+              }
+              experimentRunDisabled={experimentStartRequiresSync}
+              experimentRunBusy={taskStarting}
+              decisionChoiceStaged={Boolean(
+                humanDraft?.nodes[node.id]?.changes.selected_option !== undefined ||
+                humanDraft?.nodes[node.id]?.changes.status === "decided",
+              )}
+              onUnstage={() => {
+                updateHumanDraft((draft) => unstageCustomNode(draft, graph, node.id));
+                closeDetailSlot(slot);
+              }}
+              onRemove={() =>
+                updateHumanDraft((draft) =>
+                  stageNodeRemoval(draft, graph, node.id, Boolean(experimentControl?.active)),
+                )
+              }
+              onUndoRemoval={() => updateHumanDraft((draft) => unstageNodeRemoval(draft, node.id))}
+              onClose={() => closeDetailSlot(slot)}
+              onDock={() => dockNode(node.id, slot)}
+              onBeginEdit={() =>
+                updateHumanDraft((draft) => stageNodeEditStart(draft, graph, node.id), {
+                  phase: "start",
+                  key: node.id,
+                })
+              }
+              onStanding={(standing, amend) =>
+                updateHumanDraft(
+                  (draft) => stageNodeStanding(draft, graph, node.id, standing),
+                  amend ? { phase: "finish", key: node.id } : undefined,
+                )
+              }
+              onStage={(changes, amend) =>
+                updateHumanDraft(
+                  (draft) => stageNodeEdit(draft, graph, node.id, changes),
+                  amend ? { phase: "finish", key: node.id } : undefined,
+                )
+              }
+              onApplyField={(changes, fieldKey) =>
+                updateHumanDraft((draft) =>
+                  stageNodeEdit(draft, graph, node.id, changes, [fieldKey]),
+                )
+              }
+              onDecisionChoice={(selectedOption) =>
+                updateHumanDraft((draft) =>
+                  stageDecisionChoice(draft, graph, node.id, selectedOption),
+                )
+              }
+              project={project}
+              onRunExperiment={(isolation, browserRequested, launchConfig, message) =>
+                void runExperiment(
+                  node,
+                  undefined,
+                  isolation,
+                  browserRequested,
+                  launchConfig,
+                  message,
+                )
+              }
+              onResumeExperiment={(episodeId, turns) =>
+                void requestEpisodeContinuation(episodeId, turns).catch(() => undefined)
+              }
+              inheritedIsolation={
+                activeBranchEpisode
+                  ? {
+                      graph_isolation: true,
+                      code_worktree: activeBranchEpisode.code_worktree,
+                      worktree_repository: activeBranchEpisode.checkout.repository_alias,
+                    }
+                  : null
+              }
+              onOpenChat={() => {
+                const chatId = ensureConversation(conversations, "node_chat", node, project.name);
+                selectChat(chatId);
+                setFloatingChat({ chatId, nodeId: node.id });
+              }}
+              onOpenRelatedNode={(nodeId) => openRelatedNode(slot, nodeId)}
+              onSelectNode={openNodeById}
+            />
+          );
+        })}
+        {floatingChat && floatingChat.chatId !== selectedExperimentChatId && (
+          <DraggableWindow className="node-chat-window" kind="chat" resizable>
+            <Suspense
+              fallback={
+                <div className="project-view-loading" aria-label="Loading chat">
+                  <LoaderCircle className="spin" />
+                </div>
+              }
+            >
+              <NodeChat
+                key={floatingChat.chatId}
+                project={project}
+                actorId={draftActorId}
+                graphTarget={project.graph_target}
+                node={presentedGraph.nodes[floatingChat.nodeId] ?? null}
+                nodes={presentedGraph.nodes}
+                glossaryIndex={glossaryIndex}
+                conversationTitle={
+                  conversations.find((conversation) => conversation.chatId === floatingChat.chatId)
+                    ?.title
+                }
+                tasks={tasks}
+                watchers={watchers}
+                historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
+                agentSetup={chatTranscripts.get(floatingChat.chatId)?.agent_setup}
+                chatId={floatingChat.chatId}
+                presentation="floating"
+                graphChangesDisabled={mutationsDisabled}
+                onStartTask={startAgentTask}
+                onResumeTask={(task) => void operateTask(task, "resume")}
+                onRetryTask={requestRetry}
+                onRefreshTask={refreshAgentTask}
+                onInspectTask={selectTaskInspector}
+                onOpenInbox={() => {
+                  setFloatingChat(null);
+                  changeView("attention");
+                }}
+                onRepairGraphUpdate={repairGraphUpdate}
+                onOpenNode={openNodeById}
+                onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+                onNewSession={() => {
+                  const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
+                  const chatId =
+                    unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
+                    startConversation("node_chat", node, project.name);
+                  selectChat(chatId);
+                  setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
+                }}
+                onClose={() => setFloatingChat(null)}
+              />
+            </Suspense>
+          </DraggableWindow>
+        )}
+        <RunDialog
+          open={runDialogOpen}
+          kind={runKind}
+          project={project}
+          busy={taskStarting}
+          onClose={closeRunDialog}
+          onRun={(config, message) => void runAgent(config, message)}
+        />
+        <AutoResearchDialog
+          open={autoResearchDialogOpen}
+          // Continue's handlers skip silently while any episode action runs, so the
+          // dialog waits rather than closing over a message that was never sent.
+          busy={continueBranch !== null ? episodeAction !== null : episodeAction === "start"}
+          error={autoResearchStartError}
+          initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
+          project={project}
+          onClose={closeAutoResearchDialog}
+          onAuthorize={(
             invocationCeiling,
             startingInstruction,
             codeWorktree,
@@ -5709,80 +5728,91 @@ function MemberApp({
             branchName,
             bulletinEnabled,
             worktreeRepository,
-          )
-        }
-        branchNameRefusal={autoResearchBranchRefusal}
-        branchNamesInUse={branchNamesInUse}
-        otherLiveRuns={liveAutoResearchEpisodes}
-        graphRefs={projectGraphRefs ?? null}
-        continueBranch={continueBranch}
-        onContinue={requestEpisodeContinuation}
-        onSendMessage={messageEpisodeOrchestrator}
-      />
-      {retryTask && retryConfig && (
-        <RunDialog
-          open
-          mode="retry"
-          kind={retryProfileKind(retryTask)}
-          project={project}
-          initialConfig={retryConfig}
-          busy={taskActionId === retryTask.operation_id}
-          onClose={closeRetryTask}
-          onRun={(config) => void retryAgentTask(retryTask, config)}
+          ) =>
+            void authorizeAutoResearch(
+              invocationCeiling,
+              startingInstruction,
+              codeWorktree,
+              browserRequested,
+              launchConfig,
+              branchName,
+              bulletinEnabled,
+              worktreeRepository,
+            )
+          }
+          branchNameRefusal={autoResearchBranchRefusal}
+          branchNamesInUse={branchNamesInUse}
+          otherLiveRuns={liveAutoResearchEpisodes}
+          graphRefs={projectGraphRefs ?? null}
+          continueBranch={continueBranch}
+          onContinue={requestEpisodeContinuation}
+          onSendMessage={messageEpisodeOrchestrator}
         />
-      )}
-      {projectHistoryOpen && (
-        <ProjectHistoryDrawer
-          reportError={reportErrorNotice}
-          key={graphSessionKey(project.id, graphTarget)}
-          projectId={project.id}
-          onFork={async (revision, requestId) => {
-            await forkGraph(graphTarget, revision, requestId);
-            closeProjectHistory();
-          }}
-          forkDisabled={mutationsDisabled}
-          summaries={historyRevisionSummaries}
-          tasks={projectTasks}
-          loading={historySummariesRevision !== graph.revision}
-          error={historySummariesError}
-          onInspectTask={(taskId) => {
-            closeProjectHistory();
-            selectTaskInspector(taskId);
-          }}
-          episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
-          onClose={closeProjectHistory}
-        />
-      )}
-      {taskInspectorId && (
-        <AgentTaskInspector
-          tasks={projectTasks}
-          task={inspectedTask}
-          loading={taskInspectorLoading}
-          actionBusy={Boolean(
-            taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),
-          )}
-          mutatingActionsDisabled={Boolean(
-            mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
-          )}
-          onSelect={selectTaskInspector}
-          onStop={() => {
-            if (inspectedTask?.episode_id) void requestEpisodeStop(inspectedTask.episode_id);
-          }}
-          onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
-          onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
-          onRetry={() => inspectedTask && requestRetry(inspectedTask)}
-          onClose={() => selectTaskInspector(null)}
-        />
-      )}
-      {notice && (
-        <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
-          {notice.text}
-        </button>
-      )}
-      {desktopAccessSurface}
-      {actorNameSurface}
-      {reverificationSurface}
-    </div>,
+        {retryTask && retryConfig && (
+          <RunDialog
+            open
+            mode="retry"
+            kind={retryProfileKind(retryTask)}
+            project={project}
+            initialConfig={retryConfig}
+            busy={taskActionId === retryTask.operation_id}
+            onClose={closeRetryTask}
+            onRun={(config) => void retryAgentTask(retryTask, config)}
+          />
+        )}
+        {projectHistoryOpen && (
+          <ProjectHistoryDrawer
+            reportError={reportErrorNotice}
+            key={graphSessionKey(project.id, graphTarget)}
+            projectId={project.id}
+            onFork={async (revision, requestId) => {
+              await forkGraph(graphTarget, revision, requestId);
+              closeProjectHistory();
+            }}
+            forkDisabled={mutationsDisabled}
+            summaries={historyRevisionSummaries}
+            tasks={projectTasks}
+            loading={historySummariesRevision !== graph.revision}
+            error={historySummariesError}
+            onInspectTask={(taskId) => {
+              closeProjectHistory();
+              selectTaskInspector(taskId);
+            }}
+            episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
+            onClose={closeProjectHistory}
+          />
+        )}
+        {taskInspectorId && (
+          <AgentTaskInspector
+            tasks={projectTasks}
+            task={inspectedTask}
+            loading={taskInspectorLoading}
+            actionBusy={Boolean(
+              taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),
+            )}
+            mutatingActionsDisabled={Boolean(
+              mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
+            )}
+            onSelect={selectTaskInspector}
+            onStop={() => {
+              if (inspectedTask?.episode_id) void requestEpisodeStop(inspectedTask.episode_id);
+            }}
+            onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
+            onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
+            onRetry={() => inspectedTask && requestRetry(inspectedTask)}
+            onClose={() => selectTaskInspector(null)}
+          />
+        )}
+        {notice && (
+          <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
+            {notice.text}
+          </button>
+        )}
+        {desktopAccessSurface}
+        {actorNameSurface}
+        {reverificationSurface}
+      </div>,
+    ),
   );
 }
 

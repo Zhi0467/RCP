@@ -1253,6 +1253,17 @@ export function refreshProposal(
   );
 }
 
+/** Server-keyed per edge and Evidence revision, so a repeat reuses the first chat. */
+export function refreshEdge(
+  apiBase: string,
+  edgeId: string,
+): Promise<{ chat_id: string; operation_id: string }> {
+  return api(`${apiBase}/edges/${edgeId.split("/").map(encodeURIComponent).join("/")}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export function addressEvidenceFlag(
   apiBase: string,
   flagId: string,

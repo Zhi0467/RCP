@@ -19,6 +19,7 @@ const {
   relationOverlayHost,
   trapRelationModalTab,
 } = await server.ssrLoadModule("/src/graph/RelationMap.tsx");
+const { StaleEdgeProvider } = await server.ssrLoadModule("/src/graph/StaleEdgeContext.tsx");
 
 after(() => server.close());
 
@@ -192,6 +193,40 @@ test("renders claim-relative Evidence assessment separately and labels legacy un
     }),
   );
   assert.doesNotMatch(actionHtml, /relation-map-edge-warning|aria-label="[^"]*direct[^"]*strong/);
+});
+
+test("marks a stale edge red and offers its one Refresh only where it is refreshable", () => {
+  const incidentEdges = [
+    { id: "stale", source: "alpha", target: "focus", relation: "supports", layer: "epistemic" },
+    { id: "current", source: "beta", target: "focus", relation: "supports", layer: "epistemic" },
+  ];
+  const render = (refreshable) =>
+    renderToStaticMarkup(
+      React.createElement(
+        StaleEdgeProvider,
+        {
+          staleEdgeIds: new Set(["stale"]),
+          refreshableEdgeIds: new Set(refreshable),
+          onRefresh: async () => {},
+        },
+        React.createElement(RelationMap, {
+          focusedNode: nodes.focus,
+          allNodes: nodes,
+          incidentEdges,
+          validationMessages: [],
+          onOpenNodeWindow() {},
+        }),
+      ),
+    );
+
+  const main = render(["stale"]);
+  assert.equal((main.match(/class="relation-map-peer stale"/g) ?? []).length, 1);
+  assert.equal((main.match(/class="relation-map-edge stale"/g) ?? []).length, 1);
+  assert.equal((main.match(/data-action="refresh"/g) ?? []).length, 1);
+
+  const branch = render([]);
+  assert.equal((branch.match(/class="relation-map-edge stale"/g) ?? []).length, 1);
+  assert.doesNotMatch(branch, /data-action="refresh"/);
 });
 
 test("server rendering does not access the document for the closed overlay", () => {
