@@ -13,15 +13,21 @@ from .test_provider_login_resolver import accounts as accounts
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-@pytest.mark.parametrize("direction", ["personal_to_team", "team_to_personal"])
+@pytest.mark.parametrize(
+    ("direction", "machine_row"),
+    [("personal_to_team", True), ("team_to_personal", True), ("personal_to_team", False)],
+)
 def test_startup_releases_old_auth_failure_on_available_login(
-    accounts, manifest, tmp_path, monkeypatch, provider, direction
+    accounts, manifest, tmp_path, monkeypatch, provider, direction, machine_row
 ):
     stage = tmp_path / "stage"
     _, new, _, _ = switched_session(accounts, stage, provider, direction)
     store = accounts.store
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET failure_kind='provider_auth'")
+        if not machine_row:
+            # A machine sign-in that was never written is implicitly signed in.
+            connection.execute("DELETE FROM provider_login_states WHERE login_id=''")
         connection.execute("UPDATE projects SET locator=?", (str(manifest.path),))
     selected = []
     background = switch_background(store, stage, selected)

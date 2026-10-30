@@ -2082,14 +2082,22 @@ def create_app(
                 # signed-in login the queue picks, without waiting for a sign-in event.
                 from rcp.runs.provider_login import resume_provider_account
 
-                for state in store.provider_login_states():
-                    login = LoginKey(state.provider, state.host, state.login_id)
+                # `provider_logins` also yields an implicit machine login with no row.
+                pairs = {(state.provider, state.host) for state in store.provider_login_states()}
+                logins = [
+                    LoginKey(provider, host, row.login_id)
+                    for provider, host in sorted(pairs)
+                    for row in store.provider_logins(provider, host)
+                ]
+                for login in logins:
                     try:
+                        # Automatic: an exhausted auth-retry chain stays exhausted.
                         await asyncio.to_thread(
                             resume_provider_account,
                             background_tasks,
                             login,
                             watcher_delivery=watcher_delivery,
+                            automatic=True,
                         )
                     except Exception as exc:
                         logger.warning(
