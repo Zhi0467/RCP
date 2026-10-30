@@ -101,4 +101,6 @@ class ConnectionCache:
                 return
             _IDLE[key] = None
             while len(_IDLE) > STORAGE_IDLE_CONNECTION_LIMIT:
-                _discard(next(iter(_IDLE)))
+                # popitem takes the oldest key in one step: a finalizer that
+                # retires handles between iter() and next() broke iteration.
+                _discard(_IDLE.popitem(last=False)[0])
