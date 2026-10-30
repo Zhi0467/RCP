@@ -604,9 +604,17 @@ placement. No transcript is copied into a credential home or stripped of items.
 The failed turn records the refusal, source session, transcript path and retry.
 The fresh turn records its history pointer. A failed fresh attempt does not
 trigger another automatic transcript-refusal retry. Missing or ambiguous
-transcripts produce a visible lookup failure. Recovery retains existing authority guards: patch-only
-repair, origin-bound artifact edits, episode-owned children and reports do not
-gain a general full-task restart. Orchestrator recovery retains its allocation.
+transcripts produce a visible lookup failure. Patch-only repair retains its authority guard.
+Origin-bound artifact edits use their existing fresh file-only edit path and keep
+the artifact and graph target. Reports retain their report-attempt budget,
+hidden allocation and stage. Queued or sign-in-blocked fresh calls retain ordinary
+recovery. Consolidation uses its existing correction loop,
+reopening the full contract on the same operation and graph target. A fresh
+report or consolidation retry cannot rearm the transcript fallback.
+Episode workers keep their exact-session automatic recovery guard. Their failed
+card offers Retry; a human Retry starts fresh with the history pointer, the same
+graph target and allocation, and no additional episode invocation debit.
+Orchestrator recovery also retains its allocation.
 
 A continuation sends its reason, new human input/skills/trigger/diagnostics,
 current restrictions, and stable values that differ from the master. Paths,

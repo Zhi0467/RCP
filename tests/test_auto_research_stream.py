@@ -3913,3 +3913,78 @@ def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
     )
 
     assert callable(restored["serve"])
+
+
+@pytest.mark.parametrize("entrypoint", ["retry", "retry_auto_research"])
+@pytest.mark.parametrize("scope", ["admission", "provider"])
+def test_worker_refused_transcript_human_retry_starts_fresh(
+    manifest, tmp_path, monkeypatch, entrypoint, scope
+):
+    from rcp.agents.launcher import ProviderReadiness
+    from rcp.runs.codex_resume import start_context
+
+    from .helpers import fake_launch_admitted
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    service = _service(manifest, tmp_path)
+    stage, service, store, episode, _root, worker = _saved_worker(
+        tmp_path, status="failed", service=service
+    )
+    transcript = stage / "rollout.jsonl"
+    transcript.write_text("{}\n")
+    store.record_agent_task_receipt(
+        worker.operation_id,
+        "codex_resume_refused",
+        {
+            "reason": "login_switch",
+            "native_session_id": worker.native_session_id,
+            "transcript_path": str(transcript),
+            "host": "",
+        },
+    )
+    launcher = _WorkerLauncher(session_id="replacement-session")
+
+    async def stream(_project, _kind, request, execution):
+        async for frame in stream_auto_research_worker_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution,
+            command_dispatcher=_dispatcher(store),
+        ):
+            yield frame
+
+    tasks = BackgroundAgentTasks(store, stream)
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
+    monkeypatch.setattr(
+        service.launcher,
+        "member_readiness",
+        lambda *args, **kwargs: ProviderReadiness(
+            provider="codex", installed=True, authenticated=True
+        ),
+    )
+    if scope == "admission":
+        fake_launch_admitted(monkeypatch, tasks)
+    retried = (
+        tasks.retry(worker.operation_id)
+        if entrypoint == "retry"
+        else tasks.retry_auto_research(worker.operation_id, service=service)
+    )
+    if scope == "admission":
+        execution = _execution(store, retried, continuation="retry")
+        turn = auto_research_stream_module._canonical_worker_turn(
+            execution, AutoResearchRunRequest.model_validate(retried.request)
+        )
+        assert turn.binding.native_session_id is None
+        assert turn.allocation_operation_id == worker.operation_id
+        assert turn.task.graph_target == worker.graph_target
+        assert str(transcript) in start_context(execution, "")
+        assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+        return
+    retried = wait_for_task(store, retried.operation_id, expect="succeeded")
+    assert launcher.requested_session_ids == [None]
+    assert str(transcript) in launcher.prompts[0]
+    assert retried.native_session_id == "replacement-session"
+    assert retried.graph_target == worker.graph_target
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before

@@ -323,36 +323,22 @@ def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatc
     assert launches[0].payload["continuation_cause"] == "handoff"
 
 
-@pytest.mark.parametrize("guard", ["ancestor_retry", "origin_bound_edit", "legacy_origin_edit"])
-def test_refusal_retry_respects_lineage_and_protected_origin(accounts, guard):
+def test_refusal_retry_respects_lineage(accounts):
     store = accounts.store
     key = LoginKey("codex", "", "")
     for operation_id in ("first-refusal", "transport-retry", "current-refusal"):
         _task(store, operation_id, key, member=None)
-    edit = None
-    if guard == "origin_bound_edit":
-        edit = {"artifact_id": "artifact", "origin_bound": True}
-    elif guard == "legacy_origin_edit":
-        edit = {"artifact_id": "artifact"}
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='failed', phase='failed'")
-        if guard == "ancestor_retry":
-            connection.execute(
-                "UPDATE graph_runs SET parent_operation_id='first-refusal' "
-                "WHERE operation_id='transport-retry'"
-            )
-            connection.execute(
-                "UPDATE graph_runs SET parent_operation_id='transport-retry' "
-                "WHERE operation_id='current-refusal'"
-            )
-        else:
-            connection.execute(
-                "UPDATE graph_runs SET kind='artifact_edit', request_json=? "
-                "WHERE operation_id='current-refusal'",
-                (json.dumps({"provider": "codex", "artifact_edit": edit}),),
-            )
-    if guard == "ancestor_retry":
-        store.record_agent_task_receipt("first-refusal", RETRY, {"attempt": 1})
+        connection.execute(
+            "UPDATE graph_runs SET parent_operation_id='first-refusal' "
+            "WHERE operation_id='transport-retry'"
+        )
+        connection.execute(
+            "UPDATE graph_runs SET parent_operation_id='transport-retry' "
+            "WHERE operation_id='current-refusal'"
+        )
+    store.record_agent_task_receipt("first-refusal", RETRY, {"attempt": 1})
     store.record_agent_task_receipt("current-refusal", REFUSAL, {"reason": "login_switch"})
 
     def forbidden_retry(*_args, **_kwargs):
@@ -363,13 +349,97 @@ def test_refusal_retry_respects_lineage_and_protected_origin(accounts, guard):
     assert current is not None and current.can_retry
     retry_refused_resume(tasks, current)
     assert not store.agent_task_has_receipt(current.operation_id, RETRY)
-    skipped = [
-        r
-        for r in store.agent_task_receipts(current.operation_id)
-        if r.category == "codex_fresh_session_retry_failed"
+
+
+async def _artifact_refusal_case(manifest, tmp_path, monkeypatch):
+    from .test_artifact_edit_runtime import _run, _setup
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app, request, execution, _source, _workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    home = tmp_path / "machine-codex"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    session = str(uuid4())
+    request = request.model_copy(update={"session_id": session})
+    with store.connection() as connection:
+        for operation in ("origin", "edit"):
+            row = store.agent_task(operation)
+            payload = {**row.request, "session_id": session}
+            connection.execute(
+                "UPDATE graph_runs SET native_session_id=?, request_json=? WHERE operation_id=?",
+                (session, json.dumps(payload), operation),
+            )
+    transcript = _rollout(home, session)
+    calls = []
+
+    class Launcher:
+        async def stream(self, _provider, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            if kwargs["session_id"]:
+                yield AgentEvent(event="error", text='{"code":"invalid_encrypted_content"}')
+            else:
+                yield AgentEvent(event="session", session_id="fresh-edit")
+                yield AgentEvent(event="answer", text="Reviewed the artifact")
+                yield AgentEvent(event="done")
+
+    launcher = Launcher()
+    events = await _run(app, request, execution, launcher, tmp_path)
+    assert any(event.event == "error" for event in events)
+    store.fail_agent_task(execution.operation_id, "invalid_encrypted_content")
+    previous = store.agent_task(execution.operation_id)
+    tasks = app.state.background_tasks
+    retry_refused_resume(tasks, previous)
+    assert store.agent_task_has_receipt(previous.operation_id, REFUSAL), store.agent_task_receipts(
+        previous.operation_id
+    )
+    children = [
+        task
+        for task in store.agent_tasks(previous.project_id)
+        if task.parent_operation_id == previous.operation_id
     ]
-    if edit is not None:
-        assert len(skipped) == 1
-        assert skipped[0].payload["reason"] == "origin_bound_artifact_edit"
+    assert children, store.agent_task_receipts(previous.operation_id)
+    child = children[0]
+    fresh = tasks._launchable_request(child)
+    assert child.graph_target == previous.graph_target
+    assert child.dispatch_authority is None and child.episode_id is None
+    assert child.native_session_id is None and child.stage_root is None
+    assert fresh.artifact_edit.fresh_session and fresh.artifact_edit.origin_bound
+    assert fresh.artifact_edit.artifact_id == request.artifact_edit.artifact_id
+    fresh_execution = AgentTaskExecution(child.operation_id, store, AgentProcessControl())
+    events = await _run(app, fresh, fresh_execution, launcher, tmp_path)
+    assert not any(event.event == "error" for event in events)
+    assert calls[1][1]["session_id"] is None
+    assert json.dumps(str(transcript)) in calls[1][0]
+    assert store.agent_task_has_receipt(previous.operation_id, RETRY)
+    assert store.agent_task_has_receipt(child.operation_id, "codex_history_context")
+    retry_refused_resume(tasks, previous)
+    assert (
+        len(
+            [
+                task
+                for task in store.agent_tasks(previous.project_id)
+                if task.parent_operation_id == previous.operation_id
+            ]
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["worker", "episode_report", "consolidation", "artifact_edit"])
+async def test_owned_run_kind_refusal_uses_existing_recovery(manifest, tmp_path, monkeypatch, kind):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if kind == "worker":
+        from .test_auto_research_children_storage import refused_worker_human_retry_case
+
+        refused_worker_human_retry_case(tmp_path, monkeypatch)
+    elif kind == "episode_report":
+        from .test_episode_report import assert_report_refusal_fallback
+
+        await assert_report_refusal_fallback(manifest, tmp_path, monkeypatch)
+    elif kind == "consolidation":
+        from .test_consolidation_work import _consolidation_refusal_case
+
+        await _consolidation_refusal_case(manifest, tmp_path, monkeypatch)
     else:
-        assert skipped == []
+        await _artifact_refusal_case(manifest, tmp_path, monkeypatch)

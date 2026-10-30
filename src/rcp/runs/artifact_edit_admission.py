@@ -397,6 +397,30 @@ def admit_artifact_edit(
     return admitted
 
 
+def refused_artifact_edit_request(request: RunRequest) -> RunRequest:
+    """Rebuild the admitted file-only edit without the refused native binding."""
+    edit = request.artifact_edit
+    assert edit is not None
+    return request.model_copy(
+        update={
+            "session_id": None,
+            "fork_session_id": None,
+            "fork_source_host": None,
+            "fork_source_cwd": None,
+            "artifact_edit": edit.model_copy(
+                update={
+                    "fresh_session": True,
+                    "stage_host": None,
+                    "stage_root": None,
+                    "master_operation_id": None,
+                    "master_sha256": None,
+                    "master_path": None,
+                }
+            ),
+        }
+    )
+
+
 def start_artifact_edit(
     tasks, project_id, request, *, authorized_by, parent=None, continuation="fresh"
 ):
@@ -441,8 +465,8 @@ def start_artifact_edit(
         parent_operation_id=parent.operation_id if parent else None,
         attempt=parent.attempt + 1 if parent else 1,
         native_session_id=request.session_id,
-        stage_host=parent.stage_host if parent else edit.stage_host,
-        stage_root=parent.stage_root if parent else edit.stage_root,
+        stage_host=parent.stage_host if parent and continuation != "handoff" else edit.stage_host,
+        stage_root=parent.stage_root if parent and continuation != "handoff" else edit.stage_root,
         phase="queued",
         last_activity_at=now,
     )
@@ -458,7 +482,7 @@ def start_artifact_edit(
     return tasks.launch_admitted(record.operation_id)
 
 
-def validate_artifact_edit_launch(record, request, *, parent):
+def validate_artifact_edit_launch(record, request, *, parent, store):
     """The file-only owner validates its immutable dispatch and recovery boundary."""
     edit = request.artifact_edit
     if edit is None or request.mode != "discuss" or record.dispatch_authority is not None:
@@ -470,10 +494,17 @@ def validate_artifact_edit_launch(record, request, *, parent):
     )
     if record.kind != expected or record.episode_id is not None:
         raise ValueError("The edit changed its admitted launch or episode binding.")
+    expected_edit = parent.request.get("artifact_edit") if parent else None
+    if parent is not None and store.agent_task_has_receipt(
+        parent.operation_id, "codex_resume_refused"
+    ):
+        fresh = refused_artifact_edit_request(RunRequest.model_validate(parent.request))
+        assert fresh.artifact_edit is not None
+        expected_edit = fresh.artifact_edit.model_dump(mode="json")
     if parent is not None and (
         parent.project_id != record.project_id
         or parent.kind != record.kind
         or parent.graph_target != record.graph_target
-        or not persisted_request_roundtrips(edit, parent.request.get("artifact_edit"))
+        or not persisted_request_roundtrips(edit, expected_edit)
     ):
         raise ValueError("The edit recovery changed its admitted binding.")

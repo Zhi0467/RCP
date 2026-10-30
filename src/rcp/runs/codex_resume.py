@@ -96,9 +96,17 @@ def start_context(execution: AgentTaskExecution | None, host: str) -> str:
     if execution is None:
         return ""
     task = execution.store.agent_task(execution.operation_id)
-    if task is None or task.parent_operation_id is None:
+    if task is None:
         return ""
-    for receipt in execution.store.agent_task_receipts(task.parent_operation_id):
+    source_id = (
+        task.operation_id
+        if execution.store.agent_task_has_receipt(task.operation_id, RETRY)
+        and execution.store.agent_task_has_receipt(task.operation_id, REFUSAL)
+        else task.parent_operation_id
+    )
+    if source_id is None:
+        return ""
+    for receipt in execution.store.agent_task_receipts(source_id):
         if receipt.category == REFUSAL:
             if receipt.payload.get("host") != host:
                 # A retry rebound to another machine cannot read that host's file.
@@ -117,7 +125,7 @@ def start_context(execution: AgentTaskExecution | None, host: str) -> str:
                     "codex_history_context",
                     {
                         "reason": "login_switch",
-                        "source_operation_id": task.parent_operation_id,
+                        "source_operation_id": source_id,
                         "host": host,
                         "transcript_path": path,
                         "prompt_suffix": context,
@@ -149,16 +157,9 @@ def retry_refused_resume(tasks: BackgroundAgentTasks, record: AgentTaskRecord) -
         parent_id = parent.parent_operation_id if parent is not None else None
     if store.consolidation_run_for_operation(record.operation_id) is not None:
         return
-    if store.episode_child_recovery_refusal(record) is not None:
-        return
-    edit = record.request.get("artifact_edit")
-    if isinstance(edit, dict) and edit.get("origin_bound", True) is not False:
-        store.record_agent_task_receipt(
-            record.operation_id,
-            "codex_fresh_session_retry_failed",
-            {"reason": "origin_bound_artifact_edit"},
-            tier="summary",
-        )
+    if store.episode_child_recovery_refusal(record) is not None or (
+        record.kind == "auto_research" and record.request.get("role") == "worker"
+    ):
         return
     store.record_agent_task_receipt(
         record.operation_id,

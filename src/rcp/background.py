@@ -873,7 +873,10 @@ class BackgroundAgentTasks:
             and original.artifact_edit is not None
             and original.artifact_edit.origin_bound
         ):
-            from rcp.runs.artifact_edit_admission import start_artifact_edit
+            from rcp.runs.artifact_edit_admission import (
+                refused_artifact_edit_request,
+                start_artifact_edit,
+            )
 
             if any(
                 value is not None and value != getattr(original, key)
@@ -885,14 +888,39 @@ class BackgroundAgentTasks:
                 )
             ):
                 raise ValueError("An edit retry must retain its admitted execution profile.")
+            refused = self.store.agent_task_has_receipt(operation_id, "codex_resume_refused")
             return start_artifact_edit(
                 self,
                 previous.project_id,
-                original.model_copy(update={"session_id": previous.native_session_id}),
+                refused_artifact_edit_request(original)
+                if refused
+                else original.model_copy(update={"session_id": previous.native_session_id}),
                 authorized_by=authorized_by or previous.authorized_by,
                 parent=previous,
-                continuation="retry",
+                continuation="handoff" if refused else "retry",
             )
+        if self.store.agent_task_has_receipt(operation_id, "codex_resume_refused"):
+            route = self.store.auto_research_child_work_for_operation(operation_id)
+            if route is not None:
+                from rcp.runs.auto_research_admission import resume_auto_research_child_work
+
+                if route.current_operation_id != operation_id:
+                    raise ValueError("The worker has a newer attempt; retry its current card.")
+                if any(value is not None for value in (provider, model, reasoning, run_on, skills)):
+                    raise ValueError("A worker retry must retain its admitted execution profile.")
+                result = resume_auto_research_child_work(
+                    self, route.episode_id, route.worker_id, human_retry=True
+                )
+                if result.task is None:
+                    raise ValueError(result.reason or "The worker cannot retry.")
+                return result.task
+            if isinstance(original, AutoResearchRunRequest) and original.role == "worker":
+                self.store.record_agent_task_receipt(
+                    operation_id,
+                    "codex_fresh_session_retry",
+                    {"reason": "login_switch", "attempt": 1, "human_retry": True},
+                    tier="summary",
+                )
         if refusal := self.store.episode_child_recovery_refusal(previous):
             raise ValueError(refusal)
         _require_recoverable_machine(previous, original, run_on)
@@ -1140,6 +1168,15 @@ class BackgroundAgentTasks:
         if not isinstance(original, AutoResearchRunRequest):
             raise ValueError("This task is not an Auto-research task.")
         _require_recoverable_machine(previous, original, run_on)
+        if original.role == "worker" and self.store.agent_task_has_receipt(
+            operation_id, "codex_resume_refused"
+        ):
+            self.store.record_agent_task_receipt(
+                operation_id,
+                "codex_fresh_session_retry",
+                {"reason": "login_switch", "attempt": 1, "human_retry": True},
+                tier="summary",
+            )
         # Only a human reaches this entry point, and starting a turn is the
         # answer a stopped ladder was waiting for. The automatic path settles
         # its own row and must keep counting, so it is left alone. A turn that
@@ -1944,7 +1981,7 @@ class BackgroundAgentTasks:
         ):
             from rcp.runs.artifact_edit_admission import validate_artifact_edit_launch
 
-            validate_artifact_edit_launch(record, request, parent=parent)
+            validate_artifact_edit_launch(record, request, parent=parent, store=self.store)
             return
 
         if record.kind == "episode_report":

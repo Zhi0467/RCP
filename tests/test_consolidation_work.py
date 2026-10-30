@@ -695,3 +695,82 @@ def test_branch_consolidation_work_applies_and_holds_evidence_on_its_target(
         (episode.graph_target.branch_id, "unverified"),
     }
     assert len(branch.history.load_patches()) == 1
+
+
+async def _consolidation_refusal_case(manifest, tmp_path, monkeypatch, *, fail_fresh=False):
+    from rcp.agents import AgentEvent
+    from rcp.runs.codex_resume import REFUSAL, RETRY
+
+    from .helpers import shape_invalid_patch
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    request, execution = _admit(app)
+    request = request.model_copy(update={"provider": "codex"})
+    store = execution.store
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (request.model_dump_json(), execution.operation_id),
+        )
+    original = store.agent_task(execution.operation_id)
+    invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
+    valid = refresh_patch().model_copy(update={"kind": "work"})
+
+    class RefusingCorrectionLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            refused = self.calls == 1 or (fail_fresh and self.calls == 2)
+            if self.calls == 2:
+                self.native_session_id = str(uuid.uuid4())
+            async for event in super().stream(provider, prompt, **kwargs):
+                if refused and event.event == "done":
+                    yield AgentEvent(event="error", text='{"code":"invalid_encrypted_content"}')
+                elif not refused or event.event == "session":
+                    yield event
+
+    launcher = RefusingCorrectionLauncher(
+        [{"patch.json": agent_patch_json(invalid)}, {}, {"patch.json": agent_patch_json(valid)}],
+        message="Done",
+    )
+    session = launcher.native_session_id
+    home = tmp_path / "machine-codex"
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    transcript = home / "sessions" / f"rollout-example-{session}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": session}}) + "\n")
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            app.state.service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+    assert launcher.resumed_sessions == [None, session, None]
+    assert launcher.workspaces[0] == launcher.workspaces[1] == launcher.workspaces[2]
+    assert json.dumps(str(transcript)) in launcher.prompts[-1]
+    assert store.agent_task_has_receipt(execution.operation_id, REFUSAL)
+    assert store.agent_task_has_receipt(execution.operation_id, RETRY)
+    assert store.agent_task_has_receipt(execution.operation_id, "codex_history_context")
+    current = store.agent_task(execution.operation_id)
+    assert current.graph_target == original.graph_target
+    assert current.dispatch_authority == original.dispatch_authority
+    assert current.episode_id is None and current.parent_operation_id is None
+    launches = [
+        r for r in store.agent_task_receipts(execution.operation_id) if r.category == "agent_launch"
+    ]
+    assert [r.payload["resumed"] for r in launches] == [False, True, False]
+    updates = [
+        json.loads(event.text)["graph_update"]
+        for frame in frames
+        if (event := AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())).event
+        == "message"
+        and '"graph_update"' in event.text
+    ]
+    assert updates[-1]["status"] == ("rejected" if fail_fresh else "applied")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_fresh", [False, True])
+async def test_consolidation_refused_correction_starts_fresh_once(
+    manifest, tmp_path, monkeypatch, fail_fresh
+):
+    await _consolidation_refusal_case(manifest, tmp_path, monkeypatch, fail_fresh=fail_fresh)

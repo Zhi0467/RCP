@@ -99,6 +99,7 @@ from rcp.runs.consolidation import (
     consolidation_skill_selection,
     is_consolidation,
     require_consolidation_launch,
+    retry_refused_correction,
     settlement_source_effect_id,
 )
 from rcp.runs.evidence_flag_commands import flag_command_usage, hold_consolidation_additions
@@ -1525,6 +1526,7 @@ def _compose_work_correction_prompt(
     command_client: str,
     label: str,
     role: str,
+    force_bootstrap: bool = False,
 ) -> tuple[str, str]:
     """Send a correction inline in its Work session; return the prompt and its record path.
 
@@ -1549,6 +1551,7 @@ def _compose_work_correction_prompt(
         part=contract,
         values=values,
         rendered_values=composed.prompt_values,
+        force_bootstrap=force_bootstrap,
         browser_grant=composed.browser_grant,
     )
     return prompt, record_inline_prompt(
@@ -1807,9 +1810,14 @@ async def _settle_patch_deliverable(
             if failure is None:
                 return
         assert failure is not None
+        fresh_retry = (
+            failure.correctable
+            and bool(settled.native_session_id)
+            and retry_refused_correction(turn.execution)
+        )
         if (
             not failure.correctable
-            or correction_rounds >= maximum_corrections
+            or (correction_rounds >= maximum_corrections and not fresh_retry)
             or not settled.native_session_id
         ):
             step = _reject_patch_deliverable(turn, settled, failure, correction_rounds)
@@ -1880,6 +1888,7 @@ async def _settle_patch_deliverable(
                 command_client=correction_validator.client_command(),
                 label=f"task-{staged.token}-work-correction-{correction_rounds}.md",
                 role=f"work_patch_correction_{correction_rounds}",
+                force_bootstrap=fresh_retry,
             )
             _record_agent_launch_receipt(
                 launch_turn.execution,
@@ -1887,7 +1896,7 @@ async def _settle_patch_deliverable(
                 prompt=correction_prompt,
                 contract_path=correction_path,
                 remote=bool(launch_turn.execution_host),
-                resumed=True,
+                resumed=not fresh_retry,
                 write_scope=launch_turn.write_scope,
                 continuation="graph_correction",
                 extra={
@@ -1900,14 +1909,15 @@ async def _settle_patch_deliverable(
                     "write_directory_count": len(launch_turn.write_dirs),
                 },
             )
-            correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
+            correction_session_id = None if fresh_retry else settled.native_session_id
+            correction_outcome = _ProviderOutcome(session_id=correction_session_id)
             correction_error: str | None = None
             correction_stream = _stream_turn_agent_events(
                 launch_turn,
                 launcher,
                 correction_prompt,
                 browser_grant=composed.browser_grant,
-                session_id=settled.native_session_id,
+                session_id=correction_session_id,
                 required_session_id=required_session_id,
                 outcome=correction_outcome,
                 validator_staged=correction_validator,

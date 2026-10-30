@@ -1271,8 +1271,9 @@ def resume_auto_research_child_work(
     worker_id: str,
     *,
     operation_id: str | None = None,
+    human_retry: bool = False,
 ) -> AutoResearchChildResumeResult:
-    """Resume a routed Work attempt only from its exact usable checkpoint."""
+    """Resume the exact checkpoint; explicit human Retry may retire a refused session."""
 
     route, previous = auto_research_child_work_task(tasks, episode_id, worker_id)
     if operation_id is not None:
@@ -1292,9 +1293,15 @@ def resume_auto_research_child_work(
                 current_operation_id=existing.operation_id,
                 task=existing,
             )
+    fresh = human_retry and tasks.store.agent_task_has_receipt(
+        previous.operation_id, "codex_resume_refused"
+    )
     problem = (
         "the worker was stopped"
         if route.stop_requested_at is not None
+        else "the provider refused the saved transcript; use Retry on its card"
+        if not fresh
+        and tasks.store.agent_task_has_receipt(previous.operation_id, "codex_resume_refused")
         else _exact_child_resume_problem(tasks, previous)
     )
     if problem is not None:
@@ -1312,7 +1319,9 @@ def resume_auto_research_child_work(
     request = tasks._request_from_record(previous)
     if not isinstance(request, RunRequest):
         raise ValueError("The routed worker task is not an ordinary Work request.")
-    request = request.model_copy(update={"session_id": previous.native_session_id})
+    request = request.model_copy(
+        update={"session_id": None if fresh else previous.native_session_id}
+    )
     operation_id = operation_id or str(uuid.uuid4())
     dispatch_authority = resolved_dispatch_authority(
         tasks.store,
@@ -1339,7 +1348,7 @@ def resume_auto_research_child_work(
         status_message="Waiting for the spawned Work task to resume.",
         attempt=previous.attempt + 1,
         parent_operation_id=previous.operation_id,
-        native_session_id=previous.native_session_id,
+        native_session_id=None if fresh else previous.native_session_id,
         stage_host=previous.stage_host,
         stage_root=previous.stage_root,
         estimate_seconds=previous.estimate_seconds,
@@ -1349,6 +1358,13 @@ def resume_auto_research_child_work(
         authorized_by=episode.authorized_by,
         dispatch_authority=dispatch_authority,
     )
+    if fresh:
+        tasks.store.record_agent_task_receipt(
+            previous.operation_id,
+            "codex_fresh_session_retry",
+            {"reason": "login_switch", "attempt": 1, "human_retry": True},
+            tier="summary",
+        )
     try:
         _, stored = tasks.store.create_auto_research_child_work_recovery(worker_id, task)
     except ValueError:
@@ -1758,7 +1774,17 @@ def retry_auto_research_task(
     clean_orchestrator_retry = original.role == "orchestrator" and (
         continuation_unavailable or native_resume_unavailable or not owned_checkpoint
     )
-    starts_fresh = bool(rebound) or clean_orchestrator_retry
+    clean_worker_retry = (
+        original.role == "worker"
+        and native_resume_unavailable
+        and any(
+            receipt.category == "codex_fresh_session_retry"
+            and receipt.payload.get("human_retry") is True
+            for receipt in tasks.store.agent_task_receipts(previous.operation_id)
+        )
+        and tasks.store.agent_task_has_receipt(previous.operation_id, "codex_resume_refused")
+    )
+    starts_fresh = bool(rebound) or clean_orchestrator_retry or clean_worker_retry
     episode = auto_research_for_request(tasks, original.episode_id, original)
     lineage_login = ProviderAccounts.for_store(tasks.store).lineage_login(
         original.provider, previous.stage_host or "", previous
@@ -1883,7 +1909,9 @@ def retry_auto_research_task(
     if classification is not None:
         tasks.store.record_agent_task_receipt(
             retried.operation_id,
-            "auto_research_orchestrator_clean_retry",
+            "auto_research_orchestrator_clean_retry"
+            if original.role == "orchestrator"
+            else "native_resume_skipped",
             {
                 "classification": classification,
                 "same_allocation": True,
@@ -2550,6 +2578,16 @@ def _validate_existing_child_work_resume(
         else None
     )
     request = tasks._request_from_record(existing)
+    fresh = (
+        parent is not None
+        and any(
+            receipt.category == "codex_fresh_session_retry"
+            and receipt.payload.get("human_retry") is True
+            for receipt in tasks.store.agent_task_receipts(parent.operation_id)
+        )
+        and tasks.store.agent_task_has_receipt(parent.operation_id, "codex_resume_refused")
+    )
+    expected_session = None if fresh else parent.native_session_id if parent else None
     if (
         route is None
         or route.worker_id != worker_id
@@ -2562,11 +2600,11 @@ def _validate_existing_child_work_resume(
         or parent.project_id != existing.project_id
         or parent.episode_id != episode_id
         or existing.attempt != parent.attempt + 1
-        or existing.native_session_id != parent.native_session_id
+        or (not fresh and existing.native_session_id != expected_session)
         or (existing.stage_host or "") != (parent.stage_host or "")
         or existing.stage_root != parent.stage_root
         or not isinstance(request, RunRequest)
-        or request.session_id != parent.native_session_id
+        or request.session_id != expected_session
         or request.chat_id != parent.request.get("chat_id")
     ):
         raise ValueError("The deterministic worker Resume operation belongs to another recovery.")
