@@ -230,7 +230,8 @@ lists it and the same turn re-judges it first. Re-judging later would make the
 refiled Proposal stale again.
 
 Human Refresh of a stale assessment from main starts the same light Work on its
-Evidence, with Evidence triage. It is keyed per edge and Evidence revision.
+Evidence, with Evidence triage when the project enables it. It is keyed per edge
+and Evidence revision.
 Context names the edge, the Evidence, and the pending Proposals that cite the
 edge. The agent recreates or removes that one edge and changes nothing else.
 Evidence-to-Hypothesis edges are direct assertions, so neither refresh grants

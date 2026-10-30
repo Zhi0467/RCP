@@ -208,3 +208,49 @@ def test_a_cache_from_before_stale_edges_takes_them_from_its_graph(filed, tmp_pa
 
     assert restored.status_code == 200
     assert restored.json()["attention"]["stale_edge_ids"] == [EDGE]
+
+
+@pytest.mark.parametrize("revised", [False, True], ids=["kept", "revised"])
+def test_a_merged_reword_lands_stale_unless_the_fork_revised_the_edge(manifest, revised):
+    from tests.test_graph_invariants import REQUIRED, _agent_append
+    from tests.test_merge_regressions import _answers, _append, _commit, _fork_history, _plan
+
+    edge = {
+        "id": "edge/fork",
+        "source": "ev/fork",
+        "target": "hyp/fork",
+        "relation": "supports",
+        "explanation": "Judged on the fork's base.",
+        "assessment": {"relevance": "direct", "weight": "moderate"},
+    }
+    history, branch = _fork_history(
+        manifest,
+        [
+            {"id": "hyp/fork", "type": "hypothesis", "title": "Claim", **REQUIRED["hypothesis"]},
+            {"id": "ev/fork", "type": "evidence", "title": "Result", **REQUIRED["evidence"]},
+        ],
+        edges=[edge],
+    )
+    _append(
+        branch,
+        {"op": "update_nodes", "nodes": [{"id": "ev/fork", "changes": {"title": "Narrower"}}]},
+    )
+    if revised:
+        _agent_append(
+            branch,
+            "fixture-branch",
+            sorted(manifest.project.truth_scope),
+            {"op": "remove_edges", "edge_ids": [edge["id"]]},
+            {"op": "create_edges", "edges": [edge | {"explanation": "Re-judged on the fork."}]},
+        )
+    assert project_graph_attention(branch.state()).stale_edge_ids == (
+        [] if revised else [edge["id"]]
+    )
+
+    plan = _plan(history, branch)
+    _commit(history, branch, plan, _answers(plan))
+
+    # Merge carries content only: an unchanged edge keeps main's older revision.
+    assert project_graph_attention(history.state()).stale_edge_ids == (
+        [] if revised else [edge["id"]]
+    )

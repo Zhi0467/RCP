@@ -67,8 +67,9 @@ the graph, so nothing is stored and replay is unchanged.
 Merge compares content only and restamps what it carries:
 
 - A fork that rewords Evidence and revises its edge lands current.
-- A fork that rewords Evidence and keeps the edge's content lands stale.
-- An edge the fork judged before main reworded its Evidence lands current.
+- A fork that rewords Evidence and recreates its edge unchanged lands stale.
+- An edge the fork created or revised before main reworded its Evidence lands
+  current, because the merge restamps it.
 
 **Why:** a supports or contradicts edge read as current after its Evidence
 changed, and only the edge's judge could say whether it still held.
