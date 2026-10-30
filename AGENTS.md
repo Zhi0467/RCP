@@ -38,6 +38,11 @@ Integrate concurrent changes through a real three-way Git merge, never a whole
 patch piped into `git apply`. Use short-lived branches, PR CI, and explicit human
 merge. Servers consume only merged `main`.
 
+A green PR guarantees a green `main`. PR CI runs every test job main runs, on the
+same tree. Merge only when the PR head contains the current `origin/main` and
+every check on that head passed. If `main` moved, merge it in and rerun. Never
+add a main-only test job or a PR-only subset.
+
 ## Verification
 
 Run focused checks locally. Full suites run in PR CI. Broaden checks for failures,

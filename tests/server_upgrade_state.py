@@ -77,10 +77,10 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
     queued run holds main, so only this branch makes the candidate admit a run.
     """
     with request("/openapi.json") as response:
-        routes = set(json.load(response)["paths"])
-    if not (
-        fixture["upgrade_state"]["schedule"] and "/api/projects/{project_id}/graph-refs" in routes
-    ):
+        paths = json.load(response)["paths"]
+    # 0.4.17 to 0.4.24 list branches but cannot create one.
+    creates_branch = "post" in paths.get("/api/projects/{project_id}/graph-refs", {})
+    if not (fixture["upgrade_state"]["schedule"] and creates_branch):
         return None
     base = f"/api/projects/{fixture['project_id']}"
     with request(f"{base}/graph", cookie=cookie) as response:
@@ -255,7 +255,7 @@ def admit_due_consolidation(data_dir: Path) -> str:
     (operation_id,) = launched
     task = store.agent_task(operation_id)
     assert task is not None and task.status == "queued", task
-    store.close()
+    # 0.4.10's store has no close; this helper process exits next.
     return operation_id
 
 
