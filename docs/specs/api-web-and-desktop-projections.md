@@ -1590,7 +1590,9 @@ button sits between the trays; each change writes the setting at once:
 Turning the other group back on stores "the tray that is on, then the other". An
 off tray stays visible, faded. A ＋ slot ends the Shared tray, and the Yours tray
 while the member has no own login; adding starts a device sign-in at once or
-opens token entry on the new card. A card shows, first match wins, Being removed,
+opens token entry on the new card. The machine's card is named "Machine sign-in";
+an added shared card is named by who added it, with the date on hover; the
+viewer's own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
 signing in (device code and link only to the starter; others see who), Signed out
 (flat and dashed, with no label; a Sign in button on the viewer's own and shared
 cards), Usage limit (amber edge; a limited login is still used

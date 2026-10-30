@@ -1094,7 +1094,7 @@ only the built-in default differs. OpenCode has no added login or setting. No ag
 
 Member removal fences and retains own login rows, deletes member settings and
 removes credentials without deleting sessions. Shared logins stay. A credential
-under a running turn is kept until that turn ends; each advance cleans after its
+under a running turn, whoever's turn it is, is kept until that turn ends; each advance cleans after its
 completion check, so the completing pass finds none of the member's turns
 running. Pending removal retries remote deletion on each
 advance, returning unreached hosts in `provider_cleanup_unreached`, including the
@@ -1195,14 +1195,18 @@ clock. A changed session login records `provider_login_switched` with its previo
 and new IDs and the resolver's reason. Provider-owned revoked-login evidence
 classifies `provider_auth` across turns, wakes, workers, reports, recovery and
 probes. Only the generation captured at launch can revoke that login; late
-failures cannot revoke a repaired login. Claude recognizes its remote
+failures cannot revoke a repaired login. A turn whose login was repaired
+meanwhile fails as an ordinary provider error that recovery retries, not
+`provider_auth`, so nobody is asked to sign in again. Claude recognizes its remote
 missing-token fence and a 401 naming authentication or OAuth (observed
 2026-09-15).
 An own login is unique per provider, host and member while `removed_at IS NULL`;
 removal retains the historical row and its member attribution. Assignment clocks do not publish resource versions; member login
 settings do.
 
-Claude resolves at each turn boundary. Unhealthy bound work waits; a removed
+Claude resolves at each turn boundary. A continued Codex session keeps its
+bound login whatever the sender's setting or the login's owner, so a member's
+turn may run on another member's own login. Unhealthy bound work waits; a removed
 Codex binding refuses the session. A removed parent login stops pinning its
 transport reattempt or graph repair, which then resolves like a new turn (a Codex
 session bound to that login still refuses). Draining logins admit no new choices but remain
