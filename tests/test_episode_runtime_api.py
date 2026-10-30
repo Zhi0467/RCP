@@ -225,6 +225,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         host: str = "",
         binary: str | None = None,
         refresh: bool = False,
+        login_id: str = "",
     ) -> ProviderReadiness:
         readiness_calls.append((provider, host, binary, refresh))
         return ProviderReadiness(
@@ -270,6 +271,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         host: str = "",
         binary: str | None = None,
         refresh: bool = False,
+        login_id: str = "",
     ) -> ProviderReadiness:
         readiness_calls.append((provider, host, binary, refresh))
         return ProviderReadiness(
@@ -314,6 +316,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         host: str = "",
         binary: str | None = None,
         refresh: bool = False,
+        login_id: str = "",
     ) -> ProviderReadiness:
         readiness_calls.append((provider, host, binary, refresh))
         return ProviderReadiness(
@@ -465,7 +468,7 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
     monkeypatch.setattr(
         service.launcher,
         "readiness",
-        lambda provider, *, host="", binary=None, refresh=False: ProviderReadiness(
+        lambda provider, *, host="", binary=None, refresh=False, login_id="": ProviderReadiness(
             provider=provider,
             installed=True,
             authenticated=True,

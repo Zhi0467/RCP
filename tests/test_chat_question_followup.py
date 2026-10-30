@@ -311,17 +311,19 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     ]
 
 
-def test_answer_admission_continues_the_origin_session(manifest, tmp_path):
-    from types import SimpleNamespace
-
+def test_answer_admission_continues_the_origin_session(manifest, tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
     from rcp.runs.chat import reconcile_chat_question_answers
+
+    from .helpers import fake_launch_admitted
 
     service, store, question, _ = _project_chat_question(manifest, tmp_path)
     admitted = []
-    tasks = SimpleNamespace(
-        admit_provider_task=lambda _project, request, **_: admitted.append(request),
-        launch_admitted=lambda _operation_id: None,
+    tasks = BackgroundAgentTasks(store, lambda *_args: pytest.fail("no provider starts"))
+    monkeypatch.setattr(
+        tasks, "admit_provider_task", lambda _project, request, **_: admitted.append(request)
     )
+    fake_launch_admitted(monkeypatch, tasks)
     reconcile_chat_question_answers(AppStore(store.path), tasks, lambda _: service)
     # A first-turn origin request has no session; login selection must still
     # see the bound session the follow-up continues.
