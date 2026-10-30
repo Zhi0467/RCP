@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.providers.codex.homes import SHARED_FILES, SHARED_SESSIONS, prepare_home
+from rcp.providers.codex.homes import MIGRATION_LOCK, SHARED_FILES, SHARED_SESSIONS, prepare_home
 from rcp.providers.codex.homes import _legacy_home_idle as inspect_legacy_home
 from rcp.storage.models import MACHINE_LOGIN_ID
 
@@ -188,6 +188,7 @@ def test_new_directory_and_later_machine_entries_are_shared(tmp_path: Path) -> N
     (machine / "new_shared").write_text("new")
     prepare_home(home, machine)
     assert (home / "new_shared").read_text() == "new"
+    assert not (home / MIGRATION_LOCK).exists()
 
 
 def test_live_home_lease_defers_migration(tmp_path: Path) -> None:

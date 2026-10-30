@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 CREDENTIAL_FILES = ("auth.json",)
+# RCP's own lock in the machine home; never linked into a login home.
+MIGRATION_LOCK = ".rcp-home-migration.lock"
 SHARED_FILES = ("config.toml", "rules", "skills", "AGENTS.md")
 SHARED_SESSIONS = ("sessions", "archived_sessions", "session_index.jsonl")
 # Prelink stores Codex 0.165 creates even when the machine home is still empty.
@@ -151,7 +153,7 @@ def _prepare_locked(home: Path, machine_home: Path, *, migrate: bool) -> None:
             print(
                 "Codex home migration deferred: an older process may still use it.", file=sys.stderr
             )
-    with (machine_home / ".rcp-home-migration.lock").open("a") as lock:
+    with (machine_home / MIGRATION_LOCK).open("a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         _prepare_links(home, machine_home, migrate=migrate)
 
@@ -197,7 +199,7 @@ def _prepare_links(home: Path, machine_home: Path, *, migrate: bool) -> None:
     names.update(path.name for path in home.iterdir())
     if retained.exists():
         names.update(path.name for path in retained.iterdir())
-    for name in sorted(names - set(CREDENTIAL_FILES)):
+    for name in sorted(names - set(CREDENTIAL_FILES) - {MIGRATION_LOCK}):
         link, target = home / name, machine_home / name
         if not migrate and (retained / name).exists():
             continue
