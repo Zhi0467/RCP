@@ -416,6 +416,8 @@ export function useAnswerComments({
   const composerRef = useRef<HTMLFormElement | null>(null);
   const offerRef = useRef<HTMLButtonElement | null>(null);
   const originRef = useRef<HTMLElement | null>(null);
+  // Text typed in a composer the reader did not close themself, for the next one.
+  const keptDraft = useRef("");
   /** Clears a selection made outside the answer text (an inline artifact's) on close. */
   const externalSelectionClear = useRef<(() => void) | null>(null);
   const composerOpen = composer !== null;
@@ -446,9 +448,10 @@ export function useAnswerComments({
   /** Opens the composer on `next`; focus returns to `origin` when it is dismissed. */
   const openComposer = (
     next: AnswerCommentComposer,
-    { draft = "", origin }: { draft?: string; origin?: HTMLElement | null } = {},
+    { draft = keptDraft.current, origin }: { draft?: string; origin?: HTMLElement | null } = {},
   ) => {
     originRef.current = origin ?? (next.step === "comment" ? next.origin : null) ?? null;
+    keptDraft.current = "";
     setComment(draft);
     onError(null);
     setComposer(next);
@@ -524,7 +527,9 @@ export function useAnswerComments({
     focusComment();
   };
 
-  const dismiss = (returnFocus: boolean) => {
+  /** Closes the composer; `keepText` holds the typed text for the next one it opens. */
+  const dismiss = (returnFocus: boolean, keepText = false) => {
+    keptDraft.current = keepText ? comment : "";
     const origin = originRef.current;
     originRef.current = null;
     externalSelectionClear.current?.();

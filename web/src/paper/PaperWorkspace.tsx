@@ -160,7 +160,7 @@ export function PaperWorkspace({
     // The frame already cleared its mark; a clear sent now would end the drag that
     // a new selection starts with.
     comments.externalSelectionClear.current = null;
-    comments.dismiss(false);
+    comments.dismiss(false, true);
   };
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
@@ -266,13 +266,13 @@ export function PaperWorkspace({
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
   // A comment opened from the preview, the one kind that names where it came from,
-  // points at the file shown then; showing another file closes it.
+  // points at the file shown then; showing another file closes it and keeps its text.
   const openPreviewWhere =
     comments.composer?.step === "comment" ? comments.composer.where : undefined;
   const openPreviewRef = useRef(openPreviewWhere);
   openPreviewRef.current = openPreviewWhere;
   useEffect(() => {
-    if (openPreviewRef.current) comments.dismiss(false);
+    if (openPreviewRef.current) comments.dismiss(false, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
   }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.

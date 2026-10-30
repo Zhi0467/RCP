@@ -449,6 +449,14 @@ test("a comment opened from the preview closes when another file is shown", asyn
   await page.waitForFunction(() => document.activeElement?.closest(".paper-right-pane"));
   await select();
   await comment.waitFor();
+  await comment.fill("half written");
   await page.locator(".paper-file", { hasText: "other.md" }).click();
   await comment.waitFor({ state: "detached", timeout: 5000 });
+  // The typed text waits for the next selection; Escape discards it.
+  await text.waitFor();
+  await select();
+  assert.equal(await comment.inputValue(), "half written");
+  await comment.press("Escape");
+  await select();
+  assert.equal(await comment.inputValue(), "");
 });
