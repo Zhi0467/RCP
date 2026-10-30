@@ -103,44 +103,54 @@ file in the member-only PDF, including agent-hidden files. This follows the
 [team trust model](server-and-machine-operations.md). Agent launches cannot read
 the preview.
 
-A text `.html` or `.htm` file previews its saved revision through the inline
+A text `.html` or `.htm` file previews its latest saved page through the inline
 artifact shell, one frame inside the same opaque sandbox and CSP as agent HTML
 ([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
 document, and relative images and Paper links do not load, so the page must be
 self-contained. It passes through the agent-HTML sanitizer and takes no app theme,
-since it is the author's own page. Saving this file reloads it, as does switching
-the app's theme; unsaved typing and other files' saves do not. Making Paper
-previews artifacts was rejected: artifacts are versioned deliverables with their
-own chat, while a preview follows every save, and Markdown and PDF previews need
-SyncTeX, Paper links, and tree images.
+since it is the author's own page. A save that changes this file reloads it, as
+does switching the app's theme; unsaved typing and other files' saves do not.
+Making Paper previews artifacts was rejected: artifacts are versioned deliverables
+with their own chat, while a preview follows every save, and Markdown and PDF
+previews need SyncTeX, Paper links, and tree images.
 
 ### Commenting on the preview
 
-A reader comments on what the preview shows with the same Comment button and box
-as chat answers. Text selects natively, also on touch, except inside an HTML page,
-which takes a mouse or pen. With a mouse or pen, a drag that starts off text draws
-a box on a PDF page or image. The HTML preview has a comment-mode toggle, because
-comment mode takes over the page's drags. Each comment records where it came from:
-path and line for Markdown and plain text; the compile root, or an uploaded PDF's
-path, and page for PDFs, plus "near" a source line from reverse SyncTeX when the
-compile has a map, which is approximate because the map keeps one mark per line;
-path for images and HTML. A box adds its area as percentages across and down: of
-the PDF page or image, or of the visible part of an HTML page, which is
-approximate. It sends the text it covers, or "Selected area" when there is none,
-never pixels, because the Coach edits the source and reads it itself. A long
-location is cut from the end, which can drop the approximate source line. A location
-describes the revision shown when the reader commented; the quote names the text
-if the file has changed since.
+A native text selection in the preview offers the same Comment button and box as
+chat answers. A box or an HTML selection opens the box directly. The preview has
+no keyboard path to a comment. Text selects natively, also on touch, except inside
+an HTML page, which takes a mouse or pen. With a mouse or pen, a drag that starts
+off text draws a box on a PDF page or image. An HTML page takes comments only in
+comment mode, which starts off for each file shown, because it turns the page's
+drags into selections for comments.
+
+Each comment records where it came from: path and line for Markdown and plain
+text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
+a source line from reverse SyncTeX when the compile has a map, which is
+approximate because the map keeps one mark per line; path for images and HTML. A
+box adds its area as percentages across and down: of the PDF page or image, or of
+the visible part of an HTML page, which is approximate. A long location drops
+whole trailing parts, the approximate source line first. A location describes the
+revision shown when the reader commented; the quote names the text if the file has
+changed since.
+
+A PDF box sends the text-layer text inside it. An HTML box sends the labels, or
+else the text, of the elements mostly inside it, or of the element that holds it,
+which can reach past the box. A box with neither sends "Selected area", so a box
+over a figure in a Typst PDF, or on a LaTeX page outside the map, names only its
+page and area, which can be stale once the file changes. Boxes never send pixels,
+since comments are staged and sent as text.
 
 Cancelling the selection inside the HTML frame, leaving comment mode, or showing
 another file closes the comment box opened from the preview and keeps its text for
-the next selection; Escape or Cancel in the box discards it. A reload of the page
-keeps an open comment box, since its quote and place are already taken. While a
-Coach turn sends, or when the comment limit is reached, a box or HTML selection
-clears without opening a comment. Comments wait in the Coach composer and, as chat
-comments do, survive a reload of the tab. The Coach button shows their count and
-any Coach error, and they travel as text with the next Coach message. Coach turns
-carry no artifact context, since the Paper tree is the Coach's whole context.
+the next selection; a new box or HTML selection carries it over. Escape or Cancel
+in the box discards it. A reload of the page keeps an open comment box, since its
+quote and place are already taken. While a Coach turn sends, or when the comment
+limit is reached, a box or HTML selection clears without opening a comment.
+Comments wait in the Coach composer and, as chat comments do, survive a reload of
+the tab. The Coach button shows their count and any Coach error, and they travel
+as text with the next Coach message. Coach turns carry no artifact context;
+comments travel as text.
 
 ## Writing coach
 
