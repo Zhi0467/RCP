@@ -262,10 +262,3 @@ def test_machine_default_and_canonical_folder_payload() -> None:
     assert _machine().hidden_folders == []
     machine = _machine(hidden_folders=["/secret/b", "/secret/a"])
     assert machine.model_dump()["hidden_folders"] == ["/secret/a", "/secret/b"]
-
-
-def test_credential_globs_allow_login_directories_but_not_recursive_walks() -> None:
-    pattern = "/providers/codex/*/logins/*/codex-home/auth.json"
-    assert _scope(hidden_globs=(pattern,)).hidden_globs == (pattern,)
-    with pytest.raises(ValidationError):
-        _scope(hidden_globs=("/providers/**/auth.json",))

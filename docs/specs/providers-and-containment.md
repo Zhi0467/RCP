@@ -1203,9 +1203,8 @@ the home is idle.
 A machine lock serializes migrations from different logins. SQLite's own WAL
 locking coordinates native writers; RCP does not merge their databases.
 
-The session indexer reads the machine Codex root. Hidden read denies `auth.json`
-in each login home; shared transcripts and other home state remain readable.
-Linux tool sandboxes hide login directories created after the sandbox starts.
+The session indexer reads the machine Codex root. Hidden read still hides every
+added login home; agents read shared transcripts at their machine-home paths.
 Only the local machine sign-in keeps the cross-process credential startup lock.
 
 Every member's agents run as the same OS account, so any agent can read any

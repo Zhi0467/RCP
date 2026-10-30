@@ -46,7 +46,6 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         "/data/run-stage/project-transfer-activation/request/rcp.sqlite3",
         "/data/run-stage/backup-123/rcp.sqlite3",
         "/data/providers/claude/token",
-        "/data/providers/codex/local/logins/login/codex-home/auth.json",
         "/data/providers/command-mailboxes/mailbox.json",
         "/data/service-connections/member/connections/id/key",
         "/provider/auth.json",
@@ -59,10 +58,6 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         assert hidden(path)
     for path in (
         "/data/tools/tool",
-        "/data/providers/codex/local/logins/login/codex-home/sessions/rollout.jsonl",
-        "/data/providers/codex/local/logins/login/codex-home/config.toml",
-        "/home/research/.rcp/provider-homes/codex/login/sessions/rollout.jsonl",
-        "/home/research/.codex/sessions/rollout.jsonl",
         "/data/providers/git-identities/identity.gitconfig",
         "/data/run-stage/task/workspace/file",
         "/home/research/.rcp/sockets/command.sock",
@@ -204,9 +199,7 @@ def test_entries_missing_on_the_execution_host_are_recorded_absent(
     scope = _resolve(manifest, tmp_path, monkeypatch)
     assert str(providers) not in scope.absent_entries
     assert str(tmp_path / "home/.config/rcp/claude-setup-token") in scope.absent_entries
-    assert (
-        glob.escape(str(tmp_path / "data/providers/codex")) + "/*/logins/*/codex-home/auth.json"
-    ) in scope.absent_entries
+    assert str(tmp_path / "data/providers/codex") in scope.absent_entries
     assert glob.escape(str(tmp_path / "data")) + "/rcp.sqlite3*" not in scope.absent_entries
     assert glob.escape(str(tmp_path / "data/run-stage")) + "/backup-*" in scope.absent_entries
 

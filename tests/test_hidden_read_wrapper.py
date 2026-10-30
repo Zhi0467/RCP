@@ -114,38 +114,6 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     ]
 
 
-@pytest.mark.parametrize("credential_exists", [False, True])
-def test_bwrap_codex_login_masks_only_credentials(tmp_path: Path, credential_exists: bool) -> None:
-    root = tmp_path / "logins"
-    home = root / "login" / "codex-home"
-    home.mkdir(parents=True)
-    (home / "sessions").mkdir()
-    (home / "config.toml").write_text("shared")
-    if credential_exists:
-        (home / "auth.json").write_text("credential")
-    policy = {"hidden_globs": [str(root) + "/*/codex-home/auth.json"]}
-    argv = bwrap_argv(policy, "true")
-    # Snapshot the login inventory so newly added logins cannot expose secrets.
-    assert ("--tmpfs", os.path.realpath(root)) in zip(argv, argv[1:], strict=False)
-    assert os.path.realpath(home / "auth.json") not in argv
-    for name in ("sessions", "config.toml"):
-        path = os.path.realpath(home / name)
-        assert any(argv[index : index + 3] == ["--bind", path, path] for index in range(len(argv)))
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS only")
-def test_seatbelt_codex_login_keeps_shared_transcript_readable(tmp_path: Path) -> None:
-    home = tmp_path / "login"
-    (home / "sessions").mkdir(parents=True)
-    (home / "auth.json").write_text("credential")
-    transcript = home / "sessions" / "rollout.jsonl"
-    transcript.write_text("transcript")
-    profile = render_sandbox_profile({"hidden_globs": [str(tmp_path) + "/*/auth.json"]})
-    run = [shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec", "-p", profile, "/bin/cat"]
-    assert subprocess.run([*run, str(home / "auth.json")], capture_output=True).returncode
-    assert subprocess.run([*run, str(transcript)], capture_output=True).stdout == b"transcript"
-
-
 def test_missing_credential_parent_is_masked_at_home_only_for_the_daemon(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / "work").mkdir(parents=True)
@@ -263,11 +231,3 @@ def test_real_wrapper_hides_content_preserves_environment_streams_cwd_and_exit(
     assert result.stdout == "stdin-marker"
     assert result.stderr == "stderr-marker"
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in clean_environment(policy, env)
-
-
-def test_bwrap_masks_not_yet_created_codex_login_parent(tmp_path: Path) -> None:
-    providers = tmp_path / "providers"
-    providers.mkdir()
-    policy = {"hidden_globs": [str(providers) + "/codex/*/logins/*/codex-home/auth.json"]}
-    argv = bwrap_argv(policy, "true")
-    assert ("--tmpfs", os.path.realpath(providers)) in zip(argv, argv[1:], strict=False)
