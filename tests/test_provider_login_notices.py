@@ -82,6 +82,11 @@ def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
 def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False, "models": []}}}}
+    store.set_provider_login_setting("other", "codex", "", "shared")
+    # The machine login resolves, but the project's probe said it is signed out.
+    other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
+    assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
     store.mark_provider_login_signed_out(
         LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
     )
@@ -90,7 +95,6 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
         LoginKey("codex", "", own.login_id), member_id="viewer", detail="verified"
     )
     store.set_provider_login_setting("viewer", "codex", "", "own")
-    store.set_provider_login_setting("other", "codex", "", "shared")
     probed = []
 
     def readiness(provider, *, host, binary, refresh, login_id):
@@ -101,7 +105,6 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
 
     monkeypatch.setattr(launcher, "readiness", readiness)
     monkeypatch.setattr(launcher, "provider_binary", lambda *_: "codex")
-    cached = {"provider_readiness": {"laptop": {"codex": {"authenticated": False, "models": []}}}}
     snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, "viewer", refresh=True)
     assert snapshot["provider_readiness"]["laptop"]["codex"]["models"] == [{"id": own.login_id}]
     assert probed == [("codex", own.login_id, True)]

@@ -1997,7 +1997,7 @@ class ProjectService:
             if not isinstance(login, LoginKey):
                 return {**readiness, "authenticated": False}
             if login.login_id == MACHINE_LOGIN_ID:
-                return {**readiness, "authenticated": True}
+                return readiness  # the project's probe already checked this login
             return launcher.readiness(
                 provider,
                 host=host,

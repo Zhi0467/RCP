@@ -138,10 +138,13 @@ export function launchProviderReady(
   project: ProjectSnapshot,
   value: AgentRunConfig,
   workLike = false,
+  continued = false,
 ): boolean {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
   if (readiness === undefined) return true;
-  if (!readiness.installed || !readiness.authenticated) return false;
+  // `authenticated` is the viewer's login for a new turn. A continued session keeps
+  // the login the server bound it to, and the server refuses it if that is unusable.
+  if (!readiness.installed || (!continued && !readiness.authenticated)) return false;
   return !workLike || (readiness.work_like_available !== false && !readiness.work_like_reason);
 }
 
