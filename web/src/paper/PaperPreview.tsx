@@ -147,27 +147,17 @@ function boxComment(box: PaperBox): PreviewDirectComment {
 function HtmlPreview({
   projectId,
   file,
-  revision,
-  settled,
   toolbar,
   onDirectComment,
   onDirectCancel,
 }: {
   projectId: string;
   file: PaperFile;
-  revision: number;
-  /** Whether the saved revision is the latest, so the file's hash is its saved content. */
-  settled: boolean;
   toolbar: HTMLElement | null;
   onDirectComment?: (comment: PreviewDirectComment) => void;
   onDirectCancel?: (clear: () => void) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
-  // The page reloads for a save that changed this file, not for another file's save.
-  // An unknown hash (null) lets the next save reload it.
-  const [shown, setShown] = useState({ revision, sha256: settled ? file.sha256 : null });
-  if (revision !== shown.revision && shown.sha256 !== file.sha256)
-    setShown({ revision, sha256: settled ? file.sha256 : null });
   const [commentMode, setCommentMode] = useState(false);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
   // The clear of the comment the frame last opened; a cancel in the frame names it.
@@ -197,7 +187,7 @@ function HtmlPreview({
   });
   const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
     file.file_id,
-  )}/preview?${new URLSearchParams({ revision: String(shown.revision), presentation: "inline" })}`;
+  )}/preview?${new URLSearchParams({ presentation: "inline" })}`;
   return (
     <div
       className={`paper-html-preview${commentMode ? " commenting" : ""}${pageError ? " paper-failed" : ""}`}
@@ -234,7 +224,9 @@ function HtmlPreview({
         </>,
         Boolean(pageError),
       )}
-      <iframe key={shown.revision} ref={frame} src={source} title={file.path} onLoad={onLoad} />
+      {/* The routes load the latest saved page uncached, so only a change to this file
+          reloads it; another file's save leaves its state alone. */}
+      <iframe key={file.sha256} ref={frame} src={source} title={file.path} onLoad={onLoad} />
     </div>
   );
 }
@@ -471,8 +463,6 @@ export function PaperPreview({
         key={file.file_id}
         projectId={projectId}
         file={file}
-        revision={tree.saved_revision}
-        settled={tree.revision === tree.saved_revision}
         toolbar={toolbar}
         onDirectComment={onDirectComment}
         onDirectCancel={onDirectCancel}

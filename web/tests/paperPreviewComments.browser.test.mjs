@@ -248,12 +248,12 @@ test("preview selections name their source, and boxes on PDF pages open comments
     "main.tex, pages 1-2, near sections/a.tex line 12",
   );
 
-  // HTML: the saved revision in the inline shell, with comment mode in the panel tools.
+  // HTML: the latest saved page in the inline shell, with comment mode in the panel tools.
   await page.evaluate(() => window.show("html"));
   const frame = page.locator(".paper-html-preview iframe");
   assert.match(
     await frame.getAttribute("src"),
-    /\/api\/projects\/p\/paper\/files\/html\/preview\?revision=7&presentation=inline$/,
+    /\/api\/projects\/p\/paper\/files\/html\/preview\?presentation=inline$/,
   );
   const toggle = page.locator('header button[aria-pressed="false"]');
   await toggle.click();
@@ -309,12 +309,17 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await page.locator('header button[aria-pressed="false"]').click();
   await post({ kind: "text", text: "Plot title", surrounding_text: "" });
   await page.waitForFunction(() => window.comments.at(-1)?.quote === "Plot title");
+  const mark = () =>
+    page.evaluate(() => (document.querySelector(".paper-html-preview iframe").dataset.seen = "1"));
+  const seen = () =>
+    page.evaluate(() => document.querySelector(".paper-html-preview iframe").dataset.seen);
+  await mark();
   await page.evaluate(() => window.show("html", "", 8));
   await page.waitForTimeout(200);
-  assert.match(await frame.getAttribute("src"), /revision=7&/);
+  assert.equal(await seen(), "1");
   await page.evaluate(() => window.show("html", "", 9, "e2"));
-  await page.waitForFunction(() =>
-    document.querySelector(".paper-html-preview iframe")?.src.includes("revision=9&"),
+  await page.waitForFunction(
+    () => !document.querySelector(".paper-html-preview iframe")?.dataset.seen,
   );
   await page.waitForTimeout(200);
   assert.equal(await page.evaluate(() => window.cancels.length), 2);
