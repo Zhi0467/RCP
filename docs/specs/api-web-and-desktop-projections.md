@@ -1202,12 +1202,14 @@ Work cannot file, or names no current node returns 409 with code `proposal_not_p
 `proposal_not_stale`, `proposal_not_refileable`, or
 `proposal_target_unavailable`.
 
-`POST .../edges/{edge_id}/refresh` (empty body; the id may contain slashes)
-returns the same shape. It admits the same light chat on the edge's Evidence.
-Its key is derived from the edge and the Evidence revision, so repeats return
-the first chat until the Evidence moves again. An absent edge, or one that is
-not a [stale assessment](graph-history-and-transitions.md#stale-assessments)
-and has no chat yet, returns 409 with code `edge_not_stale`.
+`POST .../edges/{edge_id}/refresh` (body `{"evidence_rev": int}`, the
+Evidence revision the caller saw; the id may contain slashes) returns the same
+shape. It admits the same light chat on the edge's Evidence. Its key is derived
+from the edge id and that revision, so every repeat returns the first chat, even
+after the agent removed the edge. Before that chat exists, an absent edge or one
+that is not a [stale assessment](graph-history-and-transitions.md#stale-assessments)
+returns 409 `edge_not_stale`, and a revision the Evidence has moved past returns
+409 `edge_evidence_moved`.
 
 ## Application surfaces
 

@@ -123,13 +123,19 @@ def test_edge_refresh_starts_one_light_work_chat_on_its_evidence(filed, light_ca
     client = signed_in_client(filed)
     url = f"/api/projects/{filed.state.default_project_id}/edges/{EDGE}/refresh"
 
-    fresh = client.post(url, json={})
+    def evidence_rev() -> dict[str, int]:
+        return {"evidence_rev": service.history.state().nodes[EV].updated_rev}
+
+    fresh = client.post(url, json=evidence_rev())
     assert fresh.status_code == 409
     assert fresh.json()["detail"]["code"] == "edge_not_stale"
 
     _reword_evidence(service)
-    result = client.post(url, json={}).json()
-    assert client.post(url, json={}).json() == result
+    seen = evidence_rev()
+    behind = client.post(url, json={"evidence_rev": seen["evidence_rev"] - 1})
+    assert behind.json()["detail"]["code"] == "edge_evidence_moved"
+    result = client.post(url, json=seen).json()
+    assert client.post(url, json=seen).json() == result
 
     task = wait_for_task(store, result["operation_id"], expect="succeeded")
     assert task.kind == "node_chat"
@@ -144,14 +150,26 @@ def test_edge_refresh_starts_one_light_work_chat_on_its_evidence(filed, light_ca
     assert context["citing_proposal_ids"] == [PROPOSAL]
     assert light_catalog == ["node_chat"]
 
-    # The re-judged edge is current; a retry still finds the same chat.
+    # A response lost after the agent removed the edge still finds its chat.
+    _agent_patch(service, [{"op": "remove_edges", "edge_ids": [EDGE]}])
+    assert client.post(url, json=seen).json() == result
+
+
+def test_a_later_reword_is_a_new_judgment_and_a_new_chat(filed, light_catalog):
+    service = filed.state.service
+    client = signed_in_client(filed)
+    url = f"/api/projects/{filed.state.default_project_id}/edges/{EDGE}/refresh"
+
+    def refresh() -> dict:
+        rev = service.history.state().nodes[EV].updated_rev
+        return client.post(url, json={"evidence_rev": rev}).json()
+
+    _reword_evidence(service)
+    first = refresh()
     _rejudge(service, explanation="Still supports it, more narrowly.")
     assert _stale(service) == []
-    assert client.post(url, json={}).json() == result
-
-    # A later reword is a new judgment and a new chat.
     _reword_evidence(service)
-    assert client.post(url, json={}).json()["chat_id"] != result["chat_id"]
+    assert refresh()["chat_id"] != first["chat_id"]
 
 
 def test_proposal_refresh_names_its_stale_cause_edge(filed):

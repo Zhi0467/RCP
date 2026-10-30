@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_graph_service,
@@ -56,6 +57,7 @@ _REFUSALS = {
     "proposal_not_refileable": "Ordinary Work cannot file this Proposal's form.",
     "proposal_target_unavailable": "Every node the Proposal names is gone.",
     "edge_not_stale": "The relation's Evidence has not moved since it was judged.",
+    "edge_evidence_moved": "The relation's Evidence moved again; reload before refreshing.",
 }
 
 # The node the chat opens on, its message, and the skills it asks for.
@@ -99,7 +101,7 @@ def refresh_proposal(
     return _light_refresh(
         project_id,
         request,
-        lambda _state: proposal_refresh_key(proposal_id),
+        proposal_refresh_key(proposal_id),
         chat,
         store=store,
         catalog=catalog,
@@ -107,6 +109,16 @@ def refresh_proposal(
         attachment_store=attachment_store,
         background_tasks=background_tasks,
     )
+
+
+class EdgeRefreshRequest(BaseModel):
+    """The Evidence revision the caller saw the edge stale at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # It names the judgment, so a retry finds its chat even after the agent
+    # removed the edge, and a later reword is a new chat.
+    evidence_rev: int
 
 
 # ``{edge_id:path}`` because edge ids contain node ids, which contain slashes.
@@ -117,6 +129,7 @@ def refresh_proposal(
 def refresh_edge(
     project_id: str,
     edge_id: str,
+    payload: EdgeRefreshRequest,
     request: Request,
     *,
     store: StoreDependency,
@@ -127,22 +140,18 @@ def refresh_edge(
 ) -> dict[str, str]:
     """Return the stale edge's re-judging chat, one per Evidence revision."""
 
-    def key(state: GraphState) -> uuid.UUID:
-        edge = state.edges.get(edge_id)
-        if edge is None or edge.source not in state.nodes:
-            raise _refused("edge_not_stale")
-        return edge_refresh_key(edge_id, state.nodes[edge.source].updated_rev)
-
     def chat(state: GraphState) -> LightChat:
         edge = state.edges.get(edge_id)
         if edge is None or not edge_is_stale(state, edge):
             raise _refused("edge_not_stale")
+        if state.nodes[edge.source].updated_rev != payload.evidence_rev:
+            raise _refused("edge_evidence_moved")
         return edge.source, edge_refresh_message(state, edge), list(EDGE_REFRESH_SKILL_IDS)
 
     return _light_refresh(
         project_id,
         request,
-        key,
+        edge_refresh_key(edge_id, payload.evidence_rev),
         chat,
         store=store,
         catalog=catalog,
@@ -155,7 +164,7 @@ def refresh_edge(
 def _light_refresh(
     project_id: str,
     request: Request,
-    request_key: Callable[[GraphState], uuid.UUID],
+    key: uuid.UUID,
     chat: Callable[[GraphState], LightChat],
     *,
     store: StoreDependency,
@@ -167,7 +176,6 @@ def _light_refresh(
     identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     service = get_graph_service(catalog, project_id, initialize=False, write=True)
-    key = request_key(service.history.state())
     with _LOCKS(f"{store.path.resolve()}:{project_id}:{key}"):
         existing = store.client_request(project_id, str(key))
         if existing is not None:

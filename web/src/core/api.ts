@@ -1247,25 +1247,27 @@ export function refreshProposal(
   return startRefresh(apiBase, "proposals", proposalId);
 }
 
-/** Server-keyed per edge and Evidence revision, so a repeat reuses the first chat. */
+/** Keyed per edge and the Evidence revision shown, so a repeat reuses the first chat. */
 export function refreshEdge(
   apiBase: string,
   edgeId: string,
+  evidenceRev: number,
 ): Promise<{ chat_id: string; operation_id: string }> {
-  return startRefresh(apiBase, "edges", edgeId);
+  return startRefresh(apiBase, "edges", edgeId, { evidence_rev: evidenceRev });
 }
 
 function startRefresh(
   apiBase: string,
   collection: "proposals" | "edges",
   id: string,
+  body: Record<string, number> = {},
 ): Promise<{ chat_id: string; operation_id: string }> {
   // Ids keep their slashes; the route takes the rest of the path.
   return api(
     `${apiBase}/${collection}/${id.split("/").map(encodeURIComponent).join("/")}/refresh`,
     {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(body),
     },
   );
 }

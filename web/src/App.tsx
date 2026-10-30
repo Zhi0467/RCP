@@ -4832,8 +4832,8 @@ function MemberApp({
       staleEdges: {
         staleEdgeIds,
         refreshableEdgeIds,
-        onRefresh: async (edgeId: string) =>
-          openChats((await refreshEdge(apiBase, edgeId)).chat_id),
+        onRefresh: async (edgeId: string, evidenceRev: number) =>
+          openChats((await refreshEdge(apiBase, edgeId, evidenceRev)).chat_id),
       },
     },
     <div className="app-shell overview-shell">

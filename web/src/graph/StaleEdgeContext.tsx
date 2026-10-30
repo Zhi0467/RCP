@@ -5,8 +5,8 @@ interface StaleEdgeContextValue {
   staleEdgeIds: ReadonlySet<string>;
   /** The stale ones on main, where a light agent may re-judge them. */
   refreshableEdgeIds: ReadonlySet<string>;
-  /** Start or reuse the edge's re-judging chat and open it. */
-  onRefresh: (edgeId: string) => Promise<void>;
+  /** Start or reuse the edge's re-judging chat for the Evidence revision shown, and open it. */
+  onRefresh: (edgeId: string, evidenceRev: number) => Promise<void>;
 }
 
 const StaleEdgeContext = createContext<StaleEdgeContextValue>({

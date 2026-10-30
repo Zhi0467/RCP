@@ -399,7 +399,10 @@ function RelationPeer({
             {stale ? (
               <span className="relation-map-edge-stale">
                 <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
-                <RefreshEdgeButton edgeId={edge.id} />
+                <RefreshEdgeButton
+                  edgeId={edge.id}
+                  evidenceRev={allNodes[edge.source]?.updated_rev ?? 0}
+                />
               </span>
             ) : (
               <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
@@ -471,7 +474,7 @@ function RelationPeer({
 }
 
 /** Offered only where the edge is stale on main; elsewhere the red mark stands alone. */
-function RefreshEdgeButton({ edgeId }: { edgeId: string }) {
+function RefreshEdgeButton({ edgeId, evidenceRev }: { edgeId: string; evidenceRev: number }) {
   const { refreshableEdgeIds, onRefresh } = useStaleEdges();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -480,7 +483,7 @@ function RefreshEdgeButton({ edgeId }: { edgeId: string }) {
     setBusy(true);
     setFailure(null);
     try {
-      await onRefresh(edgeId);
+      await onRefresh(edgeId, evidenceRev);
     } catch (error) {
       setFailure(error instanceof Error ? error.message : String(error));
     } finally {
