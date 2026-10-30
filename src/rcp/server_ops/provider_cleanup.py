@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.resources
 import shlex
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,18 +36,13 @@ def remove_remote_credential(provider: str, login_id: str) -> None:
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
     """Fence own logins, then delete credentials nothing runs on; return unreached hosts."""
-    from rcp.runs.provider_login import bound_running_count, delete_removed_credential
-    from rcp.storage.models import LoginKey
+    fence_member_provider_logins(store, member_id)
+    return delete_member_provider_credentials(store, member_id)
 
-    # Include removed rows: later advance passes must retry their credentials.
-    with store.connection() as connection:
-        rows = connection.execute(
-            "SELECT provider, host, login_id, removed_at FROM provider_login_states "
-            "WHERE member_id = ?",
-            (member_id,),
-        ).fetchall()
-    logins = [LoginKey(row["provider"], row["host"], row["login_id"]) for row in rows]
-    for row, login in zip(rows, logins, strict=True):
+
+def fence_member_provider_logins(store: AppStore, member_id: str) -> None:
+    """Remove the member's own logins and settings in this database; touch no host."""
+    for row, login in _member_logins(store, member_id):
         if row["removed_at"] is None:
             # Draining marks the row for reconcile_login_removals, which retries a
             # pending credential after member removal has completed.
@@ -55,13 +51,31 @@ def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str
     with store.connection() as connection:
         connection.execute("DELETE FROM provider_login_settings WHERE user_id = ?", (member_id,))
 
-    # A turn already running on a fenced login keeps its credential until it ends.
+
+def delete_member_provider_credentials(store: AppStore, member_id: str) -> tuple[str, ...]:
+    """Delete fenced own credentials nothing runs on; return unreached hosts."""
+    from rcp.runs.provider_login import bound_running_count, delete_removed_credential
+
+    # Include earlier passes' rows: their credentials may still be pending.
     unreached: set[str] = set()
-    for login in logins:
+    for _row, login in _member_logins(store, member_id):
+        # A turn already running on a fenced login keeps its credential until it ends.
         running = bool(bound_running_count(store, login))
         if not delete_removed_credential(store, login, defer=running) and not running:
             unreached.add(login.host)
     return tuple(sorted(unreached))
+
+
+def _member_logins(store: AppStore, member_id: str) -> list[tuple[sqlite3.Row, LoginKey]]:
+    from rcp.storage.models import LoginKey
+
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT provider, host, login_id, removed_at FROM provider_login_states "
+            "WHERE member_id = ?",
+            (member_id,),
+        ).fetchall()
+    return [(row, LoginKey(row["provider"], row["host"], row["login_id"])) for row in rows]
 
 
 def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:

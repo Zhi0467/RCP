@@ -673,11 +673,13 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
 
     monkeypatch.setattr("rcp.runs.provider_login.cleanup_provider_login_credential", unreachable)
     review = prepare_restore(RestorePrepareRequest(**value))
+    # Reviewing a restore never reaches a host: the old deployment may still run.
+    assert cleanups == []
     result = prepare_restore(_confirm(value, review, tmp_path / "removed-member-ready"))
     assert result["status"] == "prepared"
     assert result["provider_cleanup_unreached"] == ["worker.example"]
     own_key = LoginKey("codex", "worker.example", own.login_id)
-    assert cleanups == [own_key, own_key]
+    assert cleanups == [own_key]
     roots = result["roots"]
     assert isinstance(roots, list)
     candidate = AppStore(Path(roots[0]["payload"]) / "rcp.sqlite3")

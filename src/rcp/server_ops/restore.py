@@ -36,7 +36,10 @@ from rcp.server_ops.backup_integrity import (
     database_schema_sha256,
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
-from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
+from rcp.server_ops.provider_cleanup import (
+    delete_member_provider_credentials,
+    fence_member_provider_logins,
+)
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
 
@@ -1536,15 +1539,13 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             or store.space_name != manifest.space_name
         ):
             raise RestoreRefused("Archived SQLite identity differs from its protected manifest.")
-        provider_cleanup_unreached: tuple[str, ...] = ()
         if request.remove_stale_member:
             preview = store.member_removal_preview(request.remove_stale_member)
             store.begin_member_removal(
                 request.remove_stale_member, expected_boundary_sha256=preview.boundary_sha256
             )
-            provider_cleanup_unreached = cleanup_member_provider_logins(
-                store, request.remove_stale_member
-            )
+            # Fencing changes only this copy; credentials wait for both confirmations.
+            fence_member_provider_logins(store, request.remove_stale_member)
             store.complete_member_removal(request.remove_stale_member)
         members = tuple(
             RestoreMemberRosterEntry(
@@ -1573,6 +1574,11 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 members,
                 message="Review the archived authority and retained member/token inventory, then confirm both exact boundaries.",
             )
+        provider_cleanup_unreached = (
+            delete_member_provider_credentials(store, request.remove_stale_member)
+            if request.remove_stale_member
+            else ()
+        )
     with instance_lock(data, timeout=0), closing(store), ExitStack() as snapshots:
         from rcp.server_ops.deployment import InspectRequest, inspect
 
