@@ -208,11 +208,25 @@ def _agent_task_response(
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
+    refused_worker = (
+        record.can_retry
+        and store.agent_task_has_receipt(record.operation_id, "codex_resume_refused")
+        and (worker := store.auto_research_child_work_for_operation(record.operation_id))
+        is not None
+        and worker.current_operation_id == record.operation_id
+        and worker.stop_requested_at is None
+        and (episode := store.episode(worker.episode_id)) is not None
+        and episode.status == "running"
+        and episode.stop_requested_at is None
+    )
     if consolidation or (
         (record.can_resume or record.can_retry)
         and store.episode_child_recovery_refusal(record) is not None
+        and not refused_worker
     ):
         response.update(can_resume=False, can_retry=False)
+    if refused_worker:
+        response.update(can_resume=False, can_retry=True)
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")
         session_id = None

@@ -20,6 +20,7 @@ from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
+from rcp.runs.codex_resume import REFUSAL, RETRY, record_refusal
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -98,7 +99,8 @@ async def stream_episode_report_run(
 
     Operational context is deliberately absent. The native provider session supplies its retained
     context; RCP adds only the immutable compact receipt, the official report skill, and an optional
-    diagnostic produced by the immediately preceding report attempt.
+    diagnostic produced by the immediately preceding report attempt. A refused Codex
+    transcript adds its history pointer to the one fresh report attempt.
     """
 
     try:
@@ -173,21 +175,22 @@ async def stream_episode_report_run(
         inputs_path = _inputs_path(stage)
 
         while True:
+            if not _fresh_report_attempt_available(execution, turn):
+                raise ValueError("The fresh episode report attempt did not produce a report.")
+            fresh_session = execution.store.agent_task_has_receipt(execution.operation_id, REFUSAL)
+            session_id = None if fresh_session else turn.wrapup.native_session_id
             accounts = ProviderAccounts.for_store(execution.store)
             resolved, _ = accounts.resolve_login(
                 request.provider,
                 stage.execution_host,
                 turn.episode.authorized_by.user_id if turn.episode.authorized_by else None,
-                bound_login=accounts.bound_login(
-                    request.provider, stage.execution_host, request.session_id
-                ),
             )
             if isinstance(resolved, LoginRefusal):
                 reason = resolved.detail
                 # The hidden allocation is durable; a credential block spends no
                 # new report attempt and leaves its existing wrap-up for recovery.
                 execution.store.fail_agent_task(
-                    execution.operation_id, reason, failure_kind=resolved.failure_kind
+                    execution.operation_id, reason, failure_kind="provider_auth"
                 )
                 yield _sse(AgentEvent(event="error", text=reason))
                 return
@@ -217,7 +220,7 @@ async def stream_episode_report_run(
                 attempt_number,
                 stage,
                 contract,
-                LaunchPhase(session_id=turn.wrapup.native_session_id, phase="report"),
+                LaunchPhase(session_id=session_id, phase="report"),
             )
 
             # A retained output from an older operational turn or failed report attempt must never
@@ -232,6 +235,15 @@ async def stream_episode_report_run(
                 attempt = execution.store.allocate_episode_report_attempt(turn.episode.episode_id)
                 if attempt.attempt_number != attempt_number:
                     raise RuntimeError("Episode report attempt allocation changed under launch.")
+            if fresh_session and not execution.store.agent_task_has_receipt(
+                execution.operation_id, RETRY
+            ):
+                execution.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    RETRY,
+                    {"reason": "login_switch", "attempt": 1, "attempt_id": attempt.attempt_id},
+                    tier="summary",
+                )
             if consumed_pass is not None:
                 # Every preflight passed, so the retry takes over from here.
                 execution.store.finish_remote_provider_pass(execution.operation_id, consumed_pass)
@@ -243,7 +255,7 @@ async def stream_episode_report_run(
                 prompt=prompt,
                 contract_path=contract_path,
                 remote=bool(stage.execution_host),
-                resumed=True,
+                resumed=session_id is not None,
                 write_scope=write_scope,
                 continuation="episode_report",
                 extra={
@@ -262,7 +274,7 @@ async def stream_episode_report_run(
                 },
             )
 
-            outcome = _ProviderOutcome(session_id=turn.wrapup.native_session_id)
+            outcome = _ProviderOutcome(session_id=session_id)
             provider_errors: list[str] = []
             try:
                 async with aclosing(
@@ -272,7 +284,7 @@ async def stream_episode_report_run(
                         prompt,
                         service=service,
                         workspace=stage.workspace,
-                        session_id=turn.wrapup.native_session_id,
+                        session_id=session_id,
                         read_dirs=[inputs_path],
                         write_dirs=[],
                         write_scope=write_scope,
@@ -312,7 +324,7 @@ async def stream_episode_report_run(
                 yield auth_frame
                 return
 
-            if outcome.session_id != turn.wrapup.native_session_id:
+            if not fresh_session and outcome.session_id != turn.wrapup.native_session_id:
                 diagnostic = (
                     "Episode report continuation changed the frozen native provider session."
                 )
@@ -431,10 +443,13 @@ async def finalize_recorded_episode_report_result(
             write_scope=ProjectWriteScope.model_validate_json(retained),
         ),
     )
-    outcome = _ProviderOutcome(session_id=turn.wrapup.native_session_id)
-    refused = refuse_recorded_session_mismatch(
-        execution, outcome, verdict, turn.wrapup.native_session_id
+    session_id = (
+        None
+        if execution.store.agent_task_has_receipt(execution.operation_id, RETRY)
+        else turn.wrapup.native_session_id
     )
+    outcome = _ProviderOutcome(session_id=session_id)
+    refused = refuse_recorded_session_mismatch(execution, outcome, verdict, session_id)
     attempt = execution.store.current_episode_report_attempt(turn.episode.episode_id)
     if refused and attempt is not None:
         execution.store.finish_episode_report_error(
@@ -459,6 +474,14 @@ async def finalize_recorded_episode_report_result(
             for event in verdict.events
             if event.event == "error" and event.text.strip()
         ]
+        for error in errors:
+            record_refusal(
+                execution,
+                provider=report_request.provider,
+                session_id=session_id,
+                host=stage.execution_host,
+                error=error,
+            )
         auth_frame = _settle_provider_auth_failure(
             execution, report_request, stage.execution_host, attempt, errors
         )
@@ -489,6 +512,45 @@ async def finalize_recorded_episode_report_result(
     ) as stream:
         async for frame in stream:
             yield frame
+
+
+def _fresh_report_attempt_available(
+    execution: AgentTaskExecution,
+    turn: _CanonicalReportTurn,
+) -> bool:
+    """Keep queued and sign-in-blocked calls recoverable within the report budget."""
+    retry = next(
+        (
+            r
+            for r in execution.store.agent_task_receipts(execution.operation_id)
+            if r.category == RETRY
+        ),
+        None,
+    )
+    if retry is None:
+        return True
+    attempts = execution.store.episode_report_attempts(turn.episode.episode_id)
+    first = next(
+        (
+            index
+            for index, attempt in enumerate(attempts)
+            if attempt.attempt_id == retry.payload.get("attempt_id")
+        ),
+        None,
+    )
+    if first is None:
+        return False
+    # A queued allocation has not called the provider. Authentication failures
+    # retain the ordinary sign-in recovery path; any other failed fresh call
+    # consumes the fallback, even when report attempts remain.
+    return all(
+        attempt.status == "queued"
+        or (
+            attempt.status == "failed"
+            and profile_for(turn.request.provider).credential_failure(attempt.error or "")
+        )
+        for attempt in attempts[first:]
+    )
 
 
 def _canonical_report_turn(

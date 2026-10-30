@@ -644,6 +644,9 @@ def isolate_host(
     # place a test would sweep. Starting an app runs that sweep, which means the
     # whole suite reaches it, not one test. Each test gets its own root instead.
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
+    # An added Codex login links its session store to the machine Codex home,
+    # so a test must never resolve that home to the developer's `~/.codex`.
+    monkeypatch.setenv("CODEX_HOME", str(root / "machine-codex-home"))
 
     # Discovery is the seam every unconfigured local provider execution passes
     # through: readiness runs `--version`, `login status` and `debug models`

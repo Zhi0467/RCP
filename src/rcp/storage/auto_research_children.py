@@ -712,21 +712,38 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 raise RuntimeError("the child Work route lost its current allocation")
             if current_task.status not in {"paused", "interrupted", "failed"}:
                 raise ValueError("only a paused, interrupted, or failed child Work task can resume")
+            fresh = (
+                connection.execute(
+                    "SELECT 1 FROM graph_run_receipts WHERE operation_id = ? "
+                    "AND category = 'codex_resume_refused'",
+                    (current_task.operation_id,),
+                ).fetchone()
+                is not None
+                and connection.execute(
+                    "SELECT 1 FROM graph_run_receipts WHERE operation_id = ? "
+                    "AND category = 'codex_fresh_session_retry' "
+                    "AND json_extract(payload_json, '$.human_retry') = 1",
+                    (current_task.operation_id,),
+                ).fetchone()
+                is not None
+            )
+            expected_session = None if fresh else current_task.native_session_id
             if (
                 task.status != "queued"
                 or not task.visible
                 or task.kind != current_task.kind
                 or task.project_id != route.project_id
+                or task.graph_target != current_task.graph_target
                 or task.episode_id != route.episode_id
                 or task.parent_operation_id != current_task.operation_id
                 or task.attempt != current_task.attempt + 1
                 or task.authorized_by != episode.authorized_by
                 or not current_task.native_session_id
                 or not current_task.stage_root
-                or task.native_session_id != current_task.native_session_id
+                or task.native_session_id != expected_session
                 or (task.stage_host or "") != (current_task.stage_host or "")
                 or task.stage_root != current_task.stage_root
-                or task.request.get("session_id") != current_task.native_session_id
+                or task.request.get("session_id") != expected_session
                 or task.request.get("chat_id") != current_task.request.get("chat_id")
             ):
                 raise ValueError(

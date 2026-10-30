@@ -113,11 +113,6 @@ def demand_snapshot(store, background) -> list[str]:
                         provider,
                         host,
                         task.authorized_by.user_id if task.authorized_by else None,
-                        bound_login=accounts.bound_login(
-                            provider,
-                            host,
-                            task.native_session_id or str(task.request.get("session_id") or ""),
-                        ),
                     )[0],
                     LoginRefusal,
                 ):

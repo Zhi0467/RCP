@@ -186,3 +186,19 @@ def test_installed_toolchain_drops_runner_python_and_cache_settings(monkeypatch)
         "RCP_RUN_INSTALLED_UPGRADE": "1",
         "GITHUB_ACTIONS": "true",
     }
+
+
+def test_added_codex_home_upgrade_preserves_old_writer_store(tmp_path, monkeypatch):
+    from tests.server_upgrade_codex import check_codex_home, seed_codex_home
+
+    monkeypatch.setattr("rcp.providers.codex.homes._legacy_home_idle", lambda home: True)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
+    fixture = seed_codex_home(tmp_path, "member")
+    assert fixture is not None
+    home = Path(fixture["home"])
+    assert (home / "sessions").is_dir() and not (home / "sessions").is_symlink()
+    assert (home / "state_5.sqlite").is_file()
+    check_codex_home(tmp_path, fixture, migrated=True)
+    # Re-running an installed check must preserve both the rollout and retained state.
+    check_codex_home(tmp_path, fixture, migrated=True)
+    check_codex_home(tmp_path, fixture, migrated=False)

@@ -8793,3 +8793,63 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
         if item.source_operation_id == execution.operation_id
     ] != []
     assert launcher.calls == 0
+
+
+@pytest.mark.parametrize("removed", [False, True])
+def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, removed):
+    from rcp.providers.codex import homes
+    from rcp.providers.codex.auth import CodexAuthentication
+
+    # These synthetic homes have never had a provider process; process inspection
+    # itself is covered by the home migration tests.
+    monkeypatch.setattr(homes, "_legacy_home_idle", lambda _: True)
+    store = app.state.catalog.store
+    launcher = app.state.catalog.launcher
+    login = store.add_provider_login("codex", "", added_by="member")
+    key = LoginKey("codex", "", login.login_id)
+    if removed:
+        store.finish_provider_login_removal(key)
+    credentials = launcher.credentials
+    assert credentials is not None
+    home = credentials.account_dir("codex", "", login.login_id) / "codex-home"
+    (home / "sessions").mkdir(parents=True)
+    (home / "sessions/rollout-retained.jsonl").write_text("retained rollout\n")
+    (home / "session_index.jsonl").write_text('{"id":"retained"}\n')
+    observed = []
+    recover = app.state.background_tasks.recover_at_startup
+
+    def recovering():
+        assert (home / "sessions").is_symlink()
+        other = store.add_provider_login("codex", "", added_by="member")
+        environment = CodexAuthentication().process_environment(credentials, "", other.login_id)
+        assert environment.local_env is not None
+        other_home = Path(environment.local_env["CODEX_HOME"])
+        assert (other_home / "sessions/rollout-retained.jsonl").read_text() == "retained rollout\n"
+        observed.append(key)
+        recover()
+
+    monkeypatch.setattr(app.state.background_tasks, "recover_at_startup", recovering)
+    with signed_in_client(app) as client:
+        assert client.get("/api/health/details").status_code == 200
+        assert observed == [key]
+
+
+def test_startup_codex_home_failure_does_not_prevent_recovery(app, monkeypatch, caplog):
+    store = app.state.catalog.store
+    launcher = app.state.catalog.launcher
+    login = store.add_provider_login("codex", "example-host", added_by="member")
+    key = LoginKey("codex", "example-host", login.login_id)
+    original = launcher.process_environment
+    calls = []
+
+    def prepare(login_key):
+        if login_key == key:
+            calls.append(login_key)
+            raise ValueError("sensitive remote diagnostic")
+        return original(login_key)
+
+    monkeypatch.setattr(launcher, "process_environment", prepare)
+    with signed_in_client(app) as client:
+        assert client.get("/api/health/details").status_code == 200
+        assert calls == [key]
+    assert "sensitive remote diagnostic" not in caplog.text

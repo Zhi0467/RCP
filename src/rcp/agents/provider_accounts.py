@@ -27,7 +27,6 @@ class LoginRefusal:
     source: LoginSource
     detail: str
     login: LoginKey | None = None
-    failure_kind: Literal["provider_auth", "session_refused"] = "provider_auth"
 
 
 @dataclass(frozen=True)
@@ -40,7 +39,6 @@ class PreviousProviderLogin:
 @dataclass(frozen=True)
 class TurnLoginInputs:
     lineage_login: LoginKey | None
-    bound_login: LoginKey | None
     previous: PreviousProviderLogin | None
 
 
@@ -140,33 +138,10 @@ class ProviderAccounts:
     def reset_logins_without_credentials(self) -> list[ProviderLoginStateRecord]:
         return reset_logins_without_credentials(self.store, self.credentials)
 
-    def bound_login(self, provider: str, host: str, native_session_id: str) -> LoginKey | None:
-        """Earliest provider-started task owns the session, including fork-source lookups."""
-        previous = self._session_login(provider, host, native_session_id, latest=False)
-        return previous.login if previous else None
-
     def previous_login(
         self, provider: str, host: str, native_session_id: str, *, exclude_operation_id: str
     ) -> PreviousProviderLogin | None:
         """Latest provider-started turn, excluding the task about to launch."""
-        return self._session_login(
-            provider,
-            host,
-            native_session_id,
-            latest=True,
-            exclude_operation_id=exclude_operation_id,
-        )
-
-    def _session_login(
-        self,
-        provider: str,
-        host: str,
-        native_session_id: str,
-        *,
-        latest: bool,
-        exclude_operation_id: str = "",
-    ) -> PreviousProviderLogin | None:
-        order = "DESC" if latest else "ASC"
         with self.store.connection() as connection:
             row = connection.execute(
                 "SELECT task.login_id, task.authorized_user_id, MIN(start.created_at) AS started "
@@ -177,7 +152,7 @@ class ProviderAccounts:
                 "AND COALESCE(task.stage_host, '') = ? AND task.native_session_id = ? "
                 "AND task.operation_id != ? AND task.login_id IS NOT NULL "
                 "GROUP BY task.operation_id "
-                f"ORDER BY started {order}, task.rowid {order} LIMIT 1",
+                "ORDER BY started DESC, task.rowid DESC LIMIT 1",
                 (provider, host, native_session_id, exclude_operation_id),
             ).fetchone()
         if row is None:
@@ -217,7 +192,6 @@ class ProviderAccounts:
         host: str,
         *,
         session_id: str | None = None,
-        fork_session_id: str | None = None,
         exclude_operation_id: str = "",
         task: AgentTaskRecord | None = None,
         inherit_parent: bool = False,
@@ -233,14 +207,8 @@ class ProviderAccounts:
                     task.operation_id, "provider_login_lineage"
                 ),
             )
-        bound_session = session_id or fork_session_id
         return TurnLoginInputs(
             lineage_login=lineage_login,
-            bound_login=(
-                self.bound_login(provider, host, bound_session)
-                if bound_session and profile_for(provider).sessions_bound_to_login
-                else None
-            ),
             previous=(
                 self.previous_login(
                     provider, host, session_id, exclude_operation_id=exclude_operation_id
@@ -257,7 +225,6 @@ class ProviderAccounts:
         member_id: str | None,
         *,
         session_id: str | None = None,
-        fork_session_id: str | None = None,
         lineage_login: LoginKey | None = None,
         exclude_operation_id: str = "",
         task: AgentTaskRecord | None = None,
@@ -268,7 +235,6 @@ class ProviderAccounts:
             provider,
             host,
             session_id=session_id,
-            fork_session_id=fork_session_id,
             lineage_login=lineage_login,
             exclude_operation_id=exclude_operation_id,
             task=task,
@@ -279,7 +245,6 @@ class ProviderAccounts:
             host,
             member_id,
             lineage_login=inputs.lineage_login,
-            bound_login=inputs.bound_login,
             previous=inputs.previous,
         )
 
@@ -290,18 +255,20 @@ class ProviderAccounts:
         member_id: str | None,
         *,
         lineage_login: LoginKey | None = None,
-        bound_login: LoginKey | None = None,
         previous: PreviousProviderLogin | None = None,
         dry_run: bool = True,
         operation_id: str | None = None,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
         """Resolve without writes, or atomically assign and advance the shared LRU clock.
 
-        Callers supply a lineage login only for transport reattempts and the
-        initial graph-repair correction. Codex forks supply their source's bound
-        login. Human Resume and Retry are ordinary turn boundaries.
+        Callers supply a lineage login only for transport reattempts, further
+        provider passes, and the initial graph-repair correction. The lineage and
+        the session's previous login are kept while usable and allowed for the
+        member; otherwise the member's setting order decides. A fork is a fresh
+        choice. Any login can continue any session (Codex logins share one
+        session store).
         """
-        for key in (lineage_login, bound_login, previous.login if previous else None):
+        for key in (lineage_login, previous.login if previous else None):
             if key is not None and (key.provider, key.host) != (provider, host):
                 raise ValueError("Session login does not match the launch provider and host.")
         result: tuple[LoginKey | LoginRefusal, LoginSwitchReason | None] | None = None
@@ -314,7 +281,6 @@ class ProviderAccounts:
                 host,
                 member_id,
                 lineage_login=lineage_login,
-                bound_login=bound_login,
                 previous=previous,
             )
             return result[0] if isinstance(result[0], LoginKey) else None
@@ -337,7 +303,6 @@ class ProviderAccounts:
         member_id: str | None,
         *,
         lineage_login: LoginKey | None,
-        bound_login: LoginKey | None,
         previous: PreviousProviderLogin | None,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
         previous_login = previous.login if previous else None
@@ -362,37 +327,21 @@ class ProviderAccounts:
                 )
             )
 
-        # A removed parent login can never come back, so it stops pinning its
-        # lineage; the task resolves like a new turn (a bound session still refuses).
-        if (
-            lineage_login is not None
-            and self.store.provider_login_state(lineage_login, connection=connection).removed_at
-        ):
-            lineage_login = None
         # Legacy tasks without an authorizer retain the machine login. OpenCode
         # has no RCP-managed added logins, independent of a member's setting.
-        fixed = (
-            machine
-            if not profile_for(provider).authentication.manages_login or member_id is None
-            else (
-                lineage_login
-                or (bound_login if profile_for(provider).sessions_bound_to_login else None)
-            )
-        )
-        if fixed is not None:
-            state = self.store.provider_login_state(fixed, connection=connection)
+        if not profile_for(provider).authentication.manages_login or member_id is None:
+            state = self.store.provider_login_state(machine, connection=connection)
             if usable(state):
-                return fixed, None
-            source: LoginSource = "own" if state.member_id is not None else "shared"
-            removed_bound_session = state.removed_at is not None
+                return machine, None
             return LoginRefusal(
-                source,
-                "This sign-in was removed. Start a new chat."
-                if removed_bound_session
-                else f"{profile_for(provider).label} sign-in is unavailable. Sign in in Settings, Sign-ins.",
-                fixed,
-                "session_refused" if removed_bound_session else "provider_auth",
+                "shared",
+                f"{profile_for(provider).label} sign-in is unavailable. Sign in in Settings, Sign-ins.",
+                machine,
             ), None
+        if lineage_login is not None:
+            state = self.store.provider_login_state(lineage_login, connection=connection)
+            if usable(state) and state.member_id in (None, member_id):
+                return lineage_login, None
 
         rows = self.store.provider_logins(provider, host, connection=connection)
         assignable = [row for row in rows if not row.draining_since and usable(row)]

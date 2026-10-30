@@ -1935,6 +1935,32 @@ def create_app(
             resume_runtime_owners=resume_update_runtime_owners,
         )
 
+    def prepare_added_codex_homes() -> None:
+        # An expired or removed login can still own the only copy of a rollout.
+        # Prepare every recorded home before recovery selects a usable credential.
+        with store.connection() as connection:
+            rows = connection.execute(
+                "SELECT host, login_id FROM provider_login_states "
+                "WHERE provider='codex' AND login_id != '' ORDER BY host, login_id"
+            ).fetchall()
+        for row in rows:
+            login = LoginKey("codex", row["host"], row["login_id"])
+            if (
+                not login.host
+                and not (
+                    provider_credentials.account_dir("codex", "", login.login_id) / "codex-home"
+                ).is_dir()
+            ):
+                continue
+            try:
+                with launcher.credential_gate.hold_blocking(login):
+                    launcher.process_environment(login)
+            except Exception as exc:
+                # Remote placement diagnostics may contain shell/environment data.
+                logger.warning(
+                    "Could not prepare a Codex home at startup (%s).", type(exc).__name__
+                )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         live_artifact_shutdown.clear()
@@ -1969,6 +1995,7 @@ def create_app(
                 # Cards hold provider executables and compute settings; an older
                 # manifest's copy must reach them before recovery relaunches work.
                 await asyncio.to_thread(fill_space_machines, store)
+                await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
                 from rcp.runs.branch_merge_admission import recover_branch_merge_task
                 from rcp.runs.episodes.merge import reconcile_episode_merge
@@ -2078,6 +2105,31 @@ def create_app(
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
                 await asyncio.to_thread(reconcile_question_answers)
+                # Work parked on a login that is now unusable resolves to whichever
+                # signed-in login the queue picks, without waiting for a sign-in event.
+                from rcp.runs.provider_login import resume_provider_account
+
+                # `provider_logins` also yields an implicit machine login with no row.
+                pairs = {(state.provider, state.host) for state in store.provider_login_states()}
+                logins = [
+                    LoginKey(provider, host, row.login_id)
+                    for provider, host in sorted(pairs)
+                    for row in store.provider_logins(provider, host)
+                ]
+                for login in logins:
+                    try:
+                        # Automatic: an exhausted auth-retry chain stays exhausted.
+                        await asyncio.to_thread(
+                            resume_provider_account,
+                            background_tasks,
+                            login,
+                            watcher_delivery=watcher_delivery,
+                            automatic=True,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not release parked work for %s at startup: %s", login, exc
+                        )
                 if member_removal_coordinator is not None:
                     await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
                 protected_roots = _protected_run_stage_roots(store, "")

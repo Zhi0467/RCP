@@ -59,7 +59,7 @@ def task_login_host(task: AgentTaskRecord, manifest: Callable[[], Manifest]) -> 
 class ParkedProviderWork:
     recoveries: list[tuple[str, str]] = field(default_factory=list)
     queued: list[str] = field(default_factory=list)
-    experiments: list[str] = field(default_factory=list)
+    retries: list[str] = field(default_factory=list)
     watcher_groups: list[list[StoredWatcherRecord]] = field(default_factory=list)
 
 
@@ -89,27 +89,38 @@ def parked_provider_work(
         account = resolved_task_login(store, task, host=host)
         if account is not None:
             work[account].queued.append(operation_id)
-    for episode in store.episodes(project_id, limit=None):
+    # Episode recovery has its own durable queue. Other failed turns must also
+    # wake after sign-in, including Work chats with no episode.
+    with store.connection() as connection:
+        failed = connection.execute(
+            "SELECT failed.operation_id FROM graph_runs failed WHERE failed.project_id=? "
+            "AND failed.status='failed' AND failed.failure_kind='provider_auth' "
+            "AND failed.history_only=0 AND failed.kind NOT IN ('auto_research', 'episode_report') "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_recoveries recovery "
+            "WHERE recovery.operation_id=failed.operation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM graph_runs later WHERE later.project_id=failed.project_id "
+            "AND later.graph_target_json=failed.graph_target_json AND later.rowid>failed.rowid "
+            "AND later.status NOT IN ('queued', 'running', 'pausing') "
+            "AND json_extract(later.request_json, '$.chat_id')="
+            "json_extract(failed.request_json, '$.chat_id'))",
+            (project_id,),
+        ).fetchall()
+    for row in failed:
+        current = store.agent_task(row["operation_id"])
         if (
-            episode.mode != "experiment_loop"
-            or episode.status != "running"
-            or not episode.control_node_id
+            current is None
+            or not current.can_retry
+            or store.agent_task_has_continuation(current.operation_id)
+            or store.consolidation_run_for_operation(current.operation_id) is not None
         ):
             continue
-        runtime = store.experiment_loop_runtime(
-            project_id, episode.control_node_id, graph_target=episode.graph_target
-        )
-        current = store.agent_task(runtime.current_operation_id or "")
-        if (
-            current is not None
-            and current.request.get("provider")
-            and current.failure_kind == "provider_auth"
-            and current.status == "failed"
-            and current.can_retry
-        ):
-            account = resolved_task_login(store, current)
-            if account is not None:
-                work[account].experiments.append(current.operation_id)
+        if current.episode_id:
+            episode = store.episode(current.episode_id)
+            if episode is None or episode.status != "running" or episode.stop_requested_at:
+                continue
+        account = resolved_task_login(store, current)
+        if account is not None:
+            work[account].retries.append(current.operation_id)
     for group in store.completed_watcher_groups():
         first = group[0]
         if first.project_id == project_id:
@@ -131,6 +142,7 @@ def resume_provider_account(
     reconcile_episodes: Callable[[], int] = lambda: 0,
     watcher_delivery: WatcherDelivery | None = None,
     member_id: str | None = None,
+    automatic: bool = False,
 ) -> dict[str, int]:
     """Release this account's parked work and run the ordinary episode poll once."""
 
@@ -154,13 +166,6 @@ def resume_provider_account(
         ):
             return member_id is None and resolved_task_login(store, task, host=key.host) == key
         authorizer = task.authorized_by.user_id if task.authorized_by else None
-        session = task.native_session_id or str(task.request.get("fork_session_id") or "")
-        if profile_for(key.provider).sessions_bound_to_login and session:
-            bound = accounts.bound_login(key.provider, key.host, session)
-            return (
-                member_id is None
-                and (bound or resolved_task_login(store, task, host=key.host)) == key
-            )
         if member_id is not None and authorizer != member_id:
             return False
         if authorizer is None or not profile_for(key.provider).authentication.manages_login:
@@ -180,17 +185,31 @@ def resume_provider_account(
                 continue
             work.recoveries = [pair for pair in work.recoveries if eligible(pair[1])]
             work.queued = [operation_id for operation_id in work.queued if eligible(operation_id)]
-            work.experiments = [
-                operation_id for operation_id in work.experiments if eligible(operation_id)
-            ]
+            work.retries = [operation_id for operation_id in work.retries if eligible(operation_id)]
             work.watcher_groups = [
                 group for group in work.watcher_groups if eligible(group[0].origin_operation_id)
             ]
             selected.append(work)
     for work in selected:
-        store.release_provider_auth_recoveries(work.recoveries)
-        for operation_id in work.experiments:
-            background.retry(operation_id)
+        recoveries = [
+            pair for pair in work.recoveries if not automatic or _claim_auth_retry(store, pair[1])
+        ]
+        store.release_provider_auth_recoveries(recoveries)
+        for operation_id in work.retries:
+            if automatic and not _claim_auth_retry(store, operation_id):
+                continue
+            try:
+                task = store.agent_task(operation_id)
+                background.retry(operation_id, authorized_by=task.authorized_by if task else None)
+            except ValueError as exc:
+                # Admission rechecks session ownership and credentials. Another
+                # turn or a newly expired login leaves this recovery parked.
+                store.record_agent_task_receipt(
+                    operation_id,
+                    "provider_auth_retry_deferred",
+                    {"exception_type": type(exc).__name__},
+                    tier="diagnostic",
+                )
     # This is the timer's existing pass, with its process-owned reconciler and
     # login gates. It has no account filter; still-blocked accounts stay parked.
     checked = reconcile_episodes()
@@ -206,10 +225,47 @@ def resume_provider_account(
     return {"checked": checked}
 
 
+def _claim_auth_retry(store: AppStore, operation_id: str) -> bool:
+    """Claim one immediate auth retry; a later sign-in event can release again."""
+    task = store.agent_task(operation_id)
+    if task is None:
+        return False
+    chosen = resolved_task_login(store, task)
+    if chosen is None or ProviderAccounts.for_store(store).refusal(chosen):
+        return False
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        prior = connection.execute(
+            "WITH RECURSIVE lineage(operation_id, parent_operation_id) AS ("
+            "SELECT operation_id,parent_operation_id FROM graph_runs WHERE operation_id=? "
+            "UNION SELECT parent.operation_id,parent.parent_operation_id FROM graph_runs parent "
+            "JOIN lineage child ON parent.operation_id=child.parent_operation_id "
+            "WHERE EXISTS (SELECT 1 FROM graph_run_receipts edge WHERE edge.operation_id="
+            "parent.operation_id AND edge.category IN ('provider_auth_auto_retry', 'transport_auto_retry'))) "
+            "SELECT 1 FROM graph_run_receipts claim JOIN lineage USING(operation_id) "
+            "WHERE claim.category='provider_auth_auto_retry' AND NOT EXISTS ("
+            "SELECT 1 FROM graph_run_receipts deferred WHERE deferred.operation_id=claim.operation_id "
+            "AND deferred.category='provider_auth_retry_deferred' "
+            "AND deferred.receipt_id>claim.receipt_id) LIMIT 1",
+            (operation_id,),
+        ).fetchone()
+        if prior is not None:
+            return False
+        store._insert_agent_task_receipt(
+            connection,
+            operation_id,
+            "provider_auth_auto_retry",
+            json.dumps({"from": task.login_id, "to": chosen.login_id}),
+            tier="summary",
+            created_at=store.now(),
+        )
+    return True
+
+
 def resolved_task_login(
     store: AppStore, task: AgentTaskRecord, *, host: str | None = None
 ) -> LoginKey | None:
-    """Dry-run a turn boundary, retaining Codex's session binding."""
+    """Dry-run a turn boundary with the session's stay-put login preference."""
     provider = str(task.request.get("provider") or "")
     if not provider:
         return None
@@ -220,14 +276,13 @@ def resolved_task_login(
         host,
         task.authorized_by.user_id if task.authorized_by else None,
         session_id=task.native_session_id,
-        fork_session_id=str(task.request.get("fork_session_id") or ""),
         task=task,
         inherit_parent=task.status == "queued",
     )
     if isinstance(result, LoginKey):
         return result
-    # Keep a parked binding discoverable while it is unhealthy. Release still
-    # checks usability and re-resolves unbound work before dispatch.
+    # Keep a parked machine login discoverable while it is unhealthy. Release
+    # still checks usability and re-resolves before dispatch.
     return result.login or (
         LoginKey(provider, host, task.login_id) if task.login_id is not None else None
     )
@@ -280,14 +335,13 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
     limited = background._failure_classified_as(record, "session_limit")
     if starts and (limited or record.status == "succeeded"):
         store.set_provider_login_limit(key, provider_started_at=min(starts), limited=limited)
-    # A Codex turn without a named session is still free to choose another login.
-    if profile_for(provider).sessions_bound_to_login and record.native_session_id:
-        return
     chosen = resolved_task_login(store, record)
     if chosen is None:
         return
+    # Every settlement releases session occupancy, including a failed or paused
+    # holder. Durable retry claims keep this pass from repeating an auth retry.
+    resume_provider_account(background, chosen, automatic=True)
     if record.failure_kind == "provider_auth":
-        resume_provider_account(background, chosen)
         return
     if not limited or not record.episode_id or not record.native_session_id or chosen == key:
         return
@@ -330,30 +384,15 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
 
 
 def bound_running_count(store: AppStore, key: LoginKey) -> int:
-    """Count running turns and running unpaused Codex episodes retaining this login."""
+    """Count running turns on this login; a later turn may continue on any login."""
     with store.connection() as connection:
-        rows = connection.execute(
-            "SELECT operation_id, episode_id, native_session_id, status FROM graph_runs "
+        row = connection.execute(
+            "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? AND COALESCE(stage_host,'')=? "
-            "AND login_id=? ORDER BY rowid DESC",
+            "AND login_id=? AND status IN ('running', 'pausing')",
             key,
-        ).fetchall()
-    running = sum(row["status"] in {"running", "pausing"} for row in rows)
-    if not profile_for(key.provider).sessions_bound_to_login:
-        return running
-    episodes: set[str] = set()
-    seen_sessions: set[str] = set()
-    for row in rows:
-        session = row["native_session_id"]
-        if not session or session in seen_sessions:
-            continue
-        seen_sessions.add(session)
-        if row["status"] == "paused" or not row["episode_id"]:
-            continue
-        episode = store.episode(row["episode_id"])
-        if episode is not None and episode.status == "running" and not episode.stop_requested_at:
-            episodes.add(episode.episode_id)
-    return running + len(episodes)
+        ).fetchone()
+    return int(row[0])
 
 
 def remove_shared_login(
