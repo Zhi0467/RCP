@@ -128,7 +128,6 @@ export function QuestionCard({
             <textarea
               aria-label="Question answer"
               rows={1}
-              placeholder={question.choices.length ? "Or type your own answer" : "Your answer"}
               value={text}
               disabled={disabled}
               onChange={(event) => setText(event.target.value)}

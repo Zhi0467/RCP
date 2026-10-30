@@ -164,8 +164,9 @@ text cannot select it; resolution never skips an unusable current binding.
 
 Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
-`session_stage_unavailable`, `session_stale`, `session_context_unavailable`, or
-`orchestrator_session_unavailable`.
+`session_stage_unavailable`, `session_stale`, `session_context_unavailable`,
+`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or
+`consolidation` (every nightly turn starts fresh).
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope

@@ -13,8 +13,10 @@ Members are equal. There is no administrator product role.
 Machine authority covers installation, updates, restore, credentials, central
 checkouts, and member removal.
 [Server and machine operations](server-and-machine-operations.md) owns its
-commands, service-account boundary, shared provider login, and cooperative
-team trust model. Machine authority never grants human product judgment.
+commands, service-account boundary, and cooperative team trust model. Provider
+sign-ins are member actions
+([owner](providers-and-containment.md#member-sign-in-settings-and-selection)).
+Machine authority never grants human product judgment.
 Member terminal access follows
 [its runtime boundary](providers-and-containment.md#member-terminals).
 
@@ -183,8 +185,9 @@ as its cause. Other intents use rationale without invented Evidence.
 
 Canonical merge additionally permits exact standing changes, canonically proven
 human-caused status changes, and removal of accepted ordinary nodes.
-Dependency rule 3 groups connected intents when their approval effects overlap
-another intent's effects or dependencies. Read-only overlap does not connect them.
+Dependency rule 3 groups connected intents when one intent's approval effects
+overlap another intent's dependencies, in either direction. Read-only overlap does
+not connect them.
 Approval is atomic. A protected edge may be removed and recreated atomically.
 This includes content edits to existing retirement edges that preserve their
 identity, endpoints, and relation. New retirement uses dedicated operations.

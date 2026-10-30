@@ -1411,22 +1411,23 @@ efforts, OpenCode models and optional reasoning variants. Unreadable catalogs
 use the declared list; that cannot approve an explicitly saved unknown model.
 
 Turns and credential-touching readiness/skill probes share one startup gate per
-provider and execution account. They acquire it before environment preparation
+login `(provider, host, login_id)`. They acquire it before environment preparation
 and login-generation capture; turns recheck eligibility before spawn. Probes
 hold it throughout; turns hold until a provider-authored line and the minimum
 stagger, with a bounded maximum hold. Broker readiness is not provider output.
 No process is signalled before the minimum hold, including Pause and probe
 timeout, so a refresh can finish its credential write.
 
-Local accounts also use an advisory lock under their RCP directory across RCP
-processes. Only contention retries; filesystem lock errors fail the launch and
+The local machine sign-in also uses an advisory lock under the account's RCP
+directory across RCP processes. Only contention retries; filesystem lock errors fail the launch and
 release the in-process lock. OS exit releases the file lock. Remote gates cover
-one RCP process only, and different spellings of the SSH destination form separate
-gates. Mid-turn provider refresh remains outside this startup protection.
+one RCP process only. SSH destination spellings that differ beyond case and
+surrounding whitespace form separate gates. Mid-turn provider refresh remains outside this startup protection.
 
-Credential-touching readiness is durable per `(provider, host, executable)` and
-version. Implicit reads run `--version` under the gate and reuse matching answers.
-Refresh, version change, verify, sign-in and sign-out invalidate them. Native
+Credential-touching readiness is durable per `(provider, host, login_id,
+executable)` and version. Implicit reads run `--version` under the gate and reuse
+matching answers. Refresh and version change invalidate them; verify, sign-in and
+sign-out invalidate that login's answers only. Native
 skill inventory similarly reuses matching executable/version/probe-command
 results; explicit Refresh probes all targets, including edited native skills.
 
