@@ -44,8 +44,6 @@ interface SelectedAnswerComment {
   artifact?: StagedArtifactTarget;
   /** Where the selection came from, staged and sent with it. */
   where?: string;
-  /** Where focus returns once the comment is staged or dismissed; the message field if unset. */
-  origin?: HTMLElement | null;
 }
 
 /** A part of the page whose selections can be commented on. */
@@ -190,15 +188,19 @@ function measureSelectionOffer(
 ): SelectionOffer | null {
   const selection = window.getSelection();
   if (!selection) return null;
-  let match: ReturnType<SelectionSource["resolve"]> = null;
-  let origin: HTMLElement | null = null;
   for (const source of sources) {
     const root = source.root.current;
-    match = root ? source.resolve(selection, root) : null;
-    origin = source.origin?.current ?? null;
-    if (match) break;
+    const match = root ? source.resolve(selection, root) : null;
+    if (match) return measureOffer(match, source.origin?.current ?? null, offerButton);
   }
-  if (!match) return null;
+  return null;
+}
+
+function measureOffer(
+  match: NonNullable<ReturnType<SelectionSource["resolve"]>>,
+  origin: HTMLElement | null,
+  offerButton: HTMLButtonElement | null,
+): SelectionOffer | null {
   const { range } = match;
   const firstLine = range.getClientRects().item(0) ?? range.getBoundingClientRect();
   if (!firstLine) return null;
@@ -450,7 +452,7 @@ export function useAnswerComments({
     next: AnswerCommentComposer,
     { draft = keptDraft.current, origin }: { draft?: string; origin?: HTMLElement | null } = {},
   ) => {
-    originRef.current = origin ?? (next.step === "comment" ? next.origin : null) ?? null;
+    originRef.current = origin ?? null;
     keptDraft.current = "";
     setComment(draft);
     onError(null);
@@ -480,15 +482,64 @@ export function useAnswerComments({
     }
     const rects = range.getClientRects();
     const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-    openComposer({
-      step: "comment",
-      selectedText,
-      anchor: { left: rect.left, right: rect.right, top: rect.top },
-      position: null,
-      ...(where ? { where } : {}),
-      origin,
-    });
+    openComposer(
+      {
+        step: "comment",
+        selectedText,
+        anchor: { left: rect.left, right: rect.right, top: rect.top },
+        position: null,
+        ...(where ? { where } : {}),
+      },
+      { origin },
+    );
     focusComment();
+  };
+
+  /** Opens a comment on a selection made outside the answer text: a box, or one inside
+   * an artifact frame. `clear` removes that selection's mark once the comment closes.
+   *
+   * A selection that cannot take a comment is cleared and the open one stays. A long
+   * quote is cut to the limit, since the reader cannot shorten a box or frame selection
+   * the way they can a native one. The open comment's text, or text kept from one
+   * closed for the reader, carries over unless `draft` replaces it. */
+  const openExternal = (
+    next: Omit<SelectedAnswerComment, "step" | "position">,
+    {
+      clear,
+      draft,
+      origin,
+    }: { clear?: () => void; draft?: string; origin?: HTMLElement | null } = {},
+  ) => {
+    if (busy || !next.selectedText || !roomForAnother()) {
+      clear?.();
+      return;
+    }
+    const carried = composer?.step === "comment" ? comment : keptDraft.current;
+    externalSelectionClear.current?.();
+    externalSelectionClear.current = clear ?? null;
+    const selectedText =
+      next.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
+        ? `${next.selectedText.slice(0, MAX_CHAT_ANNOTATION_TEXT_LENGTH - 1)}…`
+        : next.selectedText;
+    openComposer(
+      { ...next, step: "comment", selectedText, position: null },
+      { draft: draft ?? carried, origin },
+    );
+    focusComment();
+  };
+
+  /** Closes the comment an outside selection opened, once that selection's own mark is
+   * gone; `keepText` holds the typed text for the next comment. */
+  const closeExternal = (keepText: boolean) => {
+    // The mark is already gone; a clear sent now would end the drag that a new
+    // selection starts with.
+    externalSelectionClear.current = null;
+    dismiss(false, keepText);
+  };
+
+  /** Closes the comment opened by the selection `clear` belongs to, keeping its text. */
+  const cancelExternal = (clear: () => void) => {
+    if (externalSelectionClear.current === clear) closeExternal(true);
   };
 
   const openFromKeyboard = (answer: HTMLElement, origin: HTMLElement) => {
@@ -546,7 +597,7 @@ export function useAnswerComments({
     if (composer?.step !== "comment") return;
     const text = comment.trim();
     if (!text) return;
-    const { artifact, where, origin } = composer;
+    const { artifact, where } = composer;
     setAnnotations((current) => [
       ...current,
       {
@@ -558,8 +609,7 @@ export function useAnswerComments({
       },
     ]);
     setOpen(false);
-    dismiss(false);
-    window.requestAnimationFrame(() => (origin ?? message.current)?.focus());
+    dismiss(true);
   };
 
   return {
@@ -569,10 +619,10 @@ export function useAnswerComments({
     composer,
     comment,
     setComment,
-    externalSelectionClear,
     focusComment,
-    roomForAnother,
-    openComposer,
+    openExternal,
+    closeExternal,
+    cancelExternal,
     dismiss,
     requireComplete,
     clear,

@@ -535,8 +535,6 @@ export function NodeChat({
   const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
     ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
   >(() => new Map());
-  // Clears the selection mark inside an inline artifact once its comment closes.
-  const inlineSelectionClearRef = comments.externalSelectionClear;
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
@@ -1221,14 +1219,6 @@ export function NodeChat({
     artifact: AgentArtifactDescriptor,
     event: InlineArtifactSelectionEvent,
   ) => {
-    if (submitting) {
-      event.clear();
-      return;
-    }
-    if (!comments.roomForAnother()) {
-      event.clear();
-      return;
-    }
     if (
       annotations.some(
         (annotation) =>
@@ -1251,14 +1241,10 @@ export function NodeChat({
       comments.focusComment();
       return;
     }
-    inlineSelectionClearRef.current?.();
-    inlineSelectionClearRef.current = event.clear;
-    comments.openComposer(
+    comments.openExternal(
       {
-        step: "comment",
         selectedText: event.description || artifact.name,
         anchor: event.anchor,
-        position: null,
         artifact: {
           context: {
             source: "task",
@@ -1271,9 +1257,8 @@ export function NodeChat({
           selection: event.selection ? { ...event.selection, comment: "" } : null,
         },
       },
-      { draft: prefill },
+      { clear: event.clear, draft: prefill },
     );
-    comments.focusComment();
   };
 
   // A selection cancelled inside the frame closes the comment staged from it.
@@ -1281,10 +1266,7 @@ export function NodeChat({
     const context =
       comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
     if (context?.operation_id !== taskId || context.artifact_id !== artifact.artifact_id) return;
-    // The frame already cleared its mark; a clear sent now would end the drag that
-    // a new selection starts with.
-    inlineSelectionClearRef.current = null;
-    comments.dismiss(false);
+    comments.closeExternal(false);
   };
 
   // A new version moves the parts a selection named, so comments on the old one,
@@ -1292,10 +1274,7 @@ export function NodeChat({
   const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
     const open =
       comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (open?.artifact_id === artifact.artifact_id) {
-      inlineSelectionClearRef.current = null;
-      comments.dismiss(false);
-    }
+    if (open?.artifact_id === artifact.artifact_id) comments.closeExternal(false);
     const stale = annotations.filter(
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
     );

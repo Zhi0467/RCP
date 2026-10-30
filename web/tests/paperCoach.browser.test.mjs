@@ -468,7 +468,7 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
       tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 }),
   });
   // A stand-in shell that counts the clears the app sends it.
-  await context.route("**/files/f3/preview?*", (route) =>
+  await context.route("**/files/f3/preview", (route) =>
     route.fulfill({
       contentType: "text/html",
       body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
@@ -477,7 +477,7 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
   await page.locator(".paper-file", { hasText: "page.html" }).click();
   await page.getByRole("button", { name: "Preview", exact: true }).first().click();
   await page.getByRole("button", { name: "Comment on the page" }).click();
-  const shell = page.frame({ url: /\/files\/f3\/preview\?/ });
+  const shell = page.frame({ url: /\/files\/f3\/preview$/ });
   const post = (text) =>
     shell.evaluate(
       (text) =>
@@ -499,4 +499,32 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
   await page.getByText("Second words").first().waitFor();
   assert.equal(await comment.inputValue(), "half written");
   assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
+  // A quote longer than a comment allows is cut to the limit, so it stages.
+  await shell.evaluate(() =>
+    parent.postMessage(
+      {
+        type: "rcp-artifact-selection",
+        version: 1,
+        selection: {
+          kind: "box",
+          rect: { x: 0, y: 0, width: 1, height: 1 },
+          viewport: { width: 500, height: 400 },
+          elements: Array.from({ length: 8 }, (_, n) => ({
+            path: `p:nth-child(${n + 1})`,
+            label: "",
+            text: `${n}`.repeat(512),
+          })),
+        },
+        description: "",
+      },
+      location.origin,
+    ),
+  );
+  const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
+  await page.waitForFunction(
+    () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
+  );
+  const long = await quote.textContent();
+  assert.equal(long.length, 4096);
+  assert.ok(long.endsWith("…"));
 });

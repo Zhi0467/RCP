@@ -124,7 +124,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await page.route("**/compiled.pdf", (route) =>
     route.fulfill({ contentType: "application/pdf", body: textPdf(1, 2) }),
   );
-  await page.route("**/preview?*", (route) =>
+  await page.route("**/files/*/preview", (route) =>
     route.fulfill({ contentType: "text/html", body: "" }),
   );
   await page.goto(
@@ -251,15 +251,12 @@ test("preview selections name their source, and boxes on PDF pages open comments
   // HTML: the latest saved page in the inline shell, with comment mode in the panel tools.
   await page.evaluate(() => window.show("html"));
   const frame = page.locator(".paper-html-preview iframe");
-  assert.match(
-    await frame.getAttribute("src"),
-    /\/api\/projects\/p\/paper\/files\/html\/preview\?presentation=inline$/,
-  );
+  assert.match(await frame.getAttribute("src"), /\/api\/projects\/p\/paper\/files\/html\/preview$/);
   const toggle = page.locator('header button[aria-pressed="false"]');
   await toggle.click();
   await page.locator('header button[aria-pressed="true"]').waitFor();
   // A box keeps its area, so two boxes on one labelled image differ for the coach.
-  const shell = page.frame({ url: /\/preview\?/ });
+  const shell = page.frame({ url: /\/preview$/ });
   const post = (selection) =>
     shell.evaluate(
       (selection) =>
@@ -277,21 +274,22 @@ test("preview selections name their source, and boxes on PDF pages open comments
   });
   await page.waitForFunction(() => window.comments.at(-1)?.where?.startsWith("page.html"));
   const htmlBox = await page.evaluate(() => window.comments.at(-1));
-  // A box over many long elements is cut to the staged-comment limit, so it survives a reload.
+  // Elements quote their own text before a label they inherit, and a repeat once.
   await post({
     kind: "box",
     rect: { x: 0, y: 0, width: 1, height: 1 },
     viewport: { width: 500, height: 400 },
-    elements: Array.from({ length: 8 }, () => ({
-      path: "body > p",
-      label: "",
-      text: "x".repeat(512),
-    })),
+    elements: [
+      { path: "section > p:nth-child(1)", label: "Results", text: "First finding" },
+      { path: "section > p:nth-child(2)", label: "Results", text: "First finding" },
+      { path: "section > p:nth-child(3)", label: "Results", text: "Second finding" },
+    ],
   });
-  await page.waitForFunction(() => window.comments.at(-1)?.quote.length > 1000);
-  const long = await page.evaluate(() => window.comments.at(-1).quote);
-  assert.equal(long.length, 4096);
-  assert.ok(long.endsWith("…"));
+  await page.waitForFunction(() => window.comments.at(-1)?.quote.includes("finding"));
+  assert.equal(
+    await page.evaluate(() => window.comments.at(-1).quote),
+    "First finding, Second finding",
+  );
   assert.equal(htmlBox.quote, "Plot");
   assert.equal(htmlBox.where, "page.html, area 10-40% across and 20-60% down");
   // A selection the frame cancels reports the clear of the comment it opened.

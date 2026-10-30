@@ -37,12 +37,7 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
-import {
-  boxArea,
-  previewQuote,
-  rehypeSourceLines,
-  type PreviewDirectComment,
-} from "./previewComments";
+import { boxArea, rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { useInlineShell } from "../artifacts/useInlineShell";
 
@@ -136,7 +131,7 @@ const MarkdownPreview = memo(function MarkdownPreview({
 /** A drawn box as a comment: its text, where it sits, anchored on the box. */
 function boxComment(box: PaperBox): PreviewDirectComment {
   return {
-    quote: previewQuote(box.text),
+    quote: box.text || "Selected area",
     where: box.where,
     anchor: { left: box.rect.left, right: box.rect.right, top: box.rect.top },
     clear: box.clear,
@@ -162,23 +157,24 @@ function HtmlPreview({
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
   // The clear of the comment the frame last opened; a cancel in the frame names it.
   const opened = useRef<(() => void) | null>(null);
+  const cancelOpen = () => {
+    if (opened.current) onDirectCancel?.(opened.current);
+    opened.current = null;
+  };
   const onLoad = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
-    onCancel: () => {
-      if (opened.current) onDirectCancel?.(opened.current);
-      opened.current = null;
-    },
+    onCancel: cancelOpen,
     onSelection: ({ selection, anchor, clear }) => {
       opened.current = clear;
-      const labels =
+      // An element's own text before a label it may inherit from a section around it.
+      const named =
         selection.kind === "box"
-          ? (selection.elements ?? [])
-              .map((element) => element.label || element.text)
+          ? [...new Set((selection.elements ?? []).map((element) => element.text || element.label))]
               .filter(Boolean)
               .join(", ")
           : "";
       onDirectComment?.({
-        quote: previewQuote(selection.kind === "text" ? selection.text : labels),
+        quote: (selection.kind === "text" ? selection.text : named) || "Selected area",
         where: selection.kind === "box" ? `${file.path}, ${boxArea(selection.rect)}` : file.path,
         anchor,
         clear,
@@ -187,7 +183,7 @@ function HtmlPreview({
   });
   const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
     file.file_id,
-  )}/preview?${new URLSearchParams({ presentation: "inline" })}`;
+  )}/preview`;
   return (
     <div
       className={`paper-html-preview${commentMode ? " commenting" : ""}${pageError ? " paper-failed" : ""}`}
@@ -213,8 +209,7 @@ function HtmlPreview({
               title="Comment on the page"
               onClick={() => {
                 // Leaving comment mode clears the frame's mark, and with it the comment.
-                if (commentMode && opened.current) onDirectCancel?.(opened.current);
-                opened.current = null;
+                if (commentMode) cancelOpen();
                 setCommentMode(!commentMode);
               }}
             >

@@ -136,37 +136,15 @@ export function PaperWorkspace({
     message: coachMessage,
     onError: setCoachError,
   });
-  const openPreviewComment = (comment: PreviewDirectComment) => {
-    // A new box or frame selection replaces the open comment but keeps its text.
-    const draft = comments.composer?.step === "comment" ? comments.comment : undefined;
-    comments.externalSelectionClear.current?.();
-    comments.externalSelectionClear.current = null;
-    if (coachSubmitting || !comment.quote || !comments.roomForAnother()) {
-      comment.clear?.();
-      return;
-    }
-    comments.externalSelectionClear.current = comment.clear ?? null;
-    comments.openComposer(
+  const openPreviewComment = (comment: PreviewDirectComment) =>
+    comments.openExternal(
       {
-        step: "comment",
         selectedText: comment.quote,
         ...(comment.where ? { where: comment.where } : {}),
         anchor: comment.anchor,
-        position: null,
-        origin: previewPane.current,
       },
-      { draft },
+      { clear: comment.clear, origin: previewPane.current },
     );
-    comments.focusComment();
-  };
-  // A selection cancelled inside the HTML frame closes the comment opened from it.
-  const cancelPreviewComment = (clear: () => void) => {
-    if (comments.externalSelectionClear.current !== clear) return;
-    // The frame already cleared its mark; a clear sent now would end the drag that
-    // a new selection starts with.
-    comments.externalSelectionClear.current = null;
-    comments.dismiss(false, true);
-  };
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
   const segmentLabel = (panel: "write" | "preview" | "coach") => (
@@ -277,7 +255,7 @@ export function PaperWorkspace({
   const openPreviewRef = useRef(openPreviewWhere);
   openPreviewRef.current = openPreviewWhere;
   useEffect(() => {
-    if (openPreviewRef.current) comments.dismiss(false, true);
+    if (openPreviewRef.current) comments.closeExternal(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
   }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.
@@ -605,7 +583,7 @@ export function PaperWorkspace({
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
-                onDirectCancel={cancelPreviewComment}
+                onDirectCancel={comments.cancelExternal}
               />
             ) : (
               <PaperPreview
@@ -618,7 +596,7 @@ export function PaperWorkspace({
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
-                onDirectCancel={cancelPreviewComment}
+                onDirectCancel={comments.cancelExternal}
               />
             ))}
         </div>
