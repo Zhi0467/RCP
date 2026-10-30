@@ -229,7 +229,12 @@ and Paper.
 
 Code defaults cover RCP databases/backups/checkpoints, provider credentials,
 mailbox checkpoints, service keys, remote Claude tokens, private sockets and
-selected WebKit storage. Private SSH identities and deploy keys are hidden only
+selected WebKit storage. Added-login provider homes, under
+`<data dir>/provider-homes` and `~/.rcp/provider-homes`, are hidden whole from
+Claude and OpenCode runs. Codex runs hide only each home's `auth.json`, through a
+glob over login IDs, so a sign-in added later is covered too.
+**Why:** Codex starts its sandbox helper from inside its own home. A denied
+ancestor makes every shell command fail before it runs. Private SSH identities and deploy keys are hidden only
 after the right agent lists their decoded public-key SHA256 fingerprint and a
 bounded signing check succeeds. Missing/stale public keys or failed confirmation
 leave keys readable with a Settings/doctor reason. Public keys, SSH config and
@@ -340,10 +345,12 @@ plus the environment deny list; OpenCode receives the shell wrapper and native
 read, grep, glob, and list denies where its rules can express them. An uncovered
 native tool makes the launch visibly unhidden. macOS shell calls use a selected
 path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
-Hidden globs vary only their last path component. On Linux the wrapper empties
-each glob's parent and binds its other existing entries back, so a match created
+On Linux the wrapper empties the parent of a glob whose wildcard is in its last
+path component and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
-hidden. A hidden literal that does not exist yet is hidden the same way under its
+hidden. A wildcard above the last component, as in the Codex login-home glob,
+is expanded instead; a later match is hidden from the next command or browser
+daemon admission on. A hidden literal that does not exist yet is hidden the same way under its
 existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
@@ -1197,7 +1204,15 @@ cannot know when a vendor limit lifts; its lapse,
 | Provider | Machine sign-in | Added login, local | Added login, remote |
 | --- | --- | --- | --- |
 | Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
-| Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<account dir>/logins/<login_id>/codex-home` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
+| Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<data dir>/provider-homes/codex/<login_id>` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
+
+A local added Codex home lives outside the hidden `providers/` namespace; see
+[selected-secret hiding](#cooperative-project-write-containment). Preparation moves a home from its
+earlier path, `<account dir>/logins/<login_id>/codex-home`, together with its
+retained snapshots, under the same home lease as migration. A home a process may
+still use moves on a later preparation. The earlier path then links to the home,
+for every added login, so a rolled-back release uses the same home and
+credential. Backups and transfers exclude `provider-homes`, like `providers`.
 
 An added Codex home keeps only `auth.json` independent. Every other existing
 entry links to the machine Codex home, including configuration, skills, sessions,
@@ -1228,8 +1243,9 @@ the home is idle.
 A machine lock serializes migrations from different logins. SQLite's own WAL
 locking coordinates native writers; RCP does not merge their databases.
 
-The session indexer reads the machine Codex root. Hidden read still hides every
-added login home; agents read shared transcripts at their machine-home paths.
+The session indexer reads the machine Codex root. Hidden read hides every added
+login home from Claude and OpenCode runs, and each home's `auth.json` from Codex
+runs. Agents read shared transcripts at their machine-home paths.
 Only the local machine sign-in keeps the cross-process credential startup lock.
 
 Every member's agents run as the same OS account, so any agent can read any

@@ -411,6 +411,10 @@ class ProviderProfile:
     session_format: SessionFormat | None = None
     #: Credential-only cleanup paths relative to an added login's local account directory.
     login_credential_files: tuple[str, ...] = ()
+    #: Credential files inside an added login's provider home, which this
+    #: provider's own runs must read. Its runs hide only these files of the
+    #: homes; every other provider hides the homes whole.
+    login_home_credentials: tuple[str, ...] = ()
     #: Execution-home-relative cleanup paths, with a UUID4 {login_id} placeholder.
     remote_login_credential_files: tuple[str, ...] = ()
     #: The execution-host turn fence for each of this provider's runtime ids.

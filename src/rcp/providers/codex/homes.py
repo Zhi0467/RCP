@@ -127,6 +127,31 @@ def prepare_home(home: Path, machine_home: Path | None = None, *, migrate: bool 
     return home
 
 
+def relocate_home(legacy: Path, home: Path) -> Path:
+    """Move a home out of the hidden credential namespace; return the home to use.
+
+    Codex starts its sandbox helper from inside its home, so the home must stay
+    readable. The old path always links to the home, so a rolled-back release
+    uses the same home and credential instead of starting a second one.
+    A home a process may still use stays in place until a later preparation.
+    """
+    if legacy.is_symlink():
+        return home
+    if legacy.exists():
+        with _home_lease(legacy) as (_, exclusive):
+            if not exclusive or not _legacy_home_idle(legacy):
+                print("Codex home move deferred: a process may still use it.", file=sys.stderr)
+                return legacy
+            home.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            retained = legacy.with_name(legacy.name + "-retained")
+            if retained.exists():
+                retained.rename(home.with_name(home.name + "-retained"))
+            legacy.rename(home)
+    legacy.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    legacy.symlink_to(home)
+    return home
+
+
 @contextmanager
 def _home_lease(home):
     """An execution-host lease survives exec and an SSH supervisor reconnect."""

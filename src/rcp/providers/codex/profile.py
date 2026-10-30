@@ -72,7 +72,9 @@ class CodexProfile(ProviderProfile):
 
         return CodexAuthentication()
 
+    # The account-directory path is a pre-move home, or the link a move leaves.
     login_credential_files = ("codex-home/auth.json",)
+    login_home_credentials = ("auth.json",)
     remote_login_credential_files = (".rcp/provider-homes/codex/{login_id}/auth.json",)
     id = "codex"
     label = "Codex"

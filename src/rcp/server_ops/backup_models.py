@@ -64,6 +64,7 @@ BACKUP_APP_DATA_EXCLUSIONS = frozenset(
         # Provider credentials RCP holds for the execution account; a restored
         # server signs in again rather than inheriting a token from an archive.
         "providers",
+        "provider-homes",
         "service-connections",
         "rcp-server.json",
         "rcp.lock",

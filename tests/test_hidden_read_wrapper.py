@@ -114,6 +114,17 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     ]
 
 
+def test_bwrap_hides_each_match_of_a_wildcard_above_the_last_component(tmp_path: Path) -> None:
+    home = Path(os.path.realpath(tmp_path)) / "homes" / "codex" / "login"
+    home.mkdir(parents=True)
+    (home / "auth.json").touch()
+    (home / "config.toml").touch()
+    policy = {"hidden_globs": [str(home.parent.parent) + "/*/*/auth.json"]}
+    mounts = bwrap_argv(policy, "true")[4:-4]
+    # Only the credential is masked; the rest of the home stays readable.
+    assert mounts == ["--ro-bind", "/dev/null", str(home / "auth.json")]
+
+
 def test_missing_credential_parent_is_masked_at_home_only_for_the_daemon(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / "work").mkdir(parents=True)

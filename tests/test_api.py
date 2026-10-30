@@ -8819,6 +8819,7 @@ def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, re
     recover = app.state.background_tasks.recover_at_startup
 
     def recovering():
+        assert home.readlink() == credentials.login_home("codex", login.login_id)
         assert (home / "sessions").is_symlink()
         other = store.add_provider_login("codex", "", added_by="member")
         environment = CodexAuthentication().process_environment(credentials, "", other.login_id)
