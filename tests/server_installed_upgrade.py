@@ -590,11 +590,13 @@ def seed() -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     store = AppStore(DATA / "rcp.sqlite3")
-    # 0.4.36 keys a login by (provider, host, login_id); older releases take two arguments.
+    # Releases before 0.4.36 name a login by provider and host, not by key.
     if "key" in inspect.signature(store.mark_provider_login_verified).parameters:
-        from rcp.storage.models import LoginKey
+        from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
-        codex, claude = (LoginKey("codex", "", ""),), (LoginKey("claude", "", ""),)
+        codex, claude = (
+            (LoginKey(provider, "", MACHINE_LOGIN_ID),) for provider in ("codex", "claude")
+        )
     else:
         codex, claude = ("codex", ""), ("claude", "")
     store.mark_provider_login_verified(

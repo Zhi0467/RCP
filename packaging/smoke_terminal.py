@@ -7,6 +7,7 @@ import os
 import re
 import select
 import signal
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,22 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _start_job(master: int) -> int:
+    os.write(master, b"sleep 120 & job=$!; printf '\\036job:%s\\037' \"$job\"\n")
+    job = int(_read_until(master, rb"\x1ejob:(\d+)\x1f")[1])
+    # `$!` names the job once Bash forks it. Until the job execs sleep, it
+    # still runs Bash's own handlers, which swallow a Ctrl-C or hangup.
+    deadline = time.monotonic() + TERMINAL_STOP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        command = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(job)], capture_output=True, text=True
+        ).stdout.strip()
+        if command == "sleep":
+            return job
+        time.sleep(0.01)
+    raise RuntimeError(f"Frozen terminal job {job} did not start sleep.")
+
+
 def verify(backend: Path, directory: Path) -> None:
     for ending in ("stop", "master-close"):
         # This is the frozen cooperative command, with the production env -i
@@ -52,14 +69,14 @@ def verify(backend: Path, directory: Path) -> None:
             pids.append(int(_read_until(master, rb"\x1eshell:(\d+)\x1f")[1]))
             if os.getsid(pids[0]) != pids[0]:
                 raise RuntimeError("The frozen shell does not own its session.")
-            os.write(master, b"sleep 120 & job=$!; printf '\\036job:%s\\037' \"$job\"\n")
-            pids.append(int(_read_until(master, rb"\x1ejob:(\d+)\x1f")[1]))
+            pids.append(_start_job(master))
             if os.getpgid(pids[1]) != pids[1]:
                 raise RuntimeError("The background job has no job-control process group.")
             # Exercise foreground job control too; Bash must regain the PTY
             # after Ctrl-C before it can accept the next command.
             os.write(master, b"fg\n")
-            _read_until(master, rb"(?:\r?\n)sleep 120\r?\n")
+            # Bash 5 ends bracketed paste with a bare \r before the job's line.
+            _read_until(master, rb"[\r\n]sleep 120\r?\n")
             # Bash echoes the job before it hands it the terminal; a Ctrl-C
             # sent earlier reaches Bash and leaves the job running.
             deadline = time.monotonic() + TERMINAL_STOP_TIMEOUT_SECONDS
@@ -70,8 +87,7 @@ def verify(backend: Path, directory: Path) -> None:
             _read_until(master, rb"\$ $")
             os.write(master, b"printf '\\036interactive\\037'\n")
             _read_until(master, rb"\x1einteractive\x1f")
-            os.write(master, b"sleep 120 & job=$!; printf '\\036job:%s\\037' \"$job\"\n")
-            pids.append(int(_read_until(master, rb"\x1ejob:(\d+)\x1f")[1]))
+            pids.append(_start_job(master))
             if ending == "stop":
                 # The server keeps reading the PTY while it stops a session. An
                 # exiting shell that leads its session waits for that read.

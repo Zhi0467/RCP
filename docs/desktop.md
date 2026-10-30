@@ -185,9 +185,9 @@ uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/Resources/backend/rcp-backend
 ```
 
-Repeat with `--terminal-only` to check frozen terminal commands, job control,
-Stop and PTY cleanup. Launch the bundle with disposable data and verify project
-index and project reads. Verify truthful provider readiness, affected native
+The smoke also checks frozen terminal commands, job control, Stop and PTY
+cleanup; `--terminal-only` runs just that check. Launch the bundle with
+disposable data and verify project index and project reads. Verify truthful provider readiness, affected native
 interactions and backend ownership. CI's fake-provider smoke journey does not replace macOS qualification.
 After final verification, remove disposable Rust output if no more native work is planned:
 
