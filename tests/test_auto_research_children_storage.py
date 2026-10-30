@@ -2855,3 +2855,66 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     store.request_auto_research_child_work_stop("nested")
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
     assert store.graph_branch(parent.project_id, target.branch_id).archived
+
+
+def refused_worker_human_retry_case(tmp_path, monkeypatch):
+    from rcp.agents import AgentProcessControl
+    from rcp.api.tasks import _agent_task_response
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.auto_research_admission import resume_auto_research_child_work
+    from rcp.runs.codex_resume import REFUSAL, RETRY, retry_refused_resume, start_context
+
+    from .helpers import fake_launch_admitted
+
+    store, episode, root = _setup_parent(tmp_path)
+    route, task = _work_pair(store, episode, root, worker_id="refused-worker")
+    task = task.model_copy(update={"graph_target": _owned_fork(store, episode)})
+    store.create_auto_research_child_work(route, task)
+    stage = tmp_path / "worker-stage"
+    stage.mkdir()
+    store.checkpoint_agent_task(
+        task.operation_id, native_session_id="old-session", stage_root=str(stage)
+    )
+    store.fail_agent_task(task.operation_id, error="invalid_encrypted_content")
+    transcript = stage / "rollout.jsonl"
+    transcript.write_text("{}\n")
+    store.record_agent_task_receipt(
+        task.operation_id,
+        REFUSAL,
+        {
+            "reason": "login_switch",
+            "native_session_id": "old-session",
+            "transcript_path": str(transcript),
+            "host": "",
+        },
+    )
+
+    async def stream(*_args):
+        pytest.fail("The dispatch fake must own provider launch")
+        yield ""
+
+    tasks = BackgroundAgentTasks(store, stream)
+    fake_launch_admitted(monkeypatch, tasks)
+    failed = store.agent_task(task.operation_id)
+    before = store.episode_budget_meter(episode.episode_id).invocations_used
+    card = _agent_task_response(store, failed, tasks)
+    assert card["can_retry"] and not card["can_resume"]
+    retry_refused_resume(tasks, failed)
+    assert not store.agent_task_has_receipt(failed.operation_id, RETRY)
+    unavailable = resume_auto_research_child_work(tasks, episode.episode_id, route.worker_id)
+    assert unavailable.disposition == "resume_unavailable"
+    recovered = tasks.retry(failed.operation_id, authorized_by=episode.authorized_by)
+    assert recovered is not None
+    assert recovered.native_session_id is None
+    assert recovered.request["session_id"] is None
+    assert recovered.graph_target == failed.graph_target
+    assert recovered.episode_id == failed.episode_id
+    assert recovered.parent_operation_id == failed.operation_id
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+    execution = AgentTaskExecution(recovered.operation_id, store, AgentProcessControl())
+    assert str(transcript) in start_context(execution, "")
+    assert store.agent_task_has_receipt(failed.operation_id, RETRY)
+
+
+def test_refused_worker_human_retry_keeps_allocation_and_target(tmp_path, monkeypatch):
+    refused_worker_human_retry_case(tmp_path, monkeypatch)

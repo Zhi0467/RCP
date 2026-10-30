@@ -831,10 +831,17 @@ def _canonical_worker_turn(
             "AutoResearch worker continuation conflicts with its durable launch cause."
         )
     recovering = execution.continuation in _SAME_ALLOCATION_RECOVERY
-    if execution.continuation != "fresh" and (
-        not binding.native_session_id
-        or not binding.stage_root
-        or durable.session_id != binding.native_session_id
+    clean_retry = _is_authorized_clean_actor_retry(
+        execution, task=task, request=durable, binding=binding
+    )
+    if (
+        execution.continuation != "fresh"
+        and not clean_retry
+        and (
+            not binding.native_session_id
+            or not binding.stage_root
+            or durable.session_id != binding.native_session_id
+        )
     ):
         raise ValueError("AutoResearch worker recovery requires its exact saved session and stage.")
     if execution.continuation == "fresh" and binding.actor_operation_id != execution.operation_id:
@@ -895,7 +902,7 @@ def _canonical_orchestrator_turn(
             "AutoResearch orchestrator continuation conflicts with its durable launch cause."
         )
     recovering = execution.continuation in _SAME_ALLOCATION_RECOVERY
-    clean_retry = _is_authorized_clean_orchestrator_retry(
+    clean_retry = _is_authorized_clean_actor_retry(
         execution,
         task=task,
         request=durable,
@@ -928,7 +935,7 @@ def _canonical_orchestrator_turn(
     )
 
 
-def _is_authorized_clean_orchestrator_retry(
+def _is_authorized_clean_actor_retry(
     execution: AgentTaskExecution,
     *,
     task: AgentTaskRecord,
@@ -954,9 +961,18 @@ def _is_authorized_clean_orchestrator_retry(
         or task.attempt != parent.attempt + 1
     ):
         return False
+    if request.role == "worker" and not (
+        execution.store.agent_task_has_receipt(parent.operation_id, "codex_resume_refused")
+        and any(
+            receipt.category == "codex_fresh_session_retry"
+            and receipt.payload.get("human_retry") is True
+            for receipt in execution.store.agent_task_receipts(parent.operation_id)
+        )
+    ):
+        return False
     parent_request = AutoResearchRunRequest.model_validate(parent.request)
     if (
-        parent_request.role != "orchestrator"
+        parent_request.role != request.role
         or (parent_request.actor_operation_id or parent.operation_id) != binding.actor_operation_id
         or (parent.stage_host or "") != (binding.stage_host or "")
         or parent.stage_root != binding.stage_root
@@ -983,7 +999,15 @@ def _is_authorized_clean_orchestrator_retry(
         and receipt.payload.get("retry_required") is True
         for receipt in receipts
     )
-    if not session_limit and not continuation_unavailable:
+    native_resume_unavailable = any(
+        receipt.category == "codex_resume_refused"
+        or (
+            receipt.category == "provider_terminal_error"
+            and receipt.payload.get("classification") == "stale_session"
+        )
+        for receipt in receipts
+    ) or (bool(parent.error) and classify_terminal_error(parent.error or "") == "stale_session")
+    if not session_limit and not continuation_unavailable and not native_resume_unavailable:
         return False
 
     # A clean retry deliberately leaves the new task's session NULL so the
@@ -1000,7 +1024,7 @@ def _is_authorized_clean_orchestrator_retry(
         if (
             prior.episode_id != task.episode_id
             or prior.kind != "auto_research"
-            or prior_request.role != "orchestrator"
+            or prior_request.role != request.role
             or (prior_request.actor_operation_id or prior.operation_id)
             != binding.actor_operation_id
             or (prior.stage_host or "") != (binding.stage_host or "")

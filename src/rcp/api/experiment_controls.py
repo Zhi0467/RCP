@@ -99,6 +99,14 @@ def _experiment_control_response(
     awaiting_human = (
         task.awaiting_human if task is not None else control.operational.current_awaiting_human
     )
+    # Another Work turn may hold the episode's native session while an answered
+    # question waits for delivery. It is activity, not a request for human input.
+    if (
+        runtime.session_active
+        and not awaiting_human
+        and (episode is None or episode.blocked_reason != "question")
+    ):
+        active = True
     # A revoked login fails every attempt the same way. The turn is still
     # recoverable, so health keeps counting it, but the controls that would
     # spend an attempt on it are withheld until a person signs in.

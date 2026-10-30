@@ -105,7 +105,7 @@ async def _launch(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 @pytest.mark.parametrize("event", ["limited", "unhealthy", "draining"])
-async def test_real_launch_moves_claude_and_binds_codex(accounts, tmp_path, provider, event):
+async def test_real_launch_moves_session_to_another_login(accounts, tmp_path, provider, event):
     own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
     accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
@@ -118,50 +118,32 @@ async def test_real_launch_moves_claude_and_binds_codex(accounts, tmp_path, prov
         )
     else:
         accounts.store.set_provider_login_draining(own)
-    execution, selected, outcome, _ = await _launch(accounts, tmp_path, own)
+    await _launch(accounts, tmp_path, own)
     receipts = [
         r
         for r in accounts.store.agent_task_receipts("current")
         if r.category == "provider_login_switched"
     ]
-    if provider == "claude":
-        assert selected == [shared]
-        assert accounts.store.agent_task("current").login_id == shared.login_id
-        assert receipts[0].payload == {
-            "from": own.login_id,
-            "to": shared.login_id,
-            "reason": "limited" if event == "limited" else "unhealthy",
-        }
-    elif event == "unhealthy":
-        assert selected == []
-        assert outcome.failed
-        assert execution.provider_auth_refused == own
-        assert accounts.store.agent_task("current").login_id == own.login_id
-        assert accounts.store.provider_login_assignment(own).last_assigned_at is None
-        assert receipts == []
-    else:
-        assert selected == [own]
-        assert accounts.store.agent_task("current").login_id == own.login_id
-        assert receipts == []
+    assert accounts.store.agent_task("current").login_id == shared.login_id
+    assert receipts[0].payload == {
+        "from": own.login_id,
+        "to": shared.login_id,
+        "reason": "limited" if event == "limited" else "unhealthy",
+    }
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-async def test_gate_recheck_falls_back_only_for_unbound_work(accounts, tmp_path, provider):
+async def test_gate_recheck_falls_back_to_another_login(accounts, tmp_path, provider):
     own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
     accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
     _started_task(accounts, "previous", own)
     execution, selected, outcome, _ = await _launch(accounts, tmp_path, own, gate_failure=True)
-    if provider == "claude":
-        assert selected == [own, shared]
-        assert execution.login_key == shared
-        assert accounts.store.agent_task("current").login_id == shared.login_id
-        assert not outcome.failed
-    else:
-        assert selected == [own]
-        assert execution.provider_auth_refused == own
-        assert outcome.failed
+    assert selected == [own, shared]
+    assert execution.login_key == shared
+    assert accounts.store.agent_task("current").login_id == shared.login_id
+    assert not outcome.failed
 
 
 @pytest.mark.asyncio
@@ -195,26 +177,14 @@ async def test_pre_provider_failure_does_not_supply_previous_login(accounts, tmp
 
 
 @pytest.mark.asyncio
-async def test_removed_codex_binding_is_session_refused(accounts, tmp_path):
+async def test_removed_login_session_continues_on_another_login(accounts, tmp_path):
     own = _login(accounts, "codex", own=True, member=MEMBER)
+    shared = _login(accounts, "codex", machine=True)
     _started_task(accounts, "previous", own)
     accounts.store.finish_provider_login_removal(own)
     execution, selected, outcome, _ = await _launch(accounts, tmp_path, own)
-    assert selected == []
-    assert outcome.failed and execution.launch_refused
-    assert execution.provider_auth_refused is None
-
-
-@pytest.mark.asyncio
-async def test_codex_fork_uses_source_login(accounts, tmp_path):
-    own = _login(accounts, "codex", own=True, member=MEMBER)
-    shared = _login(accounts, "codex", machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, "codex", "", "shared")
-    _started_task(accounts, "source", own)
-    execution, selected, _, _ = await _launch(accounts, tmp_path, shared, session=None, fork=True)
-    assert selected == [own]
-    assert execution.login_key == own
-    assert accounts.store.agent_task("current").login_id == own.login_id
+    assert selected == [shared]
+    assert not outcome.failed and not execution.launch_refused
 
 
 @pytest.mark.asyncio
@@ -333,10 +303,11 @@ def test_readiness_cache_and_invalidation_are_per_login(accounts, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_claude_fork_is_a_fresh_login_choice(accounts, tmp_path):
-    source = _login(accounts, "claude")
-    shared = _login(accounts, "claude", machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, "claude", "", "shared")
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+async def test_fork_is_a_fresh_login_choice(accounts, tmp_path, provider):
+    source = _login(accounts, provider)
+    shared = _login(accounts, provider, machine=True)
+    accounts.store.set_provider_login_setting(MEMBER, provider, "", "shared")
     _started_task(accounts, "source", source)
     _, selected, _, _ = await _launch(accounts, tmp_path, source, session=None, fork=True)
     assert selected == [shared]
@@ -378,6 +349,6 @@ async def test_turn_boundary_records_setting_move_reason(
         for r in accounts.store.agent_task_receipts("current")
         if r.category == "provider_login_switched"
     ]
-    assert selected == ([expected] if provider == "claude" else [previous])
-    assert accounts.store.agent_task("current").login_id == selected[0].login_id
-    assert [r.payload["reason"] for r in receipts] == ([reason] if provider == "claude" else [])
+    assert selected == [expected]
+    assert accounts.store.agent_task("current").login_id == expected.login_id
+    assert [r.payload["reason"] for r in receipts] == [reason]

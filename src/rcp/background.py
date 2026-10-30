@@ -519,7 +519,6 @@ class BackgroundAgentTasks:
             host,
             authorized_by.user_id if authorized_by else None,
             session_id=getattr(request, "session_id", None),
-            fork_session_id=getattr(request, "fork_session_id", None),
             lineage_login=lineage_login,
         )
         if isinstance(resolved, LoginRefusal):
@@ -874,7 +873,10 @@ class BackgroundAgentTasks:
             and original.artifact_edit is not None
             and original.artifact_edit.origin_bound
         ):
-            from rcp.runs.artifact_edit_admission import start_artifact_edit
+            from rcp.runs.artifact_edit_admission import (
+                refused_artifact_edit_request,
+                start_artifact_edit,
+            )
 
             if any(
                 value is not None and value != getattr(original, key)
@@ -886,14 +888,39 @@ class BackgroundAgentTasks:
                 )
             ):
                 raise ValueError("An edit retry must retain its admitted execution profile.")
+            refused = self.store.agent_task_has_receipt(operation_id, "codex_resume_refused")
             return start_artifact_edit(
                 self,
                 previous.project_id,
-                original.model_copy(update={"session_id": previous.native_session_id}),
+                refused_artifact_edit_request(original)
+                if refused
+                else original.model_copy(update={"session_id": previous.native_session_id}),
                 authorized_by=authorized_by or previous.authorized_by,
                 parent=previous,
-                continuation="retry",
+                continuation="handoff" if refused else "retry",
             )
+        if self.store.agent_task_has_receipt(operation_id, "codex_resume_refused"):
+            route = self.store.auto_research_child_work_for_operation(operation_id)
+            if route is not None:
+                from rcp.runs.auto_research_admission import resume_auto_research_child_work
+
+                if route.current_operation_id != operation_id:
+                    raise ValueError("The worker has a newer attempt; retry its current card.")
+                if any(value is not None for value in (provider, model, reasoning, run_on, skills)):
+                    raise ValueError("A worker retry must retain its admitted execution profile.")
+                result = resume_auto_research_child_work(
+                    self, route.episode_id, route.worker_id, human_retry=True
+                )
+                if result.task is None:
+                    raise ValueError(result.reason or "The worker cannot retry.")
+                return result.task
+            if isinstance(original, AutoResearchRunRequest) and original.role == "worker":
+                self.store.record_agent_task_receipt(
+                    operation_id,
+                    "codex_fresh_session_retry",
+                    {"reason": "login_switch", "attempt": 1, "human_retry": True},
+                    tier="summary",
+                )
         if refusal := self.store.episode_child_recovery_refusal(previous):
             raise ValueError(refusal)
         _require_recoverable_machine(previous, original, run_on)
@@ -949,7 +976,7 @@ class BackgroundAgentTasks:
         same_execution_host = request.run_on == original.run_on
         # Resuming a session the provider has dropped fails the same way every
         # time; a fresh session is the only attempt that can succeed.
-        stale_session = self._failure_is_stale_session(previous)
+        stale_session = self._native_resume_unavailable(previous)
         continuation_context_unavailable = self._continuation_context_is_unavailable(previous)
         owned_checkpoint = (
             bool(previous.native_session_id)
@@ -1035,7 +1062,16 @@ class BackgroundAgentTasks:
             estimate_samples=samples,
             authorized_by=authorized_by,
         )
-        if same_provider and stale_session:
+        if retried is not None and self.store.agent_task_has_receipt(
+            previous.operation_id, "codex_resume_refused"
+        ):
+            self.store.record_agent_task_receipt(
+                retried.operation_id,
+                "native_resume_skipped",
+                {"classification": "login_switch"},
+                tier="summary",
+            )
+        elif same_provider and stale_session:
             self.store.record_agent_task_receipt(
                 retried.operation_id,
                 "native_resume_skipped",
@@ -1132,6 +1168,15 @@ class BackgroundAgentTasks:
         if not isinstance(original, AutoResearchRunRequest):
             raise ValueError("This task is not an Auto-research task.")
         _require_recoverable_machine(previous, original, run_on)
+        if original.role == "worker" and self.store.agent_task_has_receipt(
+            operation_id, "codex_resume_refused"
+        ):
+            self.store.record_agent_task_receipt(
+                operation_id,
+                "codex_fresh_session_retry",
+                {"reason": "login_switch", "attempt": 1, "human_retry": True},
+                tier="summary",
+            )
         # Only a human reaches this entry point, and starting a turn is the
         # answer a stopped ladder was waiting for. The automatic path settles
         # its own row and must keep counting, so it is left alone. A turn that
@@ -1537,17 +1582,28 @@ class BackgroundAgentTasks:
                 raise ValueError("The Experiment continuation lost its episode parent.")
         elif auto_research_mail_delivery is not None or auto_research_wake_admission is not None:
             raise ValueError("Only Auto-research may use Auto-research wake admission.")
-        self.admit_provider_task(
-            project_id,
-            request,
-            authorized_by=authorized_by,
-            lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
-                request.provider, stage_host or "", parent, graph_repair=claim_graph_repair_parent
-            ),
-            execution_host=(stage_host or "") if stage_root else None,
-            isolation_episode_id=parent.episode_id if parent else None,
-            graph_target=parent.graph_target if parent else graph_target,
-        )
+        login_wait: str | None = None
+        try:
+            self.admit_provider_task(
+                project_id,
+                request,
+                authorized_by=authorized_by,
+                lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
+                    request.provider,
+                    stage_host or "",
+                    parent,
+                    graph_repair=claim_graph_repair_parent,
+                ),
+                execution_host=(stage_host or "") if stage_root else None,
+                isolation_episode_id=parent.episode_id if parent else None,
+                graph_target=parent.graph_target if parent else graph_target,
+            )
+        except ProviderSignedOut as exc:
+            if parent is None:
+                raise
+            # The human already authorized this exact continuation. Keep its
+            # durable admission queued so sign-in can launch it without Retry.
+            login_wait = str(exc)
         if task_graph_capable(kind, request) and authorized_by is None:
             raise ValueError("A patch-capable agent task requires a human authorizer snapshot.")
         if authorized_by is None:
@@ -1615,7 +1671,7 @@ class BackgroundAgentTasks:
             request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
-            status_message=f"Waiting for the background worker to {verb}.",
+            status_message=login_wait or f"Waiting for the background worker to {verb}.",
             attempt=(parent.attempt + 1) if parent and recovery else 1,
             parent_operation_id=parent.operation_id if parent else None,
             native_session_id=request.session_id,
@@ -1925,7 +1981,7 @@ class BackgroundAgentTasks:
         ):
             from rcp.runs.artifact_edit_admission import validate_artifact_edit_launch
 
-            validate_artifact_edit_launch(record, request, parent=parent)
+            validate_artifact_edit_launch(record, request, parent=parent, store=self.store)
             return
 
         if record.kind == "episode_report":
@@ -2447,7 +2503,17 @@ class BackgroundAgentTasks:
             return "session_refused"
         if execution.provider_auth_refused is not None:
             return "provider_auth"
+        from rcp.runs.codex_resume import record_refusal
+
         provider = request.provider
+        # Replayed remote journals reach settlement without the live stream loop.
+        record_refusal(
+            execution,
+            provider=provider or "",
+            session_id=request.session_id or getattr(request, "fork_session_id", None),
+            host=execution.stage_host or self._bound_execution_host(operation_id, request),
+            error=error,
+        )
         profile = None
         if isinstance(provider, str) and provider:
             with suppress(ValueError, KeyError):
@@ -3027,6 +3093,9 @@ class BackgroundAgentTasks:
         if isinstance(request, EpisodeReportRunRequest):
             settle_provider_login(self, record)
             return
+        from rcp.runs.codex_resume import retry_refused_resume
+
+        retry_refused_resume(self, record)
         try:
             self._auto_retry_transport_loss(record)
         except Exception as exc:
@@ -3373,10 +3442,12 @@ class BackgroundAgentTasks:
             parent_id = parent.parent_operation_id
         return tuple(feedback)
 
-    def _failure_is_stale_session(self, record: AgentTaskRecord) -> bool:
-        """The provider no longer holds the native session this task would resume."""
+    def _native_resume_unavailable(self, record: AgentTaskRecord) -> bool:
+        """The provider has dropped or explicitly refused this native transcript."""
 
-        return self._failure_classified_as(record, "stale_session")
+        return self._failure_classified_as(
+            record, "stale_session"
+        ) or self.store.agent_task_has_receipt(record.operation_id, "codex_resume_refused")
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
         classified_receipt = any(

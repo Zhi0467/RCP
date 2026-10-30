@@ -619,18 +619,24 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 if abandoned is not None:
                     raise ValueError("episode Stop already abandoned recovery of this task")
 
-                clean_orchestrator_retry = (
-                    role == "orchestrator"
+                clean_actor_retry = (
+                    (
+                        role == "orchestrator"
+                        or _human_refused_worker_retry(connection, parent["operation_id"])
+                    )
                     and record.native_session_id is None
                     and record.request.get("session_id") is None
-                    and parent["actor_operation_id"] == episode.root_operation_id
+                    and (
+                        role == "worker"
+                        or parent["actor_operation_id"] == episode.root_operation_id
+                    )
                 )
-                if episode.stop_requested_at is not None and clean_orchestrator_retry:
+                if episode.stop_requested_at is not None and clean_actor_retry:
                     raise EpisodeNotRunning(
                         "a stopping episode only admits recovery through its exact saved "
                         "session and stage"
                     )
-                if clean_orchestrator_retry:
+                if clean_actor_retry:
                     if (record.stage_host or "") != (parent["stage_host"] or ""):
                         raise ValueError("a clean Retry must preserve its actor-owned stage host")
                     if record.stage_root != parent["stage_root"]:
@@ -1109,7 +1115,10 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 clean_retry = (
                     latest is not None
                     and same_allocation_recovery
-                    and role == "orchestrator"
+                    and (
+                        role == "orchestrator"
+                        or _human_refused_worker_retry(connection, record.parent_operation_id)
+                    )
                     and record.native_session_id is None
                     and request.get("session_id") is None
                     and (record.stage_host or "") == (latest["stage_host"] or "")
@@ -3305,6 +3314,27 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     return (
         connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _human_refused_worker_retry(connection: sqlite3.Connection, operation_id: str | None) -> bool:
+    """Only the explicit card Retry may retire a worker's refused transcript."""
+    if operation_id is None:
+        return False
+    return (
+        connection.execute(
+            "SELECT 1 FROM graph_run_receipts WHERE operation_id = ? "
+            "AND category = 'codex_resume_refused'",
+            (operation_id,),
+        ).fetchone()
+        is not None
+        and connection.execute(
+            "SELECT 1 FROM graph_run_receipts WHERE operation_id = ? "
+            "AND category = 'codex_fresh_session_retry' "
+            "AND json_extract(payload_json, '$.human_retry') = 1",
+            (operation_id,),
         ).fetchone()
         is not None
     )

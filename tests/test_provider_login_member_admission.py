@@ -116,12 +116,9 @@ def test_recovery_admits_actual_session_or_fresh_target(tmp_path, mode, switch_p
         store.set_provider_login_setting(human.user_id, "claude", "", "shared")
         retried = tasks.retry(root.operation_id, provider="claude")
     else:
-        # New Codex sessions have no eligible login. The existing session remains
-        # bound to its healthy own login even though Shared is now the only source.
+        # The existing session continues on the shared machine login once the
+        # member's setting excludes their own.
         store.set_provider_login_setting(human.user_id, "codex", "", "shared")
-        store.mark_provider_login_signed_out(
-            LoginKey("codex", "", ""), member_id=human.user_id, source="sign_out", detail="out"
-        )
         if mode == "auto_research":
             from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 

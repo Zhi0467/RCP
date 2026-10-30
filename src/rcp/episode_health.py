@@ -334,9 +334,6 @@ def load_episode_health(
                     wrapup.provider,
                     wrapup.execution_host or "",
                     episode.authorized_by.user_id if episode.authorized_by else None,
-                    bound_login=accounts.bound_login(
-                        wrapup.provider, wrapup.execution_host or "", wrapup.native_session_id or ""
-                    ),
                 )[0],
                 LoginRefusal,
             )

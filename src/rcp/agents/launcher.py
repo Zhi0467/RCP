@@ -866,7 +866,6 @@ class AgentLauncher:
         refresh: bool = False,
         member_id: str | None = None,
         session_id: str | None = None,
-        fork_session_id: str | None = None,
         lineage_login: LoginKey | None = None,
         machine_readiness: ProviderReadiness | None = None,
     ) -> ProviderReadiness:
@@ -878,7 +877,6 @@ class AgentLauncher:
                 host,
                 member_id,
                 session_id=session_id,
-                fork_session_id=fork_session_id,
                 lineage_login=lineage_login,
             )
             if isinstance(resolved, LoginRefusal):
@@ -1530,6 +1528,7 @@ class AgentLauncher:
                     environment = environment.with_path_prefix(
                         browser_grant.path_prefix, remote=bool(host)
                     )
+            command = [*environment.command_prefix, *command]
             local_cwd: str | None = str(cwd)
             if host:
                 command = ssh_arguments(
@@ -2174,6 +2173,7 @@ class AgentLauncher:
         timeout: float = 10,
         environment: ProviderProcessEnvironment | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        command = [*(environment.command_prefix if environment else ()), *command]
         arguments = command
         if host:
             remote = (

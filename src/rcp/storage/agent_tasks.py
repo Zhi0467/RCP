@@ -139,6 +139,9 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_dispatch_reset",
     "chat_stage_layout",
     "chat_session_resolution",
+    "codex_resume_refused",
+    "codex_fresh_session_retry",
+    "codex_history_context",
     # The latest discovery outcome is projected as the turn's omission notice.
     "artifact_discovery",
     "artifact_edit_published",
@@ -158,6 +161,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_runtime_selected",
     "provider_login_lineage",
     "provider_login_limit_retry",
+    "provider_auth_auto_retry",
+    "provider_auth_retry_deferred",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
@@ -1879,9 +1884,26 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record, resolution
-        fork_fields, fork_source_operation_id, fork_refusal = self._chat_fork_launch(
-            connection, record, chat_id
+        login_switch = (
+            continuation_cause == "handoff"
+            and record.request.get("session_id") is None
+            and record.parent_operation_id is not None
+            and connection.execute(
+                "SELECT 1 FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
+                (record.parent_operation_id, "codex_resume_refused"),
+            ).fetchone()
+            is not None
         )
+        fork_fields: dict[str, str | None]
+        if login_switch:
+            fork_fields = dict.fromkeys(_FORK_FIELDS)
+            fork_source_operation_id = None
+            fork_refusal = None
+            resolution = {"outcome": "fresh", "reason_code": "login_switch", "session_id": None}
+        else:
+            fork_fields, fork_source_operation_id, fork_refusal = self._chat_fork_launch(
+                connection, record, chat_id
+            )
         if fork_fields["fork_session_id"] or "fork_session_id" in record.request:
             record = record.model_copy(update={"request": {**record.request, **fork_fields}})
         prior_chat_targets = connection.execute(

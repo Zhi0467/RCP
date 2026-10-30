@@ -7,12 +7,32 @@ imports serve the local copy.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 if "SessionFormat" not in globals():
     from rcp.providers.session_format import SessionFormat, extract_text
 if "TurnFence" not in globals():
     from rcp.providers.turn_fence import TurnFence
+
+
+def locate_codex_transcript(session_id: str) -> str | None:
+    """Find one native rollout on this execution host, resolving shared-store links."""
+
+    if str(UUID(session_id)) != session_id:
+        raise ValueError("A Codex transcript requires a canonical session UUID.")
+    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    matches = {
+        path.resolve()
+        for directory in ("sessions", "archived_sessions")
+        for path in (home / directory).rglob(f"rollout-*-{session_id}.jsonl")
+        if path.is_file()
+    }
+    if len(matches) > 1:
+        raise ValueError("The Codex session has more than one native rollout.")
+    return str(next(iter(matches))) if matches else None
 
 
 class CodexSessionFormat(SessionFormat):

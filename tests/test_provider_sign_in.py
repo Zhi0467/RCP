@@ -1089,7 +1089,7 @@ def test_verify_finishing_after_removal_cannot_revive_login(
     def probe(_host, command, **_kwargs):
         runner.store.finish_provider_login_removal(key)
         (home / "auth.json").write_text("late native credential")
-        (home / "sessions").mkdir()
+        (home / "sessions" / "rollout.jsonl").write_text("session")
         return subprocess.CompletedProcess(command, 0, "OK", "")
 
     monkeypatch.setattr(runner.launcher, "_probe", probe)
@@ -1099,7 +1099,7 @@ def test_verify_finishing_after_removal_cannot_revive_login(
     assert state.removed_at is not None and state.state == "signed_out"
     assert state.generation == 1
     assert not (home / "auth.json").exists()
-    assert (home / "sessions").is_dir()
+    assert (home / "sessions" / "rollout.jsonl").exists()
 
 
 def test_late_credential_after_removal_is_retried_by_reconciler(

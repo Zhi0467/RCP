@@ -30,6 +30,7 @@ from rcp.providers.codex.profile import (
     _codex_shell_environment_policy,
     _codex_stage_permission_profile,
 )
+from rcp.providers.codex.profile import _codex_error_text as _error_text
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope
@@ -788,17 +789,6 @@ def _usage_int(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
     return max(0, int(value))
-
-
-def _error_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        message = value.get("message")
-        if isinstance(message, str) and message:
-            return message
-        return json.dumps(value, ensure_ascii=False)
-    return ""
 
 
 def _rpc_bytes(value: dict[str, object]) -> bytes:

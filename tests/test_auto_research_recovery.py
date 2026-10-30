@@ -24,7 +24,6 @@ from rcp.runs.auto_research_recovery import (
     reconcile_auto_research_task_settlement,
     reconcile_due_auto_research_recoveries,
 )
-from rcp.runs.provider_login import ProviderSignedOut
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
@@ -744,7 +743,7 @@ def test_a_revoked_login_is_parked_until_verified(tmp_path: Path) -> None:
     assert calls == [root.operation_id]
 
 
-def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
+def test_signed_out_pending_recovery_retains_queued_paid_child(tmp_path):
     store = _store(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -766,13 +765,18 @@ def test_pending_recovery_is_not_claimed_while_account_signed_out(tmp_path):
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
-    with pytest.raises(ProviderSignedOut):
-        tasks.retry(root.operation_id)
-    assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 0
-    assert store.auto_research_recovery(recovery.recovery_id) == recovery
+    queued = tasks.retry(root.operation_id)
+    assert queued.status == "queued"
+    assert queued.parent_operation_id == root.operation_id
+    assert queued.native_session_id == "saved-session"
+    assert queued.authorized_by == root.authorized_by
+    assert reconcile_due_auto_research_recoveries(tasks, as_of=recovery.next_attempt_at) == 1
+    admitted = store.auto_research_recovery(recovery.recovery_id)
+    assert admitted is not None and admitted.status == "admitted"
+    assert admitted.admitted_operation_id == queued.operation_id
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before + 1
 
 
 def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
@@ -821,8 +825,8 @@ def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
     assert resumed.next_attempt_at is not None
 
 
-def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Path) -> None:
-    """A release names no attempt, and an episode waits forever on one of those."""
+def test_signed_out_human_retry_releases_verdict_to_queued_paid_child(tmp_path: Path) -> None:
+    """The human retry remains a durable continuation while sign-in is unavailable."""
 
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
@@ -848,17 +852,21 @@ def test_a_refused_retry_leaves_the_verdict_it_was_going_to_answer(tmp_path: Pat
 
     settled = wait_until(blocked, detail="the repeated failure did not stop the retries")
 
-    # The account is gone, so this Retry never becomes a turn.
+    budget = store.episode(root.episode_id).invocations_used
+    # The account is gone, so the authorized continuation waits queued.
     store.mark_provider_login_failed(
         LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
     )
-    with pytest.raises(ProviderSignedOut):
-        tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
-
+    queued = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
+    assert queued.status == "queued"
+    assert queued.parent_operation_id == settled.operation_id
+    assert queued.authorized_by == root.authorized_by
+    assert store.auto_research_task_recovery_child(settled.operation_id) == queued
+    assert store.episode(root.episode_id).invocations_used == budget
     after = store.auto_research_recovery("task:root")
     assert after is not None
-    assert after.status == "blocked"
-    assert after.attempts == settled.attempts
+    assert after.status == "admitted"
+    assert after.attempts == 0
 
 
 def test_a_committed_child_keeps_the_release_that_a_later_write_failure_follows(

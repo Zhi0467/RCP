@@ -1171,7 +1171,7 @@ def agent_login_accounts(
     *,
     viewer_id: str | None = None,
 ) -> set[LoginKey]:
-    """Resolve visible launch targets and retain parked Codex session bindings."""
+    """Resolve visible launch targets, including those of parked work."""
     pairs = {
         (profile.provider, provider_login_host(manifest, profile.run_on))
         for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
@@ -1182,20 +1182,12 @@ def agent_login_accounts(
     accounts: set[LoginKey] = set()
     if project_id is not None:
         task_ids = {
-            task.operation_id
-            for task in store.agent_tasks(project_id)
-            if task.status == "queued"
-            or (
-                task.request.get("provider")
-                and profile_for(str(task.request["provider"])).sessions_bound_to_login
-                and task.failure_kind == "provider_auth"
-                and task.can_retry
-            )
+            task.operation_id for task in store.agent_tasks(project_id) if task.status == "queued"
         }
         for work in parked_provider_work(store, project_id, lambda: manifest).values():
             task_ids.update(task_id for _, task_id in work.recoveries)
             task_ids.update(work.queued)
-            task_ids.update(work.experiments)
+            task_ids.update(work.retries)
             task_ids.update(group[0].origin_operation_id for group in work.watcher_groups)
         for task_id in task_ids:
             task = store.agent_task(task_id)
@@ -1204,10 +1196,6 @@ def agent_login_accounts(
             provider = str(task.request["provider"])
             host = task_login_host(task, lambda: manifest)
             pairs.add((provider, host))
-            if profile_for(provider).sessions_bound_to_login and task.native_session_id:
-                bound = resolver.bound_login(provider, host, task.native_session_id)
-                if bound is not None:
-                    accounts.add(bound)
     for provider, host in pairs:
         selected, _ = resolver.resolve_login(provider, host, viewer_id)
         if not isinstance(selected, LoginRefusal):
@@ -1279,7 +1267,6 @@ class ProjectService:
             manifest,
             cache_root,
             app_chat_origin=app_chat_origin,
-            login_store=paper.store,
         )
         self._index_lock = threading.Lock()
         self._indexes: dict[str, ConversationIndex] = {}
