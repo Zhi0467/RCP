@@ -1221,9 +1221,9 @@ any pending device sign-in before taking the credential gate; member removal doe
 not, and relies on the late-credential rule above. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.
 
-The credential gate rechecks the selected login. A launch without a lineage
-login may release the gate and resolve once more. A refusal carries a typed
-`provider_auth` flag; classification never infers that refusal from error text. After restart,
+The credential gate rechecks the selected login. Any launch may release the
+gate and resolve once more, including a lineage continuation. A refusal carries
+a typed `provider_auth` flag; classification never infers that refusal from error text. After restart,
 an unavailable
 captured generation cannot authorize a new fence.
 
@@ -1242,9 +1242,22 @@ watcher groups by member setting. Verified credentials and changed settings use
 the same release helper, and startup runs it once for every login, so work parked
 on a login that stayed unusable moves to a usable one without a new sign-in. Tasks with no selected login re-resolve the
 member setting on a setting change or verification of an allowed source.
-Authentication failures release
-after settlement records their park when another allowed login is available.
+Authentication failures release after settlement records their park when another
+allowed login is available. Ordinary Work turns retain their authorizer. With a
+complete owned checkpoint and available continuation context, recovery resumes
+the same session. Existing recovery rules govern handoff when that context is
+unavailable. One immediate
+authentication retry records a durable receipt.
+A failed retry stays parked until a sign-in or setting change releases it.
+An authorized Resume or Retry with no usable login remains queued. This also
+applies to Experiment, Auto-research and origin-bound artifact continuations.
+Waiting does not spend another episode invocation.
+A busy session defers admission; task settlement retries the deferred delivery.
 Transport/configuration/ordinary failures do not sign out a login.
+
+An answered Experiment question waiting for delivery is not awaiting human input.
+While another turn holds the same provider session on the same host, Runs shows
+agent activity and recommends waiting. Task settlement retries answer delivery.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
 native paths, locally or in the remote interactive login shell. An explicit path

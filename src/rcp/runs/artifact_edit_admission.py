@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.artifact_comments import supports_comments
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
 from rcp.service import (
     ArtifactContextRequest,
@@ -407,13 +408,19 @@ def start_artifact_edit(
     origin = tasks.store.agent_task(edit.origin_operation_id)
     if origin is None:
         raise ValueError("The artifact origin is unavailable.")
-    tasks.admit_provider_task(
-        project_id,
-        request,
-        execution_host=edit.stage_host or "" if edit.stage_root else None,
-        graph_target=origin.graph_target,
-        authorized_by=authorized_by,
-    )
+    login_wait = None
+    try:
+        tasks.admit_provider_task(
+            project_id,
+            request,
+            execution_host=edit.stage_host or "" if edit.stage_root else None,
+            graph_target=origin.graph_target,
+            authorized_by=authorized_by,
+        )
+    except ProviderSignedOut as exc:
+        if parent is None:
+            raise
+        login_wait = str(exc)
     kind = (
         "artifact_edit"
         if edit.launch_kind == "revoking"
@@ -426,7 +433,7 @@ def start_artifact_edit(
         graph_target=origin.graph_target,
         kind=kind,
         status="queued",
-        status_message="Editing artifact.",
+        status_message=login_wait or "Editing artifact.",
         request=request.model_dump(mode="json"),
         created_at=now,
         updated_at=now,

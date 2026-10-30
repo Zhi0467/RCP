@@ -1536,17 +1536,28 @@ class BackgroundAgentTasks:
                 raise ValueError("The Experiment continuation lost its episode parent.")
         elif auto_research_mail_delivery is not None or auto_research_wake_admission is not None:
             raise ValueError("Only Auto-research may use Auto-research wake admission.")
-        self.admit_provider_task(
-            project_id,
-            request,
-            authorized_by=authorized_by,
-            lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
-                request.provider, stage_host or "", parent, graph_repair=claim_graph_repair_parent
-            ),
-            execution_host=(stage_host or "") if stage_root else None,
-            isolation_episode_id=parent.episode_id if parent else None,
-            graph_target=parent.graph_target if parent else graph_target,
-        )
+        login_wait: str | None = None
+        try:
+            self.admit_provider_task(
+                project_id,
+                request,
+                authorized_by=authorized_by,
+                lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
+                    request.provider,
+                    stage_host or "",
+                    parent,
+                    graph_repair=claim_graph_repair_parent,
+                ),
+                execution_host=(stage_host or "") if stage_root else None,
+                isolation_episode_id=parent.episode_id if parent else None,
+                graph_target=parent.graph_target if parent else graph_target,
+            )
+        except ProviderSignedOut as exc:
+            if parent is None:
+                raise
+            # The human already authorized this exact continuation. Keep its
+            # durable admission queued so sign-in can launch it without Retry.
+            login_wait = str(exc)
         if task_graph_capable(kind, request) and authorized_by is None:
             raise ValueError("A patch-capable agent task requires a human authorizer snapshot.")
         if authorized_by is None:
@@ -1614,7 +1625,7 @@ class BackgroundAgentTasks:
             request=request.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
-            status_message=f"Waiting for the background worker to {verb}.",
+            status_message=login_wait or f"Waiting for the background worker to {verb}.",
             attempt=(parent.attempt + 1) if parent and recovery else 1,
             parent_operation_id=parent.operation_id if parent else None,
             native_session_id=request.session_id,

@@ -1027,7 +1027,7 @@ async def _stream_agent_events(
     async def login_unavailable(failed_login: LoginKey) -> LoginKey | None:
         nonlocal reselected
         assert execution is not None
-        if inputs is not None and inputs.lineage_login is None and not reselected:
+        if inputs is not None and not reselected:
             reselected = True
             resolved = await asyncio.to_thread(assign_login)
             if isinstance(resolved, LoginKey):

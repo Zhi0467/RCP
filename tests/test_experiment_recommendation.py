@@ -6,7 +6,6 @@ import pytest
 
 from rcp.api.experiment_controls import _experiment_recommendation
 from rcp.control import ExperimentControlState, ExperimentOperationalState
-from rcp.runs.provider_login import ProviderSignedOut
 from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind, LoginKey
 
 
@@ -118,7 +117,7 @@ def test_a_live_turn_is_still_only_worth_waiting_for() -> None:
     assert recommendation == "wait"
 
 
-def test_signed_out_experiment_retry_creates_no_task_or_budget(tmp_path):
+def test_signed_out_experiment_retry_queues_child_without_spending_budget(tmp_path):
     from rcp.agents import AgentEvent
     from rcp.background import BackgroundAgentTasks
 
@@ -148,8 +147,11 @@ def test_signed_out_experiment_retry_creates_no_task_or_budget(tmp_path):
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
-    with pytest.raises(ProviderSignedOut):
-        tasks.retry(root.operation_id)
+    queued = tasks.retry(root.operation_id)
+    assert queued.status == "queued"
+    assert queued.parent_operation_id == root.operation_id
+    assert queued.native_session_id == root.native_session_id
+    assert queued.authorized_by == root.authorized_by
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before + 1

@@ -3101,6 +3101,7 @@ class ExperimentLoopRuntime(BaseModel):
     stop_requested: bool = False
     stop_settled: bool = False
     session_bound: bool = False
+    session_active: bool = False
     session_diagnostic: str | None = None
     projection_diagnostic: str | None = None
     provider: str | None = None

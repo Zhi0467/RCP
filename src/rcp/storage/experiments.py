@@ -3350,6 +3350,19 @@ class ExperimentStoreMixin(StoreMixinBase):
                 """,
             (project_id,),
         ).fetchall()
+        active_sessions = {
+            (row["provider"], row["execution_host"], row["native_session_id"])
+            for row in _connection.execute(
+                """
+                SELECT json_extract(request_json, '$.provider') AS provider,
+                       COALESCE(stage_host, '') AS execution_host, native_session_id
+                FROM graph_runs
+                WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
+                  AND native_session_id IS NOT NULL
+                """,
+                (project_id,),
+            )
+        }
         receipt_rows = _connection.execute(
             """
                 SELECT receipt.operation_id, receipt.category
@@ -3461,6 +3474,18 @@ class ExperimentStoreMixin(StoreMixinBase):
                     episodes,
                     parent,
                 )
+                binding = episodes.get(parent.episode_id) if parent is not None else None
+                if binding is not None and binding.session_bound:
+                    projected[control_key] = projected[control_key].model_copy(
+                        update={
+                            "session_active": (
+                                binding.provider,
+                                binding.execution_host,
+                                binding.native_session_id,
+                            )
+                            in active_sessions,
+                        }
+                    )
                 if parent is not None and parent.episode_id in wake_diagnostics:
                     projected[control_key] = projected[control_key].model_copy(
                         update={
