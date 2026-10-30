@@ -140,7 +140,7 @@ def test_edge_refresh_starts_one_light_work_chat_on_its_evidence(filed, light_ca
     assert task.request["invoked_skill_ids"] == ["evidence-triage"]
     context = _context(task.request["message"])
     assert context["edge"]["id"] == EDGE
-    assert context["evidence"]["id"] == EV
+    assert context["outcome"]["id"] == EV
     assert context["citing_proposal_ids"] == [PROPOSAL]
     assert light_catalog == ["node_chat"]
 

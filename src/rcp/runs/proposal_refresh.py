@@ -87,7 +87,7 @@ def edge_refresh_message(state: GraphState, edge: Edge) -> str:
     evidence = state.nodes[edge.source]
     context = {
         "edge": _edge_context(edge),
-        "evidence": {
+        "outcome": {
             "id": evidence.id,
             "title": evidence.title,
             "changed_rev": evidence.updated_rev,
