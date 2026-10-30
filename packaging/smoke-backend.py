@@ -175,10 +175,8 @@ def main() -> None:
         raise SystemExit(f"Packaged backend is not executable: {backend}")
 
     with tempfile.TemporaryDirectory(prefix="rcp-packaging-smoke-") as temporary:
+        smoke_terminal.verify(backend, Path(temporary))
         if arguments.terminal_only:
-            # Opt-in until the backend ships unpacked (#251): each terminal
-            # re-launches the one-file executable, which can take 10 s or more.
-            smoke_terminal.verify(backend, Path(temporary))
             print(json.dumps({"local_terminal": "passed", "cleanup_paths": 2}))
             return
         data_dir = Path(temporary) / "data"
@@ -295,6 +293,7 @@ def main() -> None:
                 "toolchain_path": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "remote_agent": "passed",
                 "remote_repository_preview": "passed",
+                "local_terminal": "passed",
             },
             sort_keys=True,
         )
