@@ -63,7 +63,9 @@ def test_transcript_location_requires_unique_session(
         locate_codex_transcript(session_id)
 
 
-@pytest.mark.parametrize("session_id", ["../*", "*", "not-a-session", "144BFE08-6628-4BA2-B520-92487C5BC865"])
+@pytest.mark.parametrize(
+    "session_id", ["../*", "*", "not-a-session", "144BFE08-6628-4BA2-B520-92487C5BC865"]
+)
 def test_transcript_location_rejects_noncanonical_identity(session_id: str) -> None:
     with pytest.raises(ValueError):
         locate_codex_transcript(session_id)
