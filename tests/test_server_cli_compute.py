@@ -42,6 +42,9 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
             state_remote=False,
         )
     )
+    # The base machine always offers the helper; a job manager adds the scheduler.
+    card = store.create_space_machine(name="laptop", host="", os_account="")
+    store.update_space_machine(card.machine_id, job_manager="slurm")
     result = ComputeBackendProbe(
         execution_machine="laptop",
         backend_id="systemd_user" if route == "helper" else "slurm",
@@ -126,6 +129,66 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
     assert store.compute_backend_probe(PROJECT_ID, "laptop", other_route) == other_probe
     for text in (result.status_label, result.backend_id, result.containment, result.diagnostic):
         assert text in output.getvalue()
+
+
+def test_server_compute_probe_refuses_a_route_the_machine_does_not_offer(
+    tmp_path, manifest, monkeypatch
+) -> None:
+    import rcp.api.app as app_module
+
+    layout = _temporary_layout(tmp_path)
+    data_dir = layout.data_dir
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Compute lab")
+    store.upsert_project(
+        ProjectRecord(
+            project_id=PROJECT_ID,
+            home_space_id=store.space_id,
+            name=manifest.name,
+            locator=str(manifest.path),
+            added_at=store.now(),
+            state_location=str(manifest.path.parent),
+            state_remote=False,
+        )
+    )
+    card = store.create_space_machine(name="laptop", host="", os_account="")
+    store.update_space_machine(card.machine_id, job_manager="none")
+    calls = []
+    monkeypatch.setattr(app_module, "probe_compute_backend", lambda *args, **_: calls.append(args))
+    with TemporaryDirectory(prefix="rcp-compute-", dir="/tmp") as socket_dir:
+        os.chown(socket_dir, os.geteuid(), os.getegid())
+        metadata = ServerMetadata.create(
+            data_dir,
+            host="127.0.0.1",
+            port=18423,
+            owner_kind="cli",
+            control_socket=Path(socket_dir) / "control.sock",
+        )
+        app = create_app(data_dir=data_dir, instance_metadata=metadata)
+        args = build_parser().parse_args(
+            [
+                "server",
+                "compute",
+                "probe",
+                "--project",
+                PROJECT_ID,
+                "laptop",
+                "--route",
+                "scheduler",
+            ]
+        )
+        output = StringIO()
+        with published_server_metadata(data_dir, metadata), signed_in_client(app):
+            code = run_server_command(
+                args,
+                identity=CallerIdentity(uid=501, username="rcp", host="lab"),
+                handler=lambda request, identity: prepare_compute_probe_command(
+                    request, identity, layout=layout
+                ),
+                stream=output,
+            )
+    assert code != 0, output.getvalue()
+    assert calls == []
+    assert store.compute_backend_probe(PROJECT_ID, "laptop", "scheduler") is None
 
 
 def test_compute_probe_requires_the_service_account() -> None:

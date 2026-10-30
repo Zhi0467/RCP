@@ -88,8 +88,9 @@ Runs shows each unready route's diagnostic, action, Settings link and **Check
 again**. The button calls
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check`. The
 [operator probe](../server.md) uses the service socket and saves its results. It
-succeeds only for a ready route. Episode start and reauthorization never gate on
-compute readiness. Helper launch probes its own route afresh.
+refuses a route the machine does not offer and succeeds only for a ready route.
+Episode start and reauthorization never gate on compute readiness. Helper launch
+probes its own route afresh.
 
 Live-artifact job needs resolve launch keys through durable successful receipts
 and the same recovery lineage. They grant observation only.
@@ -103,9 +104,11 @@ account's GUI domain with cooperative containment. Remote helpers ship source
 modules over ordinary SSH.
 
 Job roots are `<data_dir>/jobs/<id>` locally and `<jobs_root>/<id>` remotely.
-The remote default is `~/.rcp/jobs`. Configured roots must be absolute and
-outside stage retention. Internal ids grant neither filesystem authority nor a
-second watcher identity. `command.json` records the intent. `launch.json`
+The remote default is `~/.rcp/jobs`. Configured roots must be absolute. The
+execution account resolves the root and refuses one at or inside its
+`~/.rcp/stages` or a legacy `/tmp/rcp-run.*` stage, so launches and helper
+checks fail with that reason. Internal ids grant neither filesystem authority
+nor a second watcher identity. `command.json` records the intent. `launch.json`
 records the OS handle. The wrapper writes `started`, appends output to `log`,
 and atomically writes `exit` with the status and time. An uncertain start or
 failed post-start persistence retains evidence. It does not adopt orphan

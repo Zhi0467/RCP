@@ -12,7 +12,19 @@ from pathlib import Path
 def operate(operation: str, path: str, payload: str) -> str | None:
     target = Path(path)
     if operation == "resolve":
-        return str(target.expanduser())
+        root = target.expanduser()
+        # Stage retention removes `~/.rcp/stages` and legacy `/tmp/rcp-run.*` trees
+        # (`remote_stage_root.sweep_stages`); a job root there would lose its evidence.
+        real = Path(os.path.realpath(root))
+        stages = Path(os.path.realpath(Path.home() / ".rcp" / "stages"))
+        legacy = Path(os.path.realpath("/tmp"))
+        if (
+            real == stages
+            or stages in real.parents
+            or (legacy in real.parents and real.relative_to(legacy).parts[0].startswith("rcp-run."))
+        ):
+            raise ValueError("compute jobs root must be outside stage retention")
+        return str(root)
     if operation == "prepare":
         # `parents=True` would give new parents, such as `~/.rcp`, the umask's mode.
         for parent in reversed(target.parents):
@@ -52,7 +64,11 @@ def operate(operation: str, path: str, payload: str) -> str | None:
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         return 2
-    print(json.dumps(operate(argv[1], argv[2], argv[3])))
+    try:
+        print(json.dumps(operate(argv[1], argv[2], argv[3])))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 

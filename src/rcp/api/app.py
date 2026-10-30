@@ -103,7 +103,11 @@ from rcp.background import (
     StartupEffectFence,
 )
 from rcp.build_identity import build_identity
-from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
+from rcp.compute_jobs.probe import (
+    machine_compute_routes,
+    probe_compute_backend,
+    refresh_compute_probes,
+)
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.consolidation import ConsolidationPoller
@@ -536,14 +540,24 @@ def create_app(
                             raise ValueError(f"unknown execution machine: {request.machine_alias}")
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
+                    compute = store.machine_compute(
+                        manifest.machine_map[request.machine_alias].host
+                    )
+                    offered = machine_compute_routes(
+                        compute, execution=request.machine_alias == manifest.base_machine
+                    )
+                    if request.compute_route not in offered:
+                        raise ServerControlError(
+                            "operation_refused",
+                            f"{request.machine_alias} does not offer the "
+                            f"{request.compute_route} route.",
+                        )
                     probe = probe_compute_backend(
                         manifest,
                         request.machine_alias,
                         request.compute_route,
                         data_dir=app_data,
-                        compute=store.machine_compute(
-                            manifest.machine_map[request.machine_alias].host
-                        ),
+                        compute=compute,
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
