@@ -263,6 +263,13 @@ class ProviderAccounts:
                 )
             )
 
+        # A removed parent login can never come back, so it stops pinning its
+        # lineage; the task resolves like a new turn (a bound session still refuses).
+        if (
+            lineage_login is not None
+            and self.store.provider_login_state(lineage_login, connection=connection).removed_at
+        ):
+            lineage_login = None
         # Legacy tasks without an authorizer retain the machine login. OpenCode
         # has no RCP-managed added logins, independent of a member's setting.
         fixed = (
@@ -275,7 +282,7 @@ class ProviderAccounts:
             if usable(state):
                 return fixed, None
             source: LoginSource = "own" if state.member_id is not None else "shared"
-            removed_bound_session = state.removed_at is not None and lineage_login is None
+            removed_bound_session = state.removed_at is not None
             return LoginRefusal(
                 source,
                 "This sign-in was removed. Start a new chat."

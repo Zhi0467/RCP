@@ -187,16 +187,15 @@ def test_concurrent_assignments_choose_different_logins(accounts):
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])
-def test_lineage_ignores_setting_and_drain_but_refuses_removed(accounts, provider):
+def test_lineage_ignores_setting_and_drain_until_removed(accounts, provider):
     shared = _login(accounts, provider)
+    own = _login(accounts, provider, own=True)
     accounts.store.set_provider_login_setting("member", provider, "", "own")
     accounts.store.set_provider_login_draining(shared)
     assert accounts.resolve_login(provider, "", "member", lineage_login=shared) == (shared, None)
     accounts.store.finish_provider_login_removal(shared, member_id="member")
-    result, reason = accounts.resolve_login(provider, "", "member", lineage_login=shared)
-    assert isinstance(result, LoginRefusal)
-    assert result.failure_kind == "provider_auth"
-    assert reason is None
+    # A removed parent login can never come back, so it stops pinning the task.
+    assert accounts.resolve_login(provider, "", "member", lineage_login=shared)[0] == own
     if provider == "codex":
         bound, reason = accounts.resolve_login(provider, "", "member", bound_login=shared)
         assert isinstance(bound, LoginRefusal)
