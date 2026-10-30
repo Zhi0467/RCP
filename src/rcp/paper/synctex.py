@@ -13,7 +13,9 @@ from rcp.limits import PAPER_SYNCTEX_MAX_BYTES
 SyncTexMap = dict[str, list[tuple[int, int, float]]]
 
 _RECORD = re.compile(r"[\[(hvgkx$](\d+),(\d+)(?:,-?\d+)?:(-?\d+),(-?\d+)")
-_SCALED_POINTS = 65536
+# SyncTeX counts TeX scaled points, 65536 to a TeX point and 72.27 TeX points to
+# the inch; the preview scales pages in PDF points, 72 to the inch.
+_SCALED_POINTS_PER_PDF_POINT = 65536 * 72.27 / 72
 
 
 def read_synctex(path: Path, tree: Path) -> SyncTexMap | None:
@@ -62,7 +64,9 @@ def synctex_map(text: str, tree: Path) -> SyncTexMap:
             path = inputs.get(tag)
             if path is None:
                 continue
-            points = (int(y) * unit + y_offset) * magnification / 1000 / _SCALED_POINTS
+            points = (
+                (int(y) * unit + y_offset) * magnification / 1000 / _SCALED_POINTS_PER_PDF_POINT
+            )
             key = (path, int(number))
             if key not in first or (page, points) < first[key]:
                 first[key] = (page, points)

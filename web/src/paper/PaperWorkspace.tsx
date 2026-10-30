@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { EditorView } from "@codemirror/view";
 import { Download, FileWarning, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
 import { api } from "../core/api";
+import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import type {
   AgentTask,
@@ -33,6 +34,8 @@ import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
+import { resolvePreviewSelection, type PreviewDirectComment } from "./previewComments";
+import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
 
 /** Route snapshots retain selection only; IndexedDB owns all document content. */
 export interface PaperEditorState {
@@ -111,6 +114,59 @@ export function PaperWorkspace({
     retry: () => Promise<void>;
   } | null>(null);
   const [resolving, setResolving] = useState(false);
+  // The coach's send state and comments live here: the preview stages comments too,
+  // and its failures show on the Coach segment while the coach is hidden.
+  const [coachSubmitting, setCoachSubmitting] = useState(false);
+  const [coachError, setCoachError] = useState<string | null>(null);
+  const coachTranscript = useRef<HTMLDivElement>(null);
+  const coachMessage = useRef<HTMLTextAreaElement>(null);
+  const previewPane = useRef<HTMLDivElement>(null);
+  const comments = useAnswerComments({
+    // Kept for this tab, as chat keeps its comments, so a reload keeps the waiting ones.
+    storageKey: memberDraftKey(
+      identity?.user.user_id ?? null,
+      `paper-coach-annotations:${encodeURIComponent(project.id)}`,
+    ),
+    enabled: true,
+    busy: coachSubmitting,
+    sources: [
+      transcriptSource(coachTranscript),
+      { root: previewPane, origin: previewPane, resolve: resolvePreviewSelection },
+    ],
+    message: coachMessage,
+    onError: setCoachError,
+  });
+  const openPreviewComment = (comment: PreviewDirectComment) =>
+    comments.openExternal(
+      {
+        selectedText: comment.quote,
+        ...(comment.where ? { where: comment.where } : {}),
+        anchor: comment.anchor,
+      },
+      { clear: comment.clear, origin: previewPane.current },
+    );
+  const waiting = comments.annotations.length;
+  // The Coach segment carries the waiting comments' count and the coach's failure.
+  const segmentLabel = (panel: "write" | "preview" | "coach") => (
+    <>
+      {panel[0].toUpperCase() + panel.slice(1)}
+      {panel === "coach" && waiting > 0 && (
+        <>
+          <span className="paper-comment-count" aria-hidden="true">
+            {waiting}
+          </span>
+          <span className="visually-hidden">, {waiting} waiting</span>
+        </>
+      )}
+    </>
+  );
+  const segmentMark = (panel: "write" | "preview" | "coach") =>
+    panel === "coach"
+      ? {
+          className: coachError ? "paper-coach-segment paper-failure" : "paper-coach-segment",
+          title: coachError ?? (waiting > 0 ? "Comments waiting for Coach" : undefined),
+        }
+      : {};
   const changeFeed = usePaperChanges(
     apiBase,
     `${tree?.revision}:${tasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("|")}`,
@@ -192,6 +248,15 @@ export function PaperWorkspace({
   const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
+  // A comment opened from the preview points at the file shown then; showing another
+  // file closes it and keeps its text. Naming where it came from stands in for "from
+  // the preview": Coach transcript comments carry no `where`.
+  const openPreviewWhere =
+    comments.composer?.step === "comment" ? comments.composer.where : undefined;
+  useEffect(() => {
+    if (openPreviewWhere) comments.closeComment({ keepText: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
+  }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.
   useEffect(() => {
     if (tree && selection.existsAt > tree.revision) refresh();
@@ -436,8 +501,13 @@ export function PaperWorkspace({
         <div className="paper-phone-segments">
           <div className="segmented" role="group" aria-label="Paper view">
             {(["write", "preview", "coach"] as const).map((panel) => (
-              <button key={panel} aria-pressed={view === panel} onClick={() => switchView(panel)}>
-                {panel[0].toUpperCase() + panel.slice(1)}
+              <button
+                key={panel}
+                aria-pressed={view === panel}
+                onClick={() => switchView(panel)}
+                {...segmentMark(panel)}
+              >
+                {segmentLabel(panel)}
               </button>
             ))}
           </div>
@@ -480,14 +550,24 @@ export function PaperWorkspace({
         <header className="paper-bar paper-desktop-segments">
           <div className="segmented" role="group" aria-label="Paper panel">
             {(["preview", "coach"] as const).map((panel) => (
-              <button key={panel} aria-pressed={right === panel} onClick={() => switchView(panel)}>
-                {panel[0].toUpperCase() + panel.slice(1)}
+              <button
+                key={panel}
+                aria-pressed={right === panel}
+                onClick={() => switchView(panel)}
+                {...segmentMark(panel)}
+              >
+                {segmentLabel(panel)}
               </button>
             ))}
           </div>
           {!phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </header>
-        <div className="paper-right-pane" hidden={right !== "preview"}>
+        <div
+          className="paper-right-pane"
+          hidden={right !== "preview"}
+          ref={previewPane}
+          tabIndex={-1}
+        >
           {previewShown &&
             file &&
             tree &&
@@ -501,6 +581,8 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
+                onDirectComment={openPreviewComment}
+                onDirectCancel={comments.cancelExternal}
               />
             ) : (
               <PaperPreview
@@ -512,6 +594,8 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
+                onDirectComment={openPreviewComment}
+                onDirectCancel={comments.cancelExternal}
               />
             ))}
         </div>
@@ -532,9 +616,17 @@ export function PaperWorkspace({
             }}
             onLocate={locate}
             toolbar={(phone ? view : right) === "coach" ? panelBar : null}
+            comments={comments}
+            submitting={coachSubmitting}
+            setSubmitting={setCoachSubmitting}
+            error={coachError}
+            setError={setCoachError}
+            transcriptRef={coachTranscript}
+            textarea={coachMessage}
           />
         </div>
       </aside>
+      <AnswerCommentLayers comments={comments} mode="discuss" />
       {history && tree && (
         <PaperHistory
           apiBase={apiBase}

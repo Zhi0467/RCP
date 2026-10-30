@@ -10,7 +10,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { Download, FileWarning, LoaderCircle, PackagePlus, RotateCcw, X } from "lucide-react";
+import {
+  Download,
+  FileWarning,
+  LoaderCircle,
+  MessageSquarePlus,
+  PackagePlus,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { api } from "../core/api";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -29,6 +37,9 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
+import { boxArea, rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
+import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
+import { useInlineShell } from "../artifacts/useInlineShell";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
 type EngineState = "ready" | "installing" | "unavailable";
@@ -97,12 +108,18 @@ function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string 
   );
 }
 // Tree saves and callbacks update links without reparsing the unchanged preview text.
-const MarkdownPreview = memo(function MarkdownPreview({ text }: { text: string }) {
+const MarkdownPreview = memo(function MarkdownPreview({
+  text,
+  path,
+}: {
+  text: string;
+  path: string;
+}) {
   return (
-    <article className="paper-markdown chat-markdown">
+    <article className="paper-markdown chat-markdown" data-paper-path={path}>
       <ReactMarkdown
         remarkPlugins={[...ANSWER_SYNTAX_PLUGINS]}
-        rehypePlugins={[[rehypeKatex, { strict: false, trust: false }]]}
+        rehypePlugins={[rehypeSourceLines, [rehypeKatex, { strict: false, trust: false }]]}
         components={{ pre: MarkdownCodeBlock, a: PaperLink, img: PaperImage }}
       >
         {text}
@@ -110,6 +127,93 @@ const MarkdownPreview = memo(function MarkdownPreview({ text }: { text: string }
     </article>
   );
 });
+
+/** A drawn box as a comment: its text, where it sits, anchored on the box. */
+function boxComment(box: PaperBox): PreviewDirectComment {
+  return {
+    quote: box.text || "Selected area",
+    where: box.where,
+    anchor: { left: box.rect.left, right: box.rect.right, top: box.rect.top },
+    clear: box.clear,
+  };
+}
+
+/** A saved Paper HTML file in the inline viewer shell; comment mode selects inside it. */
+function HtmlPreview({
+  projectId,
+  file,
+  toolbar,
+  onDirectComment,
+  onDirectCancel,
+}: {
+  projectId: string;
+  file: PaperFile;
+  toolbar: HTMLElement | null;
+  onDirectComment?: (comment: PreviewDirectComment) => void;
+  onDirectCancel?: (clear: () => void) => void;
+}) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const [commentMode, setCommentMode] = useState(false);
+  const [pageError, setPageError] = useState<{ message: string } | null>(null);
+  const shell = useInlineShell(frame, commentMode, {
+    onPageError: setPageError,
+    onCancel: (clear) => onDirectCancel?.(clear),
+    onSelection: ({ selection, anchor, clear }) => {
+      // An element's own text before a label it may inherit from a section around it.
+      const named =
+        selection.kind === "box"
+          ? [...new Set((selection.elements ?? []).map((element) => element.text || element.label))]
+              .filter(Boolean)
+              .join(", ")
+          : "";
+      onDirectComment?.({
+        quote: (selection.kind === "text" ? selection.text : named) || "Selected area",
+        where: selection.kind === "box" ? `${file.path}, ${boxArea(selection.rect)}` : file.path,
+        anchor,
+        clear,
+      });
+    },
+  });
+  const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
+    file.file_id,
+  )}/preview`;
+  return (
+    <div
+      className={`paper-html-preview${commentMode ? " commenting" : ""}${pageError ? " paper-failed" : ""}`}
+    >
+      {panelTools(
+        toolbar,
+        <>
+          {pageError && (
+            <span
+              className="icon-button"
+              role="status"
+              title={pageError.message}
+              aria-label={pageError.message}
+            >
+              <FileWarning size={16} />
+            </span>
+          )}
+          {onDirectComment && (
+            <button
+              className="icon-button"
+              aria-pressed={commentMode}
+              aria-label="Comment on the page"
+              title="Comment on the page"
+              onClick={() => setCommentMode(!commentMode)}
+            >
+              <MessageSquarePlus size={16} />
+            </button>
+          )}
+        </>,
+        Boolean(pageError),
+      )}
+      {/* The routes load the latest saved page uncached, so only a change to this file
+          reloads it; another file's save leaves its state alone. */}
+      <iframe key={file.sha256} ref={frame} src={source} title={file.path} onLoad={shell.onLoad} />
+    </div>
+  );
+}
 
 export function PaperPreview({
   projectId,
@@ -120,6 +224,8 @@ export function PaperPreview({
   onOpenFile,
   toolbar,
   cursorLine,
+  onDirectComment,
+  onDirectCancel,
 }: {
   projectId: string;
   file: PaperFile;
@@ -132,6 +238,10 @@ export function PaperPreview({
   toolbar: HTMLElement | null;
   /** The editor's settled cursor line in this file; a LaTeX PDF scrolls to it. */
   cursorLine: number;
+  /** Opens a comment on a box drawn over a PDF page or image, or a selection inside an HTML page. */
+  onDirectComment?: (comment: PreviewDirectComment) => void;
+  /** The HTML frame cancelled the selection whose comment carries this clear. */
+  onDirectCancel?: (clear: () => void) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -302,6 +412,8 @@ export function PaperPreview({
     active,
   ]);
 
+  const onBox = onDirectComment && ((box: PaperBox) => onDirectComment(boxComment(box)));
+
   async function install() {
     if (!engine) return;
     setError(null);
@@ -316,14 +428,29 @@ export function PaperPreview({
   if (file.format === "markdown")
     return (
       <PaperMarkdownContext.Provider value={{ file, tree, projectId, onOpenFile }}>
-        <MarkdownPreview text={previewText} />
+        <MarkdownPreview text={previewText} path={file.path} />
       </PaperMarkdownContext.Provider>
     );
   if (file.format === "image" && /\.(png|jpe?g|gif|webp)$/i.test(file.path))
     return (
-      <div className="paper-image-preview">
-        <img src={assetUrl(projectId, file)} alt={file.path} />
+      <div className="paper-image-preview" data-paper-path={file.path}>
+        <PaperBoxSelect onBox={onBox}>
+          <div className="paper-image-frame" data-box-target>
+            <img src={assetUrl(projectId, file)} alt={file.path} />
+          </div>
+        </PaperBoxSelect>
       </div>
+    );
+  if (file.format === "html")
+    return (
+      <HtmlPreview
+        key={file.file_id}
+        projectId={projectId}
+        file={file}
+        toolbar={toolbar}
+        onDirectComment={onDirectComment}
+        onDirectCancel={onDirectCancel}
+      />
     );
   if (file.format === "pdf")
     return (
@@ -332,12 +459,16 @@ export function PaperPreview({
           url={assetUrl(projectId, file)}
           name={file.path.split("/").at(-1)}
           toolbar={toolbar}
+          path={file.path}
+          onBox={onBox}
         />
       </Suspense>
     );
   if (!engine)
     return file.kind === "text" ? (
-      <pre className="paper-plain-preview">{text}</pre>
+      <pre className="paper-plain-preview" data-paper-path={file.path}>
+        {text}
+      </pre>
     ) : (
       panelTools(
         toolbar,
@@ -441,6 +572,9 @@ export function PaperPreview({
             actions={actions}
             toolbar={toolbar}
             spot={spot}
+            path={pdfRoot}
+            synctex={synctex}
+            onBox={onBox}
             url={pdf}
             name={`${(selectedRoot || file.path)
               .split("/")

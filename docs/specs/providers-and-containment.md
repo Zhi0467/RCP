@@ -122,7 +122,7 @@ complete policy decision to its owner, not hide coupling behind a registry or bu
 
 An orchestrator-triggered chat is child Work only with a durable child-route row;
 missing identity follows ordinary Work. The
-[structural decision](../decisions/2026-08-20-backend-structural-refactor-closure.md)
+[structural decision](../../AGENTS.md#cross-cutting-implementation-rules)
 records the accepted coupling.
 
 ## Provider runtime selection

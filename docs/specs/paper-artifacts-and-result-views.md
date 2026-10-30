@@ -54,8 +54,9 @@ remain behind a red icon across reloads until recreated. Restart pauses the edit
 without unmounting it or losing typing. Refused or inaccessible unsent text remains
 downloadable. Leaving with unsent text asks first. An early connection close never
 discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
-transfer. Uploaded binaries deduplicate by content hash. SVG, HTML, and unknown
-types download. Only raster images display inline. Paper files never execute as
+transfer. Uploaded binaries deduplicate by content hash. SVG and unknown types
+download. Only raster images display inline. Text HTML previews inside the agent
+artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
 A database without Paper adopts the existing published tree. Local revisions
@@ -101,6 +102,75 @@ disables shell escape, but absolute inputs may expose any server-user-readable
 file in the member-only PDF, including agent-hidden files. This follows the
 [team trust model](server-and-machine-operations.md). Agent launches cannot read
 the preview.
+
+A text `.html` or `.htm` file previews its latest saved page through the inline
+artifact shell, one frame inside the same opaque sandbox and CSP as agent HTML
+([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
+document, and relative images and Paper links do not load, so the page must be
+self-contained; inlining tree images is not built, and the author is not told what
+the sanitizer removed. Its HTTP(S) links do not open either, as in a reply's
+inline artifact, because the frame allows no popups. It passes through the
+agent-HTML sanitizer and takes no app theme, since it is the author's own page. A
+save that changes this file reloads it, as does switching the app's theme or color
+mode; unsaved typing and other files' saves do not. A reload starts the page over,
+scroll and state included, so a page being edited jumps back to its top at each
+typing pause. Errors the page throws show as a warning in the panel header, with
+the message on hover. Making Paper previews artifacts was rejected: artifacts are
+versioned deliverables with their own chat, while a preview follows every save,
+and Markdown and PDF previews need SyncTeX, Paper links, and tree images.
+
+### Commenting on the preview
+
+A native text selection in the preview offers the same Comment button and window
+as chat answers. A drawn area or an HTML selection opens the window directly.
+While a comment window is open, a native selection offers no Comment button. Text
+selects natively, also on touch, except inside an HTML page, which takes a mouse
+or pen. With a mouse or pen, a drag that starts off text draws an area on a PDF
+page or image. An HTML page takes comments only in comment mode, a toggle in the
+panel header that starts off for each file shown, because it turns the page's
+drags into selections for comments.
+
+Each comment records where it came from: path and line for Markdown and plain
+text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
+a source line from reverse SyncTeX when the compile has a map, which is
+approximate because the map keeps one mark per line; path for images and HTML. An
+area adds its place as percentages across and down: of the PDF page or image, or
+of the visible part of an HTML page, which is approximate. A long location drops
+whole trailing parts, the approximate source line first. A location carries no
+revision, so after later edits or a rename it can point at the wrong place with no
+signal; the quote is what names the text. Recording a revision was rejected: a
+Coach turn reads only the latest saved snapshot, so it could flag drift but not
+find the old place.
+
+A PDF area quotes the text-layer text inside it. An HTML area quotes the text, or
+else the label, of up to eight elements mostly inside it, or of the element that
+holds it, which can reach past the area. One with neither quotes "Selected area",
+so an area over a figure in a Typst PDF, or on a LaTeX page outside the map, names
+only its page and place. The HTML frame bounds each text and element itself, by
+bytes and without a marker. A joined area quote still longer than a quote allows
+is cut, ending in "…"; a longer native selection is refused. At most 50 comments
+wait at once. These are the chat composer's limits, kept and enforced in the
+browser (`web/src/chat/chatInput.ts`). Areas never send pixels: the Coach reads
+the source files from its snapshot, so text and place are enough, and a crop would
+add an upload to every comment.
+
+Cancelling the selection inside the HTML frame, including Escape there, leaving
+comment mode, or showing another file closes the comment window opened from the
+preview and keeps its text for the next selection; a new area or HTML selection
+carries it over. Escape or Cancel in the window discards it. A reload of the HTML
+frame keeps an open comment window, since its quote and place are already taken.
+While a Coach turn sends, an area or HTML selection opens no comment. Comments
+wait in the Coach composer and, as chat comments do, survive a reload of the
+browser tab. The Coach button shows their count and any Coach error, which
+includes a refused comment's reason; opening a comment clears it. They travel as
+text with the next Coach message, never as artifact context.
+
+Unlike the Coach transcript, the preview has no keyboard Comment button, and touch
+readers cannot comment on images or HTML pages, because an area needs a precise
+pointer; the Coach has no whole-file comment, so such a reader names the place in
+a typed Coach message. An HTML page runs scripts written by any member or the
+Coach in each viewer's browser under the sandbox rules, and its quotes come from
+the page itself.
 
 ## Writing coach
 
@@ -346,8 +416,10 @@ visibility changes, and on a slow live interval. Live relay is one-way.
 Comment mode defaults off to preserve interaction. Readers can select with a
 mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
 one artifact and version in the composer. Admission refuses moved versions.
-Cancel, Escape, a new selection, or leaving comment mode closes the window.
-Version changes clear stale regions with a notice. Composer comments follow the
+Cancel or Escape in the window discards its text. A cancel in the frame, a new
+selection, or leaving comment mode closes or replaces the window and keeps the
+text for the next selection. Version changes clear stale regions with a notice and
+keep the open window's text. Composer comments follow the
 chat's mode and profile. They can combine attachments and references, including
 in Experiments. Read-only lineage children allow only Discuss comments without
 references. Both paths can publish tracked next versions. Keep follows viewer state.

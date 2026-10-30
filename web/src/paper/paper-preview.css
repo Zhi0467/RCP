@@ -46,7 +46,117 @@
   flex-direction: column;
 }
 .paper-pdf-page {
+  position: relative;
   margin-bottom: 16px;
+}
+/* pdf.js's own text layer rules (pdf_viewer.css), reduced to what selection needs. */
+.paper-pdf-page .textLayer {
+  --total-scale-factor: var(--scale-factor);
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 0;
+}
+.paper-pdf-page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.paper-pdf-page .textLayer > :not(.markedContent),
+.paper-pdf-page .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.paper-pdf-page .textLayer .markedContent {
+  display: contents;
+}
+.paper-pdf-page .textLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+.paper-pdf-page .textLayer ::selection {
+  background: color-mix(in srgb, var(--cobalt) 28%, transparent);
+  color: transparent;
+}
+.paper-pdf-page .textLayer br::selection {
+  background: transparent;
+}
+.paper-pdf-page .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.paper-pdf-page .textLayer.selecting .endOfContent {
+  top: 0;
+}
+.paper-box-select {
+  display: contents;
+}
+.paper-box-select.enabled [data-box-target] {
+  cursor: crosshair;
+}
+.paper-image-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+.paper-image-frame img {
+  display: block;
+}
+.paper-select-box {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  border: 1.5px dashed var(--cobalt);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--cobalt) 10%, transparent);
+  animation: paper-select-box-in 120ms ease-out;
+}
+@keyframes paper-select-box-in {
+  from {
+    opacity: 0;
+  }
+}
+.paper-html-preview {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 10px 10px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--sheet);
+}
+.paper-html-preview iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+}
+.paper-html-preview.commenting iframe {
+  cursor: crosshair;
 }
 .paper-pdf-pages canvas {
   display: block;
@@ -63,8 +173,18 @@
     padding: 14px;
     border-radius: 0;
   }
+  .paper-html-preview {
+    margin: 0;
+    border-radius: 0;
+  }
   .paper-pdf-pages {
     margin: 0 8px 8px;
     padding: 8px;
   }
+}
+
+/* KaTeX keeps a hidden MathML copy for screen readers; leaving it out of selection
+   keeps a comment's quote to the math as shown. */
+.paper-markdown .katex-mathml {
+  user-select: none;
 }
