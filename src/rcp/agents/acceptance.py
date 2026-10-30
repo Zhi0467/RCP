@@ -118,19 +118,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
             return tuple(self._launch_records)
 
     def readiness(
-        self,
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
-        login_id: str = MACHINE_LOGIN_ID,
+        self, login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        del binary, refresh, login_id
-        profile = profile_for(provider)
-        if host:
+        del binary, refresh
+        profile = profile_for(login.provider)
+        if login.host:
             return ProviderReadiness(
-                provider=provider,
+                provider=login.provider,
                 label=f"Acceptance {profile.label}",
                 installed=False,
                 authenticated=False,
@@ -138,12 +132,12 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 path_state="unreachable",
                 reason=(
                     "Acceptance-agent mode is local-only and refuses to impersonate "
-                    f"a provider on {host}."
+                    f"a provider on {login.host}."
                 ),
                 models=list(profile.declared),
             )
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             label=f"Acceptance {profile.label}",
             installed=True,
             authenticated=True,

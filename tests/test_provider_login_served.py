@@ -38,8 +38,8 @@ def test_served_device_login_recovers_queued_work_without_polling(
     monkeypatch.setattr(
         launcher,
         "readiness",
-        lambda provider, **_: ProviderReadiness(
-            provider=provider,
+        lambda login, **_: ProviderReadiness(
+            provider=login.provider,
             installed=False,
             authenticated=False,
             reason="Fake provider only serves the login journey.",

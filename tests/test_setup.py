@@ -28,6 +28,7 @@ from rcp.setup import (
 )
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.models import LoginKey
 from rcp.transport import StateWorkspace
 from tests.helpers import signed_in_client, unchecked_write_authority
 
@@ -307,13 +308,13 @@ def test_setup_records_discovered_provider_paths_on_the_machine_card(tmp_path) -
 
     class DiscoveringLauncher:
         @staticmethod
-        def readiness(provider: str, *, host: str = "") -> ProviderReadiness:
-            assert host == ""
+        def readiness(login: LoginKey) -> ProviderReadiness:
+            assert login.host == ""
             return ProviderReadiness(
-                provider=provider,
+                provider=login.provider,
                 installed=True,
                 authenticated=True,
-                binary_path=f"/opt/rcp-test/{provider}",
+                binary_path=f"/opt/rcp-test/{login.provider}",
                 path_state="unconfigured",
             )
 
@@ -715,12 +716,12 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
 
     class ReadyLauncher:
         @staticmethod
-        def readiness(provider: str, *, host: str = "") -> ProviderReadiness:
+        def readiness(login: LoginKey) -> ProviderReadiness:
             return ProviderReadiness(
-                provider=provider,
+                provider=login.provider,
                 installed=True,
                 authenticated=True,
-                version=f"{provider}-test",
+                version=f"{login.provider}-test",
             )
 
     monkeypatch.setattr("rcp.setup._ssh", fake_ssh)

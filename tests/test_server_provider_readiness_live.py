@@ -7,6 +7,7 @@ import os
 import pytest
 
 from rcp.agents.launcher import AgentLauncher
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 _LIVE_GATE = "RCP_RUN_PROVIDER_READINESS_LIVE"
 _HOST = "RCP_PROVIDER_READINESS_SSH_HOST"
@@ -35,10 +36,7 @@ def test_reachable_ssh_provider_is_ready_on_the_exact_account() -> None:
     assert account.os_account == expected_account
 
     readiness = launcher.readiness(
-        provider,
-        host=host,
-        binary=binary,
-        refresh=True,
+        LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary, refresh=True
     )
 
     assert readiness.installed is True, readiness.reason
@@ -58,9 +56,7 @@ def test_existing_local_unauthenticated_provider_is_reported_without_login() -> 
     assert account.os_account
 
     readiness = launcher.readiness(
-        provider,
-        binary=binary,
-        refresh=True,
+        LoginKey(provider, "", MACHINE_LOGIN_ID), binary=binary, refresh=True
     )
 
     assert readiness.installed is True, readiness.reason

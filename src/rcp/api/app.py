@@ -251,6 +251,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
 from rcp.transfer.target import (
@@ -1698,7 +1699,9 @@ def create_app(
 
             def probe(provider: str, host: str, binary: str | None) -> None:
                 try:
-                    readiness = launcher.readiness(provider, host=host, binary=binary)
+                    readiness = launcher.readiness(
+                        LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary
+                    )
                 except Exception as exc:
                     # An unexpected readiness exception still has to finish
                     # this startup generation. Feeding the diagnostic through

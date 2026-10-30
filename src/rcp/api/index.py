@@ -85,6 +85,7 @@ from rcp.storage import (
     ProjectActiveTaskConflict,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.storage.project_groups import ProjectGroupError
 from rcp.transport import StateUnavailable
 
@@ -1012,7 +1013,9 @@ def providers(
     """
 
     return [
-        launcher.readiness(provider, refresh=refresh).model_dump(mode="json")
+        launcher.readiness(LoginKey(provider, "", MACHINE_LOGIN_ID), refresh=refresh).model_dump(
+            mode="json"
+        )
         for provider in PROVIDER_IDS
     ]
 

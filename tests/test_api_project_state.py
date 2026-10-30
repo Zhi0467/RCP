@@ -18,6 +18,7 @@ from rcp.history import HistoryManager
 from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
+from rcp.storage.models import LoginKey
 from rcp.transport import StateUnavailable
 from tests.helpers import resource_watermark_tokens, sign_in_async_client, signed_in_client
 
@@ -888,19 +889,17 @@ def test_project_readiness_does_not_open_or_materialize_project(
     inventory_waits: list[tuple[str, str, str | None]] = []
 
     def readiness(
-        provider: str,
+        login: LoginKey,
         *,
-        host: str = "",
         binary: str | None = None,
         refresh: bool = False,
-        login_id: str = "",
     ):
-        calls.append((provider, refresh))
+        calls.append((login.provider, refresh))
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
-            version=f"{provider}-ready",
+            version=f"{login.provider}-ready",
         )
 
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
@@ -1126,8 +1125,8 @@ def test_project_readiness_exposes_cached_state_transfer_engine(manifest, tmp_pa
     monkeypatch.setattr(
         app.state.catalog.launcher,
         "readiness",
-        lambda provider, **_kwargs: ProviderReadiness(
-            provider=provider, installed=False, authenticated=False
+        lambda login, **_kwargs: ProviderReadiness(
+            provider=login.provider, installed=False, authenticated=False
         ),
     )
     response = signed_in_client(app).get(f"/api/projects/{app.state.default_project_id}/readiness")

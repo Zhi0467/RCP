@@ -48,6 +48,13 @@ def provider_login_host(manifest: Manifest, run_on: str | None) -> str:
     return machine.host or ""
 
 
+def task_login_host(task: AgentTaskRecord, manifest: Callable[[], Manifest]) -> str:
+    """Prefer a captured stage host; resolve queued tasks from their execution target."""
+    if task.stage_host is not None or task.stage_root is not None:
+        return task.stage_host or ""
+    return provider_login_host(manifest(), str(task.request.get("run_on") or "local"))
+
+
 @dataclass
 class ParkedProviderWork:
     recoveries: list[tuple[str, str]] = field(default_factory=list)
@@ -72,16 +79,13 @@ def parked_provider_work(
         task = store.agent_task(operation_id)
         if task is None or not task.request.get("provider"):
             continue
-        if task.stage_host is not None or task.stage_root is not None:
-            host = task.stage_host or ""
-        else:
-            try:
-                host = provider_login_host(manifest(), str(task.request.get("run_on") or "local"))
-            except (OSError, ValueError):
-                logging.getLogger(__name__).warning(
-                    "Provider login skipped an unavailable queued execution target."
-                )
-                continue
+        try:
+            host = task_login_host(task, manifest)
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Provider login skipped an unavailable queued execution target."
+            )
+            continue
         account = resolved_task_login(store, task, host=host)
         if account is not None:
             work[account].queued.append(operation_id)
@@ -151,7 +155,7 @@ def resume_provider_account(
             return member_id is None and resolved_task_login(store, task, host=key.host) == key
         authorizer = task.authorized_by.user_id if task.authorized_by else None
         session = task.native_session_id or str(task.request.get("fork_session_id") or "")
-        if key.provider == "codex" and session:
+        if profile_for(key.provider).sessions_bound_to_login and session:
             bound = accounts.bound_login(key.provider, key.host, session)
             return (
                 member_id is None
@@ -211,41 +215,14 @@ def resolved_task_login(
         return None
     host = task.stage_host or "" if host is None else host
     accounts = ProviderAccounts.for_store(store)
-    session = task.native_session_id
-    bound_session = session or str(task.request.get("fork_session_id") or "")
-    previous = (
-        accounts.previous_login(provider, host, session, exclude_operation_id="")
-        if session
-        else None
-    )
-    bound = (
-        accounts.bound_login(provider, host, bound_session)
-        if bound_session and provider == "codex"
-        else None
-    )
-    lineage = None
-    if task.status == "queued" and task.parent_operation_id:
-        parent = store.agent_task(task.parent_operation_id)
-        if (
-            parent is not None
-            and parent.login_id is not None
-            and provider == parent.request.get("provider")
-            and host == (parent.stage_host or "")
-            and (
-                store.agent_task_has_receipt(task.operation_id, "provider_login_lineage")
-                or store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
-            )
-        ):
-            lineage = LoginKey(provider, host, parent.login_id)
-    result, _ = accounts.resolve_login(
+    result, _ = accounts.resolve_launch_login(
         provider,
         host,
         task.authorized_by.user_id if task.authorized_by else None,
-        lineage_login=lineage,
-        bound_login=bound,
-        previous_login=previous.login if previous else None,
-        previous_provider_started_at=previous.provider_started_at if previous else None,
-        previous_authorized_by=previous.authorized_by if previous else None,
+        session_id=task.native_session_id,
+        fork_session_id=str(task.request.get("fork_session_id") or ""),
+        task=task,
+        inherit_parent=task.status == "queued",
     )
     if isinstance(result, LoginKey):
         return result
@@ -304,7 +281,7 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
     if starts and (limited or record.status == "succeeded"):
         store.set_provider_login_limit(key, provider_started_at=min(starts), limited=limited)
     # A Codex turn without a named session is still free to choose another login.
-    if provider == "codex" and record.native_session_id:
+    if profile_for(provider).sessions_bound_to_login and record.native_session_id:
         return
     chosen = resolved_task_login(store, record)
     if chosen is None:
@@ -362,7 +339,7 @@ def bound_running_count(store: AppStore, key: LoginKey) -> int:
             key,
         ).fetchall()
     running = sum(row["status"] in {"running", "pausing"} for row in rows)
-    if key.provider != "codex":
+    if not profile_for(key.provider).sessions_bound_to_login:
         return running
     episodes: set[str] = set()
     seen_sessions: set[str] = set()

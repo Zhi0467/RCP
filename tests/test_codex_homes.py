@@ -10,6 +10,7 @@ import pytest
 
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.providers.codex.homes import SHARED_FILES, prepare_home
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 
 def test_home_links_and_regular_file_conflict(tmp_path: Path) -> None:
@@ -41,7 +42,7 @@ def test_login_path_rejects_non_uuid4(tmp_path: Path, login_id: str) -> None:
 def test_added_login_path_preserves_machine_path(tmp_path: Path) -> None:
     credentials = ProviderCredentialStore(tmp_path)
     login_id = str(uuid4())
-    machine = credentials.account_dir("codex", "")
+    machine = credentials.account_dir("codex", "", login_id=MACHINE_LOGIN_ID)
     assert machine == tmp_path / "codex" / "local"
     assert credentials.account_dir("codex", "", login_id) == machine / "logins" / login_id
 

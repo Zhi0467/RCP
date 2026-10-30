@@ -53,7 +53,7 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
     binary = _claude_binary(tmp_path, work_ready=work_ready)
     launcher = AgentLauncher()
 
-    readiness = launcher.readiness("claude", binary=str(binary))
+    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.authenticated
     assert readiness.work_like_available is work_ready
     # A Work-only fault never becomes the general readiness reason: `reason` also
@@ -64,15 +64,20 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
         assert readiness.work_like_reason is None
     else:
         assert _WORK_PROBE_REASON in readiness.work_like_reason
-    assert launcher.readiness("claude", binary=str(binary)) == readiness
+    assert (
+        launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+        == readiness
+    )
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
-    launcher.readiness("claude", binary=str(binary), refresh=True)
+    launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
     assert (tmp_path / "probes").read_text().splitlines() == ["probe", "probe"]
 
 
 def test_unauthenticated_provider_does_not_probe_work_readiness(tmp_path: Path) -> None:
     binary = _claude_binary(tmp_path, authenticated=False)
-    readiness = AgentLauncher().readiness("claude", binary=str(binary))
+    readiness = AgentLauncher().readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert not readiness.authenticated
     assert readiness.work_like_available is None
     assert readiness.work_like_reason is None
@@ -122,7 +127,7 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
         return subprocess.CompletedProcess(command, 0, "2.1.266", "")
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness("claude", binary=str(binary), host=host)
+    readiness = launcher.readiness(LoginKey("claude", host, MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.work_like_available is None
     assert _WORK_PROBE_REASON not in (readiness.work_like_reason or "")
     if host:
@@ -153,8 +158,8 @@ async def test_first_provider_error_contains_stderr_cause(
     monkeypatch.setattr(
         launcher,
         "readiness",
-        lambda provider, **kwargs: ProviderReadiness(
-            provider=provider, installed=True, authenticated=True, binary_path=str(binary)
+        lambda login, **kwargs: ProviderReadiness(
+            provider=login.provider, installed=True, authenticated=True, binary_path=str(binary)
         ),
     )
     # The task engine stops consuming on the first error. Exercise that exact edge.
@@ -234,17 +239,21 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     store = AppStore(tmp_path / "login.sqlite3")
     launcher = AgentLauncher(login_state=store.provider_login_state)
     binary = _claude_binary(tmp_path, work_ready=True)
-    assert launcher.readiness("claude", binary=str(binary)).authenticated
+    assert launcher.readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    ).authenticated
     store.mark_provider_login_failed(
         LoginKey("claude", "", MACHINE_LOGIN_ID),
         generation=0,
         detail="observed provider failure",
         source="turn",
     )
-    readiness = launcher.readiness("claude", binary=str(binary))
+    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert not readiness.authenticated
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
-    assert not launcher.cached_readiness("claude", binary=str(binary)).authenticated
+    assert not launcher.cached_readiness(
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+    ).authenticated
 
 
 @pytest.mark.parametrize("path", ["auth", "catalog", "work"])
@@ -287,7 +296,9 @@ def test_probe_failure_updates_account_only_for_provider_auth(
         )
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness("codex", binary=str(binary), refresh=True)
+    readiness = launcher.readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+    )
     assert (
         store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
     ) is blocked
@@ -356,10 +367,12 @@ def test_auto_research_retry_probes_authorizer_or_bound_added_login(tmp_path, mo
     launcher = AgentLauncher(accounts=accounts)
     seen = []
 
-    def ready(provider, *, login_id="", **kwargs):
-        seen.append(login_id)
+    def ready(login: LoginKey, **kwargs):
+        seen.append(login.login_id)
         return ProviderReadiness(
-            provider=provider, installed=True, authenticated=login_id == selected[0].login_id
+            provider=login.provider,
+            installed=True,
+            authenticated=login.login_id == selected[0].login_id,
         )
 
     monkeypatch.setattr(launcher, "readiness", ready)

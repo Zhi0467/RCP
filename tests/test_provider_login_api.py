@@ -134,7 +134,12 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     )
     credentials = ProviderCredentialStore(tmp_path / "providers")
     credentials.store_token(
-        "claude", "", "sk-ant-oat01-list-test", member_id="member", now=store.now()
+        "claude",
+        "",
+        "sk-ant-oat01-list-test",
+        member_id="member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
     accounts = ProviderAccounts(store, credentials)
     launcher = AgentLauncher(accounts=accounts)

@@ -430,28 +430,12 @@ def serialize_episode(
     if wrapup is not None and wrapup.provider is not None:
         accounts = ProviderAccounts.for_store(store)
         host = wrapup.execution_host or ""
-        previous = (
-            accounts.previous_login(
-                wrapup.provider,
-                host,
-                wrapup.native_session_id,
-                exclude_operation_id=wrapup.allocation_operation_id or "",
-            )
-            if wrapup.native_session_id
-            else None
-        )
-        selected, _ = accounts.resolve_login(
+        selected, _ = accounts.resolve_launch_login(
             wrapup.provider,
             host,
             episode.authorized_by.user_id if episode.authorized_by else None,
-            bound_login=(
-                accounts.bound_login(wrapup.provider, host, wrapup.native_session_id)
-                if wrapup.provider == "codex" and wrapup.native_session_id
-                else None
-            ),
-            previous_login=previous.login if previous else None,
-            previous_provider_started_at=previous.provider_started_at if previous else None,
-            previous_authorized_by=previous.authorized_by if previous else None,
+            session_id=wrapup.native_session_id,
+            exclude_operation_id=wrapup.allocation_operation_id or "",
         )
         report_login_blocked = isinstance(selected, LoginRefusal)
     health, next_step, task_control, blocked_reason = project_episode_health(

@@ -9,6 +9,7 @@ from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
+from rcp.storage.models import LoginKey
 
 from .test_provider_login_resolver import _limit, _login, _task
 from .test_provider_login_resolver import accounts as accounts
@@ -310,25 +311,25 @@ def test_readiness_cache_and_invalidation_are_per_login(accounts, monkeypatch):
     launcher = AgentLauncher(accounts=accounts)
     probes = []
 
-    def probe(provider, *, host, binary, refresh, login_id=""):
-        probes.append(login_id)
+    def probe(login: LoginKey, *, binary, refresh):
+        probes.append(login.login_id)
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             label="Codex",
             installed=True,
             authenticated=True,
-            version=login_id or "machine",
+            version=login.login_id or "machine",
         )
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     for key in (own, other, own, other):
-        assert launcher.readiness("codex", login_id=key.login_id).version == (
+        assert launcher.readiness(LoginKey("codex", "", key.login_id)).version == (
             key.login_id or "machine"
         )
     assert probes == [own.login_id, other.login_id]
-    launcher.invalidate_readiness("codex", login_id=own.login_id)
-    assert launcher.cached_readiness("codex", login_id=own.login_id) is None
-    assert launcher.cached_readiness("codex", login_id=other.login_id) is not None
+    launcher.invalidate_readiness(LoginKey("codex", "", own.login_id))
+    assert launcher.cached_readiness(LoginKey("codex", "", own.login_id)) is None
+    assert launcher.cached_readiness(LoginKey("codex", "", other.login_id)) is not None
 
 
 @pytest.mark.asyncio

@@ -32,11 +32,7 @@ def provider_login_row(
     visible = state.member_id is None or state.member_id == viewer_id
     owner = store.space_user(state.member_id) if state.member_id else None
     added_by = store.space_user(state.added_by) if state.added_by else None
-    status = (
-        sign_ins.running_sign_in(key.provider, key.host, login_id=key.login_id)
-        if sign_ins
-        else None
-    )
+    status = sign_ins.running_sign_in(key) if sign_ins else None
     if status and status.started_by != viewer_id:
         status = status.model_copy(
             update={

@@ -150,7 +150,9 @@ class ProviderLoginStoreMixin(StoreMixinBase):
     def add_provider_login(
         self, provider: str, host: str, *, member_id: str | None = None, added_by: str
     ) -> ProviderLoginStateRecord:
-        if provider == "opencode":
+        from rcp.providers import profile_for
+
+        if not profile_for(provider).authentication.manages_login:
             raise ValueError("OpenCode only supports the machine sign-in.")
         record = ProviderLoginStateRecord(
             provider=provider,

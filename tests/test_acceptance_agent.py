@@ -29,6 +29,7 @@ from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from tests.helpers import create_named_app as create_app
 from tests.helpers import signed_in_client
 
@@ -189,7 +190,7 @@ def test_acceptance_agent_reuse_refuses_an_owner_without_an_explicit_mode(
 def test_acceptance_launcher_refuses_remote_execution(tmp_path) -> None:
     launcher = AcceptanceAgentLauncher()
 
-    readiness = launcher.readiness("codex", host="fixture.invalid")
+    readiness = launcher.readiness(LoginKey("codex", "fixture.invalid", MACHINE_LOGIN_ID))
     events = asyncio.run(
         _events(
             launcher,

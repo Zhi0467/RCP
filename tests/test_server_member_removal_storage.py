@@ -457,9 +457,11 @@ def test_member_cleanup_keeps_a_credential_until_its_running_turn_ends(tmp_path)
     ],
 )
 def test_remote_cleanup_helper_preserves_other_files(tmp_path, monkeypatch, provider, relative):
-    from pathlib import Path
+    import importlib.resources
+    import subprocess
+    import sys
 
-    from rcp.server_ops.provider_cleanup import remove_remote_credential
+    from rcp.providers import profile_for
 
     login_id = str(uuid.uuid4())
     credential = tmp_path / relative.format(login_id)
@@ -467,7 +469,18 @@ def test_remote_cleanup_helper_preserves_other_files(tmp_path, monkeypatch, prov
     credential.write_text("secret")
     retained = credential.with_name("session.jsonl")
     retained.write_text("history")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    remove_remote_credential(provider, login_id)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = importlib.resources.files("rcp.server_ops").joinpath("provider_cleanup.py").read_text()
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            source,
+            login_id,
+            *profile_for(provider).remote_login_credential_files,
+        ],
+        check=True,
+    )
     assert not credential.exists()
     assert retained.read_text() == "history"

@@ -37,6 +37,13 @@ class PreviousProviderLogin:
     authorized_by: str | None
 
 
+@dataclass(frozen=True)
+class TurnLoginInputs:
+    lineage_login: LoginKey | None
+    bound_login: LoginKey | None
+    previous: PreviousProviderLogin | None
+
+
 def account_login_refusal(
     store: AppStore, credentials: ProviderCredentialStore, key: LoginKey
 ) -> str | None:
@@ -186,8 +193,9 @@ class ProviderAccounts:
         parent: AgentTaskRecord | None,
         *,
         graph_repair: bool = False,
+        lineage_receipt: bool = False,
     ) -> LoginKey | None:
-        """Only transport reattempts and the initial graph repair retain a parent login."""
+        """Transport reattempts and explicitly recorded graph-repair lineage retain a login."""
         if (
             parent is not None
             and parent.login_id is not None
@@ -196,11 +204,51 @@ class ProviderAccounts:
             and host == (parent.stage_host or "")
             and (
                 graph_repair
+                or lineage_receipt
                 or self.store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
             )
         ):
             return LoginKey(provider, host, parent.login_id)
         return None
+
+    def turn_inputs(
+        self,
+        provider: str,
+        host: str,
+        *,
+        session_id: str | None = None,
+        fork_session_id: str | None = None,
+        exclude_operation_id: str = "",
+        task: AgentTaskRecord | None = None,
+        inherit_parent: bool = False,
+        lineage_login: LoginKey | None = None,
+    ) -> TurnLoginInputs:
+        """Capture session facts once; callers explicitly choose whether to inherit lineage."""
+        if lineage_login is None and inherit_parent and task and task.parent_operation_id:
+            lineage_login = self.lineage_login(
+                provider,
+                host,
+                self.store.agent_task(task.parent_operation_id),
+                lineage_receipt=self.store.agent_task_has_receipt(
+                    task.operation_id, "provider_login_lineage"
+                ),
+            )
+        bound_session = session_id or fork_session_id
+        return TurnLoginInputs(
+            lineage_login=lineage_login,
+            bound_login=(
+                self.bound_login(provider, host, bound_session)
+                if bound_session and profile_for(provider).sessions_bound_to_login
+                else None
+            ),
+            previous=(
+                self.previous_login(
+                    provider, host, session_id, exclude_operation_id=exclude_operation_id
+                )
+                if session_id
+                else None
+            ),
+        )
 
     def resolve_launch_login(
         self,
@@ -211,27 +259,28 @@ class ProviderAccounts:
         session_id: str | None = None,
         fork_session_id: str | None = None,
         lineage_login: LoginKey | None = None,
+        exclude_operation_id: str = "",
+        task: AgentTaskRecord | None = None,
+        inherit_parent: bool = False,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
         """Dry-run admission and readiness with the same session and lineage policy."""
-        previous = (
-            self.previous_login(provider, host, session_id, exclude_operation_id="")
-            if session_id
-            else None
+        inputs = self.turn_inputs(
+            provider,
+            host,
+            session_id=session_id,
+            fork_session_id=fork_session_id,
+            lineage_login=lineage_login,
+            exclude_operation_id=exclude_operation_id,
+            task=task,
+            inherit_parent=inherit_parent,
         )
-        bound_session = session_id or fork_session_id
         return self.resolve_login(
             provider,
             host,
             member_id,
-            lineage_login=lineage_login,
-            bound_login=(
-                self.bound_login(provider, host, bound_session)
-                if bound_session and profile_for(provider).sessions_bound_to_login
-                else None
-            ),
-            previous_login=previous.login if previous else None,
-            previous_provider_started_at=previous.provider_started_at if previous else None,
-            previous_authorized_by=previous.authorized_by if previous else None,
+            lineage_login=inputs.lineage_login,
+            bound_login=inputs.bound_login,
+            previous=inputs.previous,
         )
 
     def resolve_login(
@@ -242,9 +291,7 @@ class ProviderAccounts:
         *,
         lineage_login: LoginKey | None = None,
         bound_login: LoginKey | None = None,
-        previous_login: LoginKey | None = None,
-        previous_provider_started_at: str | None = None,
-        previous_authorized_by: str | None = None,
+        previous: PreviousProviderLogin | None = None,
         dry_run: bool = True,
         operation_id: str | None = None,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
@@ -254,7 +301,7 @@ class ProviderAccounts:
         initial graph-repair correction. Codex forks supply their source's bound
         login. Human Resume and Retry are ordinary turn boundaries.
         """
-        for key in (lineage_login, bound_login, previous_login):
+        for key in (lineage_login, bound_login, previous.login if previous else None):
             if key is not None and (key.provider, key.host) != (provider, host):
                 raise ValueError("Session login does not match the launch provider and host.")
         result: tuple[LoginKey | LoginRefusal, LoginSwitchReason | None] | None = None
@@ -268,9 +315,7 @@ class ProviderAccounts:
                 member_id,
                 lineage_login=lineage_login,
                 bound_login=bound_login,
-                previous_login=previous_login,
-                previous_provider_started_at=previous_provider_started_at,
-                previous_authorized_by=previous_authorized_by,
+                previous=previous,
             )
             return result[0] if isinstance(result[0], LoginKey) else None
 
@@ -293,10 +338,9 @@ class ProviderAccounts:
         *,
         lineage_login: LoginKey | None,
         bound_login: LoginKey | None,
-        previous_login: LoginKey | None,
-        previous_provider_started_at: str | None,
-        previous_authorized_by: str | None,
+        previous: PreviousProviderLogin | None,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
+        previous_login = previous.login if previous else None
         machine = LoginKey(provider, host, MACHINE_LOGIN_ID)
         setting = self.store.provider_login_setting(
             member_id or "", provider, host, connection=connection
@@ -380,10 +424,10 @@ class ProviderAccounts:
                 row.login_id,
             )
 
-        previous = next((row for row in allowed if key_for(row) == previous_login), None)
+        previous_row = next((row for row in allowed if key_for(row) == previous_login), None)
         free = [row for row in allowed if not limited(row)]
-        if not free and previous is not None:
-            return key_for(previous), None
+        if not free and previous_row is not None:
+            return key_for(previous_row), None
         candidates = free or allowed
         chosen = None
         for source in sources:
@@ -394,8 +438,8 @@ class ProviderAccounts:
             ]
             if group:
                 chosen = (
-                    previous
-                    if previous in group and not limited(previous)
+                    previous_row
+                    if previous_row in group and not limited(previous_row)
                     else min(group, key=oldest)
                 )
                 break
@@ -412,14 +456,15 @@ class ProviderAccounts:
             reason: LoginSwitchReason = "unhealthy"
         elif self.store.provider_login_assignment(previous_login, connection=connection).limited_at:
             reason = "limited"
-        elif previous_authorized_by != member_id:
+        elif previous is not None and previous.authorized_by != member_id:
             reason = "sender_setting"
         elif (
             setting.changed_at
-            and previous_provider_started_at
+            and previous is not None
+            and previous.provider_started_at
             and (
                 _required_timestamp(setting.changed_at)
-                > _required_timestamp(previous_provider_started_at)
+                > _required_timestamp(previous.provider_started_at)
             )
         ):
             reason = "setting_changed"

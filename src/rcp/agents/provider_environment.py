@@ -152,24 +152,24 @@ class ProviderCredentialStore:
 
         return cls(data_dir / "providers")
 
-    def account_dir(self, provider: str, host: str, login_id: str = "") -> Path:
+    def account_dir(self, provider: str, host: str, login_id: str) -> Path:
         if provider in {"", ".", ".."}:
             raise ValueError("Invalid credential namespace.")
         validate_login_id(login_id)
         directory = self.root / quote(provider, safe="") / account_directory_name(host)
         return directory / "logins" / login_id if login_id else directory
 
-    def token_path(self, provider: str, host: str, login_id: str = "") -> Path:
+    def token_path(self, provider: str, host: str, login_id: str) -> Path:
         return self.account_dir(provider, host, login_id) / "setup-token"
 
-    def token_record(self, provider: str, host: str, login_id: str = "") -> CredentialRecord | None:
+    def token_record(self, provider: str, host: str, login_id: str) -> CredentialRecord | None:
         path = self.account_dir(provider, host, login_id) / "setup-token.json"
         try:
             return CredentialRecord.model_validate(json.loads(path.read_text()))
         except (OSError, ValueError):
             return None
 
-    def token(self, provider: str, host: str, login_id: str = "") -> str | None:
+    def token(self, provider: str, host: str, login_id: str) -> str | None:
         try:
             token = self.token_path(provider, host, login_id).read_text().strip()
         except OSError:
@@ -177,7 +177,7 @@ class ProviderCredentialStore:
         return token or None
 
     def store_token(
-        self, provider: str, host: str, token: str, *, member_id: str, now: str, login_id: str = ""
+        self, provider: str, host: str, token: str, *, member_id: str, now: str, login_id: str
     ) -> CredentialRecord:
         directory = self.account_dir(provider, host, login_id)
         directory.mkdir(parents=True, exist_ok=True)
@@ -188,7 +188,7 @@ class ProviderCredentialStore:
         return record
 
     def mark_token_verified(
-        self, provider: str, host: str, login_id: str = "", *, now: str
+        self, provider: str, host: str, login_id: str, *, now: str
     ) -> CredentialRecord | None:
         record = self.token_record(provider, host, login_id)
         if record is None:
@@ -200,7 +200,7 @@ class ProviderCredentialStore:
         )
         return record
 
-    def delete_token(self, provider: str, host: str, login_id: str = "") -> bool:
+    def delete_token(self, provider: str, host: str, login_id: str) -> bool:
         """Remove the token and its record; True when a token was stored."""
 
         existed = self.token_path(provider, host, login_id).exists()

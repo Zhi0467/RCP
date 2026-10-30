@@ -9,7 +9,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.api.episodes import serialize_episode
 from rcp.service import ProjectService, agent_login_accounts
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.models import LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .test_episode_api_serialization import _auto_episode, _begin_report, _branch_summary, _project
 
@@ -101,10 +101,10 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     store.set_provider_login_setting("viewer", "codex", "", "own")
     probed = []
 
-    def readiness(provider, *, host, binary, refresh, login_id):
-        probed.append((provider, login_id, refresh))
+    def readiness(login: LoginKey, *, binary, refresh):
+        probed.append((login.provider, login.login_id, refresh))
         return SimpleNamespace(
-            model_dump=lambda **_: {"authenticated": True, "models": [{"id": login_id}]}
+            model_dump=lambda **_: {"authenticated": True, "models": [{"id": login.login_id}]}
         )
 
     monkeypatch.setattr(launcher, "readiness", readiness)
@@ -229,14 +229,16 @@ def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
         return subprocess.CompletedProcess(command, returncode, diagnostic, "")
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness("codex", binary="/test/codex", refresh=True)
+    readiness = launcher.readiness(
+        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/test/codex", refresh=True
+    )
     assert not readiness.authenticated
     assert store.provider_login_state(machine).state == "signed_out"
     seen = []
 
-    def added_ready(provider, **kwargs):
-        seen.append(kwargs["login_id"])
-        return ProviderReadiness(provider=provider, installed=True, authenticated=True)
+    def added_ready(login: LoginKey, **kwargs):
+        seen.append(login.login_id)
+        return ProviderReadiness(provider=login.provider, installed=True, authenticated=True)
 
     monkeypatch.setattr(launcher, "readiness", added_ready)
     snapshot = ProjectService.viewer_readiness(

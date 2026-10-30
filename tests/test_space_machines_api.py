@@ -18,6 +18,7 @@ from rcp.agents import ProviderReadiness
 from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
 from rcp.projects import fill_space_machines, record_space_machines
+from rcp.storage.models import LoginKey
 from tests.helpers import create_named_app, signed_in_client
 from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_project_membership import _create_project, _team_app
@@ -812,11 +813,11 @@ def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> 
     )
     calls: list[str | None] = []
 
-    def readiness(provider, *, host="", binary=None, refresh=False):
-        assert (provider, host, refresh) == ("codex", "", True)
+    def readiness(login: LoginKey, *, binary=None, refresh=False):
+        assert (login.provider, login.host, refresh) == ("codex", "", True)
         calls.append(binary)
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             binary_path=binary or "/opt/new-agent/codex",

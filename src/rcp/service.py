@@ -120,7 +120,7 @@ from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.provider_login import parked_provider_work, provider_login_host
+from rcp.runs.provider_login import parked_provider_work, provider_login_host, task_login_host
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -1186,7 +1186,8 @@ def agent_login_accounts(
             for task in store.agent_tasks(project_id)
             if task.status == "queued"
             or (
-                task.request.get("provider") == "codex"
+                task.request.get("provider")
+                and profile_for(str(task.request["provider"])).sessions_bound_to_login
                 and task.failure_kind == "provider_auth"
                 and task.can_retry
             )
@@ -1201,13 +1202,9 @@ def agent_login_accounts(
             if task is None or not task.request.get("provider"):
                 continue
             provider = str(task.request["provider"])
-            host = (
-                task.stage_host or ""
-                if task.stage_host is not None or task.stage_root is not None
-                else provider_login_host(manifest, str(task.request.get("run_on") or "local"))
-            )
+            host = task_login_host(task, lambda: manifest)
             pairs.add((provider, host))
-            if provider == "codex" and task.native_session_id:
+            if profile_for(provider).sessions_bound_to_login and task.native_session_id:
                 bound = resolver.bound_login(provider, host, task.native_session_id)
                 if bound is not None:
                     accounts.add(bound)
@@ -2051,7 +2048,7 @@ class ProjectService:
             binary: str | None,
         ) -> dict[str, object]:
             readiness = launcher.readiness(
-                provider, host=host, binary=binary, refresh=refresh, login_id=MACHINE_LOGIN_ID
+                LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary, refresh=refresh
             )
             if refresh and provider_skills is not None:
                 try:
@@ -2879,8 +2876,7 @@ class ProjectService:
         if machine is None:
             return profile
         readiness = launcher.cached_readiness(
-            profile.provider,
-            host=machine.host,
+            LoginKey(profile.provider, machine.host, MACHINE_LOGIN_ID),
             binary=launcher.provider_binary(profile.provider, machine.host),
         )
         if readiness is None or not readiness.models:

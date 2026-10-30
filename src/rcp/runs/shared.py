@@ -967,58 +967,33 @@ async def _stream_agent_events(
     login_key = LoginKey(request.provider, execution_host, MACHINE_LOGIN_ID)
     accounts = ProviderAccounts.for_store(execution.store) if execution is not None else None
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
-    bound_session = session_id or fork.get("fork_session_id")
-    previous = (
-        accounts.previous_login(
+    inputs = (
+        accounts.turn_inputs(
             request.provider,
             execution_host,
-            session_id,
+            session_id=session_id,
+            fork_session_id=fork.get("fork_session_id"),
             exclude_operation_id=execution.operation_id,
+            task=task,
+            inherit_parent=True,
+            # Further provider passes retain the turn's captured login.
+            lineage_login=execution.login_key,
         )
-        if accounts is not None and execution is not None and session_id
+        if accounts is not None and execution is not None
         else None
     )
-    bound_login = (
-        accounts.bound_login(request.provider, execution_host, bound_session)
-        if accounts is not None and bound_session and request.provider == "codex"
-        else None
-    )
-    # Further provider passes inside this task retain the turn's captured login.
-    lineage_login = execution.login_key if execution is not None else None
-    if (
-        lineage_login is None
-        and accounts is not None
-        and execution is not None
-        and task is not None
-        and task.parent_operation_id
-    ):
-        parent = execution.store.agent_task(task.parent_operation_id)
-        if (
-            parent is not None
-            and parent.login_id is not None
-            and parent.request.get("provider") == request.provider
-            and (parent.stage_host or "") == execution_host
-            and (
-                execution.store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
-                or execution.store.agent_task_has_receipt(
-                    task.operation_id, "provider_login_lineage"
-                )
-            )
-        ):
-            lineage_login = LoginKey(request.provider, execution_host, parent.login_id)
 
     def assign_login() -> LoginKey | LoginRefusal:
         nonlocal login_key
         assert accounts is not None and execution is not None and request.provider is not None
+        assert inputs is not None
         resolved, reason = accounts.resolve_login(
             request.provider,
             execution_host,
             task.authorized_by.user_id if task is not None and task.authorized_by else None,
-            lineage_login=lineage_login,
-            bound_login=bound_login,
-            previous_login=previous.login if previous else None,
-            previous_provider_started_at=previous.provider_started_at if previous else None,
-            previous_authorized_by=previous.authorized_by if previous else None,
+            lineage_login=inputs.lineage_login,
+            bound_login=inputs.bound_login,
+            previous=inputs.previous,
             dry_run=False,
             operation_id=execution.operation_id,
         )
@@ -1034,6 +1009,7 @@ async def _stream_agent_events(
             return resolved
         login_key = resolved
         execution.login_key = resolved
+        previous = inputs.previous
         if previous is not None and resolved != previous.login and reason is not None:
             execution.store.record_agent_task_receipt(
                 execution.operation_id,
@@ -1055,7 +1031,12 @@ async def _stream_agent_events(
     async def login_unavailable(failed_login: LoginKey) -> LoginKey | None:
         nonlocal reselected
         assert execution is not None
-        if lineage_login is None and bound_login is None and not reselected:
+        if (
+            inputs is not None
+            and inputs.lineage_login is None
+            and inputs.bound_login is None
+            and not reselected
+        ):
             reselected = True
             resolved = await asyncio.to_thread(assign_login)
             if isinstance(resolved, LoginKey):

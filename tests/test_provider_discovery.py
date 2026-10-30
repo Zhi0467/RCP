@@ -10,6 +10,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.providers import profile_for
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.transport import provider_discovery
 from rcp.transport.state import _remote_script
 
@@ -68,7 +69,7 @@ def test_native_install_is_ready_without_path_or_symlink(
             return subprocess.run(command, capture_output=True, text=True, check=False)
 
         monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
-    readiness = AgentLauncher().readiness("opencode", host=host)
+    readiness = AgentLauncher().readiness(LoginKey("opencode", host, MACHINE_LOGIN_ID))
     assert readiness.installed and readiness.authenticated
     assert readiness.binary_path == str(binary)
     assert readiness.version == "1.18.33"
@@ -109,7 +110,9 @@ def test_invalid_native_install_is_not_discovered(account: Path, kind: str) -> N
 def test_invalid_configured_path_does_not_fall_back(account: Path) -> None:
     executable(account / ".opencode/bin/opencode")
     configured = str(account / "missing-configured-opencode")
-    readiness = AgentLauncher().readiness("opencode", binary=configured)
+    readiness = AgentLauncher().readiness(
+        LoginKey("opencode", "", MACHINE_LOGIN_ID), binary=configured
+    )
     assert not readiness.installed
     assert readiness.binary_path == configured
     assert readiness.path_state == "missing"

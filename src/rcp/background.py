@@ -1834,24 +1834,16 @@ class BackgroundAgentTasks:
             self.store.fail_agent_task(record.operation_id, str(exc))
             return self._require_operation(record.operation_id)
 
-        lineage_login = None
-        if record.parent_operation_id:
-            parent_login = self.store.agent_task(record.parent_operation_id)
-            if (
-                parent_login is not None
-                and parent_login.login_id is not None
-                and request.provider == parent_login.request.get("provider")
-                and (record.stage_host or "") == (parent_login.stage_host or "")
-                and (
-                    self.store.agent_task_has_receipt(operation_id, "provider_login_lineage")
-                    or self.store.agent_task_has_receipt(
-                        parent_login.operation_id, "transport_auto_retry"
-                    )
-                )
-            ):
-                lineage_login = LoginKey(
-                    str(request.provider), record.stage_host or "", parent_login.login_id
-                )
+        lineage_login = ProviderAccounts.for_store(self.store).lineage_login(
+            request.provider,
+            record.stage_host or "",
+            self.store.agent_task(record.parent_operation_id)
+            if record.parent_operation_id
+            else None,
+            lineage_receipt=self.store.agent_task_has_receipt(
+                operation_id, "provider_login_lineage"
+            ),
+        )
         self.admit_provider_task(
             record.project_id,
             request,

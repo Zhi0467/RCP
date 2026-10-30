@@ -26,6 +26,7 @@ from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
 from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 
 def _command(
@@ -44,7 +45,7 @@ def _command(
 
 def _scripted_launcher(monkeypatch, script):
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True, "path_state": "resolved"}
     )()
     monkeypatch.setattr(
@@ -118,7 +119,7 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
     release_forced = threading.Event()
     calls = 0
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -130,7 +131,7 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
             assert release_forced.wait(timeout=2)
             version = "refreshed-result"
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             version=version,
@@ -141,13 +142,12 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     binary = "/opt/agents/codex"
     with ThreadPoolExecutor(max_workers=4) as executor:
-        ordinary = executor.submit(launcher.readiness, "codex", binary=binary)
+        ordinary = executor.submit(
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary
+        )
         assert ordinary_entered.wait(timeout=1)
         forced = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary=binary,
-            refresh=True,
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary, refresh=True
         )
         assert forced_entered.wait(timeout=1)
         with launcher._readiness_lock:
@@ -161,15 +161,10 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
 
         monkeypatch.setattr(forced_probe.completed, "wait", signal_forced_wait)
         forced_follower = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary=binary,
-            refresh=True,
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary, refresh=True
         )
         ordinary_follower = executor.submit(
-            launcher.readiness,
-            "codex",
-            binary=binary,
+            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary
         )
         assert follower_waiting.wait(timeout=1)
         release_forced.set()
@@ -180,7 +175,10 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
         assert ordinary.result().version == "warm-result"
 
     assert calls == 2
-    assert launcher.readiness("codex", binary=binary).version == "refreshed-result"
+    assert (
+        launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary).version
+        == "refreshed-result"
+    )
 
 
 def test_provider_usage_is_normalized_at_provider_boundaries() -> None:
@@ -490,7 +488,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     launcher = AgentLauncher()
     launcher._MAX_EVENT_BYTES = 1024
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True}
     )()
 
@@ -657,7 +655,7 @@ async def test_stream_records_nonzero_provider_exit_before_error(
     tmp_path: Path,
 ) -> None:
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True}
     )()
     monkeypatch.setattr(
@@ -695,11 +693,11 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
     launcher = AgentLauncher()
     probes = 0
 
-    def probe(provider: str, *, host: str, binary: str | None, **_) -> ProviderReadiness:
+    def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
         nonlocal probes
         probes += 1
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=True,
             authenticated=True,
             binary_path=binary,
@@ -713,7 +711,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
         lambda *args, **kwargs: [sys.executable, "-c", "raise SystemExit(7)"],
     )
     binary = "/opt/agents/codex"
-    launcher.readiness("codex", binary=binary)
+    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary)
 
     events = [
         event
@@ -728,7 +726,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
 
     assert probes == 1
     assert events[-1].event == "error"
-    launcher.readiness("codex", binary=binary)
+    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary)
     assert probes == 2
 
 
@@ -738,8 +736,8 @@ async def test_stream_launches_an_authenticated_discovered_path_without_manual_r
     tmp_path: Path,
 ) -> None:
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, **_kwargs: ProviderReadiness(
-        provider=provider,
+    launcher.readiness = lambda login, **_kwargs: ProviderReadiness(
+        provider=login.provider,
         installed=True,
         authenticated=True,
         binary_path="/home/agent/.local/bin/codex",
@@ -772,14 +770,14 @@ async def test_cold_readiness_does_not_block_stream_event_loop(tmp_path: Path) -
     entered = threading.Event()
     release = threading.Event()
 
-    def readiness(provider: str, *, host: str = "") -> ProviderReadiness:
+    def readiness(login: LoginKey, *, binary=None) -> ProviderReadiness:
         entered.set()
         assert release.wait(timeout=2)
         return ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             installed=False,
             authenticated=False,
-            reason=f"{host or 'local'} unavailable",
+            reason=f"{login.host or 'local'} unavailable",
         )
 
     launcher.readiness = readiness
@@ -803,7 +801,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
     tmp_path: Path,
 ) -> None:
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True}
     )()
     monkeypatch.setattr(

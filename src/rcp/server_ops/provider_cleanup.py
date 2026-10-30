@@ -20,18 +20,14 @@ if TYPE_CHECKING:
     from rcp.storage.models import LoginKey
 
 
-def remove_remote_credential(provider: str, login_id: str) -> None:
+def remove_remote_credential(login_id: str, relative_paths: tuple[str, ...]) -> None:
     """Delete one added login's credential on the execution account."""
     parsed = UUID(login_id)
     if parsed.version != 4 or str(parsed) != login_id:
         raise ValueError("Login id must be UUID4 text.")
-    if provider == "claude":
-        path = Path.home() / ".config" / "rcp" / "logins" / login_id / "claude-setup-token"
-    elif provider == "codex":
-        path = Path.home() / ".rcp" / "provider-homes" / "codex" / login_id / "auth.json"
-    else:
-        raise ValueError("Provider has no added credentials.")
-    path.unlink(missing_ok=True)
+    for relative in relative_paths:
+        path = Path.home() / relative.format(login_id=login_id)
+        path.unlink(missing_ok=True)
 
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
@@ -86,21 +82,24 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
     """
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
+    from rcp.providers import profile_for
     from rcp.transport.ssh import ssh_arguments
 
     if not login.login_id:
         raise ValueError("The machine sign-in cannot be removed.")
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
-    if login.provider == "claude":
-        credentials.delete_token(*login)
-    elif login.provider == "codex":
-        (credentials.account_dir(*login) / "codex-home" / "auth.json").unlink(missing_ok=True)
-    else:
+    profile = profile_for(login.provider)
+    if not profile.login_credential_files:
         raise ValueError("Provider has no added credentials.")
+    directory = credentials.account_dir(*login)
+    for relative in profile.login_credential_files:
+        (directory / relative).unlink(missing_ok=True)
     if not login.host:
         return True
     source = importlib.resources.files("rcp.server_ops").joinpath("provider_cleanup.py").read_text()
-    command = shlex.join(["python3", "-c", source, login.provider, login.login_id])
+    command = shlex.join(
+        ["python3", "-c", source, login.login_id, *profile.remote_login_credential_files]
+    )
     try:
         result = subprocess.run(
             ssh_arguments(login.host, command),
@@ -116,4 +115,4 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
 if __name__ == "__main__":
     import sys
 
-    remove_remote_credential(sys.argv[1], sys.argv[2])
+    remove_remote_credential(sys.argv[1], tuple(sys.argv[2:]))

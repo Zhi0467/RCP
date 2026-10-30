@@ -41,6 +41,7 @@ from rcp.storage import (
     ProjectProvisioningProviderCheckRecord,
     ProjectProvisioningRequestRecord,
 )
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 ProviderSelectorKind = Literal["request", "project"]
 _PROFILE_CAPABILITY: dict[AgentExecutionProfile, AgentCapability] = {
@@ -475,8 +476,7 @@ class ProviderReadinessCoordinator:
                 None,
             )
         readiness = self.launcher.readiness(
-            target.provider,
-            host=target.host,
+            LoginKey(target.provider, target.host, MACHINE_LOGIN_ID),
             binary=target.binary_path,
             refresh=True,
         )

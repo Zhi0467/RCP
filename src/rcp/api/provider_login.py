@@ -212,13 +212,12 @@ def verify_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
+    login = LoginKey(provider, body.host, body.login_id)
     try:
-        state = sign_ins.verify(
-            provider, body.host, member_id=member.user_id, login_id=body.login_id
-        )
+        state = sign_ins.verify(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    counts = sign_ins.resume_counts(provider, body.host, login_id=body.login_id)
+    counts = sign_ins.resume_counts(login)
     return {
         "state": state.model_dump(
             mode="json",
@@ -236,10 +235,9 @@ def start_provider_sign_in(
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
     member = get_identity_access(request).acting_user(request)
+    login = LoginKey(provider, body.host, body.login_id)
     try:
-        return sign_ins.start_sign_in(
-            provider, body.host, member_id=member.user_id, login_id=body.login_id
-        )
+        return sign_ins.start_sign_in(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
 
@@ -283,13 +281,12 @@ def save_provider_token(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
+    login = LoginKey(provider, body.host, body.login_id)
     try:
-        state = sign_ins.save_token(
-            provider, body.host, body.token, member_id=member.user_id, login_id=body.login_id
-        )
+        state = sign_ins.save_token(login, body.token, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    counts = sign_ins.resume_counts(provider, body.host, login_id=body.login_id)
+    counts = sign_ins.resume_counts(login)
     return {
         "state": state.model_dump(
             mode="json",
@@ -307,10 +304,9 @@ def sign_out_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
+    login = LoginKey(provider, body.host, body.login_id)
     try:
-        state = sign_ins.sign_out(
-            provider, body.host, member_id=member.user_id, login_id=body.login_id
-        )
+        state = sign_ins.sign_out(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     return {
@@ -428,7 +424,7 @@ def add_provider_login(
     if "device_code" in profile_for(provider).authentication.methods:
         try:
             status = sign_ins.start_sign_in(
-                provider, body.host, member_id=member.user_id, login_id=state.login_id
+                LoginKey(provider, body.host, state.login_id), member_id=member.user_id
             )
         except ProviderLoginRefused as exc:
             raise _refused(exc) from exc

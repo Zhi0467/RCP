@@ -76,7 +76,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
             yield _sse(AgentEvent(event="done"))
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
-        "claude", "", "test-token", member_id="member", now=store.now()
+        "claude", "", "test-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
     )
     background = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(background)

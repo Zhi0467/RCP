@@ -76,18 +76,25 @@ def credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProviderCred
     for name in CLAUDE_CONFLICTING_VARIABLES:
         monkeypatch.setenv(name, "a-member-shell-value")
     store = ProviderCredentialStore(tmp_path / "providers")
-    store.store_token("claude", "", TOKEN, member_id="member", now="2026-09-14T10:00:00+00:00")
+    store.store_token(
+        "claude",
+        "",
+        TOKEN,
+        member_id="member",
+        now="2026-09-14T10:00:00+00:00",
+        login_id=MACHINE_LOGIN_ID,
+    )
     return store
 
 
 def test_token_is_stored_privately_and_the_record_is_secret_free(
     credentials: ProviderCredentialStore,
 ) -> None:
-    path = credentials.token_path("claude", "")
+    path = credentials.token_path("claude", "", login_id=MACHINE_LOGIN_ID)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
-    assert credentials.token("claude", "") == TOKEN
-    record = credentials.token_record("claude", "")
+    assert credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == TOKEN
+    record = credentials.token_record("claude", "", login_id=MACHINE_LOGIN_ID)
     assert record is not None and record.pasted_by == "member" and record.verified_at is None
     assert TOKEN not in (path.parent / "setup-token.json").read_text()
     with pytest.raises(ValueError):
@@ -115,7 +122,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
         is None
     )
 
-    credentials.delete_token("claude", "")
+    credentials.delete_token("claude", "", login_id=MACHINE_LOGIN_ID)
     without = (
         AgentLauncher(credentials=credentials)
         .process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID))
@@ -136,7 +143,9 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
         .remote_prefix
         == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
     )
-    credentials.store_token("claude", host, TOKEN, member_id="member", now="now")
+    credentials.store_token(
+        "claude", host, TOKEN, member_id="member", now="now", login_id=MACHINE_LOGIN_ID
+    )
     prefix = (
         AgentLauncher(credentials=credentials)
         .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
@@ -168,7 +177,7 @@ async def test_every_local_claude_start_receives_the_stored_token(
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(credentials=credentials, readiness_snapshots=store)
 
-    readiness = launcher.readiness("claude", binary=str(binary))
+    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.authenticated and readiness.work_like_available
 
     skills = ProviderSkillInventoryManager(
@@ -209,7 +218,7 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     binary = _fake_claude(tmp_path)
     store = AppStore(tmp_path / "app.sqlite3")
     first = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        "claude", binary=str(binary)
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
     )
     probed = [start["argv"] for start in _starts(tmp_path)]
     assert ["auth", "status"] in probed
@@ -217,20 +226,20 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
 
     # A new process has no memory; the durable snapshot answers for it.
     fresh = AgentLauncher(credentials=credentials, readiness_snapshots=store)
-    reused = fresh.readiness("claude", binary=str(binary))
+    reused = fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert reused == first
     assert [start["argv"] for start in _starts(tmp_path)] == [["--version"]]
     (tmp_path / "starts.jsonl").unlink()
 
     # An explicit Refresh is the human asking for a real probe.
-    fresh.readiness("claude", binary=str(binary), refresh=True)
+    fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     (tmp_path / "starts.jsonl").unlink()
 
     # An upgraded executable is probed again, and the snapshot follows it.
     (tmp_path / "version.txt").write_text("2.1.271 (Claude Code)\n")
     upgraded = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        "claude", binary=str(binary)
+        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
     )
     assert upgraded.version == "2.1.271 (Claude Code)"
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
@@ -274,11 +283,20 @@ def test_account_paths_do_not_collide_and_deletion_is_isolated(tmp_path: Path) -
     credentials = ProviderCredentialStore(tmp_path / "providers")
     hosts = ["", "local", "account/host", "account_host", "account:host"]
     for index, host in enumerate(hosts):
-        credentials.store_token("claude", host, f"token-{index}", member_id="member", now="now")
-    assert len({credentials.token_path("claude", host) for host in hosts}) == len(hosts)
-    credentials.delete_token("claude", "account/host")
+        credentials.store_token(
+            "claude",
+            host,
+            f"token-{index}",
+            member_id="member",
+            now="now",
+            login_id=MACHINE_LOGIN_ID,
+        )
+    assert len(
+        {credentials.token_path("claude", host, login_id=MACHINE_LOGIN_ID) for host in hosts}
+    ) == len(hosts)
+    credentials.delete_token("claude", "account/host", login_id=MACHINE_LOGIN_ID)
     for index, host in enumerate(hosts):
-        assert credentials.token("claude", host) == (
+        assert credentials.token("claude", host, login_id=MACHINE_LOGIN_ID) == (
             None if host == "account/host" else f"token-{index}"
         )
 
@@ -421,7 +439,7 @@ def test_added_claude_token_isolated_from_machine(
     )
     environment = CLAUDE.process_environment(credentials, host, login_id)
     assert credentials.token("claude", host, login_id) == "added-token"
-    assert credentials.token("claude", "") == TOKEN
+    assert credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == TOKEN
     if host:
         assert f"logins/{login_id}/claude-setup-token" in (environment.remote_prefix or "")
         assert "added-token" not in (environment.remote_prefix or "")

@@ -170,7 +170,7 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True}
     )()
 
@@ -546,7 +546,7 @@ async def test_closing_the_stream_at_the_remote_reservation_frees_the_credential
     """
 
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="", binary=None: type(
+    launcher.readiness = lambda login, binary=None: type(
         "R",
         (),
         {
@@ -611,7 +611,7 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, "", "")
 
     launcher._probe = probe
-    launcher.readiness("claude", binary=str(binary))
+    launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
 
     assert "status" in holding, "the authentication probe never ran"
 
@@ -632,7 +632,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
 
     store = AppStore(tmp_path / "app.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
-    credentials.store_token("claude", "", "old-token", member_id="member", now=store.now())
+    credentials.store_token(
+        "claude", "", "old-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+    )
     accounts = ProviderAccounts(store, credentials)
     launcher = AgentLauncher(accounts=accounts)
     ProviderSignInRunner(store, launcher, accounts)
@@ -675,7 +677,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
 
     pending = asyncio.create_task(consume())
     await asyncio.wait_for(waiting.wait(), timeout=5)
-    credentials.store_token("claude", "", "new-token", member_id="member", now=store.now())
+    credentials.store_token(
+        "claude", "", "new-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+    )
     repaired = store.mark_provider_login_verified(
         LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
     )
@@ -707,7 +711,7 @@ async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
         )
     )
     launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
+    launcher.readiness = lambda login, *, binary=None: type(
         "Readiness", (), {"installed": True, "authenticated": True}
     )()
     monkeypatch.setattr(

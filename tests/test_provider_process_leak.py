@@ -12,6 +12,7 @@ from rcp.agents import launcher as launcher_module
 from rcp.agents.launcher import AgentLauncher, AgentProcessControl
 from rcp.config import Manifest
 from rcp.providers import PROVIDER_IDS
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_until
@@ -27,7 +28,7 @@ def test_local_provider_discovery_stays_unconfigured(provider: str) -> None:
     """
 
     assert launcher_module._discover_local_provider(provider) is None
-    readiness = AgentLauncher().readiness(provider)
+    readiness = AgentLauncher().readiness(LoginKey(provider, "", MACHINE_LOGIN_ID))
     assert readiness.installed is False
     assert readiness.authenticated is False
     assert readiness.path_state == "unconfigured"

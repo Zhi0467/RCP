@@ -411,6 +411,10 @@ class ProviderProfile:
     session_format: SessionFormat | None = None
     #: Native sessions live in the login home and cannot change credentials.
     sessions_bound_to_login: bool = False
+    #: Credential-only cleanup paths relative to an added login's local account directory.
+    login_credential_files: tuple[str, ...] = ()
+    #: Execution-home-relative cleanup paths, with a UUID4 {login_id} placeholder.
+    remote_login_credential_files: tuple[str, ...] = ()
     #: The execution-host turn fence for each of this provider's runtime ids.
     turn_fences: dict[str, type[TurnFence]]
     #: What a machine card's auto-compact field accepts for this CLI; None

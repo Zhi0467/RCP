@@ -776,39 +776,26 @@ class AgentLauncher:
         )
 
     def _observe_probe_failure(
-        self,
-        provider: str,
-        host: str,
-        result: subprocess.CompletedProcess[str],
-        generation: int,
-        login_id: str = MACHINE_LOGIN_ID,
+        self, login: LoginKey, result: subprocess.CompletedProcess[str], generation: int
     ) -> bool:
-        evidence = profile_for(provider).probe_failure_evidence(result)
+        evidence = profile_for(login.provider).probe_failure_evidence(result)
         if self.accounts is not None:
             return self.accounts.observe_failure(
-                LoginKey(provider, host, login_id),
+                login,
                 generation=generation,
                 evidence=evidence,
                 source="probe",
             )
-        return profile_for(provider).credential_failure(evidence)
+        return profile_for(login.provider).credential_failure(evidence)
 
-    def _with_login_state(
-        self, readiness: ProviderReadiness, host: str, login_id: str = MACHINE_LOGIN_ID
-    ) -> ProviderReadiness:
-        reason = self._login_refusal(LoginKey(readiness.provider, host, login_id))
+    def _with_login_state(self, readiness: ProviderReadiness, login: LoginKey) -> ProviderReadiness:
+        reason = self._login_refusal(login)
         if reason is not None:
             return readiness.model_copy(update={"authenticated": False, "reason": reason})
         return readiness
 
     def readiness(
-        self,
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        refresh: bool = False,
-        login_id: str = MACHINE_LOGIN_ID,
+        self, login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
         """Return one app-scoped capability, probing only when it is not known.
 
@@ -818,10 +805,10 @@ class AgentLauncher:
         ``unconfigured`` state tells settings that no stable path is saved yet.
         """
 
-        key = (provider, host, binary, login_id)
+        key = (login.provider, login.host, binary, login.login_id)
         with self._readiness_lock:
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
-                return self._with_login_state(cached.model_copy(deep=True), host, login_id)
+                return self._with_login_state(cached.model_copy(deep=True), login)
             forced_key = (*key, True)
             probe_key = forced_key if refresh else (*key, False)
             # An ordinary caller can use a forced probe already in flight. A
@@ -843,16 +830,10 @@ class AgentLauncher:
             if probe.error is not None:
                 raise probe.error
             assert probe.result is not None
-            return self._with_login_state(probe.result.model_copy(deep=True), host, login_id)
+            return self._with_login_state(probe.result.model_copy(deep=True), login)
 
         try:
-            result = self._readiness_uncached(
-                provider,
-                host=host,
-                binary=binary,
-                refresh=refresh,
-                **({"login_id": login_id} if login_id else {}),
-            )
+            result = self._readiness_uncached(login, binary=binary, refresh=refresh)
         except BaseException as exc:
             with self._readiness_lock:
                 if self._readiness_generations.get(key, 0) == generation:
@@ -874,7 +855,7 @@ class AgentLauncher:
             probe.result = result.model_copy(deep=True)
             self._readiness_probes.pop(probe_key, None)
             probe.completed.set()
-        return self._with_login_state(result, host, login_id)
+        return self._with_login_state(result, login)
 
     def member_readiness(
         self,
@@ -910,40 +891,24 @@ class AgentLauncher:
             login = resolved
         if login.login_id == MACHINE_LOGIN_ID and machine_readiness is not None:
             return machine_readiness
-        return self.readiness(
-            provider, host=host, binary=binary, refresh=refresh, login_id=login.login_id
-        )
+        return self.readiness(login, binary=binary, refresh=refresh)
 
     def cached_readiness(
-        self,
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        login_id: str = MACHINE_LOGIN_ID,
+        self, login: LoginKey, *, binary: str | None = None
     ) -> ProviderReadiness | None:
         """Return one already-probed capability, or None rather than probing."""
 
         with self._readiness_lock:
-            cached = self._readiness_cache.get((provider, host, binary, login_id))
+            cached = self._readiness_cache.get((login.provider, login.host, binary, login.login_id))
         return (
-            None
-            if cached is None
-            else self._with_login_state(cached.model_copy(deep=True), host, login_id)
+            None if cached is None else self._with_login_state(cached.model_copy(deep=True), login)
         )
 
-    def invalidate_readiness(
-        self,
-        provider: str,
-        *,
-        host: str = "",
-        binary: str | None = None,
-        login_id: str = MACHINE_LOGIN_ID,
-    ) -> None:
+    def invalidate_readiness(self, login: LoginKey, *, binary: str | None = None) -> None:
         """Forget one exact capability without disturbing other projects."""
 
         with self._readiness_lock:
-            key = (provider, host, binary, login_id)
+            key = (login.provider, login.host, binary, login.login_id)
             self._readiness_cache.pop(key, None)
             self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
 
@@ -978,22 +943,17 @@ class AgentLauncher:
         return ProviderExecutionAccount(host=host, reachable=True, os_account=account)
 
     def _readiness_uncached(
-        self,
-        provider: str,
-        *,
-        host: str,
-        binary: str | None,
-        refresh: bool = False,
-        login_id: str = MACHINE_LOGIN_ID,
+        self, login: LoginKey, *, binary: str | None, refresh: bool = False
     ) -> ProviderReadiness:
-        profile = profile_for(provider)
+        host = login.host
+        profile = profile_for(login.provider)
         configured = binary is not None
         candidate = binary
         if configured:
             path_state, path_problem, link_lost = self._configured_path_state(binary, host=host)
             if path_state != "resolved":
                 return ProviderReadiness(
-                    provider=provider,
+                    provider=login.provider,
                     label=profile.label,
                     installed=False,
                     authenticated=False,
@@ -1004,23 +964,23 @@ class AgentLauncher:
                 )
             installed = True
         elif host:
-            installed_probe, candidate = self._discover_remote_provider(provider, host)
+            installed_probe, candidate = self._discover_remote_provider(login.provider, host)
             if installed_probe.returncode == 255:
-                return _unreachable_readiness(provider, installed_probe, host=host)
+                return _unreachable_readiness(login.provider, installed_probe, host=host)
             installed = candidate is not None
         else:
-            candidate = _discover_local_provider(provider)
+            candidate = _discover_local_provider(login.provider)
             installed = candidate is not None
         if not installed or candidate is None:
             where = f" on {host}" if host else ""
             reason = (
-                f"No {provider} executable is recorded; the CLI is not installed "
+                f"No {login.provider} executable is recorded; the CLI is not installed "
                 f"or discoverable{where}."
             )
             if host and installed_probe.returncode != 1:
                 reason = _discovery_failure_reason(host, installed_probe)
             return ProviderReadiness(
-                provider=provider,
+                provider=login.provider,
                 label=profile.label,
                 installed=False,
                 authenticated=False,
@@ -1029,22 +989,20 @@ class AgentLauncher:
             )
         # `--version` needs no model request. Prepare its provider environment
         # under the account gate too, then reuse unchanged credential-touching answers.
-        with self.credential_gate.hold_blocking(LoginKey(provider, host, login_id)):
-            version_environment = self.process_environment(LoginKey(provider, host, login_id))
+        with self.credential_gate.hold_blocking(login):
+            version_environment = self.process_environment(login)
             version_result = self._probe(
                 host, [candidate, "--version"], environment=version_environment
             )
         if host and version_result.returncode == 255:
             return _unreachable_readiness(
-                provider, version_result, host=host, binary_path=candidate
+                login.provider, version_result, host=host, binary_path=candidate
             )
         version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
         version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
         path_state: ProviderPathState = "resolved" if configured else "unconfigured"
         if not refresh and version is not None and self.readiness_snapshots is not None:
-            snapshot = self.readiness_snapshots.provider_readiness_snapshot(
-                LoginKey(provider, host, login_id), candidate
-            )
+            snapshot = self.readiness_snapshots.provider_readiness_snapshot(login, candidate)
             if snapshot is not None and snapshot.version == version:
                 stored = ProviderReadiness.model_validate_json(snapshot.readiness_json)
                 return stored.model_copy(
@@ -1053,26 +1011,21 @@ class AgentLauncher:
         # Every probe below reads the login and can rotate the same token a turn
         # does. One hold covers the sequence rather than handing the credential
         # back between probes that belong to a single readiness answer.
-        with self.credential_gate.hold_blocking(LoginKey(provider, host, login_id)):
-            login_reason = self._login_refusal(LoginKey(provider, host, login_id))
-            generation = (
-                self.login_state(LoginKey(provider, host, login_id)).generation
-                if self.login_state
-                else 0
-            )
-            environment = self.process_environment(LoginKey(provider, host, login_id))
+        with self.credential_gate.hold_blocking(login):
+            login_reason = self._login_refusal(login)
+            generation = self.login_state(login).generation if self.login_state else 0
+            environment = self.process_environment(login)
             authenticated = False
             if login_reason is None:
                 auth = self._probe(host, profile.auth_command(candidate), environment=environment)
                 if host and auth.returncode == 255:
-                    return _unreachable_readiness(provider, auth, host=host, binary_path=candidate)
-                authenticated = profile.is_authenticated(auth)
-                if self._observe_probe_failure(provider, host, auth, generation, login_id):
-                    authenticated = False
-                    login_reason = (
-                        self._login_refusal(LoginKey(provider, host, login_id))
-                        or "Provider sign-in is required."
+                    return _unreachable_readiness(
+                        login.provider, auth, host=host, binary_path=candidate
                     )
+                authenticated = profile.is_authenticated(auth)
+                if self._observe_probe_failure(login, auth, generation):
+                    authenticated = False
+                    login_reason = self._login_refusal(login) or "Provider sign-in is required."
             # Enumerate only once the CLI is known to answer. An unauthenticated
             # catalog probe just costs a subprocess to learn what auth already said.
             catalog_command = profile.catalog_command(candidate) if authenticated else None
@@ -1082,15 +1035,12 @@ class AgentLauncher:
                 else None
             )
             if catalog is not None and host and catalog.returncode == 255:
-                return _unreachable_readiness(provider, catalog, host=host, binary_path=candidate)
-            if catalog is not None and self._observe_probe_failure(
-                provider, host, catalog, generation, login_id
-            ):
-                authenticated = False
-                login_reason = (
-                    self._login_refusal(LoginKey(provider, host, login_id))
-                    or "Provider sign-in is required."
+                return _unreachable_readiness(
+                    login.provider, catalog, host=host, binary_path=candidate
                 )
+            if catalog is not None and self._observe_probe_failure(login, catalog, generation):
+                authenticated = False
+                login_reason = self._login_refusal(login) or "Provider sign-in is required."
             work_like_available = None
             work_like_reason = None
             work_command = profile.work_like_probe_command(candidate) if authenticated else None
@@ -1098,15 +1048,12 @@ class AgentLauncher:
                 work_probe = self._probe(host, work_command, environment=environment)
                 if host and work_probe.returncode == 255:
                     return _unreachable_readiness(
-                        provider, work_probe, host=host, binary_path=candidate
+                        login.provider, work_probe, host=host, binary_path=candidate
                     )
-                if self._observe_probe_failure(provider, host, work_probe, generation, login_id):
+                if self._observe_probe_failure(login, work_probe, generation):
                     authenticated = False
                     work_like_available = False
-                    login_reason = (
-                        self._login_refusal(LoginKey(provider, host, login_id))
-                        or "Provider sign-in is required."
-                    )
+                    login_reason = self._login_refusal(login) or "Provider sign-in is required."
                     work_like_reason = login_reason
                 elif work_probe.returncode == 255:
                     where = f" on {host}" if host else ""
@@ -1123,7 +1070,7 @@ class AgentLauncher:
                             or f"{profile.label} Work readiness probe exited {work_probe.returncode}."
                         )
         result = ProviderReadiness(
-            provider=provider,
+            provider=login.provider,
             label=profile.label,
             installed=True,
             authenticated=authenticated,
@@ -1134,12 +1081,12 @@ class AgentLauncher:
             path_state=path_state,
             reason=login_reason
             or (
-                f"{provider} was found at {candidate}; using the discovered path until a saved path is provided."
+                f"{login.provider} was found at {candidate}; using the discovered path until a saved path is provided."
                 if authenticated and not configured
                 else (
                     None
                     if authenticated
-                    else f"{provider} CLI is not authenticated{f' on {host}' if host else ''}."
+                    else f"{login.provider} CLI is not authenticated{f' on {host}' if host else ''}."
                 )
             ),
             models=profile.models(catalog) if authenticated else [],
@@ -1148,11 +1095,11 @@ class AgentLauncher:
         # the snapshot keeps what the probes themselves said.
         if version is not None and self.readiness_snapshots is not None and login_reason is None:
             self.readiness_snapshots.save_provider_readiness_snapshot(
-                LoginKey(provider, host, login_id),
+                login,
                 ProviderReadinessSnapshotRecord(
-                    provider=provider,
+                    provider=login.provider,
                     host=host,
-                    login_id=login_id,
+                    login_id=login.login_id,
                     binary=candidate,
                     version=version,
                     readiness_json=result.model_dump_json(),
@@ -1398,20 +1345,7 @@ class AgentLauncher:
         if (login_key.provider, login_key.host) != (provider, host):
             raise ValueError("Login does not match the provider execution host.")
         while True:
-            if login_key.login_id:
-                readiness = await asyncio.to_thread(
-                    self.readiness,
-                    provider,
-                    host=host,
-                    binary=binary,
-                    login_id=login_key.login_id,
-                )
-            elif binary is not None:
-                readiness = await asyncio.to_thread(
-                    self.readiness, provider, host=host, binary=binary
-                )
-            else:
-                readiness = await asyncio.to_thread(self.readiness, provider, host=host)
+            readiness = await asyncio.to_thread(self.readiness, login_key, binary=binary)
             if self._login_refusal(login_key) is None or login_unavailable is None:
                 break
             replacement = await login_unavailable(login_key)
@@ -1648,9 +1582,7 @@ class AgentLauncher:
             if host and remote_pid_file:
                 yield AgentEvent(event="remote_process_stop", text=remote_pid_file)
             if runtime.id == profile.legacy_runtime_id:
-                self.invalidate_readiness(
-                    provider, host=host, binary=binary, login_id=login_key.login_id
-                )
+                self.invalidate_readiness(login_key, binary=binary)
             logger.warning(
                 "provider process failed to start provider=%s capability=%s runtime=%s "
                 "host=%s executable=%s operation=%s error=%s",
@@ -2053,19 +1985,13 @@ class AgentLauncher:
             elif provider_failed:
                 # The first error already includes stderr. A forced stop must
                 # not invent a second failure from our own termination signal.
-                self.invalidate_readiness(
-                    provider, host=host, binary=binary, login_id=login_key.login_id
-                )
+                self.invalidate_readiness(login_key, binary=binary)
             elif return_code and not stopped_at_result:
-                self.invalidate_readiness(
-                    provider, host=host, binary=binary, login_id=login_key.login_id
-                )
+                self.invalidate_readiness(login_key, binary=binary)
                 detail = turn.last_error or stderr or _exit_reason(provider, return_code, host)
                 yield AgentEvent(event="error", text=detail)
             elif turn.requires_protocol_completion and not protocol_complete:
-                self.invalidate_readiness(
-                    provider, host=host, binary=binary, login_id=login_key.login_id
-                )
+                self.invalidate_readiness(login_key, binary=binary)
                 yield AgentEvent(
                     event="error",
                     text=f"{provider} closed its provider protocol before the turn completed.",

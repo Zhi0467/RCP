@@ -7,7 +7,7 @@ from threading import Barrier
 
 import pytest
 
-from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
+from rcp.agents.provider_accounts import LoginRefusal, PreviousProviderLogin, ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.storage import AppStore
 from rcp.storage.models import LoginKey
@@ -99,7 +99,9 @@ def test_every_allowed_limited_keeps_continued_session(accounts, setting):
     _limit(accounts, shared)
     accounts.store.set_provider_login_setting("member", "claude", "", setting)
     previous = own if setting == "own" else shared
-    assert accounts.resolve_login("claude", "", "member", previous_login=previous) == (
+    assert accounts.resolve_login(
+        "claude", "", "member", previous=PreviousProviderLogin(previous, accounts.store.now(), None)
+    ) == (
         previous,
         None,
     )
@@ -115,9 +117,7 @@ def test_lapse_reorders_fresh_sessions_but_evidence_moves_continued(accounts, mo
     monkeypatch.setattr(accounts.store, "now", lambda: later.isoformat())
     assert accounts.resolve_login("claude", "", "member") == (own, None)
     continuation = dict(
-        previous_login=shared,
-        previous_authorized_by="member",
-        previous_provider_started_at=previous_start,
+        previous=PreviousProviderLogin(shared, previous_start, "member"),
     )
     assert accounts.resolve_login("claude", "", "member", **continuation) == (shared, None)
     accounts.store.mark_provider_login_verified(own, member_id="member", detail="ok")
@@ -148,9 +148,7 @@ def test_switch_reason_precedence(accounts, monkeypatch, previous_member, change
         "claude",
         "",
         "member",
-        previous_login=shared,
-        previous_authorized_by=previous_member,
-        previous_provider_started_at=previous_start,
+        previous=PreviousProviderLogin(shared, previous_start, previous_member),
     ) == (own, expected)
 
 
@@ -167,7 +165,9 @@ def test_lru_ties_machine_then_added_time_and_sticky_reuse(accounts, monkeypatch
             "codex", "", "member", dry_run=False, operation_id=str(i)
         ) == (expected, None)
         assert accounts.store.agent_task(str(i)).login_id == expected.login_id
-    assert accounts.resolve_login("codex", "", "member", previous_login=second) == (second, None)
+    assert accounts.resolve_login(
+        "codex", "", "member", previous=PreviousProviderLogin(second, accounts.store.now(), None)
+    ) == (second, None)
 
 
 def test_concurrent_assignments_choose_different_logins(accounts):
@@ -268,7 +268,10 @@ def test_limited_shared_session_moves_to_free_shared_login(accounts):
     alternative = _login(accounts, "claude")
     _limit(accounts, previous)
     assert accounts.resolve_login(
-        "claude", "", "member", previous_login=previous, previous_authorized_by="member"
+        "claude",
+        "",
+        "member",
+        previous=PreviousProviderLogin(previous, accounts.store.now(), "member"),
     ) == (alternative, "limited")
 
 

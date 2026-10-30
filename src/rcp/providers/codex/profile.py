@@ -50,6 +50,8 @@ class CodexProfile(ProviderProfile):
 
         return CodexAuthentication()
 
+    login_credential_files = ("codex-home/auth.json",)
+    remote_login_credential_files = (".rcp/provider-homes/codex/{login_id}/auth.json",)
     id = "codex"
     label = "Codex"
     usage_profile = "codex.turn.v1"

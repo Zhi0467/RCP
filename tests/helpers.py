@@ -29,6 +29,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.report import ValidationReport
 from rcp.history import HistoryManager
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 if TYPE_CHECKING:
     import pytest
@@ -260,7 +261,12 @@ def store_test_claude_token(store: AppStore, host: str = "") -> None:
     """Give fake Claude execution an explicit managed credential."""
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
-        "claude", host, "test-setup-token", member_id="fixture-member", now=store.now()
+        "claude",
+        host,
+        "test-setup-token",
+        member_id="fixture-member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
 
 

@@ -7,7 +7,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 from .helpers import fabricated_authorizer
 
@@ -106,7 +106,12 @@ def test_recovery_admits_actual_session_or_fresh_target(tmp_path, mode, switch_p
             key, member_id=human.user_id, source="sign_out", detail="out"
         )
         ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
-            "claude", "", "test-token", member_id=human.user_id, now=store.now()
+            "claude",
+            "",
+            "test-token",
+            member_id=human.user_id,
+            now=store.now(),
+            login_id=MACHINE_LOGIN_ID,
         )
         store.set_provider_login_setting(human.user_id, "claude", "", "shared")
         retried = tasks.retry(root.operation_id, provider="claude")
