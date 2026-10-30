@@ -41,7 +41,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.auto_research_questions import held_question_answer_mail
 from rcp.runs.experiment_admission import experiment_start_message
-from rcp.runs.provider_login import provider_login_host
+from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
 from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -1763,15 +1763,17 @@ def retry_auto_research_task(
     lineage_login = ProviderAccounts.for_store(tasks.store).lineage_login(
         original.provider, previous.stage_host or "", previous
     )
-    tasks.admit_provider_task(
-        previous.project_id,
-        original.model_copy(
-            update={"session_id": None if starts_fresh else previous.native_session_id}
-        ),
-        authorized_by=episode.authorized_by,
-        lineage_login=lineage_login,
-        execution_host=(previous.stage_host or "") if previous.stage_root else None,
-    )
+    # The existing allocation can wait queued for credentials without a new debit.
+    with suppress(ProviderSignedOut):
+        tasks.admit_provider_task(
+            previous.project_id,
+            original.model_copy(
+                update={"session_id": None if starts_fresh else previous.native_session_id}
+            ),
+            authorized_by=episode.authorized_by,
+            lineage_login=lineage_login,
+            execution_host=(previous.stage_host or "") if previous.stage_root else None,
+        )
     logical_problem = (
         "the provider refused the saved native session"
         if native_resume_unavailable

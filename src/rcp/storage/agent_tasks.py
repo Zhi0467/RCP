@@ -161,6 +161,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_runtime_selected",
     "provider_login_lineage",
     "provider_login_limit_retry",
+    "provider_auth_auto_retry",
+    "provider_auth_retry_deferred",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES

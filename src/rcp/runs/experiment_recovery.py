@@ -10,11 +10,13 @@ owns the launch gate and the request decoding these need.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import classify_terminal_error
+from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import AgentTaskContinuation, AgentTaskRequest, skill_update
 from rcp.service import RunRequest
@@ -408,12 +410,14 @@ def preflight_experiment_episode_recovery(
     original = request or tasks._request_from_record(record)
     if not isinstance(original, RunRequest) or original.patch_kind != "experiment_loop":
         return
-    tasks.admit_provider_task(
-        record.project_id,
-        original,
-        authorized_by=record.authorized_by,
-        execution_host=(record.stage_host or "") if record.stage_root else None,
-    )
+    # Recovery keeps its authorized continuation queued until a login is usable.
+    with suppress(ProviderSignedOut):
+        tasks.admit_provider_task(
+            record.project_id,
+            original,
+            authorized_by=record.authorized_by,
+            execution_host=(record.stage_host or "") if record.stage_root else None,
+        )
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)
     if problem is None:
         if record.stage_host and record.stage_root:
