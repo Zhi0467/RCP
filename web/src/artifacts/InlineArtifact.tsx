@@ -39,8 +39,9 @@ interface InlineArtifactProps {
   onKeep: (() => void) | null;
   download: ReactNode;
   onSelection: (event: InlineArtifactSelectionEvent) => void;
-  /** The selection is gone: cancelled in the frame (Escape, a new drag, an aborted one) or comment mode ended. */
-  onSelectionCancel: () => void;
+  /** A selection is gone: cancelled in the frame (Escape, a click, a new drag) or comment
+   * mode ended. `clear` is the one the selection was reported with. */
+  onSelectionCancel: (clear: () => void) => void;
   /** A new version replaced the frame, so selections drawn on the old one are stale. */
   onVersionChange: () => void;
 }
@@ -79,10 +80,6 @@ export function InlineArtifact({
   const [commentMode, setCommentMode] = useState(false);
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
-  const onSelectionRef = useRef(onSelection);
-  onSelectionRef.current = onSelection;
-  const onSelectionCancelRef = useRef(onSelectionCancel);
-  onSelectionCancelRef.current = onSelectionCancel;
   const onVersionChangeRef = useRef(onVersionChange);
   onVersionChangeRef.current = onVersionChange;
   const freshSessionRef = useRef(false);
@@ -127,11 +124,11 @@ export function InlineArtifact({
     setPageError(null);
   }, [currentVersion]);
 
-  const onFrameLoad = useInlineShell(frame, commentMode, {
+  const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
-    onCancel: () => onSelectionCancelRef.current(),
+    onCancel: onSelectionCancel,
     onSelection: (event) =>
-      onSelectionRef.current({
+      onSelection({
         ...event,
         freshSession: freshSessionRef.current,
         version: shownVersion.current,
@@ -147,7 +144,8 @@ export function InlineArtifact({
   useEffect(() => {
     if (selectable || !commentModeRef.current) return;
     setCommentMode(false);
-    onSelectionCancelRef.current();
+    shell.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when commenting is withdrawn
   }, [selectable]);
   if (!artifact)
     return (
@@ -185,7 +183,7 @@ export function InlineArtifact({
             className="chat-inline-artifact-frame"
             src={source}
             title={title}
-            onLoad={onFrameLoad}
+            onLoad={shell.onLoad}
           />
         ) : (
           error && (
@@ -227,7 +225,7 @@ export function InlineArtifact({
             aria-label={commentMode ? "Done commenting" : "Comment on a part"}
             onClick={() => {
               // Leaving comment mode clears the selection without a message from the frame.
-              if (commentMode) onSelectionCancel();
+              if (commentMode) shell.cancel();
               setCommentMode(!commentMode);
             }}
           >

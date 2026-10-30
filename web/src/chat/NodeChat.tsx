@@ -1257,16 +1257,8 @@ export function NodeChat({
           selection: event.selection ? { ...event.selection, comment: "" } : null,
         },
       },
-      { clear: event.clear, draft: prefill },
+      { clear: event.clear, ...(prefill ? { draft: prefill } : {}) },
     );
-  };
-
-  // A selection cancelled inside the frame closes the comment staged from it.
-  const cancelInlineArtifactComment = (taskId: string, artifact: AgentArtifactDescriptor) => {
-    const context =
-      comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (context?.operation_id !== taskId || context.artifact_id !== artifact.artifact_id) return;
-    comments.closeExternal(false);
   };
 
   // A new version moves the parts a selection named, so comments on the old one,
@@ -1274,7 +1266,7 @@ export function NodeChat({
   const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
     const open =
       comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (open?.artifact_id === artifact.artifact_id) comments.closeExternal(false);
+    if (open?.artifact_id === artifact.artifact_id) comments.closeComment();
     const stale = annotations.filter(
       (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
     );
@@ -1766,7 +1758,7 @@ export function NodeChat({
         onKeep={artifact?.can_keep ? () => void keepArtifact(taskId, artifact) : null}
         download={artifact && artifactDownloadControl(taskId, artifact)}
         onSelection={(event) => artifact && openInlineArtifactComment(taskId, artifact, event)}
-        onSelectionCancel={() => artifact && cancelInlineArtifactComment(taskId, artifact)}
+        onSelectionCancel={comments.cancelExternal}
         onVersionChange={() => artifact && dropStaleArtifactComments(artifact)}
       />
     );

@@ -1,13 +1,7 @@
 import type { Element as HastElement, ElementContent, Root } from "hast";
+import type { ResolvedSelection } from "../chat/answerComments";
 import type { ChatAnnotationAnchor } from "../chat/chatInput";
 import { synctexSource, type SyncTexMap } from "./synctex";
-
-/** A commentable selection in the Paper preview: the range shown, its quote, and its source. */
-export interface PreviewSelection {
-  range: Range;
-  quote: string;
-  where?: string;
-}
 
 /** A comment the preview opens itself: a box on a PDF page or image, or an HTML frame selection. */
 export interface PreviewDirectComment {
@@ -139,7 +133,7 @@ function selectedEnds(range: Range): [Text, Text] | null {
 export function resolvePreviewSelection(
   selection: Selection,
   root: HTMLElement,
-): PreviewSelection | null {
+): ResolvedSelection | null {
   if (!selection.rangeCount || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
   // The browser's own reading keeps line and block breaks; Range.toString runs the

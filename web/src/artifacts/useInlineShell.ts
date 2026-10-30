@@ -13,26 +13,35 @@ export interface InlineShellSelection {
 
 interface InlineShellHandlers {
   onSelection: (event: InlineShellSelection) => void;
-  /** The frame cancelled its selection (Escape, a new drag, an aborted one). */
-  onCancel: () => void;
+  /** A selection is gone: the frame cancelled it (Escape, a click, a new drag) or the
+   * owner called `cancel`. `clear` is the one that selection was reported with. */
+  onCancel: (clear: () => void) => void;
   /** The page reported an error, or that it cleared. */
   onPageError: (error: { message: string; count: number } | null) => void;
 }
 
 /** Talks to one inline viewer shell frame: reads its messages and keeps its comment mode.
  *
- * Returns the frame's `onLoad`, which repeats the comment mode a reload forgot. */
+ * Returns the frame's `onLoad`, which repeats the comment mode a reload forgot, and
+ * `cancel`, which reports the frame's selection gone, as leaving comment mode does. */
 export function useInlineShell(
   frame: RefObject<HTMLIFrameElement | null>,
   commentMode: boolean,
   handlers: InlineShellHandlers,
-): () => void {
+): { onLoad: () => void; cancel: () => void } {
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
   // Counts the frame's selections, so the clear of a replaced one leaves the new one alone.
   const selections = useRef(0);
+  // The clear of the selection the frame shows, which a cancel names.
+  const shown = useRef<(() => void) | null>(null);
+  const cancel = () => {
+    const clear = shown.current;
+    shown.current = null;
+    if (clear) handlersRef.current.onCancel(clear);
+  };
 
   useEffect(() => {
     const message = (event: MessageEvent) => {
@@ -48,13 +57,21 @@ export function useInlineShell(
       }
       const selection = ++selections.current;
       if (!value.selection) {
-        handlersRef.current.onCancel();
+        cancel();
         return;
       }
       if (!commentModeRef.current) return;
       const rect = frame.current?.getBoundingClientRect();
       if (!rect) return;
       const box = value.selection.kind === "box" ? value.selection.rect : null;
+      const clear = () => {
+        if (selection !== selections.current) return;
+        frame.current?.contentWindow?.postMessage(
+          { type: "rcp-inline-selection-clear", version: 1 },
+          window.location.origin,
+        );
+      };
+      shown.current = clear;
       handlersRef.current.onSelection({
         selection: value.selection,
         description: value.description,
@@ -65,13 +82,7 @@ export function useInlineShell(
               top: rect.top + box.y * rect.height,
             }
           : { left: rect.left, right: rect.right, top: rect.top + Math.min(rect.height, 48) },
-        clear: () => {
-          if (selection !== selections.current) return;
-          frame.current?.contentWindow?.postMessage(
-            { type: "rcp-inline-selection-clear", version: 1 },
-            window.location.origin,
-          );
-        },
+        clear,
       });
     };
     window.addEventListener("message", message);
@@ -87,5 +98,5 @@ export function useInlineShell(
     postCommentMode(commentMode);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the frame ref is stable
   }, [commentMode]);
-  return () => postCommentMode(commentModeRef.current);
+  return { onLoad: () => postCommentMode(commentModeRef.current), cancel };
 }

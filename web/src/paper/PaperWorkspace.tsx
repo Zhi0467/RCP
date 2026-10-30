@@ -255,7 +255,7 @@ export function PaperWorkspace({
   const openPreviewRef = useRef(openPreviewWhere);
   openPreviewRef.current = openPreviewWhere;
   useEffect(() => {
-    if (openPreviewRef.current) comments.closeExternal(true);
+    if (openPreviewRef.current) comments.closeComment({ keepText: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
   }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.

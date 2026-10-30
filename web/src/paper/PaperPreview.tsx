@@ -155,17 +155,10 @@ function HtmlPreview({
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(false);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
-  // The clear of the comment the frame last opened; a cancel in the frame names it.
-  const opened = useRef<(() => void) | null>(null);
-  const cancelOpen = () => {
-    if (opened.current) onDirectCancel?.(opened.current);
-    opened.current = null;
-  };
-  const onLoad = useInlineShell(frame, commentMode, {
+  const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
-    onCancel: cancelOpen,
+    onCancel: (clear) => onDirectCancel?.(clear),
     onSelection: ({ selection, anchor, clear }) => {
-      opened.current = clear;
       // An element's own text before a label it may inherit from a section around it.
       const named =
         selection.kind === "box"
@@ -209,7 +202,7 @@ function HtmlPreview({
               title="Comment on the page"
               onClick={() => {
                 // Leaving comment mode clears the frame's mark, and with it the comment.
-                if (commentMode) cancelOpen();
+                if (commentMode) shell.cancel();
                 setCommentMode(!commentMode);
               }}
             >
@@ -221,7 +214,7 @@ function HtmlPreview({
       )}
       {/* The routes load the latest saved page uncached, so only a change to this file
           reloads it; another file's save leaves its state alone. */}
-      <iframe key={file.sha256} ref={frame} src={source} title={file.path} onLoad={onLoad} />
+      <iframe key={file.sha256} ref={frame} src={source} title={file.path} onLoad={shell.onLoad} />
     </div>
   );
 }

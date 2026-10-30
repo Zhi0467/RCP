@@ -464,6 +464,7 @@ test("a comment opened from the preview closes when another file is shown", asyn
 test("a new selection in the HTML page keeps the typed comment and its own mark", async (t) => {
   const { page, context } = await open(t, {
     width: 1280,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
     configure: ({ tree }) =>
       tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 }),
   });
@@ -527,4 +528,11 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
   const long = await quote.textContent();
   assert.equal(long.length, 4096);
   assert.ok(long.endsWith("…"));
+  // Any other way in replaces the open comment the same way: its mark goes, its text stays.
+  await coach(page);
+  await page.getByRole("button", { name: "Comment on this answer" }).click();
+  await page.getByRole("textbox", { name: "Select answer text" }).press("ControlOrMeta+A");
+  await page.getByRole("button", { name: "Comment on selection" }).click();
+  assert.equal(await comment.inputValue(), "half written");
+  assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
 });
