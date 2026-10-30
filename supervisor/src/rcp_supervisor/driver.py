@@ -328,7 +328,10 @@ def _application_version(version: object) -> tuple[int, ...] | None:
     return tuple(int(part) for part in public.split("."))
 
 
-def _check_update_source(previous: dict, capability: dict, emitter: EventEmitter) -> bool:
+def _check_update_source(
+    previous: dict, capability: dict, emitter: EventEmitter, warnings: list[dict]
+) -> bool:
+    """The floor is the oldest release CI updates from; older ones still try, with a warning."""
     # Historical targets predate the optional floor capability.
     if "update_source_floor" not in capability:
         return True
@@ -337,27 +340,27 @@ def _check_update_source(previous: dict, capability: dict, emitter: EventEmitter
     if floor_version is None:
         raise SupervisorError("The target release declares an invalid update source floor.")
     installed = _application_version(previous.get("version_string"))
-    if installed is not None and installed >= floor_version:
+    if installed is not None:
+        if installed < floor_version:
+            warnings.append(
+                {
+                    "name": "update_source",
+                    "value": f"Updating from below v{floor} is untested; a failed update rolls back.",
+                }
+            )
         return True
-    if installed is None:
-        message = "The installed release has no comparable version; update compatibility cannot be verified."
-        instruction = (
-            "Repair the selected-release receipt or complete supervised source adoption "
-            "with sudo rcp server install before retrying the update."
-        )
-    else:
-        message = (
-            f"The installed release is older than the target's supported update floor v{floor}."
-        )
-        instruction = (
-            f'Set pin = "v{floor}" in [release] in /etc/rcp/server.toml, '
-            "run sudo rcp server update and confirm that release, then remove the pin "
-            "and run sudo rcp server update again."
-        )
     emitter.emit(
         "operator_action_needed",
-        message,
-        actions=[{"kind": "external", "instruction": instruction}],
+        "The installed release has no comparable version; update compatibility cannot be verified.",
+        actions=[
+            {
+                "kind": "external",
+                "instruction": (
+                    "Repair the selected-release receipt or complete supervised source adoption "
+                    "with sudo rcp server install before retrying the update."
+                ),
+            }
+        ],
         fields=[{"name": "update_source_floor", "value": floor}],
         resume_argv=["sudo", "rcp", "server", "update"],
     )
@@ -420,7 +423,8 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
         runtime.require_capability(previous)
         warnings: list[dict] = []
         target = prepare_release(runtime, release, warnings)
-        if not _check_update_source(previous, runtime.application(target, "capabilities"), emitter):
+        capability = runtime.application(target, "capabilities")
+        if not _check_update_source(previous, capability, emitter, warnings):
             return 3
         store = store_for(paths)
         coordinator = Coordinator(store, runtime)

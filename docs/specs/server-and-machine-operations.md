@@ -404,10 +404,11 @@ current models.
 
 The deployment source floor is `UPDATE_SOURCE_FLOOR` in
 [deployment.py](../../src/rcp/server_ops/deployment.py), not a copied release
-number here. Below-floor updates change no live state and name the required
-intermediate update. Uncomparable identities require receipt repair or adoption.
-The floor gates release qualification. Old data still uses its migration chain.
-Raising support boundaries requires explicit review, not fixture age.
+number here. It is the oldest release CI updates from. A server below it still
+updates, with an untested-path warning; a failed update rolls back as usual.
+**Why:** the floor bounds what CI proves, not what an operator may try.
+Uncomparable identities require receipt repair or adoption. Old data still uses
+its migration chain. Raising the floor requires explicit review, not fixture age.
 
 CI qualifies published stable releases at or above the floor and frozen
 fixtures, using production installation and update owners, populated old data

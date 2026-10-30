@@ -60,7 +60,7 @@ from rcp.server_ops.maintenance import MaintenanceRefused
 from rcp.storage import AppStore
 
 # Release compatibility policy, also read without imports by upgrade CI.
-UPDATE_SOURCE_FLOOR = "0.4.5"
+UPDATE_SOURCE_FLOOR = "0.4.25"
 
 _MAX_REQUEST_BYTES = 4 * 1024 * 1024
 # Live display caches, beside the update proof and outside its capture and payload.

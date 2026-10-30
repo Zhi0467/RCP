@@ -381,18 +381,21 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
 
 
 @pytest.mark.parametrize(
-    "version,floor,allowed",
+    "version,floor,allowed,untested",
     [
-        ("0.4.4+build.999.gabcdef0", "0.4.5", False),
-        ("0.4.5+build.1.gabcdef0", "0.4.5", True),
-        ("0.4.10+build.1.gabcdef0", "0.4.5", True),
-        ("0.4.9+build.1.gabcdef0", "0.4.10", False),
-        ("source", "0.4.5", False),
-        (None, "0.4.5", False),
-        ("0.3.4+build.1.gabcdef0", None, True),
+        ("0.4.4+build.999.gabcdef0", "0.4.5", True, True),
+        ("0.4.5+build.1.gabcdef0", "0.4.5", True, False),
+        ("0.4.10+build.1.gabcdef0", "0.4.5", True, False),
+        ("0.4.9+build.1.gabcdef0", "0.4.10", True, True),
+        ("source", "0.4.5", False, False),
+        (None, "0.4.5", False, False),
+        ("0.3.4+build.1.gabcdef0", None, True, False),
     ],
 )
-def test_update_checks_target_floor_before_deployment(monkeypatch, capsys, version, floor, allowed):
+def test_update_checks_target_floor_before_deployment(
+    monkeypatch, capsys, version, floor, allowed, untested
+):
+    # Below the floor the update still runs; only an uncomparable version stops it.
     previous = {"build": 1, "version_string": version}
     target = {"release_tag": "v0.5.0", "manifest_sha256": "a" * 64, "build": 2}
     calls = []
@@ -438,9 +441,9 @@ def test_update_checks_target_floor_before_deployment(monkeypatch, capsys, versi
     assert calls == (["prepare", "deploy"] if allowed else ["prepare"])
     assert step.state == ("succeeded" if allowed else "operator_action_needed")
     if allowed:
-        assert {"update_warning": "backup p1: Inventory rejected."}.items() <= {
-            field.name: field.value for field in step.fields
-        }.items()
+        names = {field.name: field.value for field in step.fields}
+        assert names["update_warning"] == "backup p1: Inventory rejected."
+        assert ("update_source" in names) == untested
     if not allowed:
         assert step.actions
         assert previous == {"build": 1, "version_string": version}

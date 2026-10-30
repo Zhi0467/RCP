@@ -344,9 +344,10 @@ sudo /usr/local/bin/rcp server update
 ```
 
 To pin a promoted release, set `[release]` `pin = "vX.Y.Z"` in
-`/etc/rcp/server.toml`. Remove it to follow stable. For an unsupported source,
-follow the reported upgrade floor, owned by `UPDATE_SOURCE_FLOOR` in
-[`deployment.py`](../src/rcp/server_ops/deployment.py), then retry.
+`/etc/rcp/server.toml`. Remove it to follow stable. An update from below the
+upgrade floor (`UPDATE_SOURCE_FLOOR` in
+[`deployment.py`](../src/rcp/server_ops/deployment.py)) runs with an
+untested-path warning. To stay on tested paths, pin the floor release first.
 Inspect `releases/<build>/install.log` after preparation failure.
 Use [the recovery contract](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery)
 for interrupted updates. To prune completed work and update the supervisor:
