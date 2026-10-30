@@ -1543,7 +1543,7 @@ moves forward. Markers are not moved with a transferred project.
 
 ### Paper, Settings, and History
 
-Paper owns the co-edited file tree, LaTeX and Typst preview, and coach change
+Paper owns the co-edited file tree, its previews, and coach change
 cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
 server status (team spaces), machine cards with their names (renamed in place)

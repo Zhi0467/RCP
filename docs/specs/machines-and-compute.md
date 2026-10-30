@@ -10,7 +10,7 @@ human job controls.
 
 The base is the machine of the canonical state repository. Every agent profile
 runs beside that repository's `.research/`. Configuration rejects an off-base
-`run_on`.
+`run_on`, except the Paper Coach's, which loading rewrites to the base machine.
 [Manifest.base_machine and require_base_machine](../../src/rcp/config.py) own
 this rule. Provider launch routing is described by
 [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
@@ -87,8 +87,9 @@ compute again** button and their synchronous re-check are
 Runs shows each unready route's diagnostic, action, Settings link and **Check
 again**. The button calls
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check`. The
-[operator probe](../server.md) uses the service socket and saves its results. It
-succeeds only for a ready route. Episode start and reauthorization never gate on
+[operator probe](../server.md) uses the service socket and checks and saves the
+route it names, whether or not the machine offers it. It succeeds only for a ready
+route. Episode start and reauthorization never gate on
 compute readiness. Helper launch probes its own route afresh.
 
 Live-artifact job needs resolve launch keys through durable successful receipts
@@ -103,8 +104,7 @@ account's GUI domain with cooperative containment. Remote helpers ship source
 modules over ordinary SSH.
 
 Job roots are `<data_dir>/jobs/<id>` locally and `<jobs_root>/<id>` remotely.
-The remote default is `~/.rcp/jobs`. Configured roots must be absolute and
-outside stage retention. Internal ids grant neither filesystem authority nor a
+The remote default is `~/.rcp/jobs`. Configured roots must be absolute. Internal ids grant neither filesystem authority nor a
 second watcher identity. `command.json` records the intent. `launch.json`
 records the OS handle. The wrapper writes `started`, appends output to `log`,
 and atomically writes `exit` with the status and time. An uncertain start or

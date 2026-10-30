@@ -59,9 +59,9 @@ settles it, so no later start refills a field the human cleared.
 The keys stay inert in the manifest, so backups record the file as written.
 
 SSH
-selects account through the route; a second account on one host refuses. A
-blank account on Add machine is filled from a batch-mode login as the service
-account. An unknown host key shows its SHA256 fingerprint with **Trust**. SSH
+selects account through the route; a second account on one host refuses. In a
+team space, a blank account on Add machine is filled from a batch-mode login as
+the service account; a personal card keeps it blank. An unknown host key shows its SHA256 fingerprint with **Trust**. SSH
 itself fetches the key over the account's own route (proxy, port, algorithms,
 host-key alias) into a scratch file, offering no credential. Trust rescans,
 refuses if the key changed since it was shown or any user or global known-hosts

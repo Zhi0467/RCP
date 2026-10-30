@@ -175,21 +175,16 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
-      # Pull requests drive the floor release and the newest four; main drives
-      # every supported release before `build` publishes. The old-data migration
-      # job still checks every release's data on pull requests. 28 journeys
-      # exceeded the 20 concurrent jobs and queued behind the rest of CI.
+      # Pull requests drive every supported release, as main does: a release
+      # skipped on the PR left main red after a green PR. The jobs past the
+      # 20 concurrent ones queue.
       - id: catalog
         name: Discover supported published stable releases
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           python -c '
-          import json, os
+          import json
           from tests.server_upgrade_harness import published_release_tags
           tags = sorted(published_release_tags(), key=lambda tag: tuple(map(int, tag[1:].split("."))))
-          if os.environ["EVENT_NAME"] == "pull_request":
-              tags = sorted(set(tags[:1] + tags[-4:]), key=tags.index)
           print("releases=" + json.dumps({"tag": tags}))
           ' >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7

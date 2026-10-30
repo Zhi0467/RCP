@@ -412,8 +412,7 @@ Raising support boundaries requires explicit review, not fixture age.
 CI qualifies published stable releases at or above the floor and frozen
 fixtures, using production installation and update owners, populated old data
 and offline scratch. Failure injection verifies rollback and old-code use before
-retry. Pull requests install the floor and the newest four releases; main
-installs every one. After the committed update, the candidate's service journal
+retry. Pull requests and main install every one. After the committed update, the candidate's service journal
 must hold no ERROR line or traceback, and the seeded question follow-up must
 still read as succeeded. The aggregate gate promotes those same bytes. It does not
 prove arbitrary installations, provider authentication, remote-root behavior or
