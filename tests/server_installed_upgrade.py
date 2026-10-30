@@ -600,6 +600,10 @@ def seed() -> None:
     store.mark_provider_login_verified(
         *codex, member_id=fixture["member_id"], detail="Synthetic offline login fixture"
     )
+    # A team member defaults to their own login since 0.4.36. The seeded
+    # Experiment runs on the machine's login, which they choose to share.
+    if hasattr(store, "set_provider_login_setting"):
+        store.set_provider_login_setting(fixture["member_id"], "codex", "", "shared")
     store.mark_provider_login_signed_out(
         *claude,
         member_id=fixture["member_id"],
