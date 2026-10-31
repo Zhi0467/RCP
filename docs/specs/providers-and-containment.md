@@ -232,7 +232,8 @@ mailbox checkpoints, service keys, remote Claude tokens, private sockets and
 selected WebKit storage. Added-login provider homes, under
 `<data dir>/provider-homes` and `~/.rcp/provider-homes`, are hidden whole from
 Claude and OpenCode runs. Codex runs hide only each home's `auth.json`, through a
-glob over login IDs, so a sign-in added later is covered too.
+glob over login IDs, so a sign-in added later is covered too. A launch that
+resolved before `provider-homes/codex` existed covers it from the next turn on.
 **Why:** Codex starts its sandbox helper from inside its own home. A denied
 ancestor makes every shell command fail before it runs.
 
@@ -350,9 +351,10 @@ path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
 On Linux the wrapper empties the parent of a glob whose wildcard is in its last
 path component and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
-hidden. A wildcard above the last component, as in the Codex login-home glob,
-is expanded instead; a later match is hidden from the next command or browser
-daemon admission on. A hidden literal that does not exist yet is hidden the same
+hidden. A wildcard above the last component is expanded instead; a later match
+is hidden from the next command or browser daemon admission on. In a Codex run
+only the browser daemon uses the wrapper; Codex's own sandbox applies the
+login-home glob to shell commands. A hidden literal that does not exist yet is hidden the same
 way under its existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
