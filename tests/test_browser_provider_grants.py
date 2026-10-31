@@ -312,18 +312,14 @@ def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
         turn = profile.runtime(profile.legacy_runtime_id).turn(request)
         client = shlex.join(staged.client_argv()[:4])
         if provider == "claude":
-            assert [arg for arg in turn.command if arg.startswith("Bash(")] == (
-                [f"Bash({client}:*)"] if capability == "paper_suggest" else []
-            )
+            assert [arg for arg in turn.command if arg.startswith("Bash(")] == [f"Bash({client}:*)"]
             if capability == "paper_suggest":
                 assert turn.command[turn.command.index("--permission-mode") + 1] == "dontAsk"
         else:
             config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
             agent = turn.command[turn.command.index("--agent") + 1]
             rules = config["agent"][agent]["permission"]
-            assert rules.get("bash") == (
-                {"*": "deny", f"{client} *": "allow"} if capability == "paper_suggest" else None
-            )
+            assert rules.get("bash") == {"*": "deny", f"{client} *": "allow"}
             if capability == "paper_suggest":
                 assert rules["*"] == "deny" and rules["edit"]["*"] == "deny"
     staged.cleanup()

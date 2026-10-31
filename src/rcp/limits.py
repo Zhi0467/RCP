@@ -144,6 +144,8 @@ COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
 # transient read error, before that turn's mailbox is refused for this process.
 COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS = 5
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+# Keep standalone brokers responsive to stop signals while stdin remains open.
+COMMAND_BROKER_STDIN_POLL_SECONDS = 0.2
 SHELL_TIMEOUT_DEFAULT_SECONDS = 120
 SHELL_TIMEOUT_MIN_MINUTES = 2
 SHELL_TIMEOUT_MAX_MINUTES = 120

@@ -82,7 +82,7 @@ It trims edges only on submission. Invalid and taken names produce distinct refu
 
 Blank names derive from the root's UTC date as `research-<mon>-<day>` or
 `experiment-<mon>-<day>`. Collisions use numeric suffixes in creation order.
-Read-time legacy fallbacks need no migration. Renames preserve other fallbacks.
+Migration backfills legacy names and their reservations. Renames preserve other names.
 Transfer carries current and retired reservations.
 
 Discuss, Work, Seed, Refresh, Experiment, Auto-research, and merge launches carry
@@ -137,7 +137,8 @@ Runs targeting a fork read only that fork and its ancestors through their fork
 points. Other runs read main and every branch. Prompt and overlap visibility
 share that scope, which grants no writes. Human views remain unfiltered.
 
-An owned fork archives automatically only when its parent head is unchanged.
+An owned fork archives automatically only while its own head remains at its
+immutable parent-at-fork head.
 It must have no reachable writer, nested live fork, unknown publication,
 undelivered watcher or mail, live child Experiment, or accepted admission.
 Resumable sessions and stages, along with bound merge destinations, count as
@@ -282,8 +283,9 @@ judgment, credential, privilege, approval, or coordination. Use actual compute
 routes. Never invent schedulers or repeat uncertain submissions.
 
 Exhaustion or an ending other than Stop fences new work, settles admitted children,
-and runs [the visual report](paper-artifacts-and-result-views.md#episode-reports)
-in the exact branch and session from an immutable bounded receipt. Stop skips it.
+and enters [visual wrap-up](conversations-episodes-and-watchers.md#visual-wrap-up)
+on the bound branch from an immutable bounded receipt. That owner defines session
+continuation and the no-session exception. Stop skips it.
 Permanent admission defects settle with a nonblocking report error. Sign-in blocks
 park without spend. Transient failures retry with the receipt. Unclassified or
 non-transient failures settle after three repeats per process, with deduplicated

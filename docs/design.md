@@ -53,9 +53,9 @@ home for repository-wide invariants and their stable identifiers.
 - A **Patch** is an attributable, ordered list of typed semantic graph operations.
 - A **Transition** is the manager-prepared atomic result of one mutation.
   It includes generated actions and lifecycle events.
-- A **Proposal** is an agent request for human judgment on a protected existing
-  ResearchQuestion or Hypothesis.
-- A **Task** is one durable provider invocation or recovery attempt.
+- A **Proposal** is a request for human judgment on a graph change governed by
+  [Proposal authority](specs/authority-and-proposals.md).
+- A **Task** is one durable operation or recovery attempt, which may invoke a provider.
 - A **Conversation** is a reusable scratch workspace for a native session.
   Its turns are explicitly labelled Discuss or Work.
 - An **Artifact** is an RCP-owned file with SQLite metadata and immutable versions.

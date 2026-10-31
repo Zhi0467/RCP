@@ -104,8 +104,8 @@ account's GUI domain with cooperative containment. Remote helpers ship source
 modules over ordinary SSH.
 
 Job roots are `<data_dir>/jobs/<id>` locally and `<jobs_root>/<id>` remotely.
-The remote default is `~/.rcp/jobs`. Configured roots must be absolute. The
-execution account resolves the root and refuses one at or inside its
+The remote default is `~/.rcp/jobs`. Configured roots must be absolute. For remote
+jobs, the execution account resolves the root and refuses one at or inside its
 `~/.rcp/stages` or a legacy `/tmp/rcp-run.*` stage, so launches and helper
 checks fail with that reason. Internal ids grant neither filesystem authority
 nor a second watcher identity. `command.json` records the intent. `launch.json`

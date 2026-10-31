@@ -339,9 +339,8 @@ class ConsolidationPoller:
         revisions: list[dict[str, object]] = []
         proposals = 0
         covered = run.input_head
-        prelaunch_failure = (
-            task.error in CONSOLIDATION_PRELAUNCH_ERRORS
-            and not self.store.agent_task_has_receipt(task.operation_id, "agent_launch")
+        prelaunch_failure = task.status == "failed" and not self.store.agent_task_has_receipt(
+            task.operation_id, "agent_launch"
         )
         verified = prelaunch_failure
         committed_digests: set[str | None] = set()
@@ -391,10 +390,14 @@ class ConsolidationPoller:
                 task.error or "The consolidation task ended before completion.",
             )
         elif task.status != "succeeded":
-            error_code, error_message = (
-                task.error if prelaunch_failure else "task_failed",
-                task.error or "The consolidation task failed.",
-            )
+            error_code = "task_failed"
+            if prelaunch_failure:
+                error_code = (
+                    task.error
+                    if task.error in CONSOLIDATION_PRELAUNCH_ERRORS
+                    else "consolidation_launch_failed"
+                )
+            error_message = task.error or "The consolidation task failed."
         elif isinstance(graph_update, dict) and graph_update.get("status") in {
             "rejected",
             "unavailable",

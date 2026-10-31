@@ -54,8 +54,9 @@ remain behind a red icon across reloads until recreated. Restart pauses the edit
 without unmounting it or losing typing. Refused or inaccessible unsent text remains
 downloadable. Leaving with unsent text asks first. An early connection close never
 discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
-transfer. Uploaded binaries deduplicate by content hash. SVG and unknown types
-download. Only raster images display inline. Text HTML previews inside the agent
+transfer. Uploaded binaries deduplicate by content hash. Text SVG and unknown text
+types preview as source; unknown binary types download. Only raster images
+display inline as images. Text HTML previews inside the agent
 artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
@@ -488,7 +489,8 @@ turn-relative copy that publishes at settlement but is not tracked later. Read-o
 crops remain inputs. Question answers need no extant artifact. Other tracked-file
 errors warn and defer. Only failure of the commented file refuses that comment.
 
-Settlement digests session files. Remote settlement uses one SSH call. Under the
+Settlement digests session files. Remote digest collection uses one SSH call;
+changed files require separate byte reads. Under the
 artifact lock, it publishes changed bytes against the retained version matching the
 recorded digest. A moved or pruned base forks into a new artifact and tracked
 file with an id prefix. Invalid types, sizes, or reads produce failures with

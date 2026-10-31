@@ -124,8 +124,11 @@ Humans may start separate Work in the chat.
 Each run creates one target-labelled Consolidation Inbox row. Report rows offer
 Keep or Dismiss, protecting temporary artifacts from expiry until settled. Viewer
 Keep closes the row. A Bulletin link retains the report but leaves review open.
-Failure rows offer a typed error and Dismiss. Prelaunch failures have no operation
-or revisions. Postlaunch failures list canonical revisions.
+Failure rows offer a typed error and Dismiss. Failed tasks with no recorded
+provider launch, including invalid persisted requests, have verified empty history
+and expose no operation or chat link. Known refusal codes remain specific; other
+prelaunch failures use `consolidation_launch_failed` with the original diagnostic.
+Postlaunch failures list canonical revisions.
 Unreadable revisions are marked unverified, rather than falsely shown as empty.
 Both kinds of failure show the count of created Proposals.
 

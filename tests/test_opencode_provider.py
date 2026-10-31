@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import fnmatch
 import json
+import shlex
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.providers.turn_fence import turn_fence
@@ -94,8 +97,9 @@ def test_every_launch_denies_unlisted_tools_first(capability):
     assert "task" not in permission
 
 
-def test_discuss_edits_only_its_own_folders_and_has_no_shell():
-    command, permission = _launch(_request("discuss", write_dirs=[Path("/work/notes")]))
+@pytest.mark.parametrize("capability", ["discuss", "scratch_patch"])
+def test_unscoped_launch_edits_only_its_own_folders_and_has_no_shell(capability):
+    command, permission = _launch(_request(capability, write_dirs=[Path("/work/notes")]))
     assert "--pure" in command
     assert "bash" not in permission
     assert permission["edit"] == {
@@ -103,6 +107,46 @@ def test_discuss_edits_only_its_own_folders_and_has_no_shell():
         "home/rcp/data/stages/s/workspace/**": "allow",
         "work/notes/**": "allow",
     }
+
+
+@pytest.mark.parametrize("capability", ["discuss", "scratch_patch"])
+@pytest.mark.parametrize("legacy_stage", [False, True])
+@pytest.mark.parametrize("session_id", [None, "saved-session"])
+def test_gated_client_is_executable_but_not_editable(capability, legacy_stage, session_id):
+    stage = Path("/stage with spaces")
+    workspace = stage if legacy_stage else stage / "workspace"
+    client = stage / "inputs" / "command.py"
+    gate = ProviderInvocationGate(
+        mailbox_id="0" * 32,
+        broker_path=str(stage / "inputs" / "broker.py"),
+        socket_path="~/.rcp/sockets/rcp-command-test.sock",
+        workspace=str(workspace),
+        response_timeout_seconds=5,
+        _token="0" * 64,
+        client_path=str(client),
+    )
+    command, permission = _launch(
+        replace(_request(capability), cwd=workspace, invocation_gate=gate, session_id=session_id)
+    )
+
+    def allowed(tool, value):
+        rules = permission.get(tool, permission["*"])
+        if isinstance(rules, str):
+            return rules == "allow"
+        matches = [
+            decision for pattern, decision in rules.items() if fnmatch.fnmatchcase(value, pattern)
+        ]
+        return bool(matches) and matches[-1] == "allow"
+
+    executable = shlex.join(gate.client_executable_argv())
+    assert allowed("bash", f"{executable} graph_log ev/example")
+    assert allowed("bash", f"{executable} validate patch.json")
+    assert not allowed("bash", "python3 -c 'print(1)'")
+    assert not allowed("bash", "touch /outside")
+    assert not allowed("edit", str(client).lstrip("/"))
+    assert not allowed("edit", str(client.parent).lstrip("/"))
+    assert allowed("edit", str(workspace / "patch.json").lstrip("/"))
+    assert ("--session" in command) == (session_id is not None)
 
 
 @pytest.mark.parametrize("capability", ["discuss", "paper_suggest", "work_auto"])

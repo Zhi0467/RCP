@@ -504,8 +504,8 @@ stays disabled until the preview loads; a failed load gives the dialog a red
 edge and a retry. Delete sends back the preview's `stop_token` and stops only
 work the human was shown: inside the deletion fence, if anything is left to stop
 and it no longer matches the token, Delete refuses with 409 before stopping
-anything and the dialog reloads the list. Work that finished meanwhile never
-refuses. Confirming
+anything and the dialog reloads the list. If all work finished meanwhile, no
+token is needed. Confirming
 first runs the non-destructive refusals (an unfinished transfer, unsafe file
 targets), so a refused Delete stops nothing. It then stops everything inside
 the catalog's deletion fence, which already refuses new work for the project.
@@ -556,8 +556,9 @@ transaction. These rows
 are operational records and do not mutate canonical graph history. Restore
 schema fingerprints, backup integrity, and resource-version registries include
 the migration's tables and triggers. Each target keeps at most 200 posts by
-evicting whole threads, least recently active first, so an accepted post is never
-the one evicted. Post retention also prunes observed mention
+evicting whole threads, least recently active first. An oversized newest thread
+keeps its root and newest 199 replies, so an accepted post is never the one
+evicted. Post retention also prunes observed mention
 rows whose posts no longer exist; unobserved rows remain for reconciliation.
 
 A roster actor is one board conversation: `chat:<chat_id>` for chat and experiment

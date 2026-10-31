@@ -498,6 +498,10 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
     if owner_mode == "experiment_loop":
         store.complete_agent_task(root.operation_id, applied_revision=None, result={})
         store.mark_episode_stop_skipped(branch_episode.episode_id)
+    else:
+        # Model the active orchestrator, not a queued reservation that provider
+        # settlement can dispatch into this test's human-Experiment launcher.
+        assert store.mark_agent_task_running(root.operation_id)
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
         f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.graph_target.branch_id}",

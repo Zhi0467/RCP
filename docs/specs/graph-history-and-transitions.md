@@ -113,8 +113,9 @@ payload keys are stable. An operation without an apply rule raises an error.
 It never silently does nothing.
 
 Supersede and merge set the project type's retirement field to `superseded`
-(`validity` for Evidence, `status` for other base types) and add `supersedes` or
-`duplicate_of`. They retain nodes and edges. Outside an approval, retirement
+(`validity` for Evidence, `status` for other base types). Supersede adds a
+`supersedes` edge when a replacement is supplied; merge adds `duplicate_of`.
+They retain nodes and edges. Outside an approval, retirement
 returns the retired node's standing to asserted. Removal deletes incident edges too.
 Research rendering omits retired Evidence. Historical `set_coverage` decodes with
 no graph effect and is rejected on admission. Reading reports are absent from
