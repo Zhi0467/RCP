@@ -234,9 +234,11 @@ selected WebKit storage. Added-login provider homes, under
 Claude and OpenCode runs. Codex runs hide only each home's `auth.json`, through a
 glob over login IDs, so a sign-in added later is covered too.
 **Why:** Codex starts its sandbox helper from inside its own home. A denied
-ancestor makes every shell command fail before it runs. Private SSH identities and deploy keys are hidden only
-after the right agent lists their decoded public-key SHA256 fingerprint and a
-bounded signing check succeeds. Missing/stale public keys or failed confirmation
+ancestor makes every shell command fail before it runs.
+
+Private SSH identities and deploy keys are hidden only after the right agent
+lists their decoded public-key SHA256 fingerprint and a bounded signing check
+succeeds. Missing/stale public keys or failed confirmation
 leave keys readable with a Settings/doctor reason. Public keys, SSH config and
 known hosts stay readable; parents containing exempt keys cannot be masked.
 
@@ -350,8 +352,8 @@ path component and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
 hidden. A wildcard above the last component, as in the Codex login-home glob,
 is expanded instead; a later match is hidden from the next command or browser
-daemon admission on. A hidden literal that does not exist yet is hidden the same way under its
-existing parent. A shell command never empties the account home or a folder
+daemon admission on. A hidden literal that does not exist yet is hidden the same
+way under its existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
 mid-session never appears to it. One window is accepted: a credential whose
@@ -1207,8 +1209,8 @@ cannot know when a vendor limit lifts; its lapse,
 | Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<data dir>/provider-homes/codex/<login_id>` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
 
 A local added Codex home lives outside the hidden `providers/` namespace; see
-[selected-secret hiding](#cooperative-project-write-containment). Preparation moves a home from its
-earlier path, `<account dir>/logins/<login_id>/codex-home`, together with its
+[selected-secret hiding](#cooperative-project-write-containment). Preparation
+moves a home from its earlier path, `<account dir>/logins/<login_id>/codex-home`, together with its
 retained snapshots, under the same home lease as migration. A home a process may
 still use moves on a later preparation. The earlier path then links to the home,
 for every added login, so a rolled-back release uses the same home and
