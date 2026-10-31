@@ -727,7 +727,7 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                 continue
             # Preserve shared-stage identity within the known-absent boundary.
             stage_key = hashlib.sha256(str(row["stage_root"]).encode("utf-8")).hexdigest()
-            rebound = absent_root / "stages" / table / stage_key
+            rebound = absent_root / "stages" / stage_key
             connection.execute(
                 f'UPDATE "{table}" SET stage_root = ? WHERE rowid = ?',
                 (str(rebound), row["rowid"]),
