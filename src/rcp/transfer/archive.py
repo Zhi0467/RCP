@@ -46,6 +46,7 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
         "project-caches",
         "project-snapshots",
         "providers",
+        "provider-homes",
         "service-connections",
         "tools",
         "rcp-server.json",

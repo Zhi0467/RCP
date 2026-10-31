@@ -1048,7 +1048,7 @@ def test_added_codex_sign_in_verify_and_logout_share_prepared_home(
     assert runner.resume_counts(LoginKey("codex", "", added.login_id)) == {"checked": 1}
     assert runner.resume_counts(LoginKey("codex", "", MACHINE_LOGIN_ID)) == {"checked": 0}
     runner.sign_out(LoginKey("codex", "", added.login_id), member_id="member")
-    home = runner.credentials.account_dir("codex", "", added.login_id) / "codex-home"
+    home = runner.credentials.login_home("codex", added.login_id)
     assert environments == [str(home)] * 3
     assert all(
         (home / name).is_symlink() for name in ("config.toml", "rules", "skills", "AGENTS.md")
@@ -1084,7 +1084,7 @@ def test_verify_finishing_after_removal_cannot_revive_login(
     added = runner.store.add_provider_login("codex", "", added_by="member")
     key = LoginKey("codex", "", added.login_id)
 
-    home = runner.credentials.account_dir(*key) / "codex-home"
+    home = runner.credentials.login_home("codex", added.login_id)
 
     def probe(_host, command, **_kwargs):
         runner.store.finish_provider_login_removal(key)
@@ -1110,7 +1110,7 @@ def test_late_credential_after_removal_is_retried_by_reconciler(
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
     added = runner.store.add_provider_login("codex", "", added_by="member")
     key = LoginKey("codex", "", added.login_id)
-    home = runner.credentials.account_dir(*key) / "codex-home"
+    home = runner.credentials.login_home("codex", added.login_id)
 
     def probe(_host, command, **_kwargs):
         runner.store.set_provider_login_draining(key)

@@ -21,6 +21,9 @@ def seed_codex_home(data: Path, member_id: str) -> dict | None:
     logins = [store.add_provider_login("codex", "", added_by=member_id) for _ in range(2)]
     home = credentials.account_dir("codex", "", logins[0].login_id) / "codex-home"
     home.mkdir(parents=True, mode=0o700)
+    # A synthetic stand-in; the harness never holds a real Codex sign-in.
+    credential = json.dumps({"synthetic": str(uuid.uuid4())})
+    (home / "auth.json").write_text(credential)
     session_id = str(uuid.uuid4())
     relative = f"sessions/2026/10/01/rollout-2026-10-01T00-00-00-{session_id}.jsonl"
     rollout = home / relative
@@ -39,6 +42,7 @@ def seed_codex_home(data: Path, member_id: str) -> dict | None:
         "session_id": session_id,
         "login_ids": [login.login_id for login in logins],
         "home": str(home),
+        "credential": credential,
         "rollout": relative,
         "content": content,
         "index": index,
@@ -63,7 +67,11 @@ def check_codex_home(data: Path, fixture: dict | None, *, migrated: bool) -> Non
         assert (home / fixture["rollout"]).read_text() == fixture["content"]
         assert fixture["index"].strip() in (home / "session_index.jsonl").read_text().splitlines()
     assert (homes[0] / fixture["rollout"]).samefile(homes[1] / fixture["rollout"])
+    assert (homes[0] / "auth.json").read_text() == fixture["credential"]
     if migrated:
+        # The home left the hidden credential namespace; its old path links to it.
+        assert homes[0] == credentials.login_home("codex", fixture["login_ids"][0])
+        assert Path(fixture["home"]).readlink() == homes[0]
         retained = homes[0].with_name(homes[0].name + "-retained")
         copies = list(retained.rglob("state_5.sqlite"))
         assert any(

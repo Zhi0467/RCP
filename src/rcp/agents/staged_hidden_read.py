@@ -177,24 +177,32 @@ def render_sandbox_profile(policy):
     return "\n".join(lines) + "\n"
 
 
-def split_glob(pattern):
-    """A glob's literal parent and its last-component pattern."""
-    parent, name = pattern.rsplit("/", 1)
-    if glob.has_magic(re.sub(r"\[[*?[]\]", "", parent)):
-        raise ValueError("hidden glob wildcards must be in the last component")
-    return re.sub(r"\[([*?[])\]", r"\1", parent) or "/", name
-
-
 def bwrap_argv(policy, command, *, executable="bwrap", persistent=False):
     # Each glob parent becomes an empty tmpfs with its other existing entries
-    # bound back, so a match created later never appears inside.
+    # bound back, so a match created later never appears inside. A wildcard
+    # above the last component is expanded instead: a later match is hidden
+    # from the next command, or the browser daemon's next admission, on.
     names = {}
+    expanded = []
     for pattern in policy.get("hidden_globs", ()):
-        parent, name = split_glob(pattern)
+        parent, name = pattern.rsplit("/", 1)
+        if glob.has_magic(re.sub(r"\[[*?[]\]", "", parent)):
+            expanded.extend(glob.glob(pattern))
+            continue
+        parent = re.sub(r"\[([*?[])\]", r"\1", parent) or "/"
         if os.path.isdir(parent):
             names.setdefault(os.path.realpath(parent), []).append(name)
-    directories = {os.path.realpath(path) for path in policy.get("hidden_directories", ())}
-    files = {os.path.realpath(path) for path in policy.get("hidden_files", ())}
+    directories = {
+        os.path.realpath(path)
+        for path in (*policy.get("hidden_directories", ()), *filter(os.path.isdir, expanded))
+    }
+    files = {
+        os.path.realpath(path)
+        for path in (
+            *policy.get("hidden_files", ()),
+            *(p for p in expanded if not os.path.isdir(p)),
+        )
+    }
     hidden = directories | files
     # A literal that does not exist yet is hidden the same way: its first missing
     # component is masked under the nearest existing folder. A shell command never

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
 from rcp.provider_auth import DeviceLogin, DeviceLoginStep, ProviderAuthentication
-from rcp.providers.codex.homes import prepare_home
+from rcp.providers.codex.homes import prepare_home, relocate_home
 from rcp.transport.ssh import ssh_arguments
 
 if TYPE_CHECKING:
@@ -179,7 +179,9 @@ class CodexAuthentication(ProviderAuthentication):
         if not login_id:
             return ProviderProcessEnvironment()
         if not host:
-            home = prepare_home(directory / "codex-home")
+            home = prepare_home(
+                relocate_home(directory / "codex-home", credentials.login_home("codex", login_id))
+            )
             return ProviderProcessEnvironment(
                 command_prefix=(
                     sys.executable,

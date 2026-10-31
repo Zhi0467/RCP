@@ -110,7 +110,7 @@ def test_added_codex_environment_and_credential_state(
     environment = auth.process_environment(credentials, "", login_id)
     assert environment.local_env is not None
     home = Path(environment.local_env["CODEX_HOME"])
-    assert home == credentials.account_dir("codex", "", login_id) / "codex-home"
+    assert home == credentials.login_home("codex", login_id)
     assert (home / "skills").readlink() == machine / "skills"
     state = ProviderLoginStateRecord(provider="codex", host="", login_id=login_id)
     assert auth.credential_available(credentials, "", login_id, login_state=state)
@@ -412,3 +412,42 @@ def test_remote_home_diagnostic_is_visible_without_shell_output(tmp_path, monkey
     )
     assert any(record.levelno == logging.WARNING for record in caplog.records)
     assert "private-shell-output" not in caplog.text
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monkeypatch, live):
+    import fcntl
+
+    from rcp.providers.codex.auth import CodexAuthentication
+    from rcp.providers.codex.homes import _home_lease
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    login_id = str(uuid4())
+    # The 0.4.36 layout: the home inside the hidden `providers/` namespace.
+    legacy = credentials.account_dir("codex", "", login_id) / "codex-home"
+    (legacy / "sessions").mkdir(parents=True)
+    (legacy / "sessions/rollout.jsonl").write_text("rollout\n")
+    (legacy / "auth.json").write_text("credential")
+    (legacy.with_name("codex-home-retained") / "snapshot").mkdir(parents=True)
+
+    def home() -> Path:
+        environment = CodexAuthentication().process_environment(credentials, "", login_id)
+        assert environment.local_env is not None
+        return Path(environment.local_env["CODEX_HOME"])
+
+    if live:
+        with _home_lease(legacy) as (lease, _):
+            fcntl.flock(lease.fileno(), fcntl.LOCK_SH)
+            assert home() == legacy
+            assert not legacy.is_symlink()
+    moved = credentials.login_home("codex", login_id)
+    assert home() == home() == moved
+    assert (moved / "auth.json").read_text() == "credential"
+    assert (tmp_path / "machine/sessions/rollout.jsonl").read_text() == "rollout\n"
+    assert (moved.with_name(moved.name + "-retained") / "snapshot").is_dir()
+    # A rolled-back release finds the same home at its old path, new sign-ins too.
+    fresh = str(uuid4())
+    CodexAuthentication().process_environment(credentials, "", fresh)
+    for login, path in ((login_id, moved), (fresh, credentials.login_home("codex", fresh))):
+        assert (credentials.account_dir("codex", "", login) / "codex-home").readlink() == path

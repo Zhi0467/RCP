@@ -91,7 +91,7 @@ def test_login_switch_preserves_session_command_and_execution_home(
         for login_id, environment in zip(login_ids, environments, strict=True):
             assert environment.local_env is not None
             home = Path(environment.local_env["CODEX_HOME"])
-            assert home == credentials.account_dir("codex", "", login_id) / "codex-home"
+            assert home == credentials.login_home("codex", login_id)
             assert (home / "sessions").resolve() == machine / "sessions"
             homes.append(home)
         rollout = Path("sessions/2026/10/30") / f"rollout-example-{session_id}.jsonl"

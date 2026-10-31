@@ -95,6 +95,8 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
     for relative in profile.login_credential_files:
         (directory / relative).unlink(missing_ok=True)
     if not login.host:
+        for name in profile.login_home_credentials:
+            (credentials.login_home(login.provider, login.login_id) / name).unlink(missing_ok=True)
         return True
     source = importlib.resources.files("rcp.server_ops").joinpath("provider_cleanup.py").read_text()
     command = shlex.join(

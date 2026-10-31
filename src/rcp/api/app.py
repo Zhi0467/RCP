@@ -1945,11 +1945,12 @@ def create_app(
             ).fetchall()
         for row in rows:
             login = LoginKey("codex", row["host"], row["login_id"])
-            if (
-                not login.host
-                and not (
-                    provider_credentials.account_dir("codex", "", login.login_id) / "codex-home"
-                ).is_dir()
+            if not login.host and not any(
+                path.is_dir()
+                for path in (
+                    provider_credentials.login_home("codex", login.login_id),
+                    provider_credentials.account_dir("codex", "", login.login_id) / "codex-home",
+                )
             ):
                 continue
             try:

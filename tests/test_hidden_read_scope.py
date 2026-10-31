@@ -204,6 +204,51 @@ def test_entries_missing_on_the_execution_host_are_recorded_absent(
     assert glob.escape(str(tmp_path / "data/run-stage")) + "/backup-*" in scope.absent_entries
 
 
+@pytest.mark.parametrize("provider", ["codex", "claude", "opencode"])
+def test_login_homes_are_readable_only_to_their_provider(
+    manifest, tmp_path, monkeypatch, provider
+) -> None:
+    import json
+    import re
+    from uuid import uuid4
+
+    from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.agents.staged_hidden_read import glob_path_regex
+    from rcp.providers.codex.profile import _codex_read_denials
+
+    credentials = ProviderCredentialStore.for_data_dir(tmp_path / "data")
+    local = credentials.login_home("codex", str(uuid4()))
+    remote = tmp_path / "home/.rcp/provider-homes/codex" / str(uuid4())
+    for home in (local, remote):
+        (home / "tmp/arg0-linux").mkdir(parents=True)
+        (home / "auth.json").write_text("dummy")
+    scope = _resolve(manifest, tmp_path, monkeypatch, provider=provider)
+    # A sign-in added after the launch resolved.
+    later = credentials.login_home("codex", str(uuid4()))
+    later.mkdir(parents=True)
+
+    def hidden(path: Path) -> bool:
+        text = str(path)
+        return (
+            text in scope.hidden_files
+            or any(path.is_relative_to(root) for root in scope.hidden_directories)
+            or any(re.fullmatch(glob_path_regex(item), text) for item in scope.hidden_globs)
+        )
+
+    assert all(hidden(home / "auth.json") for home in (local, remote, later))
+    assert hidden(tmp_path / "data/providers/codex/local/logins/id/codex-home/auth.json")
+    if provider == "codex":
+        # Codex starts its sandbox helper from inside its own home.
+        assert not any(hidden(home / "tmp/arg0-linux") for home in (local, remote, later))
+        homes = [item for item in scope.hidden_globs if "/provider-homes/" in item]
+        denials = _codex_read_denials(scope)
+        assert len(homes) == 2
+        assert all(json.dumps(item) + '="deny"' in denials for item in homes)
+    else:
+        assert str(tmp_path / "data/provider-homes") in scope.hidden_directories
+        assert str(tmp_path / "home/.rcp/provider-homes") in scope.hidden_directories
+
+
 def test_tool_wrapper_lives_in_a_hidden_folder(manifest, tmp_path, monkeypatch) -> None:
     scope = _resolve(manifest, tmp_path, monkeypatch)
     wrapper = Path(scope.wrapper_path())

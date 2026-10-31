@@ -123,6 +123,11 @@ class ProviderProcessEnvironment:
         )
 
 
+# Added-login provider homes: `<data dir>/provider-homes/<provider>/<login_id>`
+# locally and `~/.rcp/provider-homes/<provider>/<login_id>` on a remote account.
+LOGIN_HOMES = "provider-homes"
+
+
 def account_directory_name(host: str) -> str:
     """One path-safe directory per execution account; the local account is `local`."""
 
@@ -165,6 +170,17 @@ class ProviderCredentialStore:
         validate_login_id(login_id)
         directory = self.root / quote(provider, safe="") / account_directory_name(host)
         return directory / "logins" / login_id if login_id else directory
+
+    def login_home(self, provider: str, login_id: str) -> Path:
+        """An added login's local provider home, beside the hidden credential namespace.
+
+        The provider's own process must read its home, so it cannot live under
+        `providers/`; hidden read covers only the credential files inside it.
+        """
+        if not login_id:
+            raise ValueError("The machine sign-in has no added home.")
+        self.account_dir(provider, "", login_id)
+        return self.root.parent / LOGIN_HOMES / quote(provider, safe="") / login_id
 
     def token_path(self, provider: str, host: str, login_id: str) -> Path:
         return self.account_dir(provider, host, login_id) / "setup-token"

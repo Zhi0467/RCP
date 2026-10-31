@@ -11,6 +11,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
+from rcp.agents.provider_environment import LOGIN_HOMES
 from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
 from rcp.agents.staged_hidden_read import probe_hidden_read_wrapper as probe_hidden_read_wrapper
 from rcp.agents.write_scope import RegisteredRepositoryRoot, installed_server_storage
@@ -27,7 +28,7 @@ from rcp.limits import (
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_READINESS_TTL_SECONDS,
 )
-from rcp.providers import PROVIDER_IDS, AgentCapability, ProviderId
+from rcp.providers import PROVIDER_IDS, AgentCapability, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import control_directory_candidate
@@ -107,13 +108,30 @@ def hidden_read_defaults(
     credential_roots: tuple[str, ...],
     provider_login_files: tuple[str, ...],
     control_socket_dir: str | None,
+    login_home_credentials: tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """Credential roots name provider stores, never a deploy-key parent."""
+    """Credential roots name provider stores, never a deploy-key parent.
+
+    `login_home_credentials` are globs relative to the added-login homes roots.
+    A provider whose process reads its own home hides only these; for every
+    other provider the roots are hidden whole.
+    """
     directories = list(credential_roots)
     directories.append(home + "/" + HIDDEN_READ_WRAPPER_ROOT)
-    directories.extend((home + "/.config/rcp/logins", home + "/.rcp/provider-homes"))
+    directories.append(home + "/.config/rcp/logins")
     files = [*provider_login_files, home + "/.config/rcp/claude-setup-token"]
     globs = []
+    login_homes = [home + "/.rcp/" + LOGIN_HOMES]
+    if app_data_dir:
+        login_homes.append(app_data_dir + "/" + LOGIN_HOMES)
+    if login_home_credentials:
+        globs.extend(
+            glob.escape(root) + "/" + pattern
+            for root in login_homes
+            for pattern in login_home_credentials
+        )
+    else:
+        directories.extend(login_homes)
     for path in WEBKIT_READ_DENY_PATHS:
         (files if path.endswith(".binarycookies") else directories).append(home + path[1:])
     if control_socket_dir:
@@ -279,6 +297,13 @@ def resolve_hidden_read_scope(
         credential_roots=(),
         provider_login_files=tuple(facts["provider_login_files"]),
         control_socket_dir=str(control_directory_candidate()) if remote_stage is None else None,
+        # A wildcard keeps a home added after this launch covered. Codex expands
+        # deny globs with ripgrep, which anchors `*/name` to its own working
+        # directory; `**/name` matches wherever the run starts.
+        login_home_credentials=tuple(
+            f"{provider}/**/{glob.escape(name)}"
+            for name in profile_for(provider).login_home_credentials
+        ),
     )
     if data_dir and remote_stage is None:
         storage = installed_server_storage(Path(data_dir))
