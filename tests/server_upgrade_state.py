@@ -255,6 +255,37 @@ def admit_due_consolidation(data_dir: Path) -> str:
     return operation_id
 
 
+def seed_shared_consolidation_workspace(data_dir: Path, project_id: str, target: str) -> None:
+    """Write two completed turns as the installed previous release would."""
+    from rcp.consolidation import consolidation_chat_id
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.storage import AgentTaskRecord, AppStore
+
+    store = AppStore(data_dir / "rcp.sqlite3")
+    try:
+        now = store.now()
+        for _ in range(2):
+            store.create_agent_task(
+                AgentTaskRecord(
+                    operation_id=str(uuid.uuid4()),
+                    project_id=project_id,
+                    kind="project_chat",
+                    status="succeeded",
+                    request={"chat_id": consolidation_chat_id(project_id, target)},
+                    graph_target=GraphTargetRef()
+                    if target == "main"
+                    else GraphTargetRef(kind="branch", branch_id=target),
+                    stage_root=str(data_dir / "run-stage" / "shared-consolidation"),
+                    created_at=now,
+                    updated_at=now,
+                    finished_at=now,
+                    status_message="Completed.",
+                )
+            )
+    finally:
+        store.close()
+
+
 def assert_space_reads(request, fixture: dict, seeded: dict, cookie: str) -> None:
     """The candidate's space-wide reads, before any project opens, serve old caches and rows."""
     project_id = fixture["project_id"]

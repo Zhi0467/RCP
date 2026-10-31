@@ -1558,6 +1558,7 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
     from rcp.consolidation import consolidation_chat_id
     from rcp.core.authority import AuthorizedHuman
     from rcp.storage import AgentTaskRecord
+    from tests.server_upgrade_state import seed_shared_consolidation_workspace
 
     request, state, _ = captured
     with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
@@ -1573,28 +1574,25 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
             ),
             next_due_at=(datetime.fromisoformat(now) + timedelta(hours=1)).isoformat(),
         )
-        for index in range(2):
-            store.create_agent_task(
-                AgentTaskRecord(
-                    operation_id=str(uuid.uuid4()),
-                    project_id=state["project_id"],
-                    kind="project_chat",
-                    status="succeeded",
-                    request={"chat_id": consolidation_chat_id(state["project_id"])},
-                    stage_root=str(
-                        Path(request.data_dir)
-                        / "run-stage"
-                        / ("shared" if same_workspace or index == 0 else "different")
-                    ),
-                    created_at=now,
-                    updated_at=now,
-                    finished_at=now,
-                    status_message="Completed.",
-                )
-            )
-
     if same_workspace:
+        seed_shared_consolidation_workspace(Path(request.data_dir), state["project_id"], "main")
         assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
     else:
+        with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+            for index in range(2):
+                store.create_agent_task(
+                    AgentTaskRecord(
+                        operation_id=str(uuid.uuid4()),
+                        project_id=state["project_id"],
+                        kind="project_chat",
+                        status="succeeded",
+                        request={"chat_id": consolidation_chat_id(state["project_id"])},
+                        stage_root=str(Path(request.data_dir) / "run-stage" / str(index)),
+                        created_at=now,
+                        updated_at=now,
+                        finished_at=now,
+                        status_message="Completed.",
+                    )
+                )
         with pytest.raises(MaintenanceRefused, match="Consolidation admission failed"):
             _rehearse(request, tmp_path)
