@@ -185,8 +185,10 @@ export function episodeProjection(
   // This function resolves them to copy and to the task object a control acts on.
   const task = currentEpisodeControlTask(episode, tasks);
   const defaultLabel =
-    EPISODE_RECOMMENDATION_LABELS_BY_HEALTH[episode.health]?.[episode.recommendation] ??
-    EPISODE_RECOMMENDATION_LABELS[episode.recommendation];
+    episode.recommendation === "reauthorize" && !episode.can_continue
+      ? EPISODE_RECOMMENDATION_LABELS.review
+      : (EPISODE_RECOMMENDATION_LABELS_BY_HEALTH[episode.health]?.[episode.recommendation] ??
+        EPISODE_RECOMMENDATION_LABELS[episode.recommendation]);
   const label =
     episode.mode === "experiment_loop"
       ? experimentEpisodeRecommendationLabel(episode, defaultLabel)

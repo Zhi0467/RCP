@@ -1291,8 +1291,8 @@ tasks remain in History; Blocker judgment stays in Inbox.
 The exhaustive episode projection gives endings precedence over active state,
 then wrap-up. Exhaustion/human pause needs reauthorization; revoked login needs
 sign-in; stopped repeated recovery offers a changed provider/model/reasoning.
-`blocked_reason` identifies the clearing action or is null. The card shows its
-cause and diagnostic before the separately labelled recommendation; controls
+`blocked_reason` identifies the clearing action or is null. Auto-research detail
+can include the cause in its recommendation and show a diagnostic; controls
 appear only when valid. An ended Experiment whose human-authored node is closed
 is Completed with no fresh Start until reopened. Report selection uses the newest
 report-bearing episode on the exact target: `report_is_current` distinguishes
@@ -1303,6 +1303,9 @@ ending, and report. One card represents the chain; Add N turns follows
 `can_continue`, and timeline boundaries mark continuations. The branch root owns
 `episode_id`; its newest member is `current_episode_id`. Settled `not_started`
 wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
+When reauthorization is recommended but `can_continue` is false, expanded
+Auto-research detail asks the member to review the episode rather than suggesting
+an unavailable action.
 
 `GET /api/providers/logins` lists every login, shared and own, on each space
 machine and project target host, with secret-free credential summaries, labels,
