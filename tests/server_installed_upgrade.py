@@ -823,6 +823,21 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     run(["systemctl", "start", "rcp.service"])
     wait_health()
     fixture["upgrade_state"]["branch_id"] = seed_edited_branch(request, fixture, session(fixture))
+    if tag == "v0.4.36" and fixture["upgrade_state"]["branch_id"] is not None:
+        # The old writer left repeated turns in one workspace. Exercise that
+        # history when the candidate rehearses the newly edited branch.
+        run(["systemctl", "stop", "rcp.service"])
+        service(
+            [
+                old_python,
+                "-I",
+                str(SCRIPT),
+                "seed-shared-workspace",
+                fixture["upgrade_state"]["branch_id"],
+            ]
+        )
+        run(["systemctl", "start", "rcp.service"])
+        wait_health()
     followup = json.loads((ROOT / "state/question-followup.json").read_text())
     rehearses = candidate_rehearses()
     select(candidate)
@@ -958,7 +973,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
 
 def main() -> None:
     # Isolated installed interpreters need only the test helpers, never src/rcp.
-    if len(sys.argv) == 2 and sys.argv[1] in {
+    if len(sys.argv) in {2, 3} and sys.argv[1] in {
         "setup",
         "seed",
         "scratch-check",
@@ -966,6 +981,7 @@ def main() -> None:
         "seed-candidate-artifact",
         "seed-question-followup",
         "admit-consolidation",
+        "seed-shared-workspace",
         "check-launches",
         "codex-home-upgrade",
         "codex-home-rollback",
@@ -996,6 +1012,11 @@ def main() -> None:
             fixture = json.loads((ROOT / "state/fixture.json").read_text())
             queued = admit_due_consolidation(DATA) if fixture["upgrade_state"]["schedule"] else None
             write_json(ROOT / "state/consolidation.json", {"queued_operation_id": queued})
+        elif sys.argv[1] == "seed-shared-workspace":
+            from tests.server_upgrade_state import seed_shared_consolidation_workspace
+
+            fixture = json.loads((ROOT / "state/fixture.json").read_text())
+            seed_shared_consolidation_workspace(DATA, fixture["project_id"], sys.argv[2])
         elif sys.argv[1] == "check-launches":
             from tests.server_upgrade_state import check_queued_launches
 

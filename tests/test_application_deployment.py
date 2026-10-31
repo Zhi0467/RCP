@@ -1549,3 +1549,67 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
 
         monkeypatch.setattr(validation, "_captured_project_ids", lambda _overlay: set())
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+@pytest.mark.parametrize("same_workspace", [True, False])
+def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path, same_workspace):
+    from datetime import datetime, timedelta
+
+    from rcp.consolidation import consolidation_chat_id
+    from rcp.core.authority import AuthorizedHuman
+    from rcp.storage import AgentTaskRecord
+    from tests.server_upgrade_state import seed_shared_consolidation_workspace
+
+    request, state, _ = captured
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        now = store.now()
+        store.put_consolidation_schedule(
+            state["project_id"],
+            local_time="02:00",
+            timezone="UTC",
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"],
+                user_id=state["member_id"],
+                display_name="Qualification researcher",
+            ),
+            next_due_at=(datetime.fromisoformat(now) + timedelta(hours=1)).isoformat(),
+        )
+    if same_workspace:
+        seed_shared_consolidation_workspace(Path(request.data_dir), state["project_id"], "main")
+        assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+    else:
+        with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+            for index in range(2):
+                store.create_agent_task(
+                    AgentTaskRecord(
+                        operation_id=str(uuid.uuid4()),
+                        project_id=state["project_id"],
+                        kind="project_chat",
+                        status="succeeded",
+                        request={"chat_id": consolidation_chat_id(state["project_id"])},
+                        stage_root=str(Path(request.data_dir) / "run-stage" / str(index)),
+                        created_at=now,
+                        updated_at=now,
+                        finished_at=now,
+                        status_message="Completed.",
+                    )
+                )
+        with pytest.raises(MaintenanceRefused, match="Consolidation admission failed"):
+            _rehearse(request, tmp_path)
+
+
+def test_rehearsal_preserves_report_workspace_across_linked_records(tmp_path):
+    from rcp.server_ops.application_validation import _rebind_local_stage_paths
+    from tests.test_episode_storage import _start_wrapping
+
+    with closing(AppStore(tmp_path / "rcp.sqlite3")) as store:
+        wrapup, task = _start_wrapping(store, "episode")
+        assert wrapup.stage_root == task.stage_root
+        with store.connection() as connection:
+            _rebind_local_stage_paths(connection, tmp_path / "known-absent")
+        rebound_wrapup = store.episode_wrapup("episode")
+        rebound_task = store.agent_task(task.operation_id)
+        assert rebound_wrapup is not None and rebound_task is not None
+        assert rebound_wrapup.stage_root == rebound_task.stage_root
+        assert rebound_task.stage_root is not None
+        assert Path(rebound_task.stage_root).is_relative_to(tmp_path / "known-absent")
