@@ -381,6 +381,28 @@ test("a final report error is visible, terminal, and has no task recovery contro
   assert.match(html, /class="campaign-reauthorize"/);
 });
 
+test("the recommendation does not offer unavailable continuation", () => {
+  const exhausted = {
+    ...episode,
+    status: "needs_action",
+    live: false,
+    ending: "exhausted",
+    health: "needs_action",
+    recommendation: "reauthorize",
+    blocked_reason: "reauthorize",
+    task_control: null,
+    can_stop: false,
+    can_continue: true,
+  };
+  const available = renderEpisodes([exhausted]);
+  const unavailable = renderEpisodes([{ ...exhausted, can_continue: false }]);
+
+  assert.match(available, /Recommended next step<\/span><strong>[^<]*Add turns/);
+  assert.match(available, /class="campaign-reauthorize"/);
+  assert.match(unavailable, /Recommended next step<\/span><strong>[^<]*Review the episode state/);
+  assert.doesNotMatch(unavailable, /class="campaign-reauthorize"/);
+});
+
 test("a continuation chain is one run card listing each member's ceiling, ending, and report", () => {
   const sourceMember = {
     episode_id: "episode/source",

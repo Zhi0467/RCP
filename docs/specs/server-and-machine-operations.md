@@ -425,8 +425,9 @@ serves the data the update rehearsal just passed, beside a fresh personal space.
 A member signs in to both, then opens the team Runs list before any project,
 the project, Runs, Inbox, a chat and the saved artifacts, and returns to the
 personal space. The cold Runs list must list the Experiment on the old cache.
-Any failed response other than the signed-out identity probe, failed request,
-console error or page error fails it. A failure keeps `evidence.json` with both
+Failed responses, requests, console errors and page errors fail it, except for
+the signed-out identity probe and its console error, and navigation-cancelled
+requests reported as `ERR_ABORTED`. A failure keeps `evidence.json` with both
 server logs.
 
 The privileged checkpoint copier preserves metadata, links, special nodes and

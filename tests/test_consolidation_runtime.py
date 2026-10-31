@@ -19,7 +19,9 @@ from .helpers import (
     authorized_human,
     create_named_app,
     fake_launch_admitted,
+    refresh_patch,
     seed_patch,
+    signed_in_client,
 )
 
 
@@ -41,6 +43,7 @@ def runtime(manifest, tmp_path, monkeypatch):
 
     def dispatch(operation_id):
         if store.mark_agent_task_running(operation_id):
+            store.record_agent_task_receipt(operation_id, "agent_launch", {})
             dispatched.append(operation_id)
         return store.agent_task(operation_id)
 
@@ -75,7 +78,10 @@ def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, m
     assert runtime.dispatched == [run.operation_id]
 
 
-def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(runtime, monkeypatch):
+@pytest.mark.parametrize("history_available", [True, False])
+def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(
+    runtime, monkeypatch, history_available
+):
     with monkeypatch.context() as patch:
         patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
         runtime.poller.poll_once()
@@ -89,13 +95,59 @@ def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(runtime
     # Restore the real launch the fixture faked.
     monkeypatch.delattr(runtime.app.state.background_tasks, "launch_admitted")
 
-    runtime.poller.poll_once()
-    runtime.poller.poll_once()
+    runtime.poller._launch(run.operation_id)
 
-    assert runtime.store.agent_task(run.operation_id).status == "failed"
+    if not history_available:
+
+        def unavailable(_):
+            pytest.fail("A never-launched run must not read canonical history.")
+
+        monkeypatch.setattr(runtime.poller, "service_for", unavailable)
+
+    runtime.poller.reconcile_outcomes()
+
+    task = runtime.store.agent_task(run.operation_id)
+    assert task.status == "failed"
+    assert not runtime.store.agent_task_has_receipt(run.operation_id, "agent_launch")
     settled = runtime.store.consolidation_run(run.run_id)
     assert settled.outcome_settled_at is not None and settled.kind == "failure"
-    assert settled.error_message
+    assert settled.error_message == task.error and settled.error_message
+    assert settled.error_code == "consolidation_launch_failed"
+    assert settled.revisions_verified and settled.applied_revisions == []
+    assert settled.proposals_created == 0
+    assert runtime.store.consolidation_schedule(run.project_id).covered_head is None
+    assert settled.operation_id == run.operation_id
+    item = (
+        signed_in_client(runtime.app)
+        .get(f"/api/projects/{run.project_id}/consolidation")
+        .json()["inbox"][0]
+    )
+    assert item["operation_id"] is None and item["chat_id"] is None
+    assert item["revisions_verified"] and item["applied_revisions"] == []
+
+
+def test_launched_failure_preserves_history_despite_prelaunch_error_text(runtime):
+    runtime.poller.poll_once()
+    (run,) = runtime.store.consolidation_runs()
+    patch = refresh_patch().model_copy(update={"source_operation_id": run.operation_id})
+    append_fixture_patch(runtime.service, patch)
+    revision = runtime.service.history.state().revision
+    runtime.store.fail_agent_task(run.operation_id, "consolidation_authorization_revoked")
+
+    runtime.poller.reconcile_outcomes()
+
+    settled = runtime.store.consolidation_run(run.run_id)
+    assert settled.kind == "failure" and settled.error_code == "task_failed"
+    assert settled.revisions_verified
+    assert settled.applied_revisions == [{"revision": revision, "summary": patch.summary}]
+    assert runtime.store.consolidation_schedule(run.project_id).covered_head is None
+    item = (
+        signed_in_client(runtime.app)
+        .get(f"/api/projects/{run.project_id}/consolidation")
+        .json()["inbox"][0]
+    )
+    assert item["operation_id"] == run.operation_id and item["chat_id"] == run.chat_id
+    assert item["applied_revisions"] == settled.applied_revisions
 
 
 def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runtime, monkeypatch):

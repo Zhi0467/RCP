@@ -298,6 +298,7 @@ async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path:
     gate = staged.invocation_gate
     assert gate is not None
     socket_path = Path(_broker_socket_path(gate.socket_path))
+    processes: list[asyncio.subprocess.Process] = []
 
     async def start_broker() -> asyncio.subprocess.Process:
         process = await asyncio.create_subprocess_exec(
@@ -308,11 +309,14 @@ async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        processes.append(process)
         assert process.stdin is not None and process.stdout is not None
         process.stdin.write(gate.bootstrap(b""))
         await process.stdin.drain()
         line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
-        assert line.decode().rstrip() == gate.ready_line
+        assert line.decode().rstrip() == gate.ready_line, (
+            await asyncio.wait_for(process.communicate(), timeout=5)
+        )[1].decode(errors="replace")
         return process
 
     try:
@@ -330,6 +334,15 @@ async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path:
         second.send_signal(signal.SIGTERM)
         await asyncio.wait_for(second.wait(), timeout=5)
     finally:
+        for process in processes:
+            assert process.stdin is not None
+            process.stdin.close()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
         socket_path.unlink(missing_ok=True)
         staged.cleanup()
 

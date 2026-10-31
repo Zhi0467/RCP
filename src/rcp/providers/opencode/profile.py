@@ -105,7 +105,7 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             request.invocation_gate,
         )
         if (
-            request.capability in {"discuss", "paper_suggest"}
+            request.capability in {"discuss", "scratch_patch", "paper_suggest"}
             and request.invocation_gate is not None
         ):
             self.command[self.command.index("--agent") + 1] = _agent_name(permission)
@@ -466,9 +466,13 @@ def _permission(
         # Work has an unbounded shell. Other capabilities keep their narrow
         # file-edit rules, including Discuss when its browser is granted.
         base["bash"] = "allow"
-    elif capability == "discuss":
+    elif capability in {"discuss", "scratch_patch"}:
         bash = {"*": "deny"}
-        if browser_grant is not None and browser_grant.status == "granted":
+        if (
+            capability == "discuss"
+            and browser_grant is not None
+            and browser_grant.status == "granted"
+        ):
             bash["playwright-cli *"] = "allow"
             bash[f"{PREVIEW_COMMAND} *"] = "allow"
         if invocation_gate is not None and invocation_gate.client_path is not None:

@@ -128,13 +128,17 @@ modes in reverse chronological order. Only runs stopped pending human action bel
 in Needs Action. Completed has folded groups for Experiment loop, then Auto-research.
 The owning Experiment or Auto-research name leads each card.
 The start time is secondary, without “Episode”. Groups name the mode once.
-Cards have no muted recommendation or report commentary.
+Collapsed cards have no muted recommendation or report commentary. Expanded
+Auto-research detail shows the parent recommendation described by the
+[Runs projection](api-web-and-desktop-projections.md#runs).
 Backend controls select the current Experiment episode, its section, and its health.
 Older episodes remain in History. Seed, Refresh, chat, and coaching are not Runs rows.
 Blockers stay in Inbox.
 
 Run opens episode detail in Runs. Stop loop is the loop action.
-Task-level Pause, Resume, and Retry remain in the task inspector.
+Task-level Pause, Resume, and Retry are available in the task inspector.
+Expanded Auto-research detail also exposes the current task control offered by
+the parent projection, including a provider switch when that recovery permits it.
 
 ## Nodes and node detail
 
@@ -441,7 +445,9 @@ widths apply. Watcher and task controls keep their owners.
 ## Artifact viewer
 
 One shell-mounted panel survives branches for loading and identity.
-It closes on project change. All artifact, report, and repository entrances use it.
+It closes on project change. Artifact, report, and repository entrances use it
+for supported previews. PDF system viewing and downloads follow the
+[file-type rules](paper-artifacts-and-result-views.md#answer-and-artifacts-are-independent).
 It starts docked on the right at full height. Dragging its left edge resizes it.
 Dragging its title floats it. Double-clicking the title or pressing focused Enter
 or Space toggles fullscreen and restores placement.

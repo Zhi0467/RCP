@@ -308,7 +308,9 @@ roots and lifetime; hostile-agent containment would require a different owner.
 ### Machine writable paths
 
 Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
-the local temporary directory. Scratch-only/read-only launches receive none.
+the local temporary directory. Scratch-only/read-only launches receive no
+machine-card grants. Codex scratch and Discuss profiles independently allow
+the system temporary directories.
 Humans choose paths; code fixes eligible capabilities. Every launch reads the card afresh, so
 a path added mid-episode applies from the next launch. The write-boundary prompt
 tells a blocked agent to ask for the exact path there, rather than copy files out
@@ -456,7 +458,7 @@ repository roots. They never use `bypassPermissions`. They load only user
 settings (`--setting-sources user`), so the account's own skills and plugins
 load as in Discuss. A user allow rule cannot widen RCP's allow-list, a user deny
 rule can narrow it, and `disableAllHooks` keeps hooks off. Every Claude launch
-passes strict empty MCP configuration. Discuss with a broker gate adds
+passes strict empty MCP configuration. Discuss, Seed and Refresh with a broker gate add
 only `Bash(python3 -I -S <staged-client-path>:*)` for that gate's exact staged client.
 Its Edit denies protect the client directory itself and all descendants, including
 when an additional read directory or a legacy workspace contains it. The literal
@@ -521,9 +523,10 @@ outside Git. The coach's native read tools remain available, and its edit rules
 allow only its task's changes folder. General shell access is denied; only the
 protected graph-history client receives a narrow allowance when its broker gate
 is present. Discuss and ingestion may edit only their workspace and their own
-write folders. Ingestion has no shell. Discuss denies `*`, allowing only
-`python3 -I -S <staged-client-path> *` when its broker gate names that client, and
-`playwright-cli *` and the artifact preview command when the human granted the browser. Final edit denies protect the
+write folders. Discuss and ingestion deny general shell commands, allowing only
+`python3 -I -S <staged-client-path> *` when their broker gate names that client.
+Discuss also allows `playwright-cli *` and the artifact preview command when the
+human granted the browser. Final edit denies protect the
 client directory itself and all descendants in split and legacy stages.
 Without a broker gate, including artifact edits, there is no client allowance.
 Command selection and launch configuration derive the same rules, including on resumed sessions.
@@ -820,6 +823,9 @@ process tree on the execution host. Prior turns cannot gain new authority;
 validate-only credentials refuse keyed commands. The helper's `launch` verb and
 scheduler route are owned by [machines and compute](machines-and-compute.md); `lesson` is owned by
 [graph consolidation](graph-consolidation-and-lessons.md).
+
+The standalone broker bounds its stdin wait so Stop signals are handled even
+when a serving thread receives the signal and its parent keeps input open.
 
 Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
 through settlement. Disconnected accepted turns transfer it to reconciliation.

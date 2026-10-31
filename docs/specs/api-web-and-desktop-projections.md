@@ -86,8 +86,9 @@ dispatched it; eligibility uses the isolation reservation and writer checks.
 `PUT .../graph-refs/{branch_id}/archived` takes `{"archived": bool}`.
 Both admit project members and return the GraphRef. Rename returns 422
 `branch_name_invalid` or 409 `branch_name_taken`; unknown branches return 404.
-Main cannot be renamed or archived. Archive creates missing isolation state,
-without changing Patch history or episode-history archive state.
+Main cannot be renamed or archived. Archive updates the branch record and mirrors
+the flag into isolation state only for an episode's own target branch, creating
+that state if missing. It changes neither Patch history nor episode-history archive state.
 
 The `⑂ <name>` picker sits after view tabs, or beside the project name on phones,
 even on main with no branch. Its last row, New branch, opens a name field (empty
@@ -1290,8 +1291,8 @@ tasks remain in History; Blocker judgment stays in Inbox.
 The exhaustive episode projection gives endings precedence over active state,
 then wrap-up. Exhaustion/human pause needs reauthorization; revoked login needs
 sign-in; stopped repeated recovery offers a changed provider/model/reasoning.
-`blocked_reason` identifies the clearing action or is null. The card shows its
-cause and diagnostic before the separately labelled recommendation; controls
+`blocked_reason` identifies the clearing action or is null. Auto-research detail
+can include the cause in its recommendation and show a diagnostic; controls
 appear only when valid. An ended Experiment whose human-authored node is closed
 is Completed with no fresh Start until reopened. Report selection uses the newest
 report-bearing episode on the exact target: `report_is_current` distinguishes
@@ -1302,6 +1303,9 @@ ending, and report. One card represents the chain; Add N turns follows
 `can_continue`, and timeline boundaries mark continuations. The branch root owns
 `episode_id`; its newest member is `current_episode_id`. Settled `not_started`
 wrap-up means no report was needed; sign-in-blocked reports remain wrapping up.
+When reauthorization is recommended but `can_continue` is false, expanded
+Auto-research detail asks the member to review the episode rather than suggesting
+an unavailable action.
 
 `GET /api/providers/logins` lists every login, shared and own, on each space
 machine and project target host, with secret-free credential summaries, labels,
@@ -2120,8 +2124,10 @@ confirming read.
 
 `POST .../bulletin` accepts `{text, key, reply_to}`. `PATCH .../bulletin/{post_id}`
 accepts `{text, key}` and reparses references and mentions. `DELETE` on the same path soft-deletes the post. Only its author may edit or delete; another author
-gets `403 bulletin_not_author`, and editing or deleting a deleted post gets
-`409 bulletin_post_deleted`. A channel keeps at most 200 posts; a new post drops
+gets `403 bulletin_not_author`. A fresh edit or delete of a deleted post gets
+`409 bulletin_post_deleted`; a matching successful receipt replays before that
+check. DELETE uses a stable per-post key, so repeating it returns the original
+success. A channel keeps at most 200 posts; a new post drops
 whole threads, least recently active first, and an oversized thread loses its
 oldest replies. Deleted replies and deleted top-level posts without
 replies are omitted; parents with replies remain empty placeholders. Posts

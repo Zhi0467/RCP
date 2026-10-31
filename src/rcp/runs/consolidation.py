@@ -33,6 +33,7 @@ CONSOLIDATION_PRELAUNCH_ERRORS = frozenset(
         "consolidation_authorizer_departed",
         "consolidation_project_unavailable",
         "consolidation_launch_binding_invalid",
+        "consolidation_launch_failed",
         "consolidation_target_unavailable",
     }
 )

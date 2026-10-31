@@ -165,7 +165,7 @@ text cannot select it; resolution never skips an unusable current binding.
 Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
 `session_stage_unavailable`, `session_stale`, `session_context_unavailable`,
-`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, or
+`orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, `login_switch`, or
 `consolidation` (every nightly turn starts fresh).
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
@@ -648,7 +648,7 @@ existing `group` label; ordinary conversation items cannot. A helper's returned
 watcher object uses these same fields; there is no job-id observer form.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
-or a named Proposal being resolved after arming. There is no arbitrary query,
+or any Proposal related to a named node being resolved after arming. There is no arbitrary query,
 standing predicate, new-node arrival, or relation predicate.
 
 ## Graph-condition delivery
@@ -663,8 +663,8 @@ reconcile, and their callbacks cannot clear a pending transient retry elsewhere.
 A node removed after arming retires its condition.
 
 Each condition stores its arming head. A node status already true at that head
-is immediately ready; Proposal resolution is prospective and requires the
-specific later resolution event. A resolved Blocker transition is observed from
+is immediately ready; Proposal resolution is prospective and requires a later
+resolution of a Proposal related to that node. A resolved Blocker transition is observed from
 the retained final node/event, with no delete operation.
 
 Every graph wake spends one permitted invocation, including one caused by a
@@ -680,7 +680,7 @@ it never cancels the separate external job being observed. SSH checks carry
 their own bounded timeout owner so a lost client cannot abandon the check.
 Exit `0` means the named work is gone, `1` means still present, and any other result is
 unobservable. Active observations use the normal interval; repeated failures
-persist bounded exponential backoff and identity jitter. Only exit `1` resets
+persist bounded exponential backoff and identity jitter. Exit `0` or `1` resets
 the error count. A degraded observation is never inferred complete or dead, but
 an observer still unobservable after as many consecutive errors as a group member
 needs wakes its agent once with the error, alone or in its group, and then stops
@@ -819,7 +819,9 @@ record or error.
 
 The report resumes the exact session/stage with the durable ending, report
 skill/output pointer and immutable compact mode receipt, never a rebuilt graph
-or transcript. Receipt compaction follows a fixed order and storage-encoded size
+or transcript. The [Codex transcript-refusal exception](providers-and-containment.md#continuation-prompts)
+permits a fresh report session while retaining the stage, allocation and budget.
+Receipt compaction follows a fixed order and storage-encoded size
 bound. Permanent admission defects record one failed wrap-up and terminalize;
 transient locks/outages retry. Existing rows reuse their receipt; warnings are
 once per process, episode and failure kind. At most three provider attempts clear

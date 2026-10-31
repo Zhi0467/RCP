@@ -93,7 +93,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             else:
                 self.command[index] = rendered
         if (
-            request.capability in {"discuss", "paper_suggest"}
+            request.capability in {"discuss", "scratch_patch", "paper_suggest"}
             and request.invocation_gate is not None
             and request.invocation_gate.client_path is not None
         ):

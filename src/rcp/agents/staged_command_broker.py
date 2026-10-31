@@ -11,6 +11,7 @@ import json
 import os
 import pwd
 import re
+import select
 import signal
 import socket
 import stat
@@ -29,6 +30,8 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Mirrors rcp.limits.COMMAND_REJECTION_NOTICE_MAX_COUNT; this file ships alone.
 _REJECTION_NOTICE_MAX_COUNT = 20
+# Mirrors rcp.limits.COMMAND_BROKER_STDIN_POLL_SECONDS; this file ships alone.
+_STDIN_POLL_SECONDS = 0.2
 # Notice signatures carry this prefix, so a signed request can never pass as a notice.
 # Mirrors rcp.agents.command_mailbox.REJECTION_NOTICE_DOMAIN.
 _REJECTION_NOTICE_DOMAIN = b"rcp-rejection-notice\n"
@@ -172,6 +175,18 @@ def _remove_dead_socket(path):
 def _exit_on_signal(signum, _frame):
     # Turns the stop signal into SystemExit so `main` removes its socket.
     raise SystemExit(128 + signum)
+
+
+def _wait_for_stdin_close():
+    # A signal received by the serving thread cannot interrupt a main-thread
+    # read. Return to Python periodically so its pending handler can run even
+    # while the parent keeps stdin open. Standalone input after bootstrap is
+    # ignored, including any bytes the bootstrap reader already buffered.
+    descriptor = sys.stdin.fileno()
+    while True:
+        ready, _writers, _errors = select.select([descriptor], [], [], _STDIN_POLL_SECONDS)
+        if ready and not os.read(descriptor, 65536):
+            return
 
 
 def _socket_directory(home):
@@ -689,7 +704,7 @@ def main(argv=None):
         serving.start()
         if namespace.standalone:
             print(namespace.ready_line, flush=True)
-            sys.stdin.buffer.read()
+            _wait_for_stdin_close()
             return 0
         assert child is not None
         assert child.stdin is not None and child.stdout is not None and child.stderr is not None
