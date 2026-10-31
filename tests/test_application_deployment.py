@@ -1549,3 +1549,52 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
 
         monkeypatch.setattr(validation, "_captured_project_ids", lambda _overlay: set())
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+
+
+@pytest.mark.parametrize("same_workspace", [True, False])
+def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path, same_workspace):
+    from datetime import datetime, timedelta
+
+    from rcp.consolidation import consolidation_chat_id
+    from rcp.core.authority import AuthorizedHuman
+    from rcp.storage import AgentTaskRecord
+
+    request, state, _ = captured
+    with closing(AppStore(Path(request.data_dir) / "rcp.sqlite3")) as store:
+        now = store.now()
+        store.put_consolidation_schedule(
+            state["project_id"],
+            local_time="02:00",
+            timezone="UTC",
+            authorized_by=AuthorizedHuman(
+                space_id=state["space_id"],
+                user_id=state["member_id"],
+                display_name="Qualification researcher",
+            ),
+            next_due_at=(datetime.fromisoformat(now) + timedelta(hours=1)).isoformat(),
+        )
+        for index in range(2):
+            store.create_agent_task(
+                AgentTaskRecord(
+                    operation_id=str(uuid.uuid4()),
+                    project_id=state["project_id"],
+                    kind="project_chat",
+                    status="succeeded",
+                    request={"chat_id": consolidation_chat_id(state["project_id"])},
+                    stage_root=str(
+                        Path(request.data_dir)
+                        / "run-stage"
+                        / ("shared" if same_workspace or index == 0 else "different")
+                    ),
+                    created_at=now,
+                    updated_at=now,
+                    finished_at=now,
+                    status_message="Completed.",
+                )
+            )
+
+    if same_workspace:
+        assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
+    else:
+        with pytest.raises(MaintenanceRefused, match="Consolidation admission failed"):
+            _rehearse(request, tmp_path)

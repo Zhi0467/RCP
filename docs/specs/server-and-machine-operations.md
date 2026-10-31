@@ -331,7 +331,8 @@ Update rehearsal snapshots online SQLite and copies local project roots into a
 disposable output. It then runs candidate inspection, preparation and proof
 there. It never changes live admission or takes the live instance lock. A ready
 result covers that captured copy, not a later cutover. Warnings identify omitted
-projects.
+projects. Rebinding local stage paths preserves shared workspace identity within
+each stored record type while placing those paths under an isolated, absent directory.
 
 ### Application boundary and local checkpoint
 
