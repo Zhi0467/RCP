@@ -297,9 +297,11 @@ def resolve_hidden_read_scope(
         credential_roots=(),
         provider_login_files=tuple(facts["provider_login_files"]),
         control_socket_dir=str(control_directory_candidate()) if remote_stage is None else None,
-        # A wildcard login id keeps a home added after this launch covered.
+        # A wildcard keeps a home added after this launch covered. Codex expands
+        # deny globs with ripgrep, which anchors `*/name` to its own working
+        # directory; `**/name` matches wherever the run starts.
         login_home_credentials=tuple(
-            f"{provider}/*/{glob.escape(name)}"
+            f"{provider}/**/{glob.escape(name)}"
             for name in profile_for(provider).login_home_credentials
         ),
     )
