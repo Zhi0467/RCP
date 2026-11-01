@@ -4020,6 +4020,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self, operation_ids: Sequence[str]
     ) -> dict[str, AgentTaskReceiptRecord]:
         """Read the latest discovery receipt for each projected task in one query."""
+        return self._latest_agent_task_receipts(operation_ids, "artifact_discovery")
+
+    def agent_task_session_resolutions(
+        self, operation_ids: Sequence[str]
+    ) -> dict[str, AgentTaskReceiptRecord]:
+        """Read the latest session resolution for each projected task."""
+        return self._latest_agent_task_receipts(operation_ids, "chat_session_resolution")
+
+    def _latest_agent_task_receipts(
+        self, operation_ids: Sequence[str], category: str
+    ) -> dict[str, AgentTaskReceiptRecord]:
         if not operation_ids:
             return {}
         placeholders = ",".join("?" for _ in operation_ids)
@@ -4028,11 +4039,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 f"""
                 SELECT * FROM graph_run_receipts WHERE receipt_id IN (
                     SELECT MAX(receipt_id) FROM graph_run_receipts
-                    WHERE operation_id IN ({placeholders}) AND category = 'artifact_discovery'
+                    WHERE operation_id IN ({placeholders}) AND category = ?
                     GROUP BY operation_id
                 )
                 """,  # noqa: S608 - placeholders are generated, never caller text
-                tuple(operation_ids),
+                (*operation_ids, category),
             ).fetchall()
         receipts = {}
         for row in rows:

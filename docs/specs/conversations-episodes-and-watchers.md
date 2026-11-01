@@ -257,6 +257,9 @@ Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, `login_switch`, or
 `consolidation` (every nightly turn starts fresh). Private provider switches use
 `provider_switch_tail` as described under [Private agent threads](#private-agent-threads).
+Task views project the latest receipt's outcome and reason code for both project
+and Space turns; absent receipts project as null. The
+[Agent view](interface-and-visual-design.md#agent-view) shows unexpected fresh starts.
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope

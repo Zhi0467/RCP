@@ -265,7 +265,8 @@
   color: var(--muted);
   flex: none;
 }
-.chat-turn-trigger.schedule {
+.chat-turn-trigger.schedule,
+.chat-turn-trigger.fresh-session {
   align-items: center;
   background: color-mix(in srgb, var(--slate) 12%, transparent);
   border-radius: 999px;

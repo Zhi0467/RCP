@@ -207,9 +207,18 @@ def _agent_task_response(
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
     edit_outcomes: Mapping[str, list[AgentTaskReceiptRecord]] | None = None,
+    session_resolutions: Mapping[str, AgentTaskReceiptRecord] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     response["via_agent"] = store.via_agent(record.operation_id)
+    if session_resolutions is None:
+        session_resolutions = store.agent_task_session_resolutions([record.operation_id])
+    resolution = session_resolutions.get(record.operation_id)
+    response["chat_session_resolution"] = (
+        {key: resolution.payload.get(key) for key in ("outcome", "reason_code")}
+        if resolution is not None
+        else None
+    )
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
     refused_worker = (
         record.can_retry
@@ -617,9 +626,19 @@ def agent_tasks(
         _artifact_outcome_operation_ids(records)
     )
     chat_sessions: dict[tuple[str, str], str | None] = {}
+    session_resolutions = store.agent_task_session_resolutions(
+        [record.operation_id for record in records]
+    )
     return [
         _agent_task_response(
-            store, record, background_tasks, degradations, discoveries, chat_sessions, edit_outcomes
+            store,
+            record,
+            background_tasks,
+            degradations,
+            discoveries,
+            chat_sessions,
+            edit_outcomes,
+            session_resolutions,
         )
         for record in records
     ]

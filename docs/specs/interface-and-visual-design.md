@@ -396,6 +396,11 @@ Inside a project, Agents opens the member's own project thread, which leads the
 conversation list. The team's board conversations stay in that list. The thread header holds the
 voice button and a schedules list with Cancel and re-enable. Approval cards show
 the action with Approve and Decline. There is no separate Ask or voice launcher.
+A turn that starts a fresh session shows a quiet chip alongside its first message,
+except for the thread's first turn. Its recorded reason appears only on hover.
+Revision history names an attributed member as "<member>, via <agent name>" when
+the change came through their thread. The name stays plain text when the view
+cannot establish that the viewer owns the private thread.
 
 ## Terminals
 

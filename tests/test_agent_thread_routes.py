@@ -327,3 +327,50 @@ def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
         )
     for action in ("content", "download", "viewer"):
         assert client.get(base + "/" + action).status_code == 404
+
+
+def test_thread_task_projects_latest_session_resolution(manifest, tmp_path):
+    from rcp.storage import AgentTaskRecord
+    from tests.helpers import authorized_human
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        for thread in client.get("/api/agent-threads").json()["threads"]:
+            operation_id = f"resolution-{thread['kind']}"
+            project_id = thread["project_id"] or store.space_id
+            store.create_agent_task(
+                AgentTaskRecord(
+                    operation_id=operation_id,
+                    project_id=project_id,
+                    kind="space_chat" if thread["kind"] == "space" else "project_chat",
+                    status="succeeded",
+                    status_message="Done",
+                    created_at=store.now(),
+                    updated_at=store.now(),
+                    request={"chat_id": thread["thread_id"], "mode": "work"},
+                    authorized_by=authorized_human(store),
+                )
+            )
+            base = (
+                f"/api/agent-threads/{thread['thread_id']}"
+                if thread["kind"] == "space"
+                else f"/api/projects/{project_id}"
+            )
+            url = f"{base}/tasks/{operation_id}"
+            assert client.get(url).json()["chat_session_resolution"] is None
+            for outcome, reason in (
+                ("fresh", "provider_switch_tail"),
+                ("continued", "current_session"),
+            ):
+                resolution = {"outcome": outcome, "reason_code": reason}
+                store.record_agent_task_receipt(
+                    operation_id, "chat_session_resolution", {**resolution, "session_id": None}
+                )
+                response = client.get(url)
+                assert response.status_code == 200
+                assert response.json()["chat_session_resolution"] == resolution
+                if thread["kind"] == "project":
+                    tasks = client.get(base + "/tasks").json()
+                    task = next(task for task in tasks if task["operation_id"] == operation_id)
+                    assert task["chat_session_resolution"] == resolution

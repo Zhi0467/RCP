@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
 
 import {
   approvalCardExpired,
@@ -172,4 +175,34 @@ test("project threads use the chat routes and the Space thread uses its own", as
   });
   assert.deepEqual(calls[3].body, { message: "Go", timezone: "UTC" });
   assert.equal(threadTasksPath(space), "/api/agent-threads/space/tasks");
+});
+
+const renderServer = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
+after(() => renderServer.close());
+
+test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
+  const render = (outcome, hasEarlierTurn) =>
+    renderToStaticMarkup(
+      React.createElement(FreshSessionMarker, {
+        task: { chat_session_resolution: { outcome, reason_code: "provider_switch_tail" } },
+        hasEarlierTurn,
+      }),
+    );
+  const html = render("fresh", true);
+  assert.match(html, /class="chat-turn-trigger fresh-session"/);
+  const reason = html.match(/title="([^"]+)"/)?.[1];
+  assert.ok(reason);
+  assert.ok(!html.replace(/<[^>]*>/g, "").includes(reason));
+  assert.equal(render("fresh", false), "");
+  assert.equal(render("continued", true), "");
+  assert.equal(render("forking", true), "");
+  assert.equal(render("refused", true), "");
+  assert.equal(render(undefined, true), "");
 });
