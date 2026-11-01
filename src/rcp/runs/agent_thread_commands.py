@@ -53,6 +53,7 @@ def projects_projection(
             **card,
             "digest_count": counts.get(str(card["id"]), 0),
             "thread_id": thread_ids[str(card["id"])],
+            "agent_name": store.chat_name(str(card["id"]), thread_ids[str(card["id"])], ""),
             "same_machine": catalog.same_machine(str(card["id"])),
         }
         for card in catalog.cards()
@@ -76,6 +77,7 @@ def project_details(
         **catalog.card(project_id),
         "digest_count": digest_counts(store, [project_id], user_id).get(project_id, 0),
         "thread_id": thread.thread_id,
+        "agent_name": store.chat_name(project_id, thread.thread_id, ""),
         "same_machine": catalog.same_machine(project_id),
         "proposals": [
             proposal.model_dump(mode="json")

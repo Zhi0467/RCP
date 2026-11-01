@@ -118,6 +118,10 @@ def test_space_runtime_real_storage_and_partial_apply(
     async def provider(_provider, prompt, **kwargs):
         calls.append(kwargs.get("session_id"))
         stage = kwargs["cwd"]
+        assert json.loads((stage / "workspace" / "agent-name.json").read_text()) == {
+            "name": "Pip",
+            "can_self_name": False,
+        }
         scope = kwargs["write_scope"]
         assert len(scope.projects) == project_count
         assert stage.parent == tmp_path / "data" / "agent-threads" / human.user_id / "stages"

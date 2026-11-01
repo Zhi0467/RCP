@@ -1723,7 +1723,11 @@ usage. Eligible agents are asked to choose a short 2–4 word task name within
 commands cannot name another agent. Storage refuses a second self-name or any
 self-name after a human rename, collapses whitespace, and rejects empty or
 over-limit names with structured refusal codes. The name is operational
-metadata and grants no graph authority.
+metadata and grants no graph authority. The resolved name is staged afresh each
+turn in `agent-name.json`, including private Space and project threads and
+already named conversations with `can_self_name: false`. The `projects list/show`
+projections resolve each member-owned project thread's current `agent_name`
+alongside its `thread_id`.
 
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three

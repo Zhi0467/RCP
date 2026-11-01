@@ -102,7 +102,7 @@ def test_orchestrator_names_its_conversation_once(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["work", "discuss"])
-def test_named_conversation_has_no_name_grant_or_prompt(tmp_path, mode):
+def test_named_conversation_keeps_name_context_without_name_grant(tmp_path, mode):
     from rcp.runs.agent_names import name_command_usage
     from rcp.runs.tasks.discuss import _discuss_execution_instructions
 
@@ -114,12 +114,58 @@ def test_named_conversation_has_no_name_grant_or_prompt(tmp_path, mode):
         else discuss_command_handler(execution)
     )
     assert "name" not in handler.allowed_verbs
-    assert stage_agent_name_pointer(execution, tmp_path, None) == ""
-    assert not (tmp_path / "workspace" / "agent-name.json").exists()
+    assert stage_agent_name_pointer(execution, tmp_path, None)
+    assert json.loads((tmp_path / "workspace" / "agent-name.json").read_text()) == {
+        "name": "Reference probes",
+        "can_self_name": False,
+    }
     if mode == "discuss":
         assert name_command_usage("<command client>") not in _discuss_execution_instructions(
             handler
         )
+
+
+@pytest.mark.parametrize("kind", ["space", "project"])
+def test_private_agent_name_is_reread_each_turn_without_naming_permission(tmp_path, kind):
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from tests.helpers import authorized_human
+    from tests.test_storage import _task_record
+
+    execution, _ = work_execution(tmp_path)
+    store = execution.store
+    human = authorized_human(store)
+    thread = next(
+        t
+        for t in store.ensure_agent_threads(human.user_id, ["project"], default_names=("Pip",))
+        if t.kind == kind
+    )
+    scope = thread.project_id or store.space_id
+    for turn, name in enumerate((store.chat_name(scope, thread.thread_id, ""), "New name")):
+        if turn:
+            store.set_chat_title(scope, thread.thread_id, human.user_id, name)
+        task = store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id=f"private-{turn}",
+                project_id=scope,
+                kind=f"{kind}_chat",
+                authorized_by=human,
+                request={"chat_id": thread.thread_id, "mode": "work"},
+            )
+        )
+        launch = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
+        assert stage_agent_name_pointer(launch, tmp_path, None)
+        assert json.loads((tmp_path / "workspace" / "agent-name.json").read_text()) == {
+            "name": name,
+            "can_self_name": False,
+        }
+        assert "name" not in work_command_handler(launch, None).allowed_verbs
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='succeeded' WHERE operation_id=?",
+                (task.operation_id,),
+            )
 
 
 def test_name_prompt_renders_enforced_limit():
@@ -155,3 +201,20 @@ def test_seated_worker_has_no_name_context(tmp_path, manifest):
     execution = AgentTaskExecution(worker.operation_id, store, AgentProcessControl())
     assert stage_agent_name_pointer(execution, tmp_path, None) == ""
     assert not (tmp_path / "workspace" / "agent-name.json").exists()
+
+
+def test_consolidation_stages_current_name_without_name_grant(tmp_path):
+    from .test_lessons_store import consolidate
+
+    execution, human = work_execution(tmp_path)
+    consolidate(execution.store)
+    with execution.store.connection() as connection:
+        connection.execute(
+            "UPDATE consolidation_runs SET authorized_by_json=?", (human.model_dump_json(),)
+        )
+    execution.store.set_chat_title("project", "chat", human.user_id, "Named consolidation")
+    stage_agent_name_pointer(execution, tmp_path, None)
+    assert json.loads((tmp_path / "workspace" / "agent-name.json").read_text()) == {
+        "name": "Named consolidation",
+        "can_self_name": False,
+    }

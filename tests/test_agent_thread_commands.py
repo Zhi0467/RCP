@@ -70,7 +70,11 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
 def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_path: Path) -> None:
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.agents.command_protocol import HandoffArguments, HandoffCommandRequest
-    from rcp.runs.agent_thread_commands import ThreadCommandHandler, projects_projection
+    from rcp.runs.agent_thread_commands import (
+        ThreadCommandHandler,
+        project_details,
+        projects_projection,
+    )
     from tests.helpers import authorized_human, create_named_app
     from tests.test_storage import _task_record
 
@@ -87,6 +91,10 @@ def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_pat
     assert cards[0]["thread_id"] == next(
         row.thread_id for row in threads if row.project_id == project_id
     )
+    for name in ("Initial name", "Renamed colleague"):
+        store.set_chat_title(project_id, cards[0]["thread_id"], actor.user_id, name)
+        assert projects_projection(store, catalog, actor.user_id)[0]["agent_name"] == name
+        assert project_details(store, catalog, actor.user_id, project_id)["agent_name"] == name
     store.create_agent_task(
         _task_record(
             store.now(),
