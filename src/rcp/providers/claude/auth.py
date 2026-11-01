@@ -32,8 +32,12 @@ class ClaudeAuthentication(ProviderAuthentication):
     conflicting_variables = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     #: Where a remote execution account keeps the token RCP placed for it.
     remote_token_path = "~/.config/rcp/claude-setup-token"
-    # Keep delegated Claude work inside the invocation that owns it.
-    process_variables = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
+    # Keep delegated Claude work inside the invocation that owns it, and keep
+    # auto-memory from carrying one run's notes into another's context.
+    process_variables = {
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    }
     # A member cannot act on "run claude setup-token" alone: the command says
     # nothing about which machine to run it on, which account it mints for, or
     # that Claude's other sign-in is the one that breaks a shared account.
