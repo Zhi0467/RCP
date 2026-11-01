@@ -20,7 +20,6 @@ import { ProjectMembers } from "./ProjectMembers";
 import { MachineCard } from "./MachineCard";
 import { ProjectNotifications } from "../desktop/ProjectNotifications";
 import { ProjectConsolidation } from "./ProjectConsolidation";
-import { ProjectLessons } from "./ProjectLessons";
 import { AddMachineTile, MachineTile, type MachineSignal } from "./MachineTile";
 import { AddProjectMachine } from "./AddProjectMachine";
 import { useSpaceMachines } from "./useSpaceMachines";
@@ -688,11 +687,6 @@ export function ProjectSettings({
         loadError={consolidationError}
         writesDisabled={!consolidation?.can_write}
         onChanged={onConsolidationChanged}
-      />
-      <ProjectLessons
-        key={`lessons:${project.id}`}
-        apiBase={apiBase}
-        writesDisabled={!consolidation?.can_write}
       />
 
       <div className="settings-section agent-defaults">

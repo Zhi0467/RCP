@@ -4020,19 +4020,6 @@ export interface ConsolidationView {
   recent_nights: ConsolidationNight[];
 }
 
-export type LessonAuthor =
-  | { kind: "agent"; operation_id: string }
-  | { kind: "human"; user_id: string; display_name: string | null };
-
-export interface Lesson {
-  lesson_id: string;
-  text: string;
-  created_at: string;
-  updated_at: string;
-  author: LessonAuthor;
-  human_owned: boolean;
-}
-
 export interface ProjectDigestMark {
   seq: number;
   marked_at: string;
