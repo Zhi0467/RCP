@@ -24,7 +24,6 @@ from rcp.limits import (
     EVIDENCE_FLAG_SOURCE_MAX_CHARS,
     GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH,
     GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT,
-    LESSON_TEXT_MAX_CHARS,
 )
 from rcp.providers import ProviderId
 from rcp.storage import GraphCondition
@@ -54,7 +53,6 @@ CommandVerb = Literal[
     "finish",
     "launch",
     "ask",
-    "lesson",
     "bulletin",
     "name",
     "flag",
@@ -75,7 +73,6 @@ MutatingCommandVerb = Literal[
     "finish",
     "launch",
     "ask",
-    "lesson",
     "bulletin",
     "name",
     "flag",
@@ -97,7 +94,6 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "finish",
         "launch",
         "ask",
-        "lesson",
         "bulletin",
         "name",
         "flag",
@@ -524,27 +520,6 @@ class BulletinArguments(BaseModel):
         return self
 
 
-class LessonArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["add", "list", "update", "delete"]
-    lesson_id: str | None = Field(default=None, min_length=1, max_length=200)
-    text: str | None = Field(default=None, min_length=1, max_length=LESSON_TEXT_MAX_CHARS)
-    cursor: str | None = Field(default=None, min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def valid_action(self) -> LessonArguments:
-        if (self.text is not None) != (self.action in {"add", "update"}):
-            raise ValueError("lesson text is required only for add and update")
-        if self.text is not None and not self.text.strip():
-            raise ValueError("lesson text must not be blank")
-        if (self.lesson_id is not None) != (self.action in {"update", "delete"}):
-            raise ValueError("lesson id is required only for update and delete")
-        if self.cursor is not None and self.action != "list":
-            raise ValueError("only lesson list accepts a cursor")
-        return self
-
-
 class AskResult(BaseModel):
     """Question state is independent of the command envelope and transport delivery."""
 
@@ -723,17 +698,6 @@ class BulletinCommandRequest(_CommandRequest):
         return self
 
 
-class LessonCommandRequest(_CommandRequest):
-    verb: Literal["lesson"]
-    arguments: LessonArguments
-
-    @model_validator(mode="after")
-    def mutation_is_keyed(self) -> LessonCommandRequest:
-        if self.arguments.action != "list" and self.idempotency_key is None:
-            raise ValueError("lesson mutations require an idempotency key")
-        return self
-
-
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | MergeAnswersCommandRequest
@@ -756,7 +720,6 @@ CommandRequest: TypeAlias = Annotated[
     | AskCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
-    | LessonCommandRequest
     | FlagCommandRequest,
     Field(discriminator="verb"),
 ]

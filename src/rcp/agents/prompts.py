@@ -290,6 +290,7 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
         f"- writable, repository `{item.alias}`: `{item.path}`" for item in scope.repositories
     ]
     lines += [f"- writable, repository Git metadata: `{path}`" for path in scope.git_metadata_roots]
+    lines += [f"- writable, project memory notes: `{path}`" for path in scope.memory_roots]
     lines += [f"- writable, machine grant: `{path}`" for path in scope.granted_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
@@ -955,9 +956,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v12"
+DISCUSS_POLICY_VERSION = "discuss-v13"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v19"
+WORK_POLICY_VERSION = "work-v20"
 
 
 class PromptFactory:
@@ -979,7 +980,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -992,7 +993,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
-            lessons_pointer=lessons_pointer,
+            memory_pointer=memory_pointer,
             read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
@@ -1007,7 +1008,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -1023,7 +1024,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
-            lessons_pointer=lessons_pointer,
+            memory_pointer=memory_pointer,
             read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
@@ -1044,7 +1045,7 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
         launch_instructions: str | None = None,
         message_author: Literal["human", "orchestrator"] = "human",
@@ -1061,8 +1062,8 @@ class PromptFactory:
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
         if read_context:
             parts.append(read_context)
-        if lessons_pointer:
-            parts.append(lessons_pointer)
+        if memory_pointer:
+            parts.append(memory_pointer)
         if launch_instructions:
             parts.append(
                 f"Launch instructions for this session's Work turns:\n{launch_instructions}"
@@ -1409,8 +1410,9 @@ Outputs:
 Boundary:
 - Read only what the question needs, inside the repository pointers above. A non-empty host means
   read that path over SSH; an empty host means this machine.
-- Only the conversation scratch folder, including the artifact directory, is writable. Repositories,
-  remote machines, canonical RCP state, and `.research` stay read-only, and this turn has no graph
+- The conversation scratch folder, including the artifact directory, and the shared memory folder
+  named for this turn are writable. Repositories, remote machines, canonical RCP state, and
+  `.research` stay read-only, and this turn has no graph
   output. If the graph looks wrong, explain the correction in the reply so the human can switch to
   Work.
 

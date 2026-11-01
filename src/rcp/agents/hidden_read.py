@@ -165,6 +165,40 @@ class HiddenFolderRejected(ValueError):
         super().__init__(f"{code}: {path}")
 
 
+def member_hidden_read_entries(
+    *,
+    memory_root: Path | PurePosixPath,
+    state_root: Path | PurePosixPath,
+    user_id: str | None,
+    member_ids: Sequence[str],
+    existing_path_count: int = 0,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Build private-note directories and transcript globs on the execution host.
+
+    Thread launch owners supply the member inventory and the number of already
+    resolved hidden entries so private data shares the existing path budget.
+    No member identity means that all members' private data stays hidden.
+    """
+    from rcp.agents.memory_files import member_memory_root
+
+    if existing_path_count < 0:
+        raise ValueError("existing hidden path count must not be negative")
+    directories = []
+    globs = []
+    for member_id in sorted(set(member_ids)):
+        directory = str(member_memory_root(memory_root, member_id))
+        if member_id == user_id:
+            continue
+        _absolute(directory)
+        directories.append(directory)
+        prefix = str(state_root / "chat" / f"private-{member_id}-")
+        _absolute(prefix)
+        globs.append(glob.escape(prefix) + "*.jsonl")
+    if existing_path_count + len(directories) + len(globs) > HIDDEN_READ_PATH_MAX_COUNT:
+        raise HiddenFolderRejected(code="too_many_hidden_folders")
+    return tuple(directories), tuple(globs)
+
+
 def _absolute(path: str) -> None:
     if (
         not isinstance(path, str)

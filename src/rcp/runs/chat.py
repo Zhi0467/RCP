@@ -1542,6 +1542,16 @@ def _project_write_scope(
             include_shared = request.worktree_integration in {"starting_branch", "default_branch"}
             if include_shared and not request.worktree_integration_target:
                 raise ValueError("The integration turn has no admitted target branch.")
+    from rcp.agents.memory_files import prepare_project_memory
+
+    memory_roots = []
+    if (
+        task is not None
+        and execution is not None
+        and task.kind in {"node_chat", "project_chat", "auto_research"}
+    ):
+        shared, _index_bytes = prepare_project_memory(execution.store, project_id, remote_stage)
+        memory_roots = [shared]
     scope = resolve_project_write_scope(
         manifest=service.manifest,
         truth_scope=write_repositories(service.history.state()),
@@ -1550,6 +1560,7 @@ def _project_write_scope(
         capability=capability,
         stage_root=stage_root,
         workspace_root=str(workspace),
+        memory_roots=memory_roots,
         admitted_aliases=admitted_aliases,
         repository_pointers=context.repositories,
         remote_stage=remote_stage,

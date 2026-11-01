@@ -109,8 +109,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
     stage_chat_loop_status,
 )
-from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_operational_context_pointer
+from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -334,7 +333,7 @@ def _prepare_work_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_operational_context_pointer(
+        memory_pointer=stage_operational_context_pointer(
             execution,
             local_stage,
             remote_stage,
@@ -388,17 +387,15 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
-    if lifecycle is not None and lifecycle.lesson_actions is not None:
-        verbs, actions, artifacts = (
+    if lifecycle is not None and lifecycle.allowed_verbs is not None:
+        verbs, artifacts = (
             lifecycle.allowed_verbs,
-            lifecycle.lesson_actions,
             WORK_TURN_ARTIFACTS,
         )
     else:
         handler = _work_turn_command_handler(turn)
-        verbs, actions, artifacts = (
+        verbs, artifacts = (
             handler.allowed_verbs,
-            handler.lesson_actions,
             handler.turn_artifacts,
         )
     assert verbs is not None
@@ -406,13 +403,6 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     if "flag" in verbs:
         instructions.append(
             flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "lesson" in verbs:
-        instructions.append(
-            lesson_command_usage(
-                actions=actions,
-                client=client or turn.patch_inputs.validator_staged.client_command(),
-            )
         )
     if "name" in verbs:
         from rcp.runs.agent_names import name_command_usage

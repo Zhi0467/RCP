@@ -13,7 +13,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Run | Operational contract |
 | --- | --- |
 | Seed/Refresh | Read provider logs and repositories; write scratch Patch only. |
-| Discuss | Writable conversation scratch, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
+| Discuss | Writable conversation scratch and shared project memory, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
 | Work | Noninteractive tools, public web, exact repository roots, optional Patch. [Consolidation](graph-consolidation-and-lessons.md) may commit keyed Patches during its turn. |
 | Experiment-loop | Work-like access with focused Experiment and watcher authority. |
 | Auto-research orchestrate | Work-like access, staged command client, orchestrator graph profile. |
@@ -305,6 +305,18 @@ environment, scheduler, network and sockets. A provider sandbox cannot supply
 that contract. This cooperative boundary permits side effects beyond the turn's
 roots and lifetime; hostile-agent containment would require a different owner.
 
+### Project memory roots
+
+The launch owner adds the shared memory directory as a code-defined writable
+root for project Work and Discuss, Experiment, Auto-research roots and workers,
+and consolidation. It is distinct from repository and machine-grant roots.
+Both local and remote memory bases are inside `rcp_owned_paths`, so a machine
+grant cannot admit them. The provider receives the same resolved root that the
+prompt names. Discuss gains no repository-write or graph authority.
+Seed, Refresh, branch merge, Paper coach and artifact edit have no memory root.
+The [memory owner](graph-consolidation-and-lessons.md#memory) defines layout,
+index bounds, migration, and the add-only prompt rule for autonomous runs.
+
 ### Machine writable paths
 
 Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
@@ -469,7 +481,8 @@ settings. A browser grant separately adds
 the provider contract. Discuss, Seed and Refresh receive their read context as
 `Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
 `acceptEdits` an added directory is also editable, which would hand Discuss
-write access to project files.
+write access to project files. The code-defined shared memory folder is separately
+admitted through `--add-dir` for ordinary Discuss chats.
 
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
@@ -821,8 +834,7 @@ input, never authority to change scope, budget or protected beliefs.
 Work and Experiment, including correction, bind their broker to the live provider
 process tree on the execution host. Prior turns cannot gain new authority;
 validate-only credentials refuse keyed commands. The helper's `launch` verb and
-scheduler route are owned by [machines and compute](machines-and-compute.md); `lesson` is owned by
-[graph consolidation](graph-consolidation-and-lessons.md).
+scheduler route are owned by [machines and compute](machines-and-compute.md).
 
 The standalone broker bounds its stdin wait so Stop signals are handled even
 when a serving thread receives the signal and its parent keeps input open.
@@ -833,7 +845,7 @@ Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
 reservations and results before liveness checks. Restoration requires both a
 saved `ask` offer and current authorization; old checkpoints cannot add it.
-Work retains server-owned `lesson` authority. Credential-store protections and
+Credential-store protections and
 backup exclusion apply to checkpoints.
 
 Listing, reading, handling and publishing retry separately on typed temporary

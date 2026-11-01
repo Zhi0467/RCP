@@ -614,11 +614,8 @@ EVIDENCE_FLAG_SOURCE_MAX_CHARS = 1000
 # Project groups are space-local labels over related projects.
 PROJECT_GROUP_NAME_MAX_CHARS = 120
 
-# Operational lessons are bounded context, independent of graph authority.
-LESSON_TEXT_MAX_CHARS = 600
-LESSONS_PER_PROJECT_MAX = 200
-LESSONS_RENDER_MAX_BYTES = 32 * 1024
-LESSONS_LIST_PAGE_SIZE = 20
+# The memory index is notes, independent of graph authority.
+MEMORY_INDEX_MAX_BYTES = 32 * 1024
 
 # In-memory dictation uploads and bounded service calls.
 TRANSCRIPTION_AUDIO_MAX_BYTES = 4 * 1024 * 1024

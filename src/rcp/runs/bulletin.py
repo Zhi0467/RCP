@@ -213,7 +213,7 @@ def stage_bulletin_pointer(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
 ) -> str:
-    """Refresh the snapshot file; usage lives in each contract beside lesson usage."""
+    """Refresh the snapshot file; usage lives in each run contract."""
     if execution is None:
         return ""
     store = execution.store

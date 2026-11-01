@@ -19,20 +19,17 @@ from rcp.agents.command_protocol import (
     FlagCommandRequest,
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
-    LessonCommandRequest,
     NameCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import ASK_MAX_ATTEMPTS
 from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
-from rcp.runs.lesson_commands import handle_lesson
 from rcp.runs.work_experiment_commands import (
     handle_work_episode_command,
     work_experiment_allowed,
 )
 from rcp.storage import AppStore
-from rcp.storage.lessons import lesson_command_actions
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 
 if TYPE_CHECKING:
@@ -170,13 +167,8 @@ def discuss_command_handler(
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
 ) -> WorkCommandHandler:
-    """Discuss resolves questions, lessons and explicitly granted history reads."""
-    lesson_actions = (
-        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
-    )
+    """Discuss resolves questions and explicitly granted history reads."""
     verbs = {"ask"} if discuss_ask_authorized(execution) else set()
-    if lesson_actions:
-        verbs.add("lesson")
     from rcp.runs.agent_names import resolve_agent_name_state
 
     if resolve_agent_name_state(execution).get("can_self_name"):
@@ -189,7 +181,6 @@ def discuss_command_handler(
         frozenset(verbs),
         service=service,
         graph_read_scope=graph_read_scope,
-        lesson_actions=lesson_actions,
     )
 
 
@@ -323,7 +314,6 @@ class WorkCommandHandler:
     mailbox: RunStageMailbox | None = None
     #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
-    lesson_actions: tuple[str, ...] = ()
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         def refuse(message: str, code: str | None = None) -> CommandResponse:
@@ -398,19 +388,6 @@ class WorkCommandHandler:
                 turn_artifacts=self.turn_artifacts,
                 mailbox=self.mailbox,
             )
-        if isinstance(request, LessonCommandRequest):
-            execution = self.execution
-            if (
-                execution is None
-                or identity.authority != "broker"
-                or identity.task_id != execution.operation_id
-            ):
-                return refuse("Lessons require this turn's broker authority.")
-            if request.arguments.action not in self.lesson_actions:
-                return refuse(
-                    "This turn does not authorize that lesson action.", "lesson_edit_not_authorized"
-                )
-            return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, ApplyCommandRequest) and self.consolidation_apply is not None:
             return self.consolidation_apply(request, identity)
         if isinstance(request, EpisodeCommandRequest):
@@ -560,27 +537,20 @@ def work_command_handler(
 ) -> WorkCommandHandler:
     from rcp.runs.consolidation import is_consolidation
 
-    lesson_actions = (
-        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
-    )
     if is_consolidation(execution):
         return WorkCommandHandler(
             execution,
             None,
             frozenset({"validate", "apply", "flag", "bulletin"})
-            | ({"lesson"} if lesson_actions else set())
             | (graph_read_scope.verbs if graph_read_scope else frozenset()),
             consolidation_apply,
             service,
             graph_read_scope,
             mailbox,
-            lesson_actions=lesson_actions,
         )
     from rcp.runs.agent_names import resolve_agent_name_state
 
     verbs = {"validate"}
-    if lesson_actions:
-        verbs.add("lesson")
     if resolve_agent_name_state(execution).get("can_self_name"):
         verbs.add("name")
     if graph_read_scope is not None:
@@ -607,5 +577,4 @@ def work_command_handler(
         service=service,
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,
-        lesson_actions=lesson_actions,
     )

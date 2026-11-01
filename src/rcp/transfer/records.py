@@ -106,6 +106,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "graph_watcher_reconciliation",
         "operational_lessons",
         "lesson_command_receipts",
+        "memory_migrations",
         "bulletin_posts",
         "bulletin_command_receipts",
         "bulletin_reads",

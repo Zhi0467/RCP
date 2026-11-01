@@ -12,7 +12,6 @@ import type {
   AgentQuestion,
   ConsolidationView,
   GraphTargetRef,
-  Lesson,
   ProjectDigest,
   ProjectMember,
   ProjectSnapshot,
@@ -95,13 +94,6 @@ export function digestProfile(
       api(graphTargetUrl(`/api/projects/${encodeURIComponent(projectId)}/digest`, target), {
         signal,
       }),
-  };
-}
-
-export function lessonsProfile(projectId: string): ResourceProfile<{ lessons: Lesson[] }> {
-  return {
-    key: projectResourceKey(projectId, "lessons"),
-    fetch: (signal) => api(`/api/projects/${encodeURIComponent(projectId)}/lessons`, { signal }),
   };
 }
 

@@ -255,7 +255,7 @@ unchanged. Removed nodes and changed edge endpoints participate. Main lists only
 main changes; unmerged work appears on its branch. `changed_node_ids` includes
 only surviving main nodes and is empty on branches. Reports opens the target's
 episode/consolidation artifacts; a report whose artifact was deleted leaves the
-list and the count. Jobs, failed tasks, ended episodes, lessons,
+list and the count. Jobs, failed tasks, ended episodes, memory notes,
 and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
@@ -966,6 +966,10 @@ includes loaded ids and total; inspection/Send fetch the latest exact task outsi
 the list window to retain graph-target/session ownership. Branch chats resume only
 on their target.
 
+Project memory is agent-managed file data, with no lesson read in WebMCP and no
+lesson CRUD API. Its ownership and migration live in the
+[memory spec](graph-consolidation-and-lessons.md#memory).
+
 Artifact listing combines task/episode windows (reporting their sizes) with the
 Artifacts inventory. Duplicates gain `in_artifacts_panel`; panel-only records use
 `saved:` ids. Filters use source identity; exact old task/episode ids are fetched
@@ -1570,6 +1574,8 @@ repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
+
+Project memory has no Settings screen; members manage notes through project chat.
 
 Settings' Repos rows show each repository's **Agents can write** box, checked
 for members of `project_truth_scope` and fixed on for the state repository.

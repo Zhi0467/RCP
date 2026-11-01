@@ -139,7 +139,7 @@ def test_child_work_conversation_has_name_grant(tmp_path):
     work, task = _work_pair(store, parent, root, worker_id="worker")
     store.create_auto_research_child_work(work, task)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
-    assert "name" in _child_commands(execution, None, None)[0]
+    assert "name" in _child_commands(execution, None, None)
     assert stage_agent_name_pointer(execution, tmp_path, None)
 
 

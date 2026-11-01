@@ -23,7 +23,6 @@ from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
     CommandVerb,
-    LessonCommandRequest,
     MessageCommandRequest,
     NameCommandRequest,
     ValidateCommandRequest,
@@ -55,7 +54,7 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _stage_chat_patch_inputs,
 )
-from rcp.runs.lessons import stage_operational_context_pointer
+from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -124,7 +123,6 @@ from rcp.storage import (
     AutoResearchChildWorkRecord,
     AutoResearchMessageRecord,
 )
-from rcp.storage.lessons import lesson_command_actions
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
@@ -295,7 +293,7 @@ def _child_commands(
     execution: AgentTaskExecution | None,
     graph_read_scope: GraphReadScope | None,
     compute_commands: WorkComputeCommands | None,
-) -> tuple[frozenset[str], tuple[str, ...]]:
+) -> frozenset[str]:
     """Resolve a child Work launch's command surface from its launch objects."""
     from rcp.runs.agent_names import resolve_agent_name_state
 
@@ -303,15 +301,11 @@ def _child_commands(
     bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
         execution.operation_id
     )
-    lesson_actions = (
-        lesson_command_actions(execution.store, execution.operation_id) if execution else ()
-    )
     verbs = (
         frozenset(
             {
                 "validate",
                 "message",
-                *(("lesson",) if lesson_actions else ()),
                 *(("name",) if naming else ()),
                 *(("bulletin",) if bulletin else ()),
             }
@@ -319,7 +313,7 @@ def _child_commands(
         | (graph_read_scope.verbs if graph_read_scope is not None else frozenset())
         | (compute_commands.allowed_verbs if compute_commands is not None else frozenset())
     )
-    return verbs, lesson_actions
+    return verbs
 
 
 def _child_turn_verbs(turn: WorkTurn) -> frozenset[str]:
@@ -709,7 +703,7 @@ def _start_auto_research_child_validator_mailbox(
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     # Resolved once: the mailbox enforces it and the prompt renders it from the lifecycle.
-    allowed_verbs, lesson_actions = _child_commands(execution, graph_read_scope, compute_commands)
+    allowed_verbs = _child_commands(execution, graph_read_scope, compute_commands)
     lifecycle = start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -740,7 +734,6 @@ def _start_auto_research_child_validator_mailbox(
         ).model_dump(mode="json"),
     )
     lifecycle.allowed_verbs = allowed_verbs
-    lifecycle.lesson_actions = lesson_actions
     return lifecycle
 
 
@@ -765,9 +758,7 @@ def resume_child_work_command_mailbox(
     compute_commands = _resume_work_compute_commands(execution, context)
     if compute_commands is None:
         raise ValueError("The retained child Work mailbox has no compute scope.")
-    allowed_verbs, lesson_actions = _child_commands(
-        execution, context.graph_read_scope, compute_commands
-    )
+    allowed_verbs = _child_commands(execution, context.graph_read_scope, compute_commands)
     lifecycle = restore_work_validator_mailbox(
         execution,
         validate=lambda text: _validate_work_patch_live(
@@ -788,7 +779,6 @@ def resume_child_work_command_mailbox(
     )
     if lifecycle is not None:
         lifecycle.allowed_verbs = allowed_verbs
-        lifecycle.lesson_actions = lesson_actions
     return lifecycle
 
 
@@ -1427,16 +1417,6 @@ async def _serve_auto_research_child_work_mailbox(
                 turn_artifacts=WORK_TURN_ARTIFACTS,
                 mailbox=staged.mailbox,
             )
-        if isinstance(request, LessonCommandRequest):
-            from rcp.runs.lesson_commands import handle_lesson
-
-            if identity.authority != "broker":
-                return CommandResponse(
-                    request_id=request.request_id,
-                    status="invalid",
-                    message="Lessons require this child Work turn's broker authority.",
-                )
-            return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, MessageCommandRequest):
             return _dispatch_auto_research_child_reply(execution, route, request)
         if request.verb in compute_commands.allowed_verbs:

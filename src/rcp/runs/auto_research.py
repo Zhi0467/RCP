@@ -32,7 +32,6 @@ from rcp.agents.command_protocol import (
     GraphLogCommandRequest,
     InboxArguments,
     InboxCommandRequest,
-    LessonCommandRequest,
     MergeCommandRequest,
     MessageArguments,
     MessageCommandRequest,
@@ -1027,18 +1026,6 @@ class AutoResearchCommandDispatcher:
                 turn_artifacts=False,
                 mailbox=self.mailbox,
             )
-
-        if isinstance(request, LessonCommandRequest):
-            from rcp.runs.lesson_commands import handle_lesson
-
-            try:
-                self._check_admission(context, request)
-                self._canonical_command_actor(context)
-            except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable) as exc:
-                return CommandResponse(
-                    request_id=request.request_id, status="invalid", message=str(exc)
-                )
-            return handle_lesson(self.store, operation_id, request)
 
         if isinstance(request, AskCommandRequest):
             return self._dispatch_ask(context, request)
@@ -2163,7 +2150,6 @@ class AutoResearchCommandDispatcher:
         self, context: AutoResearchCommandContext, request: CommandRequest
     ) -> None:
         from rcp.runs.agent_names import task_agent_name_state
-        from rcp.storage.lessons import lesson_command_actions
 
         # A launch binds the surface its prompt rendered; recovery of a recorded call
         # outside any launch resolves the role's surface.
@@ -2182,7 +2168,6 @@ class AutoResearchCommandDispatcher:
                 ),
                 graph_read_scope=self.graph_read_scope,
                 bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
-                lesson_actions=lesson_command_actions(self.store, context.task.operation_id),
             )
         )
         if request.verb not in allowed:

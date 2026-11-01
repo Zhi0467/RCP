@@ -8,7 +8,6 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore, EpisodeRecord, ProjectRecord
 from rcp.storage.digest import append_digest_event
 from rcp.storage.evidence_flags import EvidenceFlagError
-from rcp.storage.lessons import LessonError
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
 
@@ -168,8 +167,6 @@ def test_live_membership_required_at_storage_boundaries(digest_store, departure)
         store.digest_snapshot("project", member)
     with pytest.raises(KeyError):
         store.catch_up_digest("project", member, 0)
-    with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
-        store.add_lesson("project", "tip", user_id=member, display_name="One")
     with pytest.raises(EvidenceFlagError, check=lambda exc: exc.code == "flag_forbidden"):
         store.dismiss_evidence_flag("project", "missing", user_id=member)
     with pytest.raises(ResearchViewConflict, check=lambda exc: exc.status == 404):

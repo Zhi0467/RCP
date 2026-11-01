@@ -987,12 +987,7 @@ def test_auto_research_ask_rendering_follows_resolved_verbs():
             "client", auto_research_allowed_verbs(role), role
         )
     for role in ("orchestrator", "worker"):
-        for actions in ((), ("add",), ("list",)):
-            verbs = auto_research_allowed_verbs(role, lesson_actions=actions)
-            assert ("lesson" in verbs) == bool(actions)
-            usage = auto._command_invocations("client", verbs, role, actions)
-            for action in ("add", "list", "update", "delete"):
-                assert (f"lesson {action}" in usage) == (action in actions)
+        assert "lesson" not in auto_research_allowed_verbs(role)
     assert "validate patch.json" in auto._command_invocations("test-command-client", ("validate",))
     assert "ask --key" not in auto._command_invocations("test-command-client", ("validate",))
     assert auto._orchestrator_ask_contract(("validate",)) == ""
