@@ -23,7 +23,7 @@ import {
   TriangleAlert,
   WifiOff,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { SpaceRuns } from "../experiments/SpaceRuns";
 import type { AppearancePickerProps, TextScaleControl } from "../ui/AppearancePicker";
 import type { ArchiveEpisodeAction } from "../experiments/EpisodeRunControls";
@@ -74,7 +74,6 @@ interface Props extends AppearancePickerProps {
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: () => void;
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
-  voiceControl?: ReactNode;
   textScale?: TextScaleControl;
 }
 
@@ -353,7 +352,6 @@ export function ProjectLanding({
   onExitTeamSpace,
   onOpenSpaceSettings,
   onOpenSignIns,
-  voiceControl,
   textScale,
   themeChoice,
   colorModeChoice,
@@ -567,7 +565,6 @@ export function ProjectLanding({
           onActivate={onActivateProjectTab}
           onClose={onCloseProjectTab}
         />
-        {voiceControl}
         {onOpenSpaceSettings && (
           <button
             className="landing-space-settings"

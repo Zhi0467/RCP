@@ -244,7 +244,7 @@ import { forgetBanners } from "./ui/bannerDismissal";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
-import { PhoneAskButton, PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
 import { useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
@@ -353,7 +353,7 @@ import { publishToolSurface, webMcpHostDefinitions } from "./voice/toolCatalog";
 import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
 import { openTerminalSocket } from "./terminals/terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
-import { VoiceButton, VoicePanel } from "./voice/VoicePanel";
+import { VoicePanel } from "./voice/VoicePanel";
 
 import {
   initialProjectHash,
@@ -4322,7 +4322,6 @@ function MemberApp({
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
           onOpenSignIns={openSignIns}
-          voiceControl={<VoiceButton voice={voice} className="landing-space-settings" />}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
@@ -4511,12 +4510,6 @@ function MemberApp({
     canRedo,
   };
 
-  const askAboutProject = () => {
-    const chatId =
-      unsentConversation(conversations, "project_chat")?.chatId ??
-      startConversation("project_chat", null, project.name);
-    openChats(chatId);
-  };
   const syncControls = (
     <div className="header-sync-side">
       {draftChangeCount > 0 && (
@@ -4618,7 +4611,6 @@ function MemberApp({
       >
         <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
       </button>
-      <VoiceButton voice={voice} className="icon-button" />
       <button
         className="icon-button space-settings-control"
         aria-label="Space settings"
@@ -4871,13 +4863,6 @@ function MemberApp({
               aria-label="Project actions"
             >
               {syncControls}
-              <button
-                className="button secondary"
-                disabled={projectReconciliation !== "authoritative"}
-                onClick={askAboutProject}
-              >
-                <MessageCircle size={14} /> Ask
-              </button>
               {autoResearchButton}
             </div>
             <div
@@ -5478,12 +5463,6 @@ function MemberApp({
         </Suspense>
       </main>
 
-      {phone && view !== "chats" && view !== "paper" && (
-        <PhoneAskButton
-          disabled={projectReconciliation !== "authoritative"}
-          onAsk={askAboutProject}
-        />
-      )}
       {phone && (
         <PhoneTabBar
           primary={navItems.filter((item) => phonePrimaryViews.has(item.view)).map(renderNavItem)}
