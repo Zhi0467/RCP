@@ -315,6 +315,13 @@ consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
 
+Private-thread questions belong only to the thread's member. Their Needs you
+push targets that member; list, answer and dismiss refuse other members. An
+`ask` action creates a single-use approval card in its project thread. The
+[authority spec](authority-and-proposals.md) owns the pinned action and tap
+admission. Ordinary answer and dismiss refuse card questions; card settlement
+uses the existing answer-delivery path below.
+
 Each bounded ask call retains a random `call_id` across transport rounds.
 Pending replies carry `attempt` and `max_attempts` (3); parked replies count no
 attempt. Clients without an id omit the count. A thread-safe process-local
