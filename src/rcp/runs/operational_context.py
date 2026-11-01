@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.agents.memory_files import prepare_project_memory
+from rcp.agents.memory_files import prepare_project_memory, task_has_project_memory
 from rcp.limits import MEMORY_INDEX_MAX_BYTES
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ def project_memory_pointer(
     task = execution.store.agent_task(execution.operation_id)
     if task is None:
         raise ValueError("Project memory requires its task binding.")
-    if task.kind not in {"node_chat", "project_chat", "auto_research"}:
+    if not task_has_project_memory(task):
         return ""
     shared, index_bytes = prepare_project_memory(execution.store, task.project_id, remote_stage)
     pointer = (
@@ -40,7 +40,9 @@ def project_memory_pointer(
         pointer += " Read shared notes and add useful notes; do not edit or delete existing notes."
     else:
         pointer += " Read and maintain shared notes with ordinary file edits."
-    if index_bytes > MEMORY_INDEX_MAX_BYTES:
+    if index_bytes is None:
+        pointer += " The index is unusable; repair it before using project memory."
+    elif index_bytes > MEMORY_INDEX_MAX_BYTES:
         action = "request consolidation pruning" if add_only else "prune it"
         pointer += (
             f" The index exceeds {MEMORY_INDEX_MAX_BYTES} bytes; read its start and {action}."

@@ -210,9 +210,12 @@ graph, replay, merge or paper authority.
 
 Launch prompts point to the live index and label it as notes, never instructions
 or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
-note storage. Launch stats the index; an oversized index prompts the agent to
-read its start and prune it; add-only runs request consolidation pruning. There
-is no staged lesson snapshot or lesson command.
+note storage. Launch uses `lstat` for the index; an oversized index prompts the
+agent to read its start and prune it; add-only runs request consolidation pruning. There
+is no staged lesson snapshot or lesson command. After migration, a symlink or
+non-regular index, or an unusable shared or notes directory, does not stop a
+launch: the prompt reports an unusable index and asks the agent to repair it.
+Migration still refuses these paths before recording completion.
 
 On the first launch build per project, the backend migrates all legacy
 `operational_lessons` rows into `shared/notes/lesson-<lesson_id>.md`, with
@@ -222,6 +225,18 @@ newest first within each group. Only after writes complete does the backend
 record `memory_migrations`; an unreachable base defers completion. Legacy lesson
 and command receipt tables remain read-only migration sources. Settings and
 WebMCP no longer expose lessons; agents maintain memory through file edits.
+Project identity migration commits before the catalog moves the entire memory
+folder, including member notes. The existing alias record and old migration marker
+retain an unfinished move; the next launch retries it before creating the new root.
+The marker moves only after filesystem success. A missing source makes retry safe
+after a lost SSH response; an occupied destination with a remaining source refuses
+the move. Project deletion atomically queues memory cleanup with removal of its
+records, including any old alias folders. The browser lifecycle cleanup owner
+attempts deletion after commit and retries failures at later turn boundaries.
+An unreachable base never rolls back project deletion. Memory preparation waits
+for pending deletion to finish, including when the same project is registered again.
+Remote deletion retains the resolved host/account identity at removal and checks it
+on retry. An unresolved origin or repointed alias leaves cleanup pending.
 
 ## Transfer, backup, and restore
 

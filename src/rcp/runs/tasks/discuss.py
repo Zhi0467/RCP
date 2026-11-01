@@ -22,7 +22,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
-from rcp.agents.memory_files import prepare_project_memory
+from rcp.agents.memory_files import prepare_project_memory, task_has_project_memory
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     GraphReadPrompt,
@@ -1115,18 +1115,19 @@ async def stream_discuss_run(
                     attachment_pointers=attachment_pointers,
                     ontology_extensions=context.ontology_extensions,
                 )
+            memory_write_dirs = []
+            if execution is not None:
+                task = execution.store.agent_task(execution.operation_id)
+                if task_has_project_memory(task):
+                    assert task is not None
+                    shared, _index_bytes = prepare_project_memory(
+                        execution.store, task.project_id, remote_stage
+                    )
+                    memory_write_dirs = [Path(shared)]
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
 
-        memory_write_dirs = []
-        if execution is not None:
-            task = execution.store.agent_task(execution.operation_id)
-            if task is not None:
-                shared, _index_bytes = prepare_project_memory(
-                    execution.store, task.project_id, remote_stage
-                )
-                memory_write_dirs = [Path(shared)]
         _record_agent_launch_receipt(
             execution,
             request,
