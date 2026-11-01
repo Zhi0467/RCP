@@ -1152,6 +1152,8 @@ export function ChatsWorkspace({
         {showingOwnThread && ownThread ? (
           <AgentThreadView
             thread={ownThread.thread}
+            actorId={actorId}
+            project={project}
             revision={ownThread.revision}
             voice={ownThread.voice}
             onThreadChanged={ownThread.onThreadChanged}

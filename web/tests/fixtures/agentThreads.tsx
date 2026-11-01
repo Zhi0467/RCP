@@ -1,3 +1,4 @@
+import { ArtifactViewer } from "../../src/artifacts/ArtifactViewer";
 import { ResourceRuntime } from "./resourceRuntime";
 import { createRoot } from "react-dom/client";
 import { ChatsWorkspace } from "../../src/chat/ChatsWorkspace";
@@ -141,5 +142,8 @@ function Project() {
 
 const view = new URLSearchParams(location.search).get("view");
 createRoot(document.getElementById("root")!).render(
-  <ResourceRuntime>{view === "project" ? <Project /> : <Space />}</ResourceRuntime>,
+  <ResourceRuntime>
+    {view === "project" ? <Project /> : <Space />}
+    <ArtifactViewer />
+  </ResourceRuntime>,
 );

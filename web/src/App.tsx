@@ -2636,12 +2636,14 @@ function MemberApp({
       agentsBoard,
     );
     // Project-wide, as unread is: an orchestrator opened from main has its turns on its branch.
-    markVisibleChatRead(projectTasks, visibleChatId);
+    // The private thread owns its transcript read marker, including voice lines.
+    if (visibleChatId !== ownThread?.thread_id) markVisibleChatRead(projectTasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
   }, [
     agentsBoard,
     chatReads,
     markVisibleChatRead,
+    ownThread?.thread_id,
     projectTasks,
     selectedChatId,
     selectedExperimentChatId,

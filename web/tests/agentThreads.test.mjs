@@ -188,10 +188,10 @@ const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/Age
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
-  const render = (outcome, hasEarlierTurn) =>
+  const render = (outcome, hasEarlierTurn, reason_code = "provider_switch_tail") =>
     renderToStaticMarkup(
       React.createElement(FreshSessionMarker, {
-        task: { chat_session_resolution: { outcome, reason_code: "provider_switch_tail" } },
+        task: { chat_session_resolution: { outcome, reason_code } },
         hasEarlierTurn,
       }),
     );
@@ -200,6 +200,10 @@ test("fresh session marker requires an earlier turn and keeps its reason on hove
   const reason = html.match(/title="([^"]+)"/)?.[1];
   assert.ok(reason);
   assert.ok(!html.replace(/<[^>]*>/g, "").includes(reason));
+  const compacted = render("fresh", true, "provider_switch_compacted");
+  assert.ok(compacted.match(/title="([^"]+)"/)?.[1]);
+  assert.notEqual(compacted, html);
+  assert.equal(compacted.replace(/<[^>]*>/g, ""), html.replace(/<[^>]*>/g, ""));
   assert.equal(render("fresh", false), "");
   assert.equal(render("continued", true), "");
   assert.equal(render("forking", true), "");

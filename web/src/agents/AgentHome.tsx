@@ -70,10 +70,12 @@ function RailRow({
  */
 export function AgentHome({
   threadId,
+  actorId,
   voice,
 }: {
   /** The thread the address names, or null for the default. */
   threadId: string | null;
+  actorId: string | null;
   voice: VoiceAgent;
 }) {
   const narrow = useNarrowViewport();
@@ -153,6 +155,7 @@ export function AgentHome({
         <div className="conversation-surface">
           <AgentThreadView
             thread={open}
+            actorId={actorId}
             revision={revision}
             voice={voice}
             onThreadChanged={patch}

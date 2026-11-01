@@ -393,9 +393,19 @@ the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
-conversation list. The team's board conversations stay in that list. The thread header holds the
-voice button and a schedules list with Cancel and re-enable. Approval cards show
-the action with Approve and Decline. There is no separate Ask or voice launcher.
+conversation list. The team's board conversations stay in that list. The thread
+header holds a schedules list with Cancel and re-enable; the composer holds the
+voice button. Board chats and threads
+share the agent window transcript, scrolling, artifact rendering, comments, and
+composer parts. Project threads support node references, saved artifacts, and
+artifact-selection comments. Space threads render their own turn artifacts and
+accept files and answer comments; they offer no node references, Keep, or
+artifact-selection comments. Both open artifacts in the shared in-app viewer,
+including on desktop. Voice and handoff source icons sit inside the human message
+bubble. Answer comments join the next message in both.
+Approval cards stay where the agent raised them, before later transcript lines,
+and show the action with Approve and Decline. Their outcome replaces the need
+for a separate member answer bubble. There is no separate Ask or voice launcher.
 A turn that starts a fresh session shows a quiet chip alongside its first message,
 except for the thread's first turn. Its recorded reason appears only on hover.
 Revision history names an attributed member as "<member>, via <agent name>" when
