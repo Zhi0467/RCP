@@ -492,7 +492,10 @@ def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
     execution, _ = work_execution(tmp_path, mode=mode)
     execution.stage_root = str(tmp_path)
     scope = GraphReadScope(project_id="project", target=GraphTargetRef())
-    service = cast(ProjectService, SimpleNamespace(resolve_project_service=lambda _: None))
+    service = cast(
+        ProjectService,
+        SimpleNamespace(resolve_project_service=lambda _: None, project_catalog=None),
+    )
     calls = []
 
     def history(actual_service, actual_scope, request, *, resolve_project):

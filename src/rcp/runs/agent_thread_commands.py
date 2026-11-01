@@ -19,6 +19,7 @@ from rcp.agents.command_protocol import (
     CommandResponse,
     HandoffCommandRequest,
     ProjectsCommandRequest,
+    ScheduleCommandRequest,
 )
 from rcp.digest import digest_counts
 from rcp.limits import (
@@ -147,6 +148,12 @@ class ThreadCommandHandler:
                         self.store, self.catalog, thread.user_id, request.arguments.project_id or ""
                     )
                 )
+            elif isinstance(request, ScheduleCommandRequest):
+                from rcp.runs.agent_schedules import handle_schedule
+
+                if thread.kind != "space" or task.kind != "space_chat":
+                    raise ValueError("Project schedules use the project Work handler")
+                return handle_schedule(self.store, self.operation_id, request)
             elif isinstance(request, HandoffCommandRequest):
                 if thread.kind != "space" or task.kind != "space_chat":
                     raise ValueError("Only the Space thread may hand off")

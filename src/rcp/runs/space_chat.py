@@ -111,8 +111,8 @@ class SpaceThreadOwner:
 _SPACE_TRANSCRIPT_LOCKS = KeyedLocks(threading.RLock)
 
 
-def space_transcript_lock(owner: SpaceThreadOwner) -> AbstractContextManager[object]:
-    return _SPACE_TRANSCRIPT_LOCKS(f"{owner.store.path}:{owner.thread_id}")
+def space_transcript_lock(store: AppStore, thread_id: str) -> AbstractContextManager[object]:
+    return _SPACE_TRANSCRIPT_LOCKS(f"{store.path}:{thread_id}")
 
 
 def append_space_records(
@@ -134,7 +134,7 @@ def append_space_records(
             or record.type != record.role
         ):
             raise ValueError("Space record does not match its thread")
-    with space_transcript_lock(owner):
+    with space_transcript_lock(owner.store, owner.thread_id):
         path.parent.mkdir(parents=True, exist_ok=True)
         if any(
             not stat.S_ISDIR(directory.lstat().st_mode)
@@ -209,7 +209,7 @@ async def stream_space_chat_run(
     """Run one local provider with one exact, independently authorized stage per project."""
     from rcp.agents import AgentEvent, agent_output_schema
     from rcp.agents.artifact_contract import artifact_contract
-    from rcp.agents.staged_command_client import handoff_usage, projects_usages
+    from rcp.agents.staged_command_client import handoff_usage, projects_usages, schedule_usages
     from rcp.runs.agent_thread_commands import ThreadCommandHandler
     from rcp.runs.browser_lifecycle import browser_turn
     from rcp.runs.chat import (
@@ -365,7 +365,7 @@ async def stream_space_chat_run(
                 budget=None,
                 validate=None,
                 command_handler=handler,
-                allowed_verbs=frozenset({"projects", "handoff"}),
+                allowed_verbs=frozenset({"projects", "handoff", "schedule"}),
             )
         )
         _write_space_client(stage, top.client_command())
@@ -383,8 +383,9 @@ async def stream_space_chat_run(
                     "You are the member's Space agent. This is a captured Work turn. Read across their projects; make direct file and graph changes only inside the listed admitted scopes. Hand project lifecycle work to their own project thread. Never create watch.json or top-level patch.json.",
                     render_agent_graph_authority_contract(),
                     f"Top-level command client: {stage / 'rcp'}. Available commands: "
-                    + "; ".join((*projects_usages(), handoff_usage()))
+                    + "; ".join((*projects_usages(), handoff_usage(), *schedule_usages()))
                     + ". Each admitted project's projects/<id>/rcp supports only validate, graph_log, graph_diff and bulletin. A project Patch belongs only in projects/<id>/patch.json.",
+                    "Create a schedule only when the member asked for it. Schedule add requires a member message, never a wake or question follow-up.",
                     "Resolved writable roots: "
                     + json.dumps(scope.writable_roots)
                     + "\nProtected paths: "

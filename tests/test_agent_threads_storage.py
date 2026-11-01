@@ -92,10 +92,11 @@ def test_restore_disables_schedules_expires_cards_and_preserves_handoffs(tmp_pat
     now = store.now()
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state) VALUES('s','thread','op','key','0 9 * * *','UTC','note','active')"
+            "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('s','thread','op','key','0 9 * * *','UTC','note','active',?)",
+            (now,),
         )
         connection.execute(
-            "INSERT INTO approval_cards(question_id,action_json,pinned_json,pinned_sha256,expires_at) VALUES('q','{}','{}','hash','2099-01-01T00:00:00+00:00')"
+            "INSERT INTO approval_cards(question_id,action_json,pinned_json,pinned_sha256,expires_at,request_id) VALUES('q','{}','{}','hash','2099-01-01T00:00:00+00:00','request')"
         )
         connection.execute(
             "INSERT INTO agent_handoffs(handoff_id,source_thread_id,source_operation_id,idempotency_key,target_thread_id,message,created_at) VALUES('h','source','op','key','target','message',?)",

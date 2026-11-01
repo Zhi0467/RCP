@@ -50,18 +50,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Single-entry agent tables (v66-71): fresh and immutable fixture upgrades.
-        "94561936410f721e7a3abb558e41463c94da96a4539e0fd538f5c6542e234f65",
-        "abeabed013dd1696a439ca372d6dd395b858b87582a5ad74c83d051ee082b04c",
-        "08d1b7e9894bb21c99e0e11e5e91cb411013e55a0194eda516cb7ca27d9a3dc7",
-        "2d3ade80cd8c997bd90583d3588cef99e32b2c7e499a3f5ea7f4d8ec0b644e36",
-        "3784cff41bccbd772fbfdb4f3a35d7df33d4a6118fa0f8fcbba5de8a2cdee8af",
-        "579e4a9da09582ce868a617b0f8676480029736e6f8c343fac5f955991ee034d",
-        "66c2e488a9e88690d287a41d948291b86b27e35ddef464d5905991899bb78e2e",
-        "a39db9e048d34ffc72ed6904be01a9a0f02475edc64b92b264277a67b59c2d13",
-        "a9c09574674c637bcbe8ec6a5cd5c07afb245d1f7b032f9a58ab51044846df34",
-        "d73068f7026253487d2674e975f113cfc80c45d85358c67c9d26ac221e439be1",
-        "eeeb985b87e363b7a9a3e465f2565c01c72c1cba57fd948c49a305fedebeaaca",
+        # Single-entry agent tables (v66-71): fresh, immutable fixtures, and in-place upgrades.
+        "0bb8a2ad6d1464aa8d168ebd48ce8d74fe506cd8779d12d16e4846174958a480",
+        "0fcb559347d90aea3497f82d69246a1e2a5531b52dbb3773d81f2d36ccea3bd4",
+        "217723159845471fb45cc927a76779dd7133659287df3c31933e9a5a2ad06bfb",
+        "2b6ffaadf4a438fe584a29c06473af44cc500636ba886b006a865a09ac156042",
+        "2c7b27c8502d173206aaafb1abc7c1bfe8d7a4611ea414c763e7d98a7af56a5b",
+        "5bbd2d4109de3c531c202d27bad79cb1fb785661eae415bc250924e909737b55",
+        "820077452ddc5fbcd9202f6982903ab507a850738c3d20d6a2c68de4ea28eca6",
+        "b8764f474453b331e9e3f078427c75f0110e066757dc7b546be5d53e00202e88",
+        "d8b8fb85b2683217667d2020f2b73bb549bd137f4a4473ba3fed91a58ac9ef76",
+        "fad2864a5f88e0f8e732b186533dcc109ec80d5cb454ddea8a3d898a4ccd1447",
+        "fbd5f84597e24e84f31b055a043edc9b12a388dd894e5724ad3b66bfaecb7aaa",
         # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
         "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
         "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",

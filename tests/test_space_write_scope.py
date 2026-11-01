@@ -7,7 +7,7 @@ import pytest
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 
 
-def _project(stage, project_id):
+def _project(stage, project_id, *, memory_roots=None):
     return ProjectWriteScope.create(
         project_id=project_id,
         execution_machine="local",
@@ -18,7 +18,11 @@ def _project(stage, project_id):
         repositories=[
             WritableRepositoryRoot(alias="repo", machine="local", path=f"/repos/{project_id}")
         ],
-        protected_write_paths=[f"/repos/{project_id}/.research"],
+        protected_write_paths=[
+            f"/repos/{project_id}/.research",
+            *(["/memory"] if memory_roots else []),
+        ],
+        memory_roots=memory_roots,
     )
 
 
@@ -148,3 +152,40 @@ def test_nonregular_space_output_is_refused_without_blocking(tmp_path):
     link.symlink_to(fifo)
     with pytest.raises(OSError):
         read_space_output(link)
+
+
+@pytest.mark.parametrize("project_ids", [(), ("b", "a")])
+def test_composite_memory_roots_reach_claude_launch_permissions(tmp_path, project_ids):
+    import json
+
+    from rcp.agents.write_scope import CompositeWriteScope
+    from rcp.providers.claude.profile import ClaudeProfile
+
+    projects = tuple(
+        _project(tmp_path, project_id, memory_roots=[f"/memory/{project_id}/shared"])
+        for project_id in project_ids
+    )
+    scope = CompositeWriteScope(stage_root=str(tmp_path), projects=projects)
+    memory_roots = sorted(f"/memory/{project_id}/shared" for project_id in project_ids)
+    command = ClaudeProfile().command(
+        "Member request",
+        binary="claude",
+        cwd=tmp_path,
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[],
+        write_dirs=[Path(root) for root in scope.repository_roots],
+        write_scope=scope,
+        capability="work_auto",
+        provider_version="2.1.296",
+    )
+    assert scope.memory_roots == memory_roots
+    added = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
+    assert added == [*scope.repository_roots, *memory_roots]
+    permissions = json.loads(command[command.index("--settings") + 1])["permissions"]
+    for root in memory_roots:
+        assert f"Edit(/{root}/**)" in permissions["allow"]
+    assert "Edit(//memory/**)" not in permissions["deny"]
+    for root in scope.repository_roots:
+        assert f"Edit(/{root}/.research/**)" in permissions["deny"]

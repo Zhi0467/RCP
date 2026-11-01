@@ -458,8 +458,6 @@ class NotificationSender:
                 project_link = f"#/projects/{quote(project.project_id, safe='')}"
                 owner_id = quote(question.origin.owner_id, safe="")
                 if question.origin.owner_kind == "chat":
-                    if owner := self.store.private_chat_owner(question.origin.owner_id):
-                        notification["recipient_user_id"] = owner
                     notification["deep_link"] = f"{project_link}?view=chats&chat={owner_id}"
                 else:
                     target = quote(question.origin.graph_target.key, safe="")

@@ -124,12 +124,12 @@ never see these rows.
 
 | Version | Migration name | Table |
 | --- | --- | --- |
-| 66 | `agent_threads_v1` | `agent_threads` |
-| 67 | `agent_schedules_v1` | `agent_schedules` |
-| 68 | `approval_cards_v1` | `approval_cards` |
-| 69 | `agent_handoffs_v1` | `agent_handoffs` |
-| 70 | `space_turn_project_bindings_v1` | `space_turn_project_bindings` |
-| 71 | `memory_migrations_v1` | `memory_migrations` |
+| 66 | `memory_files_v1` | `memory_migrations`, `memory_deletions` |
+| 67 | `agent_threads_v1` | `agent_threads` |
+| 68 | `agent_handoffs_v1` | `agent_handoffs` |
+| 69 | `space_turn_project_bindings_v1` | `space_turn_project_bindings` |
+| 70 | `agent_schedules_v1` | `agent_schedules` |
+| 71 | `approval_cards_v1` | `approval_cards` |
 
 `agent_threads` is the authority on privacy: a chat is private exactly when it
 has a row here.

@@ -251,8 +251,8 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
     )
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state) VALUES('schedule',?,'source','key','0 9 * * *','UTC','note','active')",
-            (source.thread_id,),
+            "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('schedule',?,'source','key','0 9 * * *','UTC','note','active',?)",
+            (source.thread_id, store.now()),
         )
     directory = store.path.parent / "agent-threads" / member.user_id
     directory.mkdir(parents=True)

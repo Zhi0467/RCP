@@ -275,6 +275,10 @@ class CompositeWriteScope:
         return sorted({root for scope in self.projects for root in scope.repository_roots})
 
     @property
+    def memory_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.memory_roots})
+
+    @property
     def writable_roots(self) -> list[str]:
         return list(
             dict.fromkeys(

@@ -20,6 +20,7 @@ from rcp.agents.command_protocol import (
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
     NameCommandRequest,
+    ScheduleCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.limits import ASK_MAX_ATTEMPTS
@@ -45,6 +46,7 @@ def handle_ask(
     origin: QuestionOrigin,
     *,
     parked: bool = False,
+    service: ProjectService | None = None,
 ) -> CommandResponse:
     """Persist or read a question without granting authority or admitting follow-ups.
 
@@ -54,12 +56,53 @@ def handle_ask(
     store operations. Producing this response does not prove the client received it.
     """
     try:
+        arguments = request.arguments.model_dump(exclude={"action"})
+        action = request.arguments.action
+        card = None
+        if action is not None:
+            from rcp.runs.approval_cards import approval_pins, private_project_thread_turn
+
+            task = store.agent_task(origin.operation_id)
+            owner = (
+                store.private_question_owner(origin.owner_id)
+                if origin.owner_kind == "chat"
+                else None
+            )
+            if (
+                service is None
+                or task is None
+                or task.authorized_by is None
+                or owner != task.authorized_by.user_id
+                or action.project_id != origin.project_id
+                or origin.capability != "work_auto"
+                or not private_project_thread_turn(store, origin.operation_id)
+            ):
+                raise ValueError("approval_requires_own_project_thread")
+            previous = next(
+                (
+                    item
+                    for item in store.list_questions(
+                        project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
+                    )
+                    if item.key == request.idempotency_key
+                ),
+                None,
+            )
+            existing_card = store.approval_card(previous.question_id) if previous else None
+            card = {
+                "action": action.model_dump(mode="json"),
+                "pinned": existing_card["pinned"]
+                if existing_card
+                else approval_pins(service, store, action, task.authorized_by),
+            }
+            arguments["choices"] = ["Approve", "Decline"]
         question = store.create_or_get_question(
             origin=origin,
             key=request.idempotency_key,
-            **request.arguments.model_dump(),
+            **arguments,
+            card=card,
         )
-    except QuestionArgumentConflict as exc:
+    except (QuestionArgumentConflict, ValueError) as exc:
         return CommandResponse(
             request_id=request.request_id,
             status="invalid",
@@ -369,6 +412,18 @@ class WorkCommandHandler:
             ):
                 return refuse("Evidence flags require this consolidation turn's broker authority.")
             return handle_flag(self.service, execution.store, execution.operation_id, request)
+        if isinstance(request, ScheduleCommandRequest):
+            from rcp.runs.agent_schedules import handle_schedule
+
+            execution = self.execution
+            if (
+                execution is None
+                or identity.task_id != execution.operation_id
+                or identity.authority != "broker"
+            ):
+                return refuse("Schedules require this turn's broker authority.")
+            return handle_schedule(execution.store, execution.operation_id, request, self.service)
+
         if isinstance(request, NameCommandRequest):
             from rcp.runs.agent_names import handle_name
 
@@ -467,7 +522,9 @@ class WorkCommandHandler:
             # Maintenance closes the human's access before it drains turns, so a
             # waiting ask would hold the drain on a human it locked out.
             maintenance = execution.admission is not None and execution.admission.closed
-            response = handle_ask(execution.store, request, origin, parked=maintenance)
+            response = handle_ask(
+                execution.store, request, origin, parked=maintenance, service=self.service
+            )
             if maintenance and response.result.get("state") == "parked":
                 response.message = (
                     "Server maintenance is under way, so the human cannot answer now. "
@@ -589,6 +646,11 @@ def work_command_handler(
             and execution.store.agent_thread(thread_id) is not None
         ):
             verbs.add("projects")
+    if execution is not None:
+        from rcp.runs.agent_schedules import schedule_thread
+
+        if schedule_thread(execution.store, execution.operation_id) is not None:
+            verbs.add("schedule")
     if work_ask_authorized(execution):
         verbs.add("ask")
     if work_experiment_allowed(execution):

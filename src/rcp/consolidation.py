@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -16,7 +17,7 @@ from rcp.background import BackgroundAgentTasks, StartupEffectFence
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.history.queries import HeadSpec, HistoryEngine, StepRecord
-from rcp.limits import CONSOLIDATION_POLL_SECONDS
+from rcp.limits import AGENT_SCHEDULE_SEARCH_DAYS, CONSOLIDATION_POLL_SECONDS
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS, consolidation_skill_selection
 from rcp.runs.evidence_flag_commands import hold_consolidation_additions
@@ -54,16 +55,95 @@ def occurrence_at(local_date: date, local_time: str, timezone: str) -> datetime:
         candidate += timedelta(minutes=1)
 
 
+def cron_fields(expression: str) -> tuple[set[int], ...]:
+    """Parse five numeric cron fields; Sunday is 0 or 7."""
+    fields = expression.split()
+    if len(fields) != 5:
+        raise ValueError("cron requires five numeric fields")
+    parsed = []
+    for field, (low, high) in zip(
+        fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7)), strict=True
+    ):
+        values: set[int] = set()
+        for part in field.split(","):
+            match = re.fullmatch(r"(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?", part)
+            if match is None:
+                raise ValueError("invalid cron field")
+            base, stride = match.groups()
+            step = int(stride or 1)
+            start, end = (
+                (low, high) if base == "*" else (int(base.split("-")[0]), int(base.split("-")[-1]))
+            )
+            if step < 1 or not low <= start <= end <= high:
+                raise ValueError("cron field is out of range")
+            values.update(range(start, end + 1, step))
+        parsed.append(values)
+    parsed[4] = {value % 7 for value in parsed[4]}
+    return tuple(parsed)
+
+
+def cron_matches_date(expression: str, fields: tuple[set[int], ...], local_date: date) -> bool:
+    dom = local_date.day in fields[2]
+    dow = (local_date.weekday() + 1) % 7 in fields[4]
+    raw = expression.split()
+    day_matches = (dom or dow) if raw[2] != "*" and raw[4] != "*" else (dom and dow)
+    return local_date.month in fields[3] and day_matches
+
+
+def cron_occurrence_count(expression: str, timezone: str, start: datetime, end: datetime) -> int:
+    """Count distinct civil fires inclusively, without replaying missed minute jobs."""
+    fields = cron_fields(expression)
+    zone = ZoneInfo(timezone)
+    day = start.astimezone(zone).date()
+    last = end.astimezone(zone).date()
+    times = [f"{hour:02}:{minute:02}" for hour in sorted(fields[1]) for minute in sorted(fields[0])]
+    count = 0
+    while day <= last:
+        if cron_matches_date(expression, fields, day):
+            midnight = datetime.combine(day, time(), zone)
+            tomorrow = datetime.combine(day + timedelta(days=1), time(), zone)
+            if (
+                midnight.astimezone(UTC) >= start
+                and tomorrow.astimezone(UTC) <= end
+                and midnight.utcoffset() == tomorrow.utcoffset()
+            ):
+                count += len(times)
+            else:
+                # Gap times coalesce at the next valid minute, exactly as repeated
+                # next_occurrence calls do; folds select their first instance.
+                instants = {occurrence_at(day, civil, timezone) for civil in times}
+                count += sum(start <= instant <= end for instant in instants)
+        day += timedelta(days=1)
+    return count
+
+
 def next_occurrence(local_time: str, timezone: str, after: datetime) -> datetime:
-    """The first scheduled civil-date occurrence strictly after an aware instant."""
+    """First daily or cron civil occurrence strictly after an aware instant."""
     if after.tzinfo is None:
         raise ValueError("schedule handling time must be timezone-aware")
-    local_date = after.astimezone(ZoneInfo(timezone)).date()
-    while True:
-        candidate = occurrence_at(local_date, local_time, timezone)
-        if candidate > after:
-            return candidate
+    local_after = after.astimezone(ZoneInfo(timezone))
+    local_date = local_after.date()
+    fields = cron_fields(local_time) if len(local_time.split()) > 1 else None
+    times = (
+        [local_time]
+        if fields is None
+        else [
+            f"{hour:02}:{minute:02}" for hour in sorted(fields[1]) for minute in sorted(fields[0])
+        ]
+    )
+    for _ in range(AGENT_SCHEDULE_SEARCH_DAYS):
+        matches = True
+        if fields is not None:
+            matches = cron_matches_date(local_time, fields, local_date)
+        if matches:
+            for civil_time in times:
+                if local_date == local_after.date() and civil_time <= local_after.strftime("%H:%M"):
+                    continue
+                candidate = occurrence_at(local_date, civil_time, timezone)
+                if candidate > after:
+                    return candidate
         local_date += timedelta(days=1)
+    raise ValueError("schedule has no occurrence within eight years")
 
 
 class ConsolidationPoller:
@@ -119,9 +199,17 @@ class ConsolidationPoller:
             self.admission.mutation("graph consolidation") if self.admission else nullcontext(),
         ):
             self.reconcile_outcomes()
+            now = datetime.fromisoformat(self.clock())
+            pending = self.store.advance_agent_schedules(now)
             if seconds_until_automatic_launch() > 0:
                 return
-            self.dispatch_due(datetime.fromisoformat(self.clock()))
+            self.dispatch_due(now)
+            self.dispatch_agent_schedules(now, pending)
+
+    def dispatch_agent_schedules(self, now: datetime, pending) -> None:
+        from rcp.runs.agent_schedules import dispatch_agent_schedules
+
+        dispatch_agent_schedules(self, now, pending)
 
     def dispatch_due(self, now: datetime) -> None:
         """Launch queued runs, then admit and launch every schedule due at `now`.

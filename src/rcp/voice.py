@@ -38,7 +38,7 @@ class SessionRequest(BaseModel):
     tools: list[FunctionTool]
     # The page's plain-language RCP playbook, appended after the fixed instructions.
     playbook: str = Field(max_length=limits.VOICE_PLAYBOOK_MAX_CHARS)
-    resume_id: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    thread_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
 
     @field_validator("tools", mode="before")
     @classmethod

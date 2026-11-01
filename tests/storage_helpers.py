@@ -16,6 +16,7 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         "agent_handoffs",
         "space_turn_project_bindings",
         "memory_migrations",
+        "memory_deletions",
     ):
         connection.execute(f'DROP TABLE IF EXISTS "{table}"')
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES

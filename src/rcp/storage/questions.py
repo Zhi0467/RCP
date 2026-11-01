@@ -6,9 +6,11 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from typing import Any
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_ANSWER_MAX_LENGTH
+from rcp.storage.approval_cards import insert_approval_card
 from rcp.storage.digest import append_question_attention
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -114,11 +116,16 @@ class QuestionStoreMixin(StoreMixinBase):
         question: str,
         choices: list[str] | None = None,
         multiple: bool = False,
+        card: dict[str, Any] | None = None,
     ) -> QuestionRecord:
         """Reuse owner+key across turns; never replace the first origin binding."""
         arguments = {"question": question, "choices": choices or [], "multiple": multiple}
         argument_hash = hashlib.sha256(
-            json.dumps(arguments, sort_keys=True, ensure_ascii=False).encode()
+            json.dumps(
+                {**arguments, **({"action": card["action"]} if card else {})},
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode()
         ).hexdigest()
         record = QuestionRecord(
             question_id=uuid.uuid4().hex,
@@ -158,6 +165,8 @@ class QuestionStoreMixin(StoreMixinBase):
                     record.created_at,
                 ),
             )
+            if card is not None:
+                insert_approval_card(connection, record.question_id, card, self.now())
             append_question_attention(
                 connection,
                 connection.execute(

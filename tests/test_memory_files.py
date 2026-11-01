@@ -402,3 +402,52 @@ def test_rename_retries_on_next_launch_after_remote_failure(tmp_path, monkeypatc
     moved, _ = prepare_project_memory(AppStore(store.path), canonical, stage)
     assert Path(moved, "MEMORY.md").read_text() == "retained note"
     assert not Path(shared).exists()
+
+
+def test_voice_reads_only_bounded_shared_and_owner_indexes(tmp_path, monkeypatch):
+    from rcp import limits
+    from rcp.agents.memory_files import read_project_memory_indexes
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    root = project_memory_root(tmp_path, "project")
+    for folder, text in [
+        ("shared", "shared"),
+        ("members/member", "漢" * 20),
+        ("members/other", "secret"),
+    ]:
+        path = root / folder
+        path.mkdir(parents=True)
+        (path / "MEMORY.md").write_text(text)
+    monkeypatch.setattr(limits, "MEMORY_INDEX_MAX_BYTES", 10)
+    result = read_project_memory_indexes(store, "project", "member")
+    assert result == {"shared_index": "shared", "private_index": "漢" * 3, "truncated": True}
+    (root / "members/member/MEMORY.md").unlink()
+    (root / "members/member/MEMORY.md").symlink_to(root / "members/other/MEMORY.md")
+    with pytest.raises(OSError):
+        read_project_memory_indexes(store, "project", "member")
+
+
+def test_voice_memory_remote_reads_the_base_using_shipped_owner(tmp_path, monkeypatch):
+    from rcp.agents.memory_files import read_project_memory_indexes
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    home = tmp_path / "remote"
+    root = home / ".rcp/memory/project/shared"
+    root.mkdir(parents=True)
+    (root / "MEMORY.md").write_text("remote shared")
+    stage = RemoteRunStage("example.invalid")
+
+    def remote(arguments, *, input_data=None, **kwargs):
+        return subprocess.run(
+            [sys.executable, *arguments[1:]],
+            input=input_data,
+            capture_output=True,
+            env={"HOME": str(home)},
+        )
+
+    monkeypatch.setattr(stage, "_ssh_bytes", remote)
+    assert read_project_memory_indexes(store, "project", "member", stage) == {
+        "shared_index": "remote shared",
+        "truncated": False,
+    }
+    assert not (tmp_path / "memory").exists()

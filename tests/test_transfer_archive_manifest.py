@@ -63,6 +63,7 @@ PROJECT_LINKED_TABLES = {
     "agent_threads",
     "space_turn_project_bindings",
     "memory_migrations",
+    "memory_deletions",
     "_legacy_campaign_invocations_archive",
     "_legacy_campaign_messages_archive",
     "_legacy_campaign_recoveries_archive",

@@ -43,7 +43,7 @@ from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import parse_head
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import (
@@ -511,16 +511,9 @@ def start_episode(
                 return _serialize_accepted(store, project_id, episode, catalog=catalog)
             service = get_project_writer(catalog, project_id)
             try:
-                body.branch_name = normalize_branch_name(body.branch_name)
-                start_request = _resolved_auto_research_start_request(service, body)
-                if body.code_worktree is None and body.worktree_repository is None:
-                    start_request = start_request.model_copy(
-                        update={
-                            "code_worktree": auto_research_code_worktree_eligible(
-                                store, project_id, start_request
-                            )
-                        }
-                    )
+                start_request = _resolved_auto_research_start_request(
+                    service, body, store=store, project_id=project_id
+                )
                 service.history.require_writable()
                 graph_base_head = service.history.head_ref()
                 episode, _ = start_auto_research(
@@ -661,6 +654,32 @@ def merge_episode_branch(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> EpisodeResponse:
+    return _merge_episode_branch(
+        project_id,
+        episode_id,
+        request,
+        body,
+        catalog=catalog,
+        store=store,
+        identity_access=identity_access,
+        background_tasks=background_tasks,
+    )
+
+
+def _merge_episode_branch(
+    project_id: str,
+    episode_id: str,
+    request: Request,
+    body: MergeEpisodeBody | None,
+    *,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    identity_access: IdentityAccess,
+    background_tasks: BackgroundAgentTasks,
+    expected_source_head: GraphHeadRef | None = None,
+    expected_main_head: GraphHeadRef | None = None,
+) -> EpisodeResponse:
+    """Enter merge admission, checking card heads before reconciliation can write."""
     authorized_by = identity_access.require_patch_capable_identity(request)
     member = _episode_for_http(store, catalog, project_id, episode_id)
     episode = merge_owner(store, member)
@@ -668,6 +687,14 @@ def merge_episode_branch(
     try:
         with project_write_admission(project_id, request):
             service.history.require_writable()
+            if expected_source_head is not None or expected_main_head is not None:
+                from rcp.runs.branch_merge_context import merge_history
+
+                if (
+                    merge_history(service, episode.graph_target).head_ref() != expected_source_head
+                    or service.history.head_ref() != expected_main_head
+                ):
+                    raise HTTPException(status_code=409, detail={"code": "merge_heads_changed"})
             reconciled = reconcile_episode_merge(service, store, episode)
             if reconciled is None:
                 merge_episode(
@@ -1171,7 +1198,11 @@ def _episode_report_viewer_response(
 def _resolved_auto_research_start_request(
     service: ProjectService,
     body: StartEpisodeBody,
+    *,
+    store: AppStore,
+    project_id: str,
 ) -> AutoResearchStartRequest:
+    body = body.model_copy(update={"branch_name": normalize_branch_name(body.branch_name)})
     profile = service.resolve_agent_profile(
         "orchestrator",
         provider=body.provider,
@@ -1203,6 +1234,12 @@ def _resolved_auto_research_start_request(
     resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(resolved, AutoResearchStartRequest):
         raise TypeError("Auto-research skill resolution changed the start request type.")
+    if body.code_worktree is None and body.worktree_repository is None:
+        resolved = resolved.model_copy(
+            update={
+                "code_worktree": auto_research_code_worktree_eligible(store, project_id, resolved)
+            }
+        )
     return resolved
 
 

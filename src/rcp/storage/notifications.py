@@ -206,7 +206,17 @@ class NotificationStoreMixin(StoreMixinBase):
                 (question_id, self.now()),
             ).rowcount
             if inserted and notification is not None:
-                self.enqueue_notification(connection, **notification)
+                owner = connection.execute(
+                    """SELECT t.user_id FROM questions q
+                    JOIN agent_threads t ON t.thread_id=q.owner_id
+                    WHERE q.question_id=? AND q.owner_kind='chat'""",
+                    (question_id,),
+                ).fetchone()
+                self.enqueue_notification(
+                    connection,
+                    recipient_user_id=owner["user_id"] if owner else None,
+                    **notification,
+                )
             return bool(inserted)
 
     def notification_preferences(self, project_id: str, user_id: str) -> dict[str, bool]:

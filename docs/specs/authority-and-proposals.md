@@ -279,3 +279,41 @@ closed command vocabulary and its audit path. Ordinary workers have narrower
 contracts. Humans own root dispatch, merges outside the orchestrator's owned
 forks, reauthorization, and protected controls. Commands do not grant graph authority. Changes still require typed
 Patches through the transition manager and Apply gate.
+
+
+## Private-thread approval cards
+
+A private project thread may attach a strict action to `ask`. The action names
+that thread's project and supplies no choices or multiple selection; RCP offers
+Approve and Decline. The action models live in
+[`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
+repository truth membership, Auto-research authorization, graph-branch merge,
+and episode merge. Plain question answers never authorize these actions.
+
+The question and its slim `approval_cards` row are committed together. The row
+pins the action and live facts under one SHA-256: pending non-stale Proposal
+content, repository identity and current membership, the resolved Auto-research
+profile and readiness, or merge source/main heads and preview. Reusing an ask key
+requires the same action and question; it does not refresh the presented pins.
+
+Only the thread's member can resolve a card. The tap checks membership, claims
+once, compares the presented hash and live pins, and invokes the existing human
+handler with its normal write admission. Direct Python calls enter the transfer
+fence and Experiment lock only when the handler does not acquire them itself.
+A stale card executes nothing. Ordinary answer and dismiss endpoints reject card
+questions with `409 approval_card`; a second tap returns `409 card_taken`.
+
+Card creation stores a random UUID4 request id; every result retains it.
+Episode start, branch merge and episode merge pass it to their native request-id
+admission. Episode merge compares the pinned source and main heads again under
+its admission lock, before reconciliation or merge writes.
+Sync and repository membership have no request-id argument; the durable card
+claim supplies their single-use execution identity. A claimed card without a
+result is failed as interrupted at startup, never automatically rerun.
+
+Cards expire after 72 hours, checked on tap and list. Listing also expires cards
+of closed threads. Expiry answers the question with `expired`. Other results
+answer it with approved, declined, stale or a failure reason, reusing ordinary question delivery
+to steer or wake the thread. Both plain questions and cards in private threads
+have owner-only list, answer, dismiss and Needs-you notification delivery.
+The approval endpoint is a member control, not a voice or WebMCP tool.

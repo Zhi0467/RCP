@@ -75,7 +75,7 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
             self.detach_consolidation_for_restore(connection, diagnostic=recorded_detail, now=now)
             connection.execute(
                 "UPDATE agent_schedules SET state='disabled', disabled_reason='restore', "
-                "pending_since=NULL WHERE state IN ('active','disabled')"
+                "pending_since=NULL, next_fire_at=NULL WHERE state IN ('active','disabled','done')"
             )
             connection.execute(
                 "UPDATE approval_cards SET expires_at=? "

@@ -245,4 +245,33 @@ same base and account finds the existing folder by project id. Note authorship
 is not tracked after migration. Legacy lesson rows, flags, schedules, per-target
 coverage, runs and receipts remain space-local; SQLite backup captures them.
 Restore retains legacy lessons, coverage and closed rows, fails unresolved runs
-on every target, and disables schedules until a member enables them again.
+on every target, and deletes consolidation schedules until a member configures them again.
+
+## Private agent schedules
+
+Private threads expose `schedule add`, `list`, and `cancel`. Add requires the
+persisted admitting member message from the composer, voice, or handoff, with a
+human trigger and no question-follow-up binding; wakes cannot create schedules.
+The agent creates one only when asked. Mutations carry an idempotency key, and
+`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread.
+
+A schedule names an IANA timezone and either a local `YYYY-MM-DDTHH:MM` instant
+or five numeric cron fields with wildcards, lists, ranges, and steps. Sunday is
+0 or 7. When both day-of-month and weekday are restricted, either matches.
+Local times use consolidation's first-fold and next-valid-gap-minute rules.
+The admitting turn's timezone is the default; without it the agent must supply
+one. Invalid and past one-shot times are refused.
+
+The consolidation poller advances due schedules and preserves their first pending
+occurrence in one transaction before the automatic-launch cooldown check. Wake
+admission and launch wait until that cooldown has passed. One-shot schedules
+become done. Busy, queued, and paused threads retain pending notes. Once eligible,
+one atomic admission claims all observed notes for one Work wake, listing each
+note and its missed fire count. Admission retains the thread's latest provider,
+native session, scratch, and member binding and rechecks the ordinary project
+write fence and session constraints. Lost thread access disables pending schedules.
+
+Schedule controls are owner-only. Restore keeps schedules disabled with reason
+`restore`, clears their pending wakes, and requires explicit re-enabling. A past
+one-shot cannot be re-enabled. Consolidation's separate restore behavior remains
+delete-on-restore.

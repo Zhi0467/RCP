@@ -811,5 +811,12 @@ AGENT_THREAD_COMPACT_TIMEOUT_SECONDS = 60
 AGENT_HANDOFF_MAX_CHARS = 16_000
 AGENT_PROJECTS_MAX_ITEMS = 100
 AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
-AGENT_SCHEDULE_NOTE_MAX_CHARS = 2_000
+# Member-requested standing schedules per private agent thread.
 AGENT_SCHEDULES_MAX_ACTIVE = 20
+AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+
+# Human approval cards expire on read or resolution, with no background sweeper.
+APPROVAL_CARD_TTL_HOURS = 72
+
+# Gregorian leap-day schedules may span eight years across a non-leap century.
+AGENT_SCHEDULE_SEARCH_DAYS = 366 * 8

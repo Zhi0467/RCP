@@ -130,7 +130,7 @@ def _steering_transaction(
     service: ProjectService | SpaceThreadOwner,
 ) -> AbstractContextManager[object]:
     if isinstance(service, SpaceThreadOwner):
-        return space_transcript_lock(service)
+        return space_transcript_lock(service.store, service.thread_id)
     return service.history.workspace.transaction()
 
 

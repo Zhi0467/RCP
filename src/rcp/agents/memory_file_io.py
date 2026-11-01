@@ -118,12 +118,49 @@ def change_project_files(data_dir: Path, project_id: str, destination: str | Non
         shutil.rmtree(root)
 
 
+def read_indexes(root: Path, user_id: str, max_bytes: int) -> dict:
+    """Read just the two authorized indexes, without following directory or file links."""
+    import stat
+
+    paths = {
+        "shared_index": root / "shared" / "MEMORY.md",
+        "private_index": root / "members" / safe_component(user_id) / "MEMORY.md",
+    }
+    result: dict = {"truncated": False}
+    for key, path in paths.items():
+        try:
+            for directory in path.parents:
+                if directory.is_symlink():
+                    raise ValueError("memory directory cannot be a symlink")
+                if directory == root.parent:
+                    break
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            continue
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError("memory index must be a regular file")
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                data = stream.read(max_bytes + 1)
+            result[key] = data[:max_bytes].decode("utf-8", errors="ignore")
+            result["truncated"] = result["truncated"] or len(data) > max_bytes
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    return result
+
+
 def main() -> None:
     request = json.load(sys.stdin)
     data_dir = Path.home() / ".rcp"
     if "destination" in request:
         change_project_files(data_dir, request["project_id"], request["destination"])
         print(json.dumps({}))
+        return
+    if "read_indexes" in request:
+        root = Path.home() / ".rcp" / "memory" / safe_component(request["project_id"])
+        print(json.dumps(read_indexes(root, request["user_id"], request["max_bytes"])))
         return
     root = memory_root(data_dir, request["project_id"])
     size = prepare_files(root, request["lessons"]) if "lessons" in request else 0

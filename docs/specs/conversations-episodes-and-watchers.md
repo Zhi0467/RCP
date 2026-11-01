@@ -51,7 +51,9 @@ transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
 use `chatScope: "space"` without node or graph target fields. A separate reader
 accepts only that scope. Optional message `source` distinguishes voice and
 handoff input (and the reserved Slack source); absent source means the composer
-and is omitted from serialization, preserving old records.
+and is omitted from serialization, preserving old records. Space turns, steering,
+and voice entries share one transcript lock; voice entries deduplicate under that
+lock before appending.
 
 Private chats, their tasks and their questions are visible and controllable only
 by their owner. Project question pushes target that owner. Unread settled project
@@ -348,6 +350,14 @@ card receives answers while the composer remains steering. Viewer edits,
 consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
+
+Private-thread questions belong only to the thread's member. Their Needs you
+push targets that member; list, answer and dismiss refuse other members. Creation
+and settlement emit no project-wide digest event for a private-thread question. An
+`ask` action creates a single-use approval card in its project thread. The
+[authority spec](authority-and-proposals.md) owns the pinned action and tap
+admission. Ordinary answer and dismiss refuse card questions; card settlement
+uses the existing answer-delivery path below.
 
 Each bounded ask call retains a random `call_id` across transport rounds.
 Pending replies carry `attempt` and `max_attempts` (3); parked replies count no
