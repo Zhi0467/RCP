@@ -159,6 +159,7 @@ class RemoteRunStage:
         *,
         reuse: bool = False,
         protected_roots: Iterable[str] | None = (),
+        thread_owner: str | None = None,
     ) -> RemoteRunStage:
         """Create this stage, or with `reuse` adopt it when it already exists.
 
@@ -175,6 +176,7 @@ class RemoteRunStage:
                 "create",
                 label,
                 "1" if reuse else "0",
+                *([thread_owner] if thread_owner is not None else []),
             ]
         )
         remote_root = result.stdout.strip()
@@ -1449,7 +1451,15 @@ def remote_stage_name(root: str) -> str | None:
     if (
         parent.is_absolute()
         and len(parent.parts) > 3
-        and parent.parts[-2:] == (".rcp", "stages")
+        and (
+            parent.parts[-2:] == (".rcp", "stages")
+            or (
+                len(parent.parts) > 5
+                and parent.parts[-4:-2] == (".rcp", "agent-threads")
+                and parent.name == "stages"
+                and remote_stage_root.MEMBER_ID.fullmatch(parent.parent.name) is not None
+            )
+        )
         and ".." not in parent.parts
     ):
         return name

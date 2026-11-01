@@ -1782,8 +1782,11 @@ plus `projects` and `schedule`. Its seeded name withholds `name`. Threads never
 receive `apply`, `status`, `spawn` or `message`, which belong to consolidation
 and Auto-research. No agent has a `lesson` verb; memory files replace it.
 
-A Space turn runs locally in its persistent stage,
-`<data_dir>/run-stage/space-<user_id>-<thread_id>`. Its
+A Space turn runs locally in its persistent
+[member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
+Admission checks the registered state host before opening execution, skips remote
+projects without contacting them, and records unavailable or broken local projects
+as `space_project_not_admitted` while admitting the others. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1806,15 +1809,21 @@ transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 Collection reads only admitted project Patch files, applies each independently
 in project-id order under its project lock and live membership check, and records
 `project_results` in the task result. Missing authority bindings refuse Apply.
+Settled project Patch files are removed after Apply or rejection. Each project's
+effect key uses the original operation in the recovery lineage, so a replayed file
+cannot append a second transition after a post-collection failure. Project-local
+state or lookup failures reject that project without stopping collection of others.
+Cleanup failures are receipted per project and do not stop later collection.
 Other Patch files and all watch files are receipted and discarded; invalid stray
 files cannot prevent another project's collection. Rejection yields a partial
 turn outcome without undoing another project's accepted transition. Watcher
 storage also refuses a Space-task origin.
 
 Every agent run hides every `private-*.jsonl` transcript under the state chat
-roots on its host, and runs on the backend's machine hide
-`<data_dir>/agent-threads`. This includes the owner's own threads. Thread
-history reaches a fresh session only as prompt text.
+roots on its host. Runs on the backend's machine hide other members'
+`<data_dir>/agent-threads/<user_id>` folders; a thread run sees only its own
+stage there, never transcripts. Thread history reaches a fresh session only as
+prompt text.
 
 `projects` returns the member's Cards projection with thread ids and
 `same_machine`; `show` adds bounded graph and episode context, at most

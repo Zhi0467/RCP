@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from tests.helpers import create_named_app, signed_in_client
 
 
@@ -150,6 +152,7 @@ def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
     from typing import cast
 
     from rcp.agents import AgentLauncher
+    from rcp.core.models import HiddenReadScope
     from rcp.runs.chat import _append_chat_exchange
     from rcp.runs.tasks.work import stream_work_run
     from rcp.service import RunRequest
@@ -200,7 +203,16 @@ def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
         assert result["status"] == "succeeded", result
         assert "prior-private-marker" in launcher.prompts[0]
         assert "prior-private-answer" in launcher.prompts[0]
-        for path in (tmp_path / "data" / "run-stage").rglob("*"):
+        task = app.state.background_tasks.store.agent_task(response.json()["operation_id"])
+        assert task is not None and task.stage_root is not None
+        stage = Path(task.stage_root)
+        owner = app.state.background_tasks.store.private_chat_owner(thread["thread_id"])
+        assert owner is not None
+        assert stage.parent == tmp_path / "data/agent-threads" / owner / "stages"
+        hidden = launcher.launch_kwargs[0]["hidden_read_scope"]
+        assert isinstance(hidden, HiddenReadScope)
+        assert not any(stage.is_relative_to(root) for root in hidden.hidden_directories)
+        for path in stage.rglob("*"):
             if path.is_file():
                 assert b"prior-private-marker" not in path.read_bytes()
 

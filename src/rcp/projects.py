@@ -2152,21 +2152,25 @@ class ProjectCatalog:
                 )
             return
 
-        boundary = (self.data_dir / "run-stage").resolve()
-        target = Path(stage.root)
-        if not target.is_absolute() or target.parent.resolve() != boundary:
-            raise ValueError("Saved local run stage is outside the RCP staging boundary")
-        _remove_local_stage(target)
+        self._validate_stage_target(stage)
+        _remove_local_stage(Path(stage.root))
 
     def _validate_stage_target(self, stage: ProjectStageRecord) -> None:
         if stage.host:
             RemoteRunStage(stage.host).attach_artifact_source(stage.root)
             return
 
+        target = Path(stage.root)
         boundary = self.data_dir / "run-stage"
+        if (
+            target.parent.name == "stages"
+            and target.parent.parent.parent == self.data_dir / "agent-threads"
+        ):
+            boundary = target.parent
+            if boundary.resolve() != boundary:
+                raise ValueError("RCP's thread staging boundary is unsafe")
         if os.path.lexists(boundary) and not stat.S_ISDIR(boundary.lstat().st_mode):
             raise ValueError("RCP's local staging boundary is unsafe")
-        target = Path(stage.root)
         if not target.is_absolute() or target.parent.resolve() != boundary.resolve():
             raise ValueError("Saved local run stage is outside the RCP staging boundary")
 

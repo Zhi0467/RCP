@@ -34,7 +34,10 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def test_catalog_delete_reclaims_only_app_owned_files_and_persists(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("parent", ["run-stage", "agent-threads/member/stages"])
+def test_catalog_delete_reclaims_only_app_owned_files_and_persists(
+    manifest, tmp_path, parent
+) -> None:
     data_dir = tmp_path / "app-data"
     store = AppStore(data_dir / "rcp.sqlite3")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
@@ -42,7 +45,7 @@ def test_catalog_delete_reclaims_only_app_owned_files_and_persists(manifest, tmp
     repository = Path(manifest.repository_map[manifest.state.repository].path)
     before = _tree_digest(repository)
 
-    stage = data_dir / "run-stage" / "saved-operation"
+    stage = data_dir / parent / "saved-operation"
     stage.mkdir(parents=True)
     (stage / "patch.json").write_text("{}", encoding="utf-8")
     (stage / "patch.json").chmod(0o400)

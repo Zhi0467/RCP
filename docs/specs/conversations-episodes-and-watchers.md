@@ -96,6 +96,14 @@ thread replies use the owner-only `agent_thread` notification; Space replies do
 not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
 
+Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
+locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
+Local recovery inventories and local/remote retention sweeps include these exact
+stages, retaining live stages and leaving transcripts alone. The owning thread
+can access its stage; every agent launch hides other members' thread folders.
+Non-thread launches hide all thread folders. Exceeding the hidden-path budget
+refuses launch rather than dropping the privacy policy.
+
 Schedule creation checks the admitted task's member message, trigger, source and
 question-follow-up binding; display transcripts never establish that authority.
 
