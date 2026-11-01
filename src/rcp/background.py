@@ -74,6 +74,7 @@ from rcp.runs.provider_login import (
     provider_login_host,
 )
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.provider_usage import record_provider_usage
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -3214,30 +3215,9 @@ class BackgroundAgentTasks:
                 if event.status is not None:
                     live_status.observe(event.status)
                 if event.usage is not None:
-                    usage_record = self.store.record_agent_usage(
-                        execution.operation_id,
-                        event.usage,
-                        idempotent=recorded,
+                    record_provider_usage(
+                        self.store, execution.operation_id, event.usage, recorded=recorded
                     )
-                    usage_receipt_exists = recorded and any(
-                        receipt.category == "provider_usage"
-                        and receipt.payload.get("usage_id") == usage_record.usage_id
-                        for receipt in self.store.agent_task_receipts(execution.operation_id)
-                    )
-                    if not usage_receipt_exists:
-                        self.store.record_agent_task_receipt(
-                            execution.operation_id,
-                            "provider_usage",
-                            {
-                                "usage_id": usage_record.usage_id,
-                                "counted": usage_record.counted,
-                                "count_reason": usage_record.count_reason,
-                                "provider_profile": usage_record.provider_profile,
-                                "processed_input_tokens": usage_record.processed_input_tokens,
-                                "generated_tokens": usage_record.generated_tokens,
-                            },
-                            tier="diagnostic",
-                        )
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text

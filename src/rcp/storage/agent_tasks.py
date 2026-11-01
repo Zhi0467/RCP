@@ -3646,6 +3646,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         usage: ProviderUsage,
         *,
         idempotent: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> AgentUsageRecord:
         """Persist one provider usage report and mark duplicate reports excluded."""
 
@@ -3688,8 +3690,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         usage_id,
                         task.project_id,
                         operation_id,
-                        task.request.get("provider") or "unknown",
-                        task.request.get("model"),
+                        provider or task.request.get("provider") or "unknown",
+                        model if provider is not None else task.request.get("model"),
                         task.kind,
                         usage.provider_profile,
                         usage.provider_event_type,
