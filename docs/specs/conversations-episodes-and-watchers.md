@@ -7,9 +7,16 @@ Auto-research orchestration and episode graph branches are in
 
 ## Agent names
 
-One agent is one Agents-board conversation (`chat_id`). Its name is the stored
-`chat_display.title` for that project and conversation, shared by the board,
-transcript responses, and Bulletin. Creation uses the first Markdown heading
+One agent has one canonical `chat_display.title`, keyed by its project (or Space
+for a Space thread) and conversation id: the thread id, board chat id,
+Auto-research chain's root episode id, or worker id. Readers resolve that row
+at read time, including agent context, Bulletin authors, digest groups, run
+labels, provenance, and the voice header. Stored author/source labels remain
+fallbacks when the name row is absent. Post bodies, handoff text, Patch history,
+fork `source_title` fallbacks, human display-name attestations, and voice
+confirmation cards retain their deliberate history.
+
+Creation uses the first Markdown heading
 in the first message when present, otherwise the whole message, with whitespace
 collapsed, cut after the last whole word within `AGENT_NAME_MAX_CHARS` (35); a
 single longer word is cut at 35. An empty name becomes "Chat". An
