@@ -1836,6 +1836,7 @@ def _append_chat_exchange(
                     "role": "user",
                     "text": request.message,
                     **({"source": request.source} if request.source is not None else {}),
+                    **({"questionId": question.question_id} if question is not None else {}),
                     "attachments": [item.model_dump(mode="json") for item in request.attachments],
                 }
             )

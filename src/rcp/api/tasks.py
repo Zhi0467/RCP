@@ -208,6 +208,7 @@ def _agent_task_response(
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
     edit_outcomes: Mapping[str, list[AgentTaskReceiptRecord]] | None = None,
     session_resolutions: Mapping[str, AgentTaskReceiptRecord] | None = None,
+    followup_question_ids: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     response["via_agent"] = store.via_agent(record.operation_id)
@@ -240,6 +241,19 @@ def _agent_task_response(
     if refused_worker:
         response.update(can_resume=False, can_retry=True)
     if record.kind in {"node_chat", "project_chat"}:
+        if record.request.get("trigger", "human") == "human":
+            if followup_question_ids is None:
+                followup_question_ids = {
+                    operation_id: question.question_id
+                    for operation_id, question in store.questions_for_followups(
+                        [record.operation_id]
+                    ).items()
+                }
+            question_id = followup_question_ids.get(record.operation_id)
+            if question_id is not None:
+                # Task and transcript reads can straddle answer admission. Keep
+                # a reconstructed prompt identifiable before its transcript refresh.
+                response["question_id"] = question_id
         chat_id = record.request.get("chat_id")
         session_id = None
         if isinstance(chat_id, str):
@@ -633,6 +647,17 @@ def agent_tasks(
     session_resolutions = store.agent_task_session_resolutions(
         [record.operation_id for record in records]
     )
+    followup_question_ids = {
+        operation_id: question.question_id
+        for operation_id, question in store.questions_for_followups(
+            [
+                record.operation_id
+                for record in records
+                if record.kind in {"node_chat", "project_chat"}
+                and record.request.get("trigger", "human") == "human"
+            ]
+        ).items()
+    }
     return [
         _agent_task_response(
             store,
@@ -643,6 +668,7 @@ def agent_tasks(
             chat_sessions,
             edit_outcomes,
             session_resolutions,
+            followup_question_ids,
         )
         for record in records
     ]

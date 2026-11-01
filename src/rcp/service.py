@@ -323,6 +323,8 @@ class ChatMessage(BaseModel):
         default=None, exclude_if=lambda value: value is None
     )
     operation_id: str | None = None
+    #: The question whose answer this member message delivers, when applicable.
+    question_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     browser_status: BrowserTurnStatus = Field(
         default_factory=lambda: BrowserTurnStatus(status="not_requested")
     )
@@ -424,6 +426,9 @@ class _StoredChatRecord(BaseModel):
     timestamp: str
     uuid: str
     operation_id: str | None = Field(default=None, alias="operationId")
+    question_id: str | None = Field(
+        default=None, alias="questionId", exclude_if=lambda value: value is None
+    )
     type: Literal["user", "assistant"]
     role: Literal["user", "assistant"]
     text: str
@@ -441,6 +446,7 @@ def _chat_message_from_record(record: _StoredChatRecord) -> ChatMessage:
         message_id=record.uuid,
         source=record.source,
         operation_id=record.operation_id,
+        question_id=record.question_id,
         role=record.role,
         text=record.text,
         timestamp=record.timestamp,
