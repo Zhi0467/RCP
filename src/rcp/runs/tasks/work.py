@@ -2716,6 +2716,21 @@ async def _stream_work_run(
             data_dir=data_dir,
             local_stage=turn.local_stage,
         )
+        from functools import partial
+
+        from rcp.runs.agent_threads import (
+            prepare_project_summary_scope,
+            provider_switch_seed,
+            thread_history_seed,
+        )
+
+        history_seed = await provider_switch_seed(
+            launcher,
+            turn.request,
+            execution,
+            thread_history_seed(service, turn.request),
+            prepare_scope=partial(prepare_project_summary_scope, service, execution, data_dir),
+        )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(
                 turn.request,
@@ -2762,9 +2777,7 @@ async def _stream_work_run(
                     browser_grant=browser_grant,
                 )
         contract_path = composed_prompt.contract_path
-        from rcp.runs.agent_threads import thread_history_seed
-
-        prompt = composed_prompt.prompt + thread_history_seed(service, turn.request)
+        prompt = composed_prompt.prompt + history_seed
         retry_baseline = _capture_retry_deliverable_baseline(turn)
     except BaseException as exc:
         if validator_lifecycle is not None:

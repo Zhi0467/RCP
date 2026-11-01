@@ -115,12 +115,32 @@ question-follow-up binding; display transcripts never establish that authority.
 Composer, voice and handoff messages count as member messages; question
 follow-ups and wakes do not.
 
-Each thread keeps one native session, which the provider compacts. A fresh
-thread session receives a bounded transcript tail directly in its first prompt,
-labelled as earlier conversation data, not instructions or authority.
-`AGENT_THREAD_TAIL_MAX_MESSAGES` and `AGENT_THREAD_TAIL_MAX_BYTES` bound it,
-newest kept. It is never staged as a file. Provider switches record
-`provider_switch_tail`; other fresh starts retain their existing reasons.
+Each thread keeps one native session, which the provider compacts. Before a
+provider switch's first turn, project and Space threads ask the old provider to
+summarize its captured native session in one read-only turn, using the existing
+branched-chat fork path in a temporary working directory for local Claude and
+Codex launches. Remote summaries resume the original session and append their
+prompt and answer because this unsupervised launch cannot use the remote fork path. A completed, nonempty
+summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new prompt and records
+`provider_switch_compacted`. The old account, session, runtime, and privacy policy
+must remain usable. Failure, including timeout after
+`AGENT_THREAD_COMPACT_TIMEOUT_SECONDS` (300 seconds), oversized output, or an
+unsupported summary capability, keeps `provider_switch_tail` and the bounded
+transcript tail. Each expected failure records one `provider_switch_summary_failed`
+diagnostic receipt with cause `timeout`, `sign_in`, `oversized`, `session_missing`,
+or `provider_error`; unexpected implementation errors propagate. Both resolution
+reasons appear on the thread's fresh-start marker.
+
+Seeds are labelled earlier conversation for context, not instructions or
+authority, and never staged as files. The compacted seed is retained in the
+task's immutable database contract so a same-task restart reuses it without
+another summary call. Other fresh starts retain their existing
+reasons and receive the tail, bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and
+`AGENT_THREAD_TAIL_MAX_BYTES`, newest kept. Summary calls use the fixed
+[summary capability](providers-and-containment.md#session-summaries), preserve
+the thread's hidden-read policy, and charge usage to the same task under the old
+provider and model. Stop shares the turn's process fence and prevents the new
+provider from starting; an unconfirmed remote exit fences further execution.
 
 ## Human notification observations
 
@@ -258,7 +278,8 @@ Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `session_stage_unavailable`, `session_stale`, `session_context_unavailable`,
 `orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, `login_switch`, or
 `consolidation` (every nightly turn starts fresh). Private provider switches use
-`provider_switch_tail` as described under [Private agent threads](#private-agent-threads).
+`provider_switch_compacted` or `provider_switch_tail` as described under
+[Private agent threads](#private-agent-threads).
 Task views project the latest receipt's outcome and reason code for both project
 and Space turns; absent receipts project as null. The
 [Agent view](interface-and-visual-design.md#agent-view) shows unexpected fresh starts.
