@@ -13,6 +13,7 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
         rows = response.json()["threads"]
         assert [row["kind"] for row in rows] == ["space", "project"]
         assert [row["agent_name"] for row in rows] == ["Pip", "Puck"]
+        assert [row["latest_operation_id"] for row in rows] == [None, None]
         assert all(row["browser_requested"] for row in rows)
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:
@@ -239,6 +240,9 @@ def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
             "/api/agent-threads/" + thread["thread_id"] + "/tasks/" + task.operation_id
         )
         assert status.status_code == 200, status.text
+        # The row names the turn before its member message reaches the transcript.
+        rows = client.get("/api/agent-threads").json()["threads"]
+        assert rows[0]["latest_operation_id"] == task.operation_id
 
 
 def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monkeypatch):

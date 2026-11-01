@@ -24,7 +24,7 @@ def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, o
     project = store.project(thread.project_id) if thread.project_id else None
     with store.connection() as connection:
         task = connection.execute(
-            "SELECT status, updated_at, finished_at FROM graph_runs "
+            "SELECT operation_id, status, updated_at, finished_at FROM graph_runs "
             "WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? "
             "AND visible=1 ORDER BY created_at DESC, operation_id DESC LIMIT 1",
             (scope, thread.thread_id),
@@ -59,6 +59,8 @@ def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, o
         "unread": bool(finished and (not read_through or finished > read_through)),
         "last_activity_at": task["updated_at"] if task else None,
         "live_state": state,
+        # A running turn's member message reaches the transcript only when it settles.
+        "latest_operation_id": task["operation_id"] if task else None,
         "browser_requested": store.chat_browser_requested(scope, thread.thread_id),
     }
 

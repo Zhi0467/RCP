@@ -4085,6 +4085,8 @@ export interface AgentThread {
   unread: boolean;
   last_activity_at: string | null;
   live_state: AgentThreadLiveState;
+  /** The thread's newest visible task, running or settled. */
+  latest_operation_id: string | null;
   browser_requested: boolean;
 }
 

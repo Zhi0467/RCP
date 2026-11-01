@@ -2174,10 +2174,12 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 
 `GET /api/agent-threads` returns the acting member's lazily created Space and
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
-`agent_name`, `unread`, `last_activity_at`, `live_state` and
-`browser_requested`. The Space thread comes first, then project threads by
-latest activity. `live_state` is idle, queued, running, paused, `needs_you` (an
-open question or card) or closed. Threads of projects the member left are
+`agent_name`, `unread`, `last_activity_at`, `live_state`,
+`latest_operation_id` and `browser_requested`. The Space thread comes first,
+then project threads by latest activity. `live_state` is idle, queued, running,
+paused, `needs_you` (an open question or card) or closed.
+`latest_operation_id` names the newest visible turn, so a view can follow a
+project turn whose member message reaches the transcript only when it settles. Threads of projects the member left are
 closed and omitted.
 
 Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`

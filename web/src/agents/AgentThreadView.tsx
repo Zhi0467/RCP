@@ -314,7 +314,8 @@ export function AgentThreadView({
         loadThreadTranscript(current),
         loadThreadQuestions(current),
       ]);
-      const turnId = latestTurnId(transcript.messages);
+      // A running project turn writes its member message only when it settles.
+      const turnId = current.latest_operation_id ?? latestTurnId(transcript.messages);
       const latestTask = turnId ? await loadThreadTask(current, turnId) : null;
       if (threadRef.current.thread_id !== current.thread_id) return;
       setLoaded({
@@ -643,6 +644,16 @@ export function AgentThreadView({
           );
         })}
         {questionsByTurn.loose.map(renderQuestion)}
+        {!pending &&
+          latest?.active &&
+          latest.request.message &&
+          !messages?.some((message) => message.operation_id === latest.operation_id) && (
+            <div className="node-chat-line human">
+              <div className="chat-human-message">
+                <span className="node-chat-text">{latest.request.message}</span>
+              </div>
+            </div>
+          )}
         {pending &&
           !messages?.some(
             (message) => message.text === pending.text && message.role === "user",
