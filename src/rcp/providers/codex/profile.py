@@ -39,8 +39,9 @@ if TYPE_CHECKING:
 
 # Every Codex launch, exec and app-server alike, runs with these features off;
 # the skill probe starts app-server with the same flags so the menu lists only
-# skills a turn loads.
-_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins")
+# skills a turn loads. Native memories would inject one shared store, fed by
+# every project's and member's past runs, into each turn.
+_DISABLED_FEATURES = ("--disable", "apps", "--disable", "plugins", "--disable", "memories")
 
 
 def is_encrypted_content_refusal(text: str) -> bool:

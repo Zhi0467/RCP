@@ -208,6 +208,11 @@ Containment differs by transport: exec disables user config and execpolicy
 rules with `--ignore-user-config` and `--ignore-rules`. App-server supports
 neither flag; RCP overrides capability-bearing keys but cannot disable `.rules`.
 
+Native provider memory is off for every launch, so staged context is the only
+carried context. Codex runs with `--disable memories`; its store is shared by
+every run on the account, across projects and members. Claude launches set
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
+
 [Live steering](#live-human-steering) follows the actual runtime. App-server
 uses `turn/steer` with `expectedTurnId`. Claude stream-json retains stdin and
 uses `--replay-user-messages`; Claude decides whether a message joins the running
