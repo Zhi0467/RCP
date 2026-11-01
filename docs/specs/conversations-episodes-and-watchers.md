@@ -81,7 +81,9 @@ unused name and then numbered suffixes. These seeded names cannot be changed by
 the agent; member renaming uses the ordinary name rules. Browser starts on.
 
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
-on each record. The reader verifies the filename against the record. Space
+on each record. The reader verifies the filename against the record. Source
+indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
+private transcripts never enter ingestion or consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
 use `chatScope: "space"` without node or graph target fields. A separate reader
 accepts only that scope. Optional message `source` distinguishes voice and

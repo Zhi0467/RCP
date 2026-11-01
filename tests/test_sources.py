@@ -440,11 +440,14 @@ def test_app_chat_sessions_are_normalized_as_human_led_roots(manifest) -> None:
         encoding="utf-8",
     )
 
-    session = next(
+    (chat_root / "private-member-thread.jsonl").write_text(chat_path.read_text())
+    sessions = [
         item
         for item in ConversationIndexer(manifest).build().sessions
         if item.provider == "app_chat"
-    )
+    ]
+    assert [item.path for item in sessions] == [str(chat_path)]
+    session = sessions[0]
 
     assert session.thread_source == "user"
     assert session.source_kind == "app_chat"
