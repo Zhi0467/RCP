@@ -603,7 +603,10 @@ class ClaudeProfile(ProviderProfile):
         # session directory previously blew past the argv size limit.
         additional_dirs = [*write_dirs]
         if scope is not None:
-            additional_dirs = [*read_dirs, *(Path(item) for item in scope.repository_roots)]
+            additional_dirs = [
+                *read_dirs,
+                *(Path(item) for item in [*scope.repository_roots, *scope.memory_roots]),
+            ]
         for directory in dict.fromkeys(str(item) for item in additional_dirs):
             command.extend(["--add-dir", directory])
         if model:
@@ -817,7 +820,11 @@ def _claude_write_settings(
     if scope is not None:
         # Claude's deny beats its allow, so a protected folder holding this
         # launch's own stage (RCP storage inside a grant) stays undenied.
-        own = [PurePosixPath(scope.stage_root), PurePosixPath(scope.workspace_root)]
+        own = [
+            PurePosixPath(scope.stage_root),
+            PurePosixPath(scope.workspace_root),
+            *(PurePosixPath(path) for path in scope.memory_roots),
+        ]
         protected_write_paths = [
             path
             for path in protected_write_paths

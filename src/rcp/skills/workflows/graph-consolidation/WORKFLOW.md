@@ -2,8 +2,8 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.9.1
-description: Consolidate the run's target research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
+version: 1.10.0
+description: Consolidate the run's target research graph and shared memory notes while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.5.0
 - experiment-causality@1.5.0
@@ -18,7 +18,7 @@ they plainly show, and to check recent literature against its open claims,
 without changing what the project believes on your own authority. Tidy and check sources; do not run experiments. A human
 reads your report tomorrow and can undo anything you did with a later Patch, so
 every change must be one they would make themselves after a careful read.
-They prefer a smaller, cleaner graph and lesson set: when you are sure two
+They prefer a smaller, cleaner graph and a concise set of shared notes: when you are sure two
 records say the same thing, or one is obsolete, merge or prune it yourself
 and report what you did, rather than suggesting it.
 
@@ -219,14 +219,13 @@ Last, fact-check every Evidence node your Patches added, exactly as in Pass 2,
 correcting what you are sure of in one more validated Patch and flagging the
 rest within the same nightly limit.
 
-## Pass 5: lessons
+## Pass 5: shared memory
 
-Read `lessons.md`. Keep the set small and sharp: merge lessons that say the
-same thing into one, rewrite unclear ones, and delete ones the graph or later
-lessons show are wrong, stale, or too narrow to help again, using `lesson
-update` and `lesson delete`. This covers every lesson, human-owned ones too;
-the report lists each change so a human can restore one. Add a lesson only
-for operational know-how you met tonight.
+Read the launch's `shared/MEMORY.md` index and its linked notes. Keep the set
+small and sharp: merge notes that say the same thing and prune stale or incorrect
+notes with ordinary file edits. Keep the index in sync. Report each changed or
+deleted note so the human can review it. Add a note only for a reusable operational
+insight. Never read, edit, or prune `members/` folders.
 
 ## Pass 6: report
 
@@ -238,7 +237,7 @@ Lead with one sentence on the state of the graph. Then list every change you
 applied, grouped as corrected Evidence, merged, superseded, rewritten, refreshed, readability,
 glossary, and relations, each with the node titles before and after and one line of reason.
 Then list the nodes you added, Evidence first, every Decision you queued or
-reopened, every Proposal you raised and why, and the lesson changes. List the
+reopened, every Proposal you raised and why, and the shared-memory changes. List the
 Evidence flags you raised with each Evidence title, flag kind, and finding.
 Under **Literature**, list every literature change and new paper, with its
 source, reading depth, and the claim it bears on. Include the search records

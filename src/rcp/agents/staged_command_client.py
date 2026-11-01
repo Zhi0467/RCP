@@ -38,7 +38,6 @@ _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
         "ask",
-        "lesson",
         "bulletin",
         "name",
         "flag",
@@ -85,38 +84,12 @@ BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
 BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
 BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
 BULLETIN_BODY = ("body_file", "<body-file>")
-LESSON_OPTIONS = {
-    "add": ((KEY_OPTION, True), (("text", "--text", "<text>"), True)),
-    "list": ((("cursor", "--cursor", "<cursor>"), False),),
-    "update": (
-        (KEY_OPTION, True),
-        (("id", "--id", "<lesson-id>"), True),
-        (("text", "--text", "<text>"), True),
-    ),
-    "delete": ((KEY_OPTION, True), (("id", "--id", "<lesson-id>"), True)),
-}
 NAME_VALUE = ("name", "<name>")
 
 
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
-
-
-def lesson_usages(actions):
-    return tuple(
-        " ".join(
-            [
-                "lesson",
-                action,
-                *(
-                    _option_usage(option) if required else f"[{_option_usage(option)}]"
-                    for option, required in LESSON_OPTIONS[action]
-                ),
-            ]
-        )
-        for action in actions
-    )
 
 
 def merge_usage():
@@ -353,13 +326,6 @@ def _parser():
     for dest, option, value in (KEY_OPTION, BULLETIN_REPLY_TO, BULLETIN_CURSOR, BULLETIN_CHANNEL):
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
-
-    lesson = subparsers.add_parser("lesson")
-    lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
-    for action, options in LESSON_OPTIONS.items():
-        command = lesson_actions.add_parser(action)
-        for (dest, flag, value), required in options:
-            command.add_argument(flag, dest=dest, metavar=value, required=required)
 
     ask = subparsers.add_parser("ask")
     ask.add_argument("--key", required=True)
@@ -602,18 +568,6 @@ def _request_arguments(namespace, workspace):
                 ),
             },
         )
-    if verb == "lesson":
-        action = namespace.lesson_action
-        arguments = {"action": action}
-        if action == "list":
-            if namespace.cursor is not None:
-                arguments["cursor"] = _nonblank(namespace.cursor, "cursor")
-            return verb, None, arguments
-        if action in ("add", "update"):
-            arguments["text"] = _nonblank(namespace.text, "lesson text")
-        if action in ("update", "delete"):
-            arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
-        return verb, _nonblank(namespace.key, "idempotency key"), arguments
     if verb == "branch":
         return (
             verb,
@@ -1206,7 +1160,6 @@ def _requested_verb(argv):
     for argument in argv:
         if argument in (
             "ask",
-            "lesson",
             "bulletin",
             "name",
             "flag",

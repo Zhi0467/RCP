@@ -138,7 +138,9 @@ class _CodexAppServerTurn(ProviderTurn):
                     "--config",
                     'default_permissions="rcp_discuss"',
                     "--config",
-                    _codex_discuss_permission_profile(request.cwd, request.hidden_read_scope),
+                    _codex_discuss_permission_profile(
+                        request.cwd, request.hidden_read_scope, write_dirs=request.write_dirs
+                    ),
                 ]
             )
         else:

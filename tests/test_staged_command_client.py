@@ -1039,7 +1039,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("inbox", "--harvest", "--key", "k-inbox-harvest"),
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
-        ("lesson", "add", "--key", "k-lesson", "--text", "Use the environment"),
         ("name", "Theta0 reference probes"),
         (
             "flag",
@@ -1089,7 +1088,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "inbox",
         "inbox",
         "finish",
-        "lesson",
         "name",
         "flag",
     ]

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS, EVIDENCE_FLAG_SOURCE_MAX_CHARS
 from rcp.storage.consolidation import target_ref
-from rcp.storage.lessons import LessonError, _require_member
+from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 from rcp.storage.resource_versions import _bump, _install
@@ -105,10 +105,8 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _member(connection: sqlite3.Connection, project_id: str, user_id: str) -> None:
-    try:
-        _require_member(connection, project_id, user_id)
-    except LessonError as exc:
-        raise EvidenceFlagError("flag_forbidden") from exc
+    if not live_project_member(connection, project_id, user_id):
+        raise EvidenceFlagError("flag_forbidden")
 
 
 def _flag(connection: sqlite3.Connection, project_id: str, flag_id: str) -> sqlite3.Row:

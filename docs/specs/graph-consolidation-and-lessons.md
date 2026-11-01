@@ -1,7 +1,7 @@
-# Graph consolidation and lessons
+# Graph consolidation and memory
 
 This spec owns nightly consolidation, its schedule, Inbox attention, and
-operational lessons. The implementation owners are
+shared operational memory. The implementation owners are
 [the scheduler](../../src/rcp/consolidation.py),
 [run storage](../../src/rcp/storage/consolidation.py), and
 [the official workflow](../../src/rcp/skills/workflows/graph-consolidation/WORKFLOW.md).
@@ -53,7 +53,7 @@ workflow and dependencies resolve through the skill registry independently of
 project defaults and appear in the launch receipt.
 
 The command client offers `validate`, keyed `apply`, `flag`, `bulletin` (a run with
-no episode always holds it), `lesson` when lesson actions resolve, and the graph
+no episode always holds it), and the graph
 history reads when a read scope exists.
 It refuses watcher handoff. Apply persists immutable bytes and their digest under
 the operation and key. It returns the committed revision.
@@ -190,38 +190,44 @@ graph transition.
 Visual states, source links, and phone controls belong to
 [the interface spec](interface-and-visual-design.md#evidence-to-check).
 
-## Operational lessons
+## Memory
 
-Lessons are short operational notes in RCP data, never graph state or authority.
-A member's ordinary Discuss or Work chat (`node_chat` or `project_chat`) may add,
-list, update, or delete every project lesson. This includes question answers and
-watcher follow-ups. Each command checks live project membership.
-Edits and additions are human-owned, with the user id and display name captured.
-Members also manage lessons in Settings.
+Project memory is Markdown on the project's base, outside Git, owned by
+[`memory_files.py`](../../src/rcp/agents/memory_files.py). The local root is
+`<data_dir>/memory/<project_id>/`; the remote root is the base account's
+`~/.rcp/memory/<project_id>/`. Launch creates it on demand using the existing
+remote transport where needed. Shared notes live in `shared/notes/`; the index
+is `shared/MEMORY.md`. Each index line links a note and gives a one-line hook.
+Notes begin with `# Title`. Member folder paths live under `members/<user_id>/`;
+private thread integration owns their admission.
 
-Child Work, Experiment, and Auto-research roots and workers may only add lessons.
-Consolidation may manage all notes, including human-owned ones.
-It reports every change. A note's author is its last editor, but an agent's
-edit keeps a human-owned note human-owned, so it still leads `lessons.md`.
-Seed, Refresh, and branch merge have no lesson commands.
-Discuss gains no graph or Apply authority. Resolved handler actions render usage
-from parser option records.
-**Why:** ordinary chat acts for its member on operational notes.
-Nightly pruning keeps the shared set useful without touching human repository
-instructions.
+Ordinary project Work and Discuss chats read and write `shared/`. Experiment,
+Auto-research roots and workers read and add notes; retaining existing notes is
+a prompt rule. Consolidation reads, edits, merges and prunes shared files,
+reports each change, and never touches member folders. Seed, Refresh, branch
+merge, Paper coach and artifact edit receive no memory access. Memory has no
+graph, replay, merge or paper authority.
 
-Mutation receipts use the operation, subcommand, and key as their identity.
-Mutations commit with their result and replay even after deletion.
-Discuss, Work, Experiment, Auto-research, and consolidation receive a pointer to
-staged `lessons.md`. Its contents are bounded by `LESSONS_RENDER_MAX_BYTES`.
-Human-owned notes come first, with the newest notes first within each group.
-The file also gives the count of omitted notes.
-`limits.py` owns text and count caps. Lessons cannot widen capability, roots,
-target, or budget. They have no replay, merge, or paper meaning.
+Launch prompts point to the live index and label it as notes, never instructions
+or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
+note storage. Launch stats the index; an oversized index prompts the agent to
+read its start and prune it; add-only runs request consolidation pruning. There
+is no staged lesson snapshot or lesson command.
+
+On the first launch build per project, the backend migrates all legacy
+`operational_lessons` rows into `shared/notes/lesson-<lesson_id>.md`, with
+`origin: lesson <lesson_id>` on the second line. Create-if-absent preserves files
+after an interrupted migration. The index orders human-owned notes first and
+newest first within each group. Only after writes complete does the backend
+record `memory_migrations`; an unreachable base defers completion. Legacy lesson
+and command receipt tables remain read-only migration sources. Settings and
+WebMCP no longer expose lessons; agents maintain memory through file edits.
 
 ## Transfer, backup, and restore
 
-Lessons, flags, schedules, per-target coverage, runs, and receipts stay with the
-space, outside project transfer. SQLite backup captures them. Restore retains
-lessons, coverage, and closed rows. It fails unresolved runs on every target.
-It disables schedules until a member enables them again.
+Memory folders are outside SQLite backup and project transfer. A transfer to the
+same base and account finds the existing folder by project id. Note authorship
+is not tracked after migration. Legacy lesson rows, flags, schedules, per-target
+coverage, runs and receipts remain space-local; SQLite backup captures them.
+Restore retains legacy lessons, coverage and closed rows, fails unresolved runs
+on every target, and disables schedules until a member enables them again.

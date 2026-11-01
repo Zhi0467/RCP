@@ -372,7 +372,9 @@ class CodexProfile(ProviderProfile):
                         "--config",
                         'default_permissions="rcp_discuss"',
                         "--config",
-                        _codex_discuss_permission_profile(cwd, hidden_read_scope),
+                        _codex_discuss_permission_profile(
+                            cwd, hidden_read_scope, write_dirs=write_dirs
+                        ),
                     ]
                 )
             if capability != "discuss" and hidden_read_scope is not None:
@@ -571,13 +573,15 @@ def _codex_paper_permission_profile(
 
 
 def _codex_discuss_permission_profile(
-    cwd: Path, hidden_read_scope: HiddenReadScope | None = None
+    cwd: Path,
+    hidden_read_scope: HiddenReadScope | None = None,
+    *,
+    write_dirs: list[Path] | None = None,
 ) -> str:
     denials = _codex_read_denials(hidden_read_scope)
+    roots = ",".join(f"{json.dumps(str(path))}=true" for path in [cwd, *(write_dirs or [])])
     return (
-        "permissions={rcp_discuss={workspace_roots={"
-        + json.dumps(str(cwd))
-        + '=true},filesystem={":root"="read",'
+        "permissions={rcp_discuss={workspace_roots={" + roots + '},filesystem={":root"="read",'
         '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
         + ("," + denials if denials else "")
         + "},network={enabled=true}}}"

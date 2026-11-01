@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v16"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v17"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
