@@ -11,7 +11,7 @@ import {
   type SetStateAction,
 } from "react";
 import { File, FolderOpen, LoaderCircle, Plus, Upload, X } from "lucide-react";
-import { api, removeChatAttachment, uploadChatAttachment } from "../core/api";
+import { api, removeComposerAttachment, uploadComposerAttachment } from "../core/api";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import {
   MAX_CHAT_ATTACHMENTS,
@@ -29,7 +29,8 @@ import type {
   ChatAttachmentDescriptor,
   ProjectArtifact,
   ProjectReferenceSelector,
-  ProjectSnapshot,
+  GraphNode,
+  GraphTargetRef,
 } from "../core/types";
 import { readPref, writePref } from "../core/prefStorage";
 import { useLayerDismiss } from "../core/useLayerDismiss";
@@ -38,6 +39,13 @@ import { ProjectReferencePicker } from "./ProjectReferencePicker";
 /** A composer's files and project references for its next turn: chat and the Paper coach
  * share this whole flow, uploads included. Files upload into the scope's attachment set:
  * the chat's own id, or a draft scope this hook owns and renews after each admitted turn. */
+
+/** The project context used by reference chips; threads need only the id. */
+export interface ComposerProject {
+  id: string;
+  graph_target?: GraphTargetRef;
+  graph?: { nodes: Record<string, GraphNode> } | null;
+}
 
 /** The attachment fields a turn request carries; the server claims them from the scope. */
 export interface ComposerTurnFields {
@@ -163,7 +171,7 @@ function draftReferencesAt(key: string | null): DraftReference[] {
 }
 
 /** Unsent references, kept for this viewer under `key`, with artifact names looked up. */
-function useDraftReferences(key: string | null, apiBase: string) {
+function useDraftReferences(key: string | null, apiBase: string | null) {
   const [references, setReferences] = useState<DraftReference[]>(() => draftReferencesAt(key));
   const identity = useRef(key);
   useEffect(() => {
@@ -176,7 +184,7 @@ function useDraftReferences(key: string | null, apiBase: string) {
   }, [key, references]);
   const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
   useEffect(() => {
-    if (!unlabeledArtifacts) return;
+    if (!unlabeledArtifacts || !apiBase) return;
     const controller = new AbortController();
     api<ProjectArtifact[]>(`${apiBase}/artifacts`, { signal: controller.signal })
       .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
@@ -239,31 +247,30 @@ function replaceAttachment(
 async function uploadPrepared(
   prepared: ComposerAttachment[],
   context: {
-    apiBase: string;
-    scope: string;
+    attachmentsUrl: string;
     clientId: string;
     setIdRef: { current: string | null };
     cancelledIds: Set<string>;
     setAttachmentSetId: (id: string) => void;
     setAttachments: Dispatch<SetStateAction<ComposerAttachment[]>>;
+    isCurrent: () => boolean;
   },
 ) {
-  const { apiBase, scope, clientId, setIdRef, cancelledIds, setAttachments } = context;
+  const { attachmentsUrl, clientId, setIdRef, cancelledIds, setAttachments } = context;
   for (const [index, item] of prepared.entries()) {
+    if (!context.isCurrent()) break;
     try {
-      const result = await uploadChatAttachment(
-        apiBase,
-        scope,
+      const result = await uploadComposerAttachment(
+        attachmentsUrl,
         item.file,
         clientId,
         setIdRef.current,
       );
       setIdRef.current = result.attachment_set_id;
       context.setAttachmentSetId(result.attachment_set_id);
-      if (cancelledIds.delete(item.localId)) {
-        await removeChatAttachment(
-          apiBase,
-          scope,
+      if (!context.isCurrent() || cancelledIds.delete(item.localId)) {
+        await removeComposerAttachment(
+          attachmentsUrl,
           result.attachment_set_id,
           result.attachment.attachment_id,
           clientId,
@@ -305,7 +312,7 @@ async function uploadPrepared(
 }
 
 /** A node on the viewed graph shows its title; anything else its fallback label. */
-function referenceLabel(project: ProjectSnapshot, selector: ProjectReferenceSelector): string {
+function referenceLabel(project: ComposerProject, selector: ProjectReferenceSelector): string {
   const target = project.graph_target ?? MAIN_GRAPH;
   const viewedBranch = target.kind === "branch" ? target.branch_id : null;
   if (selector.kind !== "node" || (selector.branch_id ?? null) !== viewedBranch) {
@@ -337,15 +344,18 @@ function composerTurnFields(
 
 export function useComposerAttachments({
   project,
+  attachmentsUrl,
   scopeId,
   referencesKey,
   input,
   message,
   filesDisabled = false,
-  referencesDisabled = false,
+  referencesDisabled: disableReferences = false,
   onError,
 }: {
-  project: ProjectSnapshot;
+  project?: ComposerProject | null;
+  /** The owner-resolved collection; required when the composer has no project. */
+  attachmentsUrl?: string;
   /** The chat whose attachment set the files join; omitted, each draft has its own. */
   scopeId?: string;
   /** Where unsent references persist for this viewer, or null to keep them in memory. */
@@ -359,21 +369,65 @@ export function useComposerAttachments({
   referencesDisabled?: boolean;
   onError: (message: string | null) => void;
 }) {
-  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const apiBase = project ? `/api/projects/${encodeURIComponent(project.id)}` : null;
+  const referencesDisabled = disableReferences || !project;
   const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
   const scope = scopeId ?? draftScope;
+  const uploadUrl =
+    attachmentsUrl ??
+    (apiBase ? `${apiBase}/chats/${encodeURIComponent(scope)}/attachments` : null);
   const [references, setReferences] = useDraftReferences(referencesKey, apiBase);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
+  // Upload callbacks retain their owner across awaits. A different conversation starts
+  // empty immediately, and a late upload removes its file from the old collection.
+  const owner = useMemo(
+    () => ({
+      scope,
+      attachmentsUrl: uploadUrl,
+      active: true,
+      setIdRef: { current: null as string | null },
+      cancelledIds: new Set<string>(),
+      busy: false,
+    }),
+    [uploadUrl, scope],
+  );
+  const currentScope = useRef({ owner, referencesKey });
+  currentScope.current = { owner, referencesKey };
+  const [attachmentState, setAttachmentState] = useState({
+    owner,
+    items: [] as ComposerAttachment[],
+    setId: null as string | null,
+  });
+  const attachments = attachmentState.owner === owner ? attachmentState.items : [];
+  const attachmentSetId = attachmentState.owner === owner ? attachmentState.setId : null;
+  const setAttachments: Dispatch<SetStateAction<ComposerAttachment[]>> = (update) => {
+    if (!owner.active) return;
+    setAttachmentState((current) => {
+      if (!owner.active) return current;
+      const items = current.owner === owner ? current.items : [];
+      return {
+        owner,
+        items: typeof update === "function" ? update(items) : update,
+        setId: current.owner === owner ? current.setId : null,
+      };
+    });
+  };
+  const setAttachmentSetId = (setId: string | null) => {
+    if (!owner.active) return;
+    setAttachmentState((current) =>
+      owner.active
+        ? { owner, items: current.owner === owner ? current.items : [], setId }
+        : current,
+    );
+  };
+  useEffect(() => {
+    owner.active = true;
+    return () => {
+      owner.active = false;
+    };
+  }, [owner]);
   const [dragging, setDragging] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const attachmentSetIdRef = useRef<string | null>(null);
-  const uploadBusyRef = useRef(false);
-  const cancelledIdsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    attachmentSetIdRef.current = attachmentSetId;
-  }, [attachmentSetId]);
   const clientId = useMemo(() => chatAttachmentClientId(), []);
   // Another chat, or the next draft, starts with its Add menu closed.
   useEffect(() => {
@@ -388,11 +442,15 @@ export function useComposerAttachments({
   const addFiles = async (incoming: File[]) => {
     setDragging(false);
     if (filesDisabled) return;
-    if (uploadBusyRef.current) {
+    if (!uploadUrl) {
+      onError("Attachments are unavailable for this conversation.");
+      return;
+    }
+    if (owner.busy) {
       onError("Wait for the current files to finish preparing before adding more.");
       return;
     }
-    uploadBusyRef.current = true;
+    owner.busy = true;
     onError(null);
     const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
     if (incoming.length > available) onError(TOO_MANY);
@@ -408,30 +466,31 @@ export function useComposerAttachments({
     }
     if (prepared.length > 0) {
       await uploadPrepared(prepared, {
-        apiBase,
-        scope,
+        attachmentsUrl: uploadUrl,
         clientId,
-        setIdRef: attachmentSetIdRef,
-        cancelledIds: cancelledIdsRef.current,
+        setIdRef: owner.setIdRef,
+        cancelledIds: owner.cancelledIds,
         setAttachmentSetId,
         setAttachments,
+        isCurrent: () => owner.active,
       });
     }
-    uploadBusyRef.current = false;
+    owner.busy = false;
   };
 
   const removeAttachment = (item: ComposerAttachment) => {
-    if (item.status === "preparing") cancelledIdsRef.current.add(item.localId);
+    if (item.status === "preparing") owner.cancelledIds.add(item.localId);
     setAttachments((current) => current.filter((candidate) => candidate.localId !== item.localId));
-    const setId = attachmentSetIdRef.current;
-    if (setId && item.descriptor) {
-      void removeChatAttachment(
-        apiBase,
-        scope,
+    const setId = owner.setIdRef.current;
+    if (setId && item.descriptor && uploadUrl) {
+      void removeComposerAttachment(
+        uploadUrl,
         setId,
         item.descriptor.attachment_id,
         clientId,
-      ).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+      ).catch((error) => {
+        if (owner.active) onError(error instanceof Error ? error.message : String(error));
+      });
     }
   };
 
@@ -449,7 +508,7 @@ export function useComposerAttachments({
     fileCount = attachments.length,
     insertPlainText = false,
   ): boolean => {
-    if (!text || referencesDisabled) return false;
+    if (!text || referencesDisabled || !project) return false;
     const result = extractReferences(text, project.id, references, fileCount, (selector) =>
       referenceLabel(project, selector),
     );
@@ -514,15 +573,33 @@ export function useComposerAttachments({
     composerTurnFields(references, ready.length ? attachmentSetId : null, clientId, scope);
 
   /** After an admitted turn: the turn owns its files and references now. */
-  const clear = useCallback(() => {
+  const clear = () => {
+    const sent = new Set(references.map((item) => referenceKey(item.selector)));
+    const remainingReferences = (items: DraftReference[]) =>
+      items.filter((item) => !sent.has(referenceKey(item.selector)));
+    if (!owner.active) {
+      // Admission may arrive after this conversation closed; consume only its
+      // captured references, leaving any new owner's draft alone.
+      if (referencesKey) {
+        const remaining = remainingReferences(draftReferencesAt(referencesKey));
+        writePref(referencesKey, remaining.length ? JSON.stringify(remaining) : null);
+      }
+      // A -> B -> A can remount this scope before the original admission returns.
+      setReferences((current) =>
+        currentScope.current.owner.active && currentScope.current.referencesKey === referencesKey
+          ? remainingReferences(current)
+          : current,
+      );
+      return;
+    }
     setAttachments([]);
-    setReferences([]);
+    setReferences(remainingReferences);
     setPickerOpen(false);
     setAttachmentSetId(null);
-    attachmentSetIdRef.current = null;
+    owner.setIdRef.current = null;
     setAddMenuOpen(false);
     setDraftScope(crypto.randomUUID());
-  }, [setReferences]);
+  };
 
   return {
     /** The files ready to travel with the next turn. */
@@ -569,7 +646,7 @@ export function ComposerAttachmentChips({ composer }: { composer: ComposerAttach
   const { references, attachments, project } = composer.ui;
   return (
     <>
-      {references.length > 0 && (
+      {project && references.length > 0 && (
         <div className="chat-attachment-chips" aria-label="References for this turn">
           {references.map((item) => (
             <ReferenceChip
@@ -671,21 +748,23 @@ export function ComposerAddPicker({
             <Upload size={14} />
             Upload file
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={disabled || composer.ui.referencesDisabled}
-            onClick={() => {
-              setAddMenuOpen(false);
-              setPickerOpen(true);
-            }}
-          >
-            <FolderOpen size={14} />
-            From RCP…
-          </button>
+          {project && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={disabled || composer.ui.referencesDisabled}
+              onClick={() => {
+                setAddMenuOpen(false);
+                setPickerOpen(true);
+              }}
+            >
+              <FolderOpen size={14} />
+              From RCP…
+            </button>
+          )}
         </div>
       )}
-      {pickerOpen && (
+      {project && pickerOpen && (
         <ProjectReferencePicker
           projectId={project.id}
           target={project.graph_target ?? MAIN_GRAPH}

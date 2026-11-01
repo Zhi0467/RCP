@@ -555,11 +555,26 @@ export function uploadChatAttachment(
   clientId: string,
   attachmentSetId?: string | null,
 ): Promise<ChatAttachmentUpload> {
+  return uploadComposerAttachment(
+    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    file,
+    clientId,
+    attachmentSetId,
+  );
+}
+
+/** Upload to the owner's attachment collection with the shared multipart contract. */
+export function uploadComposerAttachment(
+  attachmentsUrl: string,
+  file: File,
+  clientId: string,
+  attachmentSetId?: string | null,
+): Promise<ChatAttachmentUpload> {
   const body = new FormData();
   body.append("file", file, file.name);
   body.append("client_id", clientId);
   if (attachmentSetId) body.append("attachment_set_id", attachmentSetId);
-  return api<ChatAttachmentUpload>(`${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`, {
+  return api<ChatAttachmentUpload>(attachmentsUrl, {
     method: "POST",
     body,
   });
@@ -572,12 +587,26 @@ export function removeChatAttachment(
   attachmentId: string,
   clientId: string,
 ): Promise<{ removed: boolean }> {
+  return removeComposerAttachment(
+    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    attachmentSetId,
+    attachmentId,
+    clientId,
+  );
+}
+
+export function removeComposerAttachment(
+  attachmentsUrl: string,
+  attachmentSetId: string,
+  attachmentId: string,
+  clientId: string,
+): Promise<{ removed: boolean }> {
   const query = new URLSearchParams({
     attachment_set_id: attachmentSetId,
     client_id: clientId,
   });
   return api<{ removed: boolean }>(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
+    `${attachmentsUrl}/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
   );
 }

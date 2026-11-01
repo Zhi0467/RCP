@@ -20,10 +20,12 @@ import {
   registerMutationFailureHandler,
   registerTransportFailureHandler,
   removeChatAttachment,
+  removeComposerAttachment,
   steerChatTurn,
   TEAM_SHELL_PROTOCOL_HEADER,
   TEAM_SHELL_PROTOCOL_VERSION,
   uploadChatAttachment,
+  uploadComposerAttachment,
 } from "../src/core/api.ts";
 
 const teamShellProtocolOne = JSON.parse(
@@ -459,6 +461,45 @@ test("removing an unsent attachment preserves the claimed set scope", async () =
     assert.match(request.path, /attachment-a\?/);
     assert.match(request.path, /attachment_set_id=set-a/);
     assert.match(request.path, /client_id=client-a/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Space attachment ingress and removal use the owner collection with the shared contract", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const attachment = { attachment_id: "file/a", name: "notes.md" };
+  globalThis.fetch = async (path, init) => {
+    requests.push({ path, init });
+    return new Response(
+      JSON.stringify(
+        init.method === "POST" ? { attachment_set_id: "set-a", attachment } : { removed: true },
+      ),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  };
+  try {
+    const collection = "/api/agent-threads/space%2Fthread/attachments";
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    const uploaded = await uploadComposerAttachment(collection, file, "client-a");
+    assert.deepEqual(uploaded.attachment, attachment);
+    assert.equal(requests[0].path, collection);
+    assert.equal(requests[0].init.body.get("client_id"), "client-a");
+    assert.equal(requests[0].init.body.get("attachment_set_id"), null);
+    assert.equal(await requests[0].init.body.get("file").text(), "hello");
+    assert.equal(new Headers(requests[0].init.headers).get("Content-Type"), null);
+    await removeComposerAttachment(
+      collection,
+      uploaded.attachment_set_id,
+      attachment.attachment_id,
+      "client-a",
+    );
+    const deleted = new URL(requests[1].path, "http://localhost");
+    assert.equal(requests[1].init.method, "DELETE");
+    assert.equal(deleted.pathname, `${collection}/file%2Fa`);
+    assert.equal(deleted.searchParams.get("attachment_set_id"), "set-a");
+    assert.equal(deleted.searchParams.get("client_id"), "client-a");
   } finally {
     globalThis.fetch = originalFetch;
   }
