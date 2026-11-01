@@ -34,10 +34,19 @@ test("one artifact watermark refreshes inventory, run inventory, and shared view
   store.register("viewer", { ...profiles[2], fetch: async () => ++reads[2] });
   await settle();
   assert.deepEqual(reads, [1, 1, 1, 1, 1]);
-  assert.deepEqual(store.requests("p"), [{ name: "artifacts" }]);
-  store.observe("p", [{ name: "artifacts", version: "moved" }]);
+  assert.deepEqual(store.requests("p"), [{ name: "artifacts" }, { name: "chats" }]);
+  store.observe("p", [
+    { name: "artifacts", version: "moved" },
+    { name: "chats", version: "1" },
+  ]);
   await settle();
   assert.deepEqual(reads, [2, 2, 2, 2, 2]);
+  store.observe("p", [
+    { name: "artifacts", version: "moved" },
+    { name: "chats", version: "2" },
+  ]);
+  await settle();
+  assert.deepEqual(reads, [2, 3, 2, 2, 2]);
   store.write(ids[2], "undo");
   assert.equal(store.view(resourceKeyId(artifactStateProfile("p", "a").key)).value, "undo");
   store.release("viewer");

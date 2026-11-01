@@ -548,3 +548,59 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
         with store.connection() as connection:
             insert(connection, table)
         assert versions() == before
+
+
+@pytest.mark.parametrize("change", ["rename", "delete", "task_status"])
+def test_space_chat_changes_only_invalidate_reads_with_space_names(endpoint, change):
+    store = endpoint.store
+    thread = store.ensure_agent_threads(endpoint.other_member, [], default_names=("Pip",))[0]
+    keys = [
+        {"name": "chats"},
+        {"name": "graph", "ref": "main"},
+        {"name": "refs"},
+        {"name": "episodes"},
+        {"name": "artifacts"},
+        {"name": "bulletin"},
+        {"name": "digest"},
+        {"name": "tasks.status"},
+        {"name": "task", "entity": "turn"},
+    ]
+
+    def versions():
+        return {
+            row["name"]: row["version"] for row in beat(endpoint, keys)["projects"][0]["resources"]
+        }
+
+    if change == "task_status":
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO graph_runs(operation_id, project_id, kind, status, request_json, "
+                "created_at, updated_at, status_message) VALUES('space-turn', ?, 'space_chat', 'running', ?, ?, ?, '')",
+                (
+                    store.space_id,
+                    json.dumps({"chat_id": thread.thread_id}),
+                    store.now(),
+                    store.now(),
+                ),
+            )
+    before = versions()
+    if change == "rename":
+        store.set_chat_title(store.space_id, thread.thread_id, endpoint.other_member, "Renamed")
+    elif change == "delete":
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM chat_display WHERE project_id=? AND chat_id=?",
+                (store.space_id, thread.thread_id),
+            )
+    else:
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='succeeded' WHERE operation_id='space-turn'",
+            )
+    after = versions()
+    assert {name for name in before if before[name] != after[name]} == {
+        "bulletin",
+        "digest",
+        "tasks.status",
+        "task",
+    }

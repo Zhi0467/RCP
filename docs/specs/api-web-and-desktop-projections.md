@@ -24,6 +24,9 @@ whether sync health reports an error, because the graph payload carries
 canonical reachability. While a task runs, `tasks.progress` and task details
 take a clock tick, because elapsed time and progress are computed from the clock.
 Entity counters are project-scoped; chat read/pin counters are member-scoped.
+Only Bulletin, digest, task inventory and task detail tokens include the Space's
+`chats` counter: these reads render Space-thread names. Project `chats` tokens
+remain project-scoped.
 
 A request with `agent_threads: true` also gets `agent_threads: {version}`, the
 caller's own counter, read without any project id; otherwise the field is null.
@@ -32,6 +35,11 @@ reads, names, browser choice, thread questions, approval cards, schedules,
 project membership and handoff creation, delivery and settlement. A turn's file-backed transcript
 append publishes through its task row; a voice append bumps the owner's counter
 directly. A changed version reloads the thread list and the open thread.
+Task, episode timeline, run-artifact, Bulletin and digest profiles also watch
+project `chats`; the client combines that token with the resource's own version.
+Graph snapshots, history, refs and episode inventories do not watch `chats`, so
+chat activity does not refetch those heavier reads. These dependencies use existing
+counters without changing graph history or adding storage triggers.
 
 `tasks.status` and chat, episode, and terminal inventories exclude progress;
 `tasks.progress` and entity details include it. Terminal input renews idle expiry
@@ -271,6 +279,8 @@ Runs entry, Inbox item, or consolidation report. Attribution precedence is merge
 consolidation, identified human, ingestion, captured Work, other agent, system,
 then unattributed human. Stable source keys do not depend on display titles or
 optional task enrichment.
+Conversation-source group labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
+Episode merge groups retain branch labels.
 
 SQLite owns the append-only commit-ordered events and marks. Operational events
 commit with their source writes. A background projector follows accepted history,
@@ -2103,8 +2113,9 @@ have no viewer URL. Download and retention information are independent offers.
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
 child Experiment episodes. It includes unexpired or kept artifacts and undeleted
-reports, with the queried episode's report first, then creation order. Worker
-labels use the child Work route's instruction heading, or Worker. Both routes enforce project
+reports, with the queried episode's report first, then creation order. Worker and
+orchestrator labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
+Missing worker names use the instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
 
 ## Bulletin channels
@@ -2114,7 +2125,11 @@ Each graph target has one Bulletin channel. Member-authenticated reads use
 project-wide roster of every non-archived Agents-board conversation and live project
 members. Each roster row carries `id`, `chat_id`, `target_key`, `name`, `kind`,
 `seat_node_id`, `started_at`, `state`, and `last_post_at`. The stored conversation
-name matches its Agents card; `started_at` is its first turn time. Agent snapshots
+name matches its Agents card; private project-thread names remain visible to
+project members in this roster. Post author names follow the
+[canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names)
+on the server, including authors absent from the current roster.
+`started_at` is its first turn time. Agent snapshots
 and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
