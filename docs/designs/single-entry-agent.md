@@ -62,7 +62,8 @@ id. Only task and chat bookkeeping rows carry the space id; see Data model.
 | Runs on | The project's base | The backend's machine |
 | Graph target | Main | Main of each admitted project |
 | Writes | Repository roots, Patch stage, memory | Same, per same-machine project |
-| Lifecycle (Experiments, `launch`, watchers, cards) | Yes | No; hands off |
+| Lifecycle (Experiments, `launch`, watchers, cards) and Bulletin | Yes | No; hands off |
+| Stage | `<data_dir>/agent-threads/<user_id>/stages/` on a local base; `~/.rcp/agent-threads/<user_id>/stages/` on a remote base | `<data_dir>/agent-threads/<user_id>/stages/` |
 | `ask` | Plain and with an action | With an action only; becomes a handoff |
 | Push | `agent_thread` and Needs you | None in v1 |
 
@@ -88,11 +89,22 @@ UUID4 that never names a project) in these project-keyed columns:
 - `chat_display`, `chat_reads`, `chat_pins`
 - `chat_browser_preferences`, `browser_owners`
 - `chat_session_contexts`
-- `artifacts`, `artifact_operations` (turn artifacts)
-- `client_requests` (voice idempotency keys)
+- `artifacts` (turn artifacts; `artifact_operations` has no project column)
+- `client_requests` (Send and voice idempotency keys)
 
-The resource-version triggers on these tables bump under the space id. The
-Agent rail polls that scope.
+`POST /api/projects/{project_id}/tasks/{kind}` refuses `space_chat` with 422.
+The hard-coded chat kind lists stay without `space_chat`: name backfill
+(`storage/chat_names.py`), fork lookup (`storage/chat_forks.py`), task-list
+deadlines (`storage/resource_deadlines.py`) and the episode session-master
+lookup (`storage/episodes.py`). A Space thread is seeded with its name, cannot
+branch, has its own list and starts no episodes.
+
+**Rail polling.** `/api/resource-watermarks` authorizes only project ids. It
+gains a member branch; see API contract. Triggers on `agent_threads`,
+`agent_schedules`, `chat_reads`, `chat_display`, `questions` and `graph_runs`
+bump `resource_versions(scope='', resource='agent_threads', entity='member:<owner>')`
+for rows that belong to a thread. They join `agent_threads` on the row's chat
+id. This follows the existing `member:<user_id>` entity pattern.
 
 `questions`, `watchers`, `episodes` and every `notification_*` table never get
 a space-id row. A Space thread has no plain `ask`, no watch files and no
@@ -157,6 +169,7 @@ Unique indexes: `(user_id) WHERE kind='space'` and
 | `action_json` | TEXT NOT NULL | The validated action. |
 | `pinned_json`, `pinned_sha256` | TEXT NOT NULL | Live facts at creation, and the hash over action and pins. |
 | `expires_at` | TEXT NOT NULL | |
+| `request_id` | TEXT NOT NULL | A UUID4 made at creation; the route's idempotency id. |
 | `running_since` | TEXT | The single-use claim. |
 | `result_json` | TEXT | The human route's result or refusal. |
 
@@ -189,11 +202,14 @@ primary key `(operation_id, project_id)`.
   name is `private-<user_id>-<chat_id>.jsonl`. `_validate_stored_chat_record`
   compares the path using the record's `privateOwner`. The prefix serves only
   the hidden-read glob; `agent_threads` decides privacy.
+- `sources/indexer.py` indexes every `.research/chat/*.jsonl` as an `app_chat`
+  source. It skips `private-*.jsonl`.
 - The Space transcript is `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl`.
-  Its records use the same model with `chatScope: "space"`, no `nodeId` and no
-  `graphTarget`. A separate Space reader accepts only that scope. The project
-  reader keeps refusing it, because `_canonical_chat_path` knows only `node`
-  and `project`.
+  It uses a separate record model, `_StoredSpaceChatRecord`, with
+  `chatScope: Literal["space"]`, no `nodeId` and no `graphTarget`, and its own
+  reader and path check. `_StoredChatRecord.chat_scope` stays
+  `Literal["node", "project"]`, so the project reader rejects a Space line, and
+  the Space reader rejects any other scope.
 - No new trigger. A handoff turn is trigger `human` with `source: "handoff"`,
   so steering and admission accept it unchanged. Schedule fires reuse
   `schedule`; the server binding, not the trigger, still marks consolidation.
@@ -203,15 +219,31 @@ primary key `(operation_id, project_id)`.
 ### Project thread
 
 - Ordinary Work on the project's base and main target: files, the Patch stage,
-  and the memory folder. Its stage is the chat's existing persistent stage.
+  and the memory folder.
 - Verbs: the Work verbs from `src/rcp/runs/questions.py` (`validate`, `launch`,
   `episode`, `bulletin`, `ask`, `graph_log`, `graph_diff`), plus `projects` and
-  `schedule`. Not `name`.
+  `schedule`. Not `name`. Thread tasks carry contract `work_auto` and no
+  episode, so `bulletin_enabled_for_task` is true and `bulletin` is granted.
+
+### Thread stages
+
+Every thread's persistent stage lives under its owner's folder: locally
+`<data_dir>/agent-threads/<user_id>/stages/<name>`, remotely
+`~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>`.
+
+**Why:** hidden-read never hides `<data_dir>/run-stage` or `~/.rcp/stages`
+(the `protected` list in `resolve_hidden_read_scope`). Under the owner's folder,
+other members' runs can hide the stage.
+
+- `remote_stage_name` (`transport/run_stage.py`) accepts this parent as well as
+  `.rcp/stages`.
+- The local recovery inventory and stale-stage sweep (`runs/shared.py`) accept
+  it as well as `run-stage`.
+- The owner's run protects its own stage as it does today.
 
 ### Space thread
 
-- Runs in a persistent local stage `<data_dir>/run-stage/<stage>` on the
-  backend's machine.
+- Runs on the backend's machine.
 - **Composite scope.** At admission RCP lists the member's projects whose base
   is the backend's machine and whose write admission is open. Each gets its own
   `ProjectWriteScope` with stage `projects/<project_id>/`. Each keeps the
@@ -225,7 +257,7 @@ primary key `(operation_id, project_id)`.
   turn's, RCP keeps the session and records the change on the turn. This is not
   a 10g change: the thread is the binding, not the set.
 - **Hidden-read cap.** If the union of entries exceeds
-  `HIDDEN_READ_PATH_MAX_COUNT`, the turn refuses with the existing
+  `HIDDEN_READ_PATH_MAX_COUNT` (256), the turn refuses with the existing
   `too_many_hidden_folders` reason.
 - Other projects are read through `projects` and changed through `handoff`.
 
@@ -236,7 +268,7 @@ Stage layout:
 | `outcome.json` | One turn outcome, under the ordinary Work contract. |
 | `turns/<turn-id>/artifacts/` | As in chats. |
 | `rcp` | Top-level client: `projects`, `schedule`, `handoff`, `ask` (action only). |
-| `projects/<id>/rcp` | Per-project client on its own mailbox: `validate`, `graph_log`, `graph_diff`, `bulletin`. |
+| `projects/<id>/rcp` | Per-project client on its own mailbox: `validate`, `graph_log`, `graph_diff`. No `bulletin`: its store looks tasks up by project and operation; the Space thread posts through a handoff instead. |
 | `projects/<id>/patch.json` | That project's Patch. |
 
 - `validate` names its target by which client runs it.
@@ -246,9 +278,10 @@ Stage layout:
   `space_chat`.
 - **Apply authority.** Admission writes one `space_turn_project_bindings` row
   per admitted project. `AppStore.agent_task_authority(project_id, operation_id)`
-  (`src/rcp/storage/agent_tasks.py`) selects only `graph_runs` rows with that
-  `project_id`. It gains a branch: for a `space_chat` row it returns the
-  binding for that exact `(operation_id, project_id)`, with main as the target.
+  (`src/rcp/storage/agent_tasks.py`) selects `WHERE project_id = ? AND operation_id = ?`.
+  It changes to look the row up by `operation_id` first. For a `space_chat` row
+  it returns the binding for that exact `(operation_id, project_id)`, with main
+  as the target. Any other kind still requires the row's `project_id` to match.
   A missing binding raises `KeyError`. `WriteAuthority.stamp_attribution`
   (`src/rcp/core/authority.py`) then refuses with "unknown agent task" and
   keeps its existing project and target equality checks.
@@ -288,9 +321,9 @@ Stage layout:
 
 **Changed from the decisions:**
 
-- `apply` and `status` are orchestrator-only
-  (`src/rcp/agents/auto_research_commands.py`). Threads get neither. A Work
-  Patch applies at turn end.
+- `apply` belongs to the orchestrator and to consolidation's keyed Apply.
+  `status` belongs to Auto-research (`src/rcp/agents/auto_research_commands.py`).
+  Threads get neither. A Work Patch applies at turn end.
 - `spawn` and `message` create and message Auto-research workers
   (`src/rcp/agents/command_protocol.py`). They cannot drive board
   conversations. Threads use `handoff` and do not start or message board
@@ -310,8 +343,9 @@ the existing `idempotency_key`.
 `list` returns the Cards projection that `GET /api/projects`
 (`src/rcp/api/index.py`) returns for this member, plus `thread_id` and
 `same_machine` per project. `show` adds pending Proposals, open Decisions and
-Blockers, recent transitions and running episodes. Sizes are bounded in
-`limits.py`.
+Blockers, recent transitions and running episodes, at most
+`PROJECTS_COMMAND_SHOW_MAX_ITEMS` (20) per list. Each result is at most
+`PROJECTS_COMMAND_MAX_BYTES` (64 KiB); `list` then truncates and says so.
 
 `schedule` (both kinds):
 
@@ -321,7 +355,7 @@ Blockers, recent transitions and running episodes. Sizes are bounded in
 | `cron` | str | `add` only; exactly one of `cron`, `at`. |
 | `at` | str | `add` only; `YYYY-MM-DDTHH:MM`. |
 | `timezone` | str | `add` only; IANA name; defaults to the turn's timezone. |
-| `note` | str | `add` only; 1 to `AGENT_SCHEDULE_NOTE_MAX_CHARS`. |
+| `note` | str | `add` only; 1 to `AGENT_SCHEDULE_NOTE_MAX_CHARS` (500). |
 | `schedule_id` | str | `cancel` only. |
 
 `add` is refused unless the turn was admitted by a member message: trigger
@@ -334,7 +368,7 @@ follow-ups are refused. The prompt adds: create one only when the member asked.
 | Field | Type | Rule |
 | --- | --- | --- |
 | `project_id` | str | A project of this member. |
-| `message_file` | str | Safe workspace filename; at most `AGENT_HANDOFF_MAX_CHARS`. |
+| `message_file` | str | Safe workspace filename; at most `AGENT_HANDOFF_MAX_CHARS` (16,000, as `MessageArguments.body`). |
 
 - It writes a pending `agent_handoffs` row and returns `{handoff_id, state}`.
 - **Delivery.** Existing admission refuses a human turn while the target
@@ -380,9 +414,9 @@ handler, with its admission, as the owner.
 | --- | --- | --- | --- |
 | `proposal` | `sync_graph` (`api/sync.py`), body `{base_revision: current, proposals: [{proposal_id, decision, reason}]}` | None; the handler takes `project_write_admission` and `require_graph_edit_admission` inside | Proposal pending and not stale; content digest |
 | `truth_scope` | `set_repository_writable` (`api/project_state.py`) | `project_write_admission` | Alias exists; value differs |
-| `auto_research` | `start_episode` (`api/episode_routes.py`), `mode: "auto_research"` | `project_write_admission` | Readiness and the resolved profile |
-| `merge_branch` | `merge_graph_branch`, `request_id` from the card | `project_write_admission` | Merge-preview source head and main head |
-| `merge_episode` | `merge_episode_branch`, body with the card's options and `request_id` | None; inside | Merge-preview heads |
+| `auto_research` | `start_episode` (`api/episode_routes.py`), `mode: "auto_research"`, `idempotency_key = request_id` (the `Idempotency-Key` header argument) | `project_write_admission` | Readiness and the resolved profile |
+| `merge_branch` | `merge_graph_branch`, `MergeBranchBody(request_id = request_id)` | `project_write_admission` | Merge-preview source head and main head |
+| `merge_episode` | `merge_episode_branch`, `MergeEpisodeBody` with the card's options and `request_id` | None; inside | Merge-preview heads |
 
 - **How the card calls a route.** Admission is inline in each route handler,
   and there is no shared service function. So the card route calls the handler
@@ -392,9 +426,12 @@ handler, with its admission, as the owner.
   The handler then runs `require_patch_capable_identity`, membership, the
   transfer fence and the Experiment lock exactly as for a tap on the human
   control.
-- **Idempotency.** Every action carries `request_id = uuid5(card namespace, question_id)`.
-  `MergeEpisodeBody` gains optional `request_id` for this. `MergeBranchBody`
-  already requires one.
+- **Idempotency.** The routes accept only UUID4 ids, so creation stores a
+  random UUID4 in `approval_cards.request_id`. `MergeBranchBody.request_id` is
+  already a required `UUID4`. `start_episode` takes it as its `Idempotency-Key`.
+  `MergeEpisodeBody` gains optional `request_id: UUID4`. `sync_graph` and
+  `set_repository_writable` take no request id; the pins and the single-use
+  claim stop a repeat.
 - **Creation.** In a project thread, `ask` with an action validates it, reads
   the pins, and writes the `questions` row and the `approval_cards` row in one
   transaction. The question supplies the single **Needs you** push and the ask
@@ -407,7 +444,7 @@ handler, with its admission, as the owner.
   changed.
 - **Expiry.** `APPROVAL_CARD_TTL_HOURS` (72) in `limits.py`. Expiry is checked
   when the card is tapped or listed; there is no sweeper. An expired card's
-  question is dismissed.
+  question is answered `expired`, not dismissed, so the asking thread hears it.
 - **Answer.** Settlement answers the question with `approved`, `declined`,
   `stale`, `failed: <reason>` or `expired`. Existing answer delivery steers the
   running turn or admits one follow-up, so a resolved card wakes its thread.
@@ -430,9 +467,14 @@ handler, with its admission, as the owner.
 - **Tasks.** `GET /api/projects/{id}/tasks`, `GET …/tasks/{operation_id}`, the
   task controls, `chat_inventory`, the chat list and the chat routes return 404
   for private-thread tasks and chats to anyone but the owner.
+- **Artifacts.** The saved-artifact list and the task artifact routes
+  (`api/artifacts.py`, `api/tasks.py`) leave out, or return 404 for, artifacts
+  whose origin operation is a private-thread task, except to the owner.
 - **Transfer.** It keeps each private task's operation id, kind and authorizer,
   so Patch provenance still resolves. It redacts the request message and the
-  answer text. Private transcripts (`private-*.jsonl`) are excluded.
+  answer text. It excludes private transcripts (`private-*.jsonl`) and
+  private-thread artifacts (`capture_project_transfer_files` in
+  `transfer/project_files.py`).
 
 ### Member acts via the agent
 
@@ -463,8 +505,8 @@ outside Git.
 
 | Run | Write roots | Hidden |
 | --- | --- | --- |
-| Project thread, and the Space thread per same-machine project | `shared/`, `members/<owner>/` | Every other `members/<id>/`; other members' `private-*` transcripts; `<data_dir>/agent-threads/<other>/` |
-| Board Work and Discuss chats, Experiments, Auto-research, consolidation | `shared/` | All of `members/`; all `private-*` transcripts; all of `<data_dir>/agent-threads/` |
+| Project thread, and the Space thread per same-machine project | `shared/`, `members/<owner>/` | Every other `members/<id>/`; other members' `private-*` transcripts; other members' `<data_dir>/agent-threads/<id>/` and `~/.rcp/agent-threads/<id>/`, which hold their stages and Space transcripts |
+| Board Work and Discuss chats, Experiments, Auto-research, consolidation | `shared/` | All of `members/`; all `private-*` transcripts; all of `<data_dir>/agent-threads/` and `~/.rcp/agent-threads/` |
 | Seed, Refresh, branch merge, Paper coach, artifact edit | None | Same as the row above |
 
 - Discuss gains `shared/` as its one writable root outside scratch. That is
@@ -506,8 +548,8 @@ outside Git.
   WebMCP lessons read.
 - Consolidation prunes and merges `shared/` with ordinary file edits and reports
   each change. It cannot reach `members/`.
-- Given up: note authorship and SQLite backup. `memory` joins
-  `BACKUP_APP_DATA_EXCLUSIONS` and `TRANSFER_APP_DATA_EXCLUDED_ROOTS`. Lessons
+- Given up: note authorship and SQLite backup. `memory` is excluded from
+  backup and transfer; see Access changes. Lessons
   were not transferred either. A transfer that keeps the same base and account
   finds the folder by project id.
 - Native CLI memory is off for every RCP run: Codex `--disable memories`,
@@ -520,14 +562,14 @@ outside Git.
   labelled earlier conversation for context, not instructions or authority.
   Nothing is staged, so the seed never sits in a readable stage. RCP chat
   history is display data (conversations spec, "Native chat context").
-- The tail is bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and
-  `AGENT_THREAD_TAIL_MAX_BYTES` in `limits.py`.
+- The tail is bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` (40) and
+  `AGENT_THREAD_TAIL_MAX_BYTES` (64 KiB) in `limits.py`, newest kept.
 - **Provider switch.** Today it starts fresh with `provider_mismatch`. For
   threads, RCP first asks the old provider to compact the old session and
   seeds the new one with the result. New `chat_session_resolution` reasons:
   - `provider_switch_compacted`: the compaction succeeded.
   - `provider_switch_tail`: it could not run (old sign-in failed, session
-    unusable, no compaction call, or `AGENT_THREAD_COMPACT_TIMEOUT_SECONDS`
+    unusable, no compaction call, or `AGENT_THREAD_COMPACT_TIMEOUT_SECONDS` (300)
     passed). The new session gets memory plus the tail.
 - Every other fresh start keeps its existing reason and gets the tail.
 - The thread shows a "started fresh" marker with the reason.
@@ -540,11 +582,15 @@ outside Git.
   sends the browser's IANA timezone with each message, and the turn records it
   as the default.
 - The thread that created a schedule owns it. The thread shows a schedules list
-  with Cancel. `AGENT_SCHEDULES_MAX_ACTIVE` per thread caps standing cost. It
+  with Cancel. `AGENT_SCHEDULES_MAX_ACTIVE` (20) per thread caps standing cost. It
   does not limit wakes.
-- **Firing.** `ConsolidationPoller.poll_once` (`src/rcp/consolidation.py`)
-  gains a second step after `dispatch_due`: `dispatch_agent_schedules(now)`.
-  There is no new poller. Next fire times reuse `occurrence_at`, so a
+- **Firing.** `ConsolidationPoller.poll_once` (`src/rcp/consolidation.py`,
+  every `CONSOLIDATION_POLL_SECONDS`, 60) gains two calls. `mark_due_agent_schedules(now)`
+  runs after `reconcile_outcomes()` and before the
+  `seconds_until_automatic_launch() > 0` early return, so due fires are
+  recorded even while a just-woken machine waits. `admit_agent_schedule_wakes()`
+  runs after that return, beside `dispatch_due`, so the wake turn obeys the same
+  delay as consolidation. There is no new poller. Next fire times reuse `occurrence_at`, so a
   nonexistent local time uses the next valid minute and an ambiguous one the
   first instance. `next_occurrence` is generalized from one daily time to the
   cron's matching local times. A due schedule sets `pending_since` and advances
@@ -583,14 +629,15 @@ thread gets no push in v1; its results arrive through project threads.
 - The voice button sits in the thread header. Voice binds to the thread that
   is open when it starts, and the panel names that thread.
 - The backend seeds `session.input` from that thread's tail, within the
-  existing 128-message and token bounds.
+  existing `VOICE_RESUME_MAX_MESSAGES` (128) and token bounds.
 - Voice entries become display-only thread messages with `source: "voice"`.
 - The new tool `rcp_thread_send({text})` hands work to the backend agent as a
   member Work message, under the existing tap confirmation. If a turn is active
   and takes input, the text steers it. Otherwise voice gets `thread_busy` and
   says so.
 - `rcp_thread_memory()` returns the bound project's `shared/MEMORY.md` and the
-  member's own `MEMORY.md`, bounded. Voice writes memory by asking the backend
+  member's own `MEMORY.md`, each cut at `MEMORY_INDEX_MAX_BYTES` (32 KiB).
+  Voice writes memory by asking the backend
   agent.
 - Voice runs on OpenAI under the member's own key, so the member's private
   notes and thread text reach that service. Settings states this once on the
@@ -614,9 +661,16 @@ thread gets no push in v1; its results arrive through project threads.
   (`transfer/archive.py`). `agent_threads`, `space_turn_project_bindings` and
   `memory_migrations` join `TRANSFER_EXCLUDED_PROJECT_TABLES`
   (`transfer/records.py`). `agent-threads` and `memory` join
-  `BACKUP_APP_DATA_EXCLUSIONS` (`server_ops/backup_models.py`) and
-  `TRANSFER_APP_DATA_EXCLUDED_ROOTS`. Private project transcripts stay in
-  `.research/chat`, so backup captures them.
+  `TRANSFER_APP_DATA_EXCLUDED_ROOTS`.
+- **Backup.** `memory` joins `BACKUP_APP_DATA_EXCLUSIONS`
+  (`server_ops/backup_models.py`). Space transcripts are captured.
+  `agent-threads` becomes a typed captured root. Its
+  `<user_id>/<chat_id>.jsonl` files go through the same cut-at-known-operations
+  path as chats: `iter_canonical_chat_backup_prefix` (`service.py`) and
+  `capture_chat_files` (`server_ops/backup_project_io.py`). The owner is the
+  space id, and `<user_id>/stages/` is skipped. Restore writes them back.
+  Private project transcripts stay in `.research/chat`, so backup already
+  captures them.
 
 ## Whole-app font
 
@@ -676,7 +730,7 @@ Same shapes as the chat routes above.
 | Use | Route |
 | --- | --- |
 | Transcript | `GET /api/agent-threads/{thread_id}/transcript` → `ChatTranscript` |
-| Send | `POST /api/agent-threads/{thread_id}/turns` with `{message, provider?, model?, reasoning?, timezone}` → 202 `{operation_id}` |
+| Send | `POST /api/agent-threads/{thread_id}/turns` with `{message, provider?, model?, reasoning?, timezone}` and an optional `Idempotency-Key` UUID4 header → 202 with the task record that `_agent_task_response` (`api/tasks.py`) builds, as project Send returns. A repeated key returns the first record. A busy thread returns 409. |
 | Task status and controls | `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`; `POST …/steer`, `/pause`, `/resume`, `/retry` |
 
 ### Both kinds
@@ -706,6 +760,16 @@ A question's `card` is
 `{decision: "approve" | "decline", pinned_sha256}` returns
 `{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`.
 A second call returns 409 `card_taken`.
+
+### Rail watermark
+
+`POST /api/resource-watermarks`: `WatermarkRequest` gains
+`agent_threads: bool = false`. When it is true, `WatermarkResponse` gains
+`agent_threads: {"version": "string"}`. The version is built like a
+`ResourceVersion.version` from the epoch and
+`resource_versions(scope='', resource='agent_threads', entity='member:<caller>')`.
+Otherwise the field is `null`. When the version changes, the web refetches
+`GET /api/agent-threads` and the open thread. No project id is needed.
 
 ### Voice session
 
@@ -772,13 +836,14 @@ One PR, in this order. Each phase ends green.
 
 | Module | Files |
 | --- | --- |
-| Storage | `src/rcp/storage/base.py` (migrations), `src/rcp/storage/models.py` (`space_chat`), new `src/rcp/storage/agent_threads.py`, `src/rcp/storage/agent_tasks.py` (authority branch, owner filters), `src/rcp/storage/watchers.py`, `src/rcp/storage/questions.py`, `src/rcp/storage/lessons.py` (reader only), `src/rcp/storage/restore_detachment.py`, `src/rcp/storage/notifications.py` |
+| Storage | `src/rcp/storage/base.py` (migrations), `src/rcp/storage/resource_versions.py` (rail triggers), `src/rcp/storage/models.py` (`space_chat`), new `src/rcp/storage/agent_threads.py`, `src/rcp/storage/agent_tasks.py` (authority branch, owner filters), `src/rcp/storage/watchers.py`, `src/rcp/storage/questions.py`, `src/rcp/storage/lessons.py` (reader only), `src/rcp/storage/restore_detachment.py`, `src/rcp/storage/notifications.py` |
 | Contracts | `src/rcp/service.py` (records, path, reader, `RunRequest.timezone`), `src/rcp/limits.py`, `src/rcp/agents/command_protocol.py`, `src/rcp/agents/staged_command_client.py`, `src/rcp/runs/episodes/merge.py` (`request_id`), `web/src/core/types.ts` |
 | Agents | new `src/rcp/agents/memory_files.py`, `src/rcp/agents/write_scope.py`, `src/rcp/agents/hidden_read.py`, `src/rcp/agents/prompts.py`, `src/rcp/agents/context.py`, `src/rcp/agents/continuation_prompt.py`, `src/rcp/agents/auto_research_prompt.py`, `src/rcp/agents/auto_research_commands.py` |
 | Runs | new `src/rcp/runs/agent_threads.py`, new `src/rcp/runs/approval_cards.py`, new `src/rcp/runs/agent_schedules.py`, `src/rcp/runs/questions.py`, `src/rcp/runs/chat.py`, `src/rcp/runs/chat_admission.py`, `src/rcp/runs/agent_names.py`, `src/rcp/runs/consolidation.py`, `src/rcp/runs/auto_research.py`, `src/rcp/runs/tasks/{work,discuss,work_turn_runtime,experiment_loop,auto_research_stream,auto_research_child_work}.py`; delete `src/rcp/runs/lesson_commands.py`, `src/rcp/runs/lessons.py` |
 | Background and notices | `src/rcp/background.py`, `src/rcp/notifications.py`, `src/rcp/consolidation.py`, `src/rcp/skills/workflows/graph-consolidation/WORKFLOW.md` |
-| API | new `src/rcp/api/agent_threads.py` (threads and cards), `src/rcp/api/app.py`, `src/rcp/api/chats.py`, `src/rcp/api/tasks.py`, `src/rcp/api/questions.py`, `src/rcp/api/voice.py`, `src/rcp/voice.py`; delete `src/rcp/api/lessons.py` |
-| Transfer, backup, members | `src/rcp/transfer/archive.py`, `src/rcp/transfer/records.py`, `src/rcp/server_ops/backup_models.py`, `src/rcp/server_ops/members.py` |
+| API | new `src/rcp/api/agent_threads.py` (threads and cards), `src/rcp/api/app.py`, `src/rcp/api/chats.py`, `src/rcp/api/tasks.py` (`space_chat` refusal, owner filters), `src/rcp/api/artifacts.py`, `src/rcp/api/resource_watermarks.py`, `src/rcp/api/questions.py`, `src/rcp/api/voice.py`, `src/rcp/voice.py`; delete `src/rcp/api/lessons.py` |
+| Transfer, backup, members | `src/rcp/transfer/archive.py`, `src/rcp/transfer/records.py`, `src/rcp/transfer/project_files.py`, `src/rcp/server_ops/backup_models.py`, `src/rcp/server_ops/backup_project_io.py`, `src/rcp/server_ops/members.py` |
+| Stages and sources | `src/rcp/transport/run_stage.py`, `src/rcp/runs/shared.py`, `src/rcp/sources/indexer.py` |
 | Web | new Agent view under `web/src/agents/`, `web/src/App.tsx`, `web/src/projects/PhoneProjectChrome.tsx`, `web/src/projects/ProjectSettings.tsx`, delete `web/src/projects/ProjectLessons.tsx`, `web/src/voice/*`, `web/src/webmcp/reads.ts` |
 | Docs | `AGENTS.md` (4, 4b, 10b, 10g), `docs/design.md`, `docs/specs/conversations-episodes-and-watchers.md`, `docs/specs/providers-and-containment.md`, `docs/specs/graph-consolidation-and-lessons.md`, `docs/specs/api-web-and-desktop-projections.md`, `docs/specs/interface-and-visual-design.md`, `docs/specs/authority-and-proposals.md`, `docs/specs/server-and-machine-operations.md` |
 
@@ -795,7 +860,9 @@ Focused local checks follow AGENTS.md Verification. The full suite runs in PR CI
 - **Space thread.** Two same-machine projects: one Apply lands and one is
   rejected; `project_results` and `outcome.json` agree. A missing binding
   refuses Apply. Stray `patch.json` and `watch.json` are discarded. Per-project
-  clients lack `episode`, `launch` and `ask`. Zero same-machine projects. A
+  clients lack `episode`, `launch`, `ask` and `bulletin`. `POST …/tasks/space_chat`
+  is refused. Stages land under `agent-threads/<user_id>/stages/` and survive
+  restart recovery. Zero same-machine projects. A
   changed project set keeps the session. Over the hidden-read cap refuses.
   `task_owner()` covers startup recovery, Stop, Retry, steering and sign-in
   failure on a `space_chat` row.
@@ -806,9 +873,15 @@ Focused local checks follow AGENTS.md Verification. The full suite runs in PR CI
   Each handler's admission refuses during a transfer fence. Only the owner
   resolves. Neither the voice catalog nor WebMCP lists the card route.
   `schedule add` is refused in wakes and question follow-ups.
-- **Privacy.** Another member gets 404 on a private thread, its tasks and its
-  questions, and no push. Hidden-read entries for each run kind. Transfer
-  redacts private task text, keeps provenance and excludes `private-*`.
+- **Privacy.** Another member gets 404 on a private thread, its tasks, its
+  artifacts and its questions, and no push. Hidden-read entries for each run
+  kind, including other members' stages. The source indexer skips `private-*`.
+  Transfer redacts private task text, keeps provenance and excludes private
+  transcripts and artifacts.
+- **Backup.** A Space transcript round-trips through capture and restore, cut
+  at the snapshot's known operations; stages are skipped.
+- **Rail watermark.** A thread turn, read, rename, schedule or question bumps
+  only its owner's `agent_threads` version.
 - **Schedules.** Missed fires during downtime yield one combined wake. DST
   edges. Restore disables schedules and expires pending cards.
 - **Served-app journey** on disposable data, with network, console and server
