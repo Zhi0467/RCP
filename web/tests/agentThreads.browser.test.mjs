@@ -434,6 +434,35 @@ test("inside a project, Agents opens the member's thread with the team list one 
   }
 });
 
+test("a failed thread-list read retries at the same watermark", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await mockApi(page, []);
+    let failed = false;
+    // The watermark never moves; only the first list read fails.
+    await page.route("**/api/agent-threads", (route) => {
+      if (failed) return route.fallback();
+      failed = true;
+      return route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html#/agent`,
+    );
+    await page.getByRole("listbox", { name: "Threads" }).getByRole("option").first().waitFor();
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 test("a send, a read mark and history reads stay with the thread they belong to", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,

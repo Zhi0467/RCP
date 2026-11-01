@@ -21,8 +21,10 @@ export function useAgentThreads(enabled = true) {
     try {
       setThreads((await loadAgentThreads()).threads);
       setError(null);
+      return true;
     } catch (failure) {
       setError(errorMessage(failure));
+      return false;
     }
   }, []);
   useEffect(() => {
@@ -37,9 +39,10 @@ export function useAgentThreads(enabled = true) {
         try {
           const version = await loadAgentThreadsVersion(WATERMARK_REQUEST_TIMEOUT_MS);
           failures = 0;
+          // A version counts as seen only once its list loaded; a failed read retries it.
           if (!stopped && version !== seen) {
+            if (!(await reload())) throw new Error("thread list unavailable");
             seen = version;
-            await reload();
             if (!stopped) setRevision(version);
           }
         } catch {
