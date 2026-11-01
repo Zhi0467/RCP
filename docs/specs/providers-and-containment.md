@@ -1822,11 +1822,12 @@ storage also refuses a Space-task origin.
 Every agent run hides every `private-*.jsonl` transcript under the state chat
 roots on its host. Runs on the backend's machine hide other members'
 `<data_dir>/agent-threads/<user_id>` folders; a thread run keeps access to its
-own member folder, and a non-thread run hides the whole root. RCP hands thread
-history to a fresh session only as prompt text.
+own stages but not its own transcripts, and a non-thread run hides the whole
+root. RCP hands thread history to a fresh session only as prompt text.
 
 `projects` returns the member's Cards projection with thread ids and
-`same_machine`; `show` adds bounded graph and episode context, at most
+`same_machine`, true when both state and base are on the backend's machine, the
+projects a Space turn may write; `show` adds bounded graph and episode context, at most
 `AGENT_PROJECT_DETAILS_MAX_ITEMS` per list. `handoff` names one of the member's
 projects and reads a workspace message file of at most
 `AGENT_HANDOFF_MAX_CHARS`. It persists an idempotent pending delivery that the

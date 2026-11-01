@@ -37,17 +37,18 @@ and separate Experiment episodes must not create separate agent identities.
 
 Each member has one Space thread and one project thread per project membership.
 Both are private to the member and continue indefinitely. Listing
-`/api/agent-threads` creates missing threads atomically. `agent_threads` is the
+`/api/agent-threads`, and the `projects` and `handoff` verbs, create missing
+threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
 board chats remain public. Every thread turn, wake and schedule fire is a
 captured Work turn on main, authorized by the owning member. Threads have no
-Discuss mode. Loss of membership closes that project thread, and rejoining
-reopens it. The browser loads and polls the thread list only while the Space
+Discuss mode. Loss of membership closes that project thread; after rejoining,
+the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view or a project's Agents view is shown.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
-projects. It writes files and Patches only for projects whose base is the
-backend's machine. Experiments, compute `launch`, watch files, questions and
+projects. It writes files and Patches only for projects whose state and base
+are both on the backend's machine (`same_machine`). Experiments, compute `launch`, watch files, questions and
 approval cards belong to the member's own project thread, reached through
 `handoff`. The verbs each client receives enforce this; the
 [Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
@@ -102,12 +103,15 @@ Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
 locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
 Local recovery inventories and local/remote retention sweeps include these exact
 stages, retaining live stages and leaving transcripts alone. The owning thread
-can access its stage; every agent launch hides other members' thread folders.
+can access its stage but not its member folder's transcripts; every agent launch
+hides other members' thread folders.
 Non-thread launches hide all thread folders. Exceeding the hidden-path budget
 refuses launch rather than dropping the privacy policy.
 
 Schedule creation checks the admitted task's member message, trigger, source and
 question-follow-up binding; display transcripts never establish that authority.
+Composer, voice and handoff messages count as member messages; question
+follow-ups and wakes do not.
 
 Each thread keeps one native session, which the provider compacts. A fresh
 thread session receives a bounded transcript tail directly in its first prompt,

@@ -29,8 +29,9 @@ A request with `agent_threads: true` also gets `agent_threads: {version}`, the
 caller's own counter, read without any project id; otherwise the field is null.
 Triggers bump only the owning member on that member's thread rows, thread turns,
 reads, names, browser choice, thread questions, approval cards, schedules and
-delivered handoffs. A file-backed transcript append publishes through its turn's
-task row. A changed version reloads the thread list and the open thread.
+handoff creation, delivery and settlement. A turn's file-backed transcript
+append publishes through its task row; a voice append bumps the owner's counter
+directly. A changed version reloads the thread list and the open thread.
 
 `tasks.status` and chat, episode, and terminal inventories exclude progress;
 `tasks.progress` and entity details include it. Terminal input renews idle expiry
@@ -2177,10 +2178,10 @@ project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_activity_at`, `live_state`,
 `latest_operation_id` and `browser_requested`. The Space thread comes first,
 then project threads by latest activity. `live_state` is idle, queued, running,
-paused, `needs_you` (an open question or card) or closed.
-`latest_operation_id` names the newest visible turn, so a view can follow a
-project turn whose member message reaches the transcript only when it settles. Threads of projects the member left are
-closed and omitted.
+paused or `needs_you` (an open question or card). `latest_operation_id` names
+the newest visible turn, so a view can follow a project turn whose member
+message reaches the transcript only when it settles. Threads of projects the
+member left are closed and omitted; listing reopens every other thread.
 
 Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
 require ownership; another member gets 404. A project thread otherwise uses the
@@ -2189,7 +2190,8 @@ ordinary project chat, task and question routes. Its Send must be
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
 `{message, provider?, model?, reasoning?, timezone?}`. It returns 202 with
-`{operation_id}`, or 409 when admission refuses, such as a busy thread. Admission
+`{operation_id}`, 404 for a project or unowned thread, or 409 when admission
+refuses, such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.
 Its task reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`

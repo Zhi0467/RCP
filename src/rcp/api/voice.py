@@ -141,6 +141,8 @@ def voice_entries(request: Request, thread_id: str, body: VoiceEntries):
         appended = append_space_entries(
             private.store, transcript_path(private.store.path.parent, thread), thread, body.entries
         )
+    if appended:
+        private.store.bump_agent_threads_version(private.member_id)
     return {"appended": appended}
 
 

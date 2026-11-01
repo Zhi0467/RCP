@@ -509,10 +509,19 @@ def test_voice_entries_are_private_idempotent_and_seed_sessions(voice_setup, mon
         for i in range(150)
     ]
     path = f"/api/agent-threads/{THREAD_ID}/voice-entries"
+
+    def rail_version():
+        body = {"client_id": "c", "open": [], "due": [], "agent_threads": True}
+        return client.post("/api/resource-watermarks", json=body).json()["agent_threads"]
+
+    before = rail_version()
     response = client.post(path, json={"entries": entries})
     assert response.status_code == 200, response.text
     assert response.json() == {"appended": 150}
+    moved = rail_version()
+    assert moved != before
     assert client.post(path, json={"entries": entries}).json() == {"appended": 0}
+    assert rail_version() == moved
     transcript = store.path.parent / "agent-threads" / private.member_id / f"{THREAD_ID}.jsonl"
     records = [json.loads(line) for line in transcript.read_text().splitlines()]
     assert len(records) == 150

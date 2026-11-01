@@ -1660,6 +1660,20 @@ class ProjectCatalog:
         repository = manifest.repository_map[manifest.state.repository]
         return manifest.machine_map[repository.machine].host
 
+    def same_machine(self, project_id: str) -> bool:
+        """Whether state and base both live on the backend's machine, without opening."""
+
+        project_id = self._canonical_project_id(project_id)
+        record = self.store.project(project_id)
+        if record is None:
+            raise KeyError(project_id)
+        manifest = load_manifest(record.locator)
+        repository = manifest.repository_map[manifest.state.repository]
+        return not (
+            manifest.machine_map[repository.machine].host
+            or manifest.machine_map[manifest.base_machine].host
+        )
+
     def open(self, project_id: str) -> ProjectService:
         service, _ = self._service_or_open(project_id)
         return service

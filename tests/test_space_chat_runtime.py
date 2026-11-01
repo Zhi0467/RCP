@@ -68,11 +68,11 @@ def test_space_runtime_real_storage_and_partial_apply(
 
         monkeypatch.setattr(app.state.catalog, "open_execution", open_project)
         if broken == "remote":
-            original_host = app.state.catalog.state_host
+            original_local = app.state.catalog.same_machine
             monkeypatch.setattr(
                 app.state.catalog,
-                "state_host",
-                lambda pid: "remote" if pid == unavailable_id else original_host(pid),
+                "same_machine",
+                lambda pid: pid != unavailable_id and original_local(pid),
             )
         project_count -= 1
     threads = store.ensure_agent_threads(

@@ -98,6 +98,16 @@ def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
 
 
 class AgentThreadStoreMixin(StoreMixinBase):
+    def bump_agent_threads_version(self, user_id: str) -> None:
+        """A file-only transcript append (voice) moves no SQL row, so it bumps directly."""
+        with self.connection() as connection:
+            connection.execute(
+                "INSERT INTO resource_versions(scope,resource,entity,generation) "
+                "VALUES('', 'agent_threads', ?, 1) ON CONFLICT(scope,resource,entity) "
+                "DO UPDATE SET generation=generation+1",
+                (f"member:{user_id}",),
+            )
+
     def via_agent(self, operation_id: str | None) -> dict[str, str] | None:
         with self.connection() as connection:
             return agent_thread_attribution(connection, operation_id)

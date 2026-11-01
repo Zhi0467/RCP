@@ -106,7 +106,7 @@ def prepare_space_projects(
     for project_id in sorted(owner.store.member_project_ids(owner.thread.user_id)):
         try:
             owner.store.require_project_accepts_new_work(project_id)
-            if owner.catalog.state_host(project_id):
+            if not owner.catalog.same_machine(project_id):
                 continue
             service = owner.catalog.open_execution(project_id)
             machine = service.manifest.machine_map[service.manifest.base_machine]
@@ -230,7 +230,14 @@ def collect_space_projects(
                 receipt,
             )
             if not path.is_dir() or path.is_symlink():
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    owner.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "space_stray_output_kept",
+                        {"path": receipt["path"], "reason": str(exc)},
+                    )
     for project in sorted(projects, key=lambda item: item.project_id):
         try:
             # This exact binding is checked even when an earlier retry committed.

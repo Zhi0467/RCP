@@ -168,6 +168,8 @@ def hidden_read_defaults(
 
             # Reuse the member-id validator; identity comes from the thread row.
             member_memory_root(PurePosixPath(root), thread_owner)
+            # The owner keeps its stages; its transcripts reach a run only as prompt text.
+            globs.append(glob.escape(root + "/" + thread_owner) + "/*.jsonl")
             for member in sorted(set(member_ids) - {thread_owner}):
                 member_memory_root(PurePosixPath(root), member)
                 directories.append(root + "/" + member)

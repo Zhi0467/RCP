@@ -307,8 +307,10 @@ Only the thread's member can resolve a card. The tap checks membership, claims
 once, compares the presented hash and live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
-A stale card executes nothing. Ordinary answer and dismiss endpoints reject card
-questions with `409 approval_card`; a second tap returns `409 card_taken`.
+A stale card executes nothing, and the tap still uses the card up. A card
+expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes; a tap on it
+returns `expired`. Ordinary answer and dismiss endpoints reject card questions
+with `409 approval_card`; a second tap returns `409 card_taken`.
 
 Card creation stores a random UUID4 request id; every result retains it.
 Episode start, branch merge and episode merge pass it to their native request-id
