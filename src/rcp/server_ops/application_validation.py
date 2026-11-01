@@ -406,6 +406,8 @@ def build_rehearsal_overlay(
                 (project.overlay_locator, state_location, project_id),
             )
         _rebind_local_stage_paths(connection, absent_root)
+        # Pending memory cleanup names live paths; the rehearsal never acts on it.
+        connection.execute("DELETE FROM memory_deletions")
         transfer_paths = _transfer_inbox_overlay_paths(connection, data_dir)
         _validate_path_column_inventory(connection)
         connection.commit()
@@ -803,7 +805,10 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 f"Copied table {table!r} has unclassified path columns: {sorted(unexpected)}."
             )
         for column in columns.intersection(_PATH_COLUMN_NAMES):
-            if column in {"locator", "state_location"} and table != "projects":
+            if column in {"locator", "state_location"} and table not in {
+                "projects",
+                "memory_deletions",
+            }:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
@@ -858,6 +863,8 @@ def _validate_rebound_paths(
                 raise CandidateRehearsalRefused(
                     "A copied local canonical-state pointer escaped its overlay."
                 )
+    if connection.execute("SELECT 1 FROM memory_deletions LIMIT 1").fetchone() is not None:
+        raise CandidateRehearsalRefused("A copied pending memory cleanup survived the overlay.")
     for table, columns in _schema_columns(connection).items():
         if "stage_root" in columns:
             host_column = "execution_host" if table == "browser_owners" else "stage_host"
