@@ -39,6 +39,7 @@ class NotificationPreferencesUpdate(BaseModel):
     episode_finished: StrictBool | None = None
     consolidation: StrictBool | None = None
     bulletin_mention: StrictBool | None = None
+    agent_thread: StrictBool | None = None
 
 
 class DesktopNotification(BaseModel):
@@ -51,6 +52,7 @@ class DesktopNotification(BaseModel):
         "episode_finished",
         "consolidation",
         "bulletin_mention",
+        "agent_thread",
     ]
     project_name: str
     deep_link: str

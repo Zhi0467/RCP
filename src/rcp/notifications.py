@@ -680,7 +680,8 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
-            elif row["kind"] == "bulletin_mention":
+            elif row["kind"] in {"bulletin_mention", "agent_thread"}:
+                # Private replies are qualified by the owner/read fence above.
                 unresolved = True
             elif row["kind"] == "consolidation":
                 unresolved = self.store.consolidation_notification_pending(

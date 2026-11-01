@@ -5248,6 +5248,13 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         finalized = 0
         touched = 0
 
+        def project_memory(self, request: dict) -> dict:
+            from rcp.agents.memory_file_io import memory_root, prepare_files
+
+            root = memory_root(tmp_path / "remote-memory", request["project_id"])
+            size = prepare_files(root, request["lessons"]) if "lessons" in request else 0
+            return {"root": str(root), "index_bytes": size}
+
         def __init__(self, host: str) -> None:
             self.host = host
             self.root = None

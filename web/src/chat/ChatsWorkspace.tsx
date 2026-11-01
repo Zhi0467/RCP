@@ -398,6 +398,9 @@ export function ChatsWorkspace({
   useEffect(() => setRenamed({}), [summaryNames]);
   const ownThreadId = ownThread?.thread.thread_id ?? null;
   const showingOwnThread = ownThreadId !== null && selectedChatId === ownThreadId;
+  useEffect(() => {
+    if (showingOwnThread) setListCollapsed(true);
+  }, [showingOwnThread]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(

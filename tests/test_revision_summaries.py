@@ -209,6 +209,7 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
         "author": "agent",
         "producer": "agent",
         "authorized_by": None,
+        "via_agent": None,
         "profile": None,
         "task_id": None,
         "episode_id": None,

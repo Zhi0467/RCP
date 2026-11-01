@@ -2457,7 +2457,8 @@ function MemberApp({
   };
 
   // The member's own thread for this project: Agents opens it, full width.
-  const agentThreads = useAgentThreads(Boolean(projectId));
+  const agentThreads = useAgentThreads(Boolean(projectId) && view === "chats");
+  const pendingOwnThreadProject = useRef<string | null>(null);
   const ownThread =
     agentThreads.threads?.find(
       (thread) =>
@@ -2469,13 +2470,26 @@ function MemberApp({
   /** Returning to Agents reopens the chat left open there; otherwise the member's own thread. */
   const reopenAgents = () => {
     const chatId = view !== "chats" && project ? rememberedChat(project.id) : null;
-    openChats(
+    const nextChatId =
       chatId &&
-        (conversations.some((item) => item.chatId === chatId) || chatId === ownThread?.thread_id)
+      (conversations.some((item) => item.chatId === chatId) || chatId === ownThread?.thread_id)
         ? chatId
-        : (ownThread?.thread_id ?? null),
-    );
+        : (ownThread?.thread_id ?? null);
+    pendingOwnThreadProject.current = nextChatId ? null : projectId;
+    openChats(nextChatId);
   };
+
+  // First entry loads threads lazily, then opens the member's thread.
+  useEffect(() => {
+    if (view !== "chats" || pendingOwnThreadProject.current !== projectId) {
+      pendingOwnThreadProject.current = null;
+      return;
+    }
+    if (!ownThread) return;
+    pendingOwnThreadProject.current = null;
+    selectChat(ownThread.thread_id);
+    setAgentsBoard(false);
+  }, [view, projectId, ownThread, selectChat]);
 
   // Leaving Agents resets it to the board; the tab and a link that names a chat skip it.
   useEffect(() => {
@@ -5423,7 +5437,10 @@ function MemberApp({
               conversations={inventoryConversations}
               selectedChatId={selectedChatId}
               board={agentsBoard}
-              onBoardChange={setAgentsBoard}
+              onBoardChange={(board) => {
+                pendingOwnThreadProject.current = null;
+                setAgentsBoard(board);
+              }}
               nodes={presentedGraph.nodes}
               graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
@@ -5433,6 +5450,7 @@ function MemberApp({
               unreadChatIds={unreadChatIds}
               chatTranscripts={chatTranscripts}
               onSelect={(chatId) => {
+                pendingOwnThreadProject.current = null;
                 const conversation = inventoryConversations.find((item) => item.chatId === chatId);
                 // An orchestrator opens in place from main; other chats open on their own graph.
                 if (

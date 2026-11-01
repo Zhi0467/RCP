@@ -46,7 +46,7 @@ def schedule_thread(store, operation_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def handle_schedule(store, operation_id: str, command, service=None):
+def handle_schedule(store, operation_id: str, command):
     from rcp.agents.command_protocol import CommandResponse
 
     try:
@@ -58,34 +58,11 @@ def handle_schedule(store, operation_id: str, command, service=None):
         task = store.agent_task(operation_id)
         assert task is not None
         if args.action == "add":
-            if thread["kind"] == "space":
-                from rcp.service import read_space_chat_transcript
-
-                transcript = read_space_chat_transcript(
-                    store.path.parent, thread["user_id"], thread["thread_id"]
-                )
-            else:
-                transcript = (
-                    service.chat_transcript(thread["thread_id"]) if service is not None else None
-                )
-            admitting = next(
-                (
-                    message
-                    for message in (transcript.messages if transcript else [])
-                    if message.operation_id == operation_id
-                    and message.role == "user"
-                    and message.steering is None
-                ),
-                None,
-            )
+            # Admission persists the member input and provenance on the task.
+            # Display transcripts are not an authority source for runtime commands.
             if (
-                admitting is None
-                or admitting.trigger != "human"
-                or admitting.model_dump().get("source") not in (None, "voice", "handoff")
-            ):
-                raise ValueError("schedule_member_message_required")
-            if (
-                task.request.get("trigger", "human") != "human"
+                not str(task.request.get("message") or "").strip()
+                or task.request.get("trigger", "human") != "human"
                 or task.request.get("source") not in (None, "voice", "handoff")
                 or store.question_for_followup(operation_id) is not None
             ):

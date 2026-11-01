@@ -50,6 +50,9 @@ BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "agent-threads",
+        # Local project memory notes are agent-managed files; like remote-base
+        # memory they are not captured, so a restore starts with empty memory.
+        "memory",
         "bootstrap-manifests",
         "checkout-recovery",
         "browser",

@@ -21,6 +21,7 @@ from rcp.agents.command_protocol import (
     ProjectsCommandRequest,
     ScheduleCommandRequest,
 )
+from rcp.core.project_types import project_type_of
 from rcp.digest import digest_counts
 from rcp.limits import (
     AGENT_HANDOFF_MAX_CHARS,
@@ -69,6 +70,7 @@ def project_details(
     thread = next(thread for thread in threads if thread.project_id == project_id)
     service = catalog.open_display(project_id)
     state = service.history.state()
+    project_type = project_type_of(state)
     limit = AGENT_PROJECT_DETAILS_MAX_ITEMS
     return {
         **catalog.card(project_id),
@@ -83,12 +85,13 @@ def project_details(
         "decisions": [
             node.model_dump(mode="json")
             for node in state.nodes.values()
-            if node.type == "decision" and node.status in {"open", "ready"}
+            if project_type.is_chooser(node.type)
+            and getattr(node, "status", None) in {"open", "ready"}
         ][:limit],
         "blockers": [
             node.model_dump(mode="json")
             for node in state.nodes.values()
-            if node.type == "blocker" and node.status == "open"
+            if project_type.is_blocker(node.type) and getattr(node, "status", None) == "open"
         ][:limit],
         "transitions": service.history.revision_summaries(
             max(1, state.revision - limit + 1), state.revision

@@ -40,6 +40,8 @@ Each member has one Space thread and one project thread per membership. Listing
 privacy authority; filename prefixes are only read-hiding selectors. Existing
 board chats remain public. Thread turns are captured Work turns on main,
 authorized by the owning member. Loss of membership closes that project thread.
+The browser loads and polls the thread list only while the Space Agent view or
+a project's Agents view is shown.
 
 The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
 unused name and then numbered suffixes. These seeded names cannot be changed by
@@ -60,6 +62,9 @@ by their owner. Project question pushes target that owner. Unread settled projec
 thread replies use the owner-only `agent_thread` notification; Space replies do
 not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
+
+Schedule creation checks the admitted task's member message, trigger, source and
+question-follow-up binding; display transcripts never establish that authority.
 
 Fresh thread sessions receive a bounded transcript tail directly in their first
 prompt, labelled as earlier conversation data. It is never staged as a file.

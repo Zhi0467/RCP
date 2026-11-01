@@ -112,6 +112,7 @@ def task_owner(
     if task.graph_target.kind == "branch" and task.kind != "branch_merge":
         service = service.for_graph_target(
             task.graph_target,
+            initialize=False,
             expected_episode_id=store.branch_owner(
                 task.project_id, task.graph_target.branch_id or ""
             ),
