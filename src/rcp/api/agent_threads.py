@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+import uuid
+from typing import Annotated, Literal, Self
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
-from pydantic import UUID4, BaseModel, ConfigDict, Field
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
 from rcp.api.chats import (
+    AttachmentStoreDependency,
     CatalogDependency,
     ChatBrowserPreference,
     ChatReadBody,
@@ -31,6 +42,7 @@ from rcp.api.tasks import (
     content_agent_artifact,
     download_agent_artifact,
 )
+from rcp.attachments import ChatAttachmentUpload
 from rcp.providers import ProviderId
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_id
@@ -189,6 +201,65 @@ def thread_browser(
     return body
 
 
+@router.post("/api/agent-threads/{thread_id}/attachments", response_model=ChatAttachmentUpload)
+def upload_space_attachment(
+    thread_id: str,
+    request: Request,
+    file: Annotated[UploadFile, File()],
+    client_id: Annotated[str, Form()],
+    attachment_set_id: Annotated[str | None, Form()] = None,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    attachment_store: AttachmentStoreDependency,
+) -> ChatAttachmentUpload:
+    try:
+        thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
+        if thread.kind != "space":
+            raise HTTPException(status_code=404, detail="Space thread not found")
+        return attachment_store.add(
+            project_id=store.space_id,
+            chat_id=thread_id,
+            client_id=client_id,
+            filename=file.filename or "",
+            media_type=file.content_type,
+            source=file.file,
+            attachment_set_id=attachment_set_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        file.file.close()
+
+
+@router.delete("/api/agent-threads/{thread_id}/attachments/{attachment_id}")
+def remove_space_attachment(
+    thread_id: str,
+    attachment_id: str,
+    client_id: str,
+    attachment_set_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    attachment_store: AttachmentStoreDependency,
+) -> dict[str, bool]:
+    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    if thread.kind != "space":
+        raise HTTPException(status_code=404, detail="Space thread not found")
+    try:
+        attachment_store.remove(
+            project_id=store.space_id,
+            chat_id=thread_id,
+            client_id=client_id,
+            attachment_set_id=attachment_set_id,
+            attachment_id=attachment_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"removed": True}
+
+
 class SpaceTurnBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -197,6 +268,14 @@ class SpaceTurnBody(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     timezone: str | None = None
+    attachment_set_id: str | None = Field(default=None, min_length=1)
+    attachment_client_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_attachment_pair(self) -> Self:
+        if (self.attachment_set_id is None) != (self.attachment_client_id is None):
+            raise ValueError("Attachments require both attachment_set_id and attachment_client_id")
+        return self
 
 
 def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -> AgentTaskRecord:
@@ -223,6 +302,7 @@ def space_turn(
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    attachment_store: AttachmentStoreDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
@@ -254,9 +334,34 @@ def space_turn(
                 timezone=body.timezone,
                 browser_requested=store.chat_browser_requested(store.space_id, thread_id),
             )
-            task = background_tasks.start(
-                store.space_id, "space_chat", turn, authorized_by=authorized
-            )
+            operation_id = str(uuid.uuid4())
+            claimed = None
+            if body.attachment_set_id is not None:
+                claimed = attachment_store.claim(
+                    project_id=store.space_id,
+                    chat_id=thread_id,
+                    client_id=body.attachment_client_id,
+                    attachment_set_id=body.attachment_set_id,
+                    operation_id=operation_id,
+                )
+                turn = turn.model_copy(
+                    update={
+                        "attachment_batch_id": claimed.attachment_batch_id,
+                        "attachments": claimed.attachments,
+                    }
+                )
+            try:
+                task = background_tasks.start(
+                    store.space_id,
+                    "space_chat",
+                    turn,
+                    operation_id=operation_id,
+                    authorized_by=authorized,
+                )
+            except BaseException:
+                if claimed is not None and store.agent_task(operation_id) is None:
+                    attachment_store.release(claimed.attachment_batch_id, operation_id)
+                raise
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}

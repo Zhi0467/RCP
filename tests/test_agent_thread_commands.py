@@ -108,6 +108,31 @@ def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_pat
         arguments=HandoffArguments(project_id=project_id, message_file="message.md"),
     )
     identity = CommandTurnIdentity(None, "source", "turn", "broker")
+    from rcp.agents.command_protocol import AskCommandRequest
+    from rcp.runs.agent_thread_commands import space_command_usages
+
+    ask = AskCommandRequest.model_validate(
+        {
+            **request.model_dump(),
+            "verb": "ask",
+            "arguments": {
+                "question": "Approve?",
+                "action": {
+                    "kind": "truth_scope",
+                    "project_id": project_id,
+                    "alias": "repo-a",
+                    "writable": True,
+                },
+            },
+        }
+    )
+    assert handler(ask, identity).status == "invalid"
+    usages = space_command_usages(handler.allowed_verbs)
+    assert {usage.split()[0] for usage in usages} == handler.allowed_verbs
+    assert "ask" not in handler.allowed_verbs and "handoff" in handler.allowed_verbs
+    assert {usage.split()[0] for usage in space_command_usages(frozenset({"handoff"}))} == {
+        "handoff"
+    }
     first = handler(request, identity)
     assert first.status == "ok"
     assert first.result["state"] == "pending"

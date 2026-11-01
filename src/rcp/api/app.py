@@ -2517,12 +2517,18 @@ def create_app(
                         },
                     )
                 media_type = request.headers.get("content-type", "").partition(";")[0].strip()
-                attachment_upload = (
-                    request.method == "POST"
-                    and len(path_parts) == 7
-                    and path_parts[1:3] == ["api", "projects"]
-                    and path_parts[4] == "chats"
-                    and path_parts[6] == "attachments"
+                attachment_upload = request.method == "POST" and (
+                    (
+                        len(path_parts) == 7
+                        and path_parts[1:3] == ["api", "projects"]
+                        and path_parts[4] == "chats"
+                        and path_parts[6] == "attachments"
+                    )
+                    or (
+                        len(path_parts) == 5
+                        and path_parts[1:3] == ["api", "agent-threads"]
+                        and path_parts[4] == "attachments"
+                    )
                 )
                 transcription_upload = (
                     request.method == "POST"
@@ -2567,12 +2573,18 @@ def create_app(
             # preflight), so refuse those except the bounded attachment and
             # Paper multipart routes, as in a team space.
             media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
-            attachment_upload = (
-                request.method == "POST"
-                and len(path_parts) == 7
-                and path_parts[1:3] == ["api", "projects"]
-                and path_parts[4] == "chats"
-                and path_parts[6] == "attachments"
+            attachment_upload = request.method == "POST" and (
+                (
+                    len(path_parts) == 7
+                    and path_parts[1:3] == ["api", "projects"]
+                    and path_parts[4] == "chats"
+                    and path_parts[6] == "attachments"
+                )
+                or (
+                    len(path_parts) == 5
+                    and path_parts[1:3] == ["api", "agent-threads"]
+                    and path_parts[4] == "attachments"
+                )
             )
             simple = media_type in {
                 "",

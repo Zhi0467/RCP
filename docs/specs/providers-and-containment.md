@@ -1799,7 +1799,9 @@ The top-level client grants `projects`, `handoff` and `schedule`; it has no
 `ask`. Each project client has its own authenticated mailbox and grants only
 `validate`, `graph_log`, `graph_diff` and `bulletin`. A Space turn has no
 project memory root. Native subagents remain permitted; MCP servers remain off.
-Project lifecycle work goes through the member's own project thread.
+Project lifecycle work, including protected-action approval cards, goes through
+`handoff` to the member's own project thread. The top-level usage text renders
+from the same resolved verbs the handler enforces.
 The provider receives the union of project Git transports and read-hiding
 policies; the combined policy is installed before launch. Even a turn without
 local write projects retains the local account's default secret and private
@@ -1818,6 +1820,11 @@ Other Patch files and all watch files are receipted and discarded; invalid stray
 files cannot prevent another project's collection. Rejection yields a partial
 turn outcome without undoing another project's accepted transition. Watcher
 storage also refuses a Space-task origin.
+
+Space attachments reuse the ordinary chat attachment owner and stage immutable
+copies into the Space stage. Their paths enter the provider's read directories
+and prompt, and the user transcript record retains their descriptors. Every run
+hides the host's `<data_dir>/chat-attachments` store; only staged copies are inputs.
 
 Every agent run hides every `private-*.jsonl` transcript under the state chat
 roots on its host. Runs on the backend's machine hide other members'

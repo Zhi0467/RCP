@@ -16,6 +16,8 @@ from typing import Literal
 
 from rcp.agents import AgentLauncher
 from rcp.agents.git_access import ProviderGitAccess
+from rcp.agents.prompts import _attachment_items
+from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentExecutionProfile, AgentSurfaceConfig
 from rcp.core.authority import render_agent_graph_authority_contract
@@ -191,6 +193,8 @@ def append_space_message(
         "executionMachine": "local",
         "nativeSessionId": session_id,
     }
+    if role == "user" and request.attachments:
+        record["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
     if request.source is not None and role == "user":
         record["source"] = request.source
     append_space_records(owner, [record], reserve_prompt=True)
@@ -209,8 +213,7 @@ async def stream_space_chat_run(
     """Run one local provider with one exact, independently authorized stage per project."""
     from rcp.agents import AgentEvent, agent_output_schema
     from rcp.agents.artifact_contract import artifact_contract
-    from rcp.agents.staged_command_client import handoff_usage, projects_usages, schedule_usages
-    from rcp.runs.agent_thread_commands import ThreadCommandHandler
+    from rcp.runs.agent_thread_commands import ThreadCommandHandler, space_command_usages
     from rcp.runs.browser_lifecycle import browser_turn
     from rcp.runs.chat import (
         _discover_chat_artifacts,
@@ -269,6 +272,13 @@ async def stream_space_chat_run(
     artifact_scope_id = _logical_chat_turn_operation_id(owner.store, execution.operation_id)
     artifact_directory = _prepare_local_artifact_directory(
         stage, artifact_scope_id, reuse=execution.continuation == "resume"
+    )
+    attachments, attachment_read_dirs = stage_turn_attachments(
+        data_dir,
+        request.attachment_batch_id,
+        request.attachments,
+        local_stage=stage,
+        remote_stage=None,
     )
     projects, scope = prepare_space_projects(owner, request, execution, stage)
     if project_git_access is not None:
@@ -369,7 +379,7 @@ async def stream_space_chat_run(
                 budget=None,
                 validate=None,
                 command_handler=handler,
-                allowed_verbs=frozenset({"projects", "handoff", "schedule"}),
+                allowed_verbs=handler.allowed_verbs,
             )
         )
         _write_space_client(stage, top.client_command())
@@ -385,10 +395,10 @@ async def stream_space_chat_run(
         ) as browser:
             prompt = "\n\n".join(
                 [
-                    "You are the member's Space agent. This is a captured Work turn. Read across their projects; make direct file and graph changes only inside the listed admitted scopes. Hand project lifecycle work to their own project thread. Never create watch.json or top-level patch.json.",
+                    "You are the member's Space agent. This is a captured Work turn. Read across their projects; make direct file and graph changes only inside the listed admitted scopes. Hand project lifecycle work, including protected-action approval cards, to their own project thread using handoff. Never create watch.json or top-level patch.json.",
                     render_agent_graph_authority_contract(),
                     f"Top-level command client: {stage / 'rcp'}. Available commands: "
-                    + "; ".join((*projects_usages(), handoff_usage(), *schedule_usages()))
+                    + "; ".join(space_command_usages(handler.allowed_verbs))
                     + ". Each admitted project's projects/<id>/rcp supports only validate, graph_log, graph_diff and bulletin. A project Patch belongs only in projects/<id>/patch.json.",
                     "Create a schedule only when the member asked for it. Schedule add requires a member message, never a wake or question follow-up.",
                     "Resolved writable roots: "
@@ -406,6 +416,7 @@ async def stream_space_chat_run(
                     "Patch JSON schema:\n" + json.dumps(agent_output_schema()),
                     work_turn_outcome_contract(str(stage / "outcome.json")),
                     artifact_contract(str(artifact_directory)),
+                    _attachment_items(attachments),
                     seed,
                     "Member message:\n" + (request.message or ""),
                 ]
@@ -437,7 +448,7 @@ async def stream_space_chat_run(
                     prompt,
                     workspace=stage,
                     session_id=request.session_id,
-                    read_dirs=[],
+                    read_dirs=attachment_read_dirs,
                     write_dirs=[Path(root) for root in scope.repository_roots],
                     write_scope=scope,
                     execution_host="",
