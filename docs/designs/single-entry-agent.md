@@ -27,6 +27,10 @@ projects, but it is voice only, has no memory, and stops when the tab closes.
   width. The team's board conversations stay reachable there.
 - The voice launcher, the desktop Ask button and the phone Ask button are
   removed. The agent replaces all three.
+- The Agent rail folds the same way the Agents sidebar folds today.
+- Every agent gets a short default name from a small list (the Space agent and
+  each project agent), shown as the thread title. Members rename it under the
+  existing agent-name rules.
 
 ## Capability
 
@@ -97,7 +101,8 @@ These are two separate things.
   - "Child agents only add lessons" becomes a prompt rule.
   - Note authorship and SQLite backup are given up.
   - Existing lesson rows migrate to files once. Consolidation prunes the files.
-  - The Settings Lessons screen becomes a Memory screen over the files.
+  - Memory is agent-managed. No screen shows it; a member asks an agent to
+    change it. The Settings Lessons screen is removed.
 - Native CLI memory is off for single-entry agent runs.
 
 ### Storage
@@ -133,8 +138,8 @@ Slack follows the RCP version as a minimal bot on the same threads.
 
 ## Open before build
 
-- Rendered mockups: space Agent view, project Agents view, phone, Memory
-  screen.
+- Mockup revision: no top logo, foldable rail, default agent names, no
+  Memory screen.
 - Probe each provider CLI's headless or app-server compaction call, for the
   provider-switch case.
 - egm review: `design`, `implementation-readiness`, `zoom-out`.
