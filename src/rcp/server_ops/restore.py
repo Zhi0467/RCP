@@ -50,6 +50,20 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Memory files (v66): fresh, immutable fixtures, and in-place upgrades.
+        "39ac5cc9a80b242577f974c83a55c32c08028132816c63a33dd8616517cadf80",
+        "4003e4150e82ec31d249f7d2f4e6a7db017e08869a56b79b988e17b3d39bc8d3",
+        "44ffd90ede452cdea5a7177234fee91646e5f6447b22cf56a16f4268be47e6c8",
+        "4ae961aa42426ef3caec377f25f3f4f6de46909c2862b43a175dc9341e1a917e",
+        "5059d4ae72e009b727e1c6bb08c80e664fdbe62d258fa86be8f7ce7b052d3134",
+        "6b857306e2c4d0e6d359b377407ef48dcce4e6d1887080324e19572fe1c94574",
+        "894173b883a2bca6b8e6561b5d4e40546dff02d287225f5e2830b10fb5cb7555",
+        "a78b1147384e9d226c11281ae769d342391563dfc17268424e03a2507d3d8b25",
+        "a8c7e3daa3a9be1b483d4ef586b2e86679436b550b9e984fd7478c9fa74e20e5",
+        "bffe2ab92d18944dc5e774b1737e86012011bde45e9f0e4e042761cf6c07f81c",
+        "c4b56798e9b3550d45e01d7af72df4e83eaa3b14a21369e598e66e79c8c660a0",
+        "e924b5b435986a733127eeacc15ad48d5417ef629fa1ac0b990a19fc15d15151",
+        "ece9ada33eb5d4331f246726c4e0cb1fd8cc179d86c8457d79ee461e0335f6d0",
         # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
         "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
         "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",

@@ -237,6 +237,8 @@ An unreachable base never rolls back project deletion. Memory preparation waits
 for pending deletion to finish, including when the same project is registered again.
 Remote deletion retains the resolved host/account identity at removal and checks it
 on retry. An unresolved origin or repointed alias leaves cleanup pending.
+Restore and candidate rehearsal drop every pending cleanup row, because those
+rows name the live host's paths.
 
 ## Transfer, backup, and restore
 

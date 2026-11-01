@@ -107,6 +107,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "operational_lessons",
         "lesson_command_receipts",
         "memory_migrations",
+        # Pending memory-file cleanup names source paths.
+        "memory_deletions",
         "bulletin_posts",
         "bulletin_command_receipts",
         "bulletin_reads",
