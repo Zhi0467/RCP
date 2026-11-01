@@ -346,6 +346,10 @@ class CodexProfile(ProviderProfile):
                     _codex_permission_profile(scope, hidden_read_scope),
                 ]
             )
+        elif capability == "session_summary":
+            if write_scope is not None or write_dirs:
+                raise ValueError("Session summaries cannot carry write grants")
+            command.extend(_codex_summary_config(hidden_read_scope))
         elif capability == "paper_suggest":
             if write_scope is not None:
                 raise ValueError("paper_suggest cannot carry a project write scope")
@@ -541,6 +545,27 @@ def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
         + ",ignore_default_excludes=true,exclude="
         + json.dumps(policy["exclude"])
         + ",set={},include_only=[]}",
+    ]
+
+
+def _codex_summary_config(hidden_read_scope: HiddenReadScope | None) -> list[str]:
+    """Resume history without granting a scratch, temporary or repository write root."""
+    denials = _codex_read_denials(hidden_read_scope)
+    return [
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "multi_agent",
+        "--config",
+        'web_search="disabled"',
+        "--config",
+        'approval_policy="never"',
+        "--config",
+        'default_permissions="rcp_summary"',
+        "--config",
+        'permissions={rcp_summary={filesystem={":root"="read"'
+        + ("," + denials if denials else "")
+        + "},network={enabled=false}}}",
     ]
 
 
