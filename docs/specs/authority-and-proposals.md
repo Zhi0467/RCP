@@ -280,8 +280,15 @@ contracts. Humans own root dispatch, merges outside the orchestrator's owned
 forks, reauthorization, and protected controls. Commands do not grant graph authority. Changes still require typed
 Patches through the transition manager and Apply gate.
 
-
 ## Private-thread approval cards
+
+A member's private agent threads act for that member. Ordinary acts run without
+a tap: Patches, Experiment starts, compute, Bulletin posts, schedules and
+handoffs. Each records its turn's operation and authorizer as any Work turn
+does. Projections derive
+[`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
+origin operation's thread; nothing new enters a Patch, so replay is unchanged.
+Protected acts wait for the member through a card.
 
 A private project thread may attach a strict action to `ask`. The action names
 that thread's project and supplies no choices or multiple selection; RCP offers
@@ -311,8 +318,8 @@ Sync and repository membership have no request-id argument; the durable card
 claim supplies their single-use execution identity. A claimed card without a
 result is failed as interrupted at startup, never automatically rerun.
 
-Cards expire after 72 hours, checked on tap and list. Listing also expires cards
-of closed threads. Expiry answers the question with `expired`. Other results
+Cards expire after `APPROVAL_CARD_TTL_HOURS`, checked on tap and list. Listing
+also expires cards of closed threads, and restore expires every pending card. Expiry answers the question with `expired`. Other results
 answer it with approved, declined, stale or a failure reason, reusing ordinary question delivery
 to steer or wake the thread. Both plain questions and cards in private threads
 have owner-only list, answer, dismiss and Needs-you notification delivery.

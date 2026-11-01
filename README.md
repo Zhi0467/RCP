@@ -28,7 +28,7 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
   episode from the graph or a graph branch, with a budget and a Stop.
 - **Work between sessions.** Watchers, recovery, and visual reports keep running
   without an open tab, and the phone UI shows them. A nightly pass merges
-  duplicate nodes, and agents keep short operational lessons for later runs.
+  duplicate nodes, and agents keep shared memory notes for later runs.
 - **Artifacts in the reply.** Agents put pages, charts, and images right in
   their reply, running and interactive. Live pages redraw while a job runs.
   Select text or an image region to comment, and the agent that made it

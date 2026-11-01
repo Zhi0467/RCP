@@ -82,14 +82,14 @@ home for repository-wide invariants and their stable identifiers.
   durable receipts
   ([previous path](specs/compute-jobs.md)).
 - [Conversations, episodes, and watchers](specs/conversations-episodes-and-watchers.md)
-  covers Discuss and Work context, Experiment control, native-session continuity,
-  watcher delivery, Stop, and reporting.
+  covers Discuss and Work context, private agent threads and handoff, Experiment
+  control, native-session continuity, watcher delivery, Stop, and reporting.
 - [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) covers
   orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
-- [Graph consolidation and lessons](specs/graph-consolidation-and-lessons.md) covers
-  the authorized nightly consolidation turns, their Inbox rows, and per-project
-  operational lessons.
+- [Graph consolidation and memory](specs/graph-consolidation-and-lessons.md) covers
+  the authorized nightly consolidation turns, their Inbox rows, per-project
+  memory files, and private agent schedules.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) covers
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.
@@ -126,7 +126,9 @@ Linux desktop packages, a hosted service, and multi-server failover.
   the existing ordinary chat attempt.
 - [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
   connects the orchestrator to its workers in a star. There is no peer or
-  cross-episode mail.
+  cross-episode mail. A member's Space thread may hand that member's request to
+  the member's own project thread; that is not mail. Agents of different
+  members, and board agents, share only through the Bulletin.
 - [Restore](specs/server-and-machine-operations.md#backup-and-restore) requires its
   explicit safety procedure. Matching `space_id` is not a client rollback detector.
 

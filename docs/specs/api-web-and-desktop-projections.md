@@ -1055,6 +1055,10 @@ are pruned when voice starts. Missing voice credentials return
 `source: "voice"`, no task operation and the thread's private owner. Repeating
 an entry id in the same thread never appends it twice. A member voice utterance
 runs backend work only through a separate thread Send, under its normal admission.
+The page tool `rcp_thread_send({text})` makes that Send under the existing tap
+confirmation. A running turn that takes input is steered instead; otherwise
+voice gets `thread_busy` and nothing is sent. `rcp_thread_memory()` reads the
+memory route below.
 
 `GET /api/agent-threads/{thread_id}/memory` returns the bound project's
 `shared_index?`, `private_index?` and `truncated`. Each index is bounded by
@@ -2162,9 +2166,23 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 ## Agent thread API
 
 `GET /api/agent-threads` returns the acting member's lazily created Space and
-project threads, names, unread state, activity, live state and browser preference.
+project threads: `thread_id`, `kind`, `project_id`, `project_name`,
+`agent_name`, `unread`, `last_activity_at`, `live_state` and
+`browser_requested`. The Space thread comes first, then project threads by
+latest activity. `live_state` is idle, queued, running, paused, `needs_you` (an
+open question or card) or closed. Threads of projects the member left are
+closed and omitted.
+
 Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
-require ownership. Project chat routes enforce the same ownership, including
+require ownership; another member gets 404. A project thread otherwise uses the
+ordinary project chat, task and question routes. Its Send must be
+`project_chat` Work on main; anything else returns 422.
+
+A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
+`{message, provider?, model?, reasoning?, timezone?}`. It returns 202 with
+`{operation_id}`, or 409 when admission refuses, such as a busy thread. Its task
+reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
+and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Project chat routes enforce the same ownership, including
 empty threads before their first turn. Task and question detail/control routes
 return 404 for another member's private thread; lists filter before pagination.
 Chat display and read projections also exclude other members' private ids.
