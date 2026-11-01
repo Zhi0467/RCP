@@ -595,7 +595,9 @@ function RefreshMemberApp(props: {
   const mergeDispatch = useRef<BranchMergeRequest | null>(null);
   const artifactTarget = useArtifactViewerTarget();
   const artifactProject = useRef<string | null>(null);
-  artifactProject.current = artifactTarget?.projectId ?? null;
+  // A Space artifact belongs to no project.
+  artifactProject.current =
+    artifactTarget && artifactTarget.kind !== "space-artifact" ? artifactTarget.projectId : null;
   const runtime = useMemo(() => {
     const store = new ResourceStore();
     // The epoch changes with the backend process, so a restart is seen on the
