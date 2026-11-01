@@ -77,7 +77,7 @@ export function AgentHome({
   voice: VoiceAgent;
 }) {
   const narrow = useNarrowViewport();
-  const { threads, error, patch } = useAgentThreads();
+  const { threads, revision, error, patch } = useAgentThreads();
   const [folded, setFolded] = useState(() => readPref(RAIL_FOLDED_KEY) === "true");
   useEffect(() => writePref(RAIL_FOLDED_KEY, String(folded)), [folded]);
   useEffect(() => {
@@ -153,6 +153,7 @@ export function AgentHome({
         <div className="conversation-surface">
           <AgentThreadView
             thread={open}
+            revision={revision}
             voice={voice}
             onThreadChanged={patch}
             leading={

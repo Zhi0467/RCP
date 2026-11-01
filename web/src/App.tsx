@@ -5458,7 +5458,14 @@ function MemberApp({
               orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
               ownThread={
-                ownThread ? { thread: ownThread, voice, onThreadChanged: agentThreads.patch } : null
+                ownThread
+                  ? {
+                      thread: ownThread,
+                      revision: agentThreads.revision,
+                      voice,
+                      onThreadChanged: agentThreads.patch,
+                    }
+                  : null
               }
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
               archivedRevision={chatReads?.archived.join("\n")}
