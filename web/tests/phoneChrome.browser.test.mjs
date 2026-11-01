@@ -77,10 +77,6 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
       assert.equal(await page.locator("#phone-more-panels").isHidden(), true);
       assert.match(await moreTab.getAttribute("class"), /active/);
 
-      // Ask floats above the tab bar rather than under it.
-      const ask = await page.getByRole("button", { name: "Ask about this project" }).boundingBox();
-      assert.ok(ask.y + ask.height <= (await tabs.boundingBox()).y);
-
       assert.deepEqual(await page.evaluate(() => window.chosen), [
         "project-29",
         "review",

@@ -28,6 +28,8 @@ export type VoicePin = {
     containment: string | null;
     command: string;
   } | null;
+  /** The thread a voice message goes to. */
+  thread?: { thread_id: string; agent_name: string };
 };
 
 /** The page's verified identity, as the voice session sees it. Loss is final. */
@@ -56,7 +58,6 @@ export function createIdentityGate(): VoiceIdentityGate {
 
 export type VoiceExecutorDeps = {
   gate: VoiceIdentityGate;
-  initialReceipts?: readonly VoiceReceipt[];
   target?: () => VoiceReceiptTarget | null;
   saveReceipt?: (receipt: VoiceReceipt) => Promise<void>;
   catalog: () => readonly CatalogTool[];
@@ -138,14 +139,8 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       receipt.target.graph_target,
       receipt.argument_fingerprint,
     ]);
-  const unknownOutcomes = new Set(
-    (deps.initialReceipts ?? []).filter((item) => item.outcome === "unknown").map(receiptKey),
-  );
-  const requestIds = new Map(
-    (deps.initialReceipts ?? [])
-      .filter((item) => item.request_id && item.outcome !== "accepted")
-      .map((item) => [receiptKey(item), item.request_id!]),
-  );
+  const unknownOutcomes = new Set<string>();
+  const requestIds = new Map<string, string>();
   let busy = false;
 
   async function runOne(call: VoiceFunctionCall): Promise<string> {
@@ -194,6 +189,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
       "rcp_send_conversation_message",
       "rcp_start_experiment",
       "rcp_authorize_auto_research",
+      "rcp_thread_send",
     ].includes(call.name);
     if (unknownOutcomes.has(callKey) && !requestIds.has(callKey)) {
       return refusal(
@@ -233,8 +229,8 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     if (deps.target && stableJson(deps.target()) !== stableJson(target)) {
       return refuse("changed", "The project changed; nothing ran.");
     }
-    if (isWrite && deps.saveReceipt) {
-      if (!receipt) return refusal("refused", "No project target is available.");
+    // A thread tool runs with no project open, so it keeps no project receipt.
+    if (isWrite && deps.saveReceipt && receipt) {
       if (keyedWrite) {
         receipt.request_id = requestIds.get(callKey) ?? crypto.randomUUID();
         requestIds.set(callKey, receipt.request_id);
@@ -425,7 +421,7 @@ export type VoiceTranscriptEntry = {
   source?: string | null;
 };
 
-/** The persisted transcript is independent of the small panel display buffer. */
+/** A voice segment's text as it streams; each finished segment becomes one thread entry. */
 export function appendVoiceTranscript(
   entries: readonly VoiceTranscriptEntry[],
   speaker: VoiceTranscriptEntry["speaker"],
@@ -441,184 +437,6 @@ export function appendVoiceTranscript(
   )
     return [...entries.slice(0, -1), { ...last, text: last.text + delta }];
   return [...entries, { speaker, text: delta, provider_order, source }];
-}
-
-/** Bound once at save: count each entry once, then retain its newest fitting suffix. */
-export function boundVoiceTranscript<
-  T extends {
-    entries: VoiceTranscriptEntry[];
-    receipts: VoiceReceipt[];
-    revision: number;
-    updated_at: number;
-  },
->(record: T, limits: { entry_bytes: number; session_bytes: number; max_entries: number }): T {
-  const encoder = new TextEncoder();
-  const entries: VoiceTranscriptEntry[] = [];
-  for (const entry of record.entries) {
-    let text = "";
-    let bytes = 0;
-    const push = () =>
-      entries.push({
-        ...entry,
-        provider_order: entry.provider_order ?? null,
-        source: entry.source ?? null,
-        text,
-      });
-    for (const character of entry.text) {
-      const size = encoder.encode(character).length;
-      if (size > limits.entry_bytes) continue;
-      if (bytes + size > limits.entry_bytes) {
-        push();
-        text = "";
-        bytes = 0;
-      }
-      text += character;
-      bytes += size;
-    }
-    if (text) push();
-  }
-  const snapshot = {
-    ...record,
-    entries: [] as VoiceTranscriptEntry[],
-    receipts: record.receipts.map((receipt) => ({
-      ...receipt,
-      request_id: receipt.request_id ?? null,
-      task_id: receipt.task_id ?? null,
-      episode_id: receipt.episode_id ?? null,
-    })),
-  };
-  // Indented JSON conservatively covers the server's separator spaces. Reserve
-  // timestamp/revision width and include receipt and record metadata in the budget.
-  let bytes = encoder.encode(
-    JSON.stringify(
-      {
-        ...snapshot,
-        revision: Number.MAX_SAFE_INTEGER,
-        updated_at: Number.MAX_SAFE_INTEGER,
-      },
-      null,
-      1,
-    ),
-  ).length;
-  if (bytes > limits.session_bytes)
-    throw new Error("This conversation has reached its saved action limit.");
-  let start = entries.length;
-  while (start > 0 && entries.length - start < limits.max_entries) {
-    const size = encoder.encode(JSON.stringify(entries[start - 1], null, 1)).length + 2;
-    if (bytes + size > limits.session_bytes) break;
-    bytes += size;
-    start -= 1;
-  }
-  snapshot.entries = entries.slice(start);
-  return snapshot;
-}
-
-/** The backend's bound on the projects one saved session names. */
-const VOICE_SESSION_MAX_PROJECTS = 20;
-
-/** Adds the project a tool ran in to the session's list, renamed if it changed. */
-export function noteVoiceProject(
-  projects: readonly { project_id: string; project_name: string }[],
-  target: VoiceReceiptTarget | null,
-): { project_id: string; project_name: string }[] {
-  if (!target) return [...projects];
-  const named = { project_id: target.project_id, project_name: target.project_name };
-  const index = projects.findIndex((project) => project.project_id === target.project_id);
-  if (index >= 0) return projects.map((project, at) => (at === index ? named : project));
-  return projects.length < VOICE_SESSION_MAX_PROJECTS ? [...projects, named] : [...projects];
-}
-
-/** The backend's bound on a saved entry's source label. */
-const VOICE_SOURCE_MAX_CHARS = 1_024;
-
-/** Cuts by code point, as the backend counts, so no emoji is left half a surrogate pair. */
-function clipSource(text: string): string {
-  return Array.from(text).slice(0, VOICE_SOURCE_MAX_CHARS).join("");
-}
-
-/** A tool's provenance belongs to its call and the next response item only. */
-export function createVoiceSourceLabels() {
-  const calls = new Map<string, string>();
-  // Every read that succeeded since the last response; chained reads all count.
-  let pending: string[] = [];
-  let active: string | null = null;
-  let activeSegment: string | undefined;
-  return {
-    capture(callId: string, name: string, args: string, target: VoiceReceiptTarget | null) {
-      // The exact call, so two reads through one tool keep distinct provenance.
-      const where = target
-        ? ` on ${target.project_id} (${target.graph_target.branch_id ?? "main"})`
-        : "";
-      if (!calls.has(callId)) calls.set(callId, clipSource(`${name}(${args})${where}`));
-    },
-    succeeded(callId: string) {
-      const label = calls.get(callId);
-      if (label) pending.push(label);
-      calls.delete(callId);
-    },
-    discard(callId: string) {
-      calls.delete(callId);
-    },
-    speech(role: "member" | "agent", segment: string): string | null {
-      if (role === "member") {
-        pending = [];
-        active = null;
-        activeSegment = undefined;
-        return null;
-      }
-      if (pending.length) {
-        active = clipSource(pending.join("; "));
-        pending = [];
-      } else if (segment !== activeSegment) active = null;
-      activeSegment = segment;
-      return active;
-    },
-  };
-}
-
-/** At most one save is in flight; a newer snapshot replaces the pending one. */
-export function createVoiceSaveQueue<T>(
-  save: (snapshot: T) => Promise<void>,
-  isCurrent: () => boolean,
-) {
-  let pending: { snapshot: T; resolve: () => void; reject: (error: unknown) => void }[] = [];
-  let running: Promise<void> | null = null;
-  async function drain() {
-    while (pending.length) {
-      const batch = pending;
-      pending = [];
-      try {
-        if (!isCurrent()) throw new Error("Voice session identity changed.");
-        await save(batch.at(-1)!.snapshot);
-        batch.forEach(({ resolve }) => resolve());
-      } catch (error) {
-        batch.concat(pending).forEach(({ reject }) => reject(error));
-        pending = [];
-        return;
-      }
-    }
-  }
-  function start() {
-    if (!running)
-      running = Promise.resolve()
-        .then(drain)
-        .finally(() => {
-          running = null;
-          if (pending.length) start();
-        });
-  }
-  return {
-    save(snapshot: T): Promise<void> {
-      const acknowledged = new Promise<void>((resolve, reject) =>
-        pending.push({ snapshot, resolve, reject }),
-      );
-      start();
-      return acknowledged;
-    },
-    async flush() {
-      while (running) await running;
-    },
-  };
 }
 
 /** A finish offers access; only the explicit page-tool call can open the result. */
@@ -694,37 +512,5 @@ export function voiceWatchFromReceipt(receipt: VoiceReceipt): VoiceWatch | null 
       episode_id: receipt.episode_id,
     }),
     () => receipt.target.project_name,
-  );
-}
-
-/** Resolve saved uncertain admissions before rebuilding Resume's watches. */
-export async function reconcileVoiceReceipts(
-  receipts: readonly VoiceReceipt[],
-  lookup: (
-    projectId: string,
-    requestId: string,
-  ) => Promise<{
-    route: string;
-    operation_id?: string;
-    episode_id?: string;
-  }>,
-): Promise<VoiceReceipt[]> {
-  return Promise.all(
-    receipts.map(async (receipt) => {
-      if (receipt.outcome !== "unknown" || !receipt.request_id) return receipt;
-      try {
-        const admitted = await lookup(receipt.target.project_id, receipt.request_id);
-        return {
-          ...receipt,
-          outcome: "accepted" as const,
-          task_id: admitted.operation_id ?? null,
-          episode_id: admitted.episode_id ?? null,
-        };
-      } catch {
-        // Not found may still be an admission in flight, and a failed lookup
-        // settles nothing: the receipt stays unknown and a re-ask reuses its key.
-        return receipt;
-      }
-    }),
   );
 }

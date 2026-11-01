@@ -1,11 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { History, Inbox, LayoutList, Settings } from "lucide-react";
-import {
-  PhoneAskButton,
-  PhoneProjectBar,
-  PhoneTabBar,
-} from "../../src/projects/PhoneProjectChrome";
+import { PhoneProjectBar, PhoneTabBar } from "../../src/projects/PhoneProjectChrome";
 import { ProjectDock } from "../../src/projects/ProjectDock";
 import { ViewPicker } from "../../src/graph/ViewPicker";
 import "../../src/styles.css";
@@ -78,7 +74,6 @@ function Fixture() {
           <p key={index}>Row {index}</p>
         ))}
       </main>
-      <PhoneAskButton disabled={false} onAsk={() => window.chosen.push("ask")} />
       <PhoneTabBar
         primary={[
           tab("overview", "Overview", <LayoutList size={14} />),
