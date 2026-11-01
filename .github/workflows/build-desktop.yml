@@ -48,7 +48,7 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.12.7"
           enable-cache: true
@@ -127,7 +127,7 @@ jobs:
           # before it releases a candidate someone tested.
           printf '{"commit": "%s", "build": "%s", "version": "%s"}\n' \
             "$TARGET_COMMIT" "$BUILD_NUMBER" "$DESKTOP_VERSION" > ../desktop-identity.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-app
           path: |
