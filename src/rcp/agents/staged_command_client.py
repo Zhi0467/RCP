@@ -37,6 +37,7 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
+        "schedule",
         "ask",
         "bulletin",
         "name",
@@ -102,6 +103,25 @@ def branch_usage():
 
 def name_usage():
     return f"name {NAME_VALUE[1]}"
+
+
+SCHEDULE_OPTIONS = (
+    ("key", "--key", "<key>"),
+    ("cron", "--cron", "<five-fields>"),
+    ("at", "--at", "<YYYY-MM-DDTHH:MM>"),
+    ("timezone", "--timezone", "<IANA-zone>"),
+    ("note", "--note", "<note>"),
+    ("schedule_id", "--schedule-id", "<schedule-id>"),
+)
+
+
+def schedule_usages():
+    key, cron, at, timezone, note, schedule_id = map(_option_usage, SCHEDULE_OPTIONS)
+    return (
+        f"schedule add {key} ({cron} | {at}) [{timezone}] {note}",
+        "schedule list",
+        f"schedule cancel {key} {schedule_id}",
+    )
 
 
 def bulletin_usages(*, turn_artifacts: bool):
@@ -327,11 +347,17 @@ def _parser():
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
+    schedule = subparsers.add_parser("schedule")
+    schedule.add_argument("action", choices=("add", "list", "cancel"))
+    for dest, flag, metavar in SCHEDULE_OPTIONS:
+        schedule.add_argument(flag, dest=dest, metavar=metavar)
+
     ask = subparsers.add_parser("ask")
     ask.add_argument("--key", required=True)
     ask.add_argument("--question", required=True)
     ask.add_argument("--choice", action="append", default=[])
     ask.add_argument("--multiple", action="store_true")
+    ask.add_argument("--action", help="Approval action JSON; private project threads only")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
@@ -484,6 +510,16 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
+    if verb == "schedule":
+        arguments = {"action": namespace.action}
+        for field in ("cron", "at", "timezone", "note", "schedule_id"):
+            value = getattr(namespace, field)
+            if value is not None:
+                arguments[field] = value
+        key = namespace.key
+        if namespace.action != "list" and not key:
+            raise ClientInputError("schedule mutations require --key")
+        return verb, key, arguments
     if verb == "bulletin":
         if namespace.channel is not None and not (
             namespace.read or (namespace.post and not namespace.reply_to)
@@ -595,6 +631,16 @@ def _request_arguments(namespace, workspace):
             "choices": [_nonblank(choice, "choice") for choice in namespace.choice],
             "multiple": namespace.multiple,
         }
+        if namespace.action is not None:
+            if namespace.choice or namespace.multiple:
+                raise ClientInputError("--action cannot be combined with --choice or --multiple")
+            try:
+                action = json.loads(namespace.action)
+            except ValueError as exc:
+                raise ClientInputError("--action must be a JSON object") from exc
+            if not isinstance(action, dict):
+                raise ClientInputError("--action must be a JSON object")
+            arguments["action"] = action
     elif verb == "apply":
         patch_file = _keyed_command_file(
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
@@ -1159,6 +1205,7 @@ def _display_body(response, verb):
 def _requested_verb(argv):
     for argument in argv:
         if argument in (
+            "schedule",
             "ask",
             "bulletin",
             "name",

@@ -107,6 +107,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "operational_lessons",
         "lesson_command_receipts",
         "memory_migrations",
+        "agent_threads",
         "bulletin_posts",
         "bulletin_command_receipts",
         "bulletin_reads",

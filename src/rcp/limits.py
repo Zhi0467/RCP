@@ -803,3 +803,13 @@ PAPER_CHANGES_PREVIEW_LINES = 12
 # the changed middle becomes one card instead of a quadratic comparison.
 PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
 PAPER_COACH_MAX_REFRESH_ROUNDS = 2
+
+# Member-requested standing schedules per private agent thread.
+AGENT_SCHEDULES_MAX_ACTIVE = 20
+AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+
+# Human approval cards expire on read or resolution, with no background sweeper.
+APPROVAL_CARD_TTL_HOURS = 72
+
+# Gregorian leap-day schedules may span eight years across a non-leap century.
+AGENT_SCHEDULE_SEARCH_DAYS = 366 * 8

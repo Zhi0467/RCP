@@ -8,9 +8,11 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from rcp.approval_actions import ApprovalAction
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.history.queries import parse_head
 from rcp.limits import (
+    AGENT_SCHEDULE_NOTE_MAX_CHARS,
     ASK_ANSWER_MAX_LENGTH,
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
@@ -34,6 +36,7 @@ COMMAND_INVALID = 1
 COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
+    "schedule",
     "validate",
     "merge_answers",
     "graph_diff",
@@ -59,6 +62,7 @@ CommandVerb = Literal[
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
+    "schedule",
     "apply",
     "spawn",
     "merge",
@@ -80,6 +84,7 @@ MutatingCommandVerb = Literal[
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
     {
+        "schedule",
         "apply",
         "spawn",
         "merge",
@@ -427,9 +432,12 @@ class AskArguments(BaseModel):
         default_factory=list, max_length=ASK_CHOICE_MAX_COUNT
     )
     multiple: bool = False
+    action: ApprovalAction | None = None
 
     @model_validator(mode="after")
     def valid_choices(self) -> AskArguments:
+        if self.action is not None and (self.choices or self.multiple):
+            raise ValueError("approval actions cannot supply choices or multiple")
         if not self.question.strip() or any(not choice.strip() for choice in self.choices):
             raise ValueError("question and choices must not be blank")
         if len(set(self.choices)) != len(self.choices):
@@ -664,6 +672,43 @@ class AskCommandRequest(_CommandRequest):
     arguments: AskArguments
 
 
+class ScheduleArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action: Literal["add", "list", "cancel"]
+    cron: str | None = None
+    at: str | None = None
+    timezone: str | None = None
+    note: str | None = Field(default=None, min_length=1, max_length=AGENT_SCHEDULE_NOTE_MAX_CHARS)
+    schedule_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def fields_match_action(self) -> ScheduleArguments:
+        if self.action == "add":
+            if (
+                (self.cron is None) == (self.at is None)
+                or not self.note
+                or not self.note.strip()
+                or self.schedule_id is not None
+            ):
+                raise ValueError("schedule add requires one time and a note")
+        elif any(value is not None for value in (self.cron, self.at, self.timezone, self.note)):
+            raise ValueError("time and note are only valid for schedule add")
+        elif (self.action == "cancel") != (self.schedule_id is not None):
+            raise ValueError("schedule cancel requires a schedule id")
+        return self
+
+
+class ScheduleCommandRequest(_CommandRequest):
+    verb: Literal["schedule"]
+    arguments: ScheduleArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> ScheduleCommandRequest:
+        if self.arguments.action != "list" and self.idempotency_key is None:
+            raise ValueError("schedule mutations require an idempotency key")
+        return self
+
+
 class FlagCommandRequest(_CommandRequest):
     verb: Literal["flag"]
     arguments: FlagArguments
@@ -718,6 +763,7 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
+    | ScheduleCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
     | FlagCommandRequest,

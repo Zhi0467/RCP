@@ -73,6 +73,15 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
                 now=now,
             )
             self.detach_consolidation_for_restore(connection, diagnostic=recorded_detail, now=now)
+            connection.execute(
+                "UPDATE agent_schedules SET state='disabled', disabled_reason='restore', "
+                "pending_since=NULL, next_fire_at=NULL WHERE state IN ('active','done')"
+            )
+            connection.execute(
+                "UPDATE approval_cards SET expires_at=? WHERE result_json IS NULL "
+                "AND running_since IS NULL",
+                (now,),
+            )
             connection.execute("DELETE FROM notification_devices")
             connection.execute("DELETE FROM notification_phone_pairings")
             connection.execute("DELETE FROM notification_graph_markers")
