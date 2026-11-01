@@ -41,14 +41,14 @@ class VoiceEntries(BaseModel):
 def owned_thread(store: AppStore, thread_id: str, user_id: str) -> dict:
     """The thread index, never a transcript filename, establishes ownership."""
     with store.connection() as db:
-        row = db.execute("SELECT * FROM agent_threads WHERE thread_id=?", (thread_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (thread_id,)
+        ).fetchone()
     if row is None or row["user_id"] != user_id:
         raise ConnectionError("thread_not_found", 404)
     thread = dict(row)
     if thread["project_id"] and not store.is_project_member(thread["project_id"], user_id):
         raise ConnectionError("thread_not_found", 404)
-    if thread["closed_at"]:
-        raise ConnectionError("thread_closed", 409)
     return thread
 
 

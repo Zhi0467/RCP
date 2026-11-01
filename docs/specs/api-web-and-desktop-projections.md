@@ -1028,8 +1028,9 @@ it could press its own Confirm and send the screen to OpenAI.
 
 The voice button in a private agent thread opens one GPT-Live session bound to
 that thread; a second click ends it. Audio goes between the page and OpenAI
-over WebRTC; RCP never receives it. The backend checks thread ownership and
-current project membership before reading its transcript or private memory.
+over WebRTC; RCP never receives it. Closed threads return 404 on voice access.
+The backend checks thread ownership and current project membership before
+reading its transcript or private memory.
 
 `POST /api/voice/sessions` takes `{sdp_offer, tools, playbook, thread_id}`.
 The member's OpenAI connection supplies the live and delegation models. The

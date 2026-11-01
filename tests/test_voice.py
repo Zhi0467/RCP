@@ -655,7 +655,7 @@ def test_project_voice_entries_publish_and_memory_is_owner_bound(manifest, tmp_p
             db.execute(
                 "UPDATE agent_threads SET closed_at=? WHERE thread_id=?", (store.now(), THREAD_ID)
             )
-        assert client.post(path + "/voice-entries", json=body).status_code == 409
+        assert client.post(path + "/voice-entries", json=body).status_code == 404
 
 
 @pytest.mark.parametrize("bad_record", [None, [], 42, "not a record"])
@@ -671,3 +671,19 @@ def test_non_object_thread_record_is_refused(voice_setup, monkeypatch, bad_recor
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "thread_transcript_invalid"
     assert calls == []
+
+
+@pytest.mark.parametrize("closed_at", ["", "2026-01-01T00:00:00+00:00"])
+def test_closed_thread_is_hidden_from_voice(voice_setup, closed_at):
+    store, private, client = voice_setup
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE agent_threads SET closed_at=? WHERE thread_id=?", (closed_at, THREAD_ID)
+        )
+    assert client.get(f"/api/agent-threads/{THREAD_ID}/memory").status_code == 404
+    assert (
+        client.post(
+            f"/api/agent-threads/{THREAD_ID}/voice-entries", json={"entries": []}
+        ).status_code
+        == 404
+    )
