@@ -13,6 +13,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import APPROVAL_CARD_TTL_HOURS
 from rcp.storage.digest import append_question_attention
 from rcp.storage.mixin_base import StoreMixinBase
+from rcp.storage.resource_versions import install_agent_thread_version
 
 
 def migrate_approval_cards(connection: sqlite3.Connection) -> None:
@@ -22,6 +23,12 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
         expires_at TEXT NOT NULL, request_id TEXT NOT NULL,
         running_since TEXT, result_json TEXT
     )""")
+
+    install_agent_thread_version(
+        connection,
+        "approval_cards",
+        "SELECT t.user_id FROM questions q JOIN agent_threads t ON t.thread_id=q.owner_id WHERE q.question_id=ROW.question_id AND q.owner_kind='chat' AND q.project_id=coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1))",
+    )
 
 
 def card_sha256(action: dict[str, Any], pinned: dict[str, Any]) -> str:

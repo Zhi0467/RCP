@@ -11,6 +11,10 @@ from pydantic import BaseModel
 from rcp.storage.chat_names import normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
+from rcp.storage.resource_versions import (
+    install_agent_thread_version,
+    install_agent_thread_versions,
+)
 
 
 class AgentThreadRecord(BaseModel):
@@ -50,6 +54,8 @@ def migrate_agent_threads(connection: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX agent_threads_project ON agent_threads(user_id, project_id) WHERE kind='project'"
     )
 
+    install_agent_thread_versions(connection)
+
 
 def migrate_agent_handoffs(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE agent_handoffs (
@@ -60,6 +66,12 @@ def migrate_agent_handoffs(connection: sqlite3.Connection) -> None:
         UNIQUE(source_operation_id, idempotency_key))""")
     connection.execute("""CREATE INDEX agent_handoffs_pending ON agent_handoffs(target_thread_id, created_at)
         WHERE target_operation_id IS NULL""")
+
+    install_agent_thread_version(
+        connection,
+        "agent_handoffs",
+        "SELECT user_id FROM agent_threads WHERE thread_id=ROW.target_thread_id",
+    )
 
 
 def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:

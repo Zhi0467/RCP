@@ -13,6 +13,7 @@ from rcp.limits import AGENT_SCHEDULES_MAX_ACTIVE
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
+from rcp.storage.resource_versions import install_agent_thread_version
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -48,6 +49,12 @@ def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
     )""")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS agent_schedules_due ON agent_schedules(state, next_fire_at)"
+    )
+
+    install_agent_thread_version(
+        connection,
+        "agent_schedules",
+        "SELECT user_id FROM agent_threads WHERE thread_id=ROW.thread_id",
     )
 
 

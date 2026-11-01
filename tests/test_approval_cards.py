@@ -527,13 +527,10 @@ def test_merge_episode_approval_real_route(manifest, tmp_path, monkeypatch, fenc
     assert attempt.attempt_id == card["request_id"]
 
 
-def test_card_table_includes_required_request_id_from_creation(tmp_path):
+def test_card_table_includes_required_request_id_from_creation(store):
     import sqlite3
 
-    from rcp.storage.approval_cards import migrate_approval_cards
-
-    with sqlite3.connect(tmp_path / "cards.sqlite3") as connection:
-        migrate_approval_cards(connection)
+    with store.connection() as connection:
         columns = {row[1]: row for row in connection.execute("PRAGMA table_info(approval_cards)")}
         assert columns["request_id"][2:4] == ("TEXT", 1)
         with pytest.raises(sqlite3.IntegrityError, match="request_id"):

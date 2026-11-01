@@ -133,6 +133,7 @@ class WatermarkRequest(BaseModel):
     open: list[OpenProject]
     due: list[str]
     activated: str | None = None
+    agent_threads: bool = False
 
     @model_validator(mode="after")
     def unique_projects(self) -> Self:
@@ -159,11 +160,16 @@ class ProjectWatermarks(BaseModel):
     sync: SyncHealth
 
 
+class AgentThreadsVersion(BaseModel):
+    version: str
+
+
 class WatermarkResponse(BaseModel):
     epoch: str
     as_of: str
     projects: list[ProjectWatermarks]
     unavailable: list[str]
+    agent_threads: AgentThreadsVersion | None = None
 
 
 @router.post("/api/resource-watermarks")
@@ -206,6 +212,20 @@ def resource_watermarks(
             row["requested_id"]: row["project_id"] for row in authorized if row["project_id"]
         }
         epoch = watermark_epoch(authorized[0]["epoch"])
+        agent_threads = None
+        if body.agent_threads:
+            counter = connection.execute(
+                "SELECT generation FROM resource_versions "
+                "WHERE scope='' AND resource='agent_threads' AND entity=?",
+                (f"member:{member.user_id}",),
+            ).fetchone()
+            agent_threads = AgentThreadsVersion(
+                version=hashlib.sha256(
+                    json.dumps(
+                        [epoch, member.user_id, "agent_threads", counter[0] if counter else 0]
+                    ).encode()
+                ).hexdigest()
+            )
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -344,6 +364,7 @@ def resource_watermarks(
         )
     return WatermarkResponse(
         epoch=epoch,
+        agent_threads=agent_threads,
         as_of=as_of.isoformat(),
         projects=[
             ProjectWatermarks(
