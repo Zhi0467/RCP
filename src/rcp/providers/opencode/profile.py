@@ -289,6 +289,8 @@ class OpenCodeProfile(ProviderProfile):
         fork_session_id: str | None = None,
     ) -> list[str]:
         del prompt, read_dirs, autocompact
+        if capability == "session_summary":
+            raise ValueError("OpenCode does not support read-only session summaries")
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:
             _require_project_write_scope(write_scope, capability=capability, write_dirs=write_dirs)

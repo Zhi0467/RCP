@@ -532,6 +532,7 @@ class ClaudeProfile(ProviderProfile):
             "orchestrate": "dontAsk",
             "scratch_patch": "acceptEdits",
             "paper_suggest": "dontAsk",
+            "session_summary": "dontAsk",
         }[capability]
         command = [
             binary,
@@ -550,6 +551,21 @@ class ClaudeProfile(ProviderProfile):
                     json.dumps(
                         _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
                     ),
+                ]
+            )
+        elif capability == "session_summary":
+            if write_dirs:
+                raise ValueError("Session summaries cannot carry write grants")
+            settings = _claude_hidden_read_settings(hidden_read_scope) if hidden_read_scope else {}
+            settings["disableAllHooks"] = True
+            command.extend(
+                [
+                    "--tools",
+                    "",
+                    "--setting-sources",
+                    "",
+                    "--settings",
+                    json.dumps(settings, separators=(",", ":")),
                 ]
             )
         elif capability == "paper_suggest":

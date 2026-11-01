@@ -507,6 +507,16 @@ on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
 
+### Session summaries
+
+The internal `session_summary` capability forks or resumes a native session for one
+summary answer. It accepts no write roots, command gate, browser grant, or graph
+output collection. Codex uses a read-only permission profile with hidden-read
+denies and disables shell, subagents, and web search. Claude disables tools,
+hooks, external settings sources, and MCP servers. OpenCode refuses this
+capability. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
+owner records the tail fallback when the old provider cannot summarize safely.
+
 ### OpenCode
 
 Every OpenCode launch carries its rules in `OPENCODE_CONFIG_CONTENT`, which

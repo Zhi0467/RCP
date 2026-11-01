@@ -32,6 +32,7 @@ AgentCapability = Literal[
     "orchestrate",
     "scratch_patch",
     "paper_suggest",
+    "session_summary",
 ]
 
 
@@ -185,6 +186,15 @@ class ProviderTurnRequest:
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
     fork_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.capability == "session_summary" and (
+            self.write_dirs
+            or self.write_scope is not None
+            or self.invocation_gate is not None
+            or (self.browser_grant is not None and self.browser_grant.status == "granted")
+        ):
+            raise ValueError("Session summaries cannot carry write, command or browser grants")
 
 
 @dataclass(frozen=True)
