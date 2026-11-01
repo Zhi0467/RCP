@@ -45,7 +45,7 @@ from rcp.providers.opencode.remote import EXIT_MARKER, OpenCodeRunTurnFence
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
 
 _RUNTIME_ID = "opencode.run-json.v1"
@@ -280,7 +280,7 @@ class OpenCodeProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -412,7 +412,7 @@ def _permission(
     capability: AgentCapability,
     cwd: Path,
     write_dirs: list[Path],
-    scope: ProjectWriteScope | None,
+    scope: ProviderWriteScope | None,
     browser_grant: BrowserGrant | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     invocation_gate: ProviderInvocationGate | None = None,

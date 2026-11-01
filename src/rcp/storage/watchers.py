@@ -315,10 +315,12 @@ class WatcherStoreMixin(StoreMixinBase):
     @staticmethod
     def _insert_watcher(connection: sqlite3.Connection, record: StoredWatcherRecord) -> None:
         origin = connection.execute(
-            "SELECT project_id, episode_id, graph_target_json FROM graph_runs "
+            "SELECT project_id, episode_id, graph_target_json, kind FROM graph_runs "
             "WHERE operation_id = ?",
             (record.origin_operation_id,),
         ).fetchone()
+        if origin is not None and origin["kind"] == "space_chat":
+            raise ValueError("Space threads cannot own watchers; hand off to a project thread")
         if origin is None:
             if record.graph_target.kind == "branch":
                 raise ValueError("a branch watcher requires its durable origin task")

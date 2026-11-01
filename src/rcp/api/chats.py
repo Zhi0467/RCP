@@ -173,6 +173,33 @@ class ChatReads(BaseModel):
     archived: list[str]
 
 
+def _visible_chat_display(store: AppStore, project_id: str, user_id: str) -> ChatDisplay:
+    display = store.chat_display(project_id, user_id)
+    hidden = store.private_chat_ids_except(user_id)
+    return ChatDisplay(
+        archived=[chat_id for chat_id in display["archived"] if chat_id not in hidden],
+        titles={
+            chat_id: title for chat_id, title in display["titles"].items() if chat_id not in hidden
+        },
+        pinned=[chat_id for chat_id in display["pinned"] if chat_id not in hidden],
+    )
+
+
+def _visible_chat_reads(
+    store: AppStore, project_id: str, user_id: str, graph_target: GraphTargetRef | None
+) -> ChatReads:
+    reads = store.chat_reads(project_id, user_id, graph_target)
+    hidden = store.private_chat_ids_except(user_id)
+    return ChatReads(
+        baseline=reads["baseline"],
+        reads={key: value for key, value in reads["reads"].items() if key not in hidden},
+        latest_finished={
+            key: value for key, value in reads["latest_finished"].items() if key not in hidden
+        },
+        archived=[key for key in reads["archived"] if key not in hidden],
+    )
+
+
 def _canonical_chat_id(chat_id: str) -> str:
     try:
         canonical = str(uuid.UUID(chat_id))
@@ -195,7 +222,7 @@ def chat_display(
     """Archive and names are the project's; pins are the acting user's."""
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+    return _visible_chat_display(store, project_id, user.user_id)
 
 
 @router.get(
@@ -272,7 +299,7 @@ def archive_chat(
         background_tasks.add_task(
             close_chat_browser_owners, store, project_id, chat_id, delete_profile=False
         )
-    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+    return _visible_chat_display(store, project_id, user.user_id)
 
 
 @router.post(
@@ -295,7 +322,7 @@ def pin_chat(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.set_chat_pinned(project_id, chat_id, user.user_id, pinned=body.pinned)
-    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+    return _visible_chat_display(store, project_id, user.user_id)
 
 
 @router.post(
@@ -321,7 +348,7 @@ def rename_chat(
         store.set_chat_title(project_id, chat_id, user.user_id, body.title)
     except ChatNameError as exc:
         raise HTTPException(status_code=422, detail=exc.code) from exc
-    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+    return _visible_chat_display(store, project_id, user.user_id)
 
 
 @router.get("/api/projects/{project_id}/chat-reads", response_model=ChatReads)
@@ -341,10 +368,8 @@ def chat_reads(
     )
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    return ChatReads(
-        **store.chat_reads(
-            project_id, user.user_id, None if inventory else service.history.graph_target
-        )
+    return _visible_chat_reads(
+        store, project_id, user.user_id, None if inventory else service.history.graph_target
     )
 
 
@@ -370,10 +395,8 @@ def mark_chat_read(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through)
-    return ChatReads(
-        **store.chat_reads(
-            project_id, user.user_id, None if inventory else service.history.graph_target
-        )
+    return _visible_chat_reads(
+        store, project_id, user.user_id, None if inventory else service.history.graph_target
     )
 
 
@@ -441,6 +464,7 @@ def remove_chat_attachment(
 )
 def chats(
     project_id: str,
+    request: Request,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(
         default=CHAT_PAGE_DEFAULT_LIMIT,
@@ -460,7 +484,9 @@ def chats(
         else get_graph_service(catalog, project_id, branch_id, initialize=False)
     )
     project_id = catalog.resolve_project_id(project_id)
+    user = get_identity_access(request).acting_user(request)
     return service.chat_summaries(
+        excluded_chat_ids=store.private_chat_ids_except(user.user_id),
         offset=offset,
         limit=limit,
         inventory=inventory,
@@ -518,7 +544,19 @@ def chat(
     ):
         transcript = ChatTranscript.model_validate({**summary, "messages": []})
     if transcript is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
+        thread = store.agent_thread(chat_id)
+        if thread is not None and thread.project_id == project_id:
+            transcript = ChatTranscript(
+                chat_id=chat_id,
+                kind="project_chat",
+                node_id=None,
+                title=store.chat_name(project_id, chat_id, ""),
+                updated_at=thread.created_at,
+                message_count=0,
+                last_message_preview="",
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Chat not found")
     transcript = transcript.model_copy(
         update={
             "graph_title": "Main"

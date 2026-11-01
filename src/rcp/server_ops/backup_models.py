@@ -49,6 +49,7 @@ BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
 BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
+        "agent-threads",
         "bootstrap-manifests",
         "checkout-recovery",
         "browser",

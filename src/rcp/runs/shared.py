@@ -27,7 +27,7 @@ from rcp.agents.context import CoachContext
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
@@ -850,7 +850,7 @@ async def _stream_agent_events(
     session_id: str | None,
     read_dirs: list[Path],
     write_dirs: list[Path],
-    write_scope: ProjectWriteScope | None,
+    write_scope: ProviderWriteScope | None,
     execution_host: str,
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
@@ -883,6 +883,8 @@ async def _stream_agent_events(
 
         task = execution.store.agent_task(execution.operation_id)
         if task is not None and task.episode_id is not None:
+            if not isinstance(write_scope, ProjectWriteScope):
+                raise ValueError("Episodes require a single project write scope")
             await asyncio.to_thread(
                 validate_episode_launch,
                 execution.store,

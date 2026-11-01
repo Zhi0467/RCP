@@ -1287,7 +1287,7 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
         or not isinstance(attempt, int)
         or attempt != record.attempt
         or payload.get("kind") != record.kind
-        or record.kind not in {"node_chat", "project_chat"}
+        or record.kind not in {"node_chat", "project_chat", "space_chat"}
     ):
         raise _resume_lineage_error(
             f"task {record.operation_id!r} has invalid operation-created provenance"
@@ -1582,6 +1582,7 @@ def _chat_path(service: ProjectService, request: RunRequest) -> Path:
         request.chat_id,
         chat_scope=request.chat_scope,
         node_id=request.node_id,
+        private_owner=service.paper.store.private_chat_owner(request.chat_id),
     )
 
 
@@ -1834,6 +1835,7 @@ def _append_chat_exchange(
                     "type": "user",
                     "role": "user",
                     "text": request.message,
+                    **({"source": request.source} if request.source is not None else {}),
                     "attachments": [item.model_dump(mode="json") for item in request.attachments],
                 }
             )
@@ -1901,7 +1903,19 @@ def _append_chat_records(
 ) -> None:
     """Append under the chat lock; callers own the StateWorkspace transaction."""
     records = [
-        {**record, "graphTarget": service.history.graph_target.model_dump(mode="json")}
+        {
+            **record,
+            "graphTarget": service.history.graph_target.model_dump(mode="json"),
+            **(
+                {"privateOwner": owner}
+                if (
+                    owner := service.paper.store.private_chat_owner(
+                        str(record.get("sessionId", ""))
+                    )
+                )
+                else {}
+            ),
+        }
         for record in records
     ]
     path.parent.mkdir(parents=True, exist_ok=True)

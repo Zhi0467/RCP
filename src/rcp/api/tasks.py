@@ -51,6 +51,7 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
 from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
+from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
@@ -174,6 +175,7 @@ def _agent_artifact_response(
         )
     can_discuss = (
         available
+        and record.kind != "space_chat"
         and supports_comments(descriptor.media_type)
         and isinstance(record.request.get("chat_id"), str)
         and not record.history_only
@@ -187,7 +189,7 @@ def _agent_artifact_response(
         view=artifact_view(descriptor.media_type),
         can_open=available and artifact_view(descriptor.media_type) not in {"pdf", "file"},
         can_download=available,
-        can_keep=available and not kept and not record.history_only,
+        can_keep=available and not kept and not record.history_only and record.kind != "space_chat",
         can_discuss=can_discuss,
         turn_folder=stored.supplier_id if stored is not None else None,
     )
@@ -207,6 +209,7 @@ def _agent_task_response(
     edit_outcomes: Mapping[str, list[AgentTaskReceiptRecord]] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    response["via_agent"] = store.via_agent(record.operation_id)
     consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
     refused_worker = (
         record.can_retry
@@ -359,6 +362,16 @@ def start_ordinary_task(
     branch_id: str | None,
 ) -> AgentTaskRecord:
     """Validate, admit, and start one task exactly as the task route does."""
+    thread = store.agent_thread(str(body.get("chat_id", "")))
+    if thread is not None:
+        if thread.user_id != authorized_by.user_id or thread.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        if kind != "project_chat" or body.get("mode", "work") != "work" or branch_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Agent threads require Work on the project main graph.",
+            )
+        body = {**body, "mode": "work", "chat_scope": "project"}
     service = get_graph_service(catalog, project_id, branch_id, initialize=False, write=True)
     if branch_id is not None and kind not in {"node_chat", "project_chat"}:
         raise HTTPException(
@@ -583,6 +596,7 @@ def client_request(
 @router.get("/api/projects/{project_id}/tasks")
 def agent_tasks(
     project_id: str,
+    request: Request,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -595,7 +609,8 @@ def agent_tasks(
         if branch_id is not None
         else None
     )
-    records = store.agent_tasks(project_id, graph_target=target)
+    user = get_identity_access(request).acting_user(request)
+    records = store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     edit_outcomes = store.agent_task_artifact_edit_outcomes(
@@ -658,7 +673,7 @@ def steer_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    service = get_graph_service(catalog, project_id, record.graph_target.branch_id, write=True)
+    service = cast(ProjectService, task_owner(store, record, catalog=catalog))
     try:
         with project_write_admission(project_id, http_request):
             delivery = begin_chat_steer(
@@ -689,7 +704,8 @@ async def content_agent_artifact(
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
-    require_registered_project(catalog, project_id)
+    if project_id != store.space_id:
+        require_registered_project(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
@@ -773,7 +789,8 @@ async def download_agent_artifact(
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
-    require_registered_project(catalog, project_id)
+    if project_id != store.space_id:
+        require_registered_project(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
@@ -826,7 +843,8 @@ async def _artifact_viewer_response(
     store: StoreDependency,
     head: bool = False,
 ) -> Response:
-    require_registered_project(catalog, project_id)
+    if project_id != store.space_id:
+        require_registered_project(catalog, project_id)
     descriptor, _ = await asyncio.to_thread(
         _load_agent_artifact,
         store,
@@ -839,16 +857,24 @@ async def _artifact_viewer_response(
         f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
         f"/artifacts/{quote(artifact_id, safe='')}/content"
     )
+    if project_id == store.space_id:
+        record = store.agent_task(operation_id)
+        assert record is not None
+        thread_id = str(record.request["chat_id"])
+        content_url = (
+            f"/api/agent-threads/{quote(thread_id, safe='')}/tasks/{quote(operation_id, safe='')}"
+            f"/artifacts/{quote(artifact_id, safe='')}/content"
+        )
     panel = (
         comment_panel(
             {"projectId": project_id, "artifactId": artifact_id, "mediaType": descriptor.media_type}
         )
-        if supports_comments(descriptor.media_type)
+        if project_id != store.space_id and supports_comments(descriptor.media_type)
         else None
     )
     stored = store.artifact(artifact_id)
     live_url = None
-    if stored is not None:
+    if stored is not None and project_id != store.space_id:
         content_url += "?" + urlencode({"version_id": stored.current_version})
         live_url = (
             f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
@@ -973,9 +999,7 @@ def resume_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = get_graph_service(
-                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
-            )
+            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
             try:
                 with _task_preparation_service(service) as reader:
                     experiment_admission.require_current(reader, previous.request)
@@ -1037,7 +1061,7 @@ def repair_agent_task_graph_update(
         if task_graph_capable(previous.kind, previous.request)
         else None
     )
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
+    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
     try:
         experiment_admission.require_current(service, previous.request)
         with _chat_recovery_admission(service, store, previous):
@@ -1075,7 +1099,7 @@ def apply_agent_task_graph_update_again(
     if not task_graph_capable(previous.kind, previous.request):
         raise HTTPException(status_code=409, detail="This task cannot change the graph.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id, write=True)
+    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
     target = service.history.graph_target
     require_graph_edit_admission(store, catalog.resolve_project_id(project_id), target)
     try:
@@ -1140,9 +1164,7 @@ def retry_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = get_graph_service(
-                catalog, project_id, previous.graph_target.branch_id, initialize=False, write=True
-            )
+            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
             try:
                 overrides = body.model_dump(exclude_none=True) if body is not None else {}
                 if previous.kind == "auto_research":
@@ -1283,7 +1305,7 @@ def _read_agent_artifact_bytes(
         record is None
         or record.project_id != project_id
         or not (
-            record.kind in {"node_chat", "project_chat"}
+            record.kind in {"node_chat", "project_chat", "space_chat"}
             or (record.kind == "artifact_edit" and isinstance(edit, dict))
         )
     ):

@@ -224,6 +224,79 @@ class ProjectWriteScope(BaseModel):
         return _without_grants(self.model_dump(mode="json", exclude=excluded))
 
 
+@dataclass(frozen=True)
+class CompositeWriteScope:
+    """A local Space stage plus separately validated per-project write scopes.
+
+    With no projects the provider can still write its outcome in the stage;
+    there is no graph write-scope fingerprint to persist on the task.
+    """
+
+    stage_root: str
+    projects: tuple[ProjectWriteScope, ...] = ()
+    execution_machine: str = "local"
+    execution_host: str = ""
+    capability: Literal["work_auto"] = "work_auto"
+
+    def __post_init__(self) -> None:
+        stage = PurePosixPath(self.stage_root)
+        if not stage.is_absolute() or self.execution_host:
+            raise ValueError("Space scopes require an absolute local stage")
+        ids = [scope.project_id for scope in self.projects]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Space scopes require unique project bindings")
+        for scope in self.projects:
+            if (
+                scope.execution_host
+                or scope.capability != "work_auto"
+                or PurePosixPath(scope.stage_root) != stage / "projects" / scope.project_id
+            ):
+                raise ValueError("Space project scope must use its exact local project stage")
+        object.__setattr__(
+            self, "projects", tuple(sorted(self.projects, key=lambda item: item.project_id))
+        )
+
+    @property
+    def workspace_root(self) -> str:
+        return self.stage_root
+
+    @property
+    def fingerprint(self) -> str | None:
+        if not self.projects:
+            return None
+        return hashlib.sha256(
+            json.dumps(
+                sorted(scope.fingerprint for scope in self.projects), separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+
+    @property
+    def repository_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.repository_roots})
+
+    @property
+    def writable_roots(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                [
+                    self.stage_root,
+                    *(root for scope in self.projects for root in scope.writable_roots),
+                ]
+            )
+        )
+
+    @property
+    def protected_write_paths(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.protected_write_paths})
+
+    @property
+    def absent_protected_paths(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.absent_protected_paths})
+
+
+ProviderWriteScope = ProjectWriteScope | CompositeWriteScope
+
+
 def resolve_project_write_scope(
     *,
     manifest: Manifest,

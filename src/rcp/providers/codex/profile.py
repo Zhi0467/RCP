@@ -33,7 +33,7 @@ from rcp.providers.codex.remote import AppServerTurnFence, CodexSessionFormat
 from rcp.providers.turn_fence import TurnFence
 
 if TYPE_CHECKING:
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
@@ -304,7 +304,7 @@ class CodexProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -463,7 +463,7 @@ class CodexProfile(ProviderProfile):
 
 
 def _codex_permission_profile(
-    scope: ProjectWriteScope, hidden_read_scope: HiddenReadScope | None = None
+    scope: ProviderWriteScope, hidden_read_scope: HiddenReadScope | None = None
 ) -> str:
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots

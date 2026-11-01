@@ -32,6 +32,7 @@ from rcp.agents.group_context import build_group_context
 from rcp.agents.project_repositories import resolve_read_scope, write_repositories
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.api.agent_threads import router as agent_threads_router
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
@@ -133,6 +134,7 @@ from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machine
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
 from rcp.release_check import ReleaseCheck
+from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -782,7 +784,27 @@ def create_app(
     sync_coordinator = SyncCoordinator(
         catalog, on_capture=project_display_cache.rebuild_cached_snapshot
     )
-    refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
+
+    def refresh_cached_project_after_stream(
+        project_id: str,
+        kind: AgentTaskKind,
+        request: AgentTaskRequest,
+        execution: AgentTaskExecution,
+    ) -> None:
+        if kind != "space_chat":
+            project_display_cache.refresh_cached_project_after_stream(
+                project_id, kind, request, execution
+            )
+            return
+        with store.connection() as connection:
+            projects = connection.execute(
+                "SELECT project_id FROM space_turn_project_bindings WHERE operation_id=? ORDER BY project_id",
+                (execution.operation_id,),
+            ).fetchall()
+        for row in projects:
+            project_display_cache.refresh_cached_project_after_stream(
+                str(row[0]), kind, request, execution
+            )
 
     setup = ProjectSetupManager(
         app_data,
@@ -952,10 +974,51 @@ def create_app(
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> AsyncIterator[str]:
-        service = await asyncio.to_thread(catalog.open_execution, project_id)
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("The agent stream lost its durable project task.")
+        if task.graph_target.kind == "branch" and kind != "branch_merge":
+            branch = store.graph_branch(project_id, task.graph_target.branch_id or "")
+            if branch is None:
+                raise ValueError("graph_branch_missing")
+            episode = store.episode(branch.owner_episode_id) if branch.owner_episode_id else None
+            if (
+                episode is not None
+                and episode.mode == "experiment_loop"
+                and task.episode_id == episode.episode_id
+            ):
+                await asyncio.to_thread(ensure_episode_graph_target, episode)
+        owner = await asyncio.to_thread(task_owner, store, task, catalog=catalog)
+        if kind == "space_chat":
+            from rcp.runs.space_chat import SpaceThreadOwner, stream_space_chat_run
+
+            if not isinstance(owner, SpaceThreadOwner) or not isinstance(request, RunRequest):
+                raise TypeError("Space turns require their member-owned Work request")
+            async with aclosing(
+                stream_space_chat_run(
+                    owner,
+                    launcher,
+                    request,
+                    app_data,
+                    execution,
+                    deliver_handoffs=reconcile_thread_handoffs,
+                    project_git_access=lambda admitted_id, service: provider_git_access(
+                        service.manifest,
+                        project_id=admitted_id,
+                        run_on=service.manifest.base_machine,
+                        member=task.authorized_by,
+                        store=store,
+                        data_dir=app_data,
+                        layout=server_layout,
+                    ),
+                )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            return
+        if not isinstance(owner, ProjectService):
+            raise TypeError("Project task has no project service")
+        service = owner
         profile = service.resolve_agent_profile(
             resolved_agent_surface(
                 store,
@@ -977,24 +1040,6 @@ def create_app(
             data_dir=app_data,
             layout=server_layout,
         )
-        if task.graph_target.kind == "branch" and kind != "branch_merge":
-            branch = store.graph_branch(project_id, task.graph_target.branch_id or "")
-            if branch is None:
-                raise ValueError("graph_branch_missing")
-            owner = store.episode(branch.owner_episode_id) if branch.owner_episode_id else None
-            if (
-                owner is not None
-                and owner.mode == "experiment_loop"
-                and task.episode_id == owner.episode_id
-            ):
-                await asyncio.to_thread(ensure_episode_graph_target, owner)
-            service = await asyncio.to_thread(
-                service.for_graph_target,
-                task.graph_target,
-                expected_episode_id=store.branch_owner(
-                    task.project_id, task.graph_target.branch_id or ""
-                ),
-            )
         if kind == "branch_merge":
             if not isinstance(request, BranchMergeRunRequest):
                 raise TypeError("A branch merge task requires its pinned merge request.")
@@ -1154,18 +1199,12 @@ def create_app(
         finalizer = recorded_finalizer(store, execution.operation_id)
         if finalizer is None:
             raise ValueError(f"No recorded-result owner is registered for {kind}.")
-        service = await asyncio.to_thread(catalog.open_execution, project_id)
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("Recorded finalization lost its durable project task.")
-        if task.graph_target.kind == "branch" and kind != "branch_merge":
-            service = await asyncio.to_thread(
-                service.for_graph_target,
-                task.graph_target,
-                expected_episode_id=store.branch_owner(
-                    task.project_id, task.graph_target.branch_id or ""
-                ),
-            )
+        service = await asyncio.to_thread(task_owner, store, task, catalog=catalog)
+        if not isinstance(service, ProjectService):
+            raise ValueError("Space turns have no remote recorded finalizer")
         async with aclosing(
             finalizer(service, launcher, request, app_data, execution, recorded)
         ) as stream:
@@ -1178,15 +1217,9 @@ def create_app(
             raise ValueError("Command mailbox recovery lost its durable task.")
 
         def service_for_validation() -> ProjectService:
-            service = catalog.open_execution(task.project_id)
-            # A merge reads its source and destination itself, as its launch does.
-            if task.graph_target.kind == "branch" and task.kind != "branch_merge":
-                service = service.for_graph_target(
-                    task.graph_target,
-                    expected_episode_id=store.branch_owner(
-                        task.project_id, task.graph_target.branch_id or ""
-                    ),
-                )
+            service = task_owner(store, task, catalog=catalog)
+            if not isinstance(service, ProjectService):
+                raise ValueError("Space turns have no remote command mailbox")
             return service
 
         if task.kind == "auto_research":
@@ -1221,6 +1254,20 @@ def create_app(
         experiment_starter=start_experiment_from_work,
         experiment_resumer=resume_experiment_from_work,
     )
+
+    @contextmanager
+    def thread_project_admission(project_id: str) -> Iterator[None]:
+        with experiment_operation_lock(project_id):
+            store.require_project_accepts_new_work(project_id)
+            yield
+
+    def reconcile_thread_handoffs() -> None:
+        from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
+
+        dispatch_thread_handoffs(
+            store, catalog, background_tasks, project_admission=thread_project_admission
+        )
+
     machine_power = (
         MachinePowerController(
             store, demand_reader=lambda: demand_snapshot(store, background_tasks)
@@ -1430,6 +1477,9 @@ def create_app(
             settled = store.agent_task(execution.operation_id)
             if settled is not None and settled.status == "succeeded":
                 record_work_question_receipts(execution)
+            reconcile_thread_handoffs()
+            if kind == "space_chat":
+                return
             reconcile_question_answers(project_id)
             watcher_delivery.evaluate_graph_conditions_after_task(
                 project_id,
@@ -1997,12 +2047,15 @@ def create_app(
                 await asyncio.to_thread(fill_space_machines, store)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
+                await asyncio.to_thread(reconcile_thread_handoffs)
                 from rcp.runs.branch_merge_admission import recover_branch_merge_task
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
                 for task in store.recoverable_bound_merge_tasks():
                     try:
-                        service = await asyncio.to_thread(catalog.open_execution, task.project_id)
+                        service = await asyncio.to_thread(task_owner, store, task, catalog=catalog)
+                        if not isinstance(service, ProjectService):
+                            raise ValueError("Merge recovery requires a project owner")
                         await asyncio.to_thread(
                             recover_branch_merge_task, background_tasks, service, task
                         )
@@ -2654,6 +2707,7 @@ def create_app(
     app.include_router(episode_router)
     app.include_router(experiments_router)
     app.include_router(chats_router)
+    app.include_router(agent_threads_router)
     app.include_router(questions_router)
     app.include_router(consolidation_router)
     app.include_router(proposal_refresh_router)

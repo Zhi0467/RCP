@@ -34,6 +34,8 @@ COMMAND_INVALID = 1
 COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
+    "projects",
+    "handoff",
     "validate",
     "merge_answers",
     "graph_diff",
@@ -59,6 +61,7 @@ CommandVerb = Literal[
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
+    "handoff",
     "apply",
     "spawn",
     "merge",
@@ -80,6 +83,7 @@ MutatingCommandVerb = Literal[
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
     {
+        "handoff",
         "apply",
         "spawn",
         "merge",
@@ -113,6 +117,34 @@ class CommandCredential(BaseModel):
     version: Literal[1] = COMMAND_PROTOCOL_VERSION
     mailbox_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     token: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ProjectsArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["list", "show"]
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def project_matches_action(self) -> ProjectsArguments:
+        if (self.project_id is not None) != (self.action == "show"):
+            raise ValueError("Only projects show requires project_id")
+        if self.project_id is not None and not self.project_id.strip():
+            raise ValueError("project_id must not be blank")
+        return self
+
+
+class HandoffArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: str = Field(min_length=1, max_length=200)
+    message_file: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$")
+
+    @model_validator(mode="after")
+    def valid_target(self) -> HandoffArguments:
+        if not self.project_id.strip() or self.message_file in {".", ".."}:
+            raise ValueError("handoff requires a project and a safe workspace filename")
+        return self
 
 
 class ValidateArguments(BaseModel):
@@ -565,6 +597,22 @@ class _CommandRequest(BaseModel):
         return stripped
 
 
+class ProjectsCommandRequest(_CommandRequest):
+    verb: Literal["projects"]
+    arguments: ProjectsArguments
+
+
+class HandoffCommandRequest(_CommandRequest):
+    verb: Literal["handoff"]
+    arguments: HandoffArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> HandoffCommandRequest:
+        if self.idempotency_key is None:
+            raise ValueError("handoff requires an idempotency key")
+        return self
+
+
 class ValidateCommandRequest(_CommandRequest):
     verb: Literal["validate"]
     arguments: ValidateArguments
@@ -700,6 +748,8 @@ class BulletinCommandRequest(_CommandRequest):
 
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
+    | ProjectsCommandRequest
+    | HandoffCommandRequest
     | MergeAnswersCommandRequest
     | ApplyCommandRequest
     | StatusCommandRequest

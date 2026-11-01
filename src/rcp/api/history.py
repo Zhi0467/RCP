@@ -65,6 +65,9 @@ def history_summaries(
     return [
         {
             **summary,
+            "via_agent": store.via_agent(
+                str(summary["task_id"]) if summary.get("task_id") else None
+            ),
             "episode": (
                 decoration.model_dump(mode="json")
                 if (decoration := episodes.get(summary.get("episode_id"))) is not None

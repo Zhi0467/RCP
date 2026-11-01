@@ -137,6 +137,9 @@ class AppStoreBase:
         (64, "consolidation_targets_v1"),
         (65, "per_member_provider_logins_v1"),
         (66, "memory_files_v1"),
+        (67, "agent_threads_v1"),
+        (68, "agent_handoffs_v1"),
+        (69, "space_turn_project_bindings_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -978,10 +981,27 @@ class AppStoreBase:
             name="per_member_provider_logins_v1",
             migration=migrate_per_member_provider_logins,
         )
+        from rcp.storage.agent_threads import (
+            migrate_agent_handoffs,
+            migrate_agent_threads,
+            migrate_space_turn_project_bindings,
+        )
         from rcp.storage.memory import migrate_memory_files
 
         self._run_storage_schema_migration(
             connection, version=66, name="memory_files_v1", migration=migrate_memory_files
+        )
+        self._run_storage_schema_migration(
+            connection, version=67, name="agent_threads_v1", migration=migrate_agent_threads
+        )
+        self._run_storage_schema_migration(
+            connection, version=68, name="agent_handoffs_v1", migration=migrate_agent_handoffs
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=69,
+            name="space_turn_project_bindings_v1",
+            migration=migrate_space_turn_project_bindings,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

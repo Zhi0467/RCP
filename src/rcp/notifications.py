@@ -186,6 +186,7 @@ class NotificationSender:
             try:
                 self._recheck_bulletin_mentions(project)
                 self._recheck_questions(project)
+                self._recheck_agent_threads(project)
                 self._recheck_episodes(project)
                 self._recheck_consolidation(project)
             except Exception:
@@ -402,6 +403,41 @@ class NotificationSender:
             notification["observed_blocked_reason"] = event
             self.store.observe_consolidation_notification(event, notification)
 
+    def _recheck_agent_threads(self, project: ProjectRecord) -> None:
+        """Retry unread private replies with a stable turn id and an exact recipient."""
+        since = (
+            datetime.fromisoformat(self.store.now()) - timedelta(seconds=NOTIFICATION_TTL_SECONDS)
+        ).isoformat()
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT t.thread_id,t.user_id,r.operation_id,r.finished_at FROM agent_threads t "
+                "JOIN graph_runs r ON r.project_id=t.project_id "
+                "AND json_extract(r.request_json, '$.chat_id')=t.thread_id "
+                "LEFT JOIN chat_reads seen ON seen.project_id=t.project_id "
+                "AND seen.chat_id=t.thread_id AND seen.user_id=t.user_id "
+                "WHERE t.project_id=? AND t.closed_at IS NULL AND r.visible=1 "
+                "AND r.status IN ('succeeded','failed','interrupted') AND r.finished_at>? "
+                "AND (seen.read_through IS NULL OR seen.read_through<r.finished_at)",
+                (project.project_id, since),
+            ).fetchall()
+            for row in rows:
+                notice: dict[str, Any] = _notification(
+                    project,
+                    target="main",
+                    kind="agent_thread",
+                    item_id=row["thread_id"],
+                    occurrence=row["operation_id"],
+                    reason="agent_thread",
+                    created_at=row["finished_at"],
+                )
+                notice["deep_link"] = (
+                    f"#/projects/{quote(project.project_id, safe='')}?view=chats"
+                    f"&chat={quote(row['thread_id'], safe='')}"
+                )
+                self.store.enqueue_notification(
+                    connection, recipient_user_id=row["user_id"], **notice
+                )
+
     def _recheck_questions(self, project: ProjectRecord) -> None:
         for question_id in self.store.unobserved_notification_questions(project.project_id):
             question = self.store.get_question(question_id)
@@ -422,6 +458,8 @@ class NotificationSender:
                 project_link = f"#/projects/{quote(project.project_id, safe='')}"
                 owner_id = quote(question.origin.owner_id, safe="")
                 if question.origin.owner_kind == "chat":
+                    if owner := self.store.private_chat_owner(question.origin.owner_id):
+                        notification["recipient_user_id"] = owner
                     notification["deep_link"] = f"{project_link}?view=chats&chat={owner_id}"
                 else:
                     target = quote(question.origin.graph_target.key, safe="")

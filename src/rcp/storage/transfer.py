@@ -574,6 +574,15 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             operation_id = str(row["operation_id"])
             request = _json_object(row["request_json"])
             result = _json_object(row["result_json"])
+            private = (
+                connection.execute(
+                    "SELECT 1 FROM agent_threads WHERE thread_id=?",
+                    (request.get("chat_id"),),
+                ).fetchone()
+                is not None
+            )
+            if private:
+                request = {**request, "message": None}
             output = outputs.get(operation_id)
             records.append(
                 TransferTaskRecord(
@@ -581,8 +590,8 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     kind=row["kind"],
                     status=row["status"],
                     request=capture_task_request_history(row["kind"], request),
-                    assistant=cls._transfer_assistant_history(result),
-                    error=row["error"],
+                    assistant=cls._transfer_assistant_history({} if private else result),
+                    error=None if private else row["error"],
                     applied_revision=row["applied_revision"],
                     graph_updates=cls._transfer_graph_updates(result),
                     attempt=row["attempt"],
@@ -597,13 +606,14 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     updated_at=row["updated_at"],
                     started_at=row["started_at"],
                     finished_at=row["finished_at"],
-                    status_message=row["status_message"],
+                    status_message="Private thread" if private else row["status_message"],
                     events=tuple(
-                        cls._transfer_task_event(project_id, item) for item in events[operation_id]
+                        cls._transfer_task_event(project_id, item)
+                        for item in (() if private else events[operation_id])
                     ),
                     receipts=tuple(
                         cls._transfer_task_receipt(project_id, item)
-                        for item in receipts[operation_id]
+                        for item in (() if private else receipts[operation_id])
                     ),
                     usage=tuple(cls._transfer_task_usage(item) for item in usages[operation_id]),
                     contracts=tuple(
@@ -613,7 +623,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                             sha256=item["sha256"],
                             created_at=item["created_at"],
                         )
-                        for item in contracts[operation_id]
+                        for item in (() if private else contracts[operation_id])
                     ),
                     output=(
                         TransferTaskOutput(

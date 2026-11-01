@@ -49,7 +49,7 @@ from rcp.providers.claude.remote import (
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
@@ -501,7 +501,7 @@ class ClaudeProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -805,7 +805,7 @@ def _claude_paper_settings(
 
 
 def _claude_write_settings(
-    scope: ProjectWriteScope | None = None,
+    scope: ProviderWriteScope | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     cwd: Path | None = None,
 ) -> dict[str, object]:

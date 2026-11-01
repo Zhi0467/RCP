@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from rcp.agents.git_access import ProviderGitAccess
     from rcp.agents.write_scope import RegisteredRepositoryRoot
     from rcp.config import Manifest
-    from rcp.core.models import HiddenReadScope
+    from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope
     from rcp.providers import AgentCapability, ProviderId
     from rcp.transport.run_stage import RemoteRunStage
 
@@ -273,6 +273,34 @@ def unhidden_read_scope(
     )
 
 
+def local_hidden_read_key_evidence(
+    app_data_dir: Path | None, git_access: ProviderGitAccess | None = None
+) -> tuple[HiddenReadKeyEvidence, ...]:
+    """Confirm the local account's SSH and installed-project keys once per launch."""
+    from rcp.agents.write_scope import installed_server_storage
+    from rcp.ssh_agent import (
+        confirm_key_evidence,
+        running_agent_socket,
+        user_ssh_identity_candidates,
+    )
+
+    deploy_keys = {key for _, key in git_access.checkouts} if git_access is not None else set()
+    storage = installed_server_storage(app_data_dir) if app_data_dir is not None else None
+    if storage is not None:
+        deploy_keys.update(
+            str(path) for path in Path(storage.credentials_root).glob("projects/*/*/id_ed25519")
+        )
+    return confirm_key_evidence(
+        private_key_paths=user_ssh_identity_candidates(Path.home()),
+        kind="ssh_identity",
+        agent_socket=os.environ.get("SSH_AUTH_SOCK"),
+    ) + confirm_key_evidence(
+        private_key_paths=tuple(sorted(deploy_keys)),
+        kind="deploy_key",
+        agent_socket=running_agent_socket(),
+    )
+
+
 def prepare_hidden_read_launch(
     *,
     manifest: Manifest,
@@ -294,37 +322,16 @@ def prepare_hidden_read_launch(
 
     from rcp.agents.hidden_read import resolve_hidden_read_scope, staged_hidden_read_source
     from rcp.agents.staged_hidden_read import install as install_hidden_read_files
-    from rcp.agents.write_scope import installed_server_storage
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.limits import HIDDEN_READ_STAGE_TIMEOUT_SECONDS
     from rcp.ssh_agent import (
-        confirm_key_evidence,
         confirm_remote_key_evidence,
-        running_agent_socket,
-        user_ssh_identity_candidates,
     )
 
     machine = manifest.machine_map[execution_machine]
     try:
         if remote_stage is None:
-            deploy_keys = (
-                {key for _, key in git_access.checkouts} if git_access is not None else set()
-            )
-            storage = installed_server_storage(app_data_dir) if app_data_dir is not None else None
-            if storage is not None:
-                deploy_keys.update(
-                    str(path)
-                    for path in Path(storage.credentials_root).glob("projects/*/*/id_ed25519")
-                )
-            evidence = confirm_key_evidence(
-                private_key_paths=user_ssh_identity_candidates(Path.home()),
-                kind="ssh_identity",
-                agent_socket=os.environ.get("SSH_AUTH_SOCK"),
-            ) + confirm_key_evidence(
-                private_key_paths=tuple(sorted(deploy_keys)),
-                kind="deploy_key",
-                agent_socket=running_agent_socket(),
-            )
+            evidence = local_hidden_read_key_evidence(app_data_dir, git_access)
         else:
             # Confirm on the execution account, never against the local agents.
             # A transport failure before inventory raises into the unhidden fallback.

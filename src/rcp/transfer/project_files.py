@@ -348,6 +348,8 @@ def _capture_project_files_locked(
             export_root.chmod(0o700)
             source_root = workspace.backup_source_root(export_root)
             for source in canonical_chat_backup_sources(source_root):
+                if source.path.name.startswith("private-"):
+                    continue
                 captured.append(
                     _capture_chunks(
                         capture_root,

@@ -37,6 +37,7 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
+        "handoff",
         "ask",
         "bulletin",
         "name",
@@ -85,6 +86,16 @@ BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
 BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
 BULLETIN_BODY = ("body_file", "<body-file>")
 NAME_VALUE = ("name", "<name>")
+PROJECTS_SHOW = ("project_id", "<project-id>")
+HANDOFF_MESSAGE = ("message_file", "<message-file>")
+
+
+def handoff_usage():
+    return f"handoff {_option_usage(KEY_OPTION)} {PROJECTS_SHOW[1]} {HANDOFF_MESSAGE[1]}"
+
+
+def projects_usages():
+    return ("projects list", f"projects show {PROJECTS_SHOW[1]}")
 
 
 def _option_usage(option):
@@ -282,6 +293,16 @@ def _parser():
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
+    projects = subparsers.add_parser("projects")
+    project_actions = projects.add_subparsers(dest="projects_action", required=True)
+    project_actions.add_parser("list")
+    project_show = project_actions.add_parser("show")
+    project_show.add_argument(PROJECTS_SHOW[0])
+    handoff = subparsers.add_parser("handoff")
+    handoff.add_argument(KEY_OPTION[1], required=True)
+    handoff.add_argument(PROJECTS_SHOW[0])
+    handoff.add_argument(HANDOFF_MESSAGE[0])
+
     graph_diff = subparsers.add_parser("graph_diff", aliases=["graph-diff"])
     graph_diff.add_argument("from_head", nargs="?")
     graph_diff.add_argument("to_head", nargs="?")
@@ -423,6 +444,23 @@ def _nonblank(value, label):
 
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
+    if verb == "projects":
+        arguments = {"action": namespace.projects_action}
+        if namespace.projects_action == "show":
+            arguments["project_id"] = _nonblank(namespace.project_id, "project id")
+        return verb, None, arguments
+    if verb == "handoff":
+        filename = namespace.message_file
+        if not _SAFE_FILE.fullmatch(filename) or filename in (".", ".."):
+            raise ClientInputError("handoff requires a safe workspace filename")
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key"),
+            {
+                "project_id": _nonblank(namespace.project_id, "project id"),
+                "message_file": filename,
+            },
+        )
     if verb in ("validate", "merge_answers"):
         is_patch = verb == "validate"
         label = "patch.json" if is_patch else "answers file"
@@ -1159,6 +1197,8 @@ def _display_body(response, verb):
 def _requested_verb(argv):
     for argument in argv:
         if argument in (
+            "projects",
+            "handoff",
             "ask",
             "bulletin",
             "name",

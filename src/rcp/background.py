@@ -270,6 +270,7 @@ class AgentTaskExecution:
     #: Set only by the ordinary Work owner from its validated stage file; provider
     #: event text can never supply it.
     turn_outcome: TurnOutcome | None = None
+    project_results: dict[str, str] | None = None
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
     #: setting refused. Only the read that failed knows which happened, and by
@@ -603,6 +604,9 @@ class BackgroundAgentTasks:
                 and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
             ):
                 question_followups.append(task.operation_id)
+        from rcp.runs.agent_thread_commands import restart_handoff_turns, unstarted_handoff_turns
+
+        handoff_dispatches = unstarted_handoff_turns(self.store)
         consolidation_dispatches = {
             operation_id
             for operation_id in self.store.pending_consolidation_operation_ids()
@@ -617,9 +621,11 @@ class BackgroundAgentTasks:
                 *[task.operation_id for _episode, task, _request in reserved_roots],
                 *[task.operation_id for _episode, task in reserved_experiments],
                 *question_followups,
+                *[task.operation_id for task in handoff_dispatches],
             }
         )
         self._discard_orphan_mailbox_checkpoints()
+        restart_handoff_turns(self, handoff_dispatches)
         restart_stopping_experiment_recoveries(self)
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
@@ -717,6 +723,8 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         *,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
@@ -769,13 +777,15 @@ class BackgroundAgentTasks:
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
-        return self._create_and_spawn(
+        record = self._create_and_spawn(
             project_id,
             kind,
             request,
             estimate_seconds=estimate,
             estimate_samples=samples,
             operation_id=operation_id,
+            handoff_id=handoff_id,
+            handoff_wake_id=handoff_wake_id,
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
@@ -783,6 +793,8 @@ class BackgroundAgentTasks:
             graph_base_head=graph_base_head,
             ensure_graph_target=ensure_graph_target,
         )
+        assert record is not None
+        return record
 
     def resume(
         self,
@@ -1519,6 +1531,8 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
@@ -1778,6 +1792,8 @@ class BackgroundAgentTasks:
                 record = self.store.create_agent_task(
                     task_record,
                     continuation_cause=continuation,
+                    handoff_id=handoff_id,
+                    handoff_wake_id=handoff_wake_id,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -2451,6 +2467,8 @@ class BackgroundAgentTasks:
                 )
             return
         result: dict[str, object] = {"messages": outcome.messages}
+        if execution.project_results is not None:
+            result["project_results"] = execution.project_results
         if outcome.artifacts:
             result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
         if outcome.turn_outcome is not None:
