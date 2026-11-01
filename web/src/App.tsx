@@ -24,16 +24,20 @@ import {
   useRefreshRuntime,
   useRefreshHealth,
   useResource,
+  useResourcePresentation,
+  ResourcePresentationContext,
 } from "./core/useResource";
 import {
   taskResourceProfile,
   tasksResourceKey,
   taskStatusProfile,
+  taskProgressProfile,
   usageProfile,
 } from "./agents/taskResources";
 import {
   type SettingsResource,
   settingsProfile,
+  consolidationProfile,
   providerLoginsProfile,
   useProjectResource,
 } from "./projects/projectResources";
@@ -122,6 +126,7 @@ import {
   openEpisodeReport,
   setArtifactViewerHidden,
   useDockedArtifact,
+  useArtifactViewerTarget,
 } from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
@@ -148,6 +153,7 @@ import {
   loadProviderLogins,
   loadMergePreview,
   mergeEpisodeToMain,
+  mergeGraphFork,
   continueEpisode,
   refreshEdge,
   refreshProposal,
@@ -291,7 +297,6 @@ import type {
   ProjectArtifact,
   EpisodeIsolationChoice,
   MergeDiffPath,
-  MergeEpisodeBody,
   ExperimentControlState,
   ExperimentStartResponse,
   LoopOverlap,
@@ -370,7 +375,11 @@ import {
   type NotificationLink,
 } from "./core/notificationLinks";
 import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
-import { unfinishedJobsFromError } from "./graph/mergePanel";
+import {
+  pickerMergeRequestBody,
+  unfinishedJobsFromError,
+  type BranchMergeRequest,
+} from "./graph/mergePanel";
 import {
   attentionGraphForProjection,
   decisionsAwaitingChoice,
@@ -583,6 +592,10 @@ function RefreshMemberApp(props: {
   identity: ReturnType<typeof useActorIdentity>;
 }) {
   const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
+  const mergeDispatch = useRef<BranchMergeRequest | null>(null);
+  const artifactTarget = useArtifactViewerTarget();
+  const artifactProject = useRef<string | null>(null);
+  artifactProject.current = artifactTarget?.projectId ?? null;
   const runtime = useMemo(() => {
     const store = new ResourceStore();
     // The epoch changes with the backend process, so a restart is seen on the
@@ -591,7 +604,15 @@ function RefreshMemberApp(props: {
     const scheduler = new RefreshScheduler({
       store,
       clientId: crypto.randomUUID(),
-      openProjects: () => bindings.current.open,
+      openProjects: () => {
+        const open = new Map(bindings.current.open.map((project) => [project.projectId, project]));
+        // Artifact controls and one-shot detail reads can outlive a routed project tab.
+        const interests = store.awaitingWatermark();
+        if (artifactProject.current) interests.add(artifactProject.current);
+        for (const projectId of interests)
+          if (!open.has(projectId)) open.set(projectId, { projectId, currentRef: "main" });
+        return [...open.values()];
+      },
       activeProjectId: () => bindings.current.active,
       onLostAccess: (id) => bindings.current.lostAccess(id),
       send: async (request, signal) => {
@@ -622,9 +643,14 @@ function RefreshMemberApp(props: {
   useLayoutEffect(() => bindArtifactResourceStore(runtime.store), [runtime]);
   return (
     <RefreshRuntimeContext.Provider value={runtime}>
-      <MemberApp {...props} refreshBindings={bindings} />
+      <MemberApp {...props} refreshBindings={bindings} mergeDispatch={mergeDispatch} />
       <RefreshHealthMarker />
-      <ArtifactViewer />
+      <ArtifactViewer
+        onMerge={(...args) => {
+          if (!mergeDispatch.current) return Promise.reject(new Error("Merge is unavailable."));
+          return mergeDispatch.current(...args);
+        }}
+      />
     </RefreshRuntimeContext.Provider>
   );
 }
@@ -646,10 +672,12 @@ function MemberApp({
   desktop,
   identity,
   refreshBindings,
+  mergeDispatch,
 }: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
   refreshBindings: React.RefObject<RefreshBindings>;
+  mergeDispatch: React.RefObject<BranchMergeRequest | null>;
 }) {
   const { store, scheduler } = useRefreshRuntime();
   const refreshHealth = useRefreshHealth();
@@ -755,6 +783,8 @@ function MemberApp({
     loops: LoopOverlap;
   } | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const [panelReadAttempt, setPanelReadAttempt] = useState(0);
+  const [visiblePanelKey, setVisiblePanelKey] = useState<string | null>(null);
   useEffect(() => {
     if (notice?.kind === "error") reportClientEvent("notice", notice.text);
   }, [notice]);
@@ -888,6 +918,7 @@ function MemberApp({
   const graphView = useResource(
     `${projectId}:graph-view`,
     backendSessionReady && projectId ? graphProfile(projectId, graphTarget) : null,
+    JSON.stringify([backendKey, projectId, graphTarget]),
   );
   const { project: targetProject, humanDraft } = projectDraftPreviewEffectInputs(
     projectSession,
@@ -1089,12 +1120,13 @@ function MemberApp({
     loading,
     getActiveProjectId,
   });
+  const panelKey = JSON.stringify([backendKey, projectId, graphTarget, view, panelReadAttempt]);
   // Pins are fetched only where their tabs are shown.
   const pinsProfile =
     backendSessionReady && projectId && (view === "artifacts" || view === "paper")
       ? researchViewsProfile(projectId, pinBranchId)
       : null;
-  const pinsResource = useResource("research-view-pins", pinsProfile);
+  const pinsResource = useResource("research-view-pins", pinsProfile, panelKey);
   const pins = pinsResource.value?.pins ?? [];
   const activePin =
     pinSelection?.scope === pinScope
@@ -1261,6 +1293,7 @@ function MemberApp({
   } = useAgentTasks({
     projectId: backendSessionReady ? projectId : null,
     reportError: reportErrorNotice,
+    presentationKey: panelKey,
   });
   const { retryTask, tasks: projectTasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const tasks = useMemo(
@@ -1321,6 +1354,7 @@ function MemberApp({
     isActiveProject: isActiveGraph,
     visibleTranscriptIds: resolveVisibleChatTranscriptIds,
     reportError: reportErrorNotice,
+    presentationKey: panelKey,
   });
   const { floatingChat, draftConversations, selectedChatId, chatReads, chatTranscripts } =
     chatStateSnapshot;
@@ -1768,6 +1802,71 @@ function MemberApp({
     return () => window.removeEventListener("hashchange", handleHashChange);
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
+  const retainedProfiles = useMemo(() => {
+    if (!backendSessionReady || !projectId) return [];
+    const profiles: import("./core/resourceStore").ResourceProfile<unknown>[] = [
+      graphProfile(projectId, graphTarget),
+      refsProfile(projectId),
+      watchersProfile(projectId, graphTarget),
+      chatsResourceProfile(projectId, apiBase),
+      episodesProfile(projectId),
+      experimentIndexProfile(projectId),
+      historyProfile(projectId, graphTarget),
+      manifestProfile(projectId, graphTarget, projectSession.transitionManifestExpectedRulesetTag),
+    ];
+    if (view === "paper") profiles.push(paperProfile(projectId));
+    return profiles;
+  }, [
+    backendSessionReady,
+    projectId,
+    graphTarget,
+    apiBase,
+    view,
+    projectSession.transitionManifestExpectedRulesetTag,
+  ]);
+  const panelRequiredIds = useMemo(() => {
+    if (!backendSessionReady || !projectId) return [];
+    const profiles: import("./core/resourceStore").ResourceProfile<unknown>[] = [
+      graphProfile(projectId, graphTarget),
+    ];
+    if (view === "chats" || view === "execution")
+      profiles.push(
+        watchersProfile(projectId, graphTarget),
+        chatsResourceProfile(projectId, apiBase),
+        episodesProfile(projectId),
+        experimentIndexProfile(projectId),
+        taskStatusProfile(projectId),
+        taskProgressProfile(projectId),
+      );
+    if (view === "attention" || view === "scientific")
+      profiles.push(consolidationProfile(projectId));
+    if (view === "paper") profiles.push(paperProfile(projectId));
+    if (pinsProfile) profiles.push(pinsProfile);
+    if (view === "settings")
+      profiles.push(
+        settingsProfile(projectId),
+        providerLoginsProfile(projectId),
+        usageProfile(projectId),
+      );
+    return profiles.map((profile) => resourceKeyId(profile.key));
+  }, [backendSessionReady, projectId, graphTarget, apiBase, view, pinsProfile]);
+  const panelAdmission = useResourcePresentation("project-panel", panelKey, panelRequiredIds);
+  const admittedGraph = panelAdmission.views[0]?.value as ProjectSnapshot | undefined;
+  const graphAtAdmittedHead = Boolean(
+    project &&
+    admittedGraph &&
+    project.id === admittedGraph.id &&
+    JSON.stringify(project.graph_head) === JSON.stringify(admittedGraph.graph_head),
+  );
+  const panelReady =
+    panelAdmission.status === "ready" && (visiblePanelKey === panelKey || graphAtAdmittedHead);
+  useLayoutEffect(() => {
+    if (panelAdmission.status !== "ready" || !graphAtAdmittedHead) return;
+    setVisiblePanelKey(panelKey);
+    setProjectReconciliation("authoritative");
+    setLoading(false);
+  }, [panelAdmission.status, graphAtAdmittedHead, panelKey]);
+
   useLayoutEffect(() => {
     if (!backendSessionReady || setupOpen) return;
     if (!projectId) {
@@ -1787,18 +1886,7 @@ function MemberApp({
       paperEditorStates.current.clear();
     }
     lastProjectOpen.current = { backendKey, projectId, graphTarget, setupOpen };
-    const profiles: import("./core/resourceStore").ResourceProfile<unknown>[] = [
-      graphProfile(projectId, graphTarget),
-      refsProfile(projectId),
-      watchersProfile(projectId, graphTarget),
-      chatsResourceProfile(projectId, apiBase),
-      episodesProfile(projectId),
-      experimentIndexProfile(projectId),
-      historyProfile(projectId, graphTarget),
-      manifestProfile(projectId, graphTarget, projectSession.transitionManifestExpectedRulesetTag),
-    ];
-    if (view === "paper") profiles.push(paperProfile(projectId));
-    tabResources.select(projectId, profiles);
+    tabResources.select(projectId, retainedProfiles);
     const current = getProjectSessionState();
     if (
       !previous ||
@@ -1854,8 +1942,8 @@ function MemberApp({
       setProjectReconciliation("authoritative");
     } else setProjectReconciliation("opening");
     setLoading(!snapshot);
-    // Switching only paints retained data and registers demand. The scheduler
-    // validates the current ref without blocking this layout pass.
+    // Retain the data internally; presentation admission withholds it until
+    // the current entry's watermark and payload have been validated.
   }, [
     store,
     tabResources,
@@ -1879,6 +1967,7 @@ function MemberApp({
     resetProjectSelection,
     restoreProjectTabState,
     projectSession.transitionManifestExpectedRulesetTag,
+    retainedProfiles,
   ]);
 
   useEffect(() => {
@@ -1938,7 +2027,8 @@ function MemberApp({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [desktop]);
 
-  const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
+  const mutationsDisabled =
+    !panelReady || (project ? projectGraphMutationsDisabled(project) : false);
   const {
     consolidation,
     error: consolidationError,
@@ -3475,29 +3565,124 @@ function MemberApp({
     }
   };
 
-  const requestEpisodeMerge = async (episodeId: string, body: MergeEpisodeBody = {}) => {
-    if (!apiBase || !projectId || episodeAction) return;
-    const finishEpisodeAction = beginEpisodeAction(`merge:${episodeId}`);
-    if (!finishEpisodeAction) return;
-    const mutation = beginTaskPublication(store, projectId);
+  const mergeRequests = useRef(new Map<string, { id: string; choices: string }>());
+  const requestBranchMerge: BranchMergeRequest = async (
+    source,
+    body = {},
+    proposedRequestId,
+    requestedProjectId = projectId ?? undefined,
+  ) => {
+    if (!requestedProjectId) throw new Error("No project is open.");
+    const mergeApiBase = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
+    if (episodeAction) {
+      const message = "Another episode action is still starting. Try Merge again.";
+      setNotice({ kind: "error", text: message });
+      throw new Error(message);
+    }
+    const ref =
+      typeof source === "string"
+        ? projectGraphRefs?.find(
+            (item) =>
+              item.kind === "branch" &&
+              (item.episode_id === source || item.current_episode_id === source),
+          )
+        : source;
+    const episodeId =
+      typeof source === "string" ? source : (source.current_episode_id ?? source.episode_id);
+    const identity = `${requestedProjectId}:${ref?.branch_id ?? `episode:${episodeId}`}`;
+    const { request_id: suppliedRequestId, ...choices } = body;
+    const choiceIdentity = JSON.stringify(choices, Object.keys(choices).sort());
+    let admission = mergeRequests.current.get(identity);
+    if (!admission || admission.choices !== choiceIdentity) {
+      admission = {
+        id: suppliedRequestId ?? proposedRequestId ?? crypto.randomUUID(),
+        choices: choiceIdentity,
+      };
+      mergeRequests.current.set(identity, admission);
+    }
+    const finishEpisodeAction = beginEpisodeAction(`merge:${identity}`);
+    if (!finishEpisodeAction)
+      throw new Error("Another episode action is still starting. Try Merge again.");
+    const mutation = beginTaskPublication(store, requestedProjectId);
+    setNotice({ kind: "info", text: "Starting merge…" });
+    let acceptedOperationId: string | null = null;
     try {
-      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId, body);
-      replaceEpisode(nextEpisode);
-      const mergeTask = activeBranchMergeTask(nextEpisode);
+      let mergeTask: AgentTask | null;
+      if (episodeId) {
+        const nextEpisode = await mergeEpisodeToMain(mergeApiBase, episodeId, {
+          ...choices,
+          request_id: admission.id,
+        });
+        if (isActiveProject(requestedProjectId)) replaceEpisode(nextEpisode);
+        if (Object.hasOwn(nextEpisode, "accepted_merge_task")) {
+          mergeTask = nextEpisode.accepted_merge_task ?? null;
+        } else {
+          // Older servers return only the episode's existing task projection.
+          console.info("Merge response uses the legacy episode task projection.");
+          mergeTask = activeBranchMergeTask(nextEpisode);
+        }
+      } else {
+        if (!ref || ref.kind !== "branch") throw new Error("The merge source is unavailable.");
+        const accepted = await mergeGraphFork(requestedProjectId, ref.branch_id, admission.id);
+        acceptedOperationId = accepted.operation_id;
+        mergeTask = await refreshAgentTask(accepted.operation_id, requestedProjectId);
+      }
       mutation.settle(mergeTask ?? undefined);
-      if (mergeTask) recordStartedTask(mergeTask);
-      await reload();
+      mergeRequests.current.delete(identity);
+      if (isActiveProject(requestedProjectId)) {
+        if (mergeTask) recordStartedTask(mergeTask);
+        setGraphRefsReread(null);
+      }
+      store.invalidate(resourceKeyId(refsProfile(requestedProjectId).key));
+      setNotice({
+        kind: mergeTask?.failed ? "error" : "info",
+        text: mergeTask?.failed
+          ? (mergeTask.error ?? "Merge failed. Open its task for details.")
+          : mergeTask && isActiveTask(mergeTask)
+            ? "Merge is running"
+            : "Merge completed",
+      });
     } catch (error) {
       mutation.fail();
-      // A pause on unfinished jobs is the panel's own prompt, not an app error.
-      if (!unfinishedJobsFromError(error)) {
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (!acceptedOperationId && error instanceof ApiError && error.status < 500)
+        mergeRequests.current.delete(identity);
+      // Unfinished jobs use the shared confirmation at either entry point.
+      if (acceptedOperationId) {
+        store.invalidate(tasksResourceKey(requestedProjectId));
+        scheduler.now();
+      }
+      if (unfinishedJobsFromError(error)) setNotice(null);
+      else {
+        const detail = error instanceof Error ? error.message : String(error);
+        setNotice({
+          kind: "error",
+          text: acceptedOperationId
+            ? `Merge was accepted, but task details could not be loaded: ${detail}`
+            : detail,
+        });
       }
       throw error;
     } finally {
       finishEpisodeAction();
     }
+    try {
+      if (isActiveProject(requestedProjectId)) await reload();
+    } catch (error) {
+      if (isActiveProject(requestedProjectId))
+        setNotice({
+          kind: "error",
+          text: `Merge was accepted, but the project could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+    }
   };
+
+  // The sibling viewer uses this commit's project-aware dispatcher.
+  useLayoutEffect(() => {
+    mergeDispatch.current = requestBranchMerge;
+    return () => {
+      if (mergeDispatch.current === requestBranchMerge) mergeDispatch.current = null;
+    };
+  });
 
   const messageEpisodeOrchestrator = async (
     episodeId: string,
@@ -3652,13 +3837,13 @@ function MemberApp({
   };
 
   const refreshAgentTask = useCallback(
-    async (operationId: string): Promise<AgentTask> => {
-      if (!projectId) throw new Error("No project is open.");
+    async (operationId: string, requestedProjectId = projectId): Promise<AgentTask> => {
+      if (!requestedProjectId) throw new Error("No project is open.");
       const owner = crypto.randomUUID();
-      const id = store.register(owner, taskResourceProfile(projectId, operationId));
+      const id = store.register(owner, taskResourceProfile(requestedProjectId, operationId));
       try {
         await store.refresh(id);
-        store.invalidate(tasksResourceKey(projectId));
+        store.invalidate(tasksResourceKey(requestedProjectId));
         return store.committedValue<AgentTask>(id)!;
       } finally {
         store.release(owner, [id]);
@@ -4794,6 +4979,9 @@ function MemberApp({
               : current,
           );
         }}
+        onMerge={(source, requestId, confirmUnfinishedJobs) =>
+          requestBranchMerge(source, pickerMergeRequestBody(confirmUnfinishedJobs), requestId)
+        }
       />
     </>
   );
@@ -5097,415 +5285,459 @@ function MemberApp({
       <main
         className={view === "paper" ? "project-panel paper" : "project-panel"}
         ref={panelRef}
-        inert={projectReconciliation !== "authoritative"}
-        aria-busy={projectReconciliation !== "authoritative"}
+        aria-busy={!panelReady}
       >
-        <Suspense
-          fallback={
-            <div className="project-view-loading" aria-label="Loading view">
-              <LoaderCircle className="spin" />
-            </div>
-          }
-        >
-          {view === "overview" && (
-            <ProjectOverview
-              project={projectWithTransitionProjection(
-                project,
-                presentedGraph,
-                presentedExperimentControl,
-                presentedAttention,
-                presentedTransitionProjection?.primary_question ?? project.primary_question ?? null,
-                presentedTransitionProjection?.counts ?? project.counts,
-              )}
-              graph={presentedGraph}
-              pendingProposals={pendingProposals}
-              decisionsAwaitingChoice={attentionDecisions}
-              latestRevisionSummary={
-                latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
+        {!panelReady ? (
+          <div
+            className="project-view-loading"
+            role={panelAdmission.status === "error" ? "alert" : "status"}
+          >
+            {panelAdmission.status === "error" ? (
+              <>
+                <TriangleAlert size={18} />
+                <span>{errorMessage(panelAdmission.error)}</span>
+                <button
+                  className="button secondary"
+                  onClick={() => {
+                    for (const id of panelRequiredIds) store.invalidate(id);
+                    setPanelReadAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  Retry loading project
+                </button>
+              </>
+            ) : (
+              <LoaderCircle className="spin" aria-label="Loading current view" />
+            )}
+          </div>
+        ) : (
+          <ResourcePresentationContext.Provider value={panelKey}>
+            <Suspense
+              fallback={
+                <div className="project-view-loading" aria-label="Loading view">
+                  <LoaderCircle className="spin" />
+                </div>
               }
-              onNavigate={changeView}
-              digest={{
-                digest: projectDigest,
-                loaded: projectDigestLoaded,
-                targetName: branchName(projectGraphRefs, graphTarget),
-                error: projectDigestError,
-                catchingUp: projectDigestCatchingUp,
-                onCatchUp:
-                  graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
-                onOpenArtifact: (artifactId) => openArtifact({ projectId: project.id, artifactId }),
-              }}
-            />
-          )}
-          {view === "attention" && (
-            <div className="attention-page">
-              <div className="attention-main">
-                <AttentionOverview
-                  proposals={pendingProposals}
-                  decisions={attentionDecisions}
-                  blockers={openBlockers}
-                  consolidationCount={consolidationCount}
+            >
+              {view === "overview" && (
+                <ProjectOverview
+                  project={projectWithTransitionProjection(
+                    project,
+                    presentedGraph,
+                    presentedExperimentControl,
+                    presentedAttention,
+                    presentedTransitionProjection?.primary_question ??
+                      project.primary_question ??
+                      null,
+                    presentedTransitionProjection?.counts ?? project.counts,
+                  )}
+                  graph={presentedGraph}
+                  pendingProposals={pendingProposals}
+                  decisionsAwaitingChoice={attentionDecisions}
+                  latestRevisionSummary={
+                    latestRevisionSummary?.to_revision === graph.revision
+                      ? latestRevisionSummary
+                      : null
+                  }
+                  onNavigate={changeView}
+                  digest={{
+                    digest: projectDigest,
+                    loaded: projectDigestLoaded,
+                    targetName: branchName(projectGraphRefs, graphTarget),
+                    error: projectDigestError,
+                    catchingUp: projectDigestCatchingUp,
+                    onCatchUp:
+                      graphTarget.kind === "main" ? () => void catchUpProjectDigest() : undefined,
+                    onOpenArtifact: (artifactId) =>
+                      openArtifact({ projectId: project.id, artifactId }),
+                  }}
+                />
+              )}
+              {view === "attention" && (
+                <div className="attention-page">
+                  <div className="attention-main">
+                    <AttentionOverview
+                      proposals={pendingProposals}
+                      decisions={attentionDecisions}
+                      blockers={openBlockers}
+                      consolidationCount={consolidationCount}
+                      onSelectNode={openNode}
+                    />
+                    <ProposalJudgmentSection
+                      proposals={pendingProposals}
+                      graph={attentionGraph}
+                      proposalActions={presentedAttention.proposal_actions}
+                      staleProposalIds={presentedAttention.stale_proposal_ids}
+                      refreshableProposalIds={
+                        graphTarget.kind === "main"
+                          ? canonicalAttention.refreshable_proposal_ids
+                          : []
+                      }
+                      onRefresh={async (proposal) =>
+                        (await refreshProposal(apiBase, proposal.id)).chat_id
+                      }
+                      onOpenChat={openChats}
+                      onOpenNode={openNodeById}
+                      glossaryIndex={glossaryIndex}
+                      draft={mutationsDisabled ? null : humanDraft}
+                      mutationsDisabled={mutationsDisabled}
+                      onDecision={(proposal, decision) =>
+                        updateHumanDraft((draft) =>
+                          stageProposalDecision(draft, graph, proposal.id, decision),
+                        )
+                      }
+                    />
+                    <EvidenceFlagInbox
+                      key={project.id}
+                      apiBase={apiBase}
+                      projectId={project.id}
+                      rows={flagRows}
+                      writesDisabled={!consolidation?.can_write}
+                      onChanged={updateEvidenceFlag}
+                      onOpenNode={openNode}
+                      onOpenChat={(chatId) => {
+                        if (graphTarget.kind === "main") return openChats(chatId);
+                        setPendingMainChat(chatId);
+                        window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
+                      }}
+                    />
+                    <ConsolidationInbox
+                      items={openConsolidation}
+                      schedule={consolidation?.schedule ?? null}
+                      needsRenewal={needsConsolidationRenewal}
+                      error={consolidationError}
+                      writesDisabled={!consolidation?.can_write}
+                      onOpenReport={(artifactId) =>
+                        openArtifact({ projectId: project.id, artifactId })
+                      }
+                      onOpenTask={selectTaskInspector}
+                      onResolve={async (runId, action) => {
+                        await resolveConsolidationRun(apiBase, runId, action);
+                        refreshConsolidation();
+                      }}
+                      onOpenSettings={() => {
+                        changeView("settings");
+                        window.requestAnimationFrame(() =>
+                          document
+                            .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
+                            ?.scrollIntoView({ block: "center" }),
+                        );
+                      }}
+                    />
+                  </div>
+                  <AttentionRail
+                    decisions={attentionDecisions}
+                    blockers={openBlockers}
+                    onSelectNode={openNodeById}
+                  />
+                </div>
+              )}
+              {view === "scientific" && (
+                <ResearchDrilldown
+                  graph={presentedGraph}
+                  trustView={trustView}
+                  changedNodeIds={digestChangedNodes}
+                  onSelectNode={openNode}
+                  trailRef={activeResearchTrailRef!}
+                />
+              )}
+              {view === "dag" && (
+                <DagView
+                  key={graphSessionKey(project.id, graphTarget)}
+                  graphTarget={graphTarget}
+                  branchChanges={project.graph_changes}
+                  graphRefs={projectGraphRefs}
+                  mergePaths={branchMergePaths}
+                  onInspectTask={selectTaskInspector}
+                  {...graphEditingProps}
+                  graph={presentedGraph}
+                  trustView={trustView}
+                  viewportRef={activeDagViewportRef!}
+                  relationFocusNodeId={dagRelationFocusId}
+                  onClearRelationFocus={clearDagRelationFocus}
+                  changedNodeIds={digestChangedNodes}
                   onSelectNode={openNode}
                 />
-                <ProposalJudgmentSection
-                  proposals={pendingProposals}
-                  graph={attentionGraph}
-                  proposalActions={presentedAttention.proposal_actions}
-                  staleProposalIds={presentedAttention.stale_proposal_ids}
-                  refreshableProposalIds={
-                    graphTarget.kind === "main" ? canonicalAttention.refreshable_proposal_ids : []
-                  }
-                  onRefresh={async (proposal) =>
-                    (await refreshProposal(apiBase, proposal.id)).chat_id
-                  }
-                  onOpenChat={openChats}
-                  onOpenNode={openNodeById}
+              )}
+              {view === "artifacts" && (
+                <div className="artifacts-shell">
+                  <ArtifactsSubnav
+                    view={view}
+                    filesActive={!activePin}
+                    paperUnsynced={paper}
+                    failed={Boolean(pinsResource.error)}
+                    onChange={(next) => {
+                      setPinSelection(null);
+                      setRequestedPin(null);
+                      changeView(next);
+                    }}
+                  >
+                    {pinTabs}
+                  </ArtifactsSubnav>
+                  {activePin ? (
+                    <PinnedView
+                      key={`${pinScope}:${activePin.artifact_id}`}
+                      projectId={project.id}
+                      branchId={pinBranchId}
+                      pin={activePin}
+                      nodes={presentedGraph.nodes}
+                      ready={
+                        projectReconciliation === "authoritative" &&
+                        project.id === projectId &&
+                        sameGraphTarget(project.graph_target, graphTarget)
+                      }
+                      onOpenNode={openNodeById}
+                    />
+                  ) : (
+                    <Artifacts
+                      graphRefs={projectGraphRefs ?? null}
+                      key={project.id}
+                      projectId={project.id}
+                      nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                      onOpenNode={openNodeById}
+                    />
+                  )}
+                </div>
+              )}
+              {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
+              {view === "execution" && (
+                <div className="combined-runs-view">
+                  {experimentStartOverlap?.projectId === project.id && (
+                    <ExperimentStartOverlap
+                      projectId={project.id}
+                      graphRefs={projectGraphRefs ?? null}
+                      loops={experimentStartOverlap.loops}
+                      onDismiss={() => setExperimentStartOverlap(null)}
+                    />
+                  )}
+                  <ExecutionView
+                    graphTarget={graphTarget}
+                    graphRefs={projectGraphRefs ?? null}
+                    providerLogins={runsProviderLogins}
+                    viewerUserId={actorIdentity?.user.user_id ?? null}
+                    onOpenSignIns={openSignIns}
+                    machines={project.machines}
+                    computeApiBase={apiBase}
+                    onOpenSettings={() => changeView("settings")}
+                    graph={presentedGraph}
+                    episodes={episodes}
+                    episodeAction={episodeAction}
+                    tasks={projectTasks}
+                    watchers={watchers}
+                    experimentControl={presentedExperimentControl}
+                    experimentEntriesLoaded={experimentLoopsLoaded}
+                    experimentUnavailableLoops={experimentLoopsUnavailableRows}
+                    experimentEntries={experimentLoops.filter(
+                      (entry) => entry.project_id === project.id,
+                    )}
+                    exactExperimentRoute={selectedExperimentRoute}
+                    exactExperimentEntry={selectedTargetExperiment}
+                    selectedExperimentId={selectedExperimentRunId}
+                    focusExperimentId={focusExperimentRunId}
+                    selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
+                    runBusy={taskStarting}
+                    stopBusyIds={experimentStopIds}
+                    watcherCheckBusyId={watcherCheckId}
+                    taskActionId={taskActionId}
+                    selectedExperimentConversation={selectedExperimentConversation}
+                    providerLabels={Object.fromEntries(
+                      Object.entries(project.providers).map(([id, provider]) => [
+                        id,
+                        provider.label || id,
+                      ]),
+                    )}
+                    mutationsDisabled={mutationsDisabled}
+                    experimentStartsDisabled={experimentStartRequiresSync}
+                    onInspectTask={selectTaskInspector}
+                    onStopEpisode={requestEpisodeStop}
+                    onArchiveEpisode={requestEpisodeArchive}
+                    onMergeEpisode={requestBranchMerge}
+                    onContinueEpisode={requestEpisodeContinuation}
+                    onSendEpisodeMessage={messageEpisodeOrchestrator}
+                    onOperateEpisodeTask={operateEpisodeOrchestratorTask}
+                    onSwitchEpisodeProvider={chooseRetryTask}
+                    onSelectExperiment={selectExperiment}
+                    onOpenExperimentEntry={(entry) =>
+                      commitProjectOpen(project.id, experimentBoardRouteToken(entry))
+                    }
+                    onDetailFocused={clearExperimentFocus}
+                    onOpenHistory={openProjectHistory}
+                    project={project}
+                    onRunExperiment={(
+                      node,
+                      invocationCeiling,
+                      browserRequested,
+                      launchConfig,
+                      message,
+                    ) =>
+                      void runExperiment(
+                        node,
+                        invocationCeiling,
+                        undefined,
+                        browserRequested,
+                        launchConfig,
+                        message,
+                      )
+                    }
+                    onStopExperiment={(nodeId, episodeId) =>
+                      void stopExperimentLoop(nodeId, episodeId)
+                    }
+                    onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
+                    onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
+                    onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
+                    onSwitchExperimentProvider={chooseRetryTask}
+                    episodeReportHref={(episodeId) =>
+                      episodeReportPreviewUrl(project.id, episodeId)
+                    }
+                  />
+                </div>
+              )}
+              {view === "paper" && (
+                <div className="artifacts-shell">
+                  <ArtifactsSubnav
+                    view={view}
+                    paperUnsynced={paper}
+                    failed={Boolean(pinsResource.error)}
+                    onChange={changeView}
+                  >
+                    {pinTabs}
+                  </ArtifactsSubnav>
+                  <PaperWorkspace
+                    key={project.id}
+                    apiBase={apiBase}
+                    project={project}
+                    tasks={projectTasks}
+                    onStartTask={startAgentTask}
+                    editorState={paperEditorStates.current.get(project.id)}
+                    requestedFileId={requestedPaperFile}
+                    onEditorStateChange={(state) =>
+                      paperEditorStates.current.set(project.id, state)
+                    }
+                  />
+                </div>
+              )}
+              {view === "settings" && (
+                <ProjectSettings
+                  apiBase={apiBase}
+                  project={project}
+                  identity={actorIdentity}
+                  onLeftProject={() => {
+                    closeProjectRoute(project.id);
+                    removeProject(project.id);
+                    forgetProjectViewport(project.id);
+                    setNotice({ kind: "info", text: "You left this project." });
+                  }}
+                  usage={usage}
+                  onRefreshUsage={refreshUsage}
+                  cacheClearDisabled={Boolean(activeTask)}
+                  writesDisabled={mutationsDisabled}
+                  spaceKind={verifiedHealth?.space_kind ?? "personal"}
+                  onRefreshReadiness={refreshReadiness}
+                  readinessRequest={{
+                    pending: settingsResource.loading,
+                    providerError: settingsResource.error ? String(settingsResource.error) : null,
+                  }}
+                  onMovePersonalProjectToTeam={movePersonalProjectToTeam}
+                  consolidation={consolidation}
+                  consolidationError={consolidationError}
+                  onConsolidationChanged={refreshConsolidation}
+                  onCacheMetricsChange={(cacheMetrics) => {
+                    updateProject((current) =>
+                      current ? { ...current, cache_metrics: cacheMetrics } : current,
+                    );
+                  }}
+                  onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
+                    store.invalidate(resourceKeyId(settingsProfile(saved.id).key));
+                    beginProjectSnapshotRequest(saved.id);
+                    if (graphTarget.kind === "main")
+                      updateProject((current) =>
+                        projectSettingsSavedProject(saved, current, retention),
+                      );
+                    else void reload();
+                    setNotice({ kind: "info", text: "Project defaults synced." });
+                  }}
+                />
+              )}
+              {view === "chats" && (
+                <ChatsWorkspace
+                  project={project}
+                  actorId={draftActorId}
+                  conversations={inventoryConversations}
+                  selectedChatId={selectedChatId}
+                  board={agentsBoard}
+                  onBoardChange={(board) => {
+                    pendingOwnThreadProject.current = null;
+                    setAgentsBoard(board);
+                  }}
+                  nodes={presentedGraph.nodes}
+                  graphTarget={graphTarget}
                   glossaryIndex={glossaryIndex}
-                  draft={mutationsDisabled ? null : humanDraft}
-                  mutationsDisabled={mutationsDisabled}
-                  onDecision={(proposal, decision) =>
-                    updateHumanDraft((draft) =>
-                      stageProposalDecision(draft, graph, proposal.id, decision),
+                  tasks={tasks}
+                  watchers={watchers}
+                  graphChangesDisabled={mutationsDisabled}
+                  unreadChatIds={unreadChatIds}
+                  chatTranscripts={chatTranscripts}
+                  onSelect={(chatId) => {
+                    pendingOwnThreadProject.current = null;
+                    const conversation = inventoryConversations.find(
+                      (item) => item.chatId === chatId,
+                    );
+                    // An orchestrator opens in place from main; other chats open on their own graph.
+                    if (
+                      conversation &&
+                      conversation.conversationKind !== "auto_research" &&
+                      !sameGraphTarget(conversation.graphTarget, graphTarget)
+                    ) {
+                      window.location.hash = conversationHref(project.id, conversation);
+                      return;
+                    }
+                    selectListedConversation(chatId, conversation?.graphTarget);
+                  }}
+                  onOpenNode={openNodeById}
+                  onStartTask={startAgentTask}
+                  onResumeTask={(task) => void operateTask(task, "resume")}
+                  onRetryTask={requestRetry}
+                  onRefreshTask={refreshAgentTask}
+                  onInspectTask={selectTaskInspector}
+                  onOpenInbox={() => changeView("attention")}
+                  onRepairGraphUpdate={repairGraphUpdate}
+                  onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+                  onRemoveDraft={discardDraft}
+                  orchestratorEpisodes={orchestratorEpisodes}
+                  episodeAction={episodeAction}
+                  ownThread={
+                    ownThread
+                      ? {
+                          thread: ownThread,
+                          revision: agentThreads.revision,
+                          voice,
+                          onThreadChanged: agentThreads.patch,
+                        }
+                      : null
+                  }
+                  onSendOrchestratorMessage={messageEpisodeOrchestrator}
+                  archivedRevision={chatReads?.archived.join("\n")}
+                  onArchiveChange={() =>
+                    void refreshChatReads().catch((error) =>
+                      reportErrorNotice(
+                        `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                      ),
                     )
                   }
-                />
-                <EvidenceFlagInbox
-                  key={project.id}
-                  apiBase={apiBase}
-                  projectId={project.id}
-                  rows={flagRows}
-                  writesDisabled={!consolidation?.can_write}
-                  onChanged={updateEvidenceFlag}
-                  onOpenNode={openNode}
-                  onOpenChat={(chatId) => {
-                    if (graphTarget.kind === "main") return openChats(chatId);
-                    setPendingMainChat(chatId);
-                    window.location.hash = projectViewHash(project.id, MAIN_GRAPH, "chats");
-                  }}
-                />
-                <ConsolidationInbox
-                  items={openConsolidation}
-                  schedule={consolidation?.schedule ?? null}
-                  needsRenewal={needsConsolidationRenewal}
-                  error={consolidationError}
-                  writesDisabled={!consolidation?.can_write}
-                  onOpenReport={(artifactId) => openArtifact({ projectId: project.id, artifactId })}
-                  onResolve={async (runId, action) => {
-                    await resolveConsolidationRun(apiBase, runId, action);
-                    refreshConsolidation();
-                  }}
-                  onOpenSettings={() => {
-                    changeView("settings");
-                    window.requestAnimationFrame(() =>
-                      document
-                        .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
-                        ?.scrollIntoView({ block: "center" }),
+                  onNewSession={(conversation) => {
+                    const node = conversation.nodeId
+                      ? (presentedGraph.nodes[conversation.nodeId] ?? null)
+                      : null;
+                    selectChat(
+                      unsentConversation(conversations, conversation.kind, conversation.nodeId)
+                        ?.chatId ?? startConversation(conversation.kind, node, project.name),
                     );
                   }}
                 />
-              </div>
-              <AttentionRail
-                decisions={attentionDecisions}
-                blockers={openBlockers}
-                onSelectNode={openNodeById}
-              />
-            </div>
-          )}
-          {view === "scientific" && (
-            <ResearchDrilldown
-              graph={presentedGraph}
-              trustView={trustView}
-              changedNodeIds={digestChangedNodes}
-              onSelectNode={openNode}
-              trailRef={activeResearchTrailRef!}
-            />
-          )}
-          {view === "dag" && (
-            <DagView
-              key={graphSessionKey(project.id, graphTarget)}
-              graphTarget={graphTarget}
-              branchChanges={project.graph_changes}
-              graphRefs={projectGraphRefs}
-              mergePaths={branchMergePaths}
-              onInspectTask={selectTaskInspector}
-              {...graphEditingProps}
-              graph={presentedGraph}
-              trustView={trustView}
-              viewportRef={activeDagViewportRef!}
-              relationFocusNodeId={dagRelationFocusId}
-              onClearRelationFocus={clearDagRelationFocus}
-              changedNodeIds={digestChangedNodes}
-              onSelectNode={openNode}
-            />
-          )}
-          {view === "artifacts" && (
-            <div className="artifacts-shell">
-              <ArtifactsSubnav
-                view={view}
-                filesActive={!activePin}
-                paperUnsynced={paper}
-                failed={Boolean(pinsResource.error)}
-                onChange={(next) => {
-                  setPinSelection(null);
-                  setRequestedPin(null);
-                  changeView(next);
-                }}
-              >
-                {pinTabs}
-              </ArtifactsSubnav>
-              {activePin ? (
-                <PinnedView
-                  key={`${pinScope}:${activePin.artifact_id}`}
-                  projectId={project.id}
-                  branchId={pinBranchId}
-                  pin={activePin}
-                  nodes={presentedGraph.nodes}
-                  ready={
-                    projectReconciliation === "authoritative" &&
-                    project.id === projectId &&
-                    sameGraphTarget(project.graph_target, graphTarget)
-                  }
-                  onOpenNode={openNodeById}
-                />
-              ) : (
-                <Artifacts
-                  graphRefs={projectGraphRefs ?? null}
-                  key={project.id}
-                  projectId={project.id}
-                  nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
-                  onOpenNode={openNodeById}
-                />
               )}
-            </div>
-          )}
-          {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
-          {view === "execution" && (
-            <div className="combined-runs-view">
-              {experimentStartOverlap?.projectId === project.id && (
-                <ExperimentStartOverlap
-                  projectId={project.id}
-                  graphRefs={projectGraphRefs ?? null}
-                  loops={experimentStartOverlap.loops}
-                  onDismiss={() => setExperimentStartOverlap(null)}
-                />
-              )}
-              <ExecutionView
-                graphTarget={graphTarget}
-                graphRefs={projectGraphRefs ?? null}
-                providerLogins={runsProviderLogins}
-                viewerUserId={actorIdentity?.user.user_id ?? null}
-                onOpenSignIns={openSignIns}
-                machines={project.machines}
-                computeApiBase={apiBase}
-                onOpenSettings={() => changeView("settings")}
-                graph={presentedGraph}
-                episodes={episodes}
-                episodeAction={episodeAction}
-                tasks={projectTasks}
-                watchers={watchers}
-                experimentControl={presentedExperimentControl}
-                experimentEntriesLoaded={experimentLoopsLoaded}
-                experimentUnavailableLoops={experimentLoopsUnavailableRows}
-                experimentEntries={experimentLoops.filter(
-                  (entry) => entry.project_id === project.id,
-                )}
-                exactExperimentRoute={selectedExperimentRoute}
-                exactExperimentEntry={selectedTargetExperiment}
-                selectedExperimentId={selectedExperimentRunId}
-                focusExperimentId={focusExperimentRunId}
-                selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
-                runBusy={taskStarting}
-                stopBusyIds={experimentStopIds}
-                watcherCheckBusyId={watcherCheckId}
-                taskActionId={taskActionId}
-                selectedExperimentConversation={selectedExperimentConversation}
-                providerLabels={Object.fromEntries(
-                  Object.entries(project.providers).map(([id, provider]) => [
-                    id,
-                    provider.label || id,
-                  ]),
-                )}
-                mutationsDisabled={mutationsDisabled}
-                experimentStartsDisabled={experimentStartRequiresSync}
-                onInspectTask={selectTaskInspector}
-                onStopEpisode={requestEpisodeStop}
-                onArchiveEpisode={requestEpisodeArchive}
-                onMergeEpisode={requestEpisodeMerge}
-                onContinueEpisode={requestEpisodeContinuation}
-                onSendEpisodeMessage={messageEpisodeOrchestrator}
-                onOperateEpisodeTask={operateEpisodeOrchestratorTask}
-                onSwitchEpisodeProvider={chooseRetryTask}
-                onSelectExperiment={selectExperiment}
-                onOpenExperimentEntry={(entry) =>
-                  commitProjectOpen(project.id, experimentBoardRouteToken(entry))
-                }
-                onDetailFocused={clearExperimentFocus}
-                onOpenHistory={openProjectHistory}
-                project={project}
-                onRunExperiment={(
-                  node,
-                  invocationCeiling,
-                  browserRequested,
-                  launchConfig,
-                  message,
-                ) =>
-                  void runExperiment(
-                    node,
-                    invocationCeiling,
-                    undefined,
-                    browserRequested,
-                    launchConfig,
-                    message,
-                  )
-                }
-                onStopExperiment={(nodeId, episodeId) => void stopExperimentLoop(nodeId, episodeId)}
-                onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
-                onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
-                onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
-                onSwitchExperimentProvider={chooseRetryTask}
-                episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
-              />
-            </div>
-          )}
-          {view === "paper" && (
-            <div className="artifacts-shell">
-              <ArtifactsSubnav
-                view={view}
-                paperUnsynced={paper}
-                failed={Boolean(pinsResource.error)}
-                onChange={changeView}
-              >
-                {pinTabs}
-              </ArtifactsSubnav>
-              <PaperWorkspace
-                key={project.id}
-                apiBase={apiBase}
-                project={project}
-                tasks={projectTasks}
-                onStartTask={startAgentTask}
-                editorState={paperEditorStates.current.get(project.id)}
-                requestedFileId={requestedPaperFile}
-                onEditorStateChange={(state) => paperEditorStates.current.set(project.id, state)}
-              />
-            </div>
-          )}
-          {view === "settings" && (
-            <ProjectSettings
-              apiBase={apiBase}
-              project={project}
-              identity={actorIdentity}
-              onLeftProject={() => {
-                closeProjectRoute(project.id);
-                removeProject(project.id);
-                forgetProjectViewport(project.id);
-                setNotice({ kind: "info", text: "You left this project." });
-              }}
-              usage={usage}
-              onRefreshUsage={refreshUsage}
-              cacheClearDisabled={Boolean(activeTask)}
-              writesDisabled={mutationsDisabled}
-              spaceKind={verifiedHealth?.space_kind ?? "personal"}
-              onRefreshReadiness={refreshReadiness}
-              readinessRequest={{
-                pending: settingsResource.loading,
-                providerError: settingsResource.error ? String(settingsResource.error) : null,
-              }}
-              onMovePersonalProjectToTeam={movePersonalProjectToTeam}
-              consolidation={consolidation}
-              consolidationError={consolidationError}
-              onConsolidationChanged={refreshConsolidation}
-              onCacheMetricsChange={(cacheMetrics) => {
-                updateProject((current) =>
-                  current ? { ...current, cache_metrics: cacheMetrics } : current,
-                );
-              }}
-              onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
-                store.invalidate(resourceKeyId(settingsProfile(saved.id).key));
-                beginProjectSnapshotRequest(saved.id);
-                if (graphTarget.kind === "main")
-                  updateProject((current) =>
-                    projectSettingsSavedProject(saved, current, retention),
-                  );
-                else void reload();
-                setNotice({ kind: "info", text: "Project defaults synced." });
-              }}
-            />
-          )}
-          {view === "chats" && (
-            <ChatsWorkspace
-              project={project}
-              actorId={draftActorId}
-              conversations={inventoryConversations}
-              selectedChatId={selectedChatId}
-              board={agentsBoard}
-              onBoardChange={(board) => {
-                pendingOwnThreadProject.current = null;
-                setAgentsBoard(board);
-              }}
-              nodes={presentedGraph.nodes}
-              graphTarget={graphTarget}
-              glossaryIndex={glossaryIndex}
-              tasks={tasks}
-              watchers={watchers}
-              graphChangesDisabled={mutationsDisabled}
-              unreadChatIds={unreadChatIds}
-              chatTranscripts={chatTranscripts}
-              onSelect={(chatId) => {
-                pendingOwnThreadProject.current = null;
-                const conversation = inventoryConversations.find((item) => item.chatId === chatId);
-                // An orchestrator opens in place from main; other chats open on their own graph.
-                if (
-                  conversation &&
-                  conversation.conversationKind !== "auto_research" &&
-                  !sameGraphTarget(conversation.graphTarget, graphTarget)
-                ) {
-                  window.location.hash = conversationHref(project.id, conversation);
-                  return;
-                }
-                selectListedConversation(chatId, conversation?.graphTarget);
-              }}
-              onOpenNode={openNodeById}
-              onStartTask={startAgentTask}
-              onResumeTask={(task) => void operateTask(task, "resume")}
-              onRetryTask={requestRetry}
-              onRefreshTask={refreshAgentTask}
-              onInspectTask={selectTaskInspector}
-              onOpenInbox={() => changeView("attention")}
-              onRepairGraphUpdate={repairGraphUpdate}
-              onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
-              onRemoveDraft={discardDraft}
-              orchestratorEpisodes={orchestratorEpisodes}
-              episodeAction={episodeAction}
-              ownThread={
-                ownThread
-                  ? {
-                      thread: ownThread,
-                      revision: agentThreads.revision,
-                      voice,
-                      onThreadChanged: agentThreads.patch,
-                    }
-                  : null
-              }
-              onSendOrchestratorMessage={messageEpisodeOrchestrator}
-              archivedRevision={chatReads?.archived.join("\n")}
-              onArchiveChange={() =>
-                void refreshChatReads().catch((error) =>
-                  reportErrorNotice(
-                    `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
-                  ),
-                )
-              }
-              onNewSession={(conversation) => {
-                const node = conversation.nodeId
-                  ? (presentedGraph.nodes[conversation.nodeId] ?? null)
-                  : null;
-                selectChat(
-                  unsentConversation(conversations, conversation.kind, conversation.nodeId)
-                    ?.chatId ?? startConversation(conversation.kind, node, project.name),
-                );
-              }}
-            />
-          )}
-        </Suspense>
+            </Suspense>
+          </ResourcePresentationContext.Provider>
+        )}
       </main>
 
       {phone && (

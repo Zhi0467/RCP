@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from typing import Literal
 
@@ -24,6 +26,32 @@ class UnfinishedEpisodeJobs(ValueError):
         self.jobs = jobs
 
 
+class EpisodeMergeRequestConflict(ValueError):
+    code = "episode_merge_request_conflict"
+
+    def __init__(self):
+        super().__init__(self.code)
+
+
+def migrate_episode_merge_requests(connection: sqlite3.Connection) -> None:
+    """An accepted request outlives the isolation's replaceable current attempt."""
+    connection.execute(
+        "CREATE TABLE episode_merge_request_receipts (project_id TEXT NOT NULL, "
+        "owner_episode_id TEXT NOT NULL, request_id TEXT NOT NULL, acting_member TEXT NOT NULL, "
+        "choices_json TEXT NOT NULL, choices_digest TEXT NOT NULL, attempt_id TEXT NOT NULL, attempt_json TEXT NOT NULL, "
+        "accepted_task_id TEXT, accepted_graph_delivery_json TEXT, accepted_code_delivery_json TEXT, "
+        "created_at TEXT NOT NULL, PRIMARY KEY(project_id,owner_episode_id,request_id))"
+    )
+    connection.execute(
+        "CREATE INDEX episode_merge_request_attempt ON episode_merge_request_receipts(attempt_id)"
+    )
+
+
+def _merge_choices(choices: dict) -> tuple[str, str]:
+    canonical = json.dumps(choices, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return canonical, hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def _unconfirmed(
     jobs: list[EpisodeUnfinishedJob], confirmed: list[EpisodeUnfinishedJob]
 ) -> list[EpisodeUnfinishedJob]:
@@ -33,6 +61,30 @@ def _unconfirmed(
 
 class ConversationWorktreeStoreMixin(StoreMixinBase):
     """One retained worktree binding per conversation, including after removal."""
+
+    def episode_merge_request(
+        self,
+        project_id: str,
+        owner_episode_id: str,
+        request_id: str,
+        *,
+        acting_member: str,
+        choices: dict,
+    ) -> dict | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM episode_merge_request_receipts WHERE project_id=? "
+                "AND owner_episode_id=? AND request_id=?",
+                (project_id, owner_episode_id, request_id),
+            ).fetchone()
+        if row is None:
+            return None
+        if (
+            row["acting_member"] != acting_member
+            or row["choices_digest"] != _merge_choices(choices)[1]
+        ):
+            raise EpisodeMergeRequestConflict()
+        return dict(row)
 
     def episode_isolation(self, project_id: str, owner_episode_id: str) -> EpisodeIsolation | None:
         with self.connection() as connection:
@@ -242,9 +294,20 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
         attempt: EpisodeMergeAttempt,
         *,
         confirm_unfinished_jobs: bool = False,
+        request_id: str | None = None,
+        request_choices: dict | None = None,
     ) -> EpisodeIsolationState:
+        choices_json, digest = _merge_choices(request_choices or {})
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if request_id is not None:
+                existing = connection.execute(
+                    "SELECT 1 FROM episode_merge_request_receipts WHERE project_id=? "
+                    "AND owner_episode_id=? AND request_id=?",
+                    (project_id, owner_episode_id, request_id),
+                ).fetchone()
+                if existing is not None:
+                    raise EpisodeMergeRequestConflict()
             row = connection.execute(
                 "SELECT state_json FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
                 (project_id, owner_episode_id),
@@ -283,6 +346,22 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
                 }
             )
             self._write_episode_isolation_state(connection, project_id, state)
+            if request_id is not None:
+                connection.execute(
+                    "INSERT INTO episode_merge_request_receipts(project_id,owner_episode_id,request_id,"
+                    "acting_member,choices_json,choices_digest,attempt_id,attempt_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        project_id,
+                        owner_episode_id,
+                        request_id,
+                        attempt.authorized_by.user_id,
+                        choices_json,
+                        digest,
+                        attempt.attempt_id,
+                        attempt.model_dump_json(),
+                        self.now(),
+                    ),
+                )
         return state
 
     def update_episode_merge_attempt(
@@ -365,6 +444,38 @@ class ConversationWorktreeStoreMixin(StoreMixinBase):
             "WHERE project_id=? AND episode_id=?)",
             (int(state.graph_archived), project_id, project_id, state.owner_episode_id),
         )
+        attempt = state.merge_attempt
+        if attempt is not None:
+            receipt = connection.execute(
+                "SELECT payload_json FROM graph_run_receipts WHERE operation_id=? "
+                "AND category='branch_merge_outcome' ORDER BY receipt_id DESC LIMIT 1",
+                (attempt.attempt_id,),
+            ).fetchone()
+            code = (
+                {
+                    "source_commit": attempt.source_commit,
+                    "target_branch": attempt.target_branch,
+                    "target_commit": attempt.target_commit,
+                    "landed_commit": attempt.landed_commit,
+                    "squash_commit": attempt.squash_commit,
+                    "tree": attempt.tree,
+                }
+                if attempt.source_commit
+                else None
+            )
+            connection.execute(
+                "UPDATE episode_merge_request_receipts SET attempt_json=?, accepted_graph_delivery_json=COALESCE(?,accepted_graph_delivery_json), "
+                "accepted_code_delivery_json=COALESCE(?,accepted_code_delivery_json) "
+                "WHERE project_id=? AND owner_episode_id=? AND attempt_id=?",
+                (
+                    attempt.model_dump_json(),
+                    receipt["payload_json"] if receipt else None,
+                    json.dumps(code) if code else None,
+                    project_id,
+                    state.owner_episode_id,
+                    attempt.attempt_id,
+                ),
+            )
 
     def conversation_worktree(
         self, project_id: str, chat_id: str

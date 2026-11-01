@@ -48,7 +48,7 @@ test("presenting a late command response cannot overwrite an accepted task read"
   }
 });
 
-test("a failed task list read is reported, not shown as no tasks, and can be retried", async () => {
+test("a new task entry withholds a retained error before admission and can request a retry", async () => {
   const store = new ResourceStore();
   let reads = 0;
   store.register("tab", {
@@ -71,7 +71,10 @@ test("a failed task list read is reported, not shown as no tasks, and can be ret
       React.createElement(Harness),
     ),
   );
-  assert.equal(actions.tasksUnavailable, true);
+  // Server rendering runs before the hook can begin its presentation. A cached
+  // error does not establish the result of this new entry's validation.
+  assert.equal(actions.tasksUnavailable, false);
+  assert.deepEqual(actions.snapshot.tasks, []);
   const before = reads;
   actions.retryTasks();
   await new Promise(setImmediate);

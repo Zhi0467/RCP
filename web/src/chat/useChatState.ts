@@ -1,5 +1,5 @@
 import { useProjectTabResources } from "../projects/projectTabResources";
-import { useRefreshRuntime, useResource } from "../core/useResource";
+import { useRefreshRuntime, useResource, useResourcePresentation } from "../core/useResource";
 import { resourceKeyId, type ResourceView } from "../core/resourceStore";
 import {
   chatResourceProfile,
@@ -9,14 +9,7 @@ import {
 } from "./chatResources";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { ApiError, markChatRead } from "../core/api";
 import { chatSummariesForTarget, mergeChatSummaryPage } from "./chatApi";
 import {
@@ -69,6 +62,8 @@ interface UseChatStateOptions {
   isActiveProject: (projectId: string) => boolean;
   visibleTranscriptIds: (selectedChatId: string | null, floatingChatId: string | null) => string[];
   reportError: (message: string) => void;
+  /** App's tab/target/entity entry, including visits to another panel. */
+  presentationKey?: string;
 }
 
 export type ChatUiState = Pick<
@@ -180,6 +175,7 @@ export function useChatState({
   selectedExperimentChatTarget = MAIN_GRAPH,
   visibleTranscriptIds,
   reportError,
+  presentationKey = "",
 }: UseChatStateOptions) {
   const { store } = useRefreshRuntime();
   const [floatingChat, setFloatingChat] = useState<FloatingChat | null>(null);
@@ -189,6 +185,7 @@ export function useChatState({
   const inventory = useResource(
     `${projectId}:chat-view`,
     projectId ? chatsResourceProfile(projectId, apiBase) : null,
+    presentationKey,
   );
   const chatSummaries = inventory.value?.summaries ?? EMPTY_SUMMARIES;
   const chatReads = inventory.value?.reads ?? null;
@@ -223,27 +220,13 @@ export function useChatState({
   const profileToken = JSON.stringify(profileIds);
   const entityToken = JSON.stringify(profiles.map((profile) => profile.key.entity));
   const retainedTranscripts = useProjectTabResources(store);
+  const transcripts = useResourcePresentation("chat-transcripts", presentationKey, profileIds);
   useLayoutEffect(() => {
     if (projectId) retainedTranscripts.select(projectId, profiles);
     // Resource identity includes the owning graph, independent of the viewed graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retainedTranscripts, projectId, profileToken]);
-  const getTranscriptViews = useMemo(() => {
-    let previous: ResourceView<ChatTranscript>[] = [];
-    return () => {
-      const next = (JSON.parse(profileToken) as string[]).map((id) =>
-        store.view<ChatTranscript>(id),
-      );
-      if (next.length !== previous.length || next.some((value, index) => value !== previous[index]))
-        previous = next;
-      return previous;
-    };
-  }, [store, profileToken]);
-  const transcriptViews = useSyncExternalStore(
-    store.subscribe,
-    getTranscriptViews,
-    getTranscriptViews,
-  );
+  const transcriptViews = transcripts.views as readonly ResourceView<ChatTranscript>[];
   const chatTranscripts = useMemo(
     () =>
       new Map(
@@ -254,6 +237,23 @@ export function useChatState({
     [transcriptViews],
   );
   useEffect(() => {
+    if (transcripts.error) {
+      // Admission failures have no payload view to inspect.
+      const index = (JSON.parse(profileToken) as string[]).findIndex(
+        (id) => store.view(id).error === transcripts.error,
+      );
+      const failedChat = (JSON.parse(entityToken) as string[])[index];
+      if (
+        failedChat &&
+        !chatSummaries.some(
+          (summary) => summary.chat_id === failedChat && summary.message_count > 0,
+        ) &&
+        transcriptAbsenceIsExpected(failedChat, selectedExperimentChatId, transcripts.error)
+      )
+        return;
+      reportError(`Conversation could not be loaded: ${String(transcripts.error)}`);
+      return;
+    }
     const entities = JSON.parse(entityToken) as string[];
     transcriptViews.forEach((view, index) => {
       if (!view.error) return;
@@ -267,7 +267,16 @@ export function useChatState({
         `Conversation could not be loaded: ${view.error instanceof Error ? view.error.message : String(view.error)}`,
       );
     });
-  }, [transcriptViews, entityToken, selectedExperimentChatId, chatSummaries, reportError]);
+  }, [
+    store,
+    profileToken,
+    transcripts.error,
+    transcriptViews,
+    entityToken,
+    selectedExperimentChatId,
+    chatSummaries,
+    reportError,
+  ]);
   useEffect(() => {
     if (inventory.error)
       reportError(

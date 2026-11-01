@@ -106,6 +106,7 @@ from rcp.background import (
     StartupEffectFence,
 )
 from rcp.build_identity import build_identity
+from rcp.compute_jobs.jobs import helper_cancel_action
 from rcp.compute_jobs.probe import (
     machine_compute_routes,
     probe_compute_backend,
@@ -172,6 +173,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
+from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
@@ -1471,6 +1473,15 @@ def create_app(
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
+        if kind == "branch_merge":
+            try:
+                settle_merge_effects(
+                    background_tasks, catalog.open_execution(project_id), execution.operation_id
+                )
+            except Exception:
+                logger.exception(
+                    "Could not publish merge effects for task %s", execution.operation_id
+                )
         from rcp.runs.questions import record_work_question_receipts
 
         # `finally`, because the Auto-research half ran even when the generic
@@ -1543,6 +1554,17 @@ def create_app(
         auto_research_episode_ids: list[str] = []
         checked = 0
         for project in store.projects():
+            if store.pending_merge_effect_tasks(
+                project.project_id
+            ) or store.legacy_merge_effect_tasks(project.project_id):
+                try:
+                    reconcile_merge_effects(
+                        background_tasks, catalog.open_execution(project.project_id)
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not publish merge effects for project %s", project.project_id
+                    )
             for episode in store.episodes(project.project_id, limit=None):
                 checked += 1
                 if episode.mode == "auto_research":
@@ -1638,6 +1660,7 @@ def create_app(
         store,
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
+        helper_cancel_action=lambda watcher: helper_cancel_action(store, watcher),
     )
     consolidation_poller = ConsolidationPoller(
         store,
@@ -2051,6 +2074,22 @@ def create_app(
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
                 await asyncio.to_thread(reconcile_thread_handoffs)
+                for project in store.projects():
+                    if store.pending_merge_effect_tasks(
+                        project.project_id
+                    ) or store.legacy_merge_effect_tasks(project.project_id):
+                        try:
+                            service = await asyncio.to_thread(
+                                catalog.open_execution, project.project_id
+                            )
+                            await asyncio.to_thread(
+                                reconcile_merge_effects, background_tasks, service
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Could not recover merge publication for project %s",
+                                project.project_id,
+                            )
                 from rcp.runs.branch_merge_admission import recover_branch_merge_task
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 

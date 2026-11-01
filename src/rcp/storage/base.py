@@ -136,12 +136,14 @@ class AppStoreBase:
         (63, "paper_live_v1"),
         (64, "consolidation_targets_v1"),
         (65, "per_member_provider_logins_v1"),
-        (66, "memory_files_v1"),
-        (67, "agent_threads_v1"),
-        (68, "agent_handoffs_v1"),
-        (69, "space_turn_project_bindings_v1"),
-        (70, "agent_schedules_v1"),
-        (71, "approval_cards_v1"),
+        (66, "evidence_flag_origins_v1"),
+        (67, "episode_merge_requests_v1"),
+        (68, "memory_files_v1"),
+        (69, "agent_threads_v1"),
+        (70, "agent_handoffs_v1"),
+        (71, "space_turn_project_bindings_v1"),
+        (72, "agent_schedules_v1"),
+        (73, "approval_cards_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -983,6 +985,21 @@ class AppStoreBase:
             name="per_member_provider_logins_v1",
             migration=migrate_per_member_provider_logins,
         )
+        from rcp.storage.conversation_worktrees import migrate_episode_merge_requests
+        from rcp.storage.evidence_flags import migrate_evidence_flag_origins
+
+        self._run_storage_schema_migration(
+            connection,
+            version=66,
+            name="evidence_flag_origins_v1",
+            migration=migrate_evidence_flag_origins,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=67,
+            name="episode_merge_requests_v1",
+            migration=migrate_episode_merge_requests,
+        )
         from rcp.storage.agent_threads import (
             migrate_agent_handoffs,
             migrate_agent_threads,
@@ -991,17 +1008,17 @@ class AppStoreBase:
         from rcp.storage.memory import migrate_memory_files
 
         self._run_storage_schema_migration(
-            connection, version=66, name="memory_files_v1", migration=migrate_memory_files
+            connection, version=68, name="memory_files_v1", migration=migrate_memory_files
         )
         self._run_storage_schema_migration(
-            connection, version=67, name="agent_threads_v1", migration=migrate_agent_threads
+            connection, version=69, name="agent_threads_v1", migration=migrate_agent_threads
         )
         self._run_storage_schema_migration(
-            connection, version=68, name="agent_handoffs_v1", migration=migrate_agent_handoffs
+            connection, version=70, name="agent_handoffs_v1", migration=migrate_agent_handoffs
         )
         self._run_storage_schema_migration(
             connection,
-            version=69,
+            version=71,
             name="space_turn_project_bindings_v1",
             migration=migrate_space_turn_project_bindings,
         )
@@ -1009,10 +1026,10 @@ class AppStoreBase:
         from rcp.storage.approval_cards import migrate_approval_cards
 
         self._run_storage_schema_migration(
-            connection, version=70, name="agent_schedules_v1", migration=migrate_agent_schedules
+            connection, version=72, name="agent_schedules_v1", migration=migrate_agent_schedules
         )
         self._run_storage_schema_migration(
-            connection, version=71, name="approval_cards_v1", migration=migrate_approval_cards
+            connection, version=73, name="approval_cards_v1", migration=migrate_approval_cards
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

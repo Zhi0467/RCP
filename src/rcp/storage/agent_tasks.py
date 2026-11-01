@@ -153,6 +153,10 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "remote_provider_stopped",
     # What a recorded pass settles against, read back after its link drops.
     "branch_merge_turn_plan",
+    "merge_effects_required",
+    "merge_warning_carry_complete",
+    "merge_display_publication_complete",
+    "merge_effects_complete",
     "graph_pass_baseline",
     "question_answer_offered",
     "question_answer_acknowledged",
@@ -572,7 +576,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "Another task is already using this native session or workspace."
             )
 
-    def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+    def create_branch_merge_task(
+        self, record: AgentTaskRecord, *, merge_effects: dict[str, object] | None = None
+    ) -> AgentTaskRecord:
         """Admit a merge and its optional invocation allocation in one transaction."""
 
         if (
@@ -664,6 +670,31 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         raise ValueError("branch merge requires its exact owner episode")
                 self._require_merge_source_available(connection, record)
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
+                connection.execute(
+                    "UPDATE episode_merge_request_receipts SET accepted_task_id=? "
+                    "WHERE project_id=? AND attempt_id=?",
+                    (record.operation_id, record.project_id, record.operation_id),
+                )
+                effects = merge_effects or {
+                    "source": record.graph_target.model_dump(mode="json"),
+                    "source_head": binding.source_head.model_dump(mode="json") if binding else None,
+                    "destination": (
+                        binding.destination
+                        if binding
+                        else stored_episode.graph_base_head.target
+                        if stored_episode and stored_episode.graph_base_head
+                        else GraphTargetRef()
+                    ).model_dump(mode="json"),
+                }
+                if record.graph_target.kind == "branch":
+                    self._insert_agent_task_receipt(
+                        connection,
+                        record.operation_id,
+                        "merge_effects_required",
+                        self._bounded_receipt_payload(effects),
+                        tier="summary",
+                        created_at=self.now(),
+                    )
                 if (
                     binding is not None
                     and binding.dispatcher_episode_id is not None
@@ -4015,6 +4046,66 @@ class AgentTaskStoreMixin(StoreMixinBase):
             data["payload"] = json.loads(data.pop("payload_json"))
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
+
+    def pending_merge_effect_tasks(self, project_id: str | None = None) -> list[AgentTaskRecord]:
+        """Uncapped recovery inventory, including succeeded/no-change deliveries."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT run.* FROM graph_runs run WHERE run.kind='branch_merge' "
+                "AND (? IS NULL OR run.project_id=?) "
+                "AND EXISTS (SELECT 1 FROM graph_run_receipts r WHERE r.operation_id=run.operation_id "
+                "AND r.category='merge_effects_required') "
+                "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r WHERE r.operation_id=run.operation_id "
+                "AND r.category='merge_effects_complete') ORDER BY run.created_at,run.operation_id",
+                (project_id, project_id),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def complete_terminal_merge_effects_without_delivery(self, operation_id: str) -> bool:
+        """Close terminal effects after caller-held canonical non-delivery proof."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                "SELECT kind,status FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if (
+                task is None
+                or task["kind"] != "branch_merge"
+                or task["status"] not in {"failed", "succeeded"}
+            ):
+                return False
+            completed = connection.execute(
+                "SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND category='merge_effects_complete'",
+                (operation_id,),
+            ).fetchone()
+            if completed is None:
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "merge_effects_complete",
+                    self._bounded_receipt_payload(
+                        {
+                            "outcome": "not_applicable",
+                            "reason": f"{task['status']}_without_canonical_delivery",
+                        }
+                    ),
+                    tier="summary",
+                    created_at=self.now(),
+                )
+            return True
+
+    def legacy_merge_effect_tasks(self, project_id: str) -> list[AgentTaskRecord]:
+        """Old successful merges with no durable effects receipt, without a UI cap."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT run.* FROM graph_runs run WHERE run.project_id=? AND run.kind='branch_merge' "
+                "AND run.status='succeeded' AND json_extract(run.graph_target_json,'$.kind')='branch' "
+                "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
+                "WHERE r.operation_id=run.operation_id AND r.category='merge_effects_required') "
+                "ORDER BY run.created_at,run.operation_id",
+                (project_id,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
 
     def agent_task_artifact_discoveries(
         self, operation_ids: Sequence[str]

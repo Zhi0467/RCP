@@ -3134,9 +3134,9 @@ class ProjectDisplayCache:
         kind: AgentTaskKind,
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
-    ) -> None:
+    ) -> bool:
         if not task_graph_capable(kind, request):
-            return
+            return True
         try:
             service = self._catalog.loaded_service(project_id)
             if service is None:
@@ -3145,8 +3145,8 @@ class ProjectDisplayCache:
             cache_status, _cached = self._catalog.cached_snapshot_status(project_id)
             if cache_status == "missing":
                 record = self._store.project(project_id)
-                if record is None or record.revision is None:
-                    return
+                if record is None or (record.revision is None and kind != "branch_merge"):
+                    return False
             # A missing or invalid cache is rebuilt from canonical state like a valid one,
             # so aggregate reads recover once the turn closes.
             materialization = service.history.materialize(write_outputs=False)
@@ -3161,6 +3161,7 @@ class ProjectDisplayCache:
                 generation=generation,
                 patch_log_head=service.history.workspace.cached_patch_log_head(),
             )
+            return True
         except Exception as exc:
             self._logger.warning(
                 "Could not refresh display snapshot after task %s for project %s: %s",
@@ -3181,6 +3182,7 @@ class ProjectDisplayCache:
                     execution.operation_id,
                     receipt_exc,
                 )
+            return False
 
     def _complete_live_control(
         self,

@@ -1,9 +1,30 @@
 import type {
   EpisodeUnfinishedJob,
+  GraphRef,
   MergeDiffPath,
   MergeEpisodeBody,
   MergePreview,
 } from "../core/types";
+
+/** App-owned admission, shared by run cards and branch pickers. */
+export type BranchMergeRequest = (
+  source: string | Extract<GraphRef, { kind: "branch" }>,
+  body?: MergeEpisodeBody,
+  requestId?: string,
+  projectId?: string,
+) => Promise<void>;
+
+/** Picker merges retain the branch and its code workspace for further work. */
+export function pickerMergeRequestBody(confirmUnfinishedJobs: boolean): MergeEpisodeBody {
+  return {
+    history_mode: "merge",
+    keep_branch_open: true,
+    archive_graph_branch: false,
+    remove_worktree: false,
+    delete_code_branch: false,
+    ...(confirmUnfinishedJobs ? { confirm_unfinished_jobs: true } : {}),
+  };
+}
 
 export interface MergeChoices {
   targetBranch: string;

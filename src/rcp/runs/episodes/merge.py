@@ -363,6 +363,53 @@ def merge_owner(store: AppStore, member: EpisodeRecord) -> EpisodeRecord:
     return owner
 
 
+def episode_merge_request_receipt(store, owner, body, authorized_by, *, reconcile_with=None):
+    """Read acceptance after admission, optionally reconciling its own reservation."""
+    if body.request_id is None:
+        return None
+    with isolation_locks(f"{store.path}:{owner.project_id}:{owner.episode_id}"):
+        receipt = store.episode_merge_request(
+            owner.project_id,
+            owner.episode_id,
+            str(body.request_id),
+            acting_member=authorized_by.user_id,
+            choices=body.model_dump(mode="json", exclude={"request_id"}),
+        )
+        if reconcile_with is not None and receipt is not None:
+            receipt = _reconcile_merge_request(reconcile_with, store, owner, receipt)
+        _require_merge_acceptance(receipt)
+        return receipt
+
+
+def _reconcile_merge_request(service, store, owner, receipt):
+    """Resume only this keyed request's reservation; the caller holds its owner lock."""
+    state = store.episode_isolation_state(owner.project_id, owner.episode_id)
+    if (
+        state is not None
+        and state.merge_reservation == receipt["attempt_id"]
+        and state.merge_attempt is not None
+        and state.merge_attempt.attempt_id == receipt["attempt_id"]
+    ):
+        _reconcile_episode_merge(service, store, owner)
+        receipt = store.episode_merge_request(
+            owner.project_id,
+            owner.episode_id,
+            receipt["request_id"],
+            acting_member=receipt["acting_member"],
+            choices=json.loads(receipt["choices_json"]),
+        )
+        if receipt is None:
+            raise RuntimeError("The reserved merge request receipt disappeared.")
+    return receipt
+
+
+def _require_merge_acceptance(receipt):
+    if receipt is not None and receipt["accepted_task_id"] is None:
+        attempt = EpisodeMergeAttempt.model_validate_json(receipt["attempt_json"])
+        if attempt.phase != "done":
+            raise ValueError(attempt.error or "episode_merge_request_incomplete")
+
+
 def _binding(store: AppStore, owner: EpisodeRecord) -> EpisodeIsolation:
     binding = store.episode_isolation(owner.project_id, owner.episode_id)
     if binding is None:
@@ -530,7 +577,7 @@ def verify_episode_merge_code(store, owner):
     attempt = state.merge_attempt
     if attempt.source_commit is None:
         return
-    if not _git(
+    verified = _git(
         store,
         binding,
         "verify_landing",
@@ -538,11 +585,20 @@ def verify_episode_merge_code(store, owner):
         target_branch=attempt.target_branch,
         squash_commit=attempt.squash_commit,
         target_commit=attempt.target_commit,
-    )["verified"]:
+    )
+    if not verified["verified"]:
         raise ValueError("code_landing_unverified")
     # The agent may have checked the target out in the worktree; cleanup needs the
     # worktree back on its bound branch, which binding validation proves.
     _git(store, binding, "merge_preview", target_branch=attempt.target_branch)
+    if attempt.code_by_agent and attempt.landed_commit is None:
+        _save(
+            store,
+            owner,
+            attempt,
+            landed_commit=verified["target_commit"],
+            tree=verified["tree"],
+        )
 
 
 def _commit_graph(service, store, owner, attempt):
@@ -782,6 +838,22 @@ def merge_episode(
 ):
     """Reserve before the first Git write; retained phases reconcile uncertain results."""
     with isolation_locks(f"{store.path}:{owner.project_id}:{owner.episode_id}"):
+        if body.request_id is not None:
+            replay = store.episode_merge_request(
+                owner.project_id,
+                owner.episode_id,
+                str(body.request_id),
+                acting_member=authorized_by.user_id,
+                choices=body.model_dump(mode="json", exclude={"request_id"}),
+            )
+            if replay is not None:
+                replay = _reconcile_merge_request(service, store, owner, replay)
+                _require_merge_acceptance(replay)
+                return (
+                    store.agent_task(replay["accepted_task_id"])
+                    if replay["accepted_task_id"]
+                    else None
+                )
         binding = _binding(store, owner)
         state = store.episode_isolation_state(owner.project_id, owner.episode_id)
         previous = state.merge_attempt
@@ -793,7 +865,10 @@ def merge_episode(
                 if task and task.status in {"queued", "running", "pausing"}:
                     raise ValueError("episode_merge_reserved")
             if previous.phase != "pre_merge":
-                return _resume(service, store, owner, binding, previous)
+                resumed = _resume(service, store, owner, binding, previous)
+                if body.request_id is not None:
+                    raise ValueError("episode_merge_previous_attempt_settled")
+                return resumed
             store.finish_episode_merge(
                 owner.project_id,
                 owner.episode_id,
@@ -802,7 +877,14 @@ def merge_episode(
             )
         code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
-            attempt_id=str(body.request_id or uuid.uuid4()),
+            attempt_id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"rcp:episode-merge:{owner.project_id}:{owner.episode_id}:{body.request_id}",
+                )
+            )
+            if body.request_id is not None
+            else str(uuid.uuid4()),
             authorized_by=authorized_by,
             **body.model_dump(exclude={"confirm_unfinished_jobs", "request_id"}),
         )
@@ -811,6 +893,8 @@ def merge_episode(
             owner.episode_id,
             attempt,
             confirm_unfinished_jobs=body.confirm_unfinished_jobs,
+            request_id=str(body.request_id) if body.request_id is not None else None,
+            request_choices=body.model_dump(mode="json", exclude={"request_id"}),
         ).merge_attempt
         try:
             context = None
@@ -955,66 +1039,69 @@ def complete_graph_merge(service, store, owner):
 
 def reconcile_episode_merge(service, store, owner):
     with isolation_locks(f"{store.path}:{owner.project_id}:{owner.episode_id}"):
-        state = store.episode_isolation_state(owner.project_id, owner.episode_id)
-        if state is None or not state.merge_reservation or state.merge_attempt is None:
-            return
-        attempt = state.merge_attempt
-        if attempt.phase == "pre_merge":
-            task = store.agent_task(attempt.attempt_id)
-            if task and task.status in {"queued", "running", "pausing"}:
-                store.fail_agent_task(
-                    attempt.attempt_id, "episode_merge_pre_merge_reclaimed", status="interrupted"
-                )
-            store.finish_episode_merge(
-                owner.project_id,
-                owner.episode_id,
-                expected_attempt_id=attempt.attempt_id,
-                attempt=attempt,
-            )
-            return
-        if attempt.phase == "done":
-            store.finish_episode_merge(
-                owner.project_id,
-                owner.episode_id,
-                expected_attempt_id=attempt.attempt_id,
-                attempt=attempt,
-            )
-            return attempt
-        if attempt.graph_task_id:
-            task = store.agent_task(attempt.graph_task_id)
-            if task and task.status in {"queued", "running", "pausing"}:
-                return
-            # A task can fail after writing its graph receipt; that graph did merge.
-            if (task and task.status == "succeeded") or _graph_receipt(
-                service, store, owner, attempt
-            ) is not None:
-                complete_graph_merge(service, store, owner)
-                return store.episode_isolation_state(
-                    owner.project_id, owner.episode_id
-                ).merge_attempt
-            store.finish_episode_merge(
-                owner.project_id,
-                owner.episode_id,
-                expected_attempt_id=attempt.attempt_id,
-                attempt=attempt,
-            )
-            return
+        return _reconcile_episode_merge(service, store, owner)
+
+
+def _reconcile_episode_merge(service, store, owner):
+    """Recover the current attempt while the caller holds the isolation owner lock."""
+    state = store.episode_isolation_state(owner.project_id, owner.episode_id)
+    if state is None or not state.merge_reservation or state.merge_attempt is None:
+        return
+    attempt = state.merge_attempt
+    if attempt.phase == "pre_merge":
         task = store.agent_task(attempt.attempt_id)
-        if (
-            attempt.phase == "verified"
-            and task
-            and task.status in {"failed", "interrupted", "paused"}
-            # A crash can fall after the graph receipt and before the phase that records it.
-            and _graph_receipt(service, store, owner, attempt) is None
-        ):
-            store.finish_episode_merge(
-                owner.project_id,
-                owner.episode_id,
-                expected_attempt_id=attempt.attempt_id,
-                attempt=attempt,
+        if task and task.status in {"queued", "running", "pausing"}:
+            store.fail_agent_task(
+                attempt.attempt_id, "episode_merge_pre_merge_reclaimed", status="interrupted"
             )
+        store.finish_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            expected_attempt_id=attempt.attempt_id,
+            attempt=attempt,
+        )
+        return
+    if attempt.phase == "done":
+        store.finish_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            expected_attempt_id=attempt.attempt_id,
+            attempt=attempt,
+        )
+        return attempt
+    if attempt.graph_task_id:
+        task = store.agent_task(attempt.graph_task_id)
+        if task and task.status in {"queued", "running", "pausing"}:
             return
-        return _resume(service, store, owner, _binding(store, owner), attempt)
+        # A task can fail after writing its graph receipt; that graph did merge.
+        if (task and task.status == "succeeded") or _graph_receipt(
+            service, store, owner, attempt
+        ) is not None:
+            complete_graph_merge(service, store, owner)
+            return store.episode_isolation_state(owner.project_id, owner.episode_id).merge_attempt
+        store.finish_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            expected_attempt_id=attempt.attempt_id,
+            attempt=attempt,
+        )
+        return
+    task = store.agent_task(attempt.attempt_id)
+    if (
+        attempt.phase == "verified"
+        and task
+        and task.status in {"failed", "interrupted", "paused"}
+        # A crash can fall after the graph receipt and before the phase that records it.
+        and _graph_receipt(service, store, owner, attempt) is None
+    ):
+        store.finish_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            expected_attempt_id=attempt.attempt_id,
+            attempt=attempt,
+        )
+        return
+    return _resume(service, store, owner, _binding(store, owner), attempt)
 
 
 class CleanupEpisodeBody(BaseModel):

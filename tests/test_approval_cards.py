@@ -288,8 +288,11 @@ def test_card_request_id_is_persisted_uuid4(store, origin):
     assert store.approval_card(question.question_id)["request_id"] == str(key)
     for model in (MergeBranchBody, MergeEpisodeBody):
         assert model(request_id=key).request_id == key
-        with pytest.raises(ValidationError):
-            model(request_id=uuid5(NAMESPACE_URL, "card"))
+    with pytest.raises(ValidationError):
+        MergeBranchBody(request_id=uuid5(NAMESPACE_URL, "card"))
+    # Episode merge retains its native UUID contract; cards still mint UUID4 keys.
+    episode_key = uuid5(NAMESPACE_URL, "card")
+    assert MergeEpisodeBody(request_id=episode_key).request_id == episode_key
     store.settle_approval_card(question.question_id, {"outcome": "declined"})
     assert store.approval_card(question.question_id)["result"]["request_id"] == str(key)
 
@@ -524,7 +527,18 @@ def test_merge_episode_approval_real_route(manifest, tmp_path, monkeypatch, fenc
     attempt = harness.store.episode_isolation_state(
         harness.project_id, harness.episode.episode_id
     ).merge_attempt
-    assert attempt.attempt_id == card["request_id"]
+    from rcp.approval_actions import MergeEpisodeBody
+
+    receipt = harness.store.episode_merge_request(
+        harness.project_id,
+        harness.episode.episode_id,
+        card["request_id"],
+        acting_member=harness.episode.authorized_by.user_id,
+        choices=MergeEpisodeBody().model_dump(mode="json", exclude={"request_id"}),
+    )
+    assert receipt["attempt_id"] == attempt.attempt_id
+    assert receipt["accepted_task_id"] == attempt.attempt_id
+    assert response.json()["result"]["accepted_merge_task"]["operation_id"] == attempt.attempt_id
 
 
 def test_card_table_includes_required_request_id_from_creation(store):

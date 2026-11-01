@@ -5,6 +5,8 @@ import type { GraphTargetRef } from "../core/types";
 import { branchName } from "../core/branchNames";
 import { GraphPicker } from "../graph/GraphPicker";
 import { refsProfile } from "../graph/graphResources";
+import { pickerMergeRequestBody, type BranchMergeRequest } from "../graph/mergePanel";
+import { taskStatusProfile } from "../agents/taskResources";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MessageCircle, PanelRight, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
@@ -54,7 +56,7 @@ function writePlacement(next: ViewerPlacement) {
   }
 }
 
-export function ArtifactViewer() {
+export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
   const target = useArtifactViewerTarget();
   const hidden = useArtifactViewerHidden();
   const [placement, setPlacement] = useState(readPlacement);
@@ -66,6 +68,10 @@ export function ArtifactViewer() {
   const refs = useResource(
     "artifact-pin-refs",
     target?.kind === "artifact" ? refsProfile(target.projectId) : null,
+  );
+  useResource(
+    "artifact-merge-tasks",
+    onMerge && target?.kind === "artifact" ? taskStatusProfile(target.projectId) : null,
   );
   const [selectedPinTarget, setSelectedPinTarget] = useState<GraphTargetRef | null>(null);
   const [error, setError] = useState("");
@@ -328,6 +334,17 @@ export function ArtifactViewer() {
               }}
               onRefUpdated={() =>
                 store.invalidate(resourceKeyId(refsProfile(target.projectId).key))
+              }
+              onMerge={
+                onMerge
+                  ? (source, requestId, confirmUnfinishedJobs) =>
+                      onMerge(
+                        source,
+                        pickerMergeRequestBody(confirmUnfinishedJobs),
+                        requestId,
+                        target.projectId,
+                      )
+                  : undefined
               }
             />
           </>

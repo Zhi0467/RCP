@@ -253,8 +253,13 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     }
     await page.evaluate(() => {
       window.previewCalls = [];
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
       window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        unregisterCallback() {},
         invoke: async (command, args) => {
+          if (command === "plugin:event|listen") return 1;
+          if (command === "plugin:event|unlisten") return;
           window.previewCalls.push({ command, args });
           return { opened: true };
         },
@@ -329,19 +334,25 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       await page.getByRole("button", { name: "Open source node for Unavailable plot" }).count(),
       0,
     );
-    // Coming back shows the last list at once while the refresh is in flight.
-    let releaseRefresh;
+    // A changed return entry withholds cached rows until its current read lands.
+    const refreshStarted = Promise.withResolvers();
+    const refreshResponse = Promise.withResolvers();
     await page.route("**/api/projects/project/artifacts", async (route) => {
-      await new Promise((resolve) => (releaseRefresh = resolve));
+      refreshStarted.resolve();
+      await refreshResponse.promise;
       await route.fulfill({ json: entries });
     });
     await page.evaluate(async () => {
       const { remountArtifacts } = await import("/tests/fixtures/artifacts.tsx");
       remountArtifacts();
     });
-    await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
+    await refreshStarted.promise;
+    assert.equal(await page.getByRole("link", { name: "Open Saved plot" }).count(), 0);
+    assert.equal(await page.locator('.artifacts-view[aria-busy="true"]').count(), 1);
     assert.equal(await page.getByRole("status").count(), 0);
-    releaseRefresh?.();
+    refreshResponse.resolve();
+    await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
+    assert.equal(await page.locator('.artifacts-view[aria-busy="true"]').count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

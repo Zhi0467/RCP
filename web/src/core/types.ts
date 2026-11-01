@@ -1718,6 +1718,7 @@ export interface EpisodeIsolationChoice {
 }
 
 export interface MergeEpisodeBody {
+  request_id?: string;
   target_branch?: string | null;
   history_mode?: "merge" | "squash";
   remove_worktree?: boolean;
@@ -2704,6 +2705,8 @@ export interface ExperimentStartResponse extends AgentTask {
 }
 
 export interface Episode extends EpisodeLoopMetadata {
+  /** Exact accepted merge task, even when a later attempt is now current. */
+  accepted_merge_task?: AgentTask | null;
   can_merge: boolean;
   bulletin_enabled: boolean;
   browser_requested: boolean;

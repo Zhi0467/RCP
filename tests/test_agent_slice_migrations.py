@@ -26,7 +26,7 @@ def test_pre_thread_database_upgrades_without_rewriting_old_tables(tmp_path: Pat
         name: str,
         migration: Callable[[sqlite3.Connection], None],
     ) -> None:
-        if version < 67:
+        if version < 69:
             run_migration(self, connection, version=version, name=name, migration=migration)
 
     with monkeypatch.context() as legacy:
@@ -36,7 +36,7 @@ def test_pre_thread_database_upgrades_without_rewriting_old_tables(tmp_path: Pat
         legacy.setattr(
             AppStoreBase,
             "_STORAGE_SCHEMA_MIGRATIONS",
-            tuple(item for item in migrations if item[0] < 67),
+            tuple(item for item in migrations if item[0] < 69),
         )
         # The old writer's schema is generated without invoking new migration owners.
         old = AppStore(path)

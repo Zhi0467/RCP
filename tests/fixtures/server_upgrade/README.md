@@ -173,7 +173,12 @@ provider logins (storage migration 65), ending at migration 64 after per-target
 consolidation. It is built by the exact boundary source from
 `pre-consolidation-targets-v35-ceaa0d7`.
 
-`pre-memory-files-v37-607f2cc` retains the last shape before file-backed memory
-added its migration and deletion tables (storage migration 66), ending at
-migration 65 after per-member provider logins. It is built by the exact boundary
-source from `pre-member-provider-logins-v36-f78a922`.
+`pre-merge-effects-v37-607f2cc` retains the last shape before carried Evidence
+warning provenance and durable episode merge requests (storage migrations 66
+and 67), ending at migration 65 after per-member provider logins. It is built
+by the exact boundary source from `pre-member-provider-logins-v36-f78a922`.
+
+`pre-memory-files-v37-607f2cc` retains the migration-65 shape before file-backed
+memory (storage migration 68). It upgrades through Evidence flag origins and
+episode merge requests (66-67), then the single-entry agent tables (68-73).
+It is built by the exact boundary source from `pre-member-provider-logins-v36-f78a922`.

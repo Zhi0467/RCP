@@ -44,6 +44,7 @@ def start_branch_merge(
     authorized_by: AuthorizedHuman,
     operation_id: str | None = None,
     launch: bool = True,
+    merge_effects: dict[str, object] | None = None,
 ) -> AgentTaskRecord:
     """Dispatch one graph-only merge without reopening or spending the episode."""
 
@@ -127,7 +128,7 @@ def start_branch_merge(
         authorized_by=authorized_by,
         dispatch_authority=authority,
     )
-    stored = tasks.store.create_branch_merge_task(record)
+    stored = tasks.store.create_branch_merge_task(record, merge_effects=merge_effects)
     return tasks.launch_admitted(stored.operation_id) if launch else stored
 
 
@@ -140,6 +141,9 @@ def settle_agentless_merge(tasks, service, operation_id):
     if record is None or record.status != "succeeded" or record.kind != "branch_merge":
         return
     request = BranchMergeRunRequest.model_validate(record.request)
+    from rcp.runs.merge_effects import settle_merge_effects
+
+    settle_merge_effects(tasks, service, operation_id)
     target = request.merge_binding.destination if request.merge_binding else GraphTargetRef()
     execution = AgentTaskExecution(
         operation_id=operation_id,

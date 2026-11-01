@@ -27,11 +27,11 @@ def test_old_writer_database_upgrades_without_changing_legacy_rows(tmp_path: Pat
         )
         assert connection.execute("SELECT count(*) FROM agent_threads").fetchone()[0] == 0
         inventory = inspect_transfer_table_inventory(connection)
-    assert store.storage_schema_ledger_head() == 71
+    assert store.storage_schema_ledger_head() == 73
     assert not inventory.unclassified_tables
     validate_transfer_table_policy(inventory.project_linked_tables)
     store.close()
-    assert AppStore(database).storage_schema_ledger_head() == 71
+    assert AppStore(database).storage_schema_ledger_head() == 73
 
 
 def test_lazy_thread_creation_seeds_names_and_browser_once(tmp_path: Path) -> None:

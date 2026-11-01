@@ -814,7 +814,9 @@ control is not its answer. A live condition can therefore still hold an ended
 episode shut.
 
 An optional saved `cancel_command` runs only on a human Cancel request, after a
-fresh check confirms active work. It uses the recorded execution host and cwd,
+fresh check confirms active work. Exact registered helper recovery follows the
+[human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract),
+including lost work without an exit receipt. It uses the recorded execution host and cwd,
 and never changes the watcher into a separate cancelled lifecycle. A successful
 command is an attributed request; observation still determines completion.
 Stop fences continuation and leaves the action available for still-live work.

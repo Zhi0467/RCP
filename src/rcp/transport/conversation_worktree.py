@@ -513,7 +513,12 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
             baseline is None or _contains(shared, baseline, target_commit, timeout)
         )
         if operation == "verify_landing":
-            return {"verified": verified, "landed_commit": squash or source}
+            return {
+                "verified": verified,
+                "landed_commit": squash or source,
+                "target_commit": target_commit,
+                "tree": _git(shared, "rev-parse", f"{target_commit}^{{tree}}", timeout=timeout),
+            }
         if Path(binding["worktree_path"]).exists() or str(
             Path(binding["worktree_path"])
         ) in _registered(shared, timeout=timeout):

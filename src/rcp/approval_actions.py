@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.providers import ProviderId
 
@@ -29,7 +30,7 @@ class MergeEpisodeOptions(BaseModel):
 
 
 class MergeEpisodeBody(MergeEpisodeOptions):
-    request_id: UUID4 | None = None
+    request_id: UUID | None = None
 
 
 class ProjectAction(BaseModel):

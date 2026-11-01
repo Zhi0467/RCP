@@ -251,6 +251,130 @@ def test_uncertain_landing_reconciles_before_new_merge(manifest, tmp_path, monke
     assert state.merge_reservation is None
 
 
+@pytest.mark.parametrize("graph", [True, False])
+@pytest.mark.parametrize("recovery_owner", ["route", "coordinator"])
+def test_keyed_retry_reconciles_its_uncertain_landing(
+    manifest, tmp_path, monkeypatch, graph, recovery_owner
+):
+    import uuid
+
+    from rcp.runs.episodes import merge
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status" if graph else "none")
+    if not graph:
+        harness = _code_only_owner(harness)
+    shared, binding = _isolated(harness, tmp_path, graph=graph)
+    (Path(binding.worktree_path) / "file").write_text("episode")
+    original = merge._git
+
+    def lose_response(store, binding, operation, **values):
+        result = original(store, binding, operation, **values)
+        if operation == "land":
+            raise ValueError("fixture_uncertain_ssh")
+        return result
+
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    body = {"request_id": str(uuid.uuid4()), "keep_branch_open": True}
+    with monkeypatch.context() as uncertain:
+        uncertain.setattr(merge, "_git", lose_response)
+        response = harness.client.post(route, json=body)
+    assert response.status_code == 409, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    attempt_id = state.merge_attempt.attempt_id
+    assert state.merge_attempt.phase == "landing"
+    assert state.merge_reservation is not None
+    landed = git(shared, "rev-parse", "HEAD")
+    conflict = harness.client.post(route, json={**body, "keep_branch_open": False})
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["detail"]["code"] == "episode_merge_request_conflict"
+    assert (
+        harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+        == state
+    )
+    if recovery_owner == "coordinator":
+        merge.merge_episode(
+            harness.service,
+            harness.store,
+            harness.episode,
+            merge.MergeEpisodeBody.model_validate(body),
+            authorized_by=harness.episode.authorized_by,
+            dispatch_graph=lambda *_a, **_kw: pytest.fail("retry dispatched another task"),
+        )
+    response = harness.client.post(route, json=body)
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.merge_attempt.attempt_id == attempt_id
+    assert state.merge_attempt.phase == "done"
+    assert state.merge_reservation is None
+    assert git(shared, "rev-parse", "HEAD") == landed
+    tasks = [
+        task
+        for task in harness.store.episode_tasks(harness.episode.episode_id)
+        if task.kind == "branch_merge"
+    ]
+    if graph:
+        assert len(harness.branch.merge_receipts()) == 1
+        assert [task.operation_id for task in tasks] == [attempt_id]
+        assert tasks[0].status == "succeeded"
+        assert response.json()["accepted_merge_task"]["operation_id"] == attempt_id
+    else:
+        assert not tasks
+        assert response.json()["accepted_merge_task"] is None
+
+
+def test_historical_key_does_not_reconcile_a_newer_uncertain_landing(
+    manifest, tmp_path, monkeypatch
+):
+    import uuid
+
+    from rcp.runs.episodes import merge
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    shared, binding = _isolated(harness, tmp_path)
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    first_body = {"request_id": str(uuid.uuid4()), "keep_branch_open": True}
+    first = harness.client.post(route, json=first_body)
+    assert first.status_code == 202, first.text
+    task_a = first.json()["accepted_merge_task"]["operation_id"]
+    harness.branch.append(_branch_patch(harness.root.operation_id, "evidence", suffix="-later"))
+    (Path(binding.worktree_path) / "file").write_text("later episode")
+    original = merge._git
+
+    def lose_response(store, binding, operation, **values):
+        result = original(store, binding, operation, **values)
+        if operation == "land":
+            raise ValueError("fixture_uncertain_ssh")
+        return result
+
+    with monkeypatch.context() as uncertain:
+        uncertain.setattr(merge, "_git", lose_response)
+        second = harness.client.post(
+            route, json={"request_id": str(uuid.uuid4()), "keep_branch_open": True}
+        )
+    assert second.status_code == 409, second.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    tasks = [
+        (task.operation_id, task.status)
+        for task in harness.store.episode_tasks(harness.episode.episode_id)
+    ]
+    head = harness.service.history.head_ref()
+    landed = git(shared, "rev-parse", "HEAD")
+    replay = harness.client.post(route, json=first_body)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["accepted_merge_task"]["operation_id"] == task_a
+    assert (
+        harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+        == state
+    )
+    assert [
+        (task.operation_id, task.status)
+        for task in harness.store.episode_tasks(harness.episode.episode_id)
+    ] == tasks
+    assert harness.service.history.head_ref() == head
+    assert git(shared, "rev-parse", "HEAD") == landed
+    assert len(harness.branch.merge_receipts()) == 1
+
+
 @pytest.mark.parametrize(
     "phase,history_mode",
     [

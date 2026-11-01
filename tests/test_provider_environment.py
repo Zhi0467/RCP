@@ -19,6 +19,9 @@ from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 CLAUDE = ClaudeAuthentication()
 CLAUDE_TOKEN_VARIABLE = CLAUDE.token_variable
 CLAUDE_CONFLICTING_VARIABLES = CLAUDE.conflicting_variables
+CLAUDE_EXPORTS = (
+    "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1; export CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+)
 
 TOKEN = "sk-ant-oat01-test-token-value"
 
@@ -112,6 +115,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
     assert environment.local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert environment.local_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(environment.local_env)
     assert environment.remote_prefix is None
     # Codex has no RCP-managed credential; it inherits the service environment.
@@ -141,7 +145,7 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
         AgentLauncher(credentials=credentials)
         .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
         .remote_prefix
-        == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+        == CLAUDE_EXPORTS
     )
     credentials.store_token(
         "claude", host, TOKEN, member_id="member", now="now", login_id=MACHINE_LOGIN_ID
@@ -151,9 +155,7 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
         .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
         .remote_prefix
     )
-    assert (
-        prefix == CLAUDE.remote_token_prefix() + "; export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
-    )
+    assert prefix == CLAUDE.remote_token_prefix() + "; " + CLAUDE_EXPORTS
     assert TOKEN not in prefix
     assert "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN" in prefix
     assert (
@@ -418,7 +420,7 @@ def test_claude_without_managed_credentials_still_runs_foreground() -> None:
     )
     assert (
         launcher.process_environment(LoginKey("claude", "remote", MACHINE_LOGIN_ID)).remote_prefix
-        == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+        == CLAUDE_EXPORTS
     )
 
 

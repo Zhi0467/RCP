@@ -240,6 +240,8 @@ _EXEMPT_TABLES = {
     "project_aliases": "identity",
     # The flag command's idempotency ledger; no view reads it.
     "evidence_flag_command_receipts": "receipt",
+    "evidence_flag_carries": "receipt",
+    "episode_merge_request_receipts": "receipt",
     # The Bulletin post idempotency ledger; no view reads it.
     "bulletin_command_receipts": "receipt",
     "bulletin_mention_observations": "delivery",

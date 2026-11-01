@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useContext, useLayoutEffect, useMemo, useRef } from "react";
 import { api } from "../core/api";
 import { graphTargetUrl } from "../core/graphTarget";
 import {
   resourceKeyId,
+  presentedResource,
   type ResourceStore,
   type ResourceKey,
   type ResourceProfile,
 } from "../core/resourceStore";
-import { useRefreshRuntime } from "../core/useResource";
+import {
+  ResourcePresentationContext,
+  useRefreshRuntime,
+  useResourcePresentation,
+} from "../core/useResource";
 import type {
   AgentQuestion,
   ConsolidationView,
@@ -57,11 +62,17 @@ export function retainProjectView<T>(
 }
 
 /** Tab ownership survives a hidden/unmounted view; closing the tab releases it. */
-export function useProjectResource<T>(profile: ResourceProfile<T> | null) {
+export function useProjectResource<T>(profile: ResourceProfile<T> | null, activationKey?: string) {
   const { store } = useRefreshRuntime();
+  const contextKey = useContext(ResourcePresentationContext);
   const id = profile ? resourceKeyId(profile.key) : "";
+  const presentation = useResourcePresentation(
+    "project-resource",
+    activationKey ?? contextKey,
+    id ? [id] : [],
+  );
   const previous = useRef(new Map<string, { store: typeof store; id: string }>());
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!profile) return;
     const old = previous.current.get(profile.key.project);
     if (old?.store === store && old.id !== id) store.suspend(profile.key.project, [old.id]);
@@ -70,8 +81,7 @@ export function useProjectResource<T>(profile: ResourceProfile<T> | null) {
     // A key fully identifies the read; closures for the same key are equivalent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store, id]);
-  const snapshot = useMemo(() => () => store.view<T>(id), [store, id]);
-  return useSyncExternalStore(store.subscribe, snapshot, snapshot);
+  return useMemo(() => presentedResource<T>(presentation), [presentation]);
 }
 
 export function consolidationProfile(projectId: string): ResourceProfile<ConsolidationView> {

@@ -124,7 +124,11 @@ Humans may start separate Work in the chat.
 Each run creates one target-labelled Consolidation Inbox row. Report rows offer
 Keep or Dismiss, protecting temporary artifacts from expiry until settled. Viewer
 Keep closes the row. A Bulletin link retains the report but leaves review open.
-Failure rows offer a typed error and Dismiss. Failed tasks with no recorded
+Failure rows offer a typed error, Dismiss, and **Open task** when an operation
+is available. Open task uses the existing inspector, including for a missing report,
+and remains available when graph writes are disabled. API display projections
+strip terminal control sequences without rewriting the saved diagnostic.
+Failed tasks with no recorded
 provider launch, including invalid persisted requests, have verified empty history
 and expose no operation or chat link. Known refusal codes remain specific; other
 prelaunch failures use `consolidation_launch_failed` with the original diagnostic.
@@ -150,6 +154,18 @@ on the run's target. Creation checks live authorizer membership transactionally.
 Identical keys replay. Changed arguments are refused.
 Only one open or addressing flag is allowed per project, target, Evidence, and kind.
 Duplicates return the existing flag.
+
+A committed branch merge carries open or addressing findings only when the
+Evidence is present, current, and semantically equal at the finding's recorded
+revision, the delivered source head, and the current destination. Revision stamps
+alone do not change content. Missing, retired, or changed Evidence does not carry
+a finding. The destination receives an open finding with the original provenance;
+addressing work and its chat stay on the source. A matching destination finding
+absorbs the carry. Durable origin/destination receipts prevent duplicates and keep
+a dismissed destination finding dismissed across retries and later merges.
+This is server-owned propagation of an existing finding, not agent authorship.
+[Merge settlement](auto-research-and-branch-merge.md#semantic-rebase-and-merge)
+owns recovery. Stale pending Proposals remain a separate graph merge decision.
 
 After every successful or replayed Apply, keyed or final, and at settlement, RCP
 raises idempotent `consolidation_added` notices for current Evidence that the run's

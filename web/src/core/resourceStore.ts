@@ -33,6 +33,35 @@ export interface ResourceWatermark extends ResourceRequest {
   version: string;
 }
 
+export interface ObservationTicket {
+  project: string;
+  serial: number;
+}
+
+export interface PresentationTicket {
+  owner: string;
+  serial: number;
+}
+
+export interface ResourcePresentation {
+  status: "loading" | "ready" | "error";
+  error: unknown;
+  /** Payloads are exposed together only after this entry is admitted. */
+  views: readonly ResourceView<unknown>[];
+}
+
+interface PresentationEntry {
+  ticket: PresentationTicket;
+  activationKey: string;
+  ids: string[];
+  minimumObservation: number;
+  minimumRead: number;
+  proofs: Map<string, { epoch: string | null; version: string }>;
+  admitted: boolean;
+  error: unknown;
+  view: ResourcePresentation | null;
+}
+
 interface PendingOperation {
   id: string;
   apply(value: unknown): unknown;
@@ -81,6 +110,7 @@ interface ResourceState {
   settledMutation: number;
   /** Accepted payload reads, so a command can tell if a read overtook it. */
   acceptedReads: number;
+  acceptedReadStart: number;
   view: ResourceView<unknown> | null;
 }
 
@@ -119,9 +149,29 @@ const EMPTY_VIEW: ResourceView<never> = {
   pending: [],
 };
 
+const EMPTY_PRESENTATION: ResourcePresentation = {
+  status: "loading",
+  error: undefined,
+  views: [],
+};
+
+export function presentedResource<T>(presentation: ResourcePresentation): ResourceView<T> {
+  return (
+    (presentation.views[0] as ResourceView<T> | undefined) ?? {
+      ...EMPTY_VIEW,
+      loading: presentation.status !== "error",
+      stale: presentation.status === "error",
+      error: presentation.error,
+    }
+  );
+}
+
 export class ResourceStore {
   private readonly states = new Map<string, ResourceState>();
   private readonly listeners = new Set<() => void>();
+  private readonly presentations = new Map<string, PresentationEntry>();
+  private presentationSerial = 0;
+  private observationSerial = 0;
   private activeProject: string | null = null;
   private running = 0;
   private runningBackground = 0;
@@ -183,6 +233,7 @@ export class ResourceStore {
         pending: [],
         settledMutation: 0,
         acceptedReads: 0,
+        acceptedReadStart: 0,
         view: null,
       };
       this.states.set(id, state);
@@ -224,7 +275,7 @@ export class ResourceStore {
 
   /**
    * Keeps `owner`'s views of `ids` cached without polling them; `register`
-   * resumes them, and a resumed view rereads before it counts as current.
+   * resumes them. Presentation admission validates a resumed view separately.
    */
   suspend(owner: string, ids: Iterable<string>): void {
     for (const id of ids) {
@@ -234,8 +285,6 @@ export class ResourceStore {
       if (this.watched(state)) continue;
       this.fence(state);
       state.generation += 1;
-      state.observed = undefined;
-      state.owed = true;
     }
   }
 
@@ -267,6 +316,7 @@ export class ResourceStore {
       this.finishRefreshes(state, Infinity, new Error("Resource store reset"));
     }
     this.states.clear();
+    this.presentations.clear();
     this.epoch = null;
     this.notify();
   }
@@ -285,7 +335,95 @@ export class ResourceStore {
     for (const state of this.states.values()) {
       if (!state.seen && this.watched(state)) projects.add(state.profile.key.project);
     }
+    for (const entry of this.presentations.values()) {
+      if (entry.admitted) continue;
+      for (const id of entry.ids) {
+        const state = this.states.get(id);
+        if (state && !entry.proofs.has(id)) projects.add(state.profile.key.project);
+      }
+    }
     return projects;
+  }
+
+  /** Capture issuance order, never response arrival order. */
+  beginObservation(project: string): ObservationTicket {
+    return { project, serial: ++this.observationSerial };
+  }
+
+  failObservation(ticket: ObservationTicket, error: unknown): void {
+    for (const entry of this.presentations.values()) {
+      if (
+        !entry.admitted &&
+        ticket.serial >= entry.minimumObservation &&
+        entry.ids.some((id) => this.states.get(id)?.profile.key.project === ticket.project)
+      )
+        entry.error = error;
+    }
+    this.notify();
+  }
+
+  /** Starts one owner's presentation without evicting or fencing shared data. */
+  beginPresentation(
+    owner: string,
+    activationKey: string,
+    ids: readonly string[],
+  ): PresentationTicket {
+    const ticket = { owner, serial: ++this.presentationSerial };
+    this.presentations.set(owner, {
+      ticket,
+      activationKey,
+      ids: [...ids],
+      minimumObservation: this.observationSerial + 1,
+      minimumRead: this.reads + 1,
+      proofs: new Map(),
+      admitted: false,
+      error: undefined,
+      view: null,
+    });
+    if (this.requestWatermark && ids.length) this.requestWatermark();
+    else {
+      // Existing in-flight reads may finish for other owners. Their invalidation
+      // debt causes a confirming read issued after this entry, without aborting them.
+      for (const id of ids) this.invalidate(id);
+    }
+    this.notify();
+    return ticket;
+  }
+
+  endPresentation(ticket: PresentationTicket): void {
+    if (this.presentations.get(ticket.owner)?.ticket !== ticket) return;
+    this.presentations.delete(ticket.owner);
+    this.notify();
+  }
+
+  /** A render for a new entry cannot see a previous entry's retained frame. */
+  presentationView(owner: string, activationKey: string): ResourcePresentation {
+    const entry = this.presentations.get(owner);
+    if (!entry || entry.activationKey !== activationKey) return EMPTY_PRESENTATION;
+    const states = entry.ids.map((id) => this.states.get(id));
+    if (!entry.admitted) {
+      entry.admitted = states.every((state, index) => {
+        if (!state?.hasValue || state.owed || state.valueEpoch !== this.epoch) return false;
+        if (!this.requestWatermark) return state.acceptedReadStart >= entry.minimumRead;
+        const proof = entry.proofs.get(entry.ids[index]);
+        return proof?.epoch === state.valueEpoch && proof?.version === state.committed;
+      });
+    }
+    const error = entry.admitted
+      ? undefined
+      : (entry.error ?? states.find((state) => state?.error !== undefined)?.error);
+    const status = entry.admitted ? "ready" : error !== undefined ? "error" : "loading";
+    const views = entry.admitted ? entry.ids.map((id) => this.view(id)) : [];
+    const previous = entry.view;
+    if (
+      previous?.status === status &&
+      previous.error === error &&
+      previous.views.length === views.length &&
+      views.every((view, index) => view === previous.views[index])
+    )
+      return previous;
+    entry.view = { status, error, views };
+    return entry.view;
   }
 
   setActiveProject(project: string | null): void {
@@ -313,12 +451,18 @@ export class ResourceStore {
     const first = this.epoch === null;
     this.epoch = epoch;
     if (first) return;
+    for (const entry of this.presentations.values()) {
+      entry.admitted = false;
+      entry.proofs.clear();
+      entry.error = undefined;
+    }
     for (const state of this.states.values()) {
       state.inFlight?.abort();
       state.inFlight = null;
       state.generation += 1;
       state.committed = undefined;
       state.observed = undefined;
+      state.seen = false;
       state.owed = true;
       // A reachable new epoch ends any backoff earned against the old one.
       state.failures = 0;
@@ -330,7 +474,11 @@ export class ResourceStore {
   }
 
   /** Records a project's watermarks; any resource whose token moved owes a read. */
-  observe(project: string, watermarks: readonly ResourceWatermark[]): void {
+  observe(
+    project: string,
+    watermarks: readonly ResourceWatermark[],
+    ticket = this.beginObservation(project),
+  ): void {
     const versions = new Map(
       watermarks.map((entry) => [watermarkId(project, entry), entry.version]),
     );
@@ -338,9 +486,22 @@ export class ResourceStore {
       const key = state.profile.key;
       if (key.project !== project || !this.watched(state)) continue;
       const version = versions.get(watermarkId(project, key));
-      if (version !== undefined) state.observed = version;
+      if (version === undefined) continue;
+      state.observed = version;
       state.seen = true;
+      for (const entry of this.presentations.values()) {
+        const id = resourceKeyId(key);
+        if (
+          ticket.project !== project ||
+          ticket.serial < entry.minimumObservation ||
+          !entry.ids.includes(id)
+        )
+          continue;
+        entry.proofs.set(id, { epoch: this.epoch, version });
+        entry.error = undefined;
+      }
     }
+    this.notify();
     this.pump();
   }
 
@@ -395,6 +556,7 @@ export class ResourceStore {
     const version = state.observed;
     const invalidation = state.invalidations;
     state.lastRead = ++this.reads;
+    const readStart = state.lastRead;
     state.inFlight = controller;
     this.running += 1;
     if (background) this.runningBackground += 1;
@@ -421,6 +583,7 @@ export class ResourceStore {
         state.valueEpoch = this.epoch;
         state.committed = version;
         state.acceptedReads += 1;
+        state.acceptedReadStart = readStart;
         state.owed = state.invalidations !== invalidation;
         state.error = undefined;
         state.failures = 0;

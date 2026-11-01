@@ -50,18 +50,31 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Single-entry agent tables (v66-71): fresh, immutable fixtures, and in-place upgrades.
-        "01e7c9000aed3f2be0cbac30f678d4c7b657530396ed438c670427d8060556eb",
-        "059c58f9a13b19481a235c43ce157d80d1f8ccf6cd07b6c485c44e5ccf100ecb",
-        "1301a2f4a153247a01cbf75d358a55eb6c705dee87930a1c89a14d79e65ff803",
-        "453e3b1e54c81e25e00fbeef5c7ac72105cfad6d284096af7bf938783ebd0e02",
-        "7b5808ec12abebdfe296e754221ec9d186a8f7c15c6326bfed1067dcbccc606f",
-        "7f8569823484afcce3cdcf16baa5b1c6a7db4d4e59665d28279fea90fdcd8042",
-        "a42e060768625c0df07ba4dd27c1573c6e7d70cb3bfeb900811438f06985a4bb",
-        "af2090965a75e5ed93fbedfce4821df76c4ce0e20d407aae7dec7cab14cc8cfd",
-        "b11caa6bd8d6f579df3a466113708fbdf5602ef43baa3f6abf66d9045fdf1981",
-        "b7f313acee5d07de9aa1e12139ec1bfe48247fc7e8742cde088e6fa9c80b1070",
-        "b96ca61fc3fe95489b9babcc4f69e822c0c5c250d547b162e2b7ad0aa3c5e6cf",
+        # Single-entry agent tables (v68-73): fresh, immutable fixtures, and in-place upgrades.
+        "1fb54dd7c782d9ac3f7fad38f0f431e34866c57c04cfc7f0492f2cfb4c25da20",
+        "2242ab075c1f4719e4db286b84a7f60d9312cc623d7113ef2ac469b5683fc987",
+        "4be0b915079fcd850797e8b04dcba238d5854dea42ca9558b8ee0dc9dad0d92e",
+        "672b818145360f5fad524452a5deddae8fceef5b557742613992056a5f1a7549",
+        "9413d951478a7c047a213cdfa9b773236e2b09a7b764c02c0dca4be0e43f0d2d",
+        "980aad777a6fdbc23ba6ff8a76fe106af6c98f2ba7faf659372fc59d7a0b56bb",
+        "a23763a554e045e5f85811f7504659d2a006267b8be5d66dbf717ef610451ed6",
+        "aa57e6fabd0f9b90c1380b5e9a61eefc065a8a90b31f41011d39a4b4d283d446",
+        "d47a85cf63e52579de5f154c6873eaa46f8c24c48d148b0df1b4b5545c30ea7b",
+        "ee15c0e732603b4d60308414ed938154fa0441eac86877e0f16456b88d874612",
+        "f2dae801a89b3a1e589e6c5a6be81c28b2cad3cd5cc0d7e081c6bbc82f8d57cb",
+        # Evidence flag origins and episode merge requests (v66-67): fresh,
+        # immutable fixture upgrades, and the in-place compatibility boundaries.
+        "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",
+        "262760c79fd22e2a56de71f1eaed73965835247dd468a5144105126c098314c9",
+        "317347ecb1e6aeaf19c516c81bbe83a557787c91cbaeb3936e71c5ecc3ae6311",
+        "389a2153d491b28510a97721f781a339a8faa8e13e642ca830986c6db41071d4",
+        "3d336b217cd0a0ff0eb6816f44952587b92db7e5a9cfa83f887e375e1aabbefe",
+        "770421344730051d3c83a33a5529d3d6605a3ba4f9f126adba341ab6c135c164",
+        "9cf811f5ea9df5bc27a087dd2513eebb6df40b826d2473ef2de2c997051dfb6c",
+        "a213976f92f1ea0db6d357eeb2e6c66752655eba884317971ffbafee1ae8689f",
+        "b5312777f7e3b549ba731bd84ebbab3e10506aaba13b7240a52ed9640b83b098",
+        "bbdc1e93b9a7a314ec6219b291a16dd319745c09fcc51f07d4f8334bd1c85600",
+        "c50e784c64ab3dd7aef001e4b2ba36b6c685dfd01d809e3919e6801858df073e",
         # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
         "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
         "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",

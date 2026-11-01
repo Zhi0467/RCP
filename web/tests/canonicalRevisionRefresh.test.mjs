@@ -13,7 +13,10 @@ const server = await createServer({
 after(() => server.close());
 const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
 const { graphResourceKey } = await server.ssrLoadModule("/src/graph/graphResources.ts");
-const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
+const { RefreshRuntimeContext, useResource } = await server.ssrLoadModule(
+  "/src/core/useResource.ts",
+);
+const { useProjectResource } = await server.ssrLoadModule("/src/projects/projectResources.ts");
 const { experimentIndexProfile } = await server.ssrLoadModule(
   "/src/experiments/episodeResources.ts",
 );
@@ -22,12 +25,37 @@ const { cacheProjectTabState, projectReturnHash, useProjectTabs } = await server
 );
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("opening a retained resource paints synchronously without waiting for a read", async () => {
+test("shared resource hooks withhold retained data during render before any layout effect", async () => {
+  const store = new ResourceStore();
+  const profile = { key: graphResourceKey("p"), fetch: async () => "retained payload" };
+  store.register("cache", profile);
+  await settle();
+  function Resource() {
+    return useResource("panel", profile).value ?? "loading";
+  }
+  function ProjectResource() {
+    return useProjectResource(profile).value ?? "loading";
+  }
+  const rendered = renderToStaticMarkup(
+    React.createElement(
+      RefreshRuntimeContext.Provider,
+      { value: { store } },
+      React.createElement(Resource),
+      React.createElement(ProjectResource),
+    ),
+  );
+  assert.doesNotMatch(rendered, /retained payload/);
+  assert.equal(rendered, "loadingloading");
+  assert.equal(store.view(resourceKeyId(profile.key)).value, "retained payload");
+});
+
+test("retained cache stays available while a new presentation waits for its current read", async () => {
   const store = new ResourceStore();
   const profile = { key: graphResourceKey("p"), fetch: async () => ({ revision: 3 }) };
   const id = store.register("p", profile);
   await settle();
   store.suspend("p", [id]);
+  store.beginPresentation("panel", "return", [id]);
   let resolve;
   store.register("p", {
     ...profile,
@@ -36,12 +64,13 @@ test("opening a retained resource paints synchronously without waiting for a rea
         resolve = done;
       }),
   });
-  store.invalidate(id);
   assert.deepEqual(store.view(id).value, { revision: 3 });
+  assert.deepEqual(store.presentationView("panel", "return").views, []);
   assert.equal(store.view(id).stale, false, "pending validation is not a failed read");
   resolve({ revision: 4 });
   await settle();
   assert.deepEqual(store.view(id).value, { revision: 4 });
+  assert.deepEqual(store.presentationView("panel", "return").views[0].value, { revision: 4 });
 });
 
 test("visited refs remain cached but only the current ref asks for watermarks", async () => {

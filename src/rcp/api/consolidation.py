@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
@@ -46,6 +47,9 @@ router = APIRouter(dependencies=[Depends(require_project_membership)])
 Store = Annotated[AppStore, Depends(get_store)]
 Catalog = Annotated[ProjectCatalog, Depends(get_catalog)]
 Identity = Annotated[IdentityAccess, Depends(get_identity_access)]
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]"
+)
 
 
 class ScheduleRequest(BaseModel):
@@ -104,7 +108,14 @@ def item_response(run: ConsolidationRun, branch_names: dict[str, str]) -> dict:
         "applied_revisions": run.applied_revisions,
         "revisions_verified": run.revisions_verified,
         "proposals_created": run.proposals_created,
-        "error": {"code": run.error_code, "message": run.error_message} if run.error_code else None,
+        "error": {
+            "code": run.error_code,
+            "message": _ANSI_ESCAPE.sub("", run.error_message)
+            if run.error_message
+            else run.error_message,
+        }
+        if run.error_code
+        else None,
         "state": run.state,
     }
 

@@ -250,6 +250,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
     graph_isolation: bool
     isolation_owner_episode_id: str | None
     isolation_state: EpisodeIsolationState | None = None
+    accepted_merge_task: dict[str, object] | None = None
     can_merge: bool = False
     control_node_id: str | None
     graph_target: GraphTargetRef

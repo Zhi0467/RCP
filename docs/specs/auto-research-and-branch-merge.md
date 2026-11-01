@@ -423,6 +423,18 @@ reconciled receipt bind the source, base, head, prepared destination, result, ta
 dispatcher, and time. Crash recovery cannot deliver the same head twice. Main
 watchers see a successful main delivery once.
 
+[Merge effects](../../src/rcp/runs/merge_effects.py) verifies the canonical receipt
+before carrying eligible Evidence findings and rebuilding the main display
+snapshot, including attention. Agentless and no-change deliveries use the same
+settlement. Durable, uncapped effect receipts keep each step independently owed
+until it succeeds; task success alone is not publication. Startup and background
+reconciliation retry unfinished effects without redelivering the graph or changing
+the task verdict. A terminal task without graph delivery closes its effect
+obligation only after locked canonical non-delivery proof. Legacy recovery considers the latest committed delivery per
+source/destination and only findings created before it. Superseded legacy deliveries
+cannot publish old concerns. Finding eligibility and dismissal semantics belong to
+[Evidence to check](graph-consolidation-and-lessons.md#evidence-to-check).
+
 ## Runs projection
 
 Child and task state support one parent health and recommendation. Detail shows
@@ -437,6 +449,9 @@ eligible merge or squash, cleanup, and Keep branch open. Squash cannot keep the
 branch open. Submission rechecks state. Failures mark the same Merge action red
 with the reason in a tooltip. Clicking it gets a fresh preview. There is no
 separate Retry. An in-flight request or missing preview disables submission.
+[Picker behavior](api-web-and-desktop-projections.md#project-graph-ref-inventory)
+uses the shared human dispatch path. [The API contract](api-web-and-desktop-projections.md#episode-merge-api) owns
+request identity and accepted-task replay.
 Open graph shows the persistent branch. Changes compares the base and head with
 neighbouring context, creations, updates, removals, before and after values,
 provenance, and task filtering. Lens switches never change edit or picker targets.

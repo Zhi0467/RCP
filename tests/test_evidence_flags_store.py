@@ -5,6 +5,7 @@ import pytest
 from rcp.storage import AppStore
 from rcp.storage.evidence_flags import (
     EvidenceFlagError,
+    migrate_evidence_flag_origins,
     migrate_evidence_flag_targets,
     migrate_evidence_flags,
 )
@@ -96,7 +97,7 @@ def test_flag_admission_binding_rolls_back_with_task_transaction(store):
 
 
 def test_flag_migration_preserves_existing_store_and_space_records(store):
-    tables = {"evidence_flags", "evidence_flag_command_receipts"}
+    tables = {"evidence_flags", "evidence_flag_command_receipts", "evidence_flag_carries"}
     assert tables <= TRANSFER_EXCLUDED_PROJECT_TABLES
     before = store.agent_task("turn")
     with store.connection() as connection:
@@ -104,6 +105,7 @@ def test_flag_migration_preserves_existing_store_and_space_records(store):
             connection.execute(f"DROP TABLE {table}")
         migrate_evidence_flags(connection)
         migrate_evidence_flag_targets(connection)
+        migrate_evidence_flag_origins(connection)
     path = store.path
     store.close()
     reopened = AppStore(path)
@@ -114,7 +116,20 @@ def test_flag_migration_preserves_existing_store_and_space_records(store):
     reopened.detach_restored_lifecycle(diagnostic="Restore test", confirmed_by="Human")
     assert reopened.list_evidence_flags("project") == [original]
     counts = reopened.delete_project_records("project")
-    assert all(counts[table] == 1 for table in tables)
+    assert all(counts[table] == int(table != "evidence_flag_carries") for table in tables)
+
+
+def test_origin_migration_preserves_old_flag_rows_and_default(store):
+    consolidate(store)
+    original = flag(store)["flag"]
+    with store.connection() as connection:
+        connection.execute("DROP TABLE evidence_flag_carries")
+        connection.execute("ALTER TABLE evidence_flags DROP COLUMN origin_flag_id")
+    assert store.evidence_flag("project", original["flag_id"]) == original
+    with store.connection() as connection:
+        migrate_evidence_flag_origins(connection)
+    assert store.evidence_flag("project", original["flag_id"]) == original
+    assert original["origin_flag_id"] is None
 
 
 @pytest.mark.parametrize(
