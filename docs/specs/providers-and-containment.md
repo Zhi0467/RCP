@@ -1821,9 +1821,9 @@ storage also refuses a Space-task origin.
 
 Every agent run hides every `private-*.jsonl` transcript under the state chat
 roots on its host. Runs on the backend's machine hide other members'
-`<data_dir>/agent-threads/<user_id>` folders; a thread run sees only its own
-stage there, never transcripts. Thread history reaches a fresh session only as
-prompt text.
+`<data_dir>/agent-threads/<user_id>` folders; a thread run keeps access to its
+own member folder, and a non-thread run hides the whole root. RCP hands thread
+history to a fresh session only as prompt text.
 
 `projects` returns the member's Cards projection with thread ids and
 `same_machine`; `show` adds bounded graph and episode context, at most
