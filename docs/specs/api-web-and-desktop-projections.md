@@ -28,8 +28,8 @@ Entity counters are project-scoped; chat read/pin counters are member-scoped.
 A request with `agent_threads: true` also gets `agent_threads: {version}`, the
 caller's own counter, read without any project id; otherwise the field is null.
 Triggers bump only the owning member on that member's thread rows, thread turns,
-reads, names, browser choice, thread questions, approval cards, schedules and
-handoff creation, delivery and settlement. A turn's file-backed transcript
+reads, names, browser choice, thread questions, approval cards, schedules,
+project membership and handoff creation, delivery and settlement. A turn's file-backed transcript
 append publishes through its task row; a voice append bumps the owner's counter
 directly. A changed version reloads the thread list and the open thread.
 
@@ -2199,6 +2199,8 @@ and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Project chat r
 empty threads before their first turn. Task and question detail/control routes
 return 404 for another member's private thread; lists filter before pagination.
 Chat display and read projections also exclude other members' private ids.
+Task references and Bulletin artifact reads refuse another member's private
+artifact.
 
 Task rows, Patch history summaries, episode responses and Bulletin posts expose
 `via_agent: {thread_id, name} | null`, derived from operational thread ownership.

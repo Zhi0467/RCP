@@ -104,7 +104,9 @@ locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
 Local recovery inventories and local/remote retention sweeps include these exact
 stages, retaining live stages and leaving transcripts alone. The owning thread
 can access its stage but not its member folder's transcripts; every agent launch
-hides other members' thread folders.
+hides other members' thread folders. A transcript pattern covers every member
+folder, so a member who joins after launch still has hidden transcripts; their
+stages are enumerated at launch.
 Non-thread launches hide all thread folders. Exceeding the hidden-path budget
 refuses launch rather than dropping the privacy policy.
 

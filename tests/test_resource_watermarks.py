@@ -416,6 +416,7 @@ def test_agent_threads_watermark_accepts_web_body(endpoint, monkeypatch):
         ("questions", "state='answered',answer='Yes'"),
         ("approval_cards", "running_since='later'"),
         ("agent_handoffs", "target_operation_id='delivered'"),
+        ("project_members", "seated_by='admin'"),
     ],
 )
 def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, table, change):
@@ -496,6 +497,7 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
             message="Check",
             created_at=now,
         ),
+        "project_members": dict(project_id="new-project", user_id=user, seated_at=now),
     }
 
     def insert(connection, name):
@@ -538,7 +540,7 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
             entity = f"member:{member}"
             assert (after[entity] > before[entity]) == (member == user and action != "noop")
         assert "" not in after
-        if owner is None and table != "agent_threads":
+        if owner is None and table not in {"agent_threads", "project_members"}:
             assert after == before
     if table == "chat_reads" and owner is not None:
         before = versions()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from rcp.storage import AgentTaskRecord
 from tests.helpers import create_named_app, signed_in_client
 from tests.test_api_questions import _question
@@ -103,7 +105,6 @@ def test_thread_attribution_is_projection_only_and_follows_parent(tmp_path):
 
 
 def test_private_thread_cannot_fork_into_public_chat(tmp_path):
-    import pytest
 
     from rcp.storage import AppStore
 
@@ -213,3 +214,13 @@ def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
     assert {row["artifact_id"] for row in listed.json()} == (
         artifacts_by_owner[own] | artifacts_by_owner[None]
     )
+    # A private artifact cannot be pulled into another member's turn as a reference.
+    from rcp.project_references import resolve_project_artifact
+
+    for owner, ids in artifacts_by_owner.items():
+        stored = next(i for i in ids if store.artifact(i) is not None)
+        if owner == "another-member":
+            with pytest.raises(ValueError):
+                resolve_project_artifact(store, project_id, stored, viewer_id=own)
+        else:
+            assert resolve_project_artifact(store, project_id, stored, viewer_id=own).content

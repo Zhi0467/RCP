@@ -146,6 +146,8 @@ def install_agent_thread_version(connection: sqlite3.Connection, table: str, own
 def install_agent_thread_versions(connection: sqlite3.Connection) -> None:
     """Thread state and the existing chat/task owners share one member-scoped rail."""
     install_agent_thread_version(connection, "agent_threads", "ROW.user_id")
+    # Joining or leaving a project adds or drops a project thread from the list.
+    install_agent_thread_version(connection, "project_members", "ROW.user_id")
     scope = "coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1))"
     for table in ("chat_display", "chat_reads", "chat_browser_preferences"):
         owner = (

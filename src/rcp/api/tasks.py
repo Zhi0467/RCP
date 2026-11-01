@@ -453,7 +453,11 @@ def start_ordinary_task(
                     attachment_set_id=request.attachment_set_id,
                     operation_id=operation_id,
                     reference_files=resolve_project_references(
-                        store, catalog, project_id, request.references
+                        store,
+                        catalog,
+                        project_id,
+                        request.references,
+                        viewer_id=authorized_by.user_id,
                     ),
                 )
                 claimed_set = (claimed.attachment_batch_id, operation_id)

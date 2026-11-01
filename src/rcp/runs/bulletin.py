@@ -167,7 +167,12 @@ def handle_bulletin(
             if mailbox is None:
                 raise BulletinError("bulletin_stage_unavailable")
             assert request.arguments.artifact_id is not None
-            item = resolve_project_artifact(store, project_id, request.arguments.artifact_id)
+            item = resolve_project_artifact(
+                store,
+                project_id,
+                request.arguments.artifact_id,
+                viewer_id=task.authorized_by.user_id if task.authorized_by else None,
+            )
             # Source names are display metadata, never trusted paths. Unique names keep
             # successive reads immutable even when the source's current version changes.
             filename = re.sub(r"[^A-Za-z0-9._-]", "_", item.filename)[-120:] or "artifact"

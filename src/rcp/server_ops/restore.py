@@ -51,17 +51,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Single-entry agent tables (v66-71): fresh, immutable fixtures, and in-place upgrades.
-        "0674086dad22e9ad6a4243ccd6f98bbe977d6a652817951c3bca705e0ca77a10",
-        "08b6a32004d635a69cc4cd833fcc9e7cf1c3d1b18da2b85fc2f3cca79a5ddbac",
-        "482afb85004c5279fde98cbf016ffb50895a2538088ac56f48ee10a7b181095c",
-        "55c90e0d0fee4e92b32e995bfbdad90016ac6c3c927526ff68d07daf9c4eae10",
-        "5b68dd6106f2647eab4057c2b4d8f6e539f2b325e14b61de0629cdabb7a2e7fd",
-        "63632a59fdf123518d8e086bdc32a61d91f426b27032d9b92eb511a332e36f1d",
-        "76f87b343820166f4c027a3e8505d431c76560dfce3d4cdd5c05d4e304691859",
-        "a87413a136a8518b5ee6ffda8cbd4a9ed6140d367318248ddcce6e24124f413a",
-        "d739fd8b43b94effba432561a5cf44d4fda8d74a9dad674fe1efd97f4a7e97fc",
-        "f1dc46290cce2e3b3168558cf5b993eb470f6590347f76020ad3a93d6e38f810",
-        "fdbf3a51391eaae92eb41475d19423b14a1fac6a3426f0c085366b26f2111085",
+        "01e7c9000aed3f2be0cbac30f678d4c7b657530396ed438c670427d8060556eb",
+        "059c58f9a13b19481a235c43ce157d80d1f8ccf6cd07b6c485c44e5ccf100ecb",
+        "1301a2f4a153247a01cbf75d358a55eb6c705dee87930a1c89a14d79e65ff803",
+        "453e3b1e54c81e25e00fbeef5c7ac72105cfad6d284096af7bf938783ebd0e02",
+        "7b5808ec12abebdfe296e754221ec9d186a8f7c15c6326bfed1067dcbccc606f",
+        "7f8569823484afcce3cdcf16baa5b1c6a7db4d4e59665d28279fea90fdcd8042",
+        "a42e060768625c0df07ba4dd27c1573c6e7d70cb3bfeb900811438f06985a4bb",
+        "af2090965a75e5ed93fbedfce4821df76c4ce0e20d407aae7dec7cab14cc8cfd",
+        "b11caa6bd8d6f579df3a466113708fbdf5602ef43baa3f6abf66d9045fdf1981",
+        "b7f313acee5d07de9aa1e12139ec1bfe48247fc7e8742cde088e6fa9c80b1070",
+        "b96ca61fc3fe95489b9babcc4f69e822c0c5c250d547b162e2b7ad0aa3c5e6cf",
         # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
         "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
         "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",
