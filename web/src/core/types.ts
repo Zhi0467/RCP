@@ -2268,6 +2268,7 @@ export interface RevisionSummary {
   author: "agent" | "human" | null;
   producer: "agent" | "human" | "system";
   authorized_by: AuthorizedHuman | null;
+  via_agent?: ViaAgent | null;
   profile: "ordinary" | "orchestrator" | null;
   task_id: string | null;
   episode_id: string | null;
@@ -2531,6 +2532,11 @@ export interface AgentTask {
   agent_status?: AgentStatus | null;
   /** Current chat binding resolved by the server, independent of this historical turn. */
   current_chat_session_id?: string | null;
+  /** Latest recorded session decision for this turn, absent on older servers. */
+  chat_session_resolution?: {
+    outcome: "continued" | "fresh" | "forking" | "refused";
+    reason_code: string | null;
+  } | null;
   history_only: boolean;
   stage_host?: string | null;
   stage_root?: string | null;

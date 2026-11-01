@@ -61,8 +61,8 @@ const LIVE_POLL_MS = 2_000;
 const NO_QUESTIONS: AgentQuestion[] = [];
 const NO_SCHEDULES: AgentSchedule[] = [];
 
-/** Settled turns whose command lines are fetched, newest first. */
-const COMMAND_TURNS = 12;
+/** Load settled turn details in bounded batches, newest first. */
+const TURN_BATCH_SIZE = 12;
 
 type Picker = { source: AgentConfigSource; value: AgentRunConfig } | null;
 
@@ -113,6 +113,26 @@ function useThreadPicker(thread: AgentThread): Picker {
     };
   }, [thread.kind, thread.project_id]);
   return picker;
+}
+
+export function FreshSessionMarker({
+  task,
+  hasEarlierTurn,
+}: {
+  task: AgentTask | undefined;
+  hasEarlierTurn: boolean;
+}) {
+  const resolution = task?.chat_session_resolution;
+  if (!hasEarlierTurn || resolution?.outcome !== "fresh") return null;
+  return (
+    <span
+      className="chat-turn-trigger fresh-session"
+      title={resolution.reason_code?.replaceAll("_", " ")}
+    >
+      <RotateCcw size={11} aria-hidden="true" />
+      Fresh start
+    </span>
+  );
 }
 
 function TurnProgress({ task }: { task: AgentTask }) {
@@ -368,13 +388,11 @@ export function AgentThreadView({
     if (!messages) return;
     const wanted = [
       ...new Set(
-        messages
-          .filter((message) => message.role === "assistant" && message.operation_id)
-          .map((message) => message.operation_id!),
+        messages.filter((message) => message.operation_id).map((message) => message.operation_id!),
       ),
     ]
-      .slice(-COMMAND_TURNS)
-      .filter((id) => !turnTasks.has(id) && id !== latestId);
+      .filter((id) => !turnTasks.has(id) && id !== latestId)
+      .slice(-TURN_BATCH_SIZE);
     if (!wanted.length) return;
     const owner = threadRef.current;
     let current = true;
@@ -513,9 +531,15 @@ export function AgentThreadView({
 
   // A turn's questions follow its last line, so a card sits under the reply that asked.
   const lastLineOfTurn = new Map<string, number>();
+  const firstLineOfTurn = new Map<string, number>();
   messages?.forEach((message, index) => {
-    if (message.operation_id) lastLineOfTurn.set(message.operation_id, index);
+    if (message.operation_id) {
+      lastLineOfTurn.set(message.operation_id, index);
+      if (!firstLineOfTurn.has(message.operation_id))
+        firstLineOfTurn.set(message.operation_id, index);
+    }
   });
+  const firstTurnId = firstLineOfTurn.keys().next().value;
 
   const voiceHere = voice?.phase !== "idle" && voice?.thread?.thread_id === thread.thread_id;
   const voiceBusy = voice !== null && voice.phase !== "idle";
@@ -600,11 +624,15 @@ export function AgentThreadView({
           const task =
             turn && latest?.operation_id === turn ? latest : turn ? turnTasks.get(turn) : undefined;
           const closesTurn = turn !== null && lastLineOfTurn.get(turn) === index;
+          const sessionMarker = turn !== null && firstLineOfTurn.get(turn) === index && (
+            <FreshSessionMarker task={task} hasEarlierTurn={turn !== firstTurnId} />
+          );
           return (
             <Fragment key={message.message_id}>
               {message.role === "user" ? (
                 message.trigger === "schedule" ? (
                   <div className="node-chat-line agent">
+                    {sessionMarker}
                     <span className="chat-turn-trigger schedule" title={message.text}>
                       <CalendarClock size={11} aria-hidden="true" />
                       {new Date(message.timestamp).toLocaleTimeString([], {
@@ -616,6 +644,7 @@ export function AgentThreadView({
                   </div>
                 ) : (
                   <div className="node-chat-line human" data-source={message.source ?? undefined}>
+                    {sessionMarker}
                     <div className="chat-human-message">
                       {message.source === "voice" && (
                         <Mic className="chat-message-source" size={12} aria-label="Said by voice" />
@@ -633,6 +662,7 @@ export function AgentThreadView({
                 )
               ) : (
                 <div className="node-chat-line agent" data-source={message.source ?? undefined}>
+                  {sessionMarker}
                   {task && message.source !== "voice" && <TurnProgress task={task} />}
                   <div className="chat-markdown">
                     <MarkdownAnswer text={message.text} />
@@ -647,6 +677,7 @@ export function AgentThreadView({
           latest?.request.message &&
           !messages?.some((message) => message.operation_id === latest.operation_id) && (
             <div className="node-chat-line human">
+              <FreshSessionMarker task={latest} hasEarlierTurn={firstLineOfTurn.size > 0} />
               <div className="chat-human-message">
                 <span className="node-chat-text">{latest.request.message}</span>
               </div>
