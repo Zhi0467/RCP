@@ -531,3 +531,31 @@ def test_agent_posts_to_named_channel_or_own_default(store):
     assert read == store.list_bulletin("project", "main")
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_channel_invalid"):
         post(store, "unknown", channel="missing")
+
+
+def test_space_task_bulletin_requires_exact_project_binding(store):
+    # Upgrade a task produced by the old project-chat writer; project identity
+    # in the binding, rather than the bookkeeping row, authorizes this command.
+    with store.connection() as connection:
+        task = connection.execute("SELECT * FROM graph_runs WHERE operation_id='turn'").fetchone()
+        connection.execute(
+            "UPDATE graph_runs SET kind='space_chat', project_id=? WHERE operation_id='turn'",
+            (store.space_id,),
+        )
+    with pytest.raises(BulletinError):
+        post(store, "space")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO space_turn_project_bindings VALUES(?,?,?,?,?)",
+            (
+                "turn",
+                "project",
+                task["dispatch_authority_json"],
+                "scope",
+                task["graph_target_json"],
+            ),
+        )
+    result = post(store, "space")
+    assert result["text"] == "note"
+    with pytest.raises(BulletinError):
+        store.execute_bulletin_command("unbound", "turn", "read")

@@ -255,6 +255,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         record: AgentTaskRecord,
         *,
         continuation_cause: str = "fresh",
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
@@ -265,6 +267,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                from rcp.storage.agent_threads import claim_handoff_turn
+
+                if claim_handoff_turn(
+                    connection, record, handoff_id=handoff_id, handoff_wake_id=handoff_wake_id
+                ):
+                    existing = connection.execute(
+                        "SELECT * FROM graph_runs WHERE operation_id=?", (record.operation_id,)
+                    ).fetchone()
+                    if existing is None:
+                        raise ValueError("Handoff claim lost its task")
+                    return self._agent_task_record(existing)
                 if continuation_cause == "fresh":
                     self._require_project_accepts_new_work(connection, record.project_id)
                 if self._has_active_chat_overlap(connection, record):
@@ -1879,7 +1892,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 None,
             )
         resolution: dict[str, object] | None = None
-        if record.kind not in {"node_chat", "project_chat"}:
+        if record.kind not in {"node_chat", "project_chat", "space_chat"}:
             return record, resolution
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
@@ -2075,6 +2088,14 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "native_session_id": session_id,
                 }
             )
+            if (
+                reason == "provider_mismatch"
+                and connection.execute(
+                    "SELECT 1 FROM agent_threads WHERE thread_id = ?", (chat_id,)
+                ).fetchone()
+                is not None
+            ):
+                reason = "provider_switch_tail"
             resolution = {
                 "outcome": "continued" if session_id else "fresh",
                 "reason_code": reason,
@@ -2168,7 +2189,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self,
         *,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         stage_host: str,
         stage_root: str,
@@ -2267,7 +2288,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         *,
         operation_id: str,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         stage_host: str,
         stage_root: str,
@@ -2377,7 +2398,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> bool:
-        if record.kind not in {"node_chat", "project_chat"}:
+        if record.kind not in {"node_chat", "project_chat", "space_chat"}:
             return False
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
@@ -2400,7 +2421,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             row = connection.execute(
                 """
                 SELECT * FROM graph_runs
-                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat', 'space_chat')
                   AND json_extract(request_json, '$.chat_id') = ? AND status = 'running'
                 ORDER BY created_at DESC LIMIT 1
                 """,
@@ -2668,10 +2689,32 @@ class AgentTaskStoreMixin(StoreMixinBase):
             row = connection.execute(
                 """
                 SELECT * FROM graph_runs
-                WHERE project_id = ? AND operation_id = ?
+                WHERE operation_id = ?
                 """,
-                (project_id, operation_id),
+                (operation_id,),
             ).fetchone()
+            if row is not None and row["kind"] == "space_chat":
+                project_binding = connection.execute(
+                    "SELECT * FROM space_turn_project_bindings "
+                    "WHERE operation_id = ? AND project_id = ?",
+                    (operation_id, project_id),
+                ).fetchone()
+                if project_binding is None:
+                    raise KeyError(operation_id)
+                target = GraphTargetRef.model_validate_json(project_binding["graph_target_json"])
+                if target.kind != "main":
+                    raise KeyError(operation_id)
+                return AgentTaskAuthority(
+                    operation_id=operation_id,
+                    project_id=project_id,
+                    apply_target=target,
+                    authorized_by=self._authorized_human_snapshot(row),
+                    dispatch_authority=AgentDispatchAuthority.model_validate_json(
+                        project_binding["dispatch_authority_json"]
+                    ),
+                )
+            if row is not None and row["project_id"] != project_id:
+                raise KeyError(operation_id)
             binding = (
                 self._require_merge_binding(connection, self._agent_task_record(row))
                 if row is not None and row["kind"] == "branch_merge"
@@ -2926,6 +2969,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         *,
         limit: int = AGENT_TASK_LIST_DEFAULT_LIMIT,
         include_hidden: bool = False,
+        user_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
     ) -> list[AgentTaskRecord]:
         """The newest tasks, plus every chat whose latest turn is still open.
@@ -2950,6 +2994,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         scope = (
             "{run}.project_id = :project AND (:hidden OR {run}.visible = 1)"
             " AND (:target IS NULL OR {run}.graph_target_json = :target)"
+            " AND (:viewer IS NULL OR NOT EXISTS (SELECT 1 FROM agent_threads AS private_thread"
+            " WHERE private_thread.thread_id=json_extract({run}.request_json, '$.chat_id')"
+            " AND private_thread.user_id != :viewer))"
         )
         own_scope, later_scope = scope.format(run="graph_runs"), scope.format(run="later")
         chat_turn = (
@@ -3024,6 +3071,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 {
                     "project": project_id,
+                    "viewer": user_id,
                     "hidden": int(include_hidden),
                     "target": target_json,
                     "limit": max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
@@ -3255,7 +3303,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def has_active_chat_task(
         self,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
     ) -> bool:
         """Return whether one exact chat already owns an active task."""
@@ -3293,7 +3341,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def has_chat_native_session_origin(
         self,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         node_id: str | None,
         provider: str,
@@ -3383,7 +3431,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         native_session_id: str,
         *,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         node_id: str | None,
     ) -> ChatSessionContextRecord | None:
@@ -3414,7 +3462,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         execution_machine: str,
         native_session_id: str,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         node_id: str | None,
         protocol_version: int,
@@ -3785,7 +3833,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def has_resumable_paused_chat_task(
         self,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
     ) -> bool:
         """Whether this conversation has a paused attempt awaiting a decision.
@@ -6265,7 +6313,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         row: sqlite3.Row,
         *,
         project_id: str,
-        kind: Literal["node_chat", "project_chat"],
+        kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
         node_id: str | None,
     ) -> None:

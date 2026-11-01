@@ -77,6 +77,9 @@ TRANSFER_RECORD_TABLES |= frozenset(PAPER_PROJECT_TABLES)
 
 TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
+        "agent_threads",
+        "space_turn_project_bindings",
+        "memory_migrations",
         "_legacy_campaign_invocations_archive",
         "_legacy_campaign_messages_archive",
         "_legacy_campaign_recoveries_archive",

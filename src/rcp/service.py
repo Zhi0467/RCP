@@ -144,6 +144,7 @@ from rcp.transport.state_transfer import diagnostics as state_transfer_diagnosti
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
+    from rcp.projects import ProjectCatalog
     from rcp.runs.provider_sign_in import ProviderSignInRunner
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
@@ -318,6 +319,9 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
+    source: Literal["voice", "handoff", "slack"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     operation_id: str | None = None
     browser_status: BrowserTurnStatus = Field(
         default_factory=lambda: BrowserTurnStatus(status="not_requested")
@@ -365,7 +369,7 @@ class ChatSummary(BaseModel):
 
     chat_id: str
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    kind: Literal["node_chat", "project_chat"]
+    kind: Literal["node_chat", "project_chat", "space_chat"]
     node_id: str | None
     title: str
     updated_at: str
@@ -406,7 +410,13 @@ class _StoredChatRecord(BaseModel):
     graph_target: GraphTargetRef | None = Field(default=None, alias="graphTarget")
     native_session_id: str | None = Field(default=None, alias="nativeSessionId")
     node_id: str | None = Field(default=None, alias="nodeId")
-    chat_scope: Literal["node", "project"] = Field(alias="chatScope")
+    chat_scope: Literal["node", "project", "space"] = Field(alias="chatScope")
+    private_owner: str | None = Field(
+        default=None, alias="privateOwner", exclude_if=lambda value: value is None
+    )
+    source: Literal["voice", "handoff", "slack"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     provider: str | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -424,6 +434,98 @@ class _StoredChatRecord(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+
+
+def _chat_message_from_record(record: _StoredChatRecord) -> ChatMessage:
+    return ChatMessage(
+        message_id=record.uuid,
+        source=record.source,
+        operation_id=record.operation_id,
+        role=record.role,
+        text=record.text,
+        timestamp=record.timestamp,
+        native_session_id=record.native_session_id,
+        provider=record.provider,
+        model=record.model,
+        reasoning=record.reasoning,
+        execution_machine=record.execution_machine,
+        applied_revision=record.applied_revision,
+        mode=record.mode,
+        graph_update=record.graph_update,
+        turn_outcome=(
+            record.turn_outcome if record.role == "assistant" and record.mode == "work" else None
+        ),
+        trigger=record.trigger,
+        steering=record.steering,
+        attachments=record.attachments,
+    )
+
+
+def canonical_space_chat_path(data_dir: Path, user_id: str, chat_id: str) -> Path:
+    """Name a Space transcript independently of project state workspaces."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", user_id) or str(uuid.UUID(chat_id)) != chat_id:
+        raise ValueError("Invalid Space transcript identity")
+    return data_dir / "agent-threads" / user_id / f"{chat_id}.jsonl"
+
+
+def read_space_chat_transcript(
+    data_dir: Path, user_id: str, chat_id: str, *, title: str = "Agent"
+) -> ChatTranscript | None:
+    """Read only an owner-bound Space file, never a project or relocated transcript."""
+    try:
+        path = canonical_space_chat_path(data_dir, user_id, chat_id)
+        for directory in (path.parent.parent, path.parent):
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                return None
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return None
+            with os.fdopen(descriptor, encoding="utf-8") as handle:
+                descriptor = -1
+                records = [
+                    _StoredChatRecord.model_validate_json(line)
+                    for line in handle.read().split("\n")
+                    if line.strip()
+                ]
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if not records:
+            return None
+        for record in records:
+            if (
+                record.chat_scope != "space"
+                or record.session_id != chat_id
+                or record.private_owner != user_id
+                or record.node_id is not None
+                or record.graph_target is not None
+                or record.type != record.role
+                or str(uuid.UUID(record.uuid)) != record.uuid
+                or datetime.fromisoformat(record.timestamp).tzinfo is None
+                or (
+                    record.steering is not None
+                    and (record.role != "user" or record.trigger != "human")
+                )
+            ):
+                return None
+        records = _fold_chat_receipts(records)
+        messages = [_chat_message_from_record(record) for record in records]
+        preview = next((message.text for message in reversed(messages) if message.text.strip()), "")
+        return ChatTranscript(
+            chat_id=chat_id,
+            kind="space_chat",
+            node_id=None,
+            title=title,
+            updated_at=max(
+                records, key=lambda record: datetime.fromisoformat(record.timestamp)
+            ).timestamp,
+            message_count=len(messages),
+            last_message_preview=" ".join(preview.split())[:CHAT_PREVIEW_MAX_CHARS],
+            messages=messages,
+        )
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def _fold_chat_receipts(records: list[_StoredChatRecord]) -> list[_StoredChatRecord]:
@@ -468,7 +570,14 @@ def _canonical_chat_path(
     *,
     chat_scope: Literal["node", "project"],
     node_id: str | None,
+    private_owner: str | None = None,
 ) -> Path:
+    if chat_scope not in {"node", "project"}:
+        raise ValueError("Project reader refuses non-project scopes")
+    if private_owner is not None:
+        if chat_scope != "project" or not re.fullmatch(r"[A-Za-z0-9_-]+", private_owner):
+            raise ValueError("Invalid private project owner")
+        return root / "chat" / f"private-{private_owner}-{chat_id}.jsonl"
     target = node_id if chat_scope == "node" else "project"
     if target is None:
         raise ValueError("Node chat requires a node_id")
@@ -682,6 +791,7 @@ def _validate_stored_chat_record(
         record.session_id != anchor.session_id
         or record.chat_scope != anchor.chat_scope
         or record.node_id != anchor.node_id
+        or record.private_owner != anchor.private_owner
         or (
             record.graph_target is not None
             and anchor.graph_target is not None
@@ -693,11 +803,14 @@ def _validate_stored_chat_record(
         anchor.chat_scope == "project" and anchor.node_id is not None
     ):
         raise ValueError("canonical chat scope is invalid")
+    if anchor.chat_scope == "space":
+        raise ValueError("Project reader refuses Space transcripts")
     if path != _canonical_chat_path(
         root,
         anchor.session_id,
         chat_scope=anchor.chat_scope,
         node_id=anchor.node_id,
+        private_owner=anchor.private_owner,
     ):
         raise ValueError("canonical chat path does not match its records")
 
@@ -908,6 +1021,10 @@ class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     browser_requested: bool = False
+    timezone: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    source: Literal["voice", "handoff", "slack"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     provider: ProviderId | None = None
     run_truth_scope: list[str] | None = None
@@ -1062,7 +1179,7 @@ def resolve_dispatch_authority(
                 patch_kind=kind,
             ),
         )
-    if kind not in {"node_chat", "project_chat"}:
+    if kind not in {"node_chat", "project_chat", "space_chat"}:
         raise ValueError(f"Authority refused action 'dispatch': unknown task kind {kind!r}.")
 
     chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
@@ -1071,6 +1188,8 @@ def resolve_dispatch_authority(
             "Authority refused action 'dispatch': task kind and chat scope do not match."
         )
     work = request.mode == "work"
+    if kind == "space_chat" and (not work or request.patch_kind != "work"):
+        raise ValueError("Space threads require ordinary Work authority")
     patch_kind = request.patch_kind if work else None
     experiment = patch_kind == "experiment_loop"
     return AgentDispatchAuthority(
@@ -1231,8 +1350,10 @@ class ProjectService:
         project_service_resolver: Callable[[str], ProjectService] | None = None,
         paper_live: PaperLive | None = None,
         paper_admission: Callable[[str], AbstractContextManager[object]] | None = None,
+        project_catalog: ProjectCatalog | None = None,
     ) -> None:
         self.history = history
+        self.project_catalog = project_catalog
         self.paper = paper
         self.paper_live = paper_live or PaperLive(paper.store, lambda _project: paper.workspace)
         self._paper_admission = paper_admission
@@ -1358,12 +1479,14 @@ class ProjectService:
         *,
         chat_scope: Literal["node", "project"],
         node_id: str | None,
+        private_owner: str | None = None,
     ) -> Path:
         return _canonical_chat_path(
             self.history.workspace.root,
             chat_id,
             chat_scope=chat_scope,
             node_id=node_id,
+            private_owner=private_owner,
         )
 
     def restore_canonical_chat(
@@ -1415,6 +1538,7 @@ class ProjectService:
         limit: int = CHAT_PAGE_DEFAULT_LIMIT,
         inventory: bool = False,
         task_summaries: list[ChatSummary] | None = None,
+        excluded_chat_ids: set[str] | None = None,
     ) -> ChatSummaryPage:
         """Page canonical chats, optionally including every target and task-only chat."""
         if offset < 0:
@@ -1467,7 +1591,8 @@ class ProjectService:
             (
                 summary
                 for summary in summaries.values()
-                if inventory or summary.graph_target == self.history.graph_target
+                if (inventory or summary.graph_target == self.history.graph_target)
+                and summary.chat_id not in (excluded_chat_ids or set())
             ),
             key=lambda item: (datetime.fromisoformat(item.updated_at), item.chat_id),
             reverse=True,
@@ -1671,28 +1796,8 @@ class ProjectService:
                     else None
                 )
             messages.append(
-                ChatMessage(
-                    message_id=record.uuid,
-                    operation_id=record.operation_id,
-                    role=record.role,
-                    text=record.text,
-                    timestamp=record.timestamp,
-                    native_session_id=native_session_id,
-                    provider=record.provider,
-                    model=record.model,
-                    reasoning=record.reasoning,
-                    execution_machine=record.execution_machine,
-                    applied_revision=record.applied_revision,
-                    mode=record.mode,
-                    graph_update=record.graph_update,
-                    turn_outcome=(
-                        record.turn_outcome
-                        if record.role == "assistant" and record.mode == "work"
-                        else None
-                    ),
-                    trigger=record.trigger,
-                    steering=record.steering,
-                    attachments=record.attachments,
+                _chat_message_from_record(record).model_copy(
+                    update={"native_session_id": native_session_id}
                 )
             )
         first_message = next((message.text for message in messages if message.role == "user"), "")

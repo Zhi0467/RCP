@@ -37,6 +37,7 @@ TRANSFER_APP_DATA_PROJECT_SOURCE_ROOTS = frozenset({"project-sources", "artifact
 TRANSFER_APP_DATA_CONTROL_ROOTS = frozenset({"transfer-exports", "transfer-inbox"})
 TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
     {
+        "agent-threads",
         "bootstrap-manifests",
         "browser",
         "chat-attachments",
@@ -82,6 +83,9 @@ TRANSFER_RESEARCH_EXCLUDED_ROOTS = frozenset(
 )
 TRANSFER_GLOBAL_TABLES = frozenset(
     {
+        "agent_schedules",
+        "approval_cards",
+        "agent_handoffs",
         "provider_skill_inventories",
         "provider_login_states",
         "provider_login_assignments",

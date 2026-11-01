@@ -31,6 +31,7 @@ from rcp.history.branches import canonical_branch_id
 from rcp.keyed_locks import KeyedLocks
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
+from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 from rcp.runs.experiment_admission import (
     ExperimentNotReady,
@@ -44,7 +45,7 @@ from rcp.runs.experiment_admission import (
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
 from rcp.runs.provider_login import provider_login_host
 from rcp.runs.work_experiment_commands import paused_experiment_refusal, unused_turns
-from rcp.service import RunRequest
+from rcp.service import ProjectService, RunRequest
 from rcp.storage import (
     AgentTaskAdmissionConflict,
     AgentTaskRecord,
@@ -213,7 +214,9 @@ def start_work_experiment(
     project_id = source.project_id
     target = source.graph_target
     try:
-        service = get_graph_service(catalog, project_id, target.branch_id, write=True)
+        service = task_owner(store, source, catalog=catalog)
+        if not isinstance(service, ProjectService):
+            raise ValueError("Space threads must hand off Experiment starts")
     except HTTPException as exc:
         raise ValueError(str(exc.detail)) from exc
     # An uncached pick probes its provider CLI, so it is checked outside the lock.

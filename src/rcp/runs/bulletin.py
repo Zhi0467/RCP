@@ -118,6 +118,7 @@ def handle_bulletin(
     post_allowed: bool,
     turn_artifacts: bool,
     mailbox: RunStageMailbox | None = None,
+    project_id: str | None = None,
 ) -> CommandResponse:
     from rcp.storage.bulletin import BulletinError
 
@@ -136,9 +137,10 @@ def handle_bulletin(
             request_id=request.request_id, status="invalid", message=code, result={"code": code}
         )
     assert task is not None
+    project_id = project_id or task.project_id
     try:
         result: dict[str, Any] = store.execute_bulletin_command(
-            task.project_id,
+            project_id,
             operation_id,
             request.arguments.action,
             key=request.idempotency_key,
@@ -165,7 +167,7 @@ def handle_bulletin(
             if mailbox is None:
                 raise BulletinError("bulletin_stage_unavailable")
             assert request.arguments.artifact_id is not None
-            item = resolve_project_artifact(store, task.project_id, request.arguments.artifact_id)
+            item = resolve_project_artifact(store, project_id, request.arguments.artifact_id)
             # Source names are display metadata, never trusted paths. Unique names keep
             # successive reads immutable even when the source's current version changes.
             filename = re.sub(r"[^A-Za-z0-9._-]", "_", item.filename)[-120:] or "artifact"

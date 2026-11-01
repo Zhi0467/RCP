@@ -19,6 +19,22 @@ if TYPE_CHECKING:
     from rcp.transport.run_stage import RemoteRunStage
 
 
+DEFAULT_AGENT_NAMES = (
+    "Pip",
+    "Puck",
+    "Ariel",
+    "Scout",
+    "Bartleby",
+    "Sancho",
+    "Alice",
+    "Orlando",
+    "Marvin",
+    "Moss",
+    "Biscuit",
+    "Juniper",
+)
+
+
 def handle_name(store: AppStore, operation_id: str, request: NameCommandRequest) -> CommandResponse:
     try:
         result = store.self_name_chat_for_task(operation_id, request.arguments.name)
@@ -56,6 +72,13 @@ def task_agent_name_state(store: AppStore, operation_id: str) -> dict[str, objec
         if row is None or actor is None:
             return {}
         chat_id = actor.split(":", 1)[1]
+        if (
+            connection.execute(
+                "SELECT 1 FROM agent_threads WHERE thread_id=?", (chat_id,)
+            ).fetchone()
+            is not None
+        ):
+            return {}
         if (
             connection.execute(
                 "SELECT 1 FROM chat_display WHERE project_id=? AND chat_id=?",

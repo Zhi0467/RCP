@@ -1761,3 +1761,40 @@ turn's. The link resolves at read time once the turn publishes the artifact; dis
 post already links, under the artifact's lock that posts also hold, so such a link
 saves its artifact like any other. The Auto-research orchestrator and workers write
 no turn artifacts and neither see nor may run `--link`.
+
+## Space-thread scopes and commands
+
+A Space turn runs locally in its persistent member/thread stage. Its
+`CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
+and the Space stage. Each project keeps its ordinary repository overlap checks,
+exact `projects/<project_id>` stage, main graph target and dispatch binding.
+The stored fingerprint hashes the sorted project fingerprints. With no admitted
+projects the provider can write its own stage but the graph-write fingerprint
+is NULL. A changed admitted project set is recorded on the turn and does not
+change the thread's native-session identity.
+
+The top-level client grants `projects` and `handoff`. Each project client has
+its own authenticated mailbox and grants only `validate`, `graph_log`,
+`graph_diff` and `bulletin`. Native subagents remain permitted; MCP servers
+remain off. Project lifecycle work goes through the member's own project thread.
+The provider receives the union of project Git transports and read-hiding
+policies; the combined policy is installed before launch. Even a turn without
+local write projects retains the local account's default secret and private
+transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
+`too_many_hidden_folders`.
+
+Collection reads only admitted project Patch files, applies each independently
+in project-id order under its project lock and live membership check, and records
+`project_results` in the task result. Missing authority bindings refuse Apply.
+Other Patch files and all watch files are receipted and discarded; invalid stray
+files cannot prevent another project's collection. Rejection yields a partial
+turn outcome without undoing another project's accepted transition. Watcher
+storage also refuses a Space-task origin.
+
+`projects` returns the member's Cards projection with thread ids and
+`same_machine`; `show` adds bounded graph and episode context. `handoff` reads a
+bounded workspace message file and persists an idempotent pending delivery.
+Task insertion and the handoff claim commit together. The task record supplies
+an idempotent `source: "handoff"` transcript append, so interruption between SQL
+and JSONL is recoverable. Busy threads defer delivery. Startup and turn settlement
+retry pending delivery and admit a claimed Space wake when handed-off work settles.

@@ -341,6 +341,21 @@ class WorkCommandHandler:
                 if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
                 else None,
             )
+        if request.verb == "projects":
+            from rcp.runs.agent_thread_commands import ThreadCommandHandler
+
+            if (
+                self.execution is None
+                or self.service is None
+                or self.service.project_catalog is None
+            ):
+                return refuse("Project listing is unavailable for this turn.")
+            return ThreadCommandHandler(
+                self.execution.store,
+                self.service.project_catalog,
+                self.execution.operation_id,
+                self.mailbox.workspace if self.mailbox is not None else None,
+            )(request, identity)
         if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest)):
             if self.graph_read_scope is None or self.service is None:
                 return refuse(
@@ -596,6 +611,14 @@ def work_command_handler(
             and execution.store.bulletin_enabled_for_task(execution.operation_id)
         ):
             verbs.add("bulletin")
+    if execution is not None and service is not None and service.project_catalog is not None:
+        task = execution.store.agent_task(execution.operation_id)
+        if (
+            task is not None
+            and isinstance(thread_id := task.request.get("chat_id"), str)
+            and execution.store.agent_thread(thread_id) is not None
+        ):
+            verbs.add("projects")
     if work_ask_authorized(execution):
         verbs.add("ask")
     if work_experiment_allowed(execution):

@@ -22,6 +22,7 @@ from rcp.limits import (
     BULLETIN_TEXT_MAX_CHARS,
     BULLETIN_UNREAD_MAX_COUNT,
 )
+from rcp.storage.agent_threads import agent_thread_attribution
 from rcp.storage.artifacts import ArtifactStoreMixin
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
@@ -105,6 +106,7 @@ def _record(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> dict[
     return {
         "post_id": row["post_id"],
         "author": author,
+        "via_agent": agent_thread_attribution(connection, row["operation_id"]),
         "text": row["text"],
         "refs": json.loads(row["refs_json"]),
         "artifacts": _artifact_links(connection, row, now),
@@ -720,14 +722,26 @@ class BulletinStoreMixin(StoreMixinBase):
         with self._artifacts_held(text) as kept, self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
-                "SELECT * FROM graph_runs WHERE project_id=? AND operation_id=?",
-                (project_id, operation_id),
+                "SELECT * FROM graph_runs WHERE operation_id=?",
+                (operation_id,),
             ).fetchone()
             if task is None:
                 raise BulletinError("bulletin_forbidden")
+            binding = task
+            if task["kind"] == "space_chat":
+                binding = connection.execute(
+                    "SELECT * FROM space_turn_project_bindings WHERE operation_id=? AND project_id=?",
+                    (operation_id, project_id),
+                ).fetchone()
+                if binding is None or not live_project_member(
+                    connection, project_id, task["authorized_user_id"]
+                ):
+                    raise BulletinError("bulletin_forbidden")
+            elif task["project_id"] != project_id:
+                raise BulletinError("bulletin_forbidden")
             if not bulletin_enabled_for_task(connection, operation_id):
                 raise BulletinError("bulletin_disabled")
-            target_key = GraphTargetRef.model_validate_json(task["graph_target_json"]).key
+            target_key = GraphTargetRef.model_validate_json(binding["graph_target_json"]).key
             if channel is not None:
                 if channel == "main":
                     target_key = "main"
@@ -757,7 +771,7 @@ class BulletinStoreMixin(StoreMixinBase):
             )
             if named_channel:
                 target_key = named_channel["target_key"]
-            authority = json.loads(task["dispatch_authority_json"] or "{}")
+            authority = json.loads(binding["dispatch_authority_json"] or "{}")
             if authority.get("task_contract") not in {
                 "work_auto",
                 "orchestrate",

@@ -21,7 +21,7 @@ from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
     from rcp.providers.session_format import SessionFormat
@@ -171,7 +171,7 @@ class ProviderTurnRequest:
     session_id: str | None
     read_dirs: list[Path]
     write_dirs: list[Path]
-    write_scope: ProjectWriteScope | None
+    write_scope: ProviderWriteScope | None
     capability: AgentCapability
     provider_version: str | None
     browser_grant: BrowserGrant | None = None
@@ -586,7 +586,7 @@ class ProviderProfile:
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -688,11 +688,11 @@ def _paper_changes_root(write_dirs: list[Path]) -> Path:
 
 
 def _require_project_write_scope(
-    scope: ProjectWriteScope | None,
+    scope: ProviderWriteScope | None,
     *,
     capability: AgentCapability,
     write_dirs: list[Path],
-) -> ProjectWriteScope:
+) -> ProviderWriteScope:
     if scope is None:
         raise ValueError(f"{capability} launch requires a resolved project write scope")
     if scope.capability != capability:

@@ -954,6 +954,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )
@@ -1274,6 +1275,7 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
                 project_service_resolver=self.open,
+                project_catalog=self,
                 paper_live=self.paper_live,
                 paper_admission=lambda project_id: self.paper_admission(project_id),
             )
@@ -1731,6 +1733,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )
@@ -2578,6 +2581,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )

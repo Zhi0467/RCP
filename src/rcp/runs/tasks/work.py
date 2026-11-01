@@ -414,6 +414,12 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 client=client or turn.patch_inputs.validator_staged.client_command(),
             )
         )
+    if "projects" in verbs:
+        from rcp.runs.agent_thread_commands import projects_command_usage
+
+        instructions.append(
+            projects_command_usage(client or turn.patch_inputs.validator_staged.client_command())
+        )
     if "name" in verbs:
         from rcp.runs.agent_names import name_command_usage
 
@@ -2748,7 +2754,9 @@ async def _stream_work_run(
                     browser_grant=browser_grant,
                 )
         contract_path = composed_prompt.contract_path
-        prompt = composed_prompt.prompt
+        from rcp.runs.agent_threads import thread_history_seed
+
+        prompt = composed_prompt.prompt + thread_history_seed(service, turn.request)
         retry_baseline = _capture_retry_deliverable_baseline(turn)
     except BaseException as exc:
         if validator_lifecycle is not None:

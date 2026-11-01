@@ -33,6 +33,37 @@ same cap. Archiving or unarchiving keeps the name.
 **Why:** a researcher should find the same agent by the same name in every view,
 and separate Experiment episodes must not create separate agent identities.
 
+## Private agent threads
+
+Each member has one Space thread and one project thread per membership. Listing
+`/api/agent-threads` creates missing threads atomically. `agent_threads` is the
+privacy authority; filename prefixes are only read-hiding selectors. Existing
+board chats remain public. Thread turns are captured Work turns on main,
+authorized by the owning member. Loss of membership closes that project thread.
+
+The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
+unused name and then numbered suffixes. These seeded names cannot be changed by
+the agent; member renaming uses the ordinary name rules. Browser starts on.
+
+Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
+on each record. The reader verifies the filename against the record. Space
+transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
+use `chatScope: "space"` without node or graph target fields. A separate reader
+accepts only that scope. Optional message `source` distinguishes voice and
+handoff input (and the reserved Slack source); absent source means the composer
+and is omitted from serialization, preserving old records.
+
+Private chats, their tasks and their questions are visible and controllable only
+by their owner. Project question pushes target that owner. Unread settled project
+thread replies use the owner-only `agent_thread` notification; Space replies do
+not push. Public graph provenance may name the thread through `via_agent`, while
+the linked conversation remains private.
+
+Fresh thread sessions receive a bounded transcript tail directly in their first
+prompt, labelled as earlier conversation data. It is never staged as a file.
+Provider switches record `provider_switch_tail`; other fresh starts retain their
+existing reasons. Provider-native automatic compaction remains unchanged.
+
 ## Human notification observations
 
 The sender reconciles main-target attention after startup and accepted main
@@ -108,7 +139,7 @@ The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a
 different mode.
 
-Browser consent is an app-local per-chat preference, off by default. The browser
+Browser consent is an app-local per-chat preference, off by default except for agent threads. The browser
 preference API reads and sets it without rewriting transcripts. Admission of every
 chat turn, including a watcher wake and a question answer, snapshots it into
 `browser_requested`; changing the toggle affects the next turn.
@@ -166,7 +197,8 @@ Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
 `session_stage_unavailable`, `session_stale`, `session_context_unavailable`,
 `orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, `login_switch`, or
-`consolidation` (every nightly turn starts fresh).
+`consolidation` (every nightly turn starts fresh). Private provider switches use
+`provider_switch_tail` as described under [Private agent threads](#private-agent-threads).
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope

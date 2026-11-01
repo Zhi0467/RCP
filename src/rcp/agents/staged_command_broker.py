@@ -101,6 +101,7 @@ class BrokerUnavailable(BrokerError):
 
 def _parser():
     parser = argparse.ArgumentParser(prog="rcp-command-broker")
+    parser.add_argument("--workspace")
     parser.add_argument("--socket", required=True)
     parser.add_argument("--mailbox-id", required=True)
     parser.add_argument("--ready-line", required=True)
@@ -649,7 +650,7 @@ def main(argv=None):
     if not (response_timeout > 0) or response_timeout == float("inf"):
         print("broker response timeout must be a positive finite number", file=sys.stderr)
         return 2
-    workspace = os.getcwd()
+    workspace = namespace.workspace or os.getcwd()
     if os.path.islink(workspace) or not os.path.isdir(workspace):
         print("broker workspace is unavailable", file=sys.stderr)
         return 2

@@ -2148,3 +2148,23 @@ observations across restarts. Deleting a post before reconciliation suppresses
 its notification; editing away a mention preserves the accepted event. Links open
 the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `branch_id` for a branch channel. Agent mentions never wake or launch work.
+
+## Agent thread API
+
+`GET /api/agent-threads` returns the acting member's lazily created Space and
+project threads, names, unread state, activity, live state and browser preference.
+Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
+require ownership. Project chat routes enforce the same ownership, including
+empty threads before their first turn. Task and question detail/control routes
+return 404 for another member's private thread; lists filter before pagination.
+Chat display and read projections also exclude other members' private ids.
+
+Task rows, Patch history summaries, episode responses and Bulletin posts expose
+`via_agent: {thread_id, name} | null`, derived from operational thread ownership.
+This is a projection only; canonical Patch records and replay are unchanged.
+
+Space turn artifacts use owner-checked
+`/api/agent-threads/{thread_id}/tasks/{operation_id}/artifacts/{artifact_id}/{action}`
+reads for `content`, `download`, and `viewer`. They share the ordinary bounded
+artifact reader and sandboxed viewer. Space artifacts do not expose project
+Keep or discussion controls.

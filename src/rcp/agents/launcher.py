@@ -37,7 +37,7 @@ from rcp.agents.provider_environment import (
 )
 from rcp.agents.schema import EXPERIMENT_WATCH_OUTPUT_GLOB
 from rcp.agents.steering import LiveProviderSteering
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import ProviderWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.models import HiddenReadScope
 from rcp.limits import (
@@ -1175,7 +1175,7 @@ class AgentLauncher:
         fork_source_cwd: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
-        write_scope: ProjectWriteScope | None = None,
+        write_scope: ProviderWriteScope | None = None,
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
@@ -1316,7 +1316,7 @@ class AgentLauncher:
         fork_source_cwd: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
-        write_scope: ProjectWriteScope | None = None,
+        write_scope: ProviderWriteScope | None = None,
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
@@ -1754,7 +1754,7 @@ class AgentLauncher:
                     line = raw_line.decode("utf-8", errors="replace").rstrip()
                     if not line:
                         continue
-                    if invocation_gate is not None and line == invocation_gate.ready_line:
+                    if invocation_gate is not None and line in invocation_gate.ready_lines:
                         # The broker prints this straight after spawning, before the
                         # provider authenticates, so it does not end the hold.
                         continue
@@ -2067,7 +2067,7 @@ class AgentLauncher:
         fork_session_id: str | None = None,
         read_dirs: list[Path],
         write_dirs: list[Path] | None = None,
-        write_scope: ProjectWriteScope | None = None,
+        write_scope: ProviderWriteScope | None = None,
         capability: AgentCapability,
         provider_version: str | None = None,
         browser_grant: BrowserGrant | None = None,

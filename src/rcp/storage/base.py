@@ -136,6 +136,12 @@ class AppStoreBase:
         (63, "paper_live_v1"),
         (64, "consolidation_targets_v1"),
         (65, "per_member_provider_logins_v1"),
+        (66, "agent_threads_v1"),
+        (67, "agent_schedules_v1"),
+        (68, "approval_cards_v1"),
+        (69, "agent_handoffs_v1"),
+        (70, "space_turn_project_bindings_v1"),
+        (71, "memory_migrations_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -976,6 +982,36 @@ class AppStoreBase:
             version=65,
             name="per_member_provider_logins_v1",
             migration=migrate_per_member_provider_logins,
+        )
+        from rcp.storage.agent_threads import (
+            migrate_agent_handoffs,
+            migrate_agent_schedules,
+            migrate_agent_threads,
+            migrate_approval_cards,
+            migrate_memory_migrations,
+            migrate_space_turn_project_bindings,
+        )
+
+        self._run_storage_schema_migration(
+            connection, version=66, name="agent_threads_v1", migration=migrate_agent_threads
+        )
+        self._run_storage_schema_migration(
+            connection, version=67, name="agent_schedules_v1", migration=migrate_agent_schedules
+        )
+        self._run_storage_schema_migration(
+            connection, version=68, name="approval_cards_v1", migration=migrate_approval_cards
+        )
+        self._run_storage_schema_migration(
+            connection, version=69, name="agent_handoffs_v1", migration=migrate_agent_handoffs
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=70,
+            name="space_turn_project_bindings_v1",
+            migration=migrate_space_turn_project_bindings,
+        )
+        self._run_storage_schema_migration(
+            connection, version=71, name="memory_migrations_v1", migration=migrate_memory_migrations
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

@@ -15,7 +15,7 @@ from rcp.agents.provider_environment import LOGIN_HOMES
 from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
 from rcp.agents.staged_hidden_read import probe_hidden_read_wrapper as probe_hidden_read_wrapper
 from rcp.agents.write_scope import RegisteredRepositoryRoot, installed_server_storage
-from rcp.config import Manifest
+from rcp.config import MachineConfig, Manifest
 from rcp.core.models import (
     HIDDEN_READ_WRAPPER_ROOT,
     HiddenReadKeyEvidence,
@@ -146,6 +146,8 @@ def hidden_read_defaults(
             (
                 app_data_dir + "/providers/command-mailboxes",
                 app_data_dir + "/service-connections",
+                app_data_dir + "/agent-threads",
+                app_data_dir + "/agent-threads",
                 app_data_dir + "/run-stage/project-transfer-activation",
             )
         )
@@ -275,6 +277,48 @@ def resolve_hidden_read_scope(
     machine_provider_paths: Sequence[str] = (),
 ) -> HiddenReadScope:
     machine = manifest.machine_map[execution_machine]
+    return resolve_machine_hidden_read_scope(
+        machine=machine,
+        execution_machine=execution_machine,
+        provider=provider,
+        capability=capability,
+        stage_root=stage_root,
+        workspace_root=workspace_root,
+        app_data_dir=app_data_dir,
+        remote_stage=remote_stage,
+        repository_inventory=repository_inventory,
+        machine_hidden_folders=machine_hidden_folders,
+        key_evidence=key_evidence,
+        browser_enabled=browser_enabled,
+        machine_provider_paths=machine_provider_paths,
+        repository_paths=tuple(
+            item.path for item in manifest.repositories if item.machine == execution_machine
+        ),
+        project_transcript_roots=(str(manifest.research_dir / "chat"),)
+        if remote_stage is None
+        else (),
+    )
+
+
+def resolve_machine_hidden_read_scope(
+    *,
+    machine: MachineConfig,
+    execution_machine: str,
+    provider: ProviderId,
+    capability: AgentCapability,
+    stage_root: str,
+    workspace_root: str,
+    app_data_dir: Path | None,
+    remote_stage: RemoteRunStage | None,
+    repository_inventory: list[RegisteredRepositoryRoot],
+    machine_hidden_folders: list[str],
+    key_evidence: tuple[HiddenReadKeyEvidence, ...],
+    browser_enabled: bool,
+    machine_provider_paths: Sequence[str] = (),
+    repository_paths: tuple[str, ...] = (),
+    project_transcript_roots: tuple[str, ...] = (),
+) -> HiddenReadScope:
+    """Resolve account policy independently of whether a project admits writes."""
     if bool(machine.host) != (remote_stage is not None) or (
         remote_stage is not None and remote_stage.host != machine.host
     ):
@@ -305,6 +349,26 @@ def resolve_hidden_read_scope(
             for name in profile_for(provider).login_home_credentials
         ),
     )
+    # Private history is display data. Fresh thread sessions receive an explicit
+    # bounded prompt seed, so even their own transcript need not be tool-readable.
+    transcript_roots = {
+        str(PurePosixPath(item.path) / ".research" / "chat")
+        for item in repository_inventory
+        if item.execution_host == machine.host
+    }
+    transcript_roots.update(project_transcript_roots)
+    transcript_roots.update(
+        str(PurePosixPath(path) / ".research" / "chat") for path in repository_paths
+    )
+    if remote_stage is None and data_dir:
+        transcript_roots.update(
+            str(path / ".research" / "chat")
+            for path in (Path(data_dir) / "state-cache").glob("*")
+            if path.is_dir()
+        )
+    globs += tuple(glob.escape(root) + "/private-*.jsonl" for root in sorted(transcript_roots))
+    if len(set((*directories, *files, *globs))) > HIDDEN_READ_PATH_MAX_COUNT:
+        raise HiddenFolderRejected(code="too_many_hidden_folders")
     if data_dir and remote_stage is None:
         storage = installed_server_storage(Path(data_dir))
         if storage:
@@ -317,7 +381,7 @@ def resolve_hidden_read_scope(
         command_socket_directory(home),
         home + "/.ssh/known_hosts",
         *[item.path for item in repository_inventory if item.execution_host == machine.host],
-        *[item.path for item in manifest.repositories if item.machine == execution_machine],
+        *repository_paths,
     ]
     if data_dir:
         protected.extend((data_dir + "/tools", data_dir + "/run-stage"))

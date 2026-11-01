@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import BinaryIO, Protocol
@@ -216,6 +217,7 @@ class MemberRemovalCoordinator:
         after = self.store.member_removal_preview(member_id)
         if not after.active_task_ids and not after.active_episode_ids:
             ServiceConnections(self.store, member_id).remove_member_data()
+            _remove_member_agent_data(self.store, member_id)
             self.store.complete_member_removal(member_id)
             after = self.store.member_removal_preview(member_id)
         # After the completion check, so the pass that completes removal has none
@@ -422,3 +424,29 @@ def _resume_routes(
 
 
 __all__ = ["MemberRemovalCoordinator", "prepare_member_remove_command"]
+
+
+def _remove_member_agent_data(store: AppStore, member_id: str) -> None:
+    """Remove space-local private data only after the member's workers stop."""
+    if not member_id or member_id in {".", ".."} or "/" in member_id or "\\" in member_id:
+        raise ValueError("Invalid member folder")
+    root = store.path.parent / "agent-threads"
+    folder = root / member_id
+    if root.is_symlink() or folder.is_symlink():
+        raise ValueError("Agent thread data must not be a symlink")
+    if folder.exists():
+        shutil.rmtree(folder)
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM agent_schedules WHERE thread_id IN (SELECT thread_id FROM agent_threads WHERE user_id=?)",
+            (member_id,),
+        )
+        connection.execute(
+            "DELETE FROM agent_handoffs WHERE target_operation_id IS NULL AND source_thread_id IN (SELECT thread_id FROM agent_threads WHERE user_id=?)",
+            (member_id,),
+        )
+        connection.execute(
+            "UPDATE agent_threads SET closed_at=coalesce(closed_at,?),closed_reason='access_lost' WHERE user_id=?",
+            (store.now(), member_id),
+        )

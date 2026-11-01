@@ -23,6 +23,7 @@ NOTIFICATION_DEFAULTS = {
     "episode_finished": False,
     "consolidation": True,
     "bulletin_mention": True,
+    "agent_thread": True,
 }
 
 
@@ -685,6 +686,26 @@ class NotificationStoreMixin(StoreMixinBase):
         ).fetchone()
         if row is None or (row["last_status"] == "posted" and not allow_posted):
             return False
+        if row["kind"] == "agent_thread":
+            thread = connection.execute(
+                "SELECT user_id FROM agent_threads WHERE thread_id=? AND project_id=? "
+                "AND closed_at IS NULL",
+                (row["item_id"], row["project_id"]),
+            ).fetchone()
+            read = connection.execute(
+                "SELECT read_through FROM chat_reads WHERE project_id=? AND chat_id=? AND user_id=?",
+                (row["project_id"], row["item_id"], device["user_id"]),
+            ).fetchone()
+            if (
+                thread is None
+                or thread["user_id"] != device["user_id"]
+                or (read is not None and read["read_through"] >= row["created_at"])
+            ):
+                connection.execute(
+                    "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?",
+                    (device_id, notification_id),
+                )
+                return False
         if not self._notification_allowed(connection, device, row["project_id"], row["kind"]) or (
             row["kind"] == "consolidation"
             and not self._consolidation_notification_pending(

@@ -121,6 +121,16 @@ well-formedness instead of adding a second runtime invariant gate.
 Refusal cannot undo provider cost, repository writes, calls, or compute.
 Answers remain independent of the Patch verdict.
 
+### Space-thread project bindings
+
+A Space task's bookkeeping project id is the space id, never a graph target.
+`space_turn_project_bindings` stores each admitted project's dispatch authority,
+write-scope fingerprint and main target. `AppStore.agent_task_authority` requires
+that exact `(operation_id, project_id)` binding; absence or a non-main binding
+refuses authority. Ordinary tasks retain their exact project equality check.
+Per-project Apply still checks current membership under the project's lock.
+No cross-project atomicity or lifecycle authority follows from a Space task.
+
 ### Replay
 
 Replay checks the persisted producer, author, kind, and graph validity.
