@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { FileX, Maximize2, MessageSquarePlus, RefreshCw, TriangleAlert } from "lucide-react";
 import { useResource, useRefreshRuntime } from "../core/useResource";
+import type { ResourceProfile } from "../core/resourceStore";
+import type { ArtifactViewerState } from "../core/types";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { errorMessage } from "../core/errors";
@@ -22,7 +24,10 @@ export interface InlineArtifactSelectionEvent {
 }
 
 interface InlineArtifactProps {
-  projectId: string;
+  projectId: string | null;
+  /** Transient artifacts can use an owner-checked viewer directly, without project state. */
+  viewerUrl?: string;
+  stateProfile?: ResourceProfile<ArtifactViewerState> | null;
   /** Null while the turn that owns it loads; the same element then shows it. */
   artifact: AgentArtifactDescriptor | null;
   title: string;
@@ -52,6 +57,8 @@ interface InlineArtifactProps {
  * version never moves the reply around it; taller content scrolls inside. */
 export function InlineArtifact({
   projectId,
+  stateProfile,
+  viewerUrl,
   artifact,
   title,
   onLoadTask,
@@ -70,10 +77,13 @@ export function InlineArtifact({
   const [near, setNear] = useState(false);
   const { store } = useRefreshRuntime();
   const owner = useId();
-  const resource = useResource(
-    `${projectId}:inline:${owner}`,
-    near && artifact ? artifactStateProfile(projectId, artifact.artifact_id) : null,
-  );
+  const profile =
+    stateProfile !== undefined
+      ? stateProfile
+      : projectId && artifact
+        ? artifactStateProfile(projectId, artifact.artifact_id)
+        : null;
+  const resource = useResource(`${projectId}:inline:${owner}`, near && artifact ? profile : null);
   const state = resource.value;
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
@@ -159,7 +169,8 @@ export function InlineArtifact({
         </span>
       </span>
     );
-  const source = state?.viewer_url ? inlineViewerUrl(state.viewer_url) : null;
+  const resolvedViewer = state?.viewer_url ?? (near ? viewerUrl : null);
+  const source = resolvedViewer ? inlineViewerUrl(resolvedViewer) : null;
   const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (
     <span
@@ -188,11 +199,7 @@ export function InlineArtifact({
             <button
               aria-label="Retry artifact"
               title={error}
-              onClick={() =>
-                store.invalidate(
-                  resourceKeyId(artifactStateProfile(projectId, artifact.artifact_id).key),
-                )
-              }
+              onClick={() => profile && store.invalidate(resourceKeyId(profile.key))}
             >
               <RefreshCw size={14} />
             </button>

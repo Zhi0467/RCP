@@ -18,6 +18,8 @@ import type {
 } from "../core/types";
 
 export interface TaskTranscriptLine {
+  source?: ChatMessage["source"];
+  questionId?: string | null;
   browserStatus?: BrowserTurnStatus | null;
   lineId: string;
   role: "human" | "agent" | "error" | "meta";
@@ -211,6 +213,8 @@ export function chatTasksMissingFromHistory(
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
   return {
     lineId: `message:${message.message_id}`,
+    source: message.source,
+    questionId: message.question_id,
     role: message.role === "user" && message.trigger !== "watcher" ? "human" : "agent",
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
@@ -292,13 +296,25 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const message = textValue(task.request.message);
     const mode = conversationMode(task.request.mode);
     const trigger = taskTrigger(task.request.trigger);
+    const source =
+      task.request.source === "voice" ||
+      task.request.source === "handoff" ||
+      task.request.source === "slack"
+        ? task.request.source
+        : undefined;
     const graphUpdate = task.result?.graph_update ?? null;
     const turnOutcome = task.result?.turn_outcome ?? null;
     // A Paper refresh carries its source request but is not a new human message.
-    if (message && trigger === "human" && !task.request.refresh_source_task_id) {
+    if (
+      message &&
+      (trigger === "human" || trigger === "schedule") &&
+      !task.request.refresh_source_task_id
+    ) {
       const attachments = taskAttachments(task.request.attachments);
       lines.push({
         lineId: `task:${task.operation_id}:human`,
+        source,
+        questionId: task.question_id,
         role: "human",
         text: message,
         taskId: task.operation_id,
@@ -477,7 +493,10 @@ function conversationMode(value: unknown): ConversationMode | null {
 }
 
 function taskTrigger(value: unknown): TaskTrigger {
-  return value === "experiment_run" || value === "watcher" || value === "orchestrator"
+  return value === "experiment_run" ||
+    value === "watcher" ||
+    value === "orchestrator" ||
+    value === "schedule"
     ? value
     : "human";
 }
