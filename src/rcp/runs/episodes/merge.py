@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from rcp.agents.context import RepositoryPointer
 from rcp.agents.prompts import write_scope_section
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.approval_actions import MergeEpisodeBody
 from rcp.conversation_worktrees import (
     WorktreeIntegrationOption,
     integration_instruction,
@@ -52,26 +53,6 @@ from rcp.runs.merge_patch import build_merge_patch, prepare_merge_candidate
 from rcp.runs.merge_plan import plan_merge
 from rcp.service import ProjectService
 from rcp.storage import AppStore, EpisodeRecord
-
-
-class MergeEpisodeBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    target_branch: str | None = None
-    history_mode: Literal["merge", "squash"] = "merge"
-    remove_worktree: bool = True
-    delete_code_branch: bool = True
-    archive_graph_branch: bool = True
-    keep_branch_open: bool = False
-    # The human saw the unfinished jobs and merges anyway; the merge agent stops them.
-    confirm_unfinished_jobs: bool = False
-
-    @model_validator(mode="after")
-    def coherent_cleanup(self):
-        if self.history_mode == "squash" and self.keep_branch_open:
-            raise ValueError("squash_keep_branch_open")
-        if self.delete_code_branch and not self.remove_worktree:
-            raise ValueError("delete_branch_requires_remove_worktree")
-        return self
 
 
 class MergeCodePreview(BaseModel):
@@ -804,6 +785,8 @@ def merge_episode(
         binding = _binding(store, owner)
         state = store.episode_isolation_state(owner.project_id, owner.episode_id)
         previous = state.merge_attempt
+        if previous is not None and body.request_id == previous.attempt_id:
+            return previous
         if state.merge_reservation and previous:
             if previous.graph_task_id:
                 task = store.agent_task(previous.graph_task_id)
@@ -819,9 +802,9 @@ def merge_episode(
             )
         code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
-            attempt_id=str(uuid.uuid4()),
+            attempt_id=body.request_id or str(uuid.uuid4()),
             authorized_by=authorized_by,
-            **body.model_dump(exclude={"confirm_unfinished_jobs"}),
+            **body.model_dump(exclude={"confirm_unfinished_jobs", "request_id"}),
         )
         attempt = store.reserve_episode_merge(
             owner.project_id,

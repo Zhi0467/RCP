@@ -285,7 +285,7 @@ def graph_branch_merge_preview(
 class MergeBranchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: UUID4
+    request_id: uuid.UUID
 
 
 @router.post(
@@ -511,16 +511,9 @@ def start_episode(
                 return _serialize_accepted(store, project_id, episode, catalog=catalog)
             service = get_project_writer(catalog, project_id)
             try:
-                body.branch_name = normalize_branch_name(body.branch_name)
-                start_request = _resolved_auto_research_start_request(service, body)
-                if body.code_worktree is None and body.worktree_repository is None:
-                    start_request = start_request.model_copy(
-                        update={
-                            "code_worktree": auto_research_code_worktree_eligible(
-                                store, project_id, start_request
-                            )
-                        }
-                    )
+                start_request = _resolved_auto_research_start_request(
+                    service, body, store=store, project_id=project_id
+                )
                 service.history.require_writable()
                 graph_base_head = service.history.head_ref()
                 episode, _ = start_auto_research(
@@ -1171,7 +1164,11 @@ def _episode_report_viewer_response(
 def _resolved_auto_research_start_request(
     service: ProjectService,
     body: StartEpisodeBody,
+    *,
+    store: AppStore,
+    project_id: str,
 ) -> AutoResearchStartRequest:
+    body = body.model_copy(update={"branch_name": normalize_branch_name(body.branch_name)})
     profile = service.resolve_agent_profile(
         "orchestrator",
         provider=body.provider,
@@ -1203,6 +1200,12 @@ def _resolved_auto_research_start_request(
     resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(resolved, AutoResearchStartRequest):
         raise TypeError("Auto-research skill resolution changed the start request type.")
+    if body.code_worktree is None and body.worktree_repository is None:
+        resolved = resolved.model_copy(
+            update={
+                "code_worktree": auto_research_code_worktree_eligible(store, project_id, resolved)
+            }
+        )
     return resolved
 
 

@@ -400,6 +400,16 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     assert verbs is not None
     instructions = []
+    if "schedule" in verbs:
+        from rcp.agents.staged_command_client import schedule_usages
+
+        command = client or turn.patch_inputs.validator_staged.client_command()
+        instructions.append(
+            "Create a schedule only when the member asked for it. "
+            "Schedule add is available only on turns admitted from a member message, "
+            "not wakes or question follow-ups. Commands: "
+            + "; ".join(f"{command} {usage}" for usage in schedule_usages())
+        )
     if "flag" in verbs:
         instructions.append(
             flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
@@ -419,6 +429,14 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     if "ask" in verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
+        from rcp.runs.approval_cards import approval_card_usage, private_project_thread_turn
+
+        if turn.execution is not None and private_project_thread_turn(
+            turn.execution.store, turn.execution.operation_id
+        ):
+            instructions.append(
+                approval_card_usage(client or turn.patch_inputs.validator_staged.client_command())
+            )
     if "apply" in verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "

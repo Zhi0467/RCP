@@ -958,7 +958,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v13"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v20"
+WORK_POLICY_VERSION = "work-v21"
 
 
 class PromptFactory:
