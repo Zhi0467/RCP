@@ -38,6 +38,8 @@ TRANSFER_APP_DATA_CONTROL_ROOTS = frozenset({"transfer-exports", "transfer-inbox
 TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
     {
         "agent-threads",
+        # Agent-managed memory notes stay with the source installation.
+        "memory",
         "bootstrap-manifests",
         "browser",
         "chat-attachments",
