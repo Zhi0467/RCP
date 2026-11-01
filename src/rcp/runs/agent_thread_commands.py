@@ -11,7 +11,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
@@ -118,6 +118,8 @@ def _read_handoff_message(workspace: Path, filename: str) -> str:
 
 @dataclass(frozen=True)
 class ThreadCommandHandler:
+    allowed_verbs: ClassVar[frozenset[str]] = frozenset({"projects", "handoff", "schedule"})
+
     store: AppStore
     catalog: ProjectCatalog
     operation_id: str
@@ -127,6 +129,8 @@ class ThreadCommandHandler:
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         result: dict[str, object]
         try:
+            if request.verb not in self.allowed_verbs:
+                raise ValueError("This thread does not authorize that command")
             task = self.store.agent_task(self.operation_id)
             if (
                 task is None
@@ -382,6 +386,18 @@ def dispatch_thread_handoffs(
             )
             continue
     return admitted
+
+
+def space_command_usages(allowed_verbs: frozenset[str]) -> tuple[str, ...]:
+    """Render the Space handler's resolved grants using the client's option records."""
+    from rcp.agents.staged_command_client import handoff_usage, projects_usages, schedule_usages
+
+    usages = {
+        "projects": projects_usages(),
+        "handoff": (handoff_usage(),),
+        "schedule": schedule_usages(),
+    }
+    return tuple(usage for verb in sorted(allowed_verbs) for usage in usages[verb])
 
 
 def projects_command_usage(client: str) -> str:

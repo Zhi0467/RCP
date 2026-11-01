@@ -43,6 +43,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
 
     for path in (
         "/data/rcp.sqlite3-wal",
+        "/data/chat-attachments/member/file",
         "/data/run-stage/project-transfer-activation/request/rcp.sqlite3",
         "/data/run-stage/backup-123/rcp.sqlite3",
         "/data/providers/claude/token",
