@@ -121,6 +121,9 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         ]
         assert len(notices) == 1
         assert notices[0]["device_id"] == device["device_id"]
+        pending = client.get(f"/api/notifications/devices/{device['device_id']}/pending")
+        assert pending.status_code == 200
+        assert [item["reason"] for item in pending.json()] == ["agent_thread"]
         sender.run_pass()
         assert (
             len(
