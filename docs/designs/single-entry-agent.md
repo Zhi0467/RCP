@@ -522,7 +522,10 @@ outside Git.
 ### Format
 
 - `MEMORY.md` is an index: one line per note,
-  `- [Title](notes/<slug>.md) — one-line hook`.
+
+  ```markdown
+  - [Title](notes/<slug>.md) — one-line hook
+  ```
 - A note is Markdown whose first line is `# Title`. Migrated notes add a second
   line `origin: lesson <lesson_id>`.
 - Prompts point to `shared/MEMORY.md` and, for threads, the owner's
