@@ -247,8 +247,9 @@ Local times use consolidation's first-fold and next-valid-gap-minute rules.
 The admitting turn's timezone is the default; without it the agent must supply
 one. Invalid and past one-shot times are refused.
 
-The consolidation poller's second dispatch step advances due schedules and
-preserves their first pending occurrence in one transaction. One-shot schedules
+The consolidation poller advances due schedules and preserves their first pending
+occurrence in one transaction before the automatic-launch cooldown check. Wake
+admission and launch wait until that cooldown has passed. One-shot schedules
 become done. Busy, queued, and paused threads retain pending notes. Once eligible,
 one atomic admission claims all observed notes for one Work wake, listing each
 note and its missed fire count. Admission retains the thread's latest provider,

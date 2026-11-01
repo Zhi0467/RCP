@@ -199,16 +199,17 @@ class ConsolidationPoller:
             self.admission.mutation("graph consolidation") if self.admission else nullcontext(),
         ):
             self.reconcile_outcomes()
+            now = datetime.fromisoformat(self.clock())
+            pending = self.store.advance_agent_schedules(now)
             if seconds_until_automatic_launch() > 0:
                 return
-            now = datetime.fromisoformat(self.clock())
             self.dispatch_due(now)
-            self.dispatch_agent_schedules(now)
+            self.dispatch_agent_schedules(now, pending)
 
-    def dispatch_agent_schedules(self, now: datetime) -> None:
+    def dispatch_agent_schedules(self, now: datetime, pending) -> None:
         from rcp.runs.agent_schedules import dispatch_agent_schedules
 
-        dispatch_agent_schedules(self, now)
+        dispatch_agent_schedules(self, now, pending)
 
     def dispatch_due(self, now: datetime) -> None:
         """Launch queued runs, then admit and launch every schedule due at `now`.

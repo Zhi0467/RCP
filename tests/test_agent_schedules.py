@@ -241,7 +241,7 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store)
         ),
     )
     now = datetime.fromisoformat(schedule_store.now())
-    dispatch_agent_schedules(poller, now)
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert launched == []
     assert all(
         row.pending_since is not None and row.state == "done"
@@ -249,14 +249,14 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store)
     )
     with schedule_store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='origin'")
-    dispatch_agent_schedules(poller, now)
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert len(launched) == 1
     task = schedule_store.agent_task(launched[0])
     assert task.request["trigger"] == "schedule"
     assert task.authorized_by == schedule_store.agent_task("origin").authorized_by
     assert task.request["message"].count('"missed_fires": 0') == 2
     assert all(row.pending_since is None for row in schedule_store.agent_schedules())
-    dispatch_agent_schedules(poller, now)
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert len(launched) == 1
 
 
@@ -334,7 +334,11 @@ def test_schedule_wake_rechecks_transfer_fence(schedule_store):
             dispatch_authority_resolver=resolve_dispatch_authority, launch_admitted=launched.append
         ),
     )
-    dispatch_agent_schedules(poller, datetime.fromisoformat(now))
+    dispatch_agent_schedules(
+        poller,
+        datetime.fromisoformat(now),
+        schedule_store.advance_agent_schedules(datetime.fromisoformat(now)),
+    )
     assert launched == []
     assert schedule_store.agent_schedules()[0].pending_since is not None
     with schedule_store.connection() as connection:
@@ -451,3 +455,30 @@ def test_tabs_are_cron_whitespace():
     assert validate_schedule(
         cron="0\t9\t*\t*\t*", at=None, timezone="UTC", after=datetime(2026, 1, 1, tzinfo=UTC)
     ) == datetime(2026, 1, 1, 9, tzinfo=UTC)
+
+
+def test_due_schedule_is_marked_during_automatic_launch_cooldown(schedule_store, monkeypatch):
+    from unittest.mock import Mock
+
+    from rcp.consolidation import ConsolidationPoller
+
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="cooldown",
+        cron=None,
+        at="2026-01-01T09:00",
+        timezone="UTC",
+        note="Check",
+        next_fire_at="2026-01-01T09:00:00+00:00",
+    )
+    tasks = Mock()
+    poller = ConsolidationPoller(
+        schedule_store, tasks, service_for=Mock(), clock=lambda: "2026-01-01T10:00:00+00:00"
+    )
+    monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 60)
+    poller.poll_once()
+    schedule = schedule_store.agent_schedules()[0]
+    assert schedule.state == "done"
+    assert schedule.pending_since == "2026-01-01T09:00:00+00:00"
+    tasks.launch_admitted.assert_not_called()

@@ -161,7 +161,7 @@ def schedule_wake_message(schedules, now: datetime) -> str:
     )
 
 
-def dispatch_agent_schedules(poller, now: datetime) -> None:
+def dispatch_agent_schedules(poller, now: datetime, pending) -> None:
     import logging
     from collections import defaultdict
 
@@ -180,7 +180,6 @@ def dispatch_agent_schedules(poller, now: datetime) -> None:
             logging.getLogger(__name__).exception(
                 "Queued agent schedule launch failed: %s", row["operation_id"]
             )
-    pending = poller.store.advance_agent_schedules(now)
     groups = defaultdict(list)
     for schedule in pending:
         groups[schedule.thread_id].append(schedule)
