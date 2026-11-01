@@ -54,7 +54,11 @@ from rcp.server_ops.application_snapshot import copy_live_research_tree
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
 )
-from rcp.server_ops.backup_models import BackupManifestConfiguration, BackupProjectCapture
+from rcp.server_ops.backup_models import (
+    BackupFileEntry,
+    BackupManifestConfiguration,
+    BackupProjectCapture,
+)
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureReceipt,
 )
@@ -331,6 +335,7 @@ def build_rehearsal_overlay(
             "The project files and SQLite snapshot do not share one capture boundary."
         )
 
+    copy_backup_app_data_files(capture_root, data_dir, project_receipt.app_data_files)
     for capture in project_receipt.imported_sources:
         if not capture.present:
             continue
@@ -1449,6 +1454,41 @@ async def _paper_read_proof(
             raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")
         proof.append((file_id, digest))
     return _canonical_sha256(proof)
+
+
+def copy_backup_app_data_files(
+    capture_root: Path,
+    data_dir: Path,
+    entries: tuple[BackupFileEntry, ...],
+) -> None:
+    """Publish declared local memory and Space transcripts into a private copy."""
+    for entry in entries:
+        if entry.group not in {"space_thread", "local_memory"}:
+            raise CandidateRehearsalRefused("An app-data file has an unsupported capture group.")
+        parts = PurePosixPath(entry.source_relative_path).parts
+        for root in (capture_root, data_dir):
+            directory = root
+            if not stat.S_ISDIR(directory.lstat().st_mode):
+                raise CandidateRehearsalRefused("An app-data copy root is not a real directory.")
+            for component in parts[:-1]:
+                directory /= component
+                try:
+                    metadata = directory.lstat()
+                except FileNotFoundError:
+                    if root != data_dir:
+                        raise
+                    directory.mkdir(mode=_DIRECTORY_MODE)
+                    metadata = directory.lstat()
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise CandidateRehearsalRefused(
+                        "An app-data file parent is not a real directory."
+                    )
+        _copy_verified_file(
+            capture_root.joinpath(*parts),
+            data_dir.joinpath(*parts),
+            expected_sha256=entry.sha256,
+            expected_size=entry.size_bytes,
+        )
 
 
 def _copy_verified_file(

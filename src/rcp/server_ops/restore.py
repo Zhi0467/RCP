@@ -720,6 +720,7 @@ def _extract_verified_archive(
                 for entry in (
                     manifest.sqlite_snapshot,
                     *artifact_backup_entries(manifest.artifact_inventory),
+                    *manifest.app_data_files,
                     *(item for project in manifest.projects for item in project.files),
                     *(item for capture in manifest.imported_sources for item in capture.files),
                 )
@@ -1445,6 +1446,10 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         restored_project_owners,
     )
     from rcp.server_ops.application_snapshot import _set_private_directory_modes, copy_proof_tree
+    from rcp.server_ops.application_validation import (
+        CandidateRehearsalRefused,
+        copy_backup_app_data_files,
+    )
     from rcp.server_ops.backup_capture import (
         BackupSnapshotProjectInventory,
         BackupSQLiteCaptureReceipt,
@@ -1526,6 +1531,18 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     detach_restore_database(
         database, confirmed_by=request.confirmed_by, detached_at=request.detached_at
     )
+    app_data_files = tuple(
+        entry
+        for entry in manifest.app_data_files
+        if not (
+            entry.group == "space_thread"
+            and PurePosixPath(entry.source_relative_path).parts[1] == request.remove_stale_member
+        )
+    )
+    try:
+        copy_backup_app_data_files(payload, app, app_data_files)
+    except (OSError, CandidateRehearsalRefused) as exc:
+        raise RestoreRefused("Captured application files failed restore verification.") from exc
     for item in manifest.artifact_inventory:
         source = payload / "artifacts" / item.artifact_id / item.file_id
         target = app / "artifacts" / item.artifact_id / item.file_id
@@ -1779,6 +1796,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             sqlite_capture_status=sqlite_receipt.status,
             projects=manifest.projects,
             imported_sources=manifest.imported_sources,
+            app_data_files=app_data_files,
             status=sqlite_receipt.status,
         )
         project_digest = write_immutable_backup_receipt(

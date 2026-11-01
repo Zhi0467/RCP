@@ -46,13 +46,9 @@ _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
-BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
+BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts", "agent-threads", "memory"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
-        "agent-threads",
-        # Local project memory notes are agent-managed files; like remote-base
-        # memory they are not captured, so a restore starts with empty memory.
-        "memory",
         "bootstrap-manifests",
         "checkout-recovery",
         "browser",
@@ -125,6 +121,8 @@ BackupFileGroup = Literal[
     "kept_artifact",
     "legacy_kept_result_view",
     "imported_provider_history",
+    "space_thread",
+    "local_memory",
 ]
 BackupCanonicalFileKind = Literal[
     "manifest",
@@ -298,6 +296,19 @@ class BackupFileEntry(_StrictBackupModel):
             and self.archive_path == self.source_relative_path
         ):
             raise ValueError("artifact versions must name an artifact-relative file")
+        elif self.group == "space_thread" and not (
+            len(source.parts) == 3
+            and source.parts[0] == "agent-threads"
+            and source.suffix == ".jsonl"
+            and self.archive_path == self.source_relative_path
+        ):
+            raise ValueError("Space transcripts must be direct member JSONL files")
+        elif self.group == "local_memory" and not (
+            len(source.parts) >= 3
+            and source.parts[0] == "memory"
+            and self.archive_path == self.source_relative_path
+        ):
+            raise ValueError("local memory entries must remain inside their project root")
         elif self.group == "kept_artifact" and not (
             len(source.parts) == 2 and source.parts[0] == "artifacts"
         ):
@@ -1085,8 +1096,11 @@ class BackupProjectCapture(_StrictBackupModel):
         sources = [entry.source_relative_path for entry in self.files]
         if len(paths) != len(set(paths)) or len(sources) != len(set(sources)):
             raise ValueError("project backup files cannot repeat a source or archive path")
-        if any(entry.group == "sqlite_snapshot" for entry in self.files):
-            raise ValueError("project captures cannot contain the space database snapshot")
+        if any(
+            entry.group in {"sqlite_snapshot", "space_thread", "local_memory"}
+            for entry in self.files
+        ):
+            raise ValueError("project captures cannot contain space-owned data files")
         main_revisions = sorted(
             int(PurePosixPath(entry.source_relative_path).stem)
             for entry in self.files
@@ -1216,6 +1230,7 @@ class BackupArchiveManifest(_StrictBackupModel):
     projects: tuple[BackupProjectCapture, ...]
     imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
     artifact_inventory: tuple[ArtifactFile, ...] = ()
+    app_data_files: tuple[BackupFileEntry, ...] = ()
     status: Literal["complete", "partial"]
     total_bytes: int = Field(ge=0)
 
@@ -1307,6 +1322,13 @@ class BackupArchiveManifest(_StrictBackupModel):
         if self.status != ("partial" if partial else "complete"):
             raise ValueError("backup manifest status does not match its capture results")
         entries = [self.sqlite_snapshot, *artifact_backup_entries(self.artifact_inventory)]
+        if any(
+            entry.group not in {"space_thread", "local_memory"}
+            or PurePosixPath(entry.archive_path).parts[0] not in self.captured_app_data_entries
+            for entry in self.app_data_files
+        ):
+            raise ValueError("app-data files must belong to an explicitly captured owned root")
+        entries.extend(self.app_data_files)
         entries.extend(entry for project in self.projects for entry in project.files)
         entries.extend(entry for capture in self.imported_sources for entry in capture.files)
         paths = [entry.archive_path for entry in entries]

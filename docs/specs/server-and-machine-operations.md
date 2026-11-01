@@ -669,9 +669,13 @@ canonical main and branch history, typed chats, saved and published Paper,
 facts, artifacts and sealed imported histories. Saved unpublished Paper comes
 from that snapshot. Artifact capture holds its pruning lock. Live credentials
 and provider homes, source Git, caches, temporary stages and materialized
-outputs are excluded. The whole `<data_dir>/agent-threads` root (Space
-transcripts and thread stages) and local memory notes under `<data_dir>/memory`
-are excluded, so a restore starts with empty memory. Private project
+outputs are excluded. Space transcripts at
+`<data_dir>/agent-threads/<user_id>/<thread_id>.jsonl` are captured through their
+last complete line; sibling thread stages stay excluded. Local memory notes
+under `<data_dir>/memory/<project_id>` are captured with their SQLite migration
+receipts; pending memory deletions are discarded on restore. Remote-base memory
+stays out of scope. Project transfer still excludes both roots. Archives predating
+these captures restore without Space transcripts or local memory. Private project
 transcripts are typed chats and are captured.
 Unknown roots, unsafe or missing references or unreachable projects are visibly
 uncaptured.
