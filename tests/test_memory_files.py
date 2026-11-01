@@ -176,8 +176,6 @@ def test_old_database_lesson_command_result_migrates_without_receipt_changes(tmp
 def test_remote_io_does_not_lock_unrelated_database_writers(tmp_path, monkeypatch):
     import sqlite3
 
-    from rcp.agents import memory_files
-
     store = AppStore(tmp_path / "rcp.sqlite3")
 
     def remote(stage, request):
@@ -185,7 +183,7 @@ def test_remote_io_does_not_lock_unrelated_database_writers(tmp_path, monkeypatc
             connection.execute("INSERT INTO memory_migrations VALUES ('other','now',0)")
         return {"root": "/remote/.rcp/memory/project", "index_bytes": 0}
 
-    monkeypatch.setattr(memory_files, "_remote_memory", remote)
+    monkeypatch.setattr(RemoteRunStage, "project_memory", remote)
     prepare_project_memory(store, "project", RemoteRunStage("example.invalid"))
 
 

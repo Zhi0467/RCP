@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.resources
 import json
 import math
 import os
@@ -111,6 +112,18 @@ class RemoteRunStage:
     @property
     def transport_partition(self) -> str | None:
         return run_stage_partition(self.host, self.root)
+
+    def project_memory(self, request: dict) -> dict:
+        """Run the memory owner's shipped operations on this stage's host."""
+        source = (
+            importlib.resources.files("rcp.agents")
+            .joinpath("memory_file_io.py")
+            .read_text(encoding="utf-8")
+        )
+        result = self._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
+        if result.returncode:
+            raise _ssh_failure(result, "could not prepare project memory")
+        return json.loads(result.stdout)
 
     def sweep(
         self,

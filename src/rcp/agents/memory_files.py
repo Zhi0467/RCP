@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.resources
-import json
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
@@ -14,7 +12,7 @@ from rcp.agents.memory_file_io import (
     safe_component,
 )
 from rcp.keyed_locks import KeyedLocks
-from rcp.transport.run_stage import RemoteRunStage, _ssh_failure
+from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -24,25 +22,13 @@ if TYPE_CHECKING:
 _MEMORY_LOCKS = KeyedLocks()
 
 
-def _remote_memory(stage: RemoteRunStage, request: dict) -> dict:
-    source = (
-        importlib.resources.files("rcp.agents")
-        .joinpath("memory_file_io.py")
-        .read_text(encoding="utf-8")
-    )
-    result = stage._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
-    if result.returncode:
-        raise _ssh_failure(result, "could not prepare project memory")
-    return json.loads(result.stdout)
-
-
 def project_memory_root(
     data_dir: Path, project_id: str, remote_stage: RemoteRunStage | None = None
 ) -> Path:
     """Create the project root on the base account, using the existing transport."""
     safe_component(project_id)
     if remote_stage is not None:
-        return Path(_remote_memory(remote_stage, {"project_id": project_id})["root"])
+        return Path(remote_stage.project_memory({"project_id": project_id})["root"])
     return memory_root(data_dir.expanduser().resolve(), project_id)
 
 
@@ -56,9 +42,8 @@ def change_project_memory(data_dir: Path, project: ProjectRecord, destination: s
         host, separator, _path = project.state_location.partition(":/")
         if not separator:
             raise ValueError("Remote project state location has no base host")
-        _remote_memory(
-            RemoteRunStage(host),
-            {"project_id": project.project_id, "destination": destination},
+        RemoteRunStage(host).project_memory(
+            {"project_id": project.project_id, "destination": destination}
         )
     else:
         change_project_files(data_dir, project.project_id, destination)
@@ -129,7 +114,7 @@ def prepare_project_memory(
                 ]
             )
         if remote_stage is not None:
-            result = _remote_memory(remote_stage, {"project_id": project_id, "lessons": lessons})
+            result = remote_stage.project_memory({"project_id": project_id, "lessons": lessons})
             root, size = Path(result["root"]), result["index_bytes"]
         else:
             root = project_memory_root(store.path.parent, project_id)
@@ -156,8 +141,7 @@ def read_project_memory_indexes(
     safe_component(project_id)
     safe_component(user_id)
     if remote_stage is not None:
-        return _remote_memory(
-            remote_stage,
+        return remote_stage.project_memory(
             {
                 "project_id": project_id,
                 "read_indexes": True,
