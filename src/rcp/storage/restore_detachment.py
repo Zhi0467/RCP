@@ -87,5 +87,7 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
             connection.execute("DELETE FROM notification_graph_markers")
             connection.execute("DELETE FROM notification_episode_observations")
             connection.execute("DELETE FROM notification_project_baselines")
+            # Pending memory cleanup names the live host's paths; a restored copy never acts on it.
+            connection.execute("DELETE FROM memory_deletions")
             self.detach_space_authentication_for_restore(connection, now=now)
             self.detach_provider_logins_for_restore(connection, now=now)

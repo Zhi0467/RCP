@@ -35,6 +35,8 @@ export interface WatermarkRequest {
   }[];
   due: string[];
   activated?: string;
+  /** Asks for the caller's own agent-thread version, which needs no project. */
+  agent_threads?: boolean;
 }
 
 export interface WatermarkResponse {
@@ -47,6 +49,8 @@ export interface WatermarkResponse {
     sync: ProjectSyncHealth;
   }[];
   unavailable: string[];
+  /** Set when the request asked for it; null otherwise. */
+  agent_threads?: { version: string } | null;
 }
 
 export interface RefreshHealth {

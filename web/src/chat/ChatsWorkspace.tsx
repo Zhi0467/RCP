@@ -126,6 +126,8 @@ interface Props {
 
 export interface OwnThread {
   thread: AgentThread;
+  /** The member's agent-thread watermark, which reloads the open thread. */
+  revision: string | null;
   voice: VoiceAgent | null;
   onThreadChanged: (thread: AgentThread) => void;
 }
@@ -1147,6 +1149,7 @@ export function ChatsWorkspace({
         {showingOwnThread && ownThread ? (
           <AgentThreadView
             thread={ownThread.thread}
+            revision={ownThread.revision}
             voice={ownThread.voice}
             onThreadChanged={ownThread.onThreadChanged}
             leading={

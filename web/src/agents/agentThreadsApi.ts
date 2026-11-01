@@ -3,6 +3,7 @@
 // chat routes; the Space thread has its own routes with the same shapes.
 
 import { api } from "../core/api.ts";
+import type { WatermarkResponse } from "../core/refreshScheduler.ts";
 import type {
   AgentQuestion,
   AgentSchedule,
@@ -39,6 +40,29 @@ export function threadTasksPath(thread: AgentThread): string {
   return thread.kind === "space"
     ? `${threadPath(thread.thread_id)}/tasks`
     : `${projectPath(thread)}/tasks`;
+}
+
+const WATERMARK_CLIENT_ID = globalThis.crypto.randomUUID();
+
+/** The caller's agent-thread version: a turn, read, rename, schedule or question moves it. */
+export async function loadAgentThreadsVersion(
+  attemptTimeoutMs: number,
+  request: Request = api,
+): Promise<string | null> {
+  const response = await request<WatermarkResponse>(
+    "/api/resource-watermarks",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        client_id: WATERMARK_CLIENT_ID,
+        open: [],
+        due: [],
+        agent_threads: true,
+      }),
+    },
+    { attemptTimeoutMs, readOnly: true },
+  );
+  return response.agent_threads?.version ?? null;
 }
 
 /** Lists every thread, creating any that are missing. */

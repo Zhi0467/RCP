@@ -133,7 +133,7 @@ function Project() {
         onRepairGraphUpdate={async () => {}}
         onNewSession={() => {}}
         onRemoveDraft={() => {}}
-        ownThread={{ thread: moss, voice, onThreadChanged: () => {} }}
+        ownThread={{ thread: moss, revision: null, voice, onThreadChanged: () => {} }}
       />
     </main>
   );
