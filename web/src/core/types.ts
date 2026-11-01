@@ -33,7 +33,7 @@ export type SteerReceiptStatus = {
   readonly [OPAQUE_STEER_RECEIPT_STATUS]: "SteerReceiptStatus";
 };
 export type ConversationMode = "discuss" | "work";
-export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
+export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability =
   "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";

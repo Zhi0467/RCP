@@ -1,6 +1,10 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { AgentConfigChip, AgentConfigControls } from "./AgentConfigControls";
-import type { AgentRunConfig, ProjectSnapshot } from "./types";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  type AgentConfigSource,
+} from "./AgentConfigControls";
+import type { AgentRunConfig } from "./types";
 import { useLayerDismiss } from "./useLayerDismiss";
 
 const PANEL_GAP = 6;
@@ -22,7 +26,7 @@ export function useAgentConfigPicker({
   workLikeCapable = true,
   panelClassName,
 }: {
-  project: ProjectSnapshot;
+  project: AgentConfigSource;
   value: AgentRunConfig;
   onChange: (value: AgentRunConfig) => void;
   label: string;

@@ -1,0 +1,632 @@
+/* The single-entry agent: the space header's Cards | Agent toggle, the Agent
+   view's rail and thread, approval cards, and the Upcoming list. Rows, lines
+   and the composer reuse the Agents view's own classes. */
+
+/* ---------- One space header: title and toggle left, settings and account right ---------- */
+.landing-header.space-header {
+  border-bottom: 0;
+  gap: 8px;
+  padding: 18px 0 14px;
+}
+.space-header .space-title-start {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  min-width: 0;
+}
+.space-header .space-group-title {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-view-toggle {
+  flex: none;
+}
+.space-view-toggle button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* ---------- The Agent view fills the window under the header ---------- */
+.landing-shell.agent-mode {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+.agent-mode .landing-header {
+  flex: none;
+  width: min(1180px, calc(100% - 72px));
+}
+.agent-mode .landing-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0 20px;
+  width: min(1180px, calc(100% - 72px));
+}
+.agent-rail-loading {
+  color: var(--muted);
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.space-agent {
+  border: 1px solid color-mix(in srgb, var(--rule) 80%, transparent);
+  border-radius: 12px;
+  box-shadow:
+    0 1px 2px rgb(var(--shadow-rgb) / 8%),
+    0 10px 30px rgb(var(--shadow-rgb) / 8%);
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+.space-agent.rail-folded {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+.space-agent .conversation-list {
+  border-right: 1px solid var(--line);
+  grid-column: 1;
+  grid-row: 1;
+}
+.space-agent .conversation-list[hidden] {
+  display: none;
+}
+.space-agent .conversation-surface {
+  display: flex;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.space-agent .agent-list-tools {
+  padding: 10px 10px 0;
+}
+.space-agent .conversation-surface > .chat-dock {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* A thread row: the Agents list's card, its unread state a dot rather than a tint. */
+.thread-row [role="option"] {
+  align-items: center;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  width: 100%;
+}
+.thread-row-icon {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  justify-content: center;
+}
+.thread-row [role="option"].active .thread-row-icon {
+  color: var(--cobalt);
+}
+.thread-row .unread-dot,
+.thread-row .needs-you-dot {
+  background: var(--indigo);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--indigo) 18%, transparent);
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+.thread-row .needs-you-dot {
+  background: var(--mustard);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mustard) 22%, transparent);
+}
+.thread-row [role="option"].has-unread .agent-row-title {
+  font-weight: 750;
+}
+.thread-row .agent-row-meta {
+  color: var(--muted);
+}
+.thread-row [role="option"] time {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+}
+.thread-row [role="option"] time.live {
+  color: var(--slate);
+}
+.thread-rail-divider {
+  border-top: 1px solid var(--line);
+  margin: 4px 6px 10px;
+}
+
+/* ---------- Thread header ---------- */
+.thread-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 52px;
+}
+.thread-header .conversation-heading strong {
+  font-size: var(--type-lg);
+  font-weight: 650;
+}
+.thread-header-tools {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+  position: relative;
+}
+.thread-back {
+  margin-left: -8px;
+}
+.upcoming-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  font: 700 var(--type-2xs) / 1 var(--mono);
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+}
+.upcoming-button:hover,
+.upcoming-button[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+.upcoming-popover {
+  animation: agent-pop-in 0.14s ease-out;
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  display: grid;
+  padding: 6px;
+  position: absolute;
+  right: 40px;
+  top: 38px;
+  width: 300px;
+  z-index: 20;
+}
+:root[data-theme="aqua"] .upcoming-popover {
+  background: var(--aqua-surface);
+}
+.upcoming-popover h3 {
+  color: var(--faint);
+  font-size: var(--type-3xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 4px 10px 2px;
+  text-transform: uppercase;
+}
+.upcoming-row {
+  align-items: center;
+  border-radius: 7px;
+  display: grid;
+  gap: 1px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 8px 6px 8px 10px;
+}
+.upcoming-row:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+.upcoming-row[data-state="disabled"] strong {
+  color: var(--muted);
+}
+.upcoming-row strong {
+  font-size: var(--type-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upcoming-row time {
+  color: var(--muted);
+  font: var(--type-2xs) var(--mono);
+  grid-column: 1;
+}
+.upcoming-row > button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.upcoming-row .icon-button {
+  height: 28px;
+  width: 28px;
+}
+.upcoming-error {
+  color: var(--coral);
+  font-size: var(--type-xs);
+  margin: 4px 10px;
+}
+
+/* ---------- Thread lines ---------- */
+.agent-thread .node-chat-lines {
+  padding-top: 24px;
+}
+.agent-thread .node-chat-lines > * {
+  white-space: normal;
+}
+.agent-thread .node-chat-line.agent .chat-markdown p {
+  margin: 0 0 10px;
+}
+.agent-thread .node-chat-line.agent .chat-markdown p:last-child {
+  margin-bottom: 0;
+}
+.chat-human-message:has(> .chat-message-source) {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+}
+.chat-message-source {
+  color: var(--muted);
+  flex: none;
+}
+.chat-turn-trigger.schedule {
+  align-items: center;
+  background: color-mix(in srgb, var(--slate) 12%, transparent);
+  border-radius: 999px;
+  color: var(--slate);
+  display: inline-flex;
+  font: 700 var(--type-3xs) / 1 var(--mono);
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+}
+.agent-thread .chat-task-live {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: var(--type-xs);
+  gap: 6px;
+}
+
+/* Inline progress: one quiet line per turn, opened for its commands. */
+.chat-progress {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.chat-progress > summary {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  font: 600 var(--type-2xs) / 1.2 var(--mono);
+  gap: 6px;
+  list-style: none;
+  padding: 3px 0;
+}
+.chat-progress > summary::-webkit-details-marker {
+  display: none;
+}
+.chat-progress > summary .chev {
+  transition: transform 0.16s ease;
+}
+.chat-progress[open] > summary .chev {
+  transform: rotate(90deg);
+}
+.chat-progress > summary:hover {
+  color: var(--ink);
+}
+.chat-progress ol {
+  border-left: 1px solid var(--line);
+  display: grid;
+  font: var(--type-2xs) / 1.55 var(--mono);
+  gap: 1px;
+  list-style: none;
+  margin: 4px 0 10px 6px;
+  padding: 2px 0 2px 14px;
+}
+.chat-progress ol li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-progress ol li span {
+  color: var(--faint);
+  float: right;
+  margin-left: 10px;
+}
+
+/* App links in a reply read as chips; they open only when the member clicks. */
+.agent-thread .chat-markdown a[href^="#/"],
+.entity-chip {
+  align-items: center;
+  background: color-mix(in srgb, var(--cobalt) 8%, var(--sheet));
+  border: 1px solid color-mix(in srgb, var(--cobalt) 22%, transparent);
+  border-radius: 6px;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 0.92em;
+  font-weight: 600;
+  gap: 5px;
+  line-height: 1.3;
+  padding: 1px 7px;
+  text-decoration: none;
+  vertical-align: 0.5px;
+  white-space: nowrap;
+}
+.agent-thread .chat-markdown a[href^="#/"]:hover,
+.entity-chip:hover {
+  background: color-mix(in srgb, var(--cobalt) 14%, var(--sheet));
+}
+.entity-chip svg {
+  color: var(--muted);
+  flex: none;
+}
+
+/* ---------- Approval card: the question card that carries a protected act ---------- */
+.approval-card {
+  animation: agent-pop-in 0.18s ease-out;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--mustard) 45%, var(--line));
+  border-radius: 12px;
+  box-shadow:
+    0 1px 2px rgb(var(--shadow-rgb) / 8%),
+    0 6px 18px rgb(var(--shadow-rgb) / 7%);
+  display: grid;
+  gap: 12px;
+  margin: 0 auto 24px;
+  max-width: 820px;
+  padding: 14px 16px;
+  width: 100%;
+}
+:root[data-theme="aqua"] .approval-card {
+  background: var(--aqua-surface);
+}
+.approval-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.approval-icon {
+  align-items: center;
+  background: var(--amber-soft);
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--mustard) 70%, var(--ink));
+  display: inline-flex;
+  flex: none;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+.approval-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.approval-title strong {
+  font-size: var(--type-lg);
+  font-weight: 650;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.approval-title .entity-chip {
+  justify-self: start;
+}
+.approval-card .question-state {
+  background: var(--amber-soft);
+  border-radius: 999px;
+  color: var(--ink);
+  flex: none;
+  font-size: var(--type-xs);
+  margin-left: auto;
+  padding: 2px 9px;
+}
+.approval-details {
+  border-top: 1px solid var(--line);
+  display: grid;
+  font-size: var(--type-sm);
+  gap: 8px;
+  padding-top: 10px;
+}
+.approval-details p {
+  margin: 0;
+}
+.approval-details dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+.approval-details dl > div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.approval-details dt {
+  color: var(--muted);
+}
+.approval-details dd {
+  font: var(--type-2xs) var(--mono);
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.approval-error {
+  color: var(--coral);
+  font-size: var(--type-sm);
+  margin: 0;
+}
+.approval-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.approval-see {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--cobalt);
+  display: inline-flex;
+  font-size: var(--type-sm);
+  font-weight: 600;
+  gap: 3px;
+  margin-right: auto;
+  padding: 4px 0;
+}
+.approval-see svg {
+  transition: transform 0.16s ease;
+}
+.approval-card.open .approval-see svg {
+  transform: rotate(90deg);
+}
+.approval-actions .button {
+  justify-content: center;
+  min-width: 92px;
+}
+/* A settled card shrinks to one receipt line. */
+.approval-card:not([data-state="pending"]) {
+  box-shadow: none;
+  border-color: var(--line);
+  gap: 0;
+  padding: 10px 14px;
+}
+.approval-card:not([data-state="pending"]) .approval-icon {
+  height: 26px;
+  width: 26px;
+}
+.approval-card[data-state="approved"] .approval-icon {
+  background: var(--green-soft);
+  color: var(--forest);
+}
+.approval-card:not([data-state="pending"]) .approval-title strong {
+  font-size: var(--type-md);
+}
+.approval-card:not([data-state="pending"]) .question-state {
+  background: none;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ---------- Composer: one composer with the picker and the mic ---------- */
+.agent-thread .chat-composer {
+  position: relative;
+}
+.agent-thread .chat-composer textarea {
+  height: 58px;
+}
+.chat-voice-button.icon-button {
+  color: var(--ink);
+}
+.chat-voice-button.active {
+  background: var(--forest);
+  border-color: var(--forest);
+  color: var(--accent-ink);
+}
+
+/* ---------- Inside a project: your thread, roomy, with the team list one press away ---------- */
+.your-thread-row [role="option"] {
+  border-color: var(--cobalt);
+}
+.conversation-list-fold .team-count {
+  font: 700 var(--type-3xs) var(--mono);
+  margin-left: 2px;
+}
+.conversation-list-fold.with-count {
+  gap: 4px;
+  padding: 0 8px;
+  width: auto;
+}
+
+@keyframes agent-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upcoming-popover,
+  .approval-card {
+    animation: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .agent-mode .landing-header,
+  .agent-mode .landing-main {
+    width: 100%;
+  }
+  .landing-header.space-header {
+    flex-wrap: nowrap;
+    padding: 10px 12px 10px 16px;
+  }
+  .space-header .space-title-start {
+    gap: 10px;
+  }
+  .space-header .space-group-title {
+    font-size: var(--type-xl);
+  }
+  /* The account shows its avatar alone, so the header stays one line. */
+  .space-header .landing-identity-trigger {
+    grid-template-columns: 27px;
+    padding: 4px 5px;
+  }
+  .space-header .landing-identity-trigger-copy,
+  .space-header .landing-identity-trigger > svg {
+    display: none;
+  }
+  .space-header .landing-space-settings + .landing-identity-menu {
+    margin-left: 6px;
+  }
+  .agent-mode .landing-main {
+    padding: 0;
+  }
+  .space-agent,
+  .space-agent.rail-folded {
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 0;
+    border-right: 0;
+    box-shadow: none;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .space-agent .conversation-list,
+  .space-agent .conversation-surface {
+    border-right: 0;
+    grid-column: 1;
+    height: 100%;
+    max-height: none;
+  }
+  .space-agent .conversation-list [role="option"] {
+    min-height: 56px;
+  }
+  .show-thread .landing-header {
+    display: none;
+  }
+  .show-thread .space-agent {
+    border-top: 0;
+  }
+  .thread-header {
+    flex-wrap: nowrap;
+    padding: 6px 10px;
+  }
+  .agent-thread .node-chat-lines {
+    padding: 18px 16px 12px;
+  }
+  .agent-thread .chat-composer {
+    margin: 0 8px 8px;
+    width: calc(100% - 16px);
+  }
+  .approval-card {
+    padding: 12px;
+  }
+  .approval-card[data-state="pending"] .question-state {
+    display: none;
+  }
+  .approval-actions {
+    flex-wrap: wrap;
+  }
+  .approval-see {
+    flex-basis: 100%;
+  }
+  .approval-actions .button {
+    flex: 1 1 0;
+    min-height: 44px;
+  }
+  .upcoming-popover {
+    right: 0;
+    width: min(320px, calc(100vw - 20px));
+  }
+}

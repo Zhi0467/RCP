@@ -14,8 +14,11 @@ import {
   Copy,
   Ellipsis,
   FolderPlus,
+  LayoutGrid,
+  LoaderCircle,
   LogOut,
   Mail,
+  MessageCircle,
   RotateCw,
   Server,
   Settings,
@@ -23,7 +26,10 @@ import {
   TriangleAlert,
   WifiOff,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { agentThreadHash, parseAgentHash } from "../agents/agentThreadModel";
+import { useNarrowViewport } from "../ui/useNarrowViewport";
+import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { SpaceRuns } from "../experiments/SpaceRuns";
 import type { AppearancePickerProps, TextScaleControl } from "../ui/AppearancePicker";
 import type { ArchiveEpisodeAction } from "../experiments/EpisodeRunControls";
@@ -47,6 +53,10 @@ import type {
   SpaceRunIndexEntry,
 } from "../core/types";
 import { projectCreationPrimaryLabel } from "./projectSetupModel";
+
+const AgentHome = lazy(() =>
+  import("../agents/AgentHome").then((module) => ({ default: module.AgentHome })),
+);
 
 interface Props extends AppearancePickerProps {
   palette: ResolvedTheme;
@@ -74,6 +84,8 @@ interface Props extends AppearancePickerProps {
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: () => void;
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
+  /** The page's voice session, which a thread's mic binds to that thread. */
+  voice: VoiceAgent;
   textScale?: TextScaleControl;
 }
 
@@ -352,6 +364,7 @@ export function ProjectLanding({
   onExitTeamSpace,
   onOpenSpaceSettings,
   onOpenSignIns,
+  voice,
   textScale,
   themeChoice,
   colorModeChoice,
@@ -362,9 +375,14 @@ export function ProjectLanding({
   const [groupId, setGroupId] = useState(() =>
     parseProjectGroupHash(typeof window === "undefined" ? "" : window.location.hash),
   );
+  const [agentRoute, setAgentRoute] = useState(() =>
+    parseAgentHash(typeof window === "undefined" ? "" : window.location.hash),
+  );
+  const narrow = useNarrowViewport();
   useEffect(() => {
     const update = () => {
       setGroupId(parseProjectGroupHash(window.location.hash));
+      setAgentRoute(parseAgentHash(window.location.hash));
       setGroupMenu(false);
     };
     window.addEventListener("hashchange", update);
@@ -552,13 +570,31 @@ export function ProjectLanding({
   };
 
   return (
-    <div className="landing-shell">
-      <header className="landing-header">
-        <a className="rcp-mark" href="#" aria-label="RCP project index">
-          <span className="rcp-wordmark" aria-hidden="true">
-            RCP
-          </span>
-        </a>
+    <div
+      className={`landing-shell${agentRoute ? " agent-mode" : ""}${agentRoute?.threadId && narrow ? " show-thread" : ""}`}
+    >
+      <header className="landing-header space-header">
+        <div className="space-title-start">
+          <h1 className="space-group-title">{spaceTitle}</h1>
+          <div className="segmented space-view-toggle" role="group" aria-label="Space view">
+            <button
+              type="button"
+              aria-pressed={!agentRoute}
+              onClick={() => (window.location.hash = projectGroupHash(null))}
+            >
+              <LayoutGrid size={13} aria-hidden="true" />
+              Cards
+            </button>
+            <button
+              type="button"
+              aria-pressed={Boolean(agentRoute)}
+              onClick={() => (window.location.hash = agentThreadHash(null))}
+            >
+              <MessageCircle size={13} aria-hidden="true" />
+              Agent
+            </button>
+          </div>
+        </div>
         <ProjectDock
           tabs={openProjectTabs}
           activeProjectId={null}
@@ -591,252 +627,266 @@ export function ProjectLanding({
         />
       </header>
 
-      <main className="landing-main">
-        <MachinePowerWarning status={machinePower.status} onOpenSettings={onOpenSpaceSettings} />
-        {machinePower.error && <p role="alert">{machinePower.error}</p>}
-        <ProviderLoginNotice
-          // Another member's own login is theirs to sign in, not this viewer's notice.
-          states={providerLogins.filter(
-            (state) => !waitsOnOtherMember(state, identity?.user.user_id ?? null),
-          )}
-          viewerUserId={identity?.user.user_id ?? null}
-          onOpenSignIns={onOpenSignIns}
-        />
-        {loginError && <p role="alert">{loginError}</p>}
-        <div
-          className={`space-group-title-row${group && actions.failure?.id === group.id ? " group-failed" : ""}`}
-        >
-          {group ? (
-            <nav className="group-breadcrumb" aria-label="Project group">
-              <a
-                href="#"
-                className={drag.over === null ? "group-drop-target" : ""}
-                {...drag.target(null)}
-              >
-                {spaceTitle}
-              </a>
-              <span aria-hidden="true">›</span>
-              <h1 className="space-group-title">{group.name}</h1>
-            </nav>
-          ) : (
-            <h1 className="space-group-title">{spaceTitle}</h1>
-          )}
-          {group ? (
-            <div className="group-header-actions project-cover-shell">
-              {actions.retry(group.id)}
-              <button
-                className="icon-button"
-                aria-label="Group actions"
-                aria-haspopup="menu"
-                aria-expanded={groupMenu}
-                onClick={() => setGroupMenu(!groupMenu)}
-              >
-                <Ellipsis size={18} />
-              </button>
-              {groupMenu && (
-                <div
-                  className="project-cover-menu"
-                  role="menu"
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") setGroupMenu(false);
-                  }}
+      {agentRoute ? (
+        <main className="landing-main">
+          <Suspense
+            fallback={
+              <p className="agent-rail-loading" role="status">
+                <LoaderCircle className="spin" size={16} />
+              </p>
+            }
+          >
+            <AgentHome threadId={agentRoute.threadId} voice={voice} />
+          </Suspense>
+        </main>
+      ) : (
+        <main className="landing-main">
+          <MachinePowerWarning status={machinePower.status} onOpenSettings={onOpenSpaceSettings} />
+          {machinePower.error && <p role="alert">{machinePower.error}</p>}
+          <ProviderLoginNotice
+            // Another member's own login is theirs to sign in, not this viewer's notice.
+            states={providerLogins.filter(
+              (state) => !waitsOnOtherMember(state, identity?.user.user_id ?? null),
+            )}
+            viewerUserId={identity?.user.user_id ?? null}
+            onOpenSignIns={onOpenSignIns}
+          />
+          {loginError && <p role="alert">{loginError}</p>}
+          <div
+            className={`space-group-title-row${group && actions.failure?.id === group.id ? " group-failed" : ""}`}
+          >
+            {group ? (
+              <nav className="group-breadcrumb" aria-label="Project group">
+                <a
+                  href="#"
+                  className={drag.over === null ? "group-drop-target" : ""}
+                  {...drag.target(null)}
                 >
-                  <button
-                    className="project-cover-menu-action"
-                    role="menuitem"
-                    onClick={() => {
-                      setGroupMenu(false);
-                      setNameDialog({ group });
+                  {spaceTitle}
+                </a>
+                <span aria-hidden="true">›</span>
+                <h2 className="space-group-title">{group.name}</h2>
+              </nav>
+            ) : null}
+            {group ? (
+              <div className="group-header-actions project-cover-shell">
+                {actions.retry(group.id)}
+                <button
+                  className="icon-button"
+                  aria-label="Group actions"
+                  aria-haspopup="menu"
+                  aria-expanded={groupMenu}
+                  onClick={() => setGroupMenu(!groupMenu)}
+                >
+                  <Ellipsis size={18} />
+                </button>
+                {groupMenu && (
+                  <div
+                    className="project-cover-menu"
+                    role="menu"
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") setGroupMenu(false);
                     }}
                   >
-                    Rename
-                  </button>
-                  {group.count === 0 && (
                     <button
-                      className="project-cover-menu-action project-delete-action"
+                      className="project-cover-menu-action"
                       role="menuitem"
-                      disabled={actions.busy}
                       onClick={() => {
                         setGroupMenu(false);
-                        void actions.run(group.id, async () => {
-                          await api(`/api/project-groups/${encodeURIComponent(group.id)}`, {
-                            method: "DELETE",
-                          });
-                          window.location.hash = projectGroupHash(null);
-                        });
+                        setNameDialog({ group });
                       }}
                     >
-                      Delete
+                      Rename
                     </button>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <button className="group-create" onClick={() => setNameDialog({})}>
-              <FolderPlus size={16} />
-              New group
-            </button>
-          )}
-          {!group && identity?.space_kind === "team" && onExitTeamSpace && (
-            <button className="team-space-exit" onClick={onExitTeamSpace}>
-              <LogOut size={14} />
-              Exit team space
-            </button>
-          )}
-        </div>
-        <section className="project-shelf" aria-label="RCP projects">
-          {!group &&
-            invitations.map((invitation) => (
-              <ProjectInvitationCard
-                key={invitation.invitation_id}
-                invitation={invitation}
-                onAnswer={onAnswerInvitation}
-              />
-            ))}
-          {shownProjects.map((project) => {
-            const unavailable = project.reachable === false;
-            const cover = covers[project.id] || "wood";
-            return (
-              <div
-                className={`project-cover-shell${actions.failure?.id === project.id ? " group-failed" : ""}`}
-                key={project.id}
-              >
-                <button
-                  className={`project-cover project-material-${cover}`}
-                  {...drag.source(project.id)}
-                  onClick={() => onOpen(project.id)}
-                >
-                  <span className="project-cover-spine" aria-hidden="true" />
-                  <span
-                    className={unavailable ? "project-cover-state offline" : "project-cover-state"}
-                  >
-                    {unavailable ? <WifiOff size={12} /> : <Server size={12} />}
-                    {unavailable ? "Cached" : project.remote ? "Remote" : "Local"}
-                  </span>
-                  <strong>{project.name}</strong>
-                  <span className="project-cover-meta">
-                    {project.revision == null ? "Not opened" : `Revision ${project.revision}`}
-                    {project.attention_count > 0 && <> · {project.attention_count} waiting</>}
-                    {project.digest_count > 0 && (
-                      <span className="project-cover-new"> · {project.digest_count} new</span>
+                    {group.count === 0 && (
+                      <button
+                        className="project-cover-menu-action project-delete-action"
+                        role="menuitem"
+                        disabled={actions.busy}
+                        onClick={() => {
+                          setGroupMenu(false);
+                          void actions.run(group.id, async () => {
+                            await api(`/api/project-groups/${encodeURIComponent(group.id)}`, {
+                              method: "DELETE",
+                            });
+                            window.location.hash = projectGroupHash(null);
+                          });
+                        }}
+                      >
+                        Delete
+                      </button>
                     )}
-                    {project.last_opened_at && <> · {formatReturn(project.last_opened_at)}</>}
-                  </span>
-                  <span className="project-cover-open" aria-hidden="true">
-                    Open →
-                  </span>
-                </button>
-                <button
-                  className="project-cover-trigger"
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded={openMenuProject === project.id}
-                  aria-label={`Project actions for ${project.name}`}
-                  title="Project actions"
-                  onClick={() =>
-                    setOpenMenuProject((current) => (current === project.id ? null : project.id))
-                  }
-                >
-                  <Ellipsis size={14} aria-hidden="true" />
-                </button>
-                {actions.retry(project.id)}
-                {openMenuProject === project.id && (
-                  <ProjectActionsMenu
-                    project={project}
-                    groups={groups}
-                    onMoveToGroup={(id) => {
-                      setOpenMenuProject(null);
-                      void actions.move(project.id, id);
-                    }}
-                    onNewGroup={() => {
-                      setOpenMenuProject(null);
-                      setNameDialog({ projectId: project.id });
-                    }}
-                    cover={cover}
-                    onChooseCover={(style) => {
-                      setCovers((current) => ({ ...current, [project.id]: style }));
-                      setOpenMenuProject(null);
-                    }}
-                    onMoveToTeam={
-                      onMovePersonalProjectToTeam
-                        ? () => {
-                            setOpenMenuProject(null);
-                            onMovePersonalProjectToTeam(project.id);
-                          }
-                        : undefined
-                    }
-                    onDelete={() => {
-                      setOpenMenuProject(null);
-                      setDeleteError(null);
-                      setDeleteProjectId(project.id);
-                    }}
-                  />
+                  </div>
                 )}
               </div>
-            );
-          })}
-
-          {!group &&
-            shelf.groups.map((item) => (
-              <div className="project-cover-shell box-set-shell" key={item.id}>
-                {item.projects.slice(0, 2).map((project, index) => (
-                  <span
-                    key={project.id}
-                    aria-hidden="true"
-                    className={`box-set-peek peek-${index} project-material-${covers[project.id] || "wood"}`}
-                  />
-                ))}
-                <button
-                  className={`project-cover box-set${drag.over === item.id ? " group-drop-target" : ""}`}
-                  {...drag.target(item.id)}
-                  onClick={() => {
-                    setGroupMenu(false);
-                    window.location.hash = projectGroupHash(item.id);
-                  }}
+            ) : (
+              <button className="group-create" onClick={() => setNameDialog({})}>
+                <FolderPlus size={16} />
+                New group
+              </button>
+            )}
+            {!group && identity?.space_kind === "team" && onExitTeamSpace && (
+              <button className="team-space-exit" onClick={onExitTeamSpace}>
+                <LogOut size={14} />
+                Exit team space
+              </button>
+            )}
+          </div>
+          <section className="project-shelf" aria-label="RCP projects">
+            {!group &&
+              invitations.map((invitation) => (
+                <ProjectInvitationCard
+                  key={invitation.invitation_id}
+                  invitation={invitation}
+                  onAnswer={onAnswerInvitation}
+                />
+              ))}
+            {shownProjects.map((project) => {
+              const unavailable = project.reachable === false;
+              const cover = covers[project.id] || "wood";
+              return (
+                <div
+                  className={`project-cover-shell${actions.failure?.id === project.id ? " group-failed" : ""}`}
+                  key={project.id}
                 >
-                  <span className="box-set-spines" aria-hidden="true">
-                    {item.projects.map((project) => (
-                      <span
-                        key={project.id}
-                        className={`project-material-${covers[project.id] || "wood"}`}
-                      />
-                    ))}
-                  </span>
-                  <strong>{item.name}</strong>
-                  <span className="project-cover-meta">
-                    {item.count} {item.count === 1 ? "project" : "projects"}
-                    {item.waiting > 0 && ` · ${item.waiting} waiting`}
-                  </span>
-                </button>
-              </div>
-            ))}
-          <button className="project-cover new-project-cover" onClick={() => onCreate(group?.id)}>
-            <span className="new-project-plus" aria-hidden="true">
-              +
-            </span>
-            <strong>{projectCreationPrimaryLabel(projectCreation)}</strong>
-            <span className="project-cover-open" aria-hidden="true">
-              Create →
-            </span>
-          </button>
-        </section>
+                  <button
+                    className={`project-cover project-material-${cover}`}
+                    {...drag.source(project.id)}
+                    onClick={() => onOpen(project.id)}
+                  >
+                    <span className="project-cover-spine" aria-hidden="true" />
+                    <span
+                      className={
+                        unavailable ? "project-cover-state offline" : "project-cover-state"
+                      }
+                    >
+                      {unavailable ? <WifiOff size={12} /> : <Server size={12} />}
+                      {unavailable ? "Cached" : project.remote ? "Remote" : "Local"}
+                    </span>
+                    <strong>{project.name}</strong>
+                    <span className="project-cover-meta">
+                      {project.revision == null ? "Not opened" : `Revision ${project.revision}`}
+                      {project.attention_count > 0 && <> · {project.attention_count} waiting</>}
+                      {project.digest_count > 0 && (
+                        <span className="project-cover-new"> · {project.digest_count} new</span>
+                      )}
+                      {project.last_opened_at && <> · {formatReturn(project.last_opened_at)}</>}
+                    </span>
+                    <span className="project-cover-open" aria-hidden="true">
+                      Open →
+                    </span>
+                  </button>
+                  <button
+                    className="project-cover-trigger"
+                    type="button"
+                    aria-haspopup="menu"
+                    aria-expanded={openMenuProject === project.id}
+                    aria-label={`Project actions for ${project.name}`}
+                    title="Project actions"
+                    onClick={() =>
+                      setOpenMenuProject((current) => (current === project.id ? null : project.id))
+                    }
+                  >
+                    <Ellipsis size={14} aria-hidden="true" />
+                  </button>
+                  {actions.retry(project.id)}
+                  {openMenuProject === project.id && (
+                    <ProjectActionsMenu
+                      project={project}
+                      groups={groups}
+                      onMoveToGroup={(id) => {
+                        setOpenMenuProject(null);
+                        void actions.move(project.id, id);
+                      }}
+                      onNewGroup={() => {
+                        setOpenMenuProject(null);
+                        setNameDialog({ projectId: project.id });
+                      }}
+                      cover={cover}
+                      onChooseCover={(style) => {
+                        setCovers((current) => ({ ...current, [project.id]: style }));
+                        setOpenMenuProject(null);
+                      }}
+                      onMoveToTeam={
+                        onMovePersonalProjectToTeam
+                          ? () => {
+                              setOpenMenuProject(null);
+                              onMovePersonalProjectToTeam(project.id);
+                            }
+                          : undefined
+                      }
+                      onDelete={() => {
+                        setOpenMenuProject(null);
+                        setDeleteError(null);
+                        setDeleteProjectId(project.id);
+                      }}
+                    />
+                  )}
+                </div>
+              );
+            })}
 
-        {identity?.space_kind === "personal" && (
-          <TeamSpaceGroups
-            addOpen={addTeamOpen}
-            onOpenAdd={() => setAddTeamOpen(true)}
-            onCloseAdd={() => setAddTeamOpen(false)}
+            {!group &&
+              shelf.groups.map((item) => (
+                <div className="project-cover-shell box-set-shell" key={item.id}>
+                  {item.projects.slice(0, 2).map((project, index) => (
+                    <span
+                      key={project.id}
+                      aria-hidden="true"
+                      className={`box-set-peek peek-${index} project-material-${covers[project.id] || "wood"}`}
+                    />
+                  ))}
+                  <button
+                    className={`project-cover box-set${drag.over === item.id ? " group-drop-target" : ""}`}
+                    {...drag.target(item.id)}
+                    onClick={() => {
+                      setGroupMenu(false);
+                      window.location.hash = projectGroupHash(item.id);
+                    }}
+                  >
+                    <span className="box-set-spines" aria-hidden="true">
+                      {item.projects.map((project) => (
+                        <span
+                          key={project.id}
+                          className={`project-material-${covers[project.id] || "wood"}`}
+                        />
+                      ))}
+                    </span>
+                    <strong>{item.name}</strong>
+                    <span className="project-cover-meta">
+                      {item.count} {item.count === 1 ? "project" : "projects"}
+                      {item.waiting > 0 && ` · ${item.waiting} waiting`}
+                    </span>
+                  </button>
+                </div>
+              ))}
+            <button className="project-cover new-project-cover" onClick={() => onCreate(group?.id)}>
+              <span className="new-project-plus" aria-hidden="true">
+                +
+              </span>
+              <strong>{projectCreationPrimaryLabel(projectCreation)}</strong>
+              <span className="project-cover-open" aria-hidden="true">
+                Create →
+              </span>
+            </button>
+          </section>
+
+          {identity?.space_kind === "personal" && (
+            <TeamSpaceGroups
+              addOpen={addTeamOpen}
+              onOpenAdd={() => setAddTeamOpen(true)}
+              onCloseAdd={() => setAddTeamOpen(false)}
+            />
+          )}
+
+          <SpaceRuns
+            entries={spaceRuns}
+            theme={palette}
+            onOpen={onOpenExperiment}
+            onArchive={onArchiveEpisode}
           />
-        )}
-
-        <SpaceRuns
-          entries={spaceRuns}
-          theme={palette}
-          onOpen={onOpenExperiment}
-          onArchive={onArchiveEpisode}
-        />
-      </main>
+        </main>
+      )}
 
       {deleteProject && (
         <ProjectDeleteDialog

@@ -353,6 +353,7 @@ import { publishToolSurface, webMcpHostDefinitions } from "./voice/toolCatalog";
 import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
 import { openTerminalSocket } from "./terminals/terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
+import { useAgentThreads } from "./agents/useAgentThreads";
 import { VoicePanel } from "./voice/VoicePanel";
 
 import {
@@ -2455,10 +2456,25 @@ function MemberApp({
     changeView("chats");
   };
 
-  /** Returning to Agents reopens the chat left open there; inside Agents the tab is the board. */
+  // The member's own thread for this project: Agents opens it, full width.
+  const agentThreads = useAgentThreads(Boolean(projectId));
+  const ownThread =
+    agentThreads.threads?.find(
+      (thread) =>
+        thread.kind === "project" &&
+        thread.project_id === projectId &&
+        thread.live_state !== "closed",
+    ) ?? null;
+
+  /** Returning to Agents reopens the chat left open there; otherwise the member's own thread. */
   const reopenAgents = () => {
     const chatId = view !== "chats" && project ? rememberedChat(project.id) : null;
-    openChats(chatId && conversations.some((item) => item.chatId === chatId) ? chatId : null);
+    openChats(
+      chatId &&
+        (conversations.some((item) => item.chatId === chatId) || chatId === ownThread?.thread_id)
+        ? chatId
+        : (ownThread?.thread_id ?? null),
+    );
   };
 
   // Leaving Agents resets it to the board; the tab and a link that names a chat skip it.
@@ -4322,6 +4338,7 @@ function MemberApp({
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
           onOpenSignIns={openSignIns}
+          voice={voice}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
@@ -5440,6 +5457,9 @@ function MemberApp({
               onRemoveDraft={discardDraft}
               orchestratorEpisodes={orchestratorEpisodes}
               episodeAction={episodeAction}
+              ownThread={
+                ownThread ? { thread: ownThread, voice, onThreadChanged: agentThreads.patch } : null
+              }
               onSendOrchestratorMessage={messageEpisodeOrchestrator}
               archivedRevision={chatReads?.archived.join("\n")}
               onArchiveChange={() =>
