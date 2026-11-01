@@ -32,6 +32,8 @@ from rcp.agents.group_context import build_group_context
 from rcp.agents.project_repositories import resolve_read_scope, write_repositories
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.api.agent_schedules import router as agent_schedules_router
+from rcp.api.approval_cards import router as approval_cards_router
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
@@ -92,6 +94,7 @@ from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
 from rcp.api.voice import router as voice_router
+from rcp.api.voice import thread_router as voice_thread_router
 from rcp.api.watchers import router as watchers_router
 from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
@@ -2104,6 +2107,7 @@ def create_app(
                                 source="startup",
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
+                await asyncio.to_thread(store.fail_interrupted_approval_cards)
                 await asyncio.to_thread(reconcile_question_answers)
                 # Work parked on a login that is now unusable resolves to whichever
                 # signed-in login the queue picks, without waiting for a sign-in event.
@@ -2631,6 +2635,7 @@ def create_app(
     app.include_router(provider_login_router)
     app.include_router(service_connections_router)
     app.include_router(voice_router)
+    app.include_router(voice_thread_router)
     app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
@@ -2655,6 +2660,8 @@ def create_app(
     app.include_router(experiments_router)
     app.include_router(chats_router)
     app.include_router(questions_router)
+    app.include_router(approval_cards_router)
+    app.include_router(agent_schedules_router)
     app.include_router(consolidation_router)
     app.include_router(proposal_refresh_router)
     app.include_router(history_router)

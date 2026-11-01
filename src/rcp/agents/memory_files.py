@@ -83,3 +83,30 @@ def prepare_project_memory(
                     (project_id, store.now(), len(lessons or [])),
                 )
     return str(root / "shared"), size
+
+
+def read_project_memory_indexes(
+    store: AppStore,
+    project_id: str,
+    user_id: str,
+    remote_stage: RemoteRunStage | None = None,
+) -> dict:
+    """Voice reads shared and owner indexes on the project's actual base."""
+    from rcp import limits
+    from rcp.agents.memory_file_io import read_indexes
+
+    safe_component(project_id)
+    safe_component(user_id)
+    if remote_stage is not None:
+        return _remote_memory(
+            remote_stage,
+            {
+                "project_id": project_id,
+                "read_indexes": True,
+                "user_id": user_id,
+                "max_bytes": limits.MEMORY_INDEX_MAX_BYTES,
+            },
+        )
+    return read_indexes(
+        store.path.parent / "memory" / project_id, user_id, limits.MEMORY_INDEX_MAX_BYTES
+    )

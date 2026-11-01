@@ -4,18 +4,33 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
+from rcp.api.dependencies import (
+    get_catalog,
+    get_project_service,
+    get_project_writer,
+    get_store,
+    project_write_admission,
+)
 from rcp.api.service_connections import ServiceConnectionRoute, connections
 from rcp.service_connections import (
+    ConnectionError,
     IdleMinutes,
     VoiceSettings,
-    VoiceTranscriptSave,
     voice_resume_input,
 )
 from rcp.voice import SessionRequest, create_session
+from rcp.voice_threads import (
+    VoiceEntries,
+    append_space_entries,
+    owned_thread,
+    pending_records,
+    read_records,
+    transcript_path,
+)
 
 
 class VoiceRoute(ServiceConnectionRoute):
@@ -41,6 +56,7 @@ class VoiceRoute(ServiceConnectionRoute):
 
 
 router = APIRouter(prefix="/api/voice", route_class=VoiceRoute)
+thread_router = APIRouter(prefix="/api/agent-threads", route_class=VoiceRoute)
 
 
 @router.get("/settings")
@@ -68,15 +84,31 @@ def update_settings(request: Request, body: VoicePreferences):
 @router.post("/sessions")
 async def session(request: Request, body: SessionRequest):
     store = connections(request)
+    thread = owned_thread(store.store, body.thread_id, store.member_id)
     connection, key = store.voice_credentials()
     settings = store.voice_settings()
-    previous = store.read_voice_session(body.resume_id) if body.resume_id else None
-    session_input, truncated = voice_resume_input(previous["entries"] if previous else [])
+    if thread["project_id"]:
+        service = get_project_service(get_catalog(request), thread["project_id"])
+        with service.history.workspace.read_snapshot() as root:
+            records = read_records(transcript_path(root, thread), thread)
+    else:
+        records = read_records(transcript_path(store.store.path.parent, thread), thread)
+    session_input, truncated = voice_resume_input(
+        [
+            {
+                "speaker": "member" if row["role"] == "user" else "agent",
+                "text": row["text"],
+                "source": row.get("source"),
+            }
+            for row in records
+        ]
+    )
+    # Retire pre-thread records under their existing retention rule; never claim one.
+    store.list_voice_sessions(0, 1)
     answer = await create_session(connection, key, settings, body, session_input)
-    record = store.claim_voice_session(body.resume_id)
+    owned_thread(store.store, body.thread_id, store.member_id)
     return {
         "sdp_answer": answer,
-        "session": record,
         "input_truncated": truncated,
         "limits": {
             "idle_seconds": settings["idle_minutes"] * 60,
@@ -91,26 +123,44 @@ async def session(request: Request, body: SessionRequest):
     }
 
 
-@router.get("/sessions")
-def list_sessions(
-    request: Request,
-    offset: int = Query(0, ge=0),
-    limit: int = Query(5, ge=1, le=limits.VOICE_TRANSCRIPT_MAX_SESSIONS),
-):
-    return connections(request).list_voice_sessions(offset, limit)
+@thread_router.post("/{thread_id}/voice-entries")
+def voice_entries(request: Request, thread_id: str, body: VoiceEntries):
+    private = connections(request)
+    thread = owned_thread(private.store, thread_id, private.member_id)
+    if thread["project_id"]:
+        with project_write_admission(thread["project_id"], request):
+            service = get_project_writer(get_catalog(request), thread["project_id"])
+            from rcp.runs.chat import _append_chat_records
+
+            with service.history.workspace.transaction():
+                path = transcript_path(service.history.workspace.root, thread)
+                records = pending_records(path, thread, body.entries)
+                _append_chat_records(service, path, records)
+                appended = len(records)
+    else:
+        appended = append_space_entries(
+            private.store, transcript_path(private.store.path.parent, thread), thread, body.entries
+        )
+    return {"appended": appended}
 
 
-@router.get("/sessions/{session_id}/generation")
-def session_generation(request: Request, session_id: str):
-    return {"generation": connections(request).read_voice_session(session_id)["generation"]}
+@thread_router.get("/{thread_id}/memory")
+def voice_memory(request: Request, thread_id: str):
+    private = connections(request)
+    thread = owned_thread(private.store, thread_id, private.member_id)
+    if not thread["project_id"]:
+        return {"truncated": False}
+    from rcp.agents.memory_files import read_project_memory_indexes
+    from rcp.transport.run_stage import RemoteRunStage
 
-
-@router.put("/sessions/{session_id}")
-def save_session(request: Request, session_id: str, body: VoiceTranscriptSave):
-    return connections(request).save_voice_session(session_id, body)
-
-
-@router.delete("/sessions/{session_id}")
-def delete_session(request: Request, session_id: str):
-    connections(request).delete_voice_session(session_id)
-    return {"deleted": True}
+    service = get_project_service(get_catalog(request), thread["project_id"])
+    host = service.manifest.machine_map[service.manifest.base_machine].host
+    remote = RemoteRunStage(host) if host else None
+    try:
+        result = read_project_memory_indexes(
+            get_store(request), thread["project_id"], private.member_id, remote
+        )
+    except (OSError, ValueError):
+        raise ConnectionError("thread_memory_unavailable", 503) from None
+    owned_thread(private.store, thread_id, private.member_id)
+    return result

@@ -121,6 +121,8 @@ PROJECT_LINKED_TABLES = {
     "graph_seen_heads",
     "graph_watcher_reconciliation",
     "operational_lessons",
+    "memory_migrations",
+    "agent_threads",
     "lesson_command_receipts",
     "bulletin_posts",
     "bulletin_command_receipts",
