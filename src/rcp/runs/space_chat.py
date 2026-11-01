@@ -223,6 +223,7 @@ async def stream_space_chat_run(
         _ProviderOutcome,
         _sse,
         _stream_agent_events,
+        _swept_stage_root,
     )
     from rcp.runs.space_projects import (
         collect_space_projects,
@@ -255,7 +256,10 @@ async def stream_space_chat_run(
             "run_on": "local",
         }
     )
-    stage = data_dir / "run-stage" / f"space-{owner.thread.user_id}-{owner.thread_id}"
+    stage = (
+        _swept_stage_root(data_dir, store=owner.store, thread_owner=owner.thread.user_id)
+        / f"space-{owner.thread_id}"
+    )
     if execution.stage_root is not None and Path(execution.stage_root) != stage:
         raise ValueError("Space thread stage changed")
     stage.mkdir(parents=True, exist_ok=True)
@@ -292,8 +296,8 @@ async def stream_space_chat_run(
                 local_stage=stage,
             )
         )
-    hidden = merge_space_hidden_read_scopes(policies)
-    install_space_hidden_read_scope(hidden)
+    hidden_read_scope = merge_space_hidden_read_scopes(policies)
+    install_space_hidden_read_scope(hidden_read_scope)
     prior = read_space_chat_transcript(data_dir, owner.thread.user_id, owner.thread_id)
     seed = ""
     if request.session_id is None and prior is not None:
@@ -369,14 +373,15 @@ async def stream_space_chat_run(
             )
         )
         _write_space_client(stage, top.client_command())
+        workspace = stage
         async with browser_turn(
             request,
-            workspace=stage,
+            workspace=workspace,
             execution_host="",
             execution=execution,
             remote_stage=None,
             capability="work_auto",
-            hidden_read_scope=hidden,
+            hidden_read_scope=hidden_read_scope,
         ) as browser:
             prompt = "\n\n".join(
                 [
@@ -442,7 +447,7 @@ async def stream_space_chat_run(
                     outcome=outcome,
                     binary=launcher.provider_binary(profile.provider, ""),
                     invocation_gate=top.invocation_gate,
-                    hidden_read_scope=hidden,
+                    hidden_read_scope=hidden_read_scope,
                     browser_grant=browser,
                 )
             ) as stream:
@@ -550,6 +555,8 @@ def default_space_hidden_read_scope(
         machine_provider_paths=list(card.provider_paths.values()) if card else [],
         key_evidence=local_hidden_read_key_evidence(owner.catalog.data_dir, execution.git_access),
         browser_enabled=request.browser_requested,
+        thread_owner=owner.thread.user_id,
+        member_ids=tuple(member.user_id for member in owner.store.space_users()),
     )
 
 

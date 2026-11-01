@@ -17,12 +17,24 @@ from rcp.runs.space_chat import (
 )
 from rcp.service import read_space_chat_transcript
 from tests.helpers import agent_patch_json, create_named_app, seed_patch, store_test_claude_token
-from tests.test_dispatch_authority import _authorizer, _record, _work_authority, _work_request
+from tests.test_dispatch_authority import _authorizer, _work_authority, _work_request
+from tests.test_storage import _task_record
 
 
-@pytest.mark.parametrize("project_count", [0, 2])
+@pytest.mark.parametrize(
+    "project_count, broken",
+    [
+        (0, None),
+        (2, None),
+        (2, "unavailable"),
+        (2, "missing"),
+        (2, "remote"),
+        (2, "collection"),
+        (2, "directory"),
+    ],
+)
 def test_space_runtime_real_storage_and_partial_apply(
-    manifest, tmp_path, monkeypatch, project_count
+    manifest, tmp_path, monkeypatch, project_count, broken
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
@@ -39,6 +51,30 @@ def test_space_runtime_real_storage_and_partial_apply(
         app.state.catalog.register(
             str(locator), seat_member=human.user_id, identity_action="created"
         )
+    if broken in {"unavailable", "missing", "remote"}:
+        from rcp.transport import StateUnavailable
+
+        unavailable_id = sorted(store.member_project_ids(human.user_id))[0]
+        original_open = app.state.catalog.open_execution
+
+        def open_project(project_id):
+            if project_id == unavailable_id:
+                if broken == "remote":
+                    pytest.fail("remote project was opened")
+                raise (
+                    StateUnavailable("offline") if broken == "unavailable" else KeyError(project_id)
+                )
+            return original_open(project_id)
+
+        monkeypatch.setattr(app.state.catalog, "open_execution", open_project)
+        if broken == "remote":
+            original_host = app.state.catalog.state_host
+            monkeypatch.setattr(
+                app.state.catalog,
+                "state_host",
+                lambda pid: "remote" if pid == unavailable_id else original_host(pid),
+            )
+        project_count -= 1
     threads = store.ensure_agent_threads(
         human.user_id, list(store.member_project_ids(human.user_id)), default_names=("Pip",)
     )
@@ -46,18 +82,19 @@ def test_space_runtime_real_storage_and_partial_apply(
     request = _work_request().model_copy(
         update={"chat_id": thread.thread_id, "provider": "claude", "run_truth_scope": []}
     )
-    task = _record(
-        store,
-        operation_id=str(uuid.uuid4()),
-        project_id=store.space_id,
-        request=request,
-        authorized_by=human,
-        dispatch_authority=_work_authority(request),
-    )
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET kind='space_chat' WHERE operation_id=?", (task.operation_id,)
+    task = store.create_agent_task(
+        _task_record(
+            store.now(),
+            kind="space_chat",
+            status="failed",
+            operation_id=str(uuid.uuid4()),
+            project_id=store.space_id,
+            request=request.model_dump(mode="json"),
+            authorized_by=human,
+            dispatch_authority=_work_authority(request),
         )
+    )
+
     store.record_agent_task_receipt(
         task.operation_id,
         "operation_created",
@@ -83,16 +120,32 @@ def test_space_runtime_real_storage_and_partial_apply(
         stage = kwargs["cwd"]
         scope = kwargs["write_scope"]
         assert len(scope.projects) == project_count
-        assert (
-            str(tmp_path / "data" / "agent-threads")
-            in kwargs["hidden_read_scope"].hidden_directories
+        assert stage.parent == tmp_path / "data" / "agent-threads" / human.user_id / "stages"
+        assert not any(
+            stage.is_relative_to(root) for root in kwargs["hidden_read_scope"].hidden_directories
         )
         assert len(kwargs["invocation_gate"].children) == project_count
         assert "Earlier conversation" not in prompt
         for index, project in enumerate(scope.projects):
             workspace = Path(project.workspace_root)
+            if index == 0 and broken == "directory":
+                (workspace / "patch.json").mkdir()
+                continue
+            if index == 0 and broken == "collection":
+                from rcp.transport import StateUnavailable
+
+                def unavailable(*args, **kwargs):
+                    raise StateUnavailable("state became unavailable")
+
+                monkeypatch.setattr(
+                    app.state.catalog.open_execution(project.project_id).history,
+                    "append",
+                    unavailable,
+                )
             (workspace / "patch.json").write_text(
-                agent_patch_json(seed_patch()) if index == 0 else "invalid patch"
+                agent_patch_json(seed_patch())
+                if index == 0 or broken in {"collection", "directory"}
+                else "invalid patch"
             )
         (stage / "patch.json").write_text("stray")
         (stage / "watch.json").write_text("stray")
@@ -123,7 +176,9 @@ def test_space_runtime_real_storage_and_partial_apply(
     assert any("artifact" in frame and "note.md" in frame for frame in frames)
     assert len(execution.project_results) == project_count
     if project_count:
-        assert set(execution.project_results.values()) == {"applied", "rejected"}
+        assert set(execution.project_results.values()) == (
+            {"applied", "rejected"} if project_count == 2 else {"applied"}
+        )
         from rcp.core.transition_models import GraphTargetRef
 
         for project_id in execution.project_results:
@@ -133,10 +188,10 @@ def test_space_runtime_real_storage_and_partial_apply(
                 )
                 is not None
             )
-        assert execution.turn_outcome.status == "partial"
+        assert execution.turn_outcome.status == ("partial" if project_count == 2 else "done")
         assert (
             json.loads((Path(execution.stage_root) / "outcome.json").read_text())["status"]
-            == "partial"
+            == execution.turn_outcome.status
         )
     else:
         assert execution.write_scope_fingerprint is None

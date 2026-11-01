@@ -1776,7 +1776,11 @@ no turn artifacts and neither see nor may run `--link`.
 
 ## Space-thread scopes and commands
 
-A Space turn runs locally in its persistent member/thread stage. Its
+A Space turn runs locally in its persistent
+[member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
+Admission checks the registered state host before opening execution, skips remote
+projects without contacting them, and records unavailable or broken local projects
+as `space_project_not_admitted` while admitting the others. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1798,6 +1802,11 @@ transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 Collection reads only admitted project Patch files, applies each independently
 in project-id order under its project lock and live membership check, and records
 `project_results` in the task result. Missing authority bindings refuse Apply.
+Settled project Patch files are removed after Apply or rejection. Each project's
+effect key uses the original operation in the recovery lineage, so a replayed file
+cannot append a second transition after a post-collection failure. Project-local
+state or lookup failures reject that project without stopping collection of others.
+Cleanup failures are receipted per project and do not stop later collection.
 Other Patch files and all watch files are receipted and discarded; invalid stray
 files cannot prevent another project's collection. Rejection yields a partial
 turn outcome without undoing another project's accepted transition. Watcher

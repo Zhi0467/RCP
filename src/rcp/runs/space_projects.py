@@ -21,11 +21,14 @@ from rcp.agents.write_scope import (
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphTargetRef
+from rcp.history.manager import ReplayHalted
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
 from rcp.runs.bulletin import handle_bulletin
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import PatchValidationResult
+from rcp.runs.tasks.compute_commands import compute_recovery_lineage
 from rcp.service import ProjectService, RunRequest
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.runs.space_chat import SpaceThreadOwner
@@ -40,10 +43,15 @@ class SpaceProjectTurn:
     context: ChatContext
     scope: ProjectWriteScope
     operation_id: str
+    turn_id: str
 
     @property
     def patch_path(self) -> Path:
         return Path(self.scope.workspace_root) / "patch.json"
+
+    @property
+    def source_effect_id(self) -> str:
+        return f"space:{self.turn_id}:{self.project_id}"
 
     def candidate(self, text: str):
         from rcp.runs.tasks.work import _prepare_work_patch_candidate
@@ -54,7 +62,7 @@ class SpaceProjectTurn:
             run_truth_scope=self.context.run_truth_scope,
             read_scope=self.context.read_scope,
             source_operation_id=self.operation_id,
-            source_effect_id=f"space:{self.operation_id}:{self.project_id}",
+            source_effect_id=self.source_effect_id,
         )
 
     def validate(self, text: str) -> PatchValidationResult:
@@ -92,9 +100,14 @@ def prepare_space_projects(
     owner: SpaceThreadOwner, request: RunRequest, execution: AgentTaskExecution, stage: Path
 ) -> tuple[list[SpaceProjectTurn], CompositeWriteScope]:
     projects: list[SpaceProjectTurn] = []
+    turn_id = compute_recovery_lineage(
+        owner.store, execution.operation_id, continuation=execution.continuation
+    )[-1]
     for project_id in sorted(owner.store.member_project_ids(owner.thread.user_id)):
         try:
             owner.store.require_project_accepts_new_work(project_id)
+            if owner.catalog.state_host(project_id):
+                continue
             service = owner.catalog.open_execution(project_id)
             machine = service.manifest.machine_map[service.manifest.base_machine]
             if machine.host:
@@ -147,9 +160,11 @@ def prepare_space_projects(
                     "INSERT OR IGNORE INTO space_turn_project_bindings VALUES(?,?,?,?,?)", values
                 )
             projects.append(
-                SpaceProjectTurn(project_id, service, context, scope, execution.operation_id)
+                SpaceProjectTurn(
+                    project_id, service, context, scope, execution.operation_id, turn_id
+                )
             )
-        except (OSError, ValueError) as exc:
+        except (KeyError, OSError, ValueError, StateUnavailable, ReplayHalted) as exc:
             owner.store.record_agent_task_receipt(
                 execution.operation_id,
                 "space_project_not_admitted",
@@ -250,11 +265,22 @@ def collect_space_projects(
                 else:
                     project.service.history.append(candidate, discard_on_reject=True)
             results[project.project_id] = "applied"
-        except (KeyError, OSError, ValueError) as exc:
+        except (KeyError, OSError, ValueError, StateUnavailable, ReplayHalted) as exc:
             results[project.project_id] = "rejected"
             owner.store.record_agent_task_receipt(
                 execution.operation_id,
                 "space_project_rejected",
+                {"project_id": project.project_id, "reason": str(exc)},
+            )
+        # Invariant 9: settled output must not become a later attempt's input.
+        try:
+            if project.patch_path.parent.resolve() != project.patch_path.parent:
+                raise ValueError("Space output parent changed")
+            project.patch_path.unlink(missing_ok=True)
+        except (OSError, ValueError) as exc:
+            owner.store.record_agent_task_receipt(
+                execution.operation_id,
+                "space_project_cleanup_failed",
                 {"project_id": project.project_id, "reason": str(exc)},
             )
     owner.store.record_agent_task_receipt(
@@ -279,7 +305,7 @@ def commit_space_seen_heads(
             applied = [
                 patch.revision
                 for patch in project.service.history.load_patches()
-                if patch.source_effect_id == f"space:{execution.operation_id}:{project.project_id}"
+                if patch.source_effect_id == project.source_effect_id
                 and patch.admission == "accepted"
             ]
             if applied:

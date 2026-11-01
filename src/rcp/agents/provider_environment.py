@@ -316,11 +316,17 @@ def prepare_hidden_read_launch(
     machine_provider_paths: Sequence[str] = (),
     git_access: ProviderGitAccess | None = None,
     browser_enabled: bool = False,
+    thread_owner: str | None = None,
+    member_ids: Sequence[str] = (),
 ) -> HiddenReadScope:
     """Confirm keys, resolve once, then stage the exact policy used by tools."""
     import logging
 
-    from rcp.agents.hidden_read import resolve_hidden_read_scope, staged_hidden_read_source
+    from rcp.agents.hidden_read import (
+        HiddenFolderRejected,
+        resolve_hidden_read_scope,
+        staged_hidden_read_source,
+    )
     from rcp.agents.staged_hidden_read import install as install_hidden_read_files
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.limits import HIDDEN_READ_STAGE_TIMEOUT_SECONDS
@@ -354,6 +360,8 @@ def prepare_hidden_read_launch(
             machine_provider_paths=list(machine_provider_paths),
             key_evidence=evidence,
             browser_enabled=browser_enabled,
+            thread_owner=thread_owner,
+            member_ids=member_ids,
         )
         reasons = set(scope.enforcement.reasons)
         if provider == "opencode":
@@ -388,6 +396,8 @@ def prepare_hidden_read_launch(
         else:
             install_hidden_read_files(str(wrapper.parent), files)
         return scope
+    except HiddenFolderRejected:
+        raise
     except Exception:
         logging.getLogger(__name__).exception(
             "Hidden-read launch preparation failed; running unhidden"
