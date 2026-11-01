@@ -101,12 +101,13 @@ hides on main with no live branch. An amber dot signals attention on another
 unarchived branch. Rows list main first, then each parent before its indented forks, running then
 newest among siblings. Every live branch shows a Merge control, with the server's
 eligibility and refusal reason. Eligible branches offer Merge after confirmation.
-The icon says **Merge** on hover. Picker and run-card submission share task dispatch;
-episode branches retain code integration. Picker defaults keep the graph branch,
-worktree, and code branch. Run cards retain their cleanup choices. Submission
+The icon says **Merge** on hover. Project and artifact pin pickers and run cards
+share task dispatch; an artifact picker targets its artifact's project even from
+outside that project. Episode branches retain code integration. Picker defaults
+keep the graph branch, worktree, and code branch. Run cards retain their cleanup choices. Submission
 closes the confirmation and picker while admission runs; navigation stays usable.
 Accepted tasks use the existing task activity indicator and a merge status notice.
-Both entry points offer the same explicit unfinished-job confirmation. Rows hide archived branches
+All entry points offer the same explicit unfinished-job confirmation. Rows hide archived branches
 except the active one, which offers Unarchive. Rows show running/attention marks,
 rename/archive icons, and a check for selection. Rename is inline; archiving an
 unmerged branch asks first. A failed list disables the picker but retains its name.
@@ -509,6 +510,9 @@ resolved isolation owner, acting member, normalized choices, attempt, and accept
 task. An identical retry returns that accepted task, including after a later
 attempt; changed choices or actor conflict. `accepted_merge_task` identifies this
 request's task while the rest of the response describes the current episode.
+If that request still owns an incomplete reservation, its retry reconciles the
+recorded attempt before replaying acceptance. A historical request never resumes
+a newer attempt.
 Unkeyed clients retain their existing behavior. A fresh keyed request that only
 settles an earlier attempt returns `episode_merge_previous_attempt_settled` rather
 than accepting that older task under a new identity. Cleanup defaults to all

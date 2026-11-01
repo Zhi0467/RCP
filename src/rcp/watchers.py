@@ -1498,7 +1498,7 @@ class WatcherPoller:
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
         cancel_runner: Callable[[WatchSpec, str, float], str | None] = run_watcher_cancel,
-        helper_cancel_action: Callable[[WatcherRecord], Callable[[], None] | None] | None = None,
+        helper_cancel_action: Callable[[WatcherRecord], Callable[[], bool] | None] | None = None,
     ) -> None:
         self.store = store
         self.cancel_runner = cancel_runner
@@ -1579,9 +1579,11 @@ class WatcherPoller:
                 return current
             assert claimed.cancel_requested_at is not None
             try:
-                helper_action()
+                cancel_performed = helper_action()
                 return self.store.complete_watcher_cancel(
-                    watcher_id, requested_at=claimed.cancel_requested_at
+                    watcher_id,
+                    requested_at=claimed.cancel_requested_at,
+                    cancel_performed=cancel_performed,
                 )
             except Exception as exc:
                 return self.store.record_watcher_cancel_result(

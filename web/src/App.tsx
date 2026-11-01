@@ -126,6 +126,7 @@ import {
   openEpisodeReport,
   setArtifactViewerHidden,
   useDockedArtifact,
+  useArtifactViewerTarget,
 } from "./artifacts/artifactViewerModel";
 import {
   chatIndicator,
@@ -296,7 +297,6 @@ import type {
   ProjectArtifact,
   EpisodeIsolationChoice,
   MergeDiffPath,
-  MergeEpisodeBody,
   ExperimentControlState,
   ExperimentStartResponse,
   LoopOverlap,
@@ -374,7 +374,11 @@ import {
   type NotificationLink,
 } from "./core/notificationLinks";
 import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
-import { unfinishedJobsFromError } from "./graph/mergePanel";
+import {
+  pickerMergeRequestBody,
+  unfinishedJobsFromError,
+  type BranchMergeRequest,
+} from "./graph/mergePanel";
 import {
   attentionGraphForProjection,
   decisionsAwaitingChoice,
@@ -587,6 +591,10 @@ function RefreshMemberApp(props: {
   identity: ReturnType<typeof useActorIdentity>;
 }) {
   const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
+  const mergeDispatch = useRef<BranchMergeRequest | null>(null);
+  const artifactTarget = useArtifactViewerTarget();
+  const artifactProject = useRef<string | null>(null);
+  artifactProject.current = artifactTarget?.projectId ?? null;
   const runtime = useMemo(() => {
     const store = new ResourceStore();
     // The epoch changes with the backend process, so a restart is seen on the
@@ -595,7 +603,15 @@ function RefreshMemberApp(props: {
     const scheduler = new RefreshScheduler({
       store,
       clientId: crypto.randomUUID(),
-      openProjects: () => bindings.current.open,
+      openProjects: () => {
+        const open = new Map(bindings.current.open.map((project) => [project.projectId, project]));
+        // Artifact controls and one-shot detail reads can outlive a routed project tab.
+        const interests = store.awaitingWatermark();
+        if (artifactProject.current) interests.add(artifactProject.current);
+        for (const projectId of interests)
+          if (!open.has(projectId)) open.set(projectId, { projectId, currentRef: "main" });
+        return [...open.values()];
+      },
       activeProjectId: () => bindings.current.active,
       onLostAccess: (id) => bindings.current.lostAccess(id),
       send: async (request, signal) => {
@@ -626,9 +642,14 @@ function RefreshMemberApp(props: {
   useLayoutEffect(() => bindArtifactResourceStore(runtime.store), [runtime]);
   return (
     <RefreshRuntimeContext.Provider value={runtime}>
-      <MemberApp {...props} refreshBindings={bindings} />
+      <MemberApp {...props} refreshBindings={bindings} mergeDispatch={mergeDispatch} />
       <RefreshHealthMarker />
-      <ArtifactViewer />
+      <ArtifactViewer
+        onMerge={(...args) => {
+          if (!mergeDispatch.current) return Promise.reject(new Error("Merge is unavailable."));
+          return mergeDispatch.current(...args);
+        }}
+      />
     </RefreshRuntimeContext.Provider>
   );
 }
@@ -650,10 +671,12 @@ function MemberApp({
   desktop,
   identity,
   refreshBindings,
+  mergeDispatch,
 }: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
   refreshBindings: React.RefObject<RefreshBindings>;
+  mergeDispatch: React.RefObject<BranchMergeRequest | null>;
 }) {
   const { store, scheduler } = useRefreshRuntime();
   const refreshHealth = useRefreshHealth();
@@ -3513,12 +3536,14 @@ function MemberApp({
   };
 
   const mergeRequests = useRef(new Map<string, { id: string; choices: string }>());
-  const requestBranchMerge = async (
-    source: string | Extract<GraphRef, { kind: "branch" }>,
-    body: MergeEpisodeBody = {},
-    proposedRequestId?: string,
+  const requestBranchMerge: BranchMergeRequest = async (
+    source,
+    body = {},
+    proposedRequestId,
+    requestedProjectId = projectId ?? undefined,
   ) => {
-    if (!apiBase || !projectId) throw new Error("No project is open.");
+    if (!requestedProjectId) throw new Error("No project is open.");
+    const mergeApiBase = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
     if (episodeAction) {
       const message = "Another episode action is still starting. Try Merge again.";
       setNotice({ kind: "error", text: message });
@@ -3534,7 +3559,7 @@ function MemberApp({
         : source;
     const episodeId =
       typeof source === "string" ? source : (source.current_episode_id ?? source.episode_id);
-    const identity = `${projectId}:${ref?.branch_id ?? `episode:${episodeId}`}`;
+    const identity = `${requestedProjectId}:${ref?.branch_id ?? `episode:${episodeId}`}`;
     const { request_id: suppliedRequestId, ...choices } = body;
     const choiceIdentity = JSON.stringify(choices, Object.keys(choices).sort());
     let admission = mergeRequests.current.get(identity);
@@ -3548,17 +3573,17 @@ function MemberApp({
     const finishEpisodeAction = beginEpisodeAction(`merge:${identity}`);
     if (!finishEpisodeAction)
       throw new Error("Another episode action is still starting. Try Merge again.");
-    const mutation = beginTaskPublication(store, projectId);
-    if (isActiveProject(projectId)) setNotice({ kind: "info", text: "Starting merge…" });
+    const mutation = beginTaskPublication(store, requestedProjectId);
+    setNotice({ kind: "info", text: "Starting merge…" });
     let acceptedOperationId: string | null = null;
     try {
       let mergeTask: AgentTask | null;
       if (episodeId) {
-        const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId, {
+        const nextEpisode = await mergeEpisodeToMain(mergeApiBase, episodeId, {
           ...choices,
           request_id: admission.id,
         });
-        if (isActiveProject(projectId)) replaceEpisode(nextEpisode);
+        if (isActiveProject(requestedProjectId)) replaceEpisode(nextEpisode);
         if (Object.hasOwn(nextEpisode, "accepted_merge_task")) {
           mergeTask = nextEpisode.accepted_merge_task ?? null;
         } else {
@@ -3568,35 +3593,36 @@ function MemberApp({
         }
       } else {
         if (!ref || ref.kind !== "branch") throw new Error("The merge source is unavailable.");
-        const accepted = await mergeGraphFork(projectId, ref.branch_id, admission.id);
+        const accepted = await mergeGraphFork(requestedProjectId, ref.branch_id, admission.id);
         acceptedOperationId = accepted.operation_id;
-        mergeTask = await refreshAgentTask(accepted.operation_id);
+        mergeTask = await refreshAgentTask(accepted.operation_id, requestedProjectId);
       }
       mutation.settle(mergeTask ?? undefined);
       mergeRequests.current.delete(identity);
-      if (isActiveProject(projectId)) {
+      if (isActiveProject(requestedProjectId)) {
         if (mergeTask) recordStartedTask(mergeTask);
-        setNotice({
-          kind: mergeTask?.failed ? "error" : "info",
-          text: mergeTask?.failed
-            ? (mergeTask.error ?? "Merge failed. Open its task for details.")
-            : mergeTask && isActiveTask(mergeTask)
-              ? "Merge is running"
-              : "Merge completed",
-        });
         setGraphRefsReread(null);
       }
+      store.invalidate(resourceKeyId(refsProfile(requestedProjectId).key));
+      setNotice({
+        kind: mergeTask?.failed ? "error" : "info",
+        text: mergeTask?.failed
+          ? (mergeTask.error ?? "Merge failed. Open its task for details.")
+          : mergeTask && isActiveTask(mergeTask)
+            ? "Merge is running"
+            : "Merge completed",
+      });
     } catch (error) {
       mutation.fail();
       if (!acceptedOperationId && error instanceof ApiError && error.status < 500)
         mergeRequests.current.delete(identity);
       // Unfinished jobs use the shared confirmation at either entry point.
       if (acceptedOperationId) {
-        store.invalidate(tasksResourceKey(projectId));
+        store.invalidate(tasksResourceKey(requestedProjectId));
         scheduler.now();
       }
-      if (isActiveProject(projectId) && unfinishedJobsFromError(error)) setNotice(null);
-      else if (isActiveProject(projectId)) {
+      if (unfinishedJobsFromError(error)) setNotice(null);
+      else {
         const detail = error instanceof Error ? error.message : String(error);
         setNotice({
           kind: "error",
@@ -3610,15 +3636,23 @@ function MemberApp({
       finishEpisodeAction();
     }
     try {
-      await reload();
+      if (isActiveProject(requestedProjectId)) await reload();
     } catch (error) {
-      if (isActiveProject(projectId))
+      if (isActiveProject(requestedProjectId))
         setNotice({
           kind: "error",
           text: `Merge was accepted, but the project could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
         });
     }
   };
+
+  // The sibling viewer uses this commit's project-aware dispatcher.
+  useLayoutEffect(() => {
+    mergeDispatch.current = requestBranchMerge;
+    return () => {
+      if (mergeDispatch.current === requestBranchMerge) mergeDispatch.current = null;
+    };
+  });
 
   const messageEpisodeOrchestrator = async (
     episodeId: string,
@@ -3773,13 +3807,13 @@ function MemberApp({
   };
 
   const refreshAgentTask = useCallback(
-    async (operationId: string): Promise<AgentTask> => {
-      if (!projectId) throw new Error("No project is open.");
+    async (operationId: string, requestedProjectId = projectId): Promise<AgentTask> => {
+      if (!requestedProjectId) throw new Error("No project is open.");
       const owner = crypto.randomUUID();
-      const id = store.register(owner, taskResourceProfile(projectId, operationId));
+      const id = store.register(owner, taskResourceProfile(requestedProjectId, operationId));
       try {
         await store.refresh(id);
-        store.invalidate(tasksResourceKey(projectId));
+        store.invalidate(tasksResourceKey(requestedProjectId));
         return store.committedValue<AgentTask>(id)!;
       } finally {
         store.release(owner, [id]);
@@ -4923,18 +4957,7 @@ function MemberApp({
           );
         }}
         onMerge={(source, requestId, confirmUnfinishedJobs) =>
-          requestBranchMerge(
-            source,
-            {
-              history_mode: "merge",
-              keep_branch_open: true,
-              archive_graph_branch: false,
-              remove_worktree: false,
-              delete_code_branch: false,
-              ...(confirmUnfinishedJobs ? { confirm_unfinished_jobs: true } : {}),
-            },
-            requestId,
-          )
+          requestBranchMerge(source, pickerMergeRequestBody(confirmUnfinishedJobs), requestId)
         }
       />
     </>

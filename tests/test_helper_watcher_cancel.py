@@ -139,6 +139,115 @@ def test_helper_lookup_is_uncapped_and_exact(helper, monkeypatch):
     assert backend.calls == 1
 
 
+@pytest.mark.parametrize("exit_status", [0, 7])
+@pytest.mark.parametrize("initial_status", ["running", "lost", "exited"])
+def test_cancel_preserves_a_helper_that_already_exited_naturally(
+    helper, exit_status, initial_status
+):
+    store, job, watcher, backend, poller = helper
+    if initial_status == "lost":
+        store.record_compute_job_refresh(job.job_id, status="lost", diagnostic="Earlier loss")
+    receipt = f"{exit_status} 1757000000"
+    Path(job.exit_path).write_text(receipt)
+    if initial_status == "exited":
+        store.record_compute_job_refresh(
+            job.job_id,
+            status="exited",
+            exit_status=exit_status,
+            ended_at=jobs.epoch_timestamp("1757000000"),
+        )
+    assert store.compute_job(job.job_id).status == initial_status
+
+    observed = poller().cancel("project", watcher.watcher_id, "human")
+
+    completed = store.compute_job(job.job_id)
+    assert completed.status == "exited" and completed.exit_status == exit_status
+    assert completed.ended_at == jobs.epoch_timestamp("1757000000")
+    assert completed.diagnostic == ("Earlier loss" if initial_status == "lost" else None)
+    assert Path(job.exit_path).read_text() == receipt
+    assert not Path(job.job_root, "cancelled").exists()
+    assert backend.calls == 0
+    assert observed.status == "completed" and observed.completed_at
+    assert observed.cancel_requested_at is observed.cancel_requested_by is None
+    assert observed.cancel_error is None
+
+
+@pytest.mark.parametrize("receipt", [None, "bad exit receipt", "0", "256 1757000000"])
+def test_absent_helper_without_a_valid_exit_still_accepts_cancel_recovery(helper, receipt):
+    store, job, watcher, backend, poller = helper
+    if receipt is not None:
+        Path(job.exit_path).write_text(receipt)
+    observed = poller().cancel("project", watcher.watcher_id, "human")
+    cancelled = store.compute_job(job.job_id)
+    assert cancelled.status == "cancelled" and cancelled.exit_status is None
+    assert cancelled.diagnostic
+    assert Path(job.job_root, "cancelled").exists()
+    assert backend.calls == 1
+    assert observed.status == "completed" and observed.cancel_requested_by == "human"
+
+
+@pytest.mark.parametrize("exit_status", [0, 7])
+@pytest.mark.parametrize("initial_alive", [False, True])
+def test_cancel_preserves_an_exit_receipt_that_races_the_stop(helper, exit_status, initial_alive):
+    store, job, watcher, backend, poller = helper
+    backend.alive_state = initial_alive
+    cancel = backend.cancel
+
+    def complete_before_stop(*args):
+        Path(job.exit_path).write_text(f"{exit_status} 1757000000")
+        cancel(*args)
+
+    backend.cancel = complete_before_stop
+    observed = poller().cancel("project", watcher.watcher_id, "human")
+    completed = store.compute_job(job.job_id)
+    assert completed.status == "exited" and completed.exit_status == exit_status
+    assert completed.ended_at == jobs.epoch_timestamp("1757000000")
+    assert not Path(job.job_root, "cancelled").exists()
+    assert backend.calls == 1
+    assert observed.status == "completed" and observed.cancel_requested_by == "human"
+
+
+@pytest.mark.parametrize("stop_performed", [False, True])
+def test_natural_completion_retries_after_watcher_persistence_fails(
+    helper, monkeypatch, stop_performed
+):
+    store, job, watcher, backend, poller = helper
+    if stop_performed:
+        backend.alive_state = True
+        cancel = backend.cancel
+
+        def complete_before_stop(*args):
+            Path(job.exit_path).write_text("7 1757000000")
+            cancel(*args)
+
+        backend.cancel = complete_before_stop
+    else:
+        Path(job.exit_path).write_text("7 1757000000")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE watchers SET status='degraded', notified=1, "
+            "notification_operation_id='warning' WHERE watcher_id=?",
+            (watcher.watcher_id,),
+        )
+    with monkeypatch.context() as patch:
+
+        def fail_settlement(*_args, **_kwargs):
+            raise RuntimeError("watcher storage unavailable")
+
+        patch.setattr(store, "complete_watcher_cancel", fail_settlement)
+        failed = poller().cancel("project", watcher.watcher_id, "first")
+    assert failed.can_cancel and failed.cancel_error
+    assert store.compute_job(job.job_id).status == "exited"
+
+    settled = poller().cancel("project", watcher.watcher_id, "second")
+    assert settled.status == "completed" and settled.notified
+    assert settled.notification_operation_id == "warning"
+    assert settled.cancel_requested_at is settled.cancel_requested_by is None
+    assert settled.cancel_error is None
+    assert not Path(job.job_root, "cancelled").exists()
+    assert backend.calls == int(stop_performed)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

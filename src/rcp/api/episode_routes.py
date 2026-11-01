@@ -671,7 +671,9 @@ def merge_episode_branch(
     try:
         with project_write_admission(project_id, request):
             service.history.require_writable()
-            replay = episode_merge_request_receipt(store, episode, body, authorized_by)
+            replay = episode_merge_request_receipt(
+                store, episode, body, authorized_by, reconcile_with=service
+            )
             reconciled = (
                 None if replay is not None else reconcile_episode_merge(service, store, episode)
             )

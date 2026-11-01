@@ -1812,6 +1812,132 @@ for (const owned of [true, false]) {
   });
 }
 
+for (const owned of [true, false]) {
+  test(`artifact pin picker dispatches ${owned ? "episode" : "fork"} merge for its own project from landing`, async (t) => {
+    const { ref, episode: sourceEpisode } = mergeFixture(owned);
+    const { page, state, errors } = await openedShell(t, {
+      connected: true,
+      viewport: { width: 390, height: 844 },
+      health: {
+        ...HEALTH,
+        project_creation: {
+          intents: [
+            {
+              intent: "use_existing_checkout_personally",
+              eligible: true,
+              preselected: true,
+              primary_action_label: "Use existing checkout",
+              required_fields: [],
+            },
+          ],
+        },
+      },
+    });
+    const projectId = "second";
+    const episode = { ...sourceEpisode, project_id: projectId };
+    const task = { ...mergeTask(`artifact-${owned}`, ref.branch_id), project_id: projectId };
+    const submitted = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const requests = [];
+    await page.route("**/api/projects/second/graph-refs", (route) =>
+      route.fulfill({ json: [mainRef(), ref] }),
+    );
+    await page.route("**/api/projects/second/artifacts/preview/state", (route) =>
+      route.fulfill({
+        json: {
+          artifact_id: "preview",
+          name: "Merge preview artifact",
+          pinned_branch_ids: [],
+          pin_branch_id: null,
+          can_pin: true,
+          version_number: 1,
+          viewer_url: "/api/projects/second/artifacts/preview/viewer",
+        },
+      }),
+    );
+    await page.route("**/api/projects/second/artifacts/preview/viewer", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Preview</p>" }),
+    );
+    await page.route(
+      /\/api\/projects\/second\/(episodes|graph-refs)\/[^/]+\/merge$/,
+      async (route) => {
+        const request = {
+          path: new URL(route.request().url()).pathname,
+          body: route.request().postDataJSON(),
+        };
+        requests.push(request);
+        submitted.resolve(request);
+        await response.promise;
+        state.tasks = [task];
+        await route.fulfill({
+          json: owned
+            ? { ...episode, accepted_merge_task: task }
+            : { operation_id: task.operation_id, status: "running" },
+        });
+      },
+    );
+    await page.evaluate(() => {
+      window.location.hash = "/";
+    });
+    await page.locator(".project-shelf").waitFor();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.evaluate(async () =>
+      (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
+        projectId: "second",
+        artifactId: "preview",
+      }),
+    );
+    const viewer = page.locator(".artifact-viewer");
+    await viewer.getByRole("button", { name: "Branch: main", exact: true }).click();
+    const merge = page.getByRole("button", { name: `Merge ${ref.name}`, exact: true });
+    assert.equal(await merge.isEnabled(), true);
+    assert.equal(await merge.getAttribute("title"), "Merge");
+    await merge.click();
+    await page.locator("dialog").getByRole("button", { name: "Merge", exact: true }).click();
+    const request = await submitted.promise;
+    assert.equal(
+      request.path,
+      owned
+        ? "/api/projects/second/episodes/chain-current/merge"
+        : "/api/projects/second/graph-refs/member-fork/merge",
+    );
+    if (owned)
+      assert.deepEqual(request.body, {
+        request_id: request.body.request_id,
+        history_mode: "merge",
+        keep_branch_open: true,
+        archive_graph_branch: false,
+        remove_worktree: false,
+        delete_code_branch: false,
+      });
+    else assert.deepEqual(request.body, { request_id: request.body.request_id });
+    assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+    assert.equal(await page.locator("dialog").count(), 0);
+    await viewer.getByRole("button", { name: "Close viewer", exact: true }).click();
+    response.resolve();
+    await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+    if (!owned)
+      assert.ok(state.requests.includes(`/api/projects/second/tasks/${task.operation_id}`));
+    assert.equal(
+      state.requests.some((path) => path === `/api/projects/demo/tasks/${task.operation_id}`),
+      false,
+    );
+    assert.equal(requests.length, 1);
+    await page.evaluate(() => {
+      window.location.hash = "/projects/second?view=overview";
+    });
+    await page.getByRole("button", { name: "Project menu", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Project history, task in progress", exact: true })
+      .waitFor();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.deepEqual(errors, []);
+  });
+}
+
 test("App picker retries an ambiguous episode admission with the original request UUID", async (t) => {
   const { ref, episode } = mergeFixture();
   const { page, state } = await openedShell(t, {

@@ -181,11 +181,18 @@ Concurrent requests share the claim.
 An exact registered helper watcher can also recover a lost job whose ordinary
 check lacks a valid exit receipt. Matching requires the project, host, origin,
 log, and complete helper command contract. The server claims the human action,
-uses the recorded OS owner outside the provider's containment, stops it
+and first reconciles any valid exit receipt from an absent owner, including
+a receipt that arrived after an earlier loss observation. Natural completion
+retains its exit status and timestamp without a cancellation acknowledgement or
+request attribution. The server otherwise uses the recorded OS owner outside
+the provider's containment, stops it
 idempotently, writes a new cancellation acknowledgement, and checks absence afresh.
-Only confirmed absence settles the job as cancelled. It invents no exit status
-and preserves earlier loss diagnostics. Marker, transport, or owner-check failures
-stay visible and retryable. Generic shell watchers still require a successful
+An exit receipt discovered during the stop is also preserved before writing
+that acknowledgement; that request retains its stop attribution. A retry that
+finds the exited record performs no new stop and clears its unused request claim.
+Only confirmed absence settles the job as cancelled. Explicit recovery preserves
+earlier loss diagnostics and invents no exit status. Marker, transport, or
+owner-check failures stay visible and retryable. Generic shell watchers still require a successful
 fresh check before their saved command runs. A notified degraded watcher can
 settle this attributed action without losing delivery history or waking its chat
 again.

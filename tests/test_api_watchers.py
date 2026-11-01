@@ -3,6 +3,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import pytest
+
 from rcp.compute_jobs import jobs
 from rcp.storage import (
     GraphWatcherRecord,
@@ -256,8 +258,12 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
 
 
+@pytest.mark.parametrize(
+    ("initial_status", "exit_status"),
+    [("lost", None), ("running", 0), ("running", 7), ("lost", 0), ("lost", 7), ("exited", 7)],
+)
 def test_api_composes_registered_helper_cancel_for_an_already_delivered_warning(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, initial_status, exit_status
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.services.store
@@ -270,11 +276,14 @@ def test_api_composes_registered_helper_cancel_for_an_already_delivered_warning(
         job_root=str(root),
         log_path=str(root / "log"),
         exit_path=str(root / "exit"),
-        status="lost",
+        status=initial_status,
+        exit_status=exit_status if initial_status == "exited" else None,
         diagnostic="Missing exit receipt",
         ended_at="2026-09-06T01:00:00Z",
     )
     store.create_compute_job(job)
+    if exit_status is not None:
+        Path(job.exit_path).write_text(f"{exit_status} 1757000000")
     watcher = _record("registered-helper").model_copy(
         update={
             **jobs.helper_watch_spec(job),
@@ -299,13 +308,18 @@ def test_api_composes_registered_helper_cancel_for_an_already_delivered_warning(
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["status"] == "completed" and payload["notified"]
-    assert payload["cancel_requested_by"] == store.local_owner.user_id
+    assert payload["cancel_requested_by"] == (
+        store.local_owner.user_id if exit_status is None else None
+    )
     assert payload["cancel_error"] is None and payload["can_cancel"] is False
     assert store.watcher(watcher.watcher_id).notification_operation_id == "warning-delivery"
-    assert store.compute_job(job.job_id).status == "cancelled"
-    assert store.compute_job(job.job_id).diagnostic == "Missing exit receipt"
+    completed = store.compute_job(job.job_id)
+    assert completed.status == ("cancelled" if exit_status is None else "exited")
+    assert completed.exit_status == exit_status
+    assert completed.diagnostic == (None if initial_status == "running" else "Missing exit receipt")
+    assert Path(job.job_root, "cancelled").exists() is (exit_status is None)
     assert client.post(url, json={}).json() == payload
-    assert calls == [(job.backend_handle, "")]
+    assert calls == ([(job.backend_handle, "")] if exit_status is None else [])
 
 
 def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manifest, tmp_path):
