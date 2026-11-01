@@ -109,6 +109,52 @@ class ComputeJobStoreMixin(StoreMixinBase):
             ).fetchall()
         return [_compute_job_record(row) for row in rows]
 
+    def compute_jobs_for_log_path(
+        self, project_id: str, execution_host: str, log_path: str
+    ) -> list[ComputeJobRecord]:
+        """Resolve durable ownership without the display list's age/count cap."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM compute_jobs WHERE project_id = ? "
+                "AND execution_host = ? AND log_path = ?",
+                (project_id, execution_host, log_path),
+            ).fetchall()
+        return [_compute_job_record(row) for row in rows]
+
+    def record_compute_job_cancelled(self, job_id: str, *, ended_at: str) -> ComputeJobRecord:
+        """A fresh human cancellation may settle a lost job, preserving its diagnostics."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM compute_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            current = _compute_job_record(row)
+            if current.status not in {"running", "lost"}:
+                return current
+            connection.execute(
+                "UPDATE compute_jobs SET status = 'cancelled', exit_status = NULL, ended_at = ? "
+                "WHERE job_id = ?",
+                (ended_at, job_id),
+            )
+            if current.status == "running":
+                append_digest_event(
+                    connection,
+                    project_id=current.project_id,
+                    kind="job_ended",
+                    item_id=job_id,
+                    created_at=self.now(),
+                    payload={
+                        "title": current.label or job_id,
+                        "status": "cancelled",
+                        "deep_link": None,
+                    },
+                )
+            return current.model_copy(
+                update={"status": "cancelled", "exit_status": None, "ended_at": ended_at}
+            )
+
     @staticmethod
     def _episode_binding_unfinished_jobs(
         connection, project_id, owner_episode_id

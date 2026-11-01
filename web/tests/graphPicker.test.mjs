@@ -179,7 +179,7 @@ test("forks nest under their visible parent and retain exact provenance through 
   assert.equal(graphRefParentLabel({ ...root, parent_head: null }, refs), null);
 });
 
-test("only an open, eligible fork offers Merge; episode branches use episode Merge", () => {
+test("open eligible forks and episode branches share the picker Merge control", () => {
   const fork = {
     kind: "branch",
     branch_id: "f",
@@ -189,7 +189,7 @@ test("only an open, eligible fork offers Merge; episode branches use episode Mer
   };
   assert.equal(graphRefCanMerge(fork), true);
   assert.equal(graphRefCanMerge({ ...fork, episode_id: "e" }), true);
-  assert.equal(graphRefCanMerge({ ...fork, branch_id: "e", episode_id: "e" }), false);
+  assert.equal(graphRefCanMerge({ ...fork, branch_id: "e", episode_id: "e" }), true);
   assert.equal(graphRefCanMerge({ ...fork, archived: true }), false);
   assert.equal(graphRefCanMerge({ ...fork, merge_eligible: false }), false);
   assert.equal(graphRefCanMerge({ kind: "main", merge_eligible: false }), false);

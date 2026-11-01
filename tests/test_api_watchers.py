@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+from rcp.compute_jobs import jobs
 from rcp.storage import (
     GraphWatcherRecord,
     NodeStatusGraphCondition,
@@ -14,6 +15,8 @@ from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_branch_chats import _app_branch
+from .test_compute_jobs_storage import job_record
+from .test_watchers import _record
 
 
 def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path: Path) -> None:
@@ -251,6 +254,58 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 409
     assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
+
+
+def test_api_composes_registered_helper_cancel_for_an_already_delivered_warning(
+    manifest, tmp_path, monkeypatch
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.services.store
+    project_id = app.state.default_project_id
+    root = tmp_path / "jobs" / "lost"
+    root.mkdir(parents=True)
+    job = job_record(
+        project_id=project_id,
+        origin_operation_id="origin",
+        job_root=str(root),
+        log_path=str(root / "log"),
+        exit_path=str(root / "exit"),
+        status="lost",
+        diagnostic="Missing exit receipt",
+        ended_at="2026-09-06T01:00:00Z",
+    )
+    store.create_compute_job(job)
+    watcher = _record("registered-helper").model_copy(
+        update={
+            **jobs.helper_watch_spec(job),
+            "project_id": project_id,
+            "status": "degraded",
+            "notified": True,
+            "notification_operation_id": "warning-delivery",
+            "last_error": "Missing exit receipt",
+        }
+    )
+    store.create_watchers([watcher])
+    calls = []
+    monkeypatch.setattr(
+        jobs.COMPUTE_BACKENDS[job.backend_id],
+        "cancel",
+        lambda handle, context: calls.append((handle, context.execution_host)),
+    )
+    monkeypatch.setattr(jobs.COMPUTE_BACKENDS[job.backend_id], "alive", lambda *_: False)
+    client = signed_in_client(app)
+    url = f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel"
+    response = client.post(url, json={})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "completed" and payload["notified"]
+    assert payload["cancel_requested_by"] == store.local_owner.user_id
+    assert payload["cancel_error"] is None and payload["can_cancel"] is False
+    assert store.watcher(watcher.watcher_id).notification_operation_id == "warning-delivery"
+    assert store.compute_job(job.job_id).status == "cancelled"
+    assert store.compute_job(job.job_id).diagnostic == "Missing exit receipt"
+    assert client.post(url, json={}).json() == payload
+    assert calls == [(job.backend_handle, "")]
 
 
 def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manifest, tmp_path):

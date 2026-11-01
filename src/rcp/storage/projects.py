@@ -497,6 +497,10 @@ class ProjectStoreMixin(StoreMixinBase):
                     "chat_pins": connection.execute(
                         "DELETE FROM chat_pins WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "episode_merge_request_receipts": connection.execute(
+                        "DELETE FROM episode_merge_request_receipts WHERE project_id = ?",
+                        (project_id,),
+                    ).rowcount,
                     "episode_isolations": connection.execute(
                         "DELETE FROM episode_isolations WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -740,6 +744,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     "bulletin_reads",
                     "bulletin_mention_observations",
                     "evidence_flags",
+                    "evidence_flag_carries",
                     "evidence_flag_command_receipts",
                     "research_view_pins",
                     "notification_preferences",
@@ -1138,6 +1143,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 "bulletin_reads",
                 "bulletin_mention_observations",
                 "evidence_flags",
+                "evidence_flag_carries",
                 "evidence_flag_command_receipts",
                 "digest_events",
                 "digest_marks",
@@ -1190,6 +1196,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 (project_id, legacy_id),
             )
             for table in (
+                "episode_merge_request_receipts",
                 "episode_isolations",
                 "episode_isolation_states",
                 "graph_branches",

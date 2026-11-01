@@ -311,7 +311,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (65, "per_member_provider_logins_v1")
+    assert migrations[-1] == (67, "episode_merge_requests_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -4001,3 +4001,61 @@ def test_all_target_snapshot_retains_only_live_newest_or_recent_episodes(tmp_pat
         graph_target=GraphTargetRef(kind="branch", branch_id="expired"),
     )
     assert direct["experiment-node"].runtime.episode_id == "expired"
+
+
+@pytest.mark.parametrize("legacy_data_only", [False, True])
+def test_merge_receipts_follow_project_identity_and_deletion(tmp_path, legacy_data_only):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_id, project_id = "legacy-merge-project", str(uuid.uuid4())
+    if legacy_data_only:
+        store.upsert_project(
+            _project(project_id).model_copy(update={"home_space_id": store.space_id})
+        )
+    else:
+        store.upsert_project(_project(old_id))
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO evidence_flag_carries VALUES (?,?,?,?)",
+            (old_id, "source-flag", "main", "destination-flag"),
+        )
+        connection.execute(
+            "INSERT INTO episode_merge_request_receipts "
+            "(project_id,owner_episode_id,request_id,acting_member,choices_json,choices_digest,"
+            "attempt_id,attempt_json,accepted_task_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                old_id,
+                "owner",
+                "request",
+                "member",
+                "{}",
+                "digest",
+                "attempt",
+                "{}",
+                "task",
+                store.now(),
+            ),
+        )
+    if legacy_data_only:
+        store.migrate_legacy_project_data(old_id, project_id)
+    else:
+        store.migrate_project_identity(old_id, project_id, store.space_id)
+    with store.connection() as connection:
+        carry = dict(connection.execute("SELECT * FROM evidence_flag_carries").fetchone())
+        request = dict(
+            connection.execute("SELECT * FROM episode_merge_request_receipts").fetchone()
+        )
+    assert carry == {
+        "project_id": project_id,
+        "origin_flag_id": "source-flag",
+        "destination": "main",
+        "flag_id": "destination-flag",
+    }
+    assert request["project_id"] == project_id
+    assert request["accepted_task_id"] == "task"
+    store.delete_project_records(project_id)
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_flag_carries").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM episode_merge_request_receipts").fetchone()[0]
+            == 0
+        )

@@ -99,15 +99,23 @@ reddens the row and offers one retry icon, reusing the request id only after a
 network or 5xx failure. The artifact viewer's pin picker offers no New branch and
 hides on main with no live branch. An amber dot signals attention on another
 unarchived branch. Rows list main first, then each parent before its indented forks, running then
-newest among siblings. Eligible forks offer Merge after a confirmation. Rows hide archived branches
+newest among siblings. Every live branch shows a Merge control, with the server's
+eligibility and refusal reason. Eligible branches offer Merge after confirmation.
+The icon says **Merge** on hover. Picker and run-card submission share task dispatch;
+episode branches retain code integration. Picker defaults keep the graph branch,
+worktree, and code branch. Run cards retain their cleanup choices. Submission
+closes the confirmation and picker while admission runs; navigation stays usable.
+Accepted tasks use the existing task activity indicator and a merge status notice.
+Both entry points offer the same explicit unfinished-job confirmation. Rows hide archived branches
 except the active one, which offers Unarchive. Rows show running/attention marks,
 rename/archive icons, and a check for selection. Rename is inline; archiving an
 unmerged branch asks first. A failed list disables the picker but retains its name.
 
 Switching ref keeps the view, valid destination-owned chat/episode selections,
-and nodes present in the new snapshot. The mounted previous snapshot stays inert
-under a progress line until the new one arrives; only a first project open uses
-an opening screen. Cached refs paint before validation. Each ref retains its draft;
+and nodes present in the new snapshot. The destination panel shows loading until
+this entry has current data; retained
+payloads never paint before admission. Navigation stays usable. Failed admission
+shows its error and Retry rather than a previous panel. Each ref retains its draft;
 resource ownership and subscription rules are in [Revision observation and drafts](#revision-observation-and-drafts).
 One URL helper owns project/ref/view plus chat or episode; exact Experiment routes
 retain their separate `experiment`/`target`/`branch` fields.
@@ -496,7 +504,15 @@ Question notifications open the corresponding chat or expanded episode view.
 isolation owner from any member. It also accepts a code-only owner. The optional
 body names `target_branch`, `history_mode` (`merge` or `squash`),
 `remove_worktree`, `delete_code_branch`, `archive_graph_branch`, and
-`keep_branch_open`. Cleanup defaults to all three steps. Squash disallows Keep
+`keep_branch_open`, and optional UUID `request_id`. A keyed request binds its
+resolved isolation owner, acting member, normalized choices, attempt, and accepted
+task. An identical retry returns that accepted task, including after a later
+attempt; changed choices or actor conflict. `accepted_merge_task` identifies this
+request's task while the rest of the response describes the current episode.
+Unkeyed clients retain their existing behavior. A fresh keyed request that only
+settles an earlier attempt returns `episode_merge_previous_attempt_settled` rather
+than accepting that older task under a new identity. Cleanup defaults to all
+three steps. Squash disallows Keep
 branch open. Deleting the code branch requires worktree removal and delivery.
 Merge stays human-dispatched. A clean merge runs without a provider turn.
 Episode responses include the server-owned `can_merge` offer (see
@@ -635,13 +651,23 @@ deadlines immediately. Only one request runs at a time, with a five-second
 browser timeout and failure backoff of 3, 6, 12, then 30 seconds. Hidden pages
 pause; becoming visible coalesces validation. Payload reads use three slots,
 at most one for background work, with active priority and aging to prevent
-starvation. Activation paints cached data and promotes reads without awaiting SSH.
+starvation. A new presentation entry withholds retained payloads synchronously,
+including the first render before effects. Backend/member, project, ref, tab, and
+selected entity identify the entry. A watermark request issued after entry must
+validate its resources. A matching epoch/version admits accepted cache; otherwise
+the entry waits for the matching payload. An older in-flight observation cannot
+admit it. Independent shared owners keep separate entries. Failure shows loading
+or an error with retry, never a previous saved view. Ordinary active polling keeps
+the admitted view, drafts, and focus; a backend epoch change requires admission
+again. The project barrier uses these same rules for the whole panel, and direct
+chat transcript reads also participate.
 
 Every read captures its immutable key, lifecycle generation, and start sequence;
 only a matching read commits. Observed and committed tokens are separate: failed
 or superseded reads keep their refresh debt. Epoch changes fence all resources
 and clear both tokens. Backend/member changes reset the store. Unavailable
-projects lose route, tab, resources, and viewport. Contact failures preserve data
+projects lose route, tab, resources, and viewport. After admission, contact
+failures preserve the active data
 with an accessible stale marker; remote-sync health has its own marker.
 
 All open tabs watch project-wide task status; only the active tab watches progress
@@ -671,6 +697,9 @@ it is behind and excluded from Sync until edited or an incoming field is
 reversibly swapped in. Paper uses its whole-document equivalent. Display caches
 are never canonical input. When a graph-capable turn closes, RCP rebuilds the main
 display cache from canonical state, replacing a missing or invalid one too.
+Committed branch merges, including agentless and no-change deliveries, use
+[durable merge settlement](auto-research-and-branch-merge.md#semantic-rebase-and-merge)
+to publish attention as well as the graph before recording publication complete.
 
 ## Project index and identity
 

@@ -13,7 +13,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import { ApiError, mergeGraphFork, renameGraphBranch, setGraphBranchArchived } from "../core/api";
+import { ApiError, renameGraphBranch, setGraphBranchArchived } from "../core/api";
 import {
   branchName,
   branchNameProblem,
@@ -23,7 +23,7 @@ import {
 import { sameGraphTarget } from "../core/graphTarget";
 import { popoverRows, rovingFocusTarget } from "../core/rovingFocus";
 import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
-import type { GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
+import type { EpisodeUnfinishedJob, GraphHeadRef, GraphRef, GraphTargetRef } from "../core/types";
 import {
   graphPickerOptions,
   graphRefCanMerge,
@@ -32,6 +32,8 @@ import {
   graphRefTarget,
   refNeedsYou,
 } from "./graphPickerModel";
+import { MergeUnfinishedJobs } from "./MergeUnfinishedJobs";
+import { unfinishedJobsFromError } from "./mergePanel";
 import "./GraphPicker.css";
 
 interface GraphPickerProps {
@@ -49,6 +51,8 @@ interface GraphPickerProps {
   /** The last read failed: names stay, choices are disabled until a read succeeds. */
   unavailable?: boolean;
   onRefUpdated: (ref: GraphRef) => void;
+  /** App owns dispatch, request identity, task publication, and error feedback. */
+  onMerge?: (ref: Branch, requestId: string, confirmUnfinishedJobs: boolean) => Promise<void>;
   compact?: boolean;
   /** Names the trigger instead of the current branch, for a picker that moves something;
    * the trigger then reads as a plain menu row, without the branch icon. */
@@ -77,6 +81,7 @@ export function GraphPicker({
   createDisabled = false,
   onOpen,
   onRefUpdated,
+  onMerge,
   unavailable = false,
   compact = false,
   label,
@@ -99,6 +104,7 @@ export function GraphPicker({
     action: "archive" | "merge";
     ref: Branch;
     requestId: string;
+    jobs?: EpisodeUnfinishedJob[];
   } | null>(null);
   const [position, setPosition] = useState<PopoverPlacement>({ top: 0, right: 0, maxHeight: 0 });
   const button = useRef<HTMLButtonElement>(null);
@@ -235,17 +241,20 @@ export function GraphPicker({
     }
   }
 
-  async function merge(ref: Branch, requestId: string) {
-    if (busy) return;
+  async function merge(ref: Branch, requestId: string, confirmUnfinishedJobs = false) {
+    if (busy || !onMerge) return;
     setBusy(true);
     setWarning(null);
+    setConfirm(null);
+    setOpen(false);
     try {
-      await mergeGraphFork(projectId, ref.branch_id, requestId);
+      await onMerge(ref, requestId, confirmUnfinishedJobs);
     } catch (error) {
-      showError(error);
+      const jobs = unfinishedJobsFromError(error);
+      if (jobs) setConfirm({ action: "merge", ref, requestId, jobs });
+      // Other failures are reported by App outside this closed popover.
     } finally {
       setBusy(false);
-      setConfirm(null);
     }
   }
 
@@ -425,11 +434,16 @@ export function GraphPicker({
                         )}
                         {ref.kind === "branch" && !pickOnly && (
                           <>
-                            {graphRefCanMerge(ref) && (
+                            {!ref.archived && (
                               <button
                                 className="branch-picker-action"
                                 aria-label={`Merge ${ref.name}`}
-                                disabled={busy}
+                                title={
+                                  graphRefCanMerge(ref)
+                                    ? "Merge"
+                                    : (ref.merge_blocked_reason ?? "Merge unavailable")
+                                }
+                                disabled={busy || !onMerge || !graphRefCanMerge(ref)}
                                 onClick={() => {
                                   setWarning(null);
                                   setConfirm({
@@ -564,27 +578,36 @@ export function GraphPicker({
                 ? `Merge ${confirm.ref.name} into ${branchName(refs, confirm.ref.parent_head?.target ?? { kind: "main" })}?`
                 : `Archive ${confirm.ref.name} without merging?`}
             </h2>
-            <div>
-              <button
-                className="button secondary"
-                autoFocus
+            {confirm.jobs ? (
+              <MergeUnfinishedJobs
+                jobs={confirm.jobs}
                 disabled={busy}
-                onClick={() => setConfirm(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="button"
-                disabled={busy}
-                onClick={() =>
-                  void (confirm.action === "merge"
-                    ? merge(confirm.ref, confirm.requestId)
-                    : archive(confirm.ref))
-                }
-              >
-                {confirm.action === "merge" ? "Merge" : "Archive"}
-              </button>
-            </div>
+                onConfirm={() => void merge(confirm.ref, confirm.requestId, true)}
+                onCancel={() => setConfirm(null)}
+              />
+            ) : (
+              <div className="branch-picker-confirm-actions">
+                <button
+                  className="button secondary"
+                  autoFocus
+                  disabled={busy}
+                  onClick={() => setConfirm(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() =>
+                    void (confirm.action === "merge"
+                      ? merge(confirm.ref, confirm.requestId)
+                      : archive(confirm.ref))
+                  }
+                >
+                  {confirm.action === "merge" ? "Merge" : "Archive"}
+                </button>
+              </div>
+            )}
           </dialog>,
           document.body,
         )}

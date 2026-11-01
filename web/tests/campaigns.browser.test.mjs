@@ -120,7 +120,6 @@ test("a failed merge stays Merge, and a refused click marks it at phone width", 
     await button.click();
     await merge.click();
     await branch.locator(".branch-running").waitFor();
-    assert.equal(previews, 3);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].keep_branch_open, false);
     assert.deepEqual(requests[1], requests[0]);

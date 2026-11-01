@@ -21,6 +21,7 @@ export interface AgentTasksSnapshot {
 interface UseAgentTasksOptions {
   projectId: string | null;
   reportError: (message: string) => void;
+  presentationKey?: string;
 }
 
 export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): {
@@ -35,11 +36,19 @@ export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): {
   };
 }
 
-export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
+export function useAgentTasks({ projectId, presentationKey }: UseAgentTasksOptions) {
   const { store } = useRefreshRuntime();
   const owner = `${projectId}:task-view`;
-  const status = useResource(owner, projectId ? taskStatusProfile(projectId) : null);
-  const progress = useResource(owner, projectId ? taskProgressProfile(projectId) : null);
+  const status = useResource(
+    owner,
+    projectId ? taskStatusProfile(projectId) : null,
+    presentationKey,
+  );
+  const progress = useResource(
+    owner,
+    projectId ? taskProgressProfile(projectId) : null,
+    presentationKey,
+  );
   // A failed list read must not pass for "no tasks" or keep stale rows silently.
   const tasksUnavailable = Boolean(status.error || progress.error);
   const retryTasks = useCallback(() => {
@@ -59,6 +68,7 @@ export function useAgentTasks({ projectId }: UseAgentTasksOptions) {
   const detail = useResource(
     owner,
     projectId && taskInspectorId ? taskResourceProfile(projectId, taskInspectorId) : null,
+    presentationKey,
   );
   const inspectorSummary = tasks.find((task) => task.operation_id === taskInspectorId);
   const inspectedTask = useMemo(

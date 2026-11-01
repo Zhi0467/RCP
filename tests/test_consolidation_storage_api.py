@@ -97,6 +97,27 @@ def _report_settlement(store, run):
     )
 
 
+@pytest.mark.parametrize("operation_id", [None, "consolidation-task"])
+def test_historical_failure_projection_strips_ansi_and_keeps_recorded_diagnostics(
+    setup, operation_id
+):
+    client, store, project = setup
+    run = _failure(store, project)
+    historical = "\x1b[31mReport missing\x1b[0m\n\x1b]8;;https://example.invalid\x07Inspect task\x1b]8;;\x1b\\"
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE consolidation_runs SET error_code='report_missing', error_message=?, "
+            "operation_id=? WHERE run_id=?",
+            (historical, operation_id, run.run_id),
+        )
+    response = client.get(f"/api/projects/{project}/consolidation")
+    assert response.status_code == 200
+    item = response.json()["inbox"][0]
+    assert item["error"] == {"code": "report_missing", "message": "Report missing\nInspect task"}
+    assert item["operation_id"] == operation_id
+    assert store.consolidation_run(run.run_id).error_message == historical
+
+
 def test_schedule_contract_renewal_validation_and_delete(setup):
     client, store, project = setup
     base = f"/api/projects/{project}/consolidation"

@@ -184,12 +184,10 @@ export class RefreshScheduler {
       );
   }
 
-  /** An open project with a key registered after `due` was sent waits no beat. */
-  private newlyAwaiting(open: readonly OpenProject[], due: readonly string[]): boolean {
+  /** Entries created after request issuance need another observation immediately. */
+  private newlyAwaiting(open: readonly OpenProject[]): boolean {
     const awaiting = this.options.store.awaitingWatermark();
-    return open.some(
-      (project) => awaiting.has(project.projectId) && !due.includes(project.projectId),
-    );
+    return open.some((project) => awaiting.has(project.projectId));
   }
 
   private async run(): Promise<void> {
@@ -217,6 +215,9 @@ export class RefreshScheduler {
       ...(activated ? { activated } : {}),
     };
     const controller = new AbortController();
+    const observations = new Map(
+      open.map((project) => [project.projectId, store.beginObservation(project.projectId)]),
+    );
     this.inFlight = controller;
     let activatedDuringFailure = false;
     const timeout = this.clock.setTimeout(() => controller.abort(), WATERMARK_REQUEST_TIMEOUT_MS);
@@ -230,6 +231,8 @@ export class RefreshScheduler {
       const serverNow = Date.parse(response.as_of);
       const receivedAt = this.clock.now();
       for (const project of response.projects) {
+        const observation = observations.get(project.requested_id);
+        if (!observation) continue;
         const deadlines = project.resources
           .map((entry) =>
             entry.valid_until ? receivedAt + Date.parse(entry.valid_until) - serverNow : Number.NaN,
@@ -237,7 +240,7 @@ export class RefreshScheduler {
           .filter((value) => Number.isFinite(value));
         if (deadlines.length) this.validUntil.set(project.requested_id, Math.min(...deadlines));
         else this.validUntil.delete(project.requested_id);
-        store.observe(project.requested_id, project.resources);
+        store.observe(project.requested_id, project.resources, observation);
         sync.set(project.requested_id, project.sync);
       }
       for (const id of response.unavailable) {
@@ -247,9 +250,10 @@ export class RefreshScheduler {
         this.options.onLostAccess(id);
       }
       this.setHealth({ failing: false, sync });
-    } catch {
+    } catch (error) {
       if (this.inFlight !== controller) return;
       this.failures += 1;
+      for (const ticket of observations.values()) store.failObservation(ticket, error);
       // A newer activation made during the request wins over the retried one,
       // and runs at once instead of waiting out the failure backoff.
       activatedDuringFailure = this.activated !== null;
@@ -266,7 +270,7 @@ export class RefreshScheduler {
           ? activatedDuringFailure
             ? 0
             : retryBackoffMs(this.failures)
-          : this.activated || this.newlyAwaiting(open, due)
+          : this.activated || this.newlyAwaiting(open)
             ? 0
             : REFRESH_BEAT_MS;
         const untilRetry = retry === null ? null : Math.max(0, retry - this.clock.now());

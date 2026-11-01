@@ -6,9 +6,12 @@ import logging
 import shlex
 import subprocess
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
@@ -30,6 +33,9 @@ from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
 from rcp.limits import COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 from rcp.storage import AppStore
+
+if TYPE_CHECKING:
+    from rcp.storage.models import WatcherRecord
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +234,47 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
         # The retained job root outlives an ephemeral task workspace used as the job cwd.
         "cwd": job.job_root,
     }
+
+
+def helper_cancel_action(store: AppStore, watcher: WatcherRecord) -> Callable[[], None] | None:
+    """Resolve exact helper ownership before returning a deferred human action."""
+    matches = [
+        job
+        for job in store.compute_jobs_for_log_path(
+            watcher.project_id, watcher.execution_host, watcher.log_path
+        )
+        if job.origin_operation_id == watcher.origin_operation_id
+        and all(getattr(watcher, name) == value for name, value in helper_watch_spec(job).items())
+    ]
+    if len(matches) != 1:
+        return None
+    job = matches[0]
+    if job.status not in {"running", "lost"} and not (
+        job.status == "cancelled" and watcher.cancel_requested_at and watcher.cancel_error
+    ):
+        return None
+    return partial(_cancel_helper_job, store, job)
+
+
+def _cancel_helper_job(store: AppStore, job: ComputeJobRecord) -> None:
+    """Stop outside helper containment, receipt this request, and prove current absence."""
+    context = recorded_job_context(job)
+    backend = COMPUTE_BACKENDS[job.backend_id]
+    backend.cancel(job.backend_handle, context)
+    now = store.now()
+    write_job_file(
+        context,
+        str(PurePosixPath(job.job_root) / "cancelled"),
+        str(int(datetime.fromisoformat(now).timestamp())),
+    )
+    alive = backend.alive(job.backend_handle, context)
+    if alive is not False:
+        raise RuntimeError(
+            "The compute job is still active after Cancel."
+            if alive
+            else "The compute owner could not confirm job absence after Cancel."
+        )
+    store.record_compute_job_cancelled(job.job_id, ended_at=now)
 
 
 def helper_startup_state(job: ComputeJobRecord) -> dict[str, object]:

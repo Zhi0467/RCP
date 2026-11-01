@@ -12,6 +12,10 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, cast
 
+from rcp.core.models import GraphState
+from rcp.core.transition_models import GraphTargetRef
+from rcp.core.validation.outcome_edges import is_current_evidence
+from rcp.history.delta import semantic_document
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS, EVIDENCE_FLAG_SOURCE_MAX_CHARS
 from rcp.storage.consolidation import target_ref
@@ -57,6 +61,7 @@ _FIELDS = (
     "state",
     "chat_id",
     "created_at",
+    "origin_flag_id",
 )
 _LOCKS = KeyedLocks()
 _ADMISSION: ContextVar[tuple[object, str, tuple[str, ...], str] | None] = ContextVar(
@@ -100,8 +105,19 @@ def migrate_evidence_flag_targets(connection: sqlite3.Connection) -> None:
     _install(connection, "evidence_flags", [_bump("ROW.project_id", "consolidation")])
 
 
+def migrate_evidence_flag_origins(connection: sqlite3.Connection) -> None:
+    """Keep carried findings and deduplicated deliveries durable after dismissal."""
+    connection.execute("ALTER TABLE evidence_flags ADD COLUMN origin_flag_id TEXT")
+    connection.execute(
+        "CREATE TABLE evidence_flag_carries (project_id TEXT NOT NULL, origin_flag_id TEXT NOT NULL, "
+        "destination TEXT NOT NULL, flag_id TEXT NOT NULL, "
+        "PRIMARY KEY(project_id,origin_flag_id,destination))"
+    )
+
+
 def _record(row: sqlite3.Row) -> dict[str, Any]:
-    return {name: row[name] for name in _FIELDS}
+    fields = frozenset(row.keys())
+    return {name: row[name] if name in fields else None for name in _FIELDS}
 
 
 def _member(connection: sqlite3.Connection, project_id: str, user_id: str) -> None:
@@ -266,6 +282,99 @@ def settle_ended_evidence_flag_addresses(connection: sqlite3.Connection) -> None
 
 
 class EvidenceFlagStoreMixin(StoreMixinBase):
+    def carry_merge_evidence_flags(
+        self,
+        project_id: str,
+        *,
+        source: GraphTargetRef,
+        destination: GraphTargetRef,
+        source_state: GraphState,
+        destination_state: GraphState,
+        recorded_state: Callable[[int], GraphState],
+        created_before: str | None = None,
+    ) -> list[str]:
+        """Carry unchanged, unresolved source findings once, independently of dismissal.
+
+        Compare the authored Evidence, the pinned source, and the destination.
+        A deduplicated carry retains a delivery receipt too, so dismissing that
+        destination finding cannot make a crashed effect reopen it on retry.
+        Address-session bindings stay local to the source finding.
+        """
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source_key = source.branch_id if source.kind == "branch" else "main"
+            destination_key = destination.branch_id if destination.kind == "branch" else "main"
+            rows = connection.execute(
+                "SELECT * FROM evidence_flags WHERE project_id=? AND target=? "
+                "AND state IN ('open','addressing') ORDER BY created_at,flag_id",
+                (project_id, source_key),
+            ).fetchall()
+            carried = []
+            for flag in rows:
+                if created_before is not None and flag["created_at"] > created_before:
+                    continue
+                evidence_id = flag["evidence_id"]
+                if not all(
+                    is_current_evidence(state, evidence_id)
+                    for state in (source_state, destination_state)
+                ):
+                    continue
+                authored = recorded_state(flag["evidence_revision"])
+                if not is_current_evidence(authored, evidence_id):
+                    continue
+                content = semantic_document(authored.nodes[evidence_id])
+                if any(
+                    semantic_document(state.nodes[evidence_id]) != content
+                    for state in (source_state, destination_state)
+                ):
+                    continue
+                previous = connection.execute(
+                    "SELECT flag_id FROM evidence_flag_carries WHERE project_id=? "
+                    "AND origin_flag_id=? AND destination=?",
+                    (project_id, flag["flag_id"], destination_key),
+                ).fetchone()
+                if previous is not None:
+                    continue
+                duplicate = connection.execute(
+                    "SELECT flag_id FROM evidence_flags WHERE project_id=? AND target=? "
+                    "AND evidence_id=? AND kind=? AND state IN ('open','addressing')",
+                    (project_id, destination_key, evidence_id, flag["kind"]),
+                ).fetchone()
+                flag_id = (
+                    duplicate["flag_id"]
+                    if duplicate
+                    else uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"rcp:carried-evidence-flag:{project_id}:{flag['flag_id']}:{destination.key}",
+                    ).hex
+                )
+                if duplicate is None:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO evidence_flags(flag_id,project_id,run_id,occurrence_date,target,"
+                        "evidence_id,evidence_revision,kind,finding,source,state,created_at,origin_flag_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,'open',?,?)",
+                        (
+                            flag_id,
+                            project_id,
+                            flag["run_id"],
+                            flag["occurrence_date"],
+                            destination_key,
+                            evidence_id,
+                            destination_state.revision,
+                            flag["kind"],
+                            flag["finding"],
+                            flag["source"],
+                            self.now(),
+                            flag["flag_id"],
+                        ),
+                    )
+                    carried.append(flag_id)
+                connection.execute(
+                    "INSERT INTO evidence_flag_carries VALUES (?,?,?,?)",
+                    (project_id, flag["flag_id"], destination_key, flag_id),
+                )
+            return carried
+
     def list_evidence_flags(self, project_id: str) -> list[dict[str, Any]]:
         with self.connection() as connection:
             return [

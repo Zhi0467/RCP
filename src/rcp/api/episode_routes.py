@@ -38,6 +38,7 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiments import continue_experiment_episode, stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
+from rcp.api.tasks import _agent_task_response
 from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
@@ -75,6 +76,7 @@ from rcp.runs.episodes.merge import (
     MergePreview,
     branch_merge_preview,
     cleanup_episode,
+    episode_merge_request_receipt,
     merge_episode,
     merge_owner,
     merge_preview,
@@ -665,16 +667,22 @@ def merge_episode_branch(
     member = _episode_for_http(store, catalog, project_id, episode_id)
     episode = merge_owner(store, member)
     service = get_project_writer(catalog, project_id)
+    body = body or MergeEpisodeBody()
     try:
         with project_write_admission(project_id, request):
             service.history.require_writable()
-            reconciled = reconcile_episode_merge(service, store, episode)
-            if reconciled is None:
+            replay = episode_merge_request_receipt(store, episode, body, authorized_by)
+            reconciled = (
+                None if replay is not None else reconcile_episode_merge(service, store, episode)
+            )
+            if replay is None and reconciled is not None and body.request_id is not None:
+                raise ValueError("episode_merge_previous_attempt_settled")
+            if replay is None and reconciled is None:
                 merge_episode(
                     service,
                     store,
                     episode,
-                    body or MergeEpisodeBody(),
+                    body,
                     authorized_by=authorized_by,
                     dispatch_graph=lambda operation_id, launch=True: start_branch_merge(
                         background_tasks,
@@ -696,11 +704,33 @@ def merge_episode_branch(
                         authorized_by=authorized_by,
                         operation_id=operation_id,
                         launch=launch,
+                        merge_effects={
+                            "source": episode.graph_target.model_dump(mode="json"),
+                            "source_head": service.history.branch(
+                                episode.graph_target.branch_id or ""
+                            )
+                            .head_ref()
+                            .model_dump(mode="json"),
+                            "destination": (
+                                episode.graph_base_head.target
+                                if episode.graph_base_head
+                                else GraphTargetRef()
+                            ).model_dump(mode="json"),
+                        }
+                        if episode.graph_target.kind == "branch"
+                        else None,
                     ),
                 )
         state = store.episode_isolation_state(project_id, episode.episode_id)
-        if state and state.merge_attempt:
-            settle_agentless_merge(background_tasks, service, state.merge_attempt.attempt_id)
+        receipt = episode_merge_request_receipt(store, episode, body, authorized_by)
+        accepted_id = (
+            receipt["accepted_task_id"]
+            if receipt
+            else (state.merge_attempt.attempt_id if state and state.merge_attempt else None)
+        )
+        if accepted_id:
+            settle_agentless_merge(background_tasks, service, accepted_id)
+        accepted = store.agent_task(accepted_id) if accepted_id else None
         current = store.episode(member.episode_id)
         if current is None:
             raise RuntimeError("The branch merge episode could not be reloaded.")
@@ -709,6 +739,12 @@ def merge_episode_branch(
             project_id,
             current,
             catalog=catalog,
+        ).model_copy(
+            update={
+                "accepted_merge_task": _agent_task_response(store, accepted, background_tasks)
+                if accepted
+                else None
+            }
         )
     except ValueError as exc:
         state = store.episode_isolation_state(project_id, episode.episode_id)

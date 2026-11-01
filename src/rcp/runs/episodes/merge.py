@@ -56,6 +56,7 @@ from rcp.storage import AppStore, EpisodeRecord
 
 class MergeEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID | None = None
     target_branch: str | None = None
     history_mode: Literal["merge", "squash"] = "merge"
     remove_worktree: bool = True
@@ -380,6 +381,29 @@ def merge_owner(store: AppStore, member: EpisodeRecord) -> EpisodeRecord:
     if owner is None or owner.project_id != member.project_id:
         raise ValueError("episode_isolation_owner_missing")
     return owner
+
+
+def episode_merge_request_receipt(store, owner, body, authorized_by):
+    """Read a keyed acceptance after the concurrent admission has finished."""
+    if body.request_id is None:
+        return None
+    with isolation_locks(f"{store.path}:{owner.project_id}:{owner.episode_id}"):
+        receipt = store.episode_merge_request(
+            owner.project_id,
+            owner.episode_id,
+            str(body.request_id),
+            acting_member=authorized_by.user_id,
+            choices=body.model_dump(mode="json", exclude={"request_id"}),
+        )
+        _require_merge_acceptance(receipt)
+        return receipt
+
+
+def _require_merge_acceptance(receipt):
+    if receipt is not None and receipt["accepted_task_id"] is None:
+        attempt = EpisodeMergeAttempt.model_validate_json(receipt["attempt_json"])
+        if attempt.phase != "done":
+            raise ValueError(attempt.error or "episode_merge_request_incomplete")
 
 
 def _binding(store: AppStore, owner: EpisodeRecord) -> EpisodeIsolation:
@@ -801,6 +825,21 @@ def merge_episode(
 ):
     """Reserve before the first Git write; retained phases reconcile uncertain results."""
     with isolation_locks(f"{store.path}:{owner.project_id}:{owner.episode_id}"):
+        if body.request_id is not None:
+            replay = store.episode_merge_request(
+                owner.project_id,
+                owner.episode_id,
+                str(body.request_id),
+                acting_member=authorized_by.user_id,
+                choices=body.model_dump(mode="json", exclude={"request_id"}),
+            )
+            if replay is not None:
+                _require_merge_acceptance(replay)
+                return (
+                    store.agent_task(replay["accepted_task_id"])
+                    if replay["accepted_task_id"]
+                    else None
+                )
         binding = _binding(store, owner)
         state = store.episode_isolation_state(owner.project_id, owner.episode_id)
         previous = state.merge_attempt
@@ -810,7 +849,10 @@ def merge_episode(
                 if task and task.status in {"queued", "running", "pausing"}:
                     raise ValueError("episode_merge_reserved")
             if previous.phase != "pre_merge":
-                return _resume(service, store, owner, binding, previous)
+                resumed = _resume(service, store, owner, binding, previous)
+                if body.request_id is not None:
+                    raise ValueError("episode_merge_previous_attempt_settled")
+                return resumed
             store.finish_episode_merge(
                 owner.project_id,
                 owner.episode_id,
@@ -819,15 +861,24 @@ def merge_episode(
             )
         code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
-            attempt_id=str(uuid.uuid4()),
+            attempt_id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"rcp:episode-merge:{owner.project_id}:{owner.episode_id}:{body.request_id}",
+                )
+            )
+            if body.request_id is not None
+            else str(uuid.uuid4()),
             authorized_by=authorized_by,
-            **body.model_dump(exclude={"confirm_unfinished_jobs"}),
+            **body.model_dump(exclude={"confirm_unfinished_jobs", "request_id"}),
         )
         attempt = store.reserve_episode_merge(
             owner.project_id,
             owner.episode_id,
             attempt,
             confirm_unfinished_jobs=body.confirm_unfinished_jobs,
+            request_id=str(body.request_id) if body.request_id is not None else None,
+            request_choices=body.model_dump(mode="json", exclude={"request_id"}),
         ).merge_attempt
         try:
             context = None

@@ -1498,9 +1498,11 @@ class WatcherPoller:
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
         cancel_runner: Callable[[WatchSpec, str, float], str | None] = run_watcher_cancel,
+        helper_cancel_action: Callable[[WatcherRecord], Callable[[], None] | None] | None = None,
     ) -> None:
         self.store = store
         self.cancel_runner = cancel_runner
+        self.helper_cancel_action = helper_cancel_action
         self.on_completed = on_completed
         self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
@@ -1556,7 +1558,7 @@ class WatcherPoller:
             return updated
 
     def cancel(self, project_id: str, watcher_id: str, requested_by: str) -> WatcherRecord:
-        """Execute the saved action only after a human request and a fresh active check."""
+        """Claim a human helper action, or freshly check generic external work before Cancel."""
 
         # The API holds the project's write-admission lock. Do not acquire the
         # poll lock here: poll delivery takes those locks in the opposite order.
@@ -1568,6 +1570,25 @@ class WatcherPoller:
             raise ValueError("This watcher has no cancel command.")
         if not record.can_cancel:
             return record
+        helper_action = self.helper_cancel_action(record) if self.helper_cancel_action else None
+        if helper_action is not None:
+            claimed = self.store.claim_watcher_cancel(project_id, watcher_id, requested_by)
+            if claimed is None:
+                current = self.store.watcher(watcher_id)
+                assert isinstance(current, WatcherRecord)
+                return current
+            assert claimed.cancel_requested_at is not None
+            try:
+                helper_action()
+                return self.store.complete_watcher_cancel(
+                    watcher_id, requested_at=claimed.cancel_requested_at
+                )
+            except Exception as exc:
+                return self.store.record_watcher_cancel_result(
+                    watcher_id,
+                    requested_at=claimed.cancel_requested_at,
+                    error=_bounded_error(f"Helper cancellation could not be confirmed: {exc}"),
+                )
         try:
             result = self._check_record(record)
         except Exception as exc:

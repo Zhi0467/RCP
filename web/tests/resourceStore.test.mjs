@@ -644,3 +644,133 @@ test("a stalled read times out and frees its slot", async (t) => {
   assert.equal(reads.length, 1);
   assert.ok(store.view(stalled[0]).stale);
 });
+
+const observed = (store, version = "1", name = "chats", ticket) =>
+  store.observe("p", [{ name, version }], ticket ?? store.beginObservation("p"));
+
+async function retainedPresentation() {
+  const store = new ResourceStore();
+  store.attachScheduler(() => {});
+  store.observeEpoch("e1");
+  const { reads, profile } = manualProfile("chats");
+  const id = store.register("cache", profile);
+  observed(store);
+  reads[0].resolve("retained");
+  await settle();
+  return { store, reads, profile, id };
+}
+
+test("a returning presentation waits for a post-entry watermark and reuses unchanged cache", async () => {
+  const { store, reads, id } = await retainedPresentation();
+  assert.equal(store.presentationView("panel", "return").status, "loading");
+  const old = store.beginObservation("p");
+  store.beginPresentation("panel", "return", [id]);
+  observed(store, "1", "chats", old);
+  assert.equal(store.presentationView("panel", "return").status, "loading");
+  assert.deepEqual(store.presentationView("panel", "return").views, []);
+  observed(store);
+  assert.equal(store.presentationView("panel", "return").status, "ready");
+  assert.equal(store.presentationView("panel", "return").views[0].value, "retained");
+  assert.equal(reads.length, 1);
+});
+
+test("changed entry data waits for its matching accepted read while active owners stay visible", async () => {
+  const { store, reads, id } = await retainedPresentation();
+  const active = store.beginPresentation("active", "first", [id]);
+  observed(store);
+  assert.equal(store.presentationView("active", "first").status, "ready");
+  const returned = store.beginPresentation("returning", "second", [id]);
+  observed(store, "2");
+  assert.equal(store.presentationView("returning", "second").status, "loading");
+  assert.equal(store.presentationView("active", "first").views[0].value, "retained");
+  store.endPresentation(active);
+  reads[1].resolve("current");
+  await settle();
+  assert.equal(store.presentationView("returning", "second").views[0].value, "current");
+  store.endPresentation(returned);
+});
+
+test("ticket cleanup cannot retire a replacement entry and a new epoch hides admitted values", async () => {
+  const { store, reads, id } = await retainedPresentation();
+  const old = store.beginPresentation("panel", "old", [id]);
+  store.beginPresentation("panel", "new", [id]);
+  store.endPresentation(old);
+  observed(store);
+  assert.equal(store.presentationView("panel", "new").status, "ready");
+  store.observeEpoch("e2");
+  assert.equal(store.presentationView("panel", "new").status, "loading");
+  observed(store);
+  reads.at(-1).resolve("new epoch");
+  await settle();
+  assert.equal(store.presentationView("panel", "new").views[0].value, "new epoch");
+});
+
+test("failed entry validation exposes an error without retained payload and recovers", async () => {
+  const { store, reads, id } = await retainedPresentation();
+  store.beginPresentation("panel", "return", [id]);
+  const request = store.beginObservation("p");
+  const offline = new Error("offline");
+  store.failObservation(request, offline);
+  assert.equal(store.presentationView("panel", "return").error, offline);
+  assert.deepEqual(store.presentationView("panel", "return").views, []);
+  observed(store, "2");
+  reads[1].reject(offline);
+  await settle();
+  assert.equal(store.presentationView("panel", "return").status, "error");
+  store.invalidate(id);
+  reads[2].resolve("recovered");
+  await settle();
+  assert.equal(store.presentationView("panel", "return").views[0].value, "recovered");
+});
+
+test("dormant return reuses matching cache and preserves another owner's admission", async () => {
+  const { store, reads, profile, id } = await retainedPresentation();
+  store.beginPresentation("active", "first", [id]);
+  observed(store);
+  store.suspend("cache", [id]);
+  store.register("cache", profile);
+  store.beginPresentation("panel", "return", [id]);
+  observed(store);
+  assert.equal(store.presentationView("panel", "return").status, "ready");
+  assert.equal(store.presentationView("active", "first").views[0].value, "retained");
+  assert.equal(reads.length, 1);
+});
+
+test("without a scheduler an accepted pre-entry read cannot validate a new presentation", async () => {
+  const store = new ResourceStore();
+  const { reads, profile } = manualProfile("chats");
+  const id = store.register("cache", profile);
+  store.beginPresentation("panel", "return", [id]);
+  reads[0].resolve("old request");
+  await settle();
+  assert.equal(store.presentationView("panel", "return").status, "loading");
+  reads[1].resolve("current request");
+  await settle();
+  assert.equal(store.presentationView("panel", "return").views[0].value, "current request");
+});
+
+test("admitted subscribers retain their value during polling and pending mutations", async () => {
+  const { store, reads, id } = await retainedPresentation();
+  store.beginPresentation("panel", "active", [id]);
+  observed(store);
+  const presentations = [];
+  const unsubscribe = store.subscribe(() =>
+    presentations.push(store.presentationView("panel", "active")),
+  );
+  const initial = store.presentationView("panel", "active");
+  observed(store);
+  assert.equal(store.presentationView("panel", "active"), initial);
+  const mutation = store.beginMutation("intent", new Map([[id, () => "pending intent"]]));
+  assert.deepEqual(store.presentationView("panel", "active").views[0].pending, ["intent"]);
+  assert.equal(store.presentationView("panel", "active").views[0].value, "pending intent");
+  mutation.fail();
+  observed(store, "2");
+  assert.equal(store.presentationView("panel", "active").views[0].value, "retained");
+  reads.at(-1).resolve("current");
+  await settle();
+  assert.ok(presentations.length > 0);
+  assert.ok(
+    presentations.every((view) => view.status === "ready" && view.views[0].value !== undefined),
+  );
+  unsubscribe();
+});

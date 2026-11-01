@@ -343,7 +343,7 @@ RecordedAgentTaskStream = Callable[
     AsyncIterator[str],
 ]
 AgentTaskStreamClosedHook = Callable[
-    [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None
+    [str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], bool | None
 ]
 AgentTaskSettledHook = Callable[[str, AgentTaskKind, AgentTaskRequest, AgentTaskExecution], None]
 AutoResearchAdmissionExhaustedHook = Callable[[EpisodeRecord], None]

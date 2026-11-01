@@ -147,7 +147,7 @@
   margin: 0 0 20px;
   font-size: var(--type-md);
 }
-.branch-picker-confirm > div {
+.branch-picker-confirm-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
