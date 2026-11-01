@@ -1776,7 +1776,14 @@ no turn artifacts and neither see nor may run `--link`.
 
 ## Space-thread scopes and commands
 
-A Space turn runs locally in its persistent member/thread stage. Its
+A project thread is ordinary project Work on the project's base and main
+target, with the Work verbs from [questions.py](../../src/rcp/runs/questions.py)
+plus `projects` and `schedule`. Its seeded name withholds `name`. Threads never
+receive `apply`, `status`, `spawn` or `message`, which belong to consolidation
+and Auto-research. No agent has a `lesson` verb; memory files replace it.
+
+A Space turn runs locally in its persistent stage,
+`<data_dir>/run-stage/space-<user_id>-<thread_id>`. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1785,10 +1792,11 @@ projects the provider can write its own stage but the graph-write fingerprint
 is NULL. A changed admitted project set is recorded on the turn and does not
 change the thread's native-session identity.
 
-The top-level client grants `projects` and `handoff`. Each project client has
-its own authenticated mailbox and grants only `validate`, `graph_log`,
-`graph_diff` and `bulletin`. Native subagents remain permitted; MCP servers
-remain off. Project lifecycle work goes through the member's own project thread.
+The top-level client grants `projects`, `handoff` and `schedule`; it has no
+`ask`. Each project client has its own authenticated mailbox and grants only
+`validate`, `graph_log`, `graph_diff` and `bulletin`. A Space turn has no
+project memory root. Native subagents remain permitted; MCP servers remain off.
+Project lifecycle work goes through the member's own project thread.
 The provider receives the union of project Git transports and read-hiding
 policies; the combined policy is installed before launch. Even a turn without
 local write projects retains the local account's default secret and private
@@ -1803,9 +1811,18 @@ files cannot prevent another project's collection. Rejection yields a partial
 turn outcome without undoing another project's accepted transition. Watcher
 storage also refuses a Space-task origin.
 
+Every agent run hides every `private-*.jsonl` transcript under the state chat
+roots on its host, and runs on the backend's machine hide
+`<data_dir>/agent-threads`. This includes the owner's own threads. Thread
+history reaches a fresh session only as prompt text.
+
 `projects` returns the member's Cards projection with thread ids and
-`same_machine`; `show` adds bounded graph and episode context. `handoff` reads a
-bounded workspace message file and persists an idempotent pending delivery.
+`same_machine`; `show` adds bounded graph and episode context, at most
+`AGENT_PROJECT_DETAILS_MAX_ITEMS` per list. `handoff` names one of the member's
+projects and reads a workspace message file of at most
+`AGENT_HANDOFF_MAX_CHARS`. It persists an idempotent pending delivery that the
+[conversations spec](conversations-episodes-and-watchers.md#private-agent-threads)
+delivers.
 Task insertion and the handoff claim commit together. The task record supplies
 an idempotent `source: "handoff"` transcript append, so interruption between SQL
 and JSONL is recoverable. Busy threads defer delivery. Startup and turn settlement

@@ -29,6 +29,10 @@ The defaults are the Aqua theme and System mode.
 Legacy mode choices retain their mode in Aqua. Soft Aqua becomes Aqua in Light mode.
 The unified logo contains RCP once, without a redundant initial tile.
 
+Every theme sets interface and display text in Figtree and code in JetBrains
+Mono. Both are pinned packages bundled into the web build, so the desktop app
+needs no font install.
+
 ## No commentary lines
 
 Avoid unnecessary secondary labels and descriptions. Let the layout do the
@@ -62,7 +66,7 @@ RCP windows. Verify at 390px.
 ## Project shell
 
 No wordmark, logo, or revision label sits beside the project name.
-Group the labelled Sync and Ask controls together.
+The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
@@ -81,7 +85,7 @@ At widths <=560px, one top bar holds Back, project name (opens the project dock)
 Sync only for staged changes, the branch picker with Retry graph or Retry tasks
 when stale, and a labelled-row ⋯ menu. Bottom tabs show Overview,
 Inbox, Research, Runs, and More. More is active for its destinations.
-Ask floats above the bar except in Agents and Paper. Status banners and the Overview
+Status banners and the Overview
 revision use one line. Provider and compute notices expand from a summary while
 keeping failures visible. Inbox counts share a row.
 
@@ -380,6 +384,19 @@ No outcome stated chip beside the graph receipt, even without graph updates.
 Other modes without outcome metadata show no chip.
 Long reasons wrap without failure coloring.
 
+## Agent view
+
+The space home switches between Cards and Agent. Agent has a left rail with the
+member's Space thread first, then each project thread. Rows show the agent name,
+the project or Space, and an unread dot or a needs-you mark. The rail folds like
+the Agents conversation list and remembers its fold per device. At phone width
+the rail is the list, and a chosen thread fills the screen.
+
+Inside a project, Agents opens the member's own project thread, which leads the
+conversation list. The team's board conversations stay in that list. The thread header holds the
+voice button and a schedules list with Cancel and re-enable. Approval cards show
+the action with Approve and Decline. There is no separate Ask or voice launcher.
+
 ## Terminals
 
 [Terminal API](api-web-and-desktop-projections.md#member-terminal-api) owns
@@ -407,7 +424,7 @@ control. Files and History open as panels.
 
 ## Auto-research and episode history
 
-Auto-research starts in the project header beside Ask. Its exact invocation budget
+Auto-research starts in the project header beside Sync. Its exact invocation budget
 has its observed cost beside it. Hidden report allocation stays outside that meter.
 Report lifecycle belongs to
 [episode reports](paper-artifacts-and-result-views.md#episode-reports).

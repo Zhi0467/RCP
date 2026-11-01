@@ -177,6 +177,9 @@ Member removal previews the affected work and credentials. It refuses removal of
 the last enrolled member or a sole project member. Otherwise, it atomically
 fences access and revokes tokens, sessions and unconsumed invitations. The user
 remains a tombstone. The owners of graceful shutdown settle work. Apply rechecks membership.
+After the member's workers stop, removal deletes their Space-thread folder under
+`<data_dir>/agent-threads`, their agent schedules and pending handoffs, and
+closes their threads.
 Service connections are removed under their lock. Startup and re-entry resume
 unfinished removal. Self-revocation has the same anti-stranding rule. Rotation
 returns a replacement first. Operators cannot assign memberships to bypass a
@@ -585,7 +588,9 @@ typed chats, saved Paper and facts, finished operational history, referenced
 artifacts and matched native transcripts. Membership, credentials, caches,
 resumable sessions and stages and executable bindings never travel. Imported
 tasks remain history-only. Chat ids, answers and receipts stay readable. Future
-work uses the target configuration. Artifacts follow
+work uses the target configuration. Private-thread transcripts, Space-thread data
+and thread rows stay behind. A private thread's tasks keep their operation id,
+kind and authorizer, so Patch provenance resolves, but lose the request message. Artifacts follow
 [availability rules](paper-artifacts-and-result-views.md).
 
 Source release settles paused standalone attempts as interrupted with receipts.
@@ -660,8 +665,10 @@ canonical main and branch history, typed chats, saved and published Paper,
 facts, artifacts and sealed imported histories. Saved unpublished Paper comes
 from that snapshot. Artifact capture holds its pruning lock. Live credentials
 and provider homes, source Git, caches, temporary stages and materialized
-outputs are excluded. Unknown roots, unsafe or missing references or unreachable
-projects are visibly uncaptured.
+outputs are excluded. Space-thread transcripts under `<data_dir>/agent-threads`
+are excluded; private project transcripts are typed chats and are captured.
+Unknown roots, unsafe or missing references or unreachable projects are visibly
+uncaptured.
 
 File reads use complete typed chat boundaries and bounded stable reads without
 canonical publication or remote refresh locks. Healthy projects remain usable

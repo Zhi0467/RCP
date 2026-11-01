@@ -35,11 +35,45 @@ and separate Experiment episodes must not create separate agent identities.
 
 ## Private agent threads
 
-Each member has one Space thread and one project thread per membership. Listing
+Each member has one Space thread and one project thread per project membership.
+Both are private to the member and continue indefinitely. Listing
 `/api/agent-threads` creates missing threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
-board chats remain public. Thread turns are captured Work turns on main,
-authorized by the owning member. Loss of membership closes that project thread.
+board chats remain public. Every thread turn, wake and schedule fire is a
+captured Work turn on main, authorized by the owning member. Threads have no
+Discuss mode. Loss of membership closes that project thread, and rejoining
+reopens it.
+
+**The Space thread owns no project lifecycle.** It reads across the member's
+projects. It writes files and Patches only for projects whose base is the
+backend's machine. Experiments, compute `launch`, watch files, questions and
+approval cards belong to the member's own project thread, reached through
+`handoff`. The verbs each client receives enforce this; the
+[Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
+owns them. **Why:** questions, watchers, episodes and notifications are keyed
+by project, so they always carry a real project id.
+
+A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
+from `space_identity`, which never names a project. That id appears only in
+task, usage, chat display, read, pin, browser, session-context, artifact and
+client-request rows. Questions, watchers, episodes and notifications never
+carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
+resolves a task row to its project service or Space owner for recovery, Stop,
+Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
+branch and starts no episodes.
+
+`handoff` passes a Space request to the same member's project thread, with that
+member's authority. It is not mail. Delivery appends a member message with
+`source: "handoff"` and admits its turn at once when the target is idle, or
+after the target's turn settles or at startup. Pending handoffs deliver oldest
+first, one turn each, and the idempotency key prevents duplicates. When the
+handed-off turn settles, RCP admits one Space wake that reports it.
+
+A thread wakes on a member message from the composer, voice or a handoff, and on
+a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
+project thread also wakes on its own watch file through conversation watchers
+and on a resolved approval card through question answer delivery. The Space
+thread also wakes on a settled handoff. There is no wake limit.
 
 The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
 unused name and then numbered suffixes. These seeded names cannot be changed by
@@ -61,10 +95,12 @@ thread replies use the owner-only `agent_thread` notification; Space replies do
 not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
 
-Fresh thread sessions receive a bounded transcript tail directly in their first
-prompt, labelled as earlier conversation data. It is never staged as a file.
-Provider switches record `provider_switch_tail`; other fresh starts retain their
-existing reasons. Provider-native automatic compaction remains unchanged.
+Each thread keeps one native session, which the provider compacts. A fresh
+thread session receives a bounded transcript tail directly in its first prompt,
+labelled as earlier conversation data, not instructions or authority.
+`AGENT_THREAD_TAIL_MAX_MESSAGES` and `AGENT_THREAD_TAIL_MAX_BYTES` bound it,
+newest kept. It is never staged as a file. Provider switches record
+`provider_switch_tail`; other fresh starts retain their existing reasons.
 
 ## Human notification observations
 
