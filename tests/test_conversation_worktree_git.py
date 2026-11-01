@@ -428,6 +428,9 @@ def test_episode_merge_lands_verified_commit_and_retries_cleanup(repository, tar
     episode_edit(binding)
     result = land_episode(binding, target, mode)
     assert git(repository, "rev-parse", target) == result["landed_commit"]
+    verified = run("verify_landing", **result)
+    assert verified["target_commit"] == result["landed_commit"]
+    assert verified["tree"] == git(repository, "rev-parse", f"{result['landed_commit']}^{{tree}}")
     assert len(git(repository, "show", "-s", "--format=%P", target).split()) == (
         2 if mode == "merge" else 1
     )

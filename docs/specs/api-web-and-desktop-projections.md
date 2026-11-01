@@ -513,6 +513,8 @@ request's task while the rest of the response describes the current episode.
 If that request still owns an incomplete reservation, its retry reconciles the
 recorded attempt before replaying acceptance. A historical request never resumes
 a newer attempt.
+Agent-landed code retains the first verified target commit and tree before cleanup;
+later target advances do not rewrite that request's delivery proof.
 Unkeyed clients retain their existing behavior. A fresh keyed request that only
 settles an earlier attempt returns `episode_merge_previous_attempt_settled` rather
 than accepting that older task under a new identity. Cleanup defaults to all

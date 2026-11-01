@@ -597,7 +597,7 @@ def verify_episode_merge_code(store, owner):
     attempt = state.merge_attempt
     if attempt.source_commit is None:
         return
-    if not _git(
+    verified = _git(
         store,
         binding,
         "verify_landing",
@@ -605,11 +605,20 @@ def verify_episode_merge_code(store, owner):
         target_branch=attempt.target_branch,
         squash_commit=attempt.squash_commit,
         target_commit=attempt.target_commit,
-    )["verified"]:
+    )
+    if not verified["verified"]:
         raise ValueError("code_landing_unverified")
     # The agent may have checked the target out in the worktree; cleanup needs the
     # worktree back on its bound branch, which binding validation proves.
     _git(store, binding, "merge_preview", target_branch=attempt.target_branch)
+    if attempt.code_by_agent and attempt.landed_commit is None:
+        _save(
+            store,
+            owner,
+            attempt,
+            landed_commit=verified["target_commit"],
+            tree=verified["tree"],
+        )
 
 
 def _commit_graph(service, store, owner, attempt):

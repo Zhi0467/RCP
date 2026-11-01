@@ -387,17 +387,58 @@ def test_carry_crash_before_receipt_does_not_reopen_human_dismissal(
     assert len(harness.branch.merge_receipts()) == 1
 
 
-def test_keyed_code_delivery_receipt_survives_a_later_graph_attempt(manifest, tmp_path):
+@pytest.mark.parametrize("landing", ["prepared", "agent", "agent_target_moves"])
+def test_keyed_code_delivery_receipt_survives_a_later_graph_attempt(
+    manifest, tmp_path, monkeypatch, landing
+):
+    from .helpers import wait_for_task
     from .test_conversation_worktree_git import git
-    from .test_episode_merge import _isolated
+    from .test_episode_merge import _conflicting, _isolated, _merge_turn
 
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
-    shared, binding = _isolated(harness, tmp_path)
-    (Path(binding.worktree_path) / "file").write_text("delivered code")
+    verified_landing = []
+    if landing != "prepared":
+        shared, binding = _conflicting(harness, tmp_path, graph=True)
+        monkeypatch.setattr(harness.app.state.launcher, "stream", _merge_turn(harness, shared, []))
+    else:
+        shared, binding = _isolated(harness, tmp_path)
+        (Path(binding.worktree_path) / "file").write_text("delivered code")
+    if landing == "agent_target_moves":
+        from rcp.runs.episodes import merge
+
+        original_git = merge._git
+
+        def move_target_after_verification(store, binding, operation, **values):
+            result = original_git(store, binding, operation, **values)
+            if operation == "verify_landing" and result["verified"] and not verified_landing:
+                verified_landing.append(result["target_commit"])
+                (shared / "later.txt").write_text("Later target work.\n")
+                git(shared, "add", "later.txt")
+                git(shared, "commit", "-m", "Later target work")
+            return result
+
+        monkeypatch.setattr(merge, "_git", move_target_after_verification)
     key = str(uuid.uuid4())
     first = _merge(harness, request_id=key)
     assert first.status_code == 202, first.text
     accepted = first.json()["accepted_merge_task"]["operation_id"]
+    wait_for_task(harness.store, accepted, expect="succeeded")
+    with harness.store.connection() as connection:
+        first_receipt = dict(
+            connection.execute(
+                "SELECT * FROM episode_merge_request_receipts WHERE request_id=?", (key,)
+            ).fetchone()
+        )
+    landed_commit = verified_landing[0] if verified_landing else git(shared, "rev-parse", "main")
+    if verified_landing:
+        assert landed_commit != git(shared, "rev-parse", "main")
+    code = json.loads(first_receipt["accepted_code_delivery_json"])
+    assert code["landed_commit"] == landed_commit
+    assert code["tree"] == git(shared, "rev-parse", f"{landed_commit}^{{tree}}")
+    attempt = harness.store.episode_isolation_state(
+        harness.project_id, harness.episode.episode_id
+    ).merge_attempt
+    assert code == {name: getattr(attempt, name) for name in code}
     harness.branch.append(_branch_patch(harness.root.operation_id, "evidence", suffix="-later"))
     second = _merge(harness, request_id=str(uuid.uuid4()))
     assert second.status_code == 202, second.text
@@ -409,7 +450,8 @@ def test_keyed_code_delivery_receipt_survives_a_later_graph_attempt(manifest, tm
             "SELECT * FROM episode_merge_request_receipts WHERE request_id=?", (key,)
         ).fetchone()
     code = json.loads(row["accepted_code_delivery_json"])
-    assert code["landed_commit"] == git(shared, "rev-parse", "main")
+    assert row["accepted_code_delivery_json"] == first_receipt["accepted_code_delivery_json"]
+    assert code["landed_commit"] == landed_commit
     assert (
         json.loads(row["accepted_graph_delivery_json"])["provenance"]["merge_task_id"] == accepted
     )
