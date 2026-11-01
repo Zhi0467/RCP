@@ -1,20 +1,21 @@
-# Personal agent
+# Single-entry agent
 
 Working design for one PR. Its rules move into the owning specs, and this file
 is deleted before merge.
 
 ## Why
 
-A member reaches RCP through many surfaces today: the space's project cards,
-each project's views, Work chats, the Agents board, the Ask buttons and the
-voice panel. The personal agent gives each member one place to talk to RCP.
+RCP is hard to use because a member must learn many surfaces: the space's
+project cards, each project's views, Work chats, the Agents board, the Ask
+buttons and the voice panel. The single-entry agent reduces that to one place
+to talk to RCP. Everything else stays available but becomes optional.
 
 It grows from the voice agent. Voice already acts as the member across
 projects, but it is voice only, has no memory, and stops when the tab closes.
 
 ## Topology
 
-- Each member has one personal agent per space. It runs in that space's RCP
+- Each member has one agent per space. It runs in that space's RCP
   backend.
 - Its threads are one **Space thread** plus one **project thread** per project
   the member can see. Each thread is private to the member and continues
@@ -97,7 +98,7 @@ These are two separate things.
   - Note authorship and SQLite backup are given up.
   - Existing lesson rows migrate to files once. Consolidation prunes the files.
   - The Settings Lessons screen becomes a Memory screen over the files.
-- Native CLI memory is off for personal-agent runs.
+- Native CLI memory is off for single-entry agent runs.
 
 ### Storage
 
