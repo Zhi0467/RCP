@@ -643,7 +643,6 @@ export function AgentThreadView({
             </Fragment>
           );
         })}
-        {questionsByTurn.loose.map(renderQuestion)}
         {!pending &&
           latest?.request.message &&
           !messages?.some((message) => message.operation_id === latest.operation_id) && (
@@ -674,6 +673,8 @@ export function AgentThreadView({
               </div>
             </div>
           )}
+        {/* A running turn's card follows its message, which the transcript lacks yet. */}
+        {questionsByTurn.loose.map(renderQuestion)}
         {latest?.active && (
           <div className="node-chat-line agent">
             <TurnProgress task={latest} />
