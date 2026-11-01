@@ -139,6 +139,7 @@ class AppStoreBase:
         (66, "memory_files_v1"),
         (80, "approval_cards_v1"),
         (81, "agent_schedules_v1"),
+        (82, "approval_card_request_ids_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -986,13 +987,22 @@ class AppStoreBase:
             connection, version=66, name="memory_files_v1", migration=migrate_memory_files
         )
         from rcp.storage.agent_schedules import migrate_agent_schedules
-        from rcp.storage.approval_cards import migrate_approval_cards
+        from rcp.storage.approval_cards import (
+            migrate_approval_card_request_ids,
+            migrate_approval_cards,
+        )
 
         self._run_storage_schema_migration(
             connection, version=80, name="approval_cards_v1", migration=migrate_approval_cards
         )
         self._run_storage_schema_migration(
             connection, version=81, name="agent_schedules_v1", migration=migrate_agent_schedules
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=82,
+            name="approval_card_request_ids_v1",
+            migration=migrate_approval_card_request_ids,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

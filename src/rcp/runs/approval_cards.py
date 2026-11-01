@@ -11,7 +11,6 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.service import ProjectService
 from rcp.storage import AppStore
-from rcp.storage.approval_cards import card_request_id as card_request_id
 
 
 def private_project_thread_turn(store: AppStore, operation_id: str) -> bool:

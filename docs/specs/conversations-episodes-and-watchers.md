@@ -316,7 +316,8 @@ consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
 
 Private-thread questions belong only to the thread's member. Their Needs you
-push targets that member; list, answer and dismiss refuse other members. An
+push targets that member; list, answer and dismiss refuse other members. Creation
+and settlement emit no project-wide digest event for a private-thread question. An
 `ask` action creates a single-use approval card in its project thread. The
 [authority spec](authority-and-proposals.md) owns the pinned action and tap
 admission. Ordinary answer and dismiss refuse card questions; card settlement

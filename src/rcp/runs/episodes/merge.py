@@ -785,7 +785,7 @@ def merge_episode(
         binding = _binding(store, owner)
         state = store.episode_isolation_state(owner.project_id, owner.episode_id)
         previous = state.merge_attempt
-        if previous is not None and body.request_id == previous.attempt_id:
+        if previous is not None and str(body.request_id) == previous.attempt_id:
             return previous
         if state.merge_reservation and previous:
             if previous.graph_task_id:
@@ -802,7 +802,7 @@ def merge_episode(
             )
         code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
-            attempt_id=body.request_id or str(uuid.uuid4()),
+            attempt_id=str(body.request_id or uuid.uuid4()),
             authorized_by=authorized_by,
             **body.model_dump(exclude={"confirm_unfinished_jobs", "request_id"}),
         )

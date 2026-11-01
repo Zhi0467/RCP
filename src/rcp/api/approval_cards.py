@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -23,7 +24,7 @@ from rcp.api.dependencies import (
 from rcp.api.identity import IdentityAccess
 from rcp.approval_actions import ApprovalAction, MergeEpisodeBody
 from rcp.projects import ProjectCatalog
-from rcp.runs.approval_cards import approval_pins, card_request_id
+from rcp.runs.approval_cards import approval_pins
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
 
@@ -39,7 +40,7 @@ class ResolveApprovalBody(BaseModel):
 
 def _execute(
     action: ApprovalAction,
-    question_id: str,
+    request_id: str,
     request: Request,
     store: AppStore,
     catalog: ProjectCatalog,
@@ -56,7 +57,6 @@ def _execute(
     from rcp.api.sync import sync_graph
     from rcp.service import GraphSyncRequest
 
-    request_id = card_request_id(question_id)
     project_id = action.project_id
     if action.kind == "proposal":
         service = get_project_service(catalog, project_id)
@@ -158,9 +158,13 @@ def resolve_approval_card(
             result = {"outcome": "declined"}
         else:
             action = TypeAdapter(ApprovalAction).validate_python(card["action"])
-            # Direct calls do not run FastAPI dependencies. This fence also keeps
-            # our live recheck adjacent to the mutation under the Experiment lock.
-            with project_write_admission(action.project_id, request):
+            # Direct calls skip FastAPI dependencies. Proposal and episode merge
+            # handlers acquire this non-reentrant fence themselves.
+            with (
+                project_write_admission(action.project_id, request)
+                if action.kind not in {"proposal", "merge_episode"}
+                else nullcontext()
+            ):
                 try:
                     pinned = approval_pins(
                         get_project_service(catalog, action.project_id), store, action, human
@@ -173,7 +177,9 @@ def resolve_approval_card(
                     result = {
                         "outcome": "approved",
                         "result": jsonable_encoder(
-                            _execute(action, question_id, request, store, catalog, identity_access)
+                            _execute(
+                                action, card["request_id"], request, store, catalog, identity_access
+                            )
                         ),
                     }
     except HTTPException as exc:

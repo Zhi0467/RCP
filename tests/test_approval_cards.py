@@ -55,13 +55,14 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
     assert card is not None and card["result"]["outcome"] == "failed"
 
 
-def test_expiry_dismisses_question_and_claim_cannot_run(store, origin):
+def test_expiry_answers_question_and_claim_cannot_run(store, origin):
     question = make_card(store, origin)
     with store.connection() as connection:
         connection.execute("UPDATE approval_cards SET expires_at=?", (store.now(),))
     card = store.approval_card(question.question_id)
     assert card["state"] == "expired"
-    assert store.get_question(question.question_id).state == "dismissed"
+    assert store.get_question(question.question_id).state == "answered"
+    assert store.get_question(question.question_id).answer == "expired"
     assert not store.claim_approval_card(question.question_id)
 
 
@@ -100,11 +101,9 @@ def api_card(questions_api, action=None):
 @pytest.mark.parametrize(
     "action",
     [
-        {"kind": "proposal", "proposal_id": "p", "decision": "approved"},
         {"kind": "truth_scope", "alias": "repo-a", "writable": False},
         {"kind": "auto_research", "invocation_ceiling": 1},
         {"kind": "merge_branch", "branch_id": "b"},
-        {"kind": "merge_episode", "episode_id": "e"},
     ],
 )
 def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, action):
@@ -274,17 +273,25 @@ def test_expired_tap_is_single_use(questions_api):
     assert client.post(url, json=body).status_code == 409
 
 
-def test_card_request_id_acceptance_is_scoped_to_merge():
-    from uuid import UUID
+def test_card_request_id_is_persisted_uuid4(store, origin):
+    from uuid import NAMESPACE_URL, UUID, uuid5
 
-    from rcp.api.episode_routes import ForkBranchBody, MergeBranchBody
-    from rcp.runs.approval_cards import card_request_id
+    from rcp.api.episode_routes import MergeBranchBody
+    from rcp.approval_actions import MergeEpisodeBody
 
-    key = UUID(card_request_id("card"))
-    assert key.version == 5
-    assert MergeBranchBody(request_id=key).request_id == key
-    with pytest.raises(ValidationError):
-        ForkBranchBody.model_validate({"request_id": key, "name": "fork", "at": "main@0"})
+    question = make_card(store, origin)
+    card = store.approval_card(question.question_id)
+    key = UUID(card["request_id"])
+    assert key.version == 4
+    assert AppStore(store.path).approval_card(question.question_id)["request_id"] == str(key)
+    assert make_card(store, origin).question_id == question.question_id
+    assert store.approval_card(question.question_id)["request_id"] == str(key)
+    for model in (MergeBranchBody, MergeEpisodeBody):
+        assert model(request_id=key).request_id == key
+        with pytest.raises(ValidationError):
+            model(request_id=uuid5(NAMESPACE_URL, "card"))
+    store.settle_approval_card(question.question_id, {"outcome": "declined"})
+    assert store.approval_card(question.question_id)["result"]["request_id"] == str(key)
 
 
 def test_staged_ask_action_roundtrips_to_strict_broker(tmp_path):
@@ -391,14 +398,195 @@ def test_closed_thread_expires_card_on_list(questions_api):
     listed = client.get(f"/api/projects/{project_id}/chats/private/questions").json()
     row = next(row for row in listed if row["question_id"] == question.question_id)
     assert row["card"]["state"] == "expired"
-    assert row["state"] == "dismissed"
+    assert row["state"] == "answered"
+    assert row["answer"] == "expired"
 
 
-def test_all_card_results_keep_derived_request_identity(store, origin):
-    from rcp.runs.approval_cards import card_request_id
+@pytest.mark.parametrize("settlement", [None, "declined", "expired"])
+def test_private_questions_never_publish_digest_text(questions_api, settlement):
+    app, client, store, project_id = questions_api
+    question, card = api_card(questions_api)
+    if settlement:
+        store.settle_approval_card(question.question_id, {"outcome": settlement})
+    with store.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM digest_events WHERE kind='question_attention'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def refuse_transfer(_project):
+    raise ValueError("project_transfer_in_progress")
+
+
+def bounded_admission_lock(monkeypatch):
+    # Keep the real route and fence; bound lock acquisition so a regression fails
+    # instead of leaving pytest stuck inside a non-reentrant lock.
+    from contextlib import contextmanager
+    from threading import Lock
+
+    from rcp.api import dependencies
+
+    lock = Lock()
+
+    @contextmanager
+    def acquire(_project):
+        assert lock.acquire(timeout=0.1), "nested project admission deadlock"
+        try:
+            yield
+        finally:
+            lock.release()
+
+    monkeypatch.setattr(dependencies, "get_experiment_operation_lock", lambda _: acquire)
+
+
+def real_card(api, action):
+    from pydantic import TypeAdapter
+
+    from rcp.approval_actions import ApprovalAction
+    from rcp.runs.approval_cards import approval_pins
+    from tests.helpers import authorized_human
+
+    app, client, store, project_id = api
+    question, _ = api_card(api, action)
+    pins = approval_pins(
+        app.state.catalog.open(project_id),
+        store,
+        TypeAdapter(ApprovalAction).validate_python(action),
+        authorized_human(app),
+    )
+    import json
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET pinned_json=?,pinned_sha256=? WHERE question_id=?",
+            (json.dumps(pins), card_sha256(action, pins), question.question_id),
+        )
+    return question, store.approval_card(question.question_id)
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_proposal_approval_real_route(questions_api, monkeypatch, fenced):
+    from tests.test_sync import append_decision_fixture
+
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    append_decision_fixture(service, with_proposals=True)
+    action = {
+        "kind": "proposal",
+        "project_id": project_id,
+        "proposal_id": "prop/evaluation-matched",
+        "decision": "rejected",
+    }
+    question, card = real_card(questions_api, action)
+    bounded_admission_lock(monkeypatch)
+    if fenced:
+        monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transfer)
+    response = client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
+    )
+    if fenced:
+        assert response.json() == {"outcome": "failed", "reason": "project_transfer_in_progress"}
+        return
+    assert response.json()["outcome"] == "approved", response.text
+    assert service.history.state().proposals[action["proposal_id"]].status == "rejected"
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_merge_episode_approval_real_route(manifest, tmp_path, monkeypatch, fenced):
+    from tests.test_branch_merge_api import _create_branch_harness
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    api = (harness.app, harness.client, harness.store, harness.project_id)
+    action = {
+        "kind": "merge_episode",
+        "project_id": harness.project_id,
+        "episode_id": harness.episode.episode_id,
+    }
+    question, card = real_card(api, action)
+    bounded_admission_lock(monkeypatch)
+    if fenced:
+        monkeypatch.setattr(harness.store, "require_project_accepts_new_work", refuse_transfer)
+    response = harness.client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
+    )
+    if fenced:
+        assert response.json() == {"outcome": "failed", "reason": "project_transfer_in_progress"}
+        return
+    assert response.json()["outcome"] == "approved", response.text
+    assert len(harness.branch.merge_receipts()) == 1
+    attempt = harness.store.episode_isolation_state(
+        harness.project_id, harness.episode.episode_id
+    ).merge_attempt
+    assert attempt.attempt_id == card["request_id"]
+
+
+@pytest.mark.parametrize("state", ["pending", "running", "settled"])
+def test_old_card_rows_keep_execution_identity_on_upgrade(store, origin, state):
+    import json
+    from uuid import NAMESPACE_URL, UUID, uuid5
 
     question = make_card(store, origin)
-    store.settle_approval_card(question.question_id, {"outcome": "declined"})
-    assert store.approval_card(question.question_id)["result"]["request_id"] == card_request_id(
-        question.question_id
+    with store.connection() as connection:
+        # Reproduce the committed slice's seven-column writer and migration ledger.
+        connection.execute("DROP TABLE approval_cards")
+        from rcp.storage.approval_cards import migrate_approval_cards
+
+        migrate_approval_cards(connection)
+        connection.execute(
+            "INSERT INTO approval_cards VALUES (?, '{}', '{}', 'pin', '2099-01-01', NULL, NULL)",
+            (question.question_id,),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=82")
+    legacy_key = str(uuid5(uuid5(NAMESPACE_URL, "rcp:approval-card"), question.question_id))
+    with store.connection() as connection:
+        if state != "pending":
+            connection.execute("UPDATE approval_cards SET running_since=?", (store.now(),))
+        if state == "settled":
+            connection.execute(
+                "UPDATE approval_cards SET result_json=?",
+                (json.dumps({"outcome": "declined", "request_id": legacy_key}),),
+            )
+    reopened = AppStore(store.path)
+    with reopened.connection() as connection:
+        key = connection.execute("SELECT request_id FROM approval_cards").fetchone()[0]
+    if state == "pending":
+        assert UUID(key).version == 4
+    else:
+        assert key == legacy_key
+    with AppStore(store.path).connection() as connection:
+        assert connection.execute("SELECT request_id FROM approval_cards").fetchone()[0] == key
+
+
+@pytest.mark.parametrize(
+    "kind,handler", [("auto_research", "start_episode"), ("merge_branch", "merge_graph_branch")]
+)
+def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler):
+    from uuid import UUID
+
+    from rcp.api import approval_cards, episode_routes
+
+    app, client, store, project_id = questions_api
+    action = {"kind": kind, "project_id": project_id}
+    action.update({"invocation_ceiling": 1} if kind == "auto_research" else {"branch_id": "branch"})
+    question, card = api_card(questions_api, action)
+    seen = []
+
+    def execute(*args, **kwargs):
+        key = kwargs["idempotency_key"] if kind == "auto_research" else args[2].request_id
+        seen.append(key)
+        return {}
+
+    monkeypatch.setattr(episode_routes, handler, execute)
+    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    response = client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
+    assert response.json()["outcome"] == "approved", response.text
+    assert seen == [UUID(card["request_id"])]
+    assert seen[0].version == 4

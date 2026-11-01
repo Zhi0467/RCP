@@ -285,7 +285,7 @@ def graph_branch_merge_preview(
 class MergeBranchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    request_id: uuid.UUID
+    request_id: UUID4
 
 
 @router.post(

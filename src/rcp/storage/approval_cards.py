@@ -35,11 +35,21 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
     )""")
 
 
-_CARD_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "rcp:approval-card")
-
-
-def card_request_id(question_id: str) -> str:
-    return str(uuid.uuid5(_CARD_NAMESPACE, question_id))
+def migrate_approval_card_request_ids(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE approval_cards ADD COLUMN request_id TEXT")
+    for question_id, running_since, result_json in connection.execute(
+        "SELECT question_id,running_since,result_json FROM approval_cards"
+    ).fetchall():
+        # Claimed cards may already have used the old identity in native handlers.
+        request_id = (
+            uuid.uuid5(uuid.uuid5(uuid.NAMESPACE_URL, "rcp:approval-card"), question_id)
+            if running_since is not None or result_json is not None
+            else uuid.uuid4()
+        )
+        connection.execute(
+            "UPDATE approval_cards SET request_id=? WHERE question_id=?",
+            (str(request_id), question_id),
+        )
 
 
 def card_sha256(action: dict[str, Any], pinned: dict[str, Any]) -> str:
@@ -59,8 +69,15 @@ def insert_approval_card(
     action, pinned = card["action"], card["pinned"]
     expires = (datetime.fromisoformat(now) + timedelta(hours=APPROVAL_CARD_TTL_HOURS)).isoformat()
     connection.execute(
-        "INSERT INTO approval_cards VALUES (?,?,?,?,?,NULL,NULL)",
-        (question_id, json.dumps(action), json.dumps(pinned), card_sha256(action, pinned), expires),
+        "INSERT INTO approval_cards (question_id,action_json,pinned_json,pinned_sha256,expires_at,request_id) VALUES (?,?,?,?,?,?)",
+        (
+            question_id,
+            json.dumps(action),
+            json.dumps(pinned),
+            card_sha256(action, pinned),
+            expires,
+            str(uuid.uuid4()),
+        ),
     )
 
 
@@ -71,7 +88,10 @@ def _settle(
     now: str,
     human: AuthorizedHuman | None = None,
 ) -> None:
-    result = {**result, "request_id": card_request_id(question_id)}
+    row = connection.execute(
+        "SELECT request_id FROM approval_cards WHERE question_id=?", (question_id,)
+    ).fetchone()
+    result = {**result, "request_id": row["request_id"]}
     outcome = result["outcome"]
     answer = f"failed: {result.get('reason', 'unknown')}" if outcome == "failed" else outcome
     connection.execute(
@@ -82,7 +102,7 @@ def _settle(
         """UPDATE questions SET state=?,answer=?,resolved_at=?,resolved_by_json=?,
         answer_revision=answer_revision+1 WHERE question_id=? AND state='pending'""",
         (
-            "dismissed" if outcome == "expired" else "answered",
+            "answered",
             answer,
             now,
             human.model_dump_json() if human else None,
@@ -127,6 +147,7 @@ class ApprovalCardStoreMixin(StoreMixinBase):
                 _settle(connection, question_id, result, self.now())
             action = json.loads(row["action_json"])
             return {
+                "request_id": row["request_id"],
                 "kind": action["kind"],
                 "action": action,
                 "pinned": json.loads(row["pinned_json"]),
