@@ -25,6 +25,13 @@ canonical reachability. While a task runs, `tasks.progress` and task details
 take a clock tick, because elapsed time and progress are computed from the clock.
 Entity counters are project-scoped; chat read/pin counters are member-scoped.
 
+A request with `agent_threads: true` also gets `agent_threads: {version}`, the
+caller's own counter, read without any project id; otherwise the field is null.
+Triggers bump only the owning member on that member's thread rows, thread turns,
+reads, names, browser choice, thread questions, approval cards, schedules and
+delivered handoffs. A file-backed transcript append publishes through its turn's
+task row. A changed version reloads the thread list and the open thread.
+
 `tasks.status` and chat, episode, and terminal inventories exclude progress;
 `tasks.progress` and entity details include it. Terminal input renews idle expiry
 without invalidating inventory; retirement does invalidate it. Question liveness
