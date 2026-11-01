@@ -147,8 +147,10 @@ const mossTranscript = transcript("moss", [
     "assistant",
     "Started the 64k run on the GPU machine. Changing H2's standing needs your approval.",
     "op-moss",
+    { timestamp: ago(8) },
   ),
 ]);
+const mossNewest = mossTranscript.messages.at(-1).timestamp;
 
 const card = {
   question_id: "q1",
@@ -221,6 +223,14 @@ async function mockApi(page, writes) {
       writes.push({ method, path, body: request.postData() && JSON.parse(request.postData()) });
     }
     if (path === "/api/agent-threads") return json({ threads });
+    if (path === "/api/resource-watermarks")
+      return json({
+        epoch: "e",
+        as_of: new Date().toISOString(),
+        projects: [],
+        unavailable: [],
+        agent_threads: { version: "1" },
+      });
     if (path === "/api/agent-threads/space/transcript") return json(spaceTranscript);
     if (path === "/api/projects/p1/chats/moss") return json(mossTranscript);
     if (/^\/api\/projects\/p\d\/chats\/[^/]+$/.test(path))
@@ -416,6 +426,86 @@ test("inside a project, Agents opens the member's thread with the team list one 
     assert.equal(await options.count(), 3);
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/project-agents-team-list-1440.png` });
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("a send, a read mark and history reads stay with the thread they belong to", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const writes = [];
+    await mockApi(page, writes);
+    // Routes added later answer first: a held Space send, a slow Moss transcript,
+    // and a history turn whose read always fails.
+    let failSend;
+    const sendHeld = new Promise((resolve) => (failSend = resolve));
+    await page.route("**/api/agent-threads/space/turns", async (route) => {
+      await sendHeld;
+      await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+    });
+    await page.route("**/api/projects/p1/chats/moss", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fallback();
+    });
+    let historyReads = 0;
+    await page.route("**/api/projects/p1/tasks/op-check", async (route) => {
+      historyReads += 1;
+      await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html#/agent`,
+    );
+    const space = page.getByRole("region", { name: "Pip" });
+    await space.locator(".chat-progress").waitFor();
+    await space.getByRole("textbox", { name: "Message" }).fill("Plan the sweep");
+    await space.getByRole("button", { name: "Send", exact: true }).click();
+
+    // Switch while the Space send is in flight, then let it fail.
+    await page.getByRole("listbox", { name: "Threads" }).getByRole("option").nth(1).click();
+    const moss = page.getByRole("region", { name: "Moss" });
+    failSend();
+    await moss.getByRole("button", { name: "Approve" }).waitFor();
+    await page.waitForTimeout(300);
+    assert.equal(await moss.getByRole("button", { name: "Resend" }).count(), 0);
+    await moss.getByRole("textbox", { name: "Message" }).fill("Next");
+    assert.equal(await moss.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
+    assert.equal(await moss.locator(".node-chat-line").getByText("Plan the sweep").count(), 0);
+
+    // Moss is marked read only through its own newest message.
+    const reads = writes.filter((write) => write.path.endsWith("/read"));
+    assert.deepEqual(reads, [
+      { method: "POST", path: "/api/agent-threads/moss/read", body: { read_through: mossNewest } },
+    ]);
+
+    // A failing history read is retried with the transcript, not in a tight loop.
+    await page.waitForTimeout(1500);
+    assert.ok(historyReads >= 1 && historyReads <= 4, `history reads: ${historyReads}`);
+
+    // Back in the Space thread, its failed send waits there with Resend.
+    await page.getByRole("listbox", { name: "Threads" }).getByRole("option").first().click();
+    await space.getByRole("button", { name: "Resend" }).waitFor();
+    // The failed line stays in its thread, and the composer keeps a copy.
+    assert.equal(
+      await space.locator(".node-chat-line.unsent").getByText("Plan the sweep").count(),
+      1,
+    );
+    assert.equal(
+      await space.getByRole("textbox", { name: "Message" }).inputValue(),
+      "Plan the sweep",
+    );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

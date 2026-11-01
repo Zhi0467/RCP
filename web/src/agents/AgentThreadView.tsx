@@ -8,6 +8,7 @@ import {
   Play,
   RotateCcw,
   Send,
+  Square,
   X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -57,6 +58,9 @@ import {
 
 /** A live turn is checked this often; a quiet thread follows its rail row instead. */
 const LIVE_POLL_MS = 2_000;
+const NO_QUESTIONS: AgentQuestion[] = [];
+const NO_SCHEDULES: AgentSchedule[] = [];
+
 /** Settled turns whose command lines are fetched, newest first. */
 const COMMAND_TURNS = 12;
 
@@ -231,28 +235,51 @@ function SchedulesPopover({
  * approval cards, its Upcoming list, and one composer with the agent picker and
  * the mic. Every send is a Work turn as the member.
  */
+/** A transcript as loaded for one thread; another thread's never renders here. */
+type LoadedThread = {
+  threadId: string;
+  messages: ChatMessage[];
+  questions: AgentQuestion[];
+  latest: AgentTask | null;
+};
+
+/** One thread's composer: its draft and the send in flight or failed. */
+type Composer = {
+  draft: string;
+  sending: { text: string; requestId: string } | null;
+  error: string | null;
+};
+
+const EMPTY_COMPOSER: Composer = { draft: "", sending: null, error: null };
+
+/** A message that belongs to one thread, shown only while that thread is open. */
+type ThreadNote = { threadId: string; text: string };
+
 export function AgentThreadView({
   thread,
+  revision = null,
   leading,
   voice,
   onThreadChanged,
 }: {
   thread: AgentThread;
+  /** The member's agent-thread watermark; a change reloads this thread. */
+  revision?: string | null;
   /** The rail's fold or the phone's back control, at the header's start. */
   leading?: ReactNode;
   voice: VoiceAgent | null;
   onThreadChanged: (thread: AgentThread) => void;
 }) {
-  const [messages, setMessages] = useState<ChatMessage[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [questions, setQuestions] = useState<AgentQuestion[]>([]);
-  const [schedules, setSchedules] = useState<AgentSchedule[]>([]);
-  const [latest, setLatest] = useState<AgentTask | null>(null);
-  const [turnTasks, setTurnTasks] = useState<Map<string, AgentTask>>(new Map());
-  const [draft, setDraft] = useState("");
+  const [loaded, setLoaded] = useState<LoadedThread | null>(null);
+  const [loadError, setLoadError] = useState<ThreadNote | null>(null);
+  const [notice, setNotice] = useState<ThreadNote | null>(null);
+  const [scheduleList, setScheduleList] = useState<{
+    threadId: string;
+    schedules: AgentSchedule[];
+  } | null>(null);
+  const [turnTasks, setTurnTasks] = useState<ReadonlyMap<string, AgentTask>>(() => new Map());
+  const [composers, setComposers] = useState<ReadonlyMap<string, Composer>>(() => new Map());
   const [chosen, setChosen] = useState<AgentRunConfig | null>(null);
-  const [sending, setSending] = useState<{ text: string; requestId: string } | null>(null);
-  const [sendError, setSendError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
   const linesRef = useRef<HTMLDivElement>(null);
@@ -260,7 +287,26 @@ export function AgentThreadView({
   const picker = useThreadPicker(thread);
   const threadRef = useRef(thread);
   threadRef.current = thread;
+  const isCurrent = (threadId: string) => threadRef.current.thread_id === threadId;
 
+  const view = loaded?.threadId === thread.thread_id ? loaded : null;
+  const messages = view?.messages ?? null;
+  const questions = view?.questions ?? NO_QUESTIONS;
+  const latest = view?.latest ?? null;
+  const schedules =
+    scheduleList?.threadId === thread.thread_id ? scheduleList.schedules : NO_SCHEDULES;
+  const shownLoadError = loadError?.threadId === thread.thread_id ? loadError.text : null;
+  const shownNotice = notice?.threadId === thread.thread_id ? notice.text : null;
+  const composer = composers.get(thread.thread_id) ?? EMPTY_COMPOSER;
+  const updateComposer = useCallback((threadId: string, change: Partial<Composer>) => {
+    setComposers((current) => {
+      const next = new Map(current);
+      next.set(threadId, { ...(current.get(threadId) ?? EMPTY_COMPOSER), ...change });
+      return next;
+    });
+  }, []);
+
+  // Every answer names the thread it was asked for; one for a thread no longer open is dropped.
   const refresh = useCallback(async () => {
     const current = threadRef.current;
     try {
@@ -268,14 +314,19 @@ export function AgentThreadView({
         loadThreadTranscript(current),
         loadThreadQuestions(current),
       ]);
-      if (threadRef.current.thread_id !== current.thread_id) return;
-      setMessages(transcript.messages);
-      setQuestions(asked);
-      setLoadError(null);
       const turnId = latestTurnId(transcript.messages);
-      setLatest(turnId ? await loadThreadTask(current, turnId) : null);
+      const latestTask = turnId ? await loadThreadTask(current, turnId) : null;
+      if (threadRef.current.thread_id !== current.thread_id) return;
+      setLoaded({
+        threadId: current.thread_id,
+        messages: transcript.messages,
+        questions: asked,
+        latest: latestTask,
+      });
+      setLoadError(null);
     } catch (failure) {
-      if (threadRef.current.thread_id === current.thread_id) setLoadError(errorMessage(failure));
+      if (threadRef.current.thread_id === current.thread_id)
+        setLoadError({ threadId: current.thread_id, text: errorMessage(failure) });
     }
   }, []);
 
@@ -283,29 +334,23 @@ export function AgentThreadView({
     const current = threadRef.current;
     try {
       const list = await loadThreadSchedules(current.thread_id);
-      if (threadRef.current.thread_id === current.thread_id) setSchedules(list.schedules);
+      if (threadRef.current.thread_id === current.thread_id)
+        setScheduleList({ threadId: current.thread_id, schedules: list.schedules });
     } catch {
       // Upcoming is a side list; the thread stays usable without it.
     }
   }, []);
 
-  // A new thread starts empty; the rail row's activity reloads the open one.
+  // Another thread starts with its own picks; the watermark reloads the open one.
   useEffect(() => {
-    setMessages(null);
-    setQuestions([]);
-    setSchedules([]);
-    setLatest(null);
-    setTurnTasks(new Map());
-    setDraft("");
     setChosen(null);
-    setSendError(null);
     setRenaming(false);
     followRef.current = true;
   }, [thread.thread_id]);
   useEffect(() => {
     void refresh();
     void refreshSchedules();
-  }, [refresh, refreshSchedules, thread.thread_id, thread.last_activity_at, thread.live_state]);
+  }, [refresh, refreshSchedules, thread.thread_id, revision]);
 
   // While a turn runs, its progress and outcome are polled until it settles.
   const live = latest?.active ?? false;
@@ -315,7 +360,9 @@ export function AgentThreadView({
     return () => window.clearInterval(timer);
   }, [live, refresh]);
 
-  // Settled turns never change, so each one's commands are fetched once.
+  // Settled turns never change, so each is kept once fetched. A failed read changes
+  // nothing here and is tried again when the transcript next loads.
+  const latestId = latest?.operation_id ?? null;
   useEffect(() => {
     if (!messages) return;
     const wanted = [
@@ -326,15 +373,18 @@ export function AgentThreadView({
       ),
     ]
       .slice(-COMMAND_TURNS)
-      .filter((id) => !turnTasks.has(id) && id !== latest?.operation_id);
+      .filter((id) => !turnTasks.has(id) && id !== latestId);
     if (!wanted.length) return;
+    const owner = threadRef.current;
     let current = true;
-    void Promise.all(wanted.map((id) => loadThreadTask(thread, id).catch(() => null))).then(
+    void Promise.all(wanted.map((id) => loadThreadTask(owner, id).catch(() => null))).then(
       (tasks) => {
         if (!current) return;
+        const settled = tasks.filter((task): task is AgentTask => Boolean(task?.settled));
+        if (!settled.length) return;
         setTurnTasks((known) => {
           const next = new Map(known);
-          for (const task of tasks) if (task?.settled) next.set(task.operation_id, task);
+          for (const task of settled) next.set(task.operation_id, task);
           return next;
         });
       },
@@ -342,20 +392,21 @@ export function AgentThreadView({
     return () => {
       current = false;
     };
-  }, [messages, thread, turnTasks, latest?.operation_id]);
+  }, [messages, turnTasks, latestId]);
 
-  // Reading the thread marks it read through its newest message.
+  // Reading marks the open thread read through its own newest message, once it loaded.
+  const loadedThreadId = view?.threadId ?? null;
   const newest = messages ? readThrough(messages) : null;
   useEffect(() => {
-    if (!thread.unread || !newest) return;
+    if (!thread.unread || !newest || loadedThreadId !== thread.thread_id) return;
     markThreadRead(thread.thread_id, newest).then(onThreadChanged, () => undefined);
-  }, [thread.unread, thread.thread_id, newest, onThreadChanged]);
+  }, [thread.unread, thread.thread_id, loadedThreadId, newest, onThreadChanged]);
 
   // The view follows new lines only while the reader sits at the bottom.
   useEffect(() => {
     const lines = linesRef.current;
     if (lines && followRef.current) lines.scrollTop = lines.scrollHeight;
-  }, [messages, questions, sending, latest]);
+  }, [messages, questions, composer.sending, latest]);
 
   const config = chosen ?? picker?.value ?? null;
   const agentPicker = useAgentConfigPicker({
@@ -367,12 +418,13 @@ export function AgentThreadView({
     panelClassName: "chat-agent-config-panel",
   });
 
+  // A send belongs to the thread it was typed in, wherever the member goes meanwhile.
   const send = async (text: string, requestId: string) => {
-    setSending({ text, requestId });
-    setSendError(null);
+    const target = thread;
+    updateComposer(target.thread_id, { sending: { text, requestId }, error: null });
     try {
       await sendThreadTurn(
-        thread,
+        target,
         {
           message: text,
           // Only a pick made here changes the provider; otherwise the thread keeps its own.
@@ -387,31 +439,46 @@ export function AgentThreadView({
         },
         requestId,
       );
-      setDraft("");
-      followRef.current = true;
-      await refresh();
-      setSending(null);
+      if (isCurrent(target.thread_id)) {
+        followRef.current = true;
+        // The sent line stays until the transcript that holds it arrives.
+        await refresh();
+      }
+      setComposers((current) => {
+        const entry = current.get(target.thread_id) ?? EMPTY_COMPOSER;
+        const next = new Map(current);
+        next.set(target.thread_id, {
+          draft: entry.draft.trim() === text ? "" : entry.draft,
+          sending: null,
+          error: null,
+        });
+        return next;
+      });
     } catch (failure) {
-      setSendError(errorMessage(failure));
+      updateComposer(target.thread_id, { error: errorMessage(failure) });
     }
   };
   const submit = () => {
-    const text = draft.trim();
-    if (!text || (sending && !sendError)) return;
+    const text = composer.draft.trim();
+    if (!text || (composer.sending && !composer.error)) return;
     void send(text, crypto.randomUUID());
   };
 
   const control = async (action: "pause" | "resume" | "retry", task: AgentTask) => {
+    const target = thread;
     setControlBusy(true);
     try {
-      await controlThreadTask(thread, task.operation_id, action, crypto.randomUUID());
+      await controlThreadTask(target, task.operation_id, action, crypto.randomUUID());
     } catch (failure) {
-      setSendError(errorMessage(failure));
+      if (isCurrent(target.thread_id))
+        setNotice({ threadId: target.thread_id, text: errorMessage(failure) });
     } finally {
       setControlBusy(false);
-      void refresh();
+      if (isCurrent(target.thread_id)) void refresh();
     }
   };
+  const noteFailure = (threadId: string) => (failure: unknown) =>
+    setNotice({ threadId, text: errorMessage(failure) });
 
   const questionsByTurn = useMemo(() => {
     const byTurn = new Map<string, AgentQuestion[]>();
@@ -451,6 +518,7 @@ export function AgentThreadView({
 
   const voiceHere = voice?.phase !== "idle" && voice?.thread?.thread_id === thread.thread_id;
   const voiceBusy = voice !== null && voice.phase !== "idle";
+  const pending = composer.sending;
   const pausedTask = latest?.paused && latest.can_resume ? latest : null;
   const failedTask =
     latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
@@ -462,7 +530,7 @@ export function AgentThreadView({
       onSelect: () =>
         void setThreadBrowser(thread.thread_id, !thread.browser_requested).then(
           (result) => onThreadChanged({ ...thread, ...result }),
-          (failure) => setSendError(errorMessage(failure)),
+          noteFailure(thread.thread_id),
         ),
     },
   ];
@@ -483,8 +551,9 @@ export function AgentThreadView({
               onDone={(title) => {
                 setRenaming(false);
                 if (title && title !== thread.agent_name)
-                  void renameThread(thread.thread_id, title).then(onThreadChanged, (failure) =>
-                    setSendError(errorMessage(failure)),
+                  void renameThread(thread.thread_id, title).then(
+                    onThreadChanged,
+                    noteFailure(thread.thread_id),
                   );
               }}
             />
@@ -515,14 +584,14 @@ export function AgentThreadView({
           followRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
         }}
       >
-        {messages === null && !loadError && (
+        {messages === null && !shownLoadError && (
           <div className="node-chat-line meta" role="status">
             <LoaderCircle className="spin" size={14} />
           </div>
         )}
-        {loadError && (
+        {shownLoadError && (
           <div className="node-chat-line error" role="alert">
-            {loadError}
+            {shownLoadError}
           </div>
         )}
         {messages?.map((message, index) => {
@@ -574,24 +643,24 @@ export function AgentThreadView({
           );
         })}
         {questionsByTurn.loose.map(renderQuestion)}
-        {sending &&
+        {pending &&
           !messages?.some(
-            (message) => message.text === sending.text && message.role === "user",
+            (message) => message.text === pending.text && message.role === "user",
           ) && (
-            <div className={`node-chat-line human${sendError ? " unsent" : ""}`}>
-              {sendError && (
+            <div className={`node-chat-line human${composer.error ? " unsent" : ""}`}>
+              {composer.error && (
                 <button
                   type="button"
                   className="icon-button chat-turn-resend"
                   aria-label="Resend"
-                  title={sendError}
-                  onClick={() => void send(sending.text, sending.requestId)}
+                  title={composer.error}
+                  onClick={() => void send(pending.text, pending.requestId)}
                 >
                   <RotateCcw size={14} />
                 </button>
               )}
               <div className="chat-human-message">
-                <span className="node-chat-text">{sending.text}</span>
+                <span className="node-chat-text">{pending.text}</span>
               </div>
             </div>
           )}
@@ -601,6 +670,16 @@ export function AgentThreadView({
             <span className="chat-task-live" role="status">
               <LoaderCircle className="spin" size={12} aria-hidden="true" />
               {latest.status_message}
+              {latest.can_pause && (
+                <button
+                  type="button"
+                  className="button compact secondary"
+                  disabled={controlBusy || latest.pausing}
+                  onClick={() => void control("pause", latest)}
+                >
+                  <Square size={11} /> Stop
+                </button>
+              )}
             </span>
           </div>
         )}
@@ -627,17 +706,17 @@ export function AgentThreadView({
             </button>
           </div>
         )}
-        {sendError && !sending && (
+        {shownNotice && (
           <div className="node-chat-line error" role="alert">
-            {sendError}
+            {shownNotice}
           </div>
         )}
       </div>
       <div className="chat-composer" data-mode="work">
         <textarea
           aria-label="Message"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          value={composer.draft}
+          onChange={(event) => updateComposer(thread.thread_id, { draft: event.target.value })}
           onKeyDown={(event) => {
             if (!returnSends(event) || event.nativeEvent.isComposing) return;
             event.preventDefault();
@@ -675,10 +754,10 @@ export function AgentThreadView({
               className="icon-button primary chat-send-button"
               type="button"
               aria-label="Send"
-              disabled={!draft.trim() || (sending !== null && !sendError)}
+              disabled={!composer.draft.trim() || (pending !== null && !composer.error)}
               onClick={submit}
             >
-              {sending && !sendError ? (
+              {pending && !composer.error ? (
                 <LoaderCircle className="spin" size={16} />
               ) : (
                 <Send size={16} />
