@@ -219,18 +219,30 @@ def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
 
 
 def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
+    import uuid
+
     from tests.helpers import fake_launch_admitted
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     with signed_in_client(app) as client:
         thread = client.get("/api/agent-threads").json()["threads"][0]
+        headers = {"Idempotency-Key": str(uuid.uuid4())}
         response = client.post(
             "/api/agent-threads/" + thread["thread_id"] + "/turns",
             json={"message": "List my projects", "timezone": "UTC"},
+            headers=headers,
         )
         assert response.status_code == 202, response.text
+        replay = client.post(
+            "/api/agent-threads/" + thread["thread_id"] + "/turns",
+            json={"message": "List my projects", "timezone": "UTC"},
+            headers=headers,
+        )
+        assert replay.status_code == 202, replay.text
+        assert replay.json() == response.json()
         store = app.state.background_tasks.store
+        assert len(store.agent_tasks(store.space_id)) == 1
         task = store.agent_task(response.json()["operation_id"])
         assert task is not None
         assert task.kind == "space_chat" and task.project_id == store.space_id

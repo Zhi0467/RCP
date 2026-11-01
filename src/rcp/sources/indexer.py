@@ -311,6 +311,9 @@ class ConversationIndexer:
         if chat_root.exists():
             state_alias = self.manifest.state.repository
             for path in chat_root.glob("*.jsonl"):
+                # Match the hidden-read selector before reading any private bytes.
+                if path.match("private-*.jsonl"):
+                    continue
                 metadata = self._inspect(path, "app_chat")
                 session_id = metadata["session_id"] or path.stem
                 remote_source_path = (

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
+from pydantic import UUID4, BaseModel, ConfigDict, Field
 
 from rcp.api.chats import (
     CatalogDependency,
@@ -223,29 +223,40 @@ def space_turn(
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
     if thread.kind != "space":
         raise HTTPException(status_code=404, detail="Space thread not found")
-    owner = SpaceThreadOwner(store, catalog, thread_id)
-    profile = owner.resolve_agent_profile(
-        provider=body.provider, model=body.model, reasoning=body.reasoning
-    )
     try:
-        turn = RunRequest(
-            chat_id=thread_id,
-            chat_scope="project",
-            mode="work",
-            message=body.message,
-            provider=profile.provider,
-            model=profile.model,
-            reasoning=profile.reasoning,
-            run_on=profile.run_on,
-            timezone=body.timezone,
-            browser_requested=store.chat_browser_requested(store.space_id, thread_id),
-        )
-        task = background_tasks.start(store.space_id, "space_chat", turn, authorized_by=authorized)
+        with store.client_request_admission(
+            store.space_id,
+            authorized.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            f"agent-threads/{thread_id}/turns",
+        ) as existing:
+            if existing is not None:
+                return {"operation_id": existing.operation_id}
+            owner = SpaceThreadOwner(store, catalog, thread_id)
+            profile = owner.resolve_agent_profile(
+                provider=body.provider, model=body.model, reasoning=body.reasoning
+            )
+            turn = RunRequest(
+                chat_id=thread_id,
+                chat_scope="project",
+                mode="work",
+                message=body.message,
+                provider=profile.provider,
+                model=profile.model,
+                reasoning=profile.reasoning,
+                run_on=profile.run_on,
+                timezone=body.timezone,
+                browser_requested=store.chat_browser_requested(store.space_id, thread_id),
+            )
+            task = background_tasks.start(
+                store.space_id, "space_chat", turn, authorized_by=authorized
+            )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}

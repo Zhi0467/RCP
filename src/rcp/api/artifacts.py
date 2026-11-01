@@ -60,6 +60,7 @@ from rcp.storage import (
     EpisodeMode,
     EpisodeRecord,
 )
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
@@ -264,16 +265,24 @@ def _temporary(store: AppStore, artifact: Artifact) -> bool:
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
 def saved_artifacts(
     project_id: str,
+    request: Request,
     *,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ) -> list[SavedArtifactResponse]:
     """Project saved output inventory, independent of recent task/episode windows."""
     # require_current_instance canonicalizes legacy project URLs before routing.
     require_registered_project(catalog, project_id)
     base = f"/api/projects/{quote(project_id, safe='')}"
     entries: list[SavedArtifactResponse] = []
-    artifact_tasks = store.project_tasks_with_kept_artifacts(project_id)
+    user_id = identity_access.acting_user(request).user_id
+    excluded_chats = store.private_chat_ids_except(user_id)
+    artifact_tasks = [
+        task
+        for task in store.project_tasks_with_kept_artifacts(project_id)
+        if task.request.get("chat_id") not in excluded_chats
+    ]
     reports = store.project_episode_report_summaries(project_id)
     report_origins: dict[str, AgentTaskRecord] = {}
     for report in reports:
@@ -282,7 +291,12 @@ def saved_artifacts(
             origin = store.agent_task(wrapup.concluding_operation_id)
             if origin is not None:
                 report_origins[report.episode_id] = origin
-    stored_artifacts = store.artifacts(project_id)
+    with store.connection() as connection:
+        stored_artifacts = [
+            artifact
+            for artifact in store.artifacts(project_id)
+            if private_artifact_owner(connection, artifact) in {None, user_id}
+        ]
     stored_by_id = {artifact.artifact_id: artifact for artifact in stored_artifacts}
     holds = store.artifact_deletion_holds()
     chat_origins = _artifact_source_hrefs(
@@ -336,6 +350,8 @@ def saved_artifacts(
     # satisfy _episode_report_viewer_response's availability prerequisites.
     for report in reports:
         origin = report_origins.get(report.episode_id)
+        if origin is not None and origin.request.get("chat_id") in excluded_chats:
+            continue
         stored_report = store.episode_report(report.episode_id)
         if stored_report is None:
             continue

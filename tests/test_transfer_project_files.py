@@ -588,3 +588,88 @@ def test_transfer_projection_keeps_nested_text_and_binary_separate_from_saved_st
     assert (root / "paper/projection/figures/renamed.png").read_bytes() == figure
     assert captured.records.paper == records.paper
     assert captured.records.schema_version == 7
+
+
+def test_private_thread_export_keeps_patch_provenance_without_text_or_artifacts(manifest, tmp_path):
+    from tests.test_api_questions import _question
+
+    service, public_records, *_ = _finished_project(manifest, tmp_path)
+    store = service.paper.store
+    project_id = public_records.project_id
+    thread = next(
+        t
+        for t in store.ensure_agent_threads("member", [project_id], default_names=("Pip",))
+        if t.project_id
+    )
+    public_task = store.agent_task(public_records.tasks[0].operation_id)
+    assert public_task is not None
+    secret = "private-export-marker"
+    task = store.create_agent_task(
+        public_task.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
+                "kind": "project_chat",
+                "request": {
+                    "chat_id": thread.thread_id,
+                    "message": secret,
+                    "provider": "codex",
+                    "chat_scope": "project",
+                    "mode": "work",
+                    "control_completion_criteria": [secret],
+                },
+                "result": {
+                    "answer": secret,
+                    "trace_messages": [secret],
+                    "messages": [secret],
+                    "graph_update": {"status": "rejected", "validation_messages": [secret]},
+                    "artifacts": [
+                        descriptor_for(
+                            "private", secret + ".html", media_type="text/html"
+                        ).model_dump()
+                    ],
+                },
+                "status_message": secret,
+                "applied_revision": 1,
+            }
+        )
+    )
+    store.record_agent_task_event(task.operation_id, secret)
+    store.record_agent_task_receipt(task.operation_id, "steering", {"text": secret})
+    question = _question(store, project_id, owner_id=thread.thread_id, key=secret)
+    store.dismiss_question(question.question_id, resolved_by=authorized_human(store))
+    store.record_agent_task_patch_output(task.operation_id, '{"operations":[]}')
+    public_artifact = store.artifacts(project_id)[0]
+    for binding in ({"chat_id": thread.thread_id}, {"origin_operation_id": task.operation_id}):
+        store.create_artifact(
+            public_artifact.model_copy(
+                update={
+                    "artifact_id": uuid.uuid4().hex,
+                    "chat_id": None,
+                    "origin_operation_id": None,
+                    "supplier_id": task.operation_id,
+                    "source_name": secret + ".html",
+                    **binding,
+                }
+            ),
+            data=secret.encode(),
+        )
+    records = store.export_project_transfer_records(
+        project_id,
+        attributions=public_records.attributions,
+    )
+    exported = next(t for t in records.tasks if t.operation_id == task.operation_id)
+    assert secret not in records.model_dump_json()
+    assert question.question not in records.model_dump_json()
+    assert exported.kind == task.kind and exported.applied_revision == 1
+    assert (
+        exported.authorized_by_attribution_id
+        == public_records.tasks[0].authorized_by_attribution_id
+    )
+    assert exported.output is not None and exported.output.patch.value() == {"operations": []}
+    capture = capture_project_transfer_files(service, records, tmp_path / "private-capture")
+    assert [a.artifact_id for a in capture.artifacts] == [public_artifact.artifact_id]
+    assert secret not in capture.model_dump_json()
+    assert all(
+        secret.encode() not in (tmp_path / "private-capture" / e.archive_path).read_bytes()
+        for e in capture.entries
+    )

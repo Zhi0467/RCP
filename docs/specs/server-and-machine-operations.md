@@ -590,7 +590,10 @@ resumable sessions and stages and executable bindings never travel. Imported
 tasks remain history-only. Chat ids, answers and receipts stay readable. Future
 work uses the target configuration. Private-thread transcripts, Space-thread data
 and thread rows stay behind. A private thread's tasks keep their operation id,
-kind and authorizer, so Patch provenance resolves, but lose the request message. Artifacts follow
+kind, authorizer and Patch output, so Patch provenance resolves, but lose private
+request text, answers, traces, diagnostics and artifact references. Private-thread
+artifact metadata and bytes stay behind too. Question records are excluded; private
+steering text stays behind with transcripts and task receipts. Public artifacts follow
 [availability rules](paper-artifacts-and-result-views.md).
 
 Source release settles paused standalone attempts as interrupted with receipts.

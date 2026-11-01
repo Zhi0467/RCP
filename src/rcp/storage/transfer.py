@@ -582,7 +582,11 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 is not None
             )
             if private:
-                request = {**request, "message": None}
+                request = {
+                    key: value
+                    for key, value in request.items()
+                    if key in {"chat_id", "chat_scope", "mode", "provider", "model", "reasoning"}
+                }
             output = outputs.get(operation_id)
             records.append(
                 TransferTaskRecord(
@@ -593,7 +597,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     assistant=cls._transfer_assistant_history({} if private else result),
                     error=None if private else row["error"],
                     applied_revision=row["applied_revision"],
-                    graph_updates=cls._transfer_graph_updates(result),
+                    graph_updates=cls._transfer_graph_updates({} if private else result),
                     attempt=row["attempt"],
                     parent_operation_id=row["parent_operation_id"],
                     episode_id=row["episode_id"],
@@ -635,7 +639,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         if output is not None
                         else None
                     ),
-                    artifacts=cls._transfer_artifacts(result),
+                    artifacts=cls._transfer_artifacts({} if private else result),
                     visible=bool(row["visible"]),
                     history_only=True,
                 )
