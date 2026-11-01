@@ -1,13 +1,12 @@
 import type { ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
-import type { AgentRunConfig, AgentTask, ConversationMode, ProjectSnapshot } from "../core/types";
+import type { ConversationMode } from "../core/types";
 import { StagedAnswerComments, type AnswerComments } from "./answerComments";
 import {
   ComposerAddPicker,
   ComposerAttachmentChips,
   type ComposerAttachments,
 } from "./composerAttachments";
-import { ProviderSwitchHint } from "./ProviderSwitchHint";
 
 /**
  * The one composer shell chat and the Paper coach share: skills, the provider
@@ -15,30 +14,25 @@ import { ProviderSwitchHint } from "./ProviderSwitchHint";
  * (Add first, then the caller's own tools) and the send actions.
  */
 export function ChatComposer({
-  project,
-  config,
-  tasks,
-  sessionId,
+  hint,
   mode,
   composer,
   comments,
   skills,
-  addDisabled,
+  addDisabled = false,
   className,
   field,
   tools,
   actions,
   notice,
 }: {
-  project: ProjectSnapshot;
-  config: AgentRunConfig;
-  tasks: AgentTask[];
-  sessionId: string | null | undefined;
+  /** A caller-owned hint above staged comments, such as a provider switch. */
+  hint?: ReactNode;
   mode: ConversationMode;
-  composer: ComposerAttachments;
+  composer?: ComposerAttachments;
   comments: AnswerComments;
-  skills: SkillPickerProps;
-  addDisabled: boolean;
+  skills?: SkillPickerProps;
+  addDisabled?: boolean;
   /** The caller's own state, such as a failure edge. */
   className?: string;
   /** The message field, which each caller keys and submits its own way. */
@@ -50,18 +44,18 @@ export function ChatComposer({
 }) {
   return (
     <div
-      className={`chat-composer${className ? ` ${className}` : ""}${composer.dragging ? " is-dragging-files" : ""}`}
+      className={`chat-composer${className ? ` ${className}` : ""}${composer?.dragging ? " is-dragging-files" : ""}`}
       data-mode={mode}
-      {...composer.dropTarget()}
+      {...composer?.dropTarget()}
     >
-      <SkillPicker {...skills} />
-      <ProviderSwitchHint project={project} config={config} tasks={tasks} sessionId={sessionId} />
+      {skills && <SkillPicker {...skills} />}
+      {hint}
       <StagedAnswerComments comments={comments} />
-      <ComposerAttachmentChips composer={composer} />
+      {composer && <ComposerAttachmentChips composer={composer} />}
       {field}
       <div className="chat-send">
         <div className="chat-composer-tools">
-          <ComposerAddPicker composer={composer} disabled={addDisabled} />
+          {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}
           {tools}
         </div>
         <div className="chat-send-actions">{actions}</div>

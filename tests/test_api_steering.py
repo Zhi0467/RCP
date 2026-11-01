@@ -693,6 +693,7 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     )
     assert len(answers) == 1
     answer = answers[0]
+    assert answer.question_id == question.question_id
     if delivery in {"delivered", "unrecorded"}:
         # An unrecorded steer is never redelivered by a follow-up, and its record
         # is repaired onto the turn that received it.

@@ -22,6 +22,7 @@ import type {
 } from "../core/types";
 
 type Request = typeof api;
+type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
 
 const THREADS = "/api/agent-threads";
 
@@ -29,14 +30,14 @@ function threadPath(threadId: string): string {
   return `${THREADS}/${encodeURIComponent(threadId)}`;
 }
 
-function projectPath(thread: AgentThread): string {
+function projectPath(thread: ThreadTaskOwner): string {
   if (thread.kind !== "project" || !thread.project_id)
     throw new Error("This thread has no project.");
   return `/api/projects/${encodeURIComponent(thread.project_id)}`;
 }
 
 /** Where a thread's turns are read and controlled. */
-export function threadTasksPath(thread: AgentThread): string {
+export function threadTasksPath(thread: ThreadTaskOwner): string {
   return thread.kind === "space"
     ? `${threadPath(thread.thread_id)}/tasks`
     : `${projectPath(thread)}/tasks`;
@@ -104,7 +105,7 @@ export async function sendThreadTurn(
 }
 
 export function loadThreadTask(
-  thread: AgentThread,
+  thread: ThreadTaskOwner,
   operationId: string,
   request: Request = api,
 ): Promise<AgentTask> {
@@ -125,7 +126,7 @@ export function steerThreadTurn(
 }
 
 export function controlThreadTask(
-  thread: AgentThread,
+  thread: ThreadTaskOwner,
   operationId: string,
   action: "pause" | "resume" | "retry",
   requestId: string,

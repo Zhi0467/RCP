@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from rcp.core.models import AuthorizedHuman
@@ -97,7 +98,7 @@ def migrate_questions(connection: sqlite3.Connection) -> None:
     )
 
 
-def _question_record(row: sqlite3.Row) -> QuestionRecord:
+def _question_record(row: sqlite3.Row | Mapping[str, Any]) -> QuestionRecord:
     data = dict(row)
     for name in ("project_id", "owner_kind", "owner_id"):
         data.pop(name)

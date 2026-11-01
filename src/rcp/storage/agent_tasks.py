@@ -443,20 +443,35 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def question_for_followup(self, operation_id: str) -> QuestionRecord | None:
         """Keep an answer's binding through recovery children as well as its first turn."""
+        return self.questions_for_followups([operation_id]).get(operation_id)
+
+    def questions_for_followups(self, operation_ids: Sequence[str]) -> dict[str, QuestionRecord]:
+        """Resolve a page of answer turns and recovery descendants in one query."""
         from rcp.storage.questions import _question_record
 
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("(?)" for _ in operation_ids)
         with self.connection() as connection:
-            row = connection.execute(
-                """WITH RECURSIVE lineage(operation_id) AS (
-                    SELECT ? UNION SELECT run.parent_operation_id FROM graph_runs AS run
+            rows = connection.execute(
+                f"""WITH RECURSIVE requested(operation_id) AS (VALUES {placeholders}),
+                lineage(requested_id, operation_id) AS (
+                    SELECT operation_id, operation_id FROM requested
+                    UNION SELECT lineage.requested_id, run.parent_operation_id
+                    FROM graph_runs AS run
                     JOIN lineage ON run.operation_id=lineage.operation_id
                     WHERE run.parent_operation_id IS NOT NULL
-                ) SELECT question.* FROM questions AS question
+                ) SELECT lineage.requested_id, question.* FROM questions AS question
                 JOIN lineage ON question.followup_operation_id=lineage.operation_id
-                LIMIT 1""",
-                (operation_id,),
-            ).fetchone()
-        return _question_record(row) if row is not None else None
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
+            ).fetchall()
+        questions: dict[str, QuestionRecord] = {}
+        for row in rows:
+            data = dict(row)
+            requested_id = data.pop("requested_id")
+            questions.setdefault(requested_id, _question_record(data))
+        return questions
 
     def create_artifact_edit_task(
         self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"

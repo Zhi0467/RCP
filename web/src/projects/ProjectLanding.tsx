@@ -636,7 +636,11 @@ export function ProjectLanding({
               </p>
             }
           >
-            <AgentHome threadId={agentRoute.threadId} voice={voice} />
+            <AgentHome
+              threadId={agentRoute.threadId}
+              actorId={identity?.user?.user_id ?? null}
+              voice={voice}
+            />
           </Suspense>
         </main>
       ) : (

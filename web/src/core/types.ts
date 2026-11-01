@@ -2499,6 +2499,8 @@ export interface AgentStatus {
 }
 
 export interface AgentTask {
+  /** Answer delivery identity for task-only transcript reconstruction. */
+  question_id?: string | null;
   /** Local command feedback; never sent to the backend. */
   action_error?: string;
   action_error_action?: "pause" | "resume" | "retry" | "stop";
@@ -3056,6 +3058,8 @@ export interface ChatArtifactComments {
 }
 
 export interface ChatMessage {
+  /** The question this member delivery answers; approval cards show its outcome in place. */
+  question_id?: string | null;
   turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
   /** The turn's live agent status, joined by the chat route; display only. */
@@ -4105,6 +4109,10 @@ export interface AgentThreadList {
 
 /** A turn sent to a thread; the timezone is the browser's IANA name. */
 export interface AgentThreadTurnRequest {
+  references?: ProjectReferenceSelector[];
+  attachment_set_id?: string;
+  attachment_client_id?: string;
+  artifact_context?: ArtifactContextRequest | null;
   message: string;
   provider?: ProviderId;
   model?: string;

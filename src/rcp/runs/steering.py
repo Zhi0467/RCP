@@ -91,6 +91,7 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
     return ChatMessage(
         message_id=record.uuid,
         operation_id=record.operation_id,
+        question_id=record.question_id,
         role=record.role,
         text=record.text,
         timestamp=record.timestamp,
@@ -159,6 +160,7 @@ def _record_steer(
     message_id: str,
     text: str,
     receipt: SteeringReceipt,
+    question_id: str | None = None,
 ) -> _StoredChatRecord:
     """Append one steer to the transcript inside the caller's transaction, once.
 
@@ -195,7 +197,13 @@ def _record_steer(
         common.update({"chatScope": "space", "privateOwner": service.thread.user_id})
         common.pop("nodeId", None)
     stored = _StoredChatRecord.model_validate(
-        {**common, "uuid": message_id, "text": text, "steering": receipt.model_dump()}
+        {
+            **common,
+            "uuid": message_id,
+            "text": text,
+            "steering": receipt.model_dump(),
+            "questionId": question_id,
+        }
     )
     # The normal exchange arrives only on completion. Reserve its prompt first
     # so a steer cannot become the conversation title or precede its own turn.
@@ -452,6 +460,7 @@ def _record_answer_steer(
             message_id=question_answer_message_id(question),
             text=question_answer_text(question),
             receipt=_receipt(target.attempt, turn_id, "delivered", None),
+            question_id=question.question_id,
         )
     background.bump_steer_revision(target.operation_id)
 
