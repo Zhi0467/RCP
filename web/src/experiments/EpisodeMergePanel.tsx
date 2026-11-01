@@ -1,5 +1,6 @@
 import { ChevronDown, LoaderCircle, Network } from "lucide-react";
 import { useEffect, useState } from "react";
+import { MergeUnfinishedJobs } from "../graph/MergeUnfinishedJobs";
 import { loadMergePreview } from "../core/api";
 import {
   type MergeChoices,
@@ -114,13 +115,14 @@ export function EpisodeMergePanel({
       { ...choices, targetBranch: targetDraft },
       hasGraphBranch,
     );
+    setOpen(false);
     try {
       await onMerge(
         episode.episode_id,
         confirmUnfinishedJobs ? { ...body, confirm_unfinished_jobs: true } : body,
       );
-      setOpen(false);
     } catch (error) {
+      setOpen(true);
       const jobs = unfinishedJobsFromError(error);
       if (jobs) setPausedJobs(jobs);
       else setMergeError(error instanceof Error ? error.message : String(error));
@@ -280,34 +282,12 @@ export function EpisodeMergePanel({
         </fieldset>
       )}
       {pausedJobs && (
-        <div className="merge-unfinished-jobs" role="alert">
-          <strong>These jobs may still be writing the worktree.</strong>
-          <ul aria-label="Unfinished jobs">
-            {pausedJobs.map((job) => (
-              <li key={`${job.kind}:${job.id}`}>
-                <code>{job.command ?? job.id}</code> <span>{job.status}</span>
-              </li>
-            ))}
-          </ul>
-          <span>Merge anyway, and the merge agent stops them before it merges.</span>
-          <div className="merge-unfinished-actions">
-            <button
-              className="button primary compact"
-              type="button"
-              disabled={disabled || !previewCurrent}
-              onClick={() => void merge(true)}
-            >
-              Merge anyway
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              onClick={() => setPausedJobs(null)}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <MergeUnfinishedJobs
+          jobs={pausedJobs}
+          disabled={disabled || !previewCurrent}
+          onConfirm={() => void merge(true)}
+          onCancel={() => setPausedJobs(null)}
+        />
       )}
     </div>
   );

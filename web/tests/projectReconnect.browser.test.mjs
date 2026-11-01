@@ -3,6 +3,8 @@ import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { watermarkResponse } from "./watermarks.mjs";
+import { episode as baseEpisode } from "./fixtures/campaigns.mjs";
+import { timelineFixture } from "./fixtures/timeline.mjs";
 
 let server;
 let browser;
@@ -47,7 +49,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   const providers = {};
   const profile = { provider: "codex", model: "", reasoning: "high", run_on: "local" };
   const state = {
-    connected: false,
+    connected: options.connected ?? false,
     health: options.health ?? HEALTH,
     signedIn: options.signedIn ?? true,
     member: "human",
@@ -76,6 +78,13 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     missingBranches: new Set(),
     taskRefusal: null,
     taskStarts: 0,
+    taskListStatus: 200,
+    tasks: [],
+    watermarkGate: null,
+    resourceVersions: {},
+    payloadGates: new Map(),
+    transcripts: options.transcripts ?? {},
+    artifacts: [],
   };
   const project = (id = "demo", target = mainTarget) => ({
     id,
@@ -160,10 +169,11 @@ async function openDemoProject(t, initialFreshness, options = {}) {
               ? `${state.connected}:${state.graphVersion}`
               : resource.name === "chats"
                 ? `chats:${state.archivedChats.join(",")}`
-                : "v1",
+                : (state.resourceVersions[resource.name] ?? "v1"),
         }),
         epoch: state.epoch,
       };
+      if (state.watermarkGate) await state.watermarkGate.promise;
     } else if (path === "/api/health" || path === "/api/health/details") {
       if (!state.health) return route.abort();
       json = state.health;
@@ -232,6 +242,8 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         graph_mutation: project().graph_mutation,
       };
     } else if (path === "/api/projects/demo/episodes") json = state.episodes;
+    else if (/\/episodes\/[^/]+\/timeline$/.test(path))
+      json = timelineFixture(path.split("/").at(-2));
     else if (path === "/api/projects/demo/watchers")
       json = state.watchers.filter(
         (watcher) => (watcher.graph_target.branch_id ?? null) === branchId,
@@ -254,8 +266,16 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     } else if (/\/chats\/[^/]+$/.test(path)) {
       const found = state.chats.find((chat) => chat.chat_id === path.split("/").at(-1));
       if (!found) return route.fulfill({ status: 404, json: { detail: "Chat not found" } });
-      json = { ...found, messages: [] };
-    } else if (path.endsWith("/tasks/project_chat")) {
+      json = { ...found, messages: state.transcripts[found.chat_id] ?? [] };
+    } else if (path.endsWith("/tasks") && state.taskListStatus !== 200) {
+      return route.fulfill({
+        status: state.taskListStatus,
+        json: { detail: "Task list unavailable" },
+      });
+    } else if (path.endsWith("/tasks")) json = state.tasks;
+    else if (/\/tasks\/[^/]+$/.test(path) && route.request().method() === "GET")
+      json = state.tasks.find((task) => task.operation_id === path.split("/").at(-1)) ?? null;
+    else if (path.endsWith("/tasks/project_chat")) {
       state.taskStarts++;
       if (state.taskRefusal) return route.fulfill({ status: 409, json: state.taskRefusal });
       return route.fulfill({ status: 500, json: { detail: "not modelled" } });
@@ -267,6 +287,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         archived: state.archivedChats,
       };
     else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
+    else if (path.endsWith("/artifacts")) json = state.artifacts;
     else if (path.endsWith("/digest") && options.digest) {
       await options.digest.gate;
       json = options.digest.value;
@@ -282,6 +303,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
         changed_node_ids: [],
         count: 0,
       };
+    if (state.payloadGates.has(path)) await state.payloadGates.get(path).promise;
     await route.fulfill({ json });
   });
   const readinessLoaded = page.waitForResponse((response) =>
@@ -614,7 +636,7 @@ for (const signInAgain of [true, false]) {
 }
 
 test(
-  "a refused reconciliation leaves the retained project usable and can recover again",
+  "a refused reconciliation withholds retained content and its visible retry recovers",
   { timeout: 20000 },
   async (t) => {
     const { page, state } = await openedShell(t);
@@ -633,18 +655,19 @@ test(
     await page.getByRole("alertdialog").waitFor({ state: "detached" });
     assert.equal(await shellStillMounted(page), true);
     assert.equal(await page.locator(".project-panel[inert]").count(), 0);
-    state.health = null;
-    await reverify(page);
-    await page.getByRole("alertdialog").waitFor();
+    const retry = page.getByRole("button", { name: "Retry loading project", exact: true });
+    await retry.waitFor();
+    assert.equal(await page.locator('.project-panel[aria-busy="true"]').count(), 1);
+    assert.equal(await page.locator(".project-panel .overview-questions").count(), 0);
     state.projectStatus = 200;
-    state.health = HEALTH;
     const recovered = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/projects/demo" && response.status() === 200,
     );
-    await reverify(page);
+    await retry.click();
     await recovered;
-    await page.getByRole("alertdialog").waitFor({ state: "detached" });
+    await retry.waitFor({ state: "detached" });
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     assert.equal(await shellStillMounted(page), true);
   },
 );
@@ -946,11 +969,7 @@ test(
     );
     await branchShown(page, "b1");
     const before = state.requests.length;
-    const sourceLoaded = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/projects/demo/chats/source",
-    );
     await page.locator(".chat-origin-link").click();
-    await sourceLoaded;
     await branchShown(page, "main");
     await menu.waitFor();
     // A refetch loop reissues the read as soon as its answer renders.
@@ -960,7 +979,8 @@ test(
     const sourceReads = state.requests
       .slice(before)
       .filter((path) => path === "/api/projects/demo/chats/source").length;
-    assert.ok(sourceReads >= 1 && sourceReads <= 2, `source chat read ${sourceReads} times`);
+    // A fresh matching watermark may admit the retained transcript without a read.
+    assert.ok(sourceReads <= 2, `source chat read ${sourceReads} times`);
 
     await menu.click();
     const archived = page.waitForResponse((response) =>
@@ -994,7 +1014,7 @@ test(
     await page.getByRole("button", { name: "Agents", exact: true }).click();
     await page.getByRole("button", { name: "Open Loaded conversation", exact: true }).waitFor();
     await switchBranch(page, "b1");
-    await page.locator(".project-panel[inert]").waitFor();
+    await page.locator('.project-panel[aria-busy="true"]').waitFor();
     await page.getByRole("progressbar", { name: "Loading branch" }).waitFor();
     assert.equal(
       await page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("view")),
@@ -1019,7 +1039,7 @@ test(
     assert.equal(await page.locator(".app-loading").count(), 0);
     state.branchGate = null;
     gate.resolve();
-    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     await branchShown(page, "b1");
 
     // Add an uncached branch after prefetch, then leave while its read is pending.
@@ -1035,14 +1055,14 @@ test(
       (request) => new URL(request.url()).searchParams.get("branch_id") === "late",
     );
     await switchBranch(page, "late");
-    await requested;
+    const lateRequest = await requested;
     await switchBranch(page, "main");
-    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
-    const lateResponse = page.waitForResponse(
-      (response) => new URL(response.url()).searchParams.get("branch_id") === "late",
-    );
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     state.branchGate.resolve();
-    await (await lateResponse).finished();
+    // Leaving the target may cancel the read entirely. If it survives, its
+    // response is still fenced from the currently presented graph.
+    const lateResponse = await lateRequest.response();
+    if (lateResponse) await lateResponse.finished();
     await page.evaluate(() => new Promise(requestAnimationFrame));
     assert.equal(
       await page
@@ -1153,7 +1173,7 @@ test(
     await row(page, "draft").waitFor({ state: "detached" });
     assert.deepEqual(state.mutations.at(-1).body, { archived: true });
     await page.getByRole("button", { name: "merged", exact: true }).click();
-    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     await picker(page).click();
     await page.getByRole("button", { name: "Archive merged", exact: true }).click();
     await page.getByRole("button", { name: "Unarchive merged", exact: true }).waitFor();
@@ -1211,14 +1231,14 @@ test(
       .getByRole("dialog", { name: "Branches", exact: true })
       .getByRole("button", { name: "phone", exact: true })
       .click();
-    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     await branchShown(page, "phone");
     assert.equal(await picker(page).getByLabel("Another branch needs you").count(), 0);
   },
 );
 
 test(
-  "unvisited branches are never warmed and a revisited branch paints at once",
+  "unvisited branches stay cold and a revisited branch reuses cache after a fresh observation",
   { timeout: 25000 },
   async (t) => {
     const { page, state } = await openedShell(t, {
@@ -1239,19 +1259,30 @@ test(
       false,
     );
     await switchBranch(page, "second");
-    await page.locator(".project-panel[inert]").waitFor({ state: "detached" });
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
     await branchShown(page, "second");
     await switchBranch(page, "main");
     await branchShown(page, "main");
-    state.branchGate = Promise.withResolvers();
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
+    state.watermarkGate = Promise.withResolvers();
+    const before = state.requests.filter(
+      (path) => path === "/api/projects/demo?branch_id=second",
+    ).length;
     await switchBranch(page, "second");
-    assert.equal(await page.locator(".project-panel[inert]").count(), 0);
+    await page.locator('.project-panel[aria-busy="true"]').waitFor();
+    assert.equal(await page.locator(".project-panel .overview-questions").count(), 0);
+    state.watermarkGate.resolve();
+    state.watermarkGate = null;
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
+    assert.equal(
+      state.requests.filter((path) => path === "/api/projects/demo?branch_id=second").length,
+      before,
+    );
     assert.equal(await page.evaluate(() => window.__sawLoadingScreen), false);
     assert.equal(
       state.requests.some((path) => /branch_id=(first|archived)/.test(path)),
       false,
     );
-    state.branchGate.resolve();
   },
 );
 
@@ -1405,4 +1436,640 @@ test("an empty or unknown branch_id opens main instead of a blank target", async
     await branchShown(page, "main");
     await page.locator(".toast.error").waitFor();
   }
+});
+
+const transcriptMessage = (text) => ({
+  message_id: text,
+  operation_id: "completed-turn",
+  role: "assistant",
+  text,
+  timestamp: "2026-10-10T12:00:00Z",
+  native_session_id: null,
+  provider: "codex",
+  model: null,
+  reasoning: null,
+  execution_machine: "local",
+  applied_revision: null,
+  mode: "discuss",
+  graph_update: null,
+  trigger: "human",
+  attachments: [],
+});
+
+// Capture DOM mutations as well as frames: a layout-effect correction cannot
+// conceal an old entry that React already committed in the returning panel.
+async function recordReturningContent(page, selector, text) {
+  await page.evaluate(
+    ({ selector, text }) => {
+      window.__staleEntryFrames = [];
+      const sample = () => {
+        const panel = document.querySelector(selector);
+        if (panel?.textContent.includes(text)) window.__staleEntryFrames.push(panel.textContent);
+      };
+      window.__entryObserver?.disconnect();
+      window.__entryObserver = new MutationObserver(sample);
+      window.__entryObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      window.__sampleEntryFrame = sample;
+    },
+    { selector, text },
+  );
+}
+
+const sampleEntryFrames = (page) =>
+  page.evaluate(async () => {
+    await new Promise(requestAnimationFrame);
+    window.__sampleEntryFrame();
+    await new Promise(requestAnimationFrame);
+    window.__sampleEntryFrame();
+    return window.__staleEntryFrames;
+  });
+
+test("returning Agents admits the current transcript before its first frame at 390px", async (t) => {
+  const summary = { ...chat, message_count: 1 };
+  const { page, errors, state } = await openedShell(t, {
+    viewport: { width: 390, height: 844 },
+    chats: [summary],
+    transcripts: { "held-chat": [transcriptMessage("Retained transcript")] },
+  });
+  await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
+  await page.getByText("Retained transcript", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await page.locator(".node-chat-lines").waitFor({ state: "detached" });
+  const gate = Promise.withResolvers();
+  state.watermarkGate = gate;
+  // This request started while Agents was still dormant. Its late reply must
+  // not validate the new entry, even though its version matches retained data.
+  const oldWatermark = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/api/resource-watermarks",
+  );
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await oldWatermark;
+  state.resourceVersions.chat = "updated-chat";
+  state.transcripts["held-chat"] = [transcriptMessage("Current transcript")];
+  const payload = Promise.withResolvers();
+  state.payloadGates.set("/api/projects/demo/chats/held-chat", payload);
+  await recordReturningContent(page, ".node-chat-lines", "Retained transcript");
+  await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  const transcriptRequested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/api/projects/demo/chats/held-chat",
+  );
+  gate.resolve();
+  state.watermarkGate = null;
+  await transcriptRequested;
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  payload.resolve();
+  state.payloadGates.clear();
+  await page.getByText("Current transcript", { exact: true }).waitFor();
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  const editor = page.getByRole("textbox", { name: "Message", exact: true });
+  await editor.fill("Unsent draft");
+  await editor.focus();
+  const editorElement = await editor.elementHandle();
+  const pollingPayload = Promise.withResolvers();
+  state.payloadGates.set("/api/projects/demo/chats/held-chat", pollingPayload);
+  state.resourceVersions.chat = "next-chat";
+  state.transcripts["held-chat"] = [transcriptMessage("Polled transcript")];
+  const pollRequested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/api/projects/demo/chats/held-chat",
+  );
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await pollRequested;
+  assert.equal(await page.getByText("Current transcript", { exact: true }).isVisible(), true);
+  assert.equal(await editor.inputValue(), "Unsent draft");
+  assert.equal(await editorElement.evaluate((element) => document.activeElement === element), true);
+  pollingPayload.resolve();
+  state.payloadGates.clear();
+  await page.getByText("Polled transcript", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "Unsent draft");
+  assert.equal(await editorElement.evaluate((element) => document.activeElement === element), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.deepEqual(
+    errors.filter((message) => !message.includes("Failed to load resource")),
+    [],
+  );
+});
+
+test("returning Artifacts withholds its retained rows until current admission at 390px", async (t) => {
+  const { page, errors, state } = await openedShell(t, { viewport: { width: 390, height: 844 } });
+  const artifact = (name) => ({
+    id: name,
+    artifact_id: name,
+    name,
+    available: true,
+    can_open: false,
+    can_download: false,
+    view: "image",
+  });
+  state.artifacts = [artifact("Retained artifact")];
+  await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
+  await page
+    .locator(".phone-tab-bar")
+    .getByRole("button", { name: /^Artifacts/ })
+    .click();
+  await page.getByRole("heading", { name: "Retained artifact" }).waitFor();
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  state.watermarkGate = Promise.withResolvers();
+  state.resourceVersions.artifacts = "updated-artifacts";
+  state.artifacts = [artifact("Current artifact")];
+  const payload = Promise.withResolvers();
+  state.payloadGates.set("/api/projects/demo/artifacts", payload);
+  await recordReturningContent(page, ".artifacts-view", "Retained artifact");
+  await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
+  await page
+    .locator(".phone-tab-bar")
+    .getByRole("button", { name: /^Artifacts/ })
+    .click();
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  const artifactsRequested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === "/api/projects/demo/artifacts",
+  );
+  state.watermarkGate.resolve();
+  state.watermarkGate = null;
+  await artifactsRequested;
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  payload.resolve();
+  state.payloadGates.clear();
+  await page.getByRole("heading", { name: "Current artifact" }).waitFor();
+  assert.deepEqual(await sampleEntryFrames(page), []);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  assert.deepEqual(
+    errors.filter((message) => !message.includes("Failed to load resource")),
+    [],
+  );
+});
+
+test("a current task-list failure remains visible and its retry recovers", async (t) => {
+  const { page, state } = await openedShell(t);
+  state.taskListStatus = 503;
+  state.resourceVersions["tasks.status"] = "tasks-changed";
+  const failed = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/projects/demo/tasks" && response.status() === 503,
+  );
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await failed;
+  const retry = page.getByRole("button", { name: "Retry tasks", exact: true });
+  await retry.waitFor();
+  state.taskListStatus = 200;
+  const recovered = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/projects/demo/tasks" && response.status() === 200,
+  );
+  await retry.click();
+  await recovered;
+  await retry.waitFor({ state: "detached" });
+});
+
+function mergeTask(operationId, branchId = "episode-branch") {
+  return {
+    operation_id: operationId,
+    project_id: "demo",
+    kind: "branch_merge",
+    status: "running",
+    request: { provider: "codex" },
+    graph_target: { kind: "branch", branch_id: branchId },
+    created_at: "2026-10-10T12:00:00Z",
+    updated_at: "2026-10-10T12:00:01Z",
+    status_message: "Merging branch",
+    status_label: "Running",
+    phase: "running",
+    runtime_id: "codex",
+    runtime_label: "Codex",
+    provider_label: "Codex",
+    attempt: 1,
+    history_only: false,
+    elapsed_seconds: 1,
+    progress: 0,
+    estimate_seconds: 10,
+    estimate_samples: 1,
+    active: true,
+    queued: false,
+    pausing: false,
+    awaiting_human: false,
+    paused: false,
+    failed: false,
+    settled: false,
+    finished: false,
+    can_pause: false,
+    can_resume: false,
+    can_retry: false,
+    steer_visible: false,
+    can_steer: false,
+    steer_unavailable_reason: null,
+    steer_turn_id: null,
+    steer_action_label: "",
+    events: [],
+  };
+}
+
+function mergeFixture(episodeOwned = true) {
+  const ref = {
+    ...branchRef(episodeOwned ? "episode-branch" : "member-fork"),
+    parent_head: mainRef().head,
+    episode_id: episodeOwned ? "chain-root" : null,
+    current_episode_id: episodeOwned ? "chain-current" : null,
+    mode: episodeOwned ? "auto_research" : null,
+    merge_eligible: true,
+  };
+  const episode = {
+    ...baseEpisode,
+    project_id: "demo",
+    episode_id: "chain-current",
+    tasks: [],
+    chain: [],
+    status: "completed",
+    health: "needs_action",
+    run_section: "actionable",
+    recommendation: "review",
+    live: false,
+    can_stop: false,
+    can_merge: true,
+    can_message: false,
+    task_control: null,
+    root_operation_id: null,
+    current_operation_id: null,
+    current_orchestrator_task_id: null,
+    current_control_task_id: null,
+    graph_target: ref.head.target,
+    graph_base_head: ref.base_head,
+    graph_branch: ref,
+    graph_isolation: true,
+    code_worktree: false,
+    isolation_owner_episode_id: "chain-root",
+    isolation_state: null,
+  };
+  return { ref, episode };
+}
+
+async function submitPickerMerge(page, ref) {
+  await picker(page).click();
+  await page.getByRole("button", { name: `Merge ${ref.name}`, exact: true }).click();
+  await page.locator("dialog").getByRole("button", { name: "Merge", exact: true }).click();
+}
+
+for (const owned of [true, false]) {
+  test(`App dispatches ${owned ? "episode" : "member fork"} picker merge and keeps 390px navigation usable`, async (t) => {
+    const { ref, episode } = mergeFixture(owned);
+    const { page, state, errors } = await openedShell(t, {
+      connected: true,
+      viewport: { width: 390, height: 844 },
+      graphRefs: [mainRef(), ref],
+      episodes: owned ? [episode] : [],
+    });
+    const submitted = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const requests = [];
+    const task = mergeTask(`merge-${ref.branch_id}`, ref.branch_id);
+    await page.route(
+      /\/api\/projects\/demo\/(episodes|graph-refs)\/[^/]+\/merge$/,
+      async (route) => {
+        const request = {
+          path: new URL(route.request().url()).pathname,
+          body: route.request().postDataJSON(),
+        };
+        requests.push(request);
+        if (owned && !request.body.confirm_unfinished_jobs)
+          return route.fulfill({
+            status: 409,
+            json: {
+              detail: {
+                code: "unfinished_jobs_confirmation_required",
+                jobs: [
+                  {
+                    kind: "watcher",
+                    id: "training-job",
+                    command: "python train.py",
+                    status: "unobservable",
+                  },
+                ],
+              },
+            },
+          });
+        submitted.resolve(request);
+        await response.promise;
+        state.tasks = [task];
+        await route.fulfill({
+          json: owned
+            ? { ...episode, accepted_merge_task: task }
+            : { operation_id: task.operation_id, status: "running" },
+        });
+      },
+    );
+    await submitPickerMerge(page, ref);
+    if (owned) {
+      await page.getByRole("list", { name: "Unfinished jobs", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Merge anyway", exact: true }).click();
+    }
+    const request = await submitted.promise;
+    assert.equal(
+      request.path,
+      owned
+        ? "/api/projects/demo/episodes/chain-current/merge"
+        : "/api/projects/demo/graph-refs/member-fork/merge",
+    );
+    assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+    if (owned)
+      assert.deepEqual(request.body, {
+        request_id: request.body.request_id,
+        history_mode: "merge",
+        keep_branch_open: true,
+        archive_graph_branch: false,
+        remove_worktree: false,
+        delete_code_branch: false,
+        confirm_unfinished_jobs: true,
+      });
+    else assert.deepEqual(request.body, { request_id: request.body.request_id });
+    assert.equal(await page.locator("dialog").count(), 0);
+    await page.getByRole("button", { name: "Inbox", exact: true }).click();
+    assert.equal(
+      await page.getByRole("button", { name: "Inbox", exact: true }).getAttribute("aria-current"),
+      "page",
+    );
+    await page.locator('.project-panel[aria-busy="false"]').waitFor();
+    response.resolve();
+    await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+    await page.getByRole("button", { name: "Project menu", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Project history, task in progress", exact: true })
+      .waitFor();
+    assert.equal(await page.locator(".activity-pulse:visible").count(), 1);
+    assert.equal(requests.length, owned ? 2 : 1);
+    if (owned) assert.equal(requests[0].body.confirm_unfinished_jobs, undefined);
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.deepEqual(
+      errors.filter((message) => !message.includes("409 (Conflict)")),
+      [],
+    );
+  });
+}
+
+for (const owned of [true, false]) {
+  test(`artifact pin picker dispatches ${owned ? "episode" : "fork"} merge for its own project from landing`, async (t) => {
+    const { ref, episode: sourceEpisode } = mergeFixture(owned);
+    const { page, state, errors } = await openedShell(t, {
+      connected: true,
+      viewport: { width: 390, height: 844 },
+      health: {
+        ...HEALTH,
+        project_creation: {
+          intents: [
+            {
+              intent: "use_existing_checkout_personally",
+              eligible: true,
+              preselected: true,
+              primary_action_label: "Use existing checkout",
+              required_fields: [],
+            },
+          ],
+        },
+      },
+    });
+    const projectId = "second";
+    const episode = { ...sourceEpisode, project_id: projectId };
+    const task = { ...mergeTask(`artifact-${owned}`, ref.branch_id), project_id: projectId };
+    const submitted = Promise.withResolvers();
+    const response = Promise.withResolvers();
+    const requests = [];
+    await page.route("**/api/projects/second/graph-refs", (route) =>
+      route.fulfill({ json: [mainRef(), ref] }),
+    );
+    await page.route("**/api/projects/second/artifacts/preview/state", (route) =>
+      route.fulfill({
+        json: {
+          artifact_id: "preview",
+          name: "Merge preview artifact",
+          pinned_branch_ids: [],
+          pin_branch_id: null,
+          can_pin: true,
+          version_number: 1,
+          viewer_url: "/api/projects/second/artifacts/preview/viewer",
+        },
+      }),
+    );
+    await page.route("**/api/projects/second/artifacts/preview/viewer", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Preview</p>" }),
+    );
+    await page.route(
+      /\/api\/projects\/second\/(episodes|graph-refs)\/[^/]+\/merge$/,
+      async (route) => {
+        const request = {
+          path: new URL(route.request().url()).pathname,
+          body: route.request().postDataJSON(),
+        };
+        requests.push(request);
+        submitted.resolve(request);
+        await response.promise;
+        state.tasks = [task];
+        await route.fulfill({
+          json: owned
+            ? { ...episode, accepted_merge_task: task }
+            : { operation_id: task.operation_id, status: "running" },
+        });
+      },
+    );
+    await page.evaluate(() => {
+      window.location.hash = "/";
+    });
+    await page.locator(".project-shelf").waitFor();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.evaluate(async () =>
+      (await import("/src/artifacts/artifactViewerModel.ts")).openArtifact({
+        projectId: "second",
+        artifactId: "preview",
+      }),
+    );
+    const viewer = page.locator(".artifact-viewer");
+    await viewer.getByRole("button", { name: "Branch: main", exact: true }).click();
+    const merge = page.getByRole("button", { name: `Merge ${ref.name}`, exact: true });
+    assert.equal(await merge.isEnabled(), true);
+    assert.equal(await merge.getAttribute("title"), "Merge");
+    await merge.click();
+    await page.locator("dialog").getByRole("button", { name: "Merge", exact: true }).click();
+    const request = await submitted.promise;
+    assert.equal(
+      request.path,
+      owned
+        ? "/api/projects/second/episodes/chain-current/merge"
+        : "/api/projects/second/graph-refs/member-fork/merge",
+    );
+    if (owned)
+      assert.deepEqual(request.body, {
+        request_id: request.body.request_id,
+        history_mode: "merge",
+        keep_branch_open: true,
+        archive_graph_branch: false,
+        remove_worktree: false,
+        delete_code_branch: false,
+      });
+    else assert.deepEqual(request.body, { request_id: request.body.request_id });
+    assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+    assert.equal(await page.locator("dialog").count(), 0);
+    await viewer.getByRole("button", { name: "Close viewer", exact: true }).click();
+    response.resolve();
+    await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+    if (!owned)
+      assert.ok(state.requests.includes(`/api/projects/second/tasks/${task.operation_id}`));
+    assert.equal(
+      state.requests.some((path) => path === `/api/projects/demo/tasks/${task.operation_id}`),
+      false,
+    );
+    assert.equal(requests.length, 1);
+    await page.evaluate(() => {
+      window.location.hash = "/projects/second?view=overview";
+    });
+    await page.getByRole("button", { name: "Project menu", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Project history, task in progress", exact: true })
+      .waitFor();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    assert.deepEqual(errors, []);
+  });
+}
+
+test("App picker retries an ambiguous episode admission with the original request UUID", async (t) => {
+  const { ref, episode } = mergeFixture();
+  const { page, state } = await openedShell(t, {
+    connected: true,
+    graphRefs: [mainRef(), ref],
+    episodes: [episode],
+  });
+  const requests = [];
+  const admitted = new Map();
+  const task = mergeTask("merge-retry");
+  await page.route(/\/api\/projects\/demo\/(episodes|graph-refs)\/[^/]+\/merge$/, async (route) => {
+    const body = route.request().postDataJSON();
+    requests.push({ path: new URL(route.request().url()).pathname, body });
+    if (!admitted.has(body.request_id)) admitted.set(body.request_id, task);
+    if (requests.length === 1)
+      return route.fulfill({
+        status: 503,
+        json: { detail: "Merge admission response unavailable" },
+      });
+    state.tasks = [admitted.get(body.request_id)];
+    await route.fulfill({
+      json: { ...episode, accepted_merge_task: admitted.get(body.request_id) },
+    });
+  });
+  await submitPickerMerge(page, ref);
+  await page
+    .locator(".toast.error")
+    .filter({ hasText: "Merge admission response unavailable" })
+    .waitFor();
+  await submitPickerMerge(page, ref);
+  await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].path, "/api/projects/demo/episodes/chain-current/merge");
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(admitted.size, 1);
+});
+
+test("App run-card merge uses the episode dispatcher and preserves explicit cleanup choices", async (t) => {
+  const { ref, episode } = mergeFixture();
+  const { page, state, errors } = await openedShell(t, {
+    connected: true,
+    graphRefs: [mainRef(), ref],
+    episodes: [episode],
+  });
+  const task = mergeTask("merge-run-card");
+  const submitted = Promise.withResolvers();
+  await page.route("**/episodes/chain-current/merge-preview", (route) =>
+    route.fulfill({
+      json: {
+        delivered_baseline: null,
+        graph: { direct: 1, conflicts: 0, reviews: 0, paths: [] },
+        code: {
+          repo_alias: "code",
+          source_branch: "work",
+          target_branch: "main",
+          commits_ahead: 1,
+          leftover_files: [],
+          status: "clean",
+          conflict_files: [],
+        },
+        needs_agent: false,
+      },
+    }),
+  );
+  await page.route(/\/api\/projects\/demo\/(episodes|graph-refs)\/[^/]+\/merge$/, async (route) => {
+    submitted.resolve({
+      path: new URL(route.request().url()).pathname,
+      body: route.request().postDataJSON(),
+    });
+    state.tasks = [task];
+    await route.fulfill({ json: { ...episode, accepted_merge_task: task } });
+  });
+  await page.getByRole("button", { name: "Runs", exact: true }).click();
+  const card = page.locator('.campaign-run[data-episode-id="chain-current"]');
+  await card.waitFor();
+  await card.locator(".campaign-run-toggle").click();
+  const merge = card.locator(".episode-merge-panel");
+  await merge.getByRole("button", { name: "Merge", exact: true }).click();
+  const choices = merge.getByRole("group", { name: "Merge options", exact: true });
+  await choices.waitFor();
+  await choices
+    .getByRole("checkbox", { name: "Keep the graph branch for more runs", exact: true })
+    .check();
+  await choices.getByRole("button", { name: "Merge", exact: true }).click();
+  const request = await submitted.promise;
+  assert.equal(request.path, "/api/projects/demo/episodes/chain-current/merge");
+  assert.deepEqual(request.body, {
+    request_id: request.body.request_id,
+    target_branch: "main",
+    history_mode: "merge",
+    keep_branch_open: true,
+    archive_graph_branch: false,
+    remove_worktree: true,
+    delete_code_branch: true,
+  });
+  assert.match(request.body.request_id, /^[0-9a-f-]{36}$/);
+  await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("App preserves an accepted fork merge UUID when its task-detail GET refuses", async (t) => {
+  const { ref } = mergeFixture(false);
+  const { page, state } = await openedShell(t, {
+    connected: true,
+    graphRefs: [mainRef(), ref],
+  });
+  const requests = [];
+  const task = mergeTask("accepted-fork-task", ref.branch_id);
+  let detailAvailable = false;
+  await page.route("**/graph-refs/member-fork/merge", async (route) => {
+    requests.push(route.request().postDataJSON());
+    state.tasks = [task];
+    await route.fulfill({ json: { operation_id: task.operation_id, status: "running" } });
+  });
+  await page.route("**/tasks/accepted-fork-task", (route) =>
+    detailAvailable
+      ? route.fulfill({ json: task })
+      : route.fulfill({ status: 404, json: { detail: "Task details temporarily unavailable" } }),
+  );
+  await submitPickerMerge(page, ref);
+  await page
+    .locator(".toast.error")
+    .filter({ hasText: "Merge was accepted, but task details could not be loaded" })
+    .waitFor();
+  detailAvailable = true;
+  await submitPickerMerge(page, ref);
+  await page.locator(".toast").filter({ hasText: "Merge is running" }).waitFor();
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].request_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.equal(state.tasks.length, 1);
+  await page
+    .getByRole("button", { name: "Project history, task in progress", exact: true })
+    .waitFor();
 });

@@ -10,6 +10,7 @@ interface Props {
   error: string | null;
   writesDisabled: boolean;
   onOpenReport: (artifactId: string) => void;
+  onOpenTask: (operationId: string) => void;
   onResolve: (runId: string, action: "keep" | "dismiss") => Promise<void>;
   onOpenSettings: () => void;
 }
@@ -22,6 +23,7 @@ export function ConsolidationInbox({
   error,
   writesDisabled,
   onOpenReport,
+  onOpenTask,
   onResolve,
   onOpenSettings,
 }: Props) {
@@ -99,6 +101,15 @@ export function ConsolidationInbox({
               </ul>
             ) : null}
             <div className="card-actions">
+              {item.kind === "failure" && item.operation_id ? (
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => onOpenTask(item.operation_id!)}
+                >
+                  <ExternalLink size={14} /> Open task
+                </button>
+              ) : null}
               {item.kind === "report" && item.report ? (
                 <>
                   <button

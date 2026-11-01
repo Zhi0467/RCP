@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from typing import Literal
 
 from rcp.compute_jobs.models import (
     ComputeBackendProbe,
@@ -108,6 +109,75 @@ class ComputeJobStoreMixin(StoreMixinBase):
                 (project_id, COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT),
             ).fetchall()
         return [_compute_job_record(row) for row in rows]
+
+    def compute_jobs_for_log_path(
+        self, project_id: str, execution_host: str, log_path: str
+    ) -> list[ComputeJobRecord]:
+        """Resolve durable ownership without the display list's age/count cap."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM compute_jobs WHERE project_id = ? "
+                "AND execution_host = ? AND log_path = ?",
+                (project_id, execution_host, log_path),
+            ).fetchall()
+        return [_compute_job_record(row) for row in rows]
+
+    def record_compute_job_cancelled(self, job_id: str, *, ended_at: str) -> ComputeJobRecord:
+        """A fresh human cancellation may settle a lost job, preserving its diagnostics."""
+        return self._record_compute_job_completion(job_id, status="cancelled", ended_at=ended_at)
+
+    def record_compute_job_exited(
+        self, job_id: str, *, exit_status: int, ended_at: str
+    ) -> ComputeJobRecord:
+        """Explicit recovery preserves a verified exit receipt even after an earlier loss."""
+        return self._record_compute_job_completion(
+            job_id, status="exited", exit_status=exit_status, ended_at=ended_at
+        )
+
+    def _record_compute_job_completion(
+        self,
+        job_id: str,
+        *,
+        status: Literal["cancelled", "exited"],
+        ended_at: str,
+        exit_status: int | None = None,
+    ) -> ComputeJobRecord:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM compute_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            current = _compute_job_record(row)
+            if current.status not in {"running", "lost"}:
+                return current
+            completed = current.model_copy(
+                update={
+                    "status": status,
+                    "exit_status": exit_status,
+                    "ended_at": ended_at,
+                }
+            )
+            connection.execute(
+                "UPDATE compute_jobs SET status = ?, exit_status = ?, ended_at = ? "
+                "WHERE job_id = ?",
+                (status, exit_status, ended_at, job_id),
+            )
+            if current.status == "running":
+                append_digest_event(
+                    connection,
+                    project_id=current.project_id,
+                    kind="job_ended",
+                    item_id=job_id,
+                    created_at=self.now(),
+                    payload={
+                        "title": current.label or job_id,
+                        "status": status,
+                        "deep_link": None,
+                    },
+                )
+            return completed
 
     @staticmethod
     def _episode_binding_unfinished_jobs(

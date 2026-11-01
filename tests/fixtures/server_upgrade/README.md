@@ -172,3 +172,8 @@ boundary source from `pre-paper-live-v34-22089be`.
 provider logins (storage migration 65), ending at migration 64 after per-target
 consolidation. It is built by the exact boundary source from
 `pre-consolidation-targets-v35-ceaa0d7`.
+
+`pre-merge-effects-v37-607f2cc` retains the last shape before carried Evidence
+warning provenance and durable episode merge requests (storage migrations 66
+and 67), ending at migration 65 after per-member provider logins. It is built
+by the exact boundary source from `pre-member-provider-logins-v36-f78a922`.

@@ -16,6 +16,13 @@ def test_served_consolidation_schedule_inbox_notification_and_shutdown(manifest,
     store = app.state.services.store
     project = app.state.default_project_id
     run = _failure(store, project)
+    historical = "\x1b[31mConsolidation report was not produced.\x1b[0m"
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE consolidation_runs SET error_code='report_missing', error_message=? "
+            "WHERE run_id=?",
+            (historical, run.run_id),
+        )
     store.delete_consolidation_schedule(project)
     device = store.register_notification_device(store.local_owner.user_id)
     with socket.socket() as sock:
@@ -40,6 +47,11 @@ def test_served_consolidation_schedule_inbox_notification_and_shutdown(manifest,
                 before = client.get(base)
                 assert before.status_code == 200
                 assert before.json()["inbox"][0]["run_id"] == run.run_id
+                assert before.json()["inbox"][0]["error"] == {
+                    "code": "report_missing",
+                    "message": "Consolidation report was not produced.",
+                }
+                assert store.consolidation_run(run.run_id).error_message == historical
                 enabled = client.put(
                     base + "/schedule", json={"local_time": "02:30", "timezone": "UTC"}
                 )

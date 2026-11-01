@@ -136,6 +136,8 @@ class AppStoreBase:
         (63, "paper_live_v1"),
         (64, "consolidation_targets_v1"),
         (65, "per_member_provider_logins_v1"),
+        (66, "evidence_flag_origins_v1"),
+        (67, "episode_merge_requests_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -976,6 +978,21 @@ class AppStoreBase:
             version=65,
             name="per_member_provider_logins_v1",
             migration=migrate_per_member_provider_logins,
+        )
+        from rcp.storage.conversation_worktrees import migrate_episode_merge_requests
+        from rcp.storage.evidence_flags import migrate_evidence_flag_origins
+
+        self._run_storage_schema_migration(
+            connection,
+            version=66,
+            name="evidence_flag_origins_v1",
+            migration=migrate_evidence_flag_origins,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=67,
+            name="episode_merge_requests_v1",
+            migration=migrate_episode_merge_requests,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

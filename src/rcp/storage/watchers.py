@@ -1066,6 +1066,38 @@ class WatcherStoreMixin(StoreMixinBase):
             raise KeyError(watcher_id)
         return stored
 
+    def complete_watcher_cancel(
+        self, watcher_id: str, *, requested_at: str, cancel_performed: bool = True
+    ) -> WatcherRecord:
+        """Settle the helper observation, attributing only a performed cancellation."""
+        timestamp = self.now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                UPDATE watchers
+                SET status = CASE WHEN status = 'stopped' THEN 'stopped' ELSE 'completed' END,
+                    completed_at = COALESCE(completed_at, ?), last_checked_at = ?,
+                    last_exit_code = 0, last_error = NULL, next_check_at = NULL,
+                    consecutive_error_count = 0, cancel_error = NULL,
+                    cancel_requested_by = CASE WHEN ? THEN cancel_requested_by ELSE NULL END,
+                    cancel_requested_at = CASE WHEN ? THEN cancel_requested_at ELSE NULL END
+                WHERE watcher_id = ? AND cancel_requested_at = ?
+                  AND status IN ('active', 'degraded', 'stopped', 'completed')
+                """,
+                (
+                    timestamp,
+                    timestamp,
+                    cancel_performed,
+                    cancel_performed,
+                    watcher_id,
+                    requested_at,
+                ),
+            )
+        stored = self.watcher(watcher_id)
+        if not isinstance(stored, WatcherRecord):
+            raise KeyError(watcher_id)
+        return stored
+
     def record_watcher_check(
         self,
         watcher_id: str,

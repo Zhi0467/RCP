@@ -50,6 +50,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Evidence flag origins and episode merge requests (v66-67): fresh,
+        # immutable fixture upgrades, and the in-place compatibility boundaries.
+        "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",
+        "262760c79fd22e2a56de71f1eaed73965835247dd468a5144105126c098314c9",
+        "317347ecb1e6aeaf19c516c81bbe83a557787c91cbaeb3936e71c5ecc3ae6311",
+        "389a2153d491b28510a97721f781a339a8faa8e13e642ca830986c6db41071d4",
+        "3d336b217cd0a0ff0eb6816f44952587b92db7e5a9cfa83f887e375e1aabbefe",
+        "770421344730051d3c83a33a5529d3d6605a3ba4f9f126adba341ab6c135c164",
+        "9cf811f5ea9df5bc27a087dd2513eebb6df40b826d2473ef2de2c997051dfb6c",
+        "a213976f92f1ea0db6d357eeb2e6c66752655eba884317971ffbafee1ae8689f",
+        "b5312777f7e3b549ba731bd84ebbab3e10506aaba13b7240a52ed9640b83b098",
+        "bbdc1e93b9a7a314ec6219b291a16dd319745c09fcc51f07d4f8334bd1c85600",
+        "c50e784c64ab3dd7aef001e4b2ba36b6c685dfd01d809e3919e6801858df073e",
         # Per-member provider logins (v65): fresh, immutable fixtures, and in-place upgrades.
         "08d00f98fae40efb1c2b645802d46bb38f90ff5262552fb3029bd5c005889913",
         "35aa4a2ca0425c7d787a40dc8988b1740fab2a8c1d676ecc38b71cff026a2cfd",

@@ -274,8 +274,13 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.getByRole("button", { name: "Collapse conversation list" }).click();
       await list.waitFor({ state: "hidden" });
       await page.setViewportSize(viewport);
-      // The phone header drops the title once the narrow layout applies.
+      // CSS can hide the title before React commits its narrow state. Wait for
+      // the desktop-only control to leave the DOM and its keyboard effect to flush.
       await header.locator(".conversation-heading").waitFor({ state: "hidden" });
+      await page
+        .getByRole("button", { name: "Expand conversation list", includeHidden: true })
+        .waitFor({ state: "detached" });
+      await page.evaluate(() => new Promise(requestAnimationFrame));
       await toggleList();
       await list.waitFor();
       await page.setViewportSize({ width: 1100, height: 900 });
