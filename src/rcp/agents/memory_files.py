@@ -7,12 +7,18 @@ import json
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
-from rcp.agents.memory_file_io import memory_root, prepare_files, safe_component
+from rcp.agents.memory_file_io import (
+    change_project_files,
+    memory_root,
+    prepare_files,
+    safe_component,
+)
 from rcp.keyed_locks import KeyedLocks
 from rcp.transport.run_stage import RemoteRunStage, _ssh_failure
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+    from rcp.storage.models import AgentTaskRecord, ProjectRecord
 
 
 _MEMORY_LOCKS = KeyedLocks()
@@ -40,6 +46,47 @@ def project_memory_root(
     return memory_root(data_dir.expanduser().resolve(), project_id)
 
 
+def task_has_project_memory(task: AgentTaskRecord | None) -> bool:
+    """One admission rule for memory prompts and writable roots."""
+    return task is not None and task.kind in {"node_chat", "project_chat", "auto_research"}
+
+
+def change_project_memory(data_dir: Path, project: ProjectRecord, destination: str | None) -> None:
+    if project.state_remote:
+        host, separator, _path = project.state_location.partition(":/")
+        if not separator:
+            raise ValueError("Remote project state location has no base host")
+        _remote_memory(
+            RemoteRunStage(host),
+            {"project_id": project.project_id, "destination": destination},
+        )
+    else:
+        change_project_files(data_dir, project.project_id, destination)
+
+
+def finish_project_memory_rename(store: AppStore, project: ProjectRecord) -> None:
+    """Retry alias moves after the identity commit, before creating the new root."""
+    with store.connection() as connection:
+        if connection.execute(
+            "SELECT 1 FROM memory_migrations WHERE project_id = ?", (project.project_id,)
+        ).fetchone():
+            return
+        aliases = connection.execute(
+            "SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?",
+            (project.project_id,),
+        ).fetchall()
+    for row in aliases:
+        old_id = row[0]
+        change_project_memory(
+            store.path.parent, project.model_copy(update={"project_id": old_id}), project.project_id
+        )
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE memory_migrations SET project_id = ? WHERE project_id = ?",
+                (project.project_id, old_id),
+            )
+
+
 def member_memory_root(root: PurePath, user_id: str) -> Path:
     """Return a member's private folder; only the thread owner creates it."""
     return Path(root) / "members" / safe_component(user_id)
@@ -47,7 +94,7 @@ def member_memory_root(root: PurePath, user_id: str) -> Path:
 
 def prepare_project_memory(
     store: AppStore, project_id: str, remote_stage: RemoteRunStage | None = None
-) -> tuple[str, int]:
+) -> tuple[str, int | None]:
     """Migrate once, committing the marker only after the base confirms all writes.
 
     The process owns its data directory; a project lock serializes first launches
@@ -56,6 +103,17 @@ def prepare_project_memory(
     """
     safe_component(project_id)
     with _MEMORY_LOCKS(f"{store.path.resolve()}:{project_id}"):
+        with store.connection() as connection:
+            pending = connection.execute(
+                "SELECT 1 FROM memory_deletions WHERE project_id = ? OR project_id IN "
+                "(SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?)",
+                (project_id, project_id),
+            ).fetchone()
+        if pending:
+            raise ValueError("Project memory deletion remains pending; retry cleanup before launch")
+        project = store.project(project_id)
+        if project is not None:
+            finish_project_memory_rename(store, project)
         with store.connection() as connection:
             migrated = connection.execute(
                 "SELECT 1 FROM memory_migrations WHERE project_id=?", (project_id,)
@@ -72,7 +130,7 @@ def prepare_project_memory(
             )
         if remote_stage is not None:
             result = _remote_memory(remote_stage, {"project_id": project_id, "lessons": lessons})
-            root, size = Path(result["root"]), int(result["index_bytes"])
+            root, size = Path(result["root"]), result["index_bytes"]
         else:
             root = project_memory_root(store.path.parent, project_id)
             size = prepare_files(root, lessons)

@@ -24,6 +24,7 @@ import tomlkit
 from pydantic import BaseModel, Field, TypeAdapter
 
 from rcp.agents import AgentLauncher
+from rcp.agents.memory_files import finish_project_memory_rename
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import (
@@ -1192,6 +1193,12 @@ class ProjectCatalog:
                         identity.project_id,
                         self.store.space_id,
                     )
+                    try:
+                        finish_project_memory_rename(self.store, stored)
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Project memory rename remains pending"
+                        )
                     self._refresh_project_aliases()
                     self._apply_app_file_migration(migration)
                     attachment_store.apply_project_identity_migration(attachment_migration)
@@ -2009,10 +2016,28 @@ class ProjectCatalog:
                         imported_inventory,
                     ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
-                    from rcp.runs.browser_lifecycle import close_chat_browser_owners
+                    from rcp.runs.browser_lifecycle import (
+                        browser_host_key,
+                        close_chat_browser_owners,
+                        retry_browser_cleanup,
+                    )
 
                     close_chat_browser_owners(self.store, project_id, delete_profile=True)
-                    database_records = self.store.delete_project_records(project_id)
+                    record = self.store.project(project_id)
+                    memory_host_key = None
+                    if record is not None and record.state_remote:
+                        try:
+                            memory_host_key = browser_host_key(
+                                record.state_location.partition(":/")[0]
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "Project memory cleanup origin could not be resolved"
+                            )
+                    database_records = self.store.delete_project_records(
+                        project_id, memory_host_key=memory_host_key
+                    )
+                    retry_browser_cleanup(self.store)
                 except BaseException:
                     if stopped:
                         # The project is kept, so its paper must publish again.

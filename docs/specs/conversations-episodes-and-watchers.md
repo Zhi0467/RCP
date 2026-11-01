@@ -123,7 +123,9 @@ force. Pending project-deletion cleanup retains its origin even if the same
 project is registered again. A session hears its browser state when it starts
 with a browser and whenever the state changes, compared with its last committed turn.
 Project removal requests deletion for every retained owner. Failed cleanup stays
-pending and retries at later turn boundaries. The owner key names the stable stage,
+pending and retries at later turn boundaries. The same cleanup owner drains durable
+project-memory deletions after the project deletion commits and at turn boundaries
+(see [memory lifecycle](graph-consolidation-and-lessons.md)). The owner key names the stable stage,
 space, project, and resolved execution host and account; a repointed SSH alias
 cannot clean up the old host through its new target.
 

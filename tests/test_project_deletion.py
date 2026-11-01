@@ -320,8 +320,8 @@ def test_registration_waits_until_project_deletion_cleanup_finishes(
     finish_cleanup = threading.Event()
     delete_records = store.delete_project_records
 
-    def pause_after_commit(project_id: str):
-        result = delete_records(project_id)
+    def pause_after_commit(project_id: str, **kwargs):
+        result = delete_records(project_id, **kwargs)
         cleanup_started.set()
         if not finish_cleanup.wait(timeout=5):
             raise TimeoutError("test did not release project cleanup")

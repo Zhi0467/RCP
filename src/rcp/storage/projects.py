@@ -440,7 +440,9 @@ class ProjectStoreMixin(StoreMixinBase):
             ).fetchall()
         return [ProjectStageRecord.model_validate(dict(row)) for row in rows]
 
-    def delete_project_records(self, project_id: str) -> dict[str, int]:
+    def delete_project_records(
+        self, project_id: str, *, memory_host_key: str | None = None
+    ) -> dict[str, int]:
         """Atomically delete every database row owned by one registration.
 
         The active-task check is repeated under a write lock so a task cannot be
@@ -457,6 +459,37 @@ class ProjectStoreMixin(StoreMixinBase):
                 ):
                     raise KeyError(project_id)
                 self._require_project_deletion_safe(connection, project_id)
+                project_row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone()
+                assert project_row is not None
+                memory_ids = [
+                    project_id,
+                    *(
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?",
+                            (project_id,),
+                        )
+                    ),
+                ]
+                for memory_id in memory_ids:
+                    record = self._project_record(project_row).model_copy(
+                        update={"project_id": memory_id}
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO memory_deletions VALUES (?, ?, ?, ?)",
+                        (
+                            memory_id,
+                            record.state_location,
+                            record.model_dump_json(),
+                            memory_host_key,
+                        ),
+                    )
+                    if memory_id != project_id:
+                        connection.execute(
+                            "DELETE FROM memory_migrations WHERE project_id = ?", (memory_id,)
+                        )
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -733,6 +766,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     (project_id,),
                 ).rowcount
                 for table in (
+                    "memory_migrations",
                     "operational_lessons",
                     "lesson_command_receipts",
                     "bulletin_posts",
