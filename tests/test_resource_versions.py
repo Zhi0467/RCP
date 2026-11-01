@@ -268,6 +268,9 @@ _EXEMPT_TABLES = {
     "paper_change_groups": "coach cards",
     "paper_changes": "coach cards",
     "paper_change_receipts": "receipt",
+    # Memory lives in files; these rows are a migration receipt and a cleanup queue.
+    "memory_migrations": "receipt",
+    "memory_deletions": "cleanup queue",
 }
 
 
