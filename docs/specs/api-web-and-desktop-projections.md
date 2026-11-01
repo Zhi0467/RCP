@@ -2187,8 +2187,10 @@ ordinary project chat, task and question routes. Its Send must be
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
 `{message, provider?, model?, reasoning?, timezone?}`. It returns 202 with
-`{operation_id}`, or 409 when admission refuses, such as a busy thread. Its task
-reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
+`{operation_id}`, or 409 when admission refuses, such as a busy thread. Admission
+honors a UUID4 `Idempotency-Key` through the same durable receipt as
+project chat: a replay by the same member and route returns the original operation.
+Its task reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
 and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Project chat routes enforce the same ownership, including
 empty threads before their first turn. Task and question detail/control routes
 return 404 for another member's private thread; lists filter before pagination.
@@ -2203,3 +2205,7 @@ Space turn artifacts use owner-checked
 reads for `content`, `download`, and `viewer`. They share the ordinary bounded
 artifact reader and sandboxed viewer. Space artifacts do not expose project
 Keep or discussion controls.
+
+Project saved-artifact lists and artifact reads enforce private-thread ownership
+from the artifact's chat or producing task. Another member's private artifacts
+are omitted from lists and return 404 on reads.

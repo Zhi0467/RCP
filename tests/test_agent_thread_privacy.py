@@ -145,3 +145,71 @@ def test_task_ownership_filter_precedes_recent_limit(tmp_path):
     assert [
         task.operation_id for task in store.agent_tasks("project", limit=1, user_id="viewer")
     ] == ["public"]
+
+
+def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
+    import uuid
+
+    from rcp.artifacts import descriptor_for
+    from rcp.storage import Artifact
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    own = store.local_owner.user_id
+    artifacts_by_owner = {}
+    for owner in (own, "another-member", None):
+        chat_id = (
+            next(
+                t.thread_id
+                for t in store.ensure_agent_threads(owner, [project_id], default_names=("Pip",))
+                if t.project_id
+            )
+            if owner
+            else "public-chat"
+        )
+        operation_id = str(uuid.uuid4())
+        now = store.now()
+        kept = descriptor_for(operation_id, "legacy.html", media_type="text/html").model_copy(
+            update={
+                "kept_filename": "legacy.html",
+                "kept_at": now,
+            }
+        )
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind="project_chat",
+                status="succeeded",
+                request={"chat_id": chat_id},
+                created_at=now,
+                updated_at=now,
+                finished_at=now,
+                status_message="Done",
+                result={"artifacts": [kept.model_dump(mode="json")]},
+            )
+        )
+        artifact = Artifact(
+            artifact_id=uuid.uuid4().hex,
+            project_id=project_id,
+            supplier="turn",
+            supplier_id=operation_id,
+            origin_operation_id=operation_id,
+            source_name="saved.html",
+            media_type="text/html",
+            created_at=now,
+            kept_at=now,
+        )
+        store.create_artifact(artifact, data=b"<p>saved</p>")
+        artifacts_by_owner[owner] = {artifact.artifact_id, kept.artifact_id}
+        response = client.get(
+            f"/api/projects/{project_id}/artifacts/{artifact.artifact_id}/content"
+        )
+        assert response.status_code == (404 if owner == "another-member" else 200)
+    listed = client.get(f"/api/projects/{project_id}/artifacts")
+    assert listed.status_code == 200
+    assert {row["artifact_id"] for row in listed.json()} == (
+        artifacts_by_owner[own] | artifacts_by_owner[None]
+    )

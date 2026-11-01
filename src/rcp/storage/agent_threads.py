@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rcp.storage.artifact_models import Artifact
 from rcp.storage.chat_names import normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -15,6 +16,21 @@ from rcp.storage.resource_versions import (
     install_agent_thread_version,
     install_agent_thread_versions,
 )
+
+
+def private_artifact_owner(connection: sqlite3.Connection, artifact: Artifact) -> str | None:
+    """Resolve saved output privacy from its chat or producing task, including old rows."""
+    row = connection.execute(
+        "SELECT user_id FROM agent_threads WHERE thread_id = ? OR thread_id IN ("
+        "SELECT json_extract(request_json, '$.chat_id') FROM graph_runs "
+        "WHERE operation_id IN (?, ?)) LIMIT 1",
+        (
+            artifact.chat_id,
+            artifact.origin_operation_id,
+            artifact.supplier_id if artifact.supplier == "turn" else None,
+        ),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 class AgentThreadRecord(BaseModel):
