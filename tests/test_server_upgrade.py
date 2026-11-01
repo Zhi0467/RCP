@@ -156,6 +156,8 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (63,),
             (64,),
             (65,),
+            (66,),
+            (67,),
         ]
 
         plan = connection.execute(
@@ -224,6 +226,65 @@ def test_immutable_server_boundaries_upgrade_and_start(
     shutil.copytree(fixture, copied)
 
     _exercise_candidate_upgrade(copied, baseline_schema=baseline_schema)
+
+
+def test_merge_receipt_upgrade_preserves_a_pre_origin_evidence_flag(tmp_path: Path) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-merge-effects-v37-607f2cc"
+    )
+    metadata = verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = _materialize_database(copied / "data")
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 65
+        )
+        assert "origin_flag_id" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(evidence_flags)")
+        }
+        connection.execute(
+            "INSERT INTO evidence_flags(flag_id,project_id,target,evidence_id,evidence_revision,"
+            "kind,finding,state,created_at) VALUES (?,?,?,?,2,'overclaim',?,'open',?)",
+            (
+                "legacy-flag",
+                metadata["project_id"],
+                metadata["legacy_branch_id"],
+                "ev/legacy-branch",
+                "Review the retained legacy Evidence.",
+                "2026-10-01T00:00:00+00:00",
+            ),
+        )
+        old = dict(
+            connection.execute(
+                "SELECT * FROM evidence_flags WHERE flag_id='legacy-flag'"
+            ).fetchone()
+        )
+    with chdir(copied):
+        store = AppStore(database)
+        upgraded = store.evidence_flag(str(metadata["project_id"]), "legacy-flag")
+        assert upgraded["origin_flag_id"] is None
+        assert {name: upgraded[name] for name in upgraded if name != "origin_flag_id"} == {
+            name: old[name] for name in upgraded if name != "origin_flag_id"
+        }
+        with store.connection() as connection:
+            assert (
+                connection.execute("SELECT COUNT(*) FROM evidence_flag_carries").fetchone()[0] == 0
+            )
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM episode_merge_request_receipts"
+                ).fetchone()[0]
+                == 0
+            )
+        assert store.storage_schema_ledger_head() == store.storage_schema_registry_head()
+        store.close()
 
 
 def test_node_worker_upgrade_preserves_attempt_and_allows_project_seat(tmp_path: Path) -> None:

@@ -11,11 +11,6 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=49")
     connection.execute("DROP TABLE IF EXISTS episode_merge_request_receipts")
     connection.execute("DROP TABLE IF EXISTS evidence_flag_carries")
-    if any(
-        row[1] == "origin_flag_id"
-        for row in connection.execute("PRAGMA table_info(evidence_flags)")
-    ):
-        connection.execute("ALTER TABLE evidence_flags DROP COLUMN origin_flag_id")
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES
 
     for table in (*reversed(PAPER_PROJECT_TABLES), *PAPER_SHARED_TABLES):
@@ -25,6 +20,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     ).fetchall()
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
+    if any(
+        row[1] == "origin_flag_id"
+        for row in connection.execute("PRAGMA table_info(evidence_flags)")
+    ):
+        connection.execute("ALTER TABLE evidence_flags DROP COLUMN origin_flag_id")
     if any(row[1] == "login_id" for row in connection.execute("PRAGMA table_info(graph_runs)")):
         connection.execute("ALTER TABLE graph_runs DROP COLUMN login_id")
         connection.execute("DROP TABLE provider_login_assignments")

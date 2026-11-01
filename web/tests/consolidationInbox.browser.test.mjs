@@ -38,6 +38,5 @@ test("failure task action uses its operation and fits a 390px Inbox", async (t) 
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   const bounds = await open.boundingBox();
   assert.ok(bounds.width >= 44 && bounds.height >= 44);
-  await page.screenshot({ path: "/private/tmp/rcp-consolidation-inbox-390.png" });
   assert.deepEqual(errors, []);
 });

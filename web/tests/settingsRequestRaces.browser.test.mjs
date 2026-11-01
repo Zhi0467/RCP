@@ -209,7 +209,14 @@ test("project member responses and invite selections stay with their project", a
     "Clara",
   ]);
 
-  await respond(page, alphaRoute, { json: members("alpha-member") });
+  // Leaving alpha cancels its dormant read when no other owner watches it.
+  // A surviving response is fenced just as a cancellation is; neither may
+  // replace beta's members or its invitation candidates.
+  await alphaRoute.fulfill({ json: members("alpha-member") });
+  const alphaResponse = await alphaRoute.request().response();
+  if (alphaResponse) await alphaResponse.finished();
+  else assert.match(alphaRoute.request().failure().errorText, /abort/i);
+  await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.match(await memberList.textContent(), /Ben/);
   assert.doesNotMatch(await memberList.textContent(), /Alice/);
   assert.deepEqual(await invitation.locator("option").allTextContents(), [

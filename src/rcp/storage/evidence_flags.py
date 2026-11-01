@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, cast
 from rcp.core.models import GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.outcome_edges import is_current_evidence
-from rcp.history.delta import semantic_document
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import EVIDENCE_FLAG_FINDING_MAX_CHARS, EVIDENCE_FLAG_SOURCE_MAX_CHARS
 from rcp.storage.consolidation import target_ref
@@ -300,6 +299,8 @@ class EvidenceFlagStoreMixin(StoreMixinBase):
         destination finding cannot make a crashed effect reopen it on retry.
         Address-session bindings stay local to the source finding.
         """
+        from rcp.history.delta import semantic_document
+
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             source_key = source.branch_id if source.kind == "branch" else "main"
