@@ -645,8 +645,7 @@ export function AgentThreadView({
         })}
         {questionsByTurn.loose.map(renderQuestion)}
         {!pending &&
-          latest?.active &&
-          latest.request.message &&
+          latest?.request.message &&
           !messages?.some((message) => message.operation_id === latest.operation_id) && (
             <div className="node-chat-line human">
               <div className="chat-human-message">
@@ -678,7 +677,7 @@ export function AgentThreadView({
         {latest?.active && (
           <div className="node-chat-line agent">
             <TurnProgress task={latest} />
-            <span className="chat-task-live" role="status">
+            <span className="agent-turn-live" role="status">
               <LoaderCircle className="spin" size={12} aria-hidden="true" />
               {latest.status_message}
               {latest.can_pause && (

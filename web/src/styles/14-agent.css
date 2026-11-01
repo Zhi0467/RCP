@@ -276,7 +276,7 @@
   margin-bottom: 8px;
   padding: 4px 8px;
 }
-.agent-thread .chat-task-live {
+.agent-turn-live {
   align-items: center;
   color: var(--muted);
   display: inline-flex;

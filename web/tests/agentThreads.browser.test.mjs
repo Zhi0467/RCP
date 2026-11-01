@@ -118,6 +118,7 @@ const settled = (operationId, events = []) => ({
   can_steer: false,
   steer_turn_id: null,
   status_message: "Done",
+  request: {},
   events,
 });
 
