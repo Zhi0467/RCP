@@ -18,6 +18,7 @@ from rcp.history.engine import ProjectHistoryEngine
 from rcp.history.queries import HeadSpec
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
+from rcp.storage.chat_names import chat_titles
 from rcp.storage.digest import append_digest_event
 from rcp.transport import StateUnavailable
 
@@ -594,6 +595,14 @@ def _present_current(store, project_id, result, state, runs) -> None:
     question_ids = [item["item_id"] for item in needs if item["kind"] == "question"]
     report_ids = [item["item_id"] for item in reports if item["kind"] == "episode_report"]
     with store.connection() as conn:
+        chat_groups = [
+            group for group in result["changed"] if group["source_key"].startswith("chat:")
+        ]
+        titles = chat_titles(
+            conn, project_id, [group["source_key"].removeprefix("chat:") for group in chat_groups]
+        )
+        for group in chat_groups:
+            group["label"] = titles.get(group["source_key"].removeprefix("chat:"), group["label"])
         owners = {
             row[0]: (row[1], row[2])
             for row in conn.execute(

@@ -97,6 +97,7 @@ export function digestProfile(
   target: GraphTargetRef,
 ): ResourceProfile<ProjectDigest> {
   return {
+    watch: [{ name: "chats" }],
     key: projectResourceKey(projectId, "digest", {
       query: target.kind === "main" ? "main" : `branch:${target.branch_id}`,
     }),

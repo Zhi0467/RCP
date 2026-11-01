@@ -8,6 +8,7 @@ import {
   registerAccessLossHandler,
   saveVoiceSettings,
 } from "../core/api";
+import { useAgentThreads } from "../agents/useAgentThreads";
 import { appendVoiceEntries } from "../agents/agentThreadsApi";
 import { desktopKeepsVoiceWhileHidden } from "../core/desktopRuntime";
 import { serviceConnectionFailure } from "./dictation";
@@ -273,6 +274,7 @@ export function useVoiceAgent({
 }) {
   const [phase, setPhase] = useState<"idle" | "starting" | "open">("idle");
   const [thread, setThread] = useState<AgentThread | null>(null);
+  const { threads } = useAgentThreads(phase !== "idle");
   const [problem, setProblem] = useState<VoiceProblem | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [transcript, setTranscript] = useState<VoiceTranscriptLine[]>([]);
@@ -672,8 +674,8 @@ export function useVoiceAgent({
 
   return {
     phase,
-    /** The thread this session is bound to, named on its panel. */
-    thread,
+    /** Keep the session binding while reading its current display name. */
+    thread: threads?.find((item) => item.thread_id === thread?.thread_id) ?? thread,
     problem,
     startedAt,
     transcript,

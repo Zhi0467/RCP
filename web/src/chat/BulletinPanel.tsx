@@ -119,6 +119,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
   const url = graphTargetUrl(base, channel);
   const channelKey = bulletinTargetKey(channel);
   const profile: ResourceProfile<BulletinPage> = {
+    watch: [{ name: "chats" }],
     key: projectResourceKey(projectId, "bulletin", { query: `${url}:${cursor ?? ""}` }),
     fetch: (signal) =>
       api(
@@ -175,10 +176,6 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
     setDraft(rebase);
     setEditing((current) => current && { ...current, text: rebase(current.text) });
   }, [channelKey, candidates]);
-  const agentNames = useMemo(
-    () => new Map(roster.map((actor) => [actor.id, actor.name])),
-    [roster],
-  );
   const resourceId = resourceKeyId(profile.key);
   const channelsId = resourceKeyId(channelsProfile.key);
   const reload = () => {
@@ -575,7 +572,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
         </article>
       );
     const agent = item.author.kind === "agent";
-    const author = bulletinAuthor(item, agentNames);
+    const author = bulletinAuthor(item);
     // An agent still on the roster opens its conversation from its name or avatar.
     const authorActor = agent ? rosterById.get(item.author.actor_id ?? "") : undefined;
     const own = canPost && bulletinIsOwnPost(item, actorId);
@@ -885,7 +882,7 @@ export function BulletinPanel({ projectId, target, actorId, nodes = NO_NODES, on
             {reply && (
               <div className="bulletin-replying">
                 <CornerUpLeft size={13} />
-                <span>{bulletinAuthor(reply, agentNames)}</span>
+                <span>{bulletinAuthor(reply)}</span>
                 <span className="bulletin-replying-text">
                   {bulletinDecodeMentions(reply.text, candidates)}
                 </span>

@@ -49,7 +49,7 @@ ResourceName = Literal[
 RESOURCE_NAMES = frozenset(get_args(ResourceName))
 _PROCESS_EPOCH = uuid.uuid4().hex
 # Change when the projection/token contract changes, independently of DB migrations.
-_PROJECTION_VERSION = 1
+_PROJECTION_VERSION = 2
 router = APIRouter()
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
@@ -251,6 +251,9 @@ def resource_watermarks(
               UNION SELECT id, scope, resource, '' FROM requested
               UNION SELECT id, '', resource, '' FROM requested
               UNION SELECT id, scope, resource, ? FROM requested WHERE resource='chats'
+              UNION SELECT id, (SELECT space_id FROM space_identity WHERE singleton=1),
+                           'chats', '' FROM requested
+                     WHERE resource IN ('bulletin', 'digest', 'tasks.status', 'task')
             )
             SELECT scopes.id, COALESCE(SUM(version.generation), 0) AS generation
             FROM scopes LEFT JOIN resource_versions AS version

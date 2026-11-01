@@ -213,6 +213,7 @@ async def stream_space_chat_run(
     """Run one local provider with one exact, independently authorized stage per project."""
     from rcp.agents import AgentEvent, agent_output_schema
     from rcp.agents.artifact_contract import artifact_contract
+    from rcp.runs.agent_names import stage_agent_name_pointer
     from rcp.runs.agent_thread_commands import ThreadCommandHandler, space_command_usages
     from rcp.runs.browser_lifecycle import browser_turn
     from rcp.runs.chat import (
@@ -419,6 +420,7 @@ async def stream_space_chat_run(
                 [
                     "You are the member's Space agent. This is a captured Work turn. Read across their projects; make direct file and graph changes only inside the listed admitted scopes. Hand project lifecycle work, including protected-action approval cards, to their own project thread using handoff. Never create watch.json or top-level patch.json.",
                     render_agent_graph_authority_contract(),
+                    stage_agent_name_pointer(execution, stage, None),
                     f"Top-level command client: {stage / 'rcp'}. Available commands: "
                     + "; ".join(space_command_usages(handler.allowed_verbs))
                     + ". Each admitted project's projects/<id>/rcp supports only validate, graph_log, graph_diff and bulletin. A project Patch belongs only in projects/<id>/patch.json.",

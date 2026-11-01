@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 from rcp.limits import BULLETIN_KEY_MAX_CHARS, BULLETIN_REPLY_MAX_CHARS
@@ -559,3 +561,63 @@ def test_space_task_bulletin_requires_exact_project_binding(store):
     assert result["text"] == "note"
     with pytest.raises(BulletinError):
         store.execute_bulletin_command("unbound", "turn", "read")
+
+
+@pytest.mark.parametrize("identity", ["chat:c1", "episode:c1", "worker:c1", "space"])
+def test_old_post_author_resolves_live_name_and_deleted_fallback(store, identity):
+    scope, chat_id = "project", "c1"
+    if identity == "space":
+        thread = next(
+            t
+            for t in store.ensure_agent_threads(
+                store.local_owner.user_id, [], default_names=("Agent",)
+            )
+            if t.kind == "space"
+        )
+        chat_id = thread.thread_id
+        with store.connection() as connection:
+            scope = connection.execute("SELECT space_id FROM space_identity").fetchone()[0]
+        identity = f"chat:{chat_id}"
+    original = post(store, "old")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE bulletin_posts SET author_actor_id=?, actor_label='Old writer' WHERE post_id=?",
+            (identity, original["post_id"]),
+        )
+    store.set_chat_title(scope, chat_id, store.local_owner.user_id, "Renamed")
+    assert store.list_bulletin("project", "main")["posts"][0]["author"]["actor_label"] == "Renamed"
+    with store.connection() as connection:
+        connection.execute(
+            "DELETE FROM chat_display WHERE project_id=? AND chat_id=?", (scope, chat_id)
+        )
+    assert (
+        store.list_bulletin("project", "main")["posts"][0]["author"]["actor_label"] == "Old writer"
+    )
+
+
+def test_post_author_names_are_batched_per_page(store, monkeypatch):
+    expected = {}
+    for index in range(8):
+        entry = post(store, f"post-{index}")
+        chat_id = f"author-{index}"
+        title = f"Renamed {index}"
+        store.set_chat_title("project", chat_id, store.local_owner.user_id, title)
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE bulletin_posts SET author_actor_id=?, operation_id=NULL WHERE post_id=?",
+                (f"chat:{chat_id}", entry["post_id"]),
+            )
+        expected[entry["post_id"]] = title
+    queries = []
+    connection_owner = store.connection
+
+    @contextmanager
+    def traced():
+        with connection_owner() as connection:
+            connection.set_trace_callback(queries.append)
+            yield connection
+
+    monkeypatch.setattr(store, "connection", traced)
+    posts = store.list_bulletin("project", "main")["posts"]
+    assert {entry["post_id"]: entry["author"]["actor_label"] for entry in posts} == expected
+    assert len([query for query in queries if "chat_display" in query]) == 1

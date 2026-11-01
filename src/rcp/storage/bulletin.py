@@ -24,6 +24,7 @@ from rcp.limits import (
 )
 from rcp.storage.agent_threads import agent_thread_attribution
 from rcp.storage.artifacts import ArtifactStoreMixin
+from rcp.storage.chat_names import chat_title, chat_titles
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
@@ -96,13 +97,20 @@ def _artifact_links(
     return links
 
 
-def _record(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> dict[str, Any]:
+def _record(
+    connection: sqlite3.Connection, row: sqlite3.Row, now: str, titles: dict[str, str]
+) -> dict[str, Any]:
     author = {"kind": row["author_kind"]}
     for key in ("operation_id", "actor_label", "user_id", "display_name"):
         if row[key] is not None:
             author[key] = row[key]
     if row["author_actor_id"] is not None:
         author["actor_id"] = row["author_actor_id"]
+        prefix, _, chat_id = row["author_actor_id"].partition(":")
+        if author["kind"] == "agent" and prefix in {"chat", "episode", "worker"}:
+            title = titles.get(chat_id)
+            if title is not None:
+                author["actor_label"] = title
     return {
         "post_id": row["post_id"],
         "author": author,
@@ -117,6 +125,22 @@ def _record(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> dict[
         "deleted_at": row["deleted_at"],
         "reply_count": row["reply_count"] if "reply_count" in row.keys() else 0,  # noqa: SIM118 - sqlite rows iterate values
     }
+
+
+def _records(
+    connection: sqlite3.Connection, rows: list[sqlite3.Row], now: str
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    chat_ids = [
+        row["author_actor_id"].partition(":")[2]
+        for row in rows
+        if row["author_kind"] == "agent"
+        and row["author_actor_id"]
+        and row["author_actor_id"].partition(":")[0] in {"chat", "episode", "worker"}
+    ]
+    titles = chat_titles(connection, rows[0]["project_id"], chat_ids)
+    return [_record(connection, row, now, titles) for row in rows]
 
 
 _REPLY_COUNT = "(SELECT count(*) FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.reply_to=p.post_id AND r.deleted_at IS NULL)"
@@ -245,12 +269,13 @@ def _list(
         f"SELECT count(*) FROM bulletin_posts p WHERE project_id=? AND target_key=? AND {_VISIBLE}",
         (project_id, target_key),
     ).fetchone()[0]
-    posts = [
-        _record(connection, row, now)
-        for row in sorted(
+    posts = _records(
+        connection,
+        sorted(
             [*rows[:BULLETIN_PAGE_SIZE], *replies], key=lambda row: row["sequence"], reverse=True
-        )
-    ]
+        ),
+        now,
+    )
     parents = {post["post_id"]: post for post in posts if not post["reply_to"]}
     for post in posts:
         if post["reply_to"]:
@@ -445,14 +470,14 @@ def _post(
                     (project_id, target_key, post_id, mention["id"], now),
                 )
         outcome = {
-            "post": _record(
+            "post": _records(
                 connection,
                 connection.execute(
                     f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE post_id=?",
                     (post_id,),
-                ).fetchone(),
+                ).fetchall(),
                 now,
-            )
+            )[0]
         }
         _retain_recent_threads(connection, project_id, target_key)
         connection.execute(
@@ -500,19 +525,20 @@ class BulletinStoreMixin(StoreMixinBase):
         mentions under it are not open.
         """
         with self.connection() as connection:
+            rows = connection.execute(
+                f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND deleted_at IS NULL "
+                "AND p.author_actor_id IS NOT ? "
+                "AND NOT EXISTS(SELECT 1 FROM bulletin_posts t WHERE t.post_id=p.reply_to AND t.deleted_at IS NOT NULL) "
+                "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
+                "AND NOT EXISTS(SELECT 1 FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.author_actor_id=? "
+                "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND (p.edited_at IS NULL OR r.created_at>p.edited_at) "
+                "AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
+                "ORDER BY sequence DESC",
+                (project_id, actor_id, actor_id, actor_id),
+            ).fetchall()
             return [
-                {**_record(connection, row, self.now()), "target_key": row["target_key"]}
-                for row in connection.execute(
-                    f"SELECT p.*, {_REPLY_COUNT} AS reply_count FROM bulletin_posts p WHERE project_id=? AND deleted_at IS NULL "
-                    "AND p.author_actor_id IS NOT ? "
-                    "AND NOT EXISTS(SELECT 1 FROM bulletin_posts t WHERE t.post_id=p.reply_to AND t.deleted_at IS NOT NULL) "
-                    "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) m WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
-                    "AND NOT EXISTS(SELECT 1 FROM bulletin_posts r WHERE r.project_id=p.project_id AND r.target_key=p.target_key AND r.author_actor_id=? "
-                    "AND r.deleted_at IS NULL AND r.sequence>p.sequence AND (p.edited_at IS NULL OR r.created_at>p.edited_at) "
-                    "AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
-                    "ORDER BY sequence DESC",
-                    (project_id, actor_id, actor_id, actor_id),
-                )
+                {**post, "target_key": row["target_key"]}
+                for row, post in zip(rows, _records(connection, rows, self.now()), strict=True)
             ]
 
     def mark_bulletin_read(
@@ -815,16 +841,15 @@ def _agent_label(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: st
     """
 
     request = json.loads(task["request_json"] or "{}")
-    # An orchestrator's turns carry no chat_id; its conversation is its chain root.
-    chat_id = request.get("chat_id") or (
-        actor_id.removeprefix("episode:") if actor_id.startswith("episode:") else None
+    # Actor ids already identify worker chats and orchestrator chain roots.
+    prefix, _, chat_id = actor_id.partition(":")
+    named = (
+        chat_title(connection, task["project_id"], chat_id)
+        if prefix in {"chat", "episode", "worker"}
+        else None
     )
-    named = connection.execute(
-        "SELECT title FROM chat_display WHERE project_id=? AND chat_id=?",
-        (task["project_id"], chat_id),
-    ).fetchone()
-    if named and named["title"]:
-        return named["title"]
+    if named is not None:
+        return named
     part = (
         "Worker"
         if request.get("role") == "worker"

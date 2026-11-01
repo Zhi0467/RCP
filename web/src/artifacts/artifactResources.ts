@@ -27,6 +27,7 @@ export function runArtifactsProfile(
   episodeId: string,
 ): ResourceProfile<RunArtifactEntry[]> {
   return {
+    watch: [{ name: "chats" }],
     key: projectResourceKey(projectId, "artifacts", { query: `episode:${episodeId}` }),
     fetch: (signal) =>
       api(

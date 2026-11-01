@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Annotated, Literal
@@ -21,7 +22,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episode_timeline import worker_label
-from rcp.api.episodes import child_experiment_on_owned_branch
+from rcp.api.episodes import child_experiment_on_owned_branch, episode_chain_records
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
 from rcp.artifact_comments import (
@@ -62,6 +63,7 @@ from rcp.storage import (
 )
 from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifacts import ArtifactDeleteRefused
+from rcp.storage.chat_names import chat_titles
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -611,8 +613,35 @@ def run_artifacts(
         )
     )
     entries = []
+    orchestrator_id = (
+        episode_chain_records(store, episode)[0].episode_id
+        if episode.mode == "auto_research"
+        else None
+    )
+    with store.connection() as connection:
+        works = {
+            row["operation_id"]: row
+            for row in connection.execute(
+                "SELECT attempt.operation_id, route.worker_id, route.instruction "
+                "FROM json_each(?) AS requested "
+                "JOIN auto_research_child_work_attempts AS attempt ON attempt.operation_id=requested.value "
+                "JOIN auto_research_child_work AS route ON route.worker_id=attempt.worker_id",
+                (json.dumps([artifact.origin_operation_id for artifact in artifacts]),),
+            )
+        }
+        actor_ids = [work["worker_id"] for work in works.values()]
+        if orchestrator_id is not None:
+            actor_ids.append(orchestrator_id)
+        titles = chat_titles(connection, project_id, actor_ids)
     for artifact in artifacts:
-        work = store.auto_research_child_work_for_operation(artifact.origin_operation_id or "")
+        work = works.get(artifact.origin_operation_id)
+        label = worker_label(work["instruction"]) if work else None
+        actor_id = work["worker_id"] if work else None
+        if actor_id is None and orchestrator_id and artifact.episode_id == episode_id:
+            actor_id = orchestrator_id
+            label = "Orchestrator"
+        if actor_id is not None:
+            label = titles.get(actor_id, label)
         entries.append(
             RunArtifactEntry(
                 artifact_id=artifact.artifact_id,
@@ -621,7 +650,7 @@ def run_artifacts(
                 view=artifact_view(artifact.media_type),
                 supplier=artifact.supplier,
                 origin_operation_id=artifact.origin_operation_id,
-                worker_label=worker_label(work.instruction) if work else None,
+                worker_label=label,
                 created_at=artifact.created_at,
             )
         )
