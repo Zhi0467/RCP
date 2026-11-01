@@ -907,6 +907,13 @@ export function ChatsWorkspace({
             {archiveError}
           </p>
         )}
+        <AgentBoard
+          columns={boardColumns}
+          labels={BOARD_LABELS}
+          renderCard={renderBoardCard}
+          onOpen={openCard}
+          onDrop={dropCard}
+        />
         <BulletinPanel
           key={`${project.id}:${graphTarget.kind === "branch" ? graphTarget.branch_id : "main"}`}
           projectId={project.id}
@@ -914,13 +921,6 @@ export function ChatsWorkspace({
           actorId={actorId}
           nodes={nodes}
           onOpenNode={onOpenNode}
-        />
-        <AgentBoard
-          columns={boardColumns}
-          labels={BOARD_LABELS}
-          renderCard={renderBoardCard}
-          onOpen={openCard}
-          onDrop={dropCard}
         />
       </section>
     );
