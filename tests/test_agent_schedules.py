@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
@@ -92,46 +93,29 @@ def command(**arguments):
 
 
 def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_store):
-    from types import SimpleNamespace
-
     from rcp.runs.agent_schedules import handle_schedule
 
-    # Replay actual old-writer JSON, rather than restamping it with today's model.
-    from rcp.service import _StoredChatRecord
-
-    message = _StoredChatRecord.model_validate(
-        {
-            "sessionId": "thread",
-            "chatScope": "project",
-            "timestamp": schedule_store.now(),
-            "uuid": "m",
-            "type": "user",
-            "role": "user",
-            "text": "Check daily",
-            "operationId": "origin",
-        }
-    )
+    # Replay old-writer admission JSON, without a display transcript.
     old_request = '{"chat_id":"thread","chat_scope":"project","mode":"work","message":"Check daily","trigger":"human"}'
     with schedule_store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'", (old_request,)
         )
-    service = SimpleNamespace(chat_transcript=lambda _: SimpleNamespace(messages=[message]))
     add = command(action="add", cron="0 9 * * *", timezone="UTC", note="Check results")
-    first = handle_schedule(schedule_store, "origin", add, service)
+    first = handle_schedule(schedule_store, "origin", add)
     assert first.status == "ok"
-    assert handle_schedule(schedule_store, "origin", add, service).result == first.result
+    assert handle_schedule(schedule_store, "origin", add).result == first.result
     schedule_result = first.result["schedule"]
     assert isinstance(schedule_result, dict)
     schedule_id = schedule_result["schedule_id"]
     cancel = command(action="cancel", schedule_id=schedule_id)
-    assert handle_schedule(schedule_store, "origin", cancel, service).status == "ok"
-    assert handle_schedule(schedule_store, "origin", cancel, service).status == "ok"
+    assert handle_schedule(schedule_store, "origin", cancel).status == "ok"
+    assert handle_schedule(schedule_store, "origin", cancel).status == "ok"
     assert schedule_store.agent_schedules("thread")[0].state == "cancelled"
 
 
 @pytest.mark.parametrize(
-    "trigger,source,followup,transcript",
+    "trigger,source,followup,member_message",
     [
         ("schedule", None, False, True),
         ("watcher", None, False, True),
@@ -141,17 +125,15 @@ def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_stor
     ],
 )
 def test_add_requires_admitting_member_message(
-    schedule_store, monkeypatch, trigger, source, followup, transcript
+    schedule_store, monkeypatch, trigger, source, followup, member_message
 ):
     import json
-    from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import handle_schedule
-    from rcp.service import ChatMessage
 
     with schedule_store.connection() as connection:
         request = dict(schedule_store.agent_task("origin").request)
-        request.update(trigger=trigger)
+        request.update(trigger=trigger, message="Check" if member_message else "")
         if source:
             request["source"] = source
         connection.execute(
@@ -160,21 +142,10 @@ def test_add_requires_admitting_member_message(
         )
     if followup:
         monkeypatch.setattr(schedule_store, "question_for_followup", lambda _: object())
-    message = ChatMessage(
-        message_id="m",
-        operation_id="origin",
-        role="user",
-        text="Check",
-        timestamp=schedule_store.now(),
-    )
-    service = SimpleNamespace(
-        chat_transcript=lambda _: SimpleNamespace(messages=[message]) if transcript else None
-    )
     result = handle_schedule(
         schedule_store,
         "origin",
         command(action="add", cron="0 9 * * *", timezone="UTC", note="Check"),
-        service,
     )
     assert result.status == "invalid"
     assert schedule_store.agent_schedules() == []
@@ -209,11 +180,10 @@ def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store)
     )
 
 
-def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store):
+def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store, monkeypatch):
     from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import dispatch_agent_schedules
-    from rcp.service import resolve_dispatch_authority
 
     for key in ("a", "b"):
         schedule_store.add_agent_schedule(
@@ -234,12 +204,16 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store)
         schedule_store.mark_agent_task_running(operation_id)
         launched.append(operation_id)
 
-    poller = SimpleNamespace(
-        store=schedule_store,
-        tasks=SimpleNamespace(
-            dispatch_authority_resolver=resolve_dispatch_authority, launch_admitted=launch
-        ),
-    )
+    from rcp.background import BackgroundAgentTasks
+    from tests.helpers import fake_launch_admitted
+
+    async def stream(*_args) -> AsyncIterator[str]:
+        raise AssertionError("The validating launch fake must not start a provider")
+        yield ""
+
+    tasks = BackgroundAgentTasks(schedule_store, stream)
+    fake_launch_admitted(monkeypatch, tasks, launch)
+    poller = SimpleNamespace(store=schedule_store, tasks=tasks)
     now = datetime.fromisoformat(schedule_store.now())
     dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert launched == []
@@ -305,11 +279,10 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     assert client.get(path).json()["schedules"][0]["state"] == "cancelled"
 
 
-def test_schedule_wake_rechecks_transfer_fence(schedule_store):
+def test_schedule_wake_rechecks_transfer_fence(schedule_store, monkeypatch):
     from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import dispatch_agent_schedules
-    from rcp.service import resolve_dispatch_authority
 
     schedule_store.add_agent_schedule(
         thread_id="thread",
@@ -328,12 +301,16 @@ def test_schedule_wake_rechecks_transfer_fence(schedule_store):
             (now, now),
         )
     launched = []
-    poller = SimpleNamespace(
-        store=schedule_store,
-        tasks=SimpleNamespace(
-            dispatch_authority_resolver=resolve_dispatch_authority, launch_admitted=launched.append
-        ),
-    )
+    from rcp.background import BackgroundAgentTasks
+    from tests.helpers import fake_launch_admitted
+
+    async def stream(*_args) -> AsyncIterator[str]:
+        raise AssertionError("The validating launch fake must not start a provider")
+        yield ""
+
+    tasks = BackgroundAgentTasks(schedule_store, stream)
+    fake_launch_admitted(monkeypatch, tasks, launched.append)
+    poller = SimpleNamespace(store=schedule_store, tasks=tasks)
     dispatch_agent_schedules(
         poller,
         datetime.fromisoformat(now),
@@ -369,10 +346,8 @@ def test_every_minute_long_downtime_count_and_dst_coalescing():
 @pytest.mark.parametrize("source", ["voice", "handoff"])
 def test_member_sources_can_add(schedule_store, source):
     import json
-    from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import handle_schedule
-    from rcp.service import ChatMessage
 
     task = schedule_store.agent_task("origin")
     with schedule_store.connection() as connection:
@@ -380,20 +355,11 @@ def test_member_sources_can_add(schedule_store, source):
             "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
             (json.dumps({**task.request, "source": source}), "origin"),
         )
-    message = ChatMessage(
-        message_id="m",
-        operation_id="origin",
-        role="user",
-        text="Check",
-        timestamp=schedule_store.now(),
-    )
-    service = SimpleNamespace(chat_transcript=lambda _: SimpleNamespace(messages=[message]))
     assert (
         handle_schedule(
             schedule_store,
             "origin",
             command(action="add", cron="0 9 * * *", timezone="UTC", note="Check"),
-            service,
         ).status
         == "ok"
     )
@@ -484,7 +450,7 @@ def test_due_schedule_is_marked_during_automatic_launch_cooldown(schedule_store,
     tasks.launch_admitted.assert_not_called()
 
 
-def test_space_thread_commands_create_and_wake_its_own_schedule(manifest, tmp_path):
+def test_space_thread_commands_create_and_wake_its_own_schedule(manifest, tmp_path, monkeypatch):
     from datetime import timedelta
     from types import SimpleNamespace
 
@@ -523,6 +489,7 @@ def test_space_thread_commands_create_and_wake_its_own_schedule(manifest, tmp_pa
             dispatch_authority=resolve_dispatch_authority("space_chat", request),
         )
     )
+    assert request.message is not None
     append_space_message(
         SpaceThreadOwner(store, catalog, thread.thread_id),
         request,
@@ -543,13 +510,10 @@ def test_space_thread_commands_create_and_wake_its_own_schedule(manifest, tmp_pa
     listed = handler(command(action="list"), identity)
     assert listed.result["schedules"] == [added.result["schedule"]]
     launched = []
-    poller = SimpleNamespace(
-        store=store,
-        tasks=SimpleNamespace(
-            dispatch_authority_resolver=resolve_dispatch_authority,
-            launch_admitted=launched.append,
-        ),
-    )
+    from tests.helpers import fake_launch_admitted
+
+    fake_launch_admitted(monkeypatch, app.state.background_tasks, launched.append)
+    poller = SimpleNamespace(store=store, tasks=app.state.background_tasks)
     due = now + timedelta(days=2)
     dispatch_agent_schedules(poller, due, store.advance_agent_schedules(due))
     assert len(launched) == 1

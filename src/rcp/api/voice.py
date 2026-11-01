@@ -88,7 +88,7 @@ async def session(request: Request, body: SessionRequest):
     connection, key = store.voice_credentials()
     settings = store.voice_settings()
     if thread["project_id"]:
-        service = get_project_service(get_catalog(request), thread["project_id"])
+        service = get_project_writer(get_catalog(request), thread["project_id"])
         with service.history.workspace.read_snapshot() as root:
             records = read_records(transcript_path(root, thread), thread)
     else:

@@ -15,7 +15,7 @@ from rcp.api.dependencies import (
     get_catalog,
     get_identity_access,
     get_project_display_cache,
-    get_project_service,
+    get_project_writer,
     get_store,
     get_watcher_delivery,
     project_write_admission,
@@ -61,7 +61,7 @@ def _execute(
 
     project_id = action.project_id
     if action.kind == "proposal":
-        service = get_project_service(catalog, project_id)
+        service = get_project_writer(catalog, project_id)
         return sync_graph(
             project_id,
             GraphSyncRequest.model_validate(
@@ -171,7 +171,7 @@ def resolve_approval_card(
             ):
                 try:
                     pinned = approval_pins(
-                        get_project_service(catalog, action.project_id), store, action, human
+                        get_project_writer(catalog, action.project_id), store, action, human
                     )
                 except (KeyError, ValueError):
                     pinned = None

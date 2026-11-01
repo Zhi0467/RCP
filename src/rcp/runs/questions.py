@@ -422,7 +422,7 @@ class WorkCommandHandler:
                 or identity.authority != "broker"
             ):
                 return refuse("Schedules require this turn's broker authority.")
-            return handle_schedule(execution.store, execution.operation_id, request, self.service)
+            return handle_schedule(execution.store, execution.operation_id, request)
 
         if isinstance(request, NameCommandRequest):
             from rcp.runs.agent_names import handle_name
