@@ -445,6 +445,9 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         await page.route("**/api/projects/demo/chats/own-thread/questions", (route) =>
           route.fulfill({ json: [] }),
         );
+        await page.route("**/api/projects/demo/chat-display", (route) =>
+          route.fulfill({ json: { archived: [], titles: {}, pinned: [] } }),
+        );
         await page
           .getByRole("button", { name: /^Agents/ })
           .first()
