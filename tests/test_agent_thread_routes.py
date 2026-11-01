@@ -119,6 +119,12 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         store.create_agent_task(task)
         sender = app.state.notification_sender
         sender.run_pass()
+        # An ordinary finished reply only marks the thread unread; a failure pushes.
+        assert not [n for n in store.notification_outbox() if n["kind"] == "agent_thread"]
+        store.create_agent_task(
+            task.model_copy(update={"operation_id": "thread-failure", "status": "failed"})
+        )
+        sender.run_pass()
         notices = [
             notice for notice in store.notification_outbox() if notice["kind"] == "agent_thread"
         ]
@@ -127,6 +133,7 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         pending = client.get(f"/api/notifications/devices/{device['device_id']}/pending")
         assert pending.status_code == 200
         assert [item["reason"] for item in pending.json()] == ["agent_thread"]
+        assert pending.json()[0]["deep_link"] == f"#/agent/{row['thread_id']}"
         sender.run_pass()
         assert (
             len(

@@ -94,9 +94,10 @@ and voice entries share one transcript lock; voice entries deduplicate under tha
 lock before appending.
 
 Private chats, their tasks and their questions are visible and controllable only
-by their owner. Project question pushes target that owner. Unread settled project
-thread replies use the owner-only `agent_thread` notification; Space replies do
-not push. Public graph provenance may name the thread through `via_agent`, while
+by their owner. Project question pushes target that owner. A failed or
+interrupted project thread turn that stays unread uses the owner-only
+`agent_thread` notification, linking to the thread; an ordinary reply only marks
+the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
 
 Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`

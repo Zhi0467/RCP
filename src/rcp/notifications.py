@@ -404,7 +404,10 @@ class NotificationSender:
             self.store.observe_consolidation_notification(event, notification)
 
     def _recheck_agent_threads(self, project: ProjectRecord) -> None:
-        """Retry unread private replies with a stable turn id and an exact recipient."""
+        """Push unread failed private turns with a stable turn id and an exact recipient.
+
+        A finished reply only marks the thread unread; questions and cards push on their own.
+        """
         since = (
             datetime.fromisoformat(self.store.now()) - timedelta(seconds=NOTIFICATION_TTL_SECONDS)
         ).isoformat()
@@ -416,7 +419,7 @@ class NotificationSender:
                 "LEFT JOIN chat_reads seen ON seen.project_id=t.project_id "
                 "AND seen.chat_id=t.thread_id AND seen.user_id=t.user_id "
                 "WHERE t.project_id=? AND t.closed_at IS NULL AND r.visible=1 "
-                "AND r.status IN ('succeeded','failed','interrupted') AND r.finished_at>? "
+                "AND r.status IN ('failed','interrupted') AND r.finished_at>? "
                 "AND (seen.read_through IS NULL OR seen.read_through<r.finished_at)",
                 (project.project_id, since),
             ).fetchall()
@@ -430,10 +433,7 @@ class NotificationSender:
                     reason="agent_thread",
                     created_at=row["finished_at"],
                 )
-                notice["deep_link"] = (
-                    f"#/projects/{quote(project.project_id, safe='')}?view=chats"
-                    f"&chat={quote(row['thread_id'], safe='')}"
-                )
+                notice["deep_link"] = f"#/agent/{quote(row['thread_id'], safe='')}"
                 self.store.enqueue_notification(
                     connection, recipient_user_id=row["user_id"], **notice
                 )
