@@ -17,6 +17,10 @@ def test_cron_grammar_and_dst():
     assert next_occurrence(
         "*/15 9-10 * * 1,3", "UTC", datetime(2026, 11, 2, 9, 1, tzinfo=UTC)
     ) == datetime(2026, 11, 2, 9, 15, tzinfo=UTC)
+    # A stepped single start runs through the field maximum, as in cron.
+    assert next_occurrence(
+        "5/2 * * * *", "UTC", datetime(2026, 11, 2, 9, 6, tzinfo=UTC)
+    ) == datetime(2026, 11, 2, 9, 7, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(

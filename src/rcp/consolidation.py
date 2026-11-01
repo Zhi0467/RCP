@@ -71,9 +71,11 @@ def cron_fields(expression: str) -> tuple[set[int], ...]:
                 raise ValueError("invalid cron field")
             base, stride = match.groups()
             step = int(stride or 1)
-            start, end = (
-                (low, high) if base == "*" else (int(base.split("-")[0]), int(base.split("-")[-1]))
-            )
+            bounds = base.split("-")
+            start, end = (low, high) if base == "*" else (int(bounds[0]), int(bounds[-1]))
+            if base != "*" and len(bounds) == 1 and stride is not None:
+                # A stepped single start runs through the field maximum, as in cron.
+                end = high
             if step < 1 or not low <= start <= end <= high:
                 raise ValueError("cron field is out of range")
             values.update(range(start, end + 1, step))

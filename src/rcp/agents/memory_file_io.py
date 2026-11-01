@@ -134,7 +134,8 @@ def read_indexes(root: Path, user_id: str, max_bytes: int) -> dict:
                     raise ValueError("memory directory cannot be a symlink")
                 if directory == root.parent:
                     break
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            # Non-blocking, so a FIFO is refused below instead of waited on.
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except FileNotFoundError:
             continue
         try:

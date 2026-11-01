@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -423,6 +425,22 @@ def test_voice_reads_only_bounded_shared_and_owner_indexes(tmp_path, monkeypatch
     (root / "members/member/MEMORY.md").symlink_to(root / "members/other/MEMORY.md")
     with pytest.raises(OSError):
         read_project_memory_indexes(store, "project", "member")
+    (root / "members/member/MEMORY.md").unlink()
+    (root / "shared/MEMORY.md").unlink()
+    os.mkfifo(root / "shared/MEMORY.md")
+    outcome: list[BaseException] = []
+
+    def read() -> None:
+        try:
+            read_project_memory_indexes(store, "project", "member")
+        except (OSError, ValueError) as exc:
+            outcome.append(exc)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(5)
+    # A FIFO left by an agent is refused, never waited on.
+    assert not reader.is_alive() and outcome
 
 
 def test_voice_memory_remote_reads_the_base_using_shipped_owner(tmp_path, monkeypatch):
