@@ -223,7 +223,8 @@ def test_space_runtime_real_storage_and_partial_apply(
         assert execution.turn_outcome.status == "done"
     if broken in {"unavailable", "missing", "remote", "hidden"}:
         # A project the turn cannot write is named to the agent, for handoff.
-        assert f'"{unavailable_id}":' in prompts[0]
+        (master,) = (Path(execution.stage_root) / "inputs").glob("space-master-*.md")
+        assert str(master) in prompts[0] and f'"{unavailable_id}"' in master.read_text()
     transcript = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
     assert transcript is not None
     assert [message.role for message in transcript.messages] == ["user", "assistant"]
@@ -278,8 +279,20 @@ def test_space_runtime_real_storage_and_partial_apply(
                 )
             ]
 
+        if project_count == 0:
+            # A changed contract restages the master for the session that holds it.
+            monkeypatch.setattr("rcp.runs.space_chat.SPACE_MASTER_POLICY", "space-master-next")
         asyncio.run(continue_run())
         assert calls == [None, "space-native"]
+        inputs = Path(execution.stage_root) / "inputs"
+        first_master = next(inputs.glob("space-master-v1-*.md"))
+        # The first turn opens the staged master; the resumed turn only points to it.
+        assert str(first_master) in prompts[0] and len(prompts[1]) < 4000
+        if project_count == 0:
+            (restaged,) = inputs.glob("space-master-next-*.md")
+            assert str(restaged) in prompts[1]
+        else:
+            assert str(first_master) in prompts[1]
         continued = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
         assert continued is not None
         assert len(continued.messages) == 4

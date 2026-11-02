@@ -1863,6 +1863,18 @@ carries that outcome. The next turn's prompt carries the last turn's
 per-project results. Watcher
 storage also refuses a Space-task origin.
 
+A Space turn's fixed contract is a session master, staged with the
+`session_master` mechanism project chat uses. The master holds the role, the
+authority contract, the top-level usage, what the turn routes elsewhere, each
+project client's grant and write boundary, a pointer to the staged Patch schema,
+and the outcome and artifact contracts, including live pages. It also states the
+per-project context values and unreachable projects. Its key is the digest of
+the fixed part, so a changed contract restages the master. A new native session,
+after a provider switch for example, opens it again. A continuation of the
+same session sends a pointer, a context delta of changed values, the last turn's
+results and the turn envelope. That envelope holds this turn's artifact
+directory, attachments and message. Every Space turn kind takes this path.
+
 Space attachments reuse the ordinary chat attachment owner and stage immutable
 copies into the Space stage. Their paths enter the provider's read directories
 and prompt, and the user transcript record retains their descriptors. Every run
