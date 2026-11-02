@@ -654,11 +654,15 @@
   .agent-mode .landing-main {
     width: 100%;
   }
+  /* Title, toggle, settings, and account share one line; an open project tab
+     wraps to its own row below them (12-operations.css), never under them. */
   .landing-header.space-header {
-    flex-wrap: nowrap;
     padding: 10px 12px 10px 16px;
   }
+  /* A zero basis lets the title ellipsize instead of pushing settings and
+     account onto a second row. */
   .space-header .space-title-start {
+    flex: 1 1 0;
     gap: 10px;
   }
   .space-header .space-group-title {
