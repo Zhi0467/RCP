@@ -603,8 +603,12 @@ def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
     schedule_store.create_agent_task(resumed, continuation_cause="resume")
     with schedule_store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='resumed'")
+    schedule_store.set_agent_thread_pick(
+        "thread", provider="claude", model=None, reasoning=None, run_on=None
+    )
     dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert len(launched) == 1
+    assert schedule_store.agent_task(launched[0]).request["provider"] == "claude"
     restarted = BackgroundAgentTasks(AppStore(schedule_store.path), lambda *_args: None)
     monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kwargs: None)
     restarted.recover_at_startup()
