@@ -124,12 +124,10 @@ def test_remote_roots_follow_the_proven_home_instead_of_assuming_home_user(
 @pytest.mark.parametrize(
     ("invalid", "message"),
     [
-        # Control characters cannot reach a remote shell line.
         ("/home/alice\nother", _SAFE_LINE),
         ("/home/alice\x00other", _SAFE_LINE),
         ("/home/alice\x7f", _SAFE_LINE),
         ("/home/alice\tother", _SAFE_LINE),
-        # A space is not a control character, so it stays a legal home.
         ("home/alice", _ABSOLUTE_HOME),
         ("/", _ABSOLUTE_HOME),
         ("/srv/../home/alice", _ABSOLUTE_HOME),
@@ -156,22 +154,18 @@ def test_remote_roots_reject_unsafe_homes_with_the_guard_that_caught_them(
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        # Every recorded path must be absolute and normalized.
         ("data_dir", Path("home/rcp/rcp-server/data"), "must be absolute and normalized"),
         (
             "data_dir",
             Path("/home/rcp/rcp-server/../data"),
             "must be absolute and normalized",
         ),
-        # Server-owned children may not escape the server root.
         ("projects_root", Path("/home/rcp/elsewhere"), "must stay below the server root"),
-        # Server-owned children may not nest inside one another.
         (
             "projects_root",
             Path("/home/rcp/rcp-server/data/projects"),
             "must not overlap",
         ),
-        # The control socket belongs directly below the runtime directory.
         (
             "control_socket",
             Path("/run/rcp/nested/control.sock"),

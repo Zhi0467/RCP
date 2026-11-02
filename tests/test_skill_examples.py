@@ -100,7 +100,6 @@ def test_causality_example_choice_requires_orchestrator_authority() -> None:
     assert chosen.nodes["dec/measurement-duration"].status == "decided"
     assert chosen.nodes["exp/compare-methods"].status == "proposed"
 
-    # Omitting the orchestrator marker does not turn the same choice into ordinary Work.
     ordinary = json.loads(choice)
     ordinary.pop("agent_action")
     ordinary_patch = prepare_agent_patch(

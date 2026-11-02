@@ -119,8 +119,6 @@ def test_space_runtime_real_storage_and_partial_apply(
         if broken == "hidden" and service.history.project_id == unavailable_id:
             from rcp.agents.provider_environment import unhidden_read_scope
 
-            # Shared preparation's unhidden fallback leaves that project out, never
-            # widening the whole turn.
             return unhidden_read_scope(execution_machine="local", host="")
         return default_space_hidden_read_scope(
             owner, request, kwargs["workspace"], execution, kwargs["repository_inventory"]
@@ -141,7 +139,6 @@ def test_space_runtime_real_storage_and_partial_apply(
         }
         scope = kwargs["write_scope"]
         assert len(scope.projects) == project_count
-        # Only the owner's private notes are writable, readable and pointed to.
         notes = (tmp_path / "data").resolve() / "memory" / "members" / human.user_id
         assert scope.memory_roots == [str(notes)] and str(notes) in scope.writable_roots
         assert str(notes / "MEMORY.md") in prompt
@@ -249,19 +246,16 @@ def test_space_runtime_real_storage_and_partial_apply(
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
     if broken in {"unavailable", "missing", "remote", "hidden"}:
-        # An excluded project reaches neither the write scope, Git, nor a mailbox.
         scope, git_access = launched[0]
         assert unavailable_id not in {item.project_id for item in scope.projects}
         assert unavailable_id not in {repository for repository, _ in git_access.checkouts}
         assert not (Path(execution.stage_root) / "projects" / unavailable_id / "rcp").exists()
-        # A project the turn cannot write is named to the agent, for handoff.
         (master,) = (Path(execution.stage_root) / "inputs").glob("space-master-*.md")
         assert str(master) in prompts[0] and f'"{unavailable_id}"' in master.read_text()
     transcript = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
     assert transcript is not None
     assert [message.role for message in transcript.messages] == ["user", "assistant"]
     assert transcript.messages[-1].text == "Finished the requested work."
-    # The answer carries how its graph updates settled, not plain success.
     assert transcript.messages[-1].turn_outcome == execution.turn_outcome
     assert store.chat_session_context("claude", "local", "space-native").kind == "space_chat"
 
@@ -312,13 +306,11 @@ def test_space_runtime_real_storage_and_partial_apply(
             ]
 
         if project_count == 0:
-            # A changed contract restages the master for the session that holds it.
             monkeypatch.setattr("rcp.runs.space_chat.SPACE_MASTER_POLICY", "space-master-next")
         asyncio.run(continue_run())
         assert calls == [None, "space-native"]
         inputs = Path(execution.stage_root) / "inputs"
         first_master = next(inputs.glob(f"{SPACE_MASTER_POLICY}-*.md"))
-        # The first turn opens the staged master; the resumed turn only points to it.
         assert str(first_master) in prompts[0] and len(prompts[1]) < 4000
         if project_count == 0:
             (restaged,) = inputs.glob("space-master-next-*.md")
@@ -329,7 +321,6 @@ def test_space_runtime_real_storage_and_partial_apply(
         assert continued is not None
         assert len(continued.messages) == 4
         if project_count:
-            # The next turn learns which project was not applied, and why.
             (receipt,) = store.agent_task_receipts_by_category(
                 task.operation_id, "space_project_results"
             )
@@ -352,7 +343,6 @@ def test_space_output_clear_removes_agent_directories_without_following_links(tm
     linked.symlink_to(outside)
     for path in (made, linked, stage / "outcome.json"):
         clear_space_output(path)
-    # A malformed output never survives into the next fresh turn.
     assert not made.exists() and not linked.is_symlink()
     assert (outside / "kept").exists()
 
@@ -401,6 +391,7 @@ def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
 
 
 def test_space_seed_cuts_an_oversized_newest_message_to_the_budget():
+    """Quotes double under JSON escaping, so the cut accounts for it."""
     import json
     from types import SimpleNamespace
 
@@ -408,7 +399,6 @@ def test_space_seed_cuts_an_oversized_newest_message_to_the_budget():
     from rcp.runs.space_chat import _space_seed
     from rcp.service import RunRequest
 
-    # Quotes double under JSON escaping, so the cut must account for it.
     newest = '"é' * AGENT_THREAD_TAIL_MAX_BYTES
     prior = SimpleNamespace(
         messages=[
@@ -443,7 +433,6 @@ def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
             None, fresh, None, tail, prepare_scope=None, local_stage=tmp_path, remote_stage=None
         )
     )
-    # The prompt carries one short pointer; the staged file holds the newest tail.
     assert len(pointer) < 1000
     (staged,) = (tmp_path / "inputs").glob("thread-history-*.md")
     assert str(staged) in pointer and "turn 39 " in staged.read_text()
@@ -459,6 +448,7 @@ def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
     ],
 )
 def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written, status):
+    """An answer with no outcome file is unstated, as in project Work, not a failure."""
     from rcp.runs.space_chat import settle_space_turn_outcome
 
     if written == "link":
@@ -466,13 +456,10 @@ def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written, s
         (tmp_path / "outcome.json").symlink_to(tmp_path / "elsewhere.json")
     elif written is not None:
         (tmp_path / "outcome.json").write_text(written)
-    # Project updates may already have applied; the turn still settles. An answer
-    # with no outcome file is unstated, as in project Work, not a failure.
     assert settle_space_turn_outcome(tmp_path, {}).status == status
     failed = {"p": {"name": "P", "status": "rejected"}}
     assert settle_space_turn_outcome(tmp_path, failed).status == "partial"
     if written == "link":
-        # The partial rewrite replaces the agent's link, never writes through it.
         assert (tmp_path / "elsewhere.json").read_text() == '{"status": "done"}'
         assert not (tmp_path / "outcome.json").is_symlink()
 
@@ -564,7 +551,7 @@ def test_a_delivered_space_steer_keeps_its_final_receipt(manifest, tmp_path):
     delivered: Future[ProviderSteerReceipt] = Future()
     delivered.set_result(ProviderSteerReceipt("delivered"))
     background = cast(Any, SimpleNamespace(bump_steer_revision=lambda _operation_id: None))
-    for _ in range(2):  # A repeated final receipt is written once.
+    for _ in range(2):
         finish_chat_steer(owner, background, task, (stored, delivered))
     transcript = read_space_chat_transcript(
         tmp_path / "data", owner.thread.user_id, owner.thread_id
@@ -585,7 +572,7 @@ def test_a_crash_cut_last_line_never_locks_the_space_thread(manifest, tmp_path):
     append_space_message(owner, request, task.operation_id, role="user", text="Hello")
     path = canonical_space_chat_path(tmp_path / "data", thread.user_id, thread.thread_id)
     with path.open("ab") as handle:
-        handle.write(b'{"sessionId": "\xc3')  # A write cut mid-record and mid-character.
+        handle.write(b'{"sessionId": "\xc3')
     transcript = read_space_chat_transcript(tmp_path / "data", thread.user_id, thread.thread_id)
     assert transcript is not None and [item.text for item in transcript.messages] == ["Hello"]
     append_space_message(owner, request, task.operation_id, role="assistant", text="Hi")

@@ -172,7 +172,6 @@ def test_local_skill_stage_is_immutable_and_points_to_each_package(tmp_path: Pat
     assert (bundle / "workflow" / "research-graph-audit" / "WORKFLOW.md").is_file()
     assert (bundle / "skill" / "graph-audit" / "SKILL.md").stat().st_mode & 0o222 == 0
     assert bundle.stat().st_mode & 0o222 == 0
-    # No unrelated registry package rides along.
     assert sorted(path.name for path in (bundle / "skill").iterdir()) == [
         "evidence-triage",
         "experiment-causality",

@@ -108,8 +108,10 @@ async def test_adapter_request_and_empty_success(monkeypatch, kind):
 
 @pytest.mark.asyncio
 async def test_gemini_reads_both_general_and_transcribe_model_replies(monkeypatch):
+    """The shape gemini-3.5-transcribe returned to a live probe, beside a general
+    model's.
+    """
     request = ConnectRequest(kind="gemini", key=KEY)
-    # The shape gemini-3.5-transcribe returned to a live probe, beside a general model's.
     parts = [{"audioTranscription": {"text": "Testing dictation"}}, {"text": " here."}]
     reply = {"candidates": [{"content": {"parts": parts, "role": "model"}}]}
     mock_transport(
@@ -226,7 +228,6 @@ async def test_connect_records_only_passing_formats_and_never_saves_failure(
     async def silent(*_):
         return " "
 
-    # A model that answers with no words cannot dictate, even when the request succeeds.
     monkeypatch.setattr(transcription, "transcribe", silent)
     assert client.post("/api/service-connections", json=payload).status_code == 422
     assert len(private.summary()["connections"]) == 1

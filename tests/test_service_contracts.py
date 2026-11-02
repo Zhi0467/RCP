@@ -104,9 +104,9 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
 
 
 def test_graph_attention_projection_names_a_prior_choice_its_options_dropped() -> None:
-    # An agent may reword a Decision's options but never writes `selected_option`,
-    # so a reopened Decision routinely records a choice its ballot cannot mark.
-    # The projection names it once; no consumer re-derives it.
+    """An agent never writes `selected_option`, so a reopened Decision often records a
+    choice its ballot cannot mark; the projection names it once.
+    """
     state = GraphState(
         nodes={
             "dec/reworded": Decision(
@@ -138,8 +138,6 @@ def test_graph_attention_projection_names_a_prior_choice_its_options_dropped() -
         },
     )
 
-    # Only the Decision whose ballot lost its choice; an option that still
-    # carries the choice marks it itself, and an undecided one has none.
     assert project_graph_attention(state).decision_prior_choices == {"dec/reworded": "small"}
 
 

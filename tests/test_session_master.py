@@ -31,6 +31,7 @@ def _task(
 
 
 def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: Path) -> None:
+    """A replacement recorded by a failed attempt may never have been delivered."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     stage = tmp_path / "stage"
@@ -59,17 +60,14 @@ def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: 
 
     kept = continuation("wake-1", "key-1")
     assert kept.path == start.path and not kept.bootstrap
-    # The kept master reports the values it was rendered with, so only a change is sent.
     assert kept.values == {"patch": {"path": "/stage/patch.json"}}
     assert Path(kept.path).read_text(encoding="utf-8") == "master one"
 
-    # A replacement recorded by an attempt that failed may never have been delivered.
     undelivered = continuation("wake-failed", "key-2", status="failed")
     assert undelivered.bootstrap
     replaced = continuation("wake-2", "key-2")
     assert replaced.bootstrap and replaced.replaces
     assert Path(replaced.path).read_text(encoding="utf-8") == "master for key-2"
 
-    # The replacement is now what the session holds.
     after = continuation("wake-3", "key-2")
     assert after.path == replaced.path and not after.bootstrap

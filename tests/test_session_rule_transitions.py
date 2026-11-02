@@ -139,8 +139,6 @@ def test_human_reopens_own_master_after_experiment(session, phase, baseline, rem
 @pytest.mark.parametrize("edit", [None, "discuss", "revoking"])
 def test_experiment_repair_keeps_own_values_and_owner_revocation(session, edit):
     store, stage, request, task, succeed = session
-    # Only a revoking edit replaces the session's instructions; a Discuss edit runs
-    # under the chat master and must not force a reopening.
     revocation = edit == "revoking"
     experiment = task("experiment", episode=True)
     key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=False)
@@ -176,7 +174,7 @@ def test_experiment_repair_keeps_own_values_and_owner_revocation(session, edit):
                 "project", "session", stage_host=None, stage_root=str(stage)
             )
 
-        assert pending()  # Recording a launch alone cannot clear revocation.
+        assert pending()
         succeed(repair)
         assert not pending()
 
