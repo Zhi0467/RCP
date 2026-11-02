@@ -359,6 +359,7 @@ import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
 import { openTerminalSocket } from "./terminals/terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
 import { useAgentThreads } from "./agents/useAgentThreads";
+import { taskControlHeaders } from "./agents/agentThreadsApi";
 import { VoicePanel } from "./voice/VoicePanel";
 
 import {
@@ -3765,7 +3766,7 @@ function MemberApp({
     try {
       const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
         method: "POST",
-        headers: { "Idempotency-Key": requestId },
+        headers: taskControlHeaders(action, requestId),
       });
       taskActionRequestIds.current.delete(admissionKey);
       mutation.settle(next);

@@ -6,14 +6,18 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
+import subprocess
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
+import httpx
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from pydantic import TypeAdapter
@@ -28,7 +32,9 @@ from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.report import ValidationReport
 from rcp.history import HistoryManager
+from rcp.projects import ProjectCatalog
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
+from rcp.transport.state import SSHStateWorkspace, StateWorkspace
 
 if TYPE_CHECKING:
     import pytest
@@ -788,3 +794,157 @@ class CommandFileMailbox:
 
     def remove_if_sha256(self, _name: str, _sha256: str) -> bool:
         return True
+
+
+def traced_connection(
+    connection: Callable[[], AbstractContextManager[sqlite3.Connection]],
+    record: Callable[[str], None],
+) -> Callable[[], AbstractContextManager[sqlite3.Connection]]:
+    """Wrap a store's connection factory so every statement it runs reaches `record`."""
+
+    @contextmanager
+    def traced() -> Iterator[sqlite3.Connection]:
+        with connection() as opened:
+            opened.set_trace_callback(record)
+            yield opened
+
+    return traced
+
+
+class _TracingAppStore(AppStore):
+    """Count projection reads without changing the production connection path."""
+
+    def __init__(self, path) -> None:
+        self.select_count = 0
+        super().__init__(path)
+
+    def connection(self) -> AbstractContextManager[sqlite3.Connection]:
+        return traced_connection(super().connection, self._count_select)()
+
+    def _count_select(self, statement: str) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            self.select_count += 1
+
+
+_WRITE_KEYWORDS = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE"})
+
+
+def is_write_statement(statement: str) -> bool:
+    """`BEGIN IMMEDIATE` or DML, the statements a read-only route never runs."""
+
+    words = statement.split(None, 2)
+    if not words:
+        return False
+    head = words[0].upper()
+    if head == "BEGIN":
+        return len(words) > 1 and words[1].upper() == "IMMEDIATE"
+    return head in _WRITE_KEYWORDS
+
+
+@dataclass
+class RequestTrace:
+    """Effects observed while `trace_requests` is active.
+
+    `transactions` holds the statements of each store connection use, in order.
+    """
+
+    transactions: list[list[str]] = field(default_factory=list)
+    subprocesses: list[list[str]] = field(default_factory=list)
+    http: list[str] = field(default_factory=list)
+    remote_reads: list[str] = field(default_factory=list)
+
+    @property
+    def statements(self) -> list[str]:
+        return [statement for transaction in self.transactions for statement in transaction]
+
+    def writes(self, exempt: Callable[[list[str]], bool] = lambda _writes: False) -> list[str]:
+        """Write statements, leaving out each connection use whose writes `exempt` accepts."""
+
+        found: list[str] = []
+        for transaction in self.transactions:
+            writes = [statement for statement in transaction if is_write_statement(statement)]
+            if writes and not exempt(writes):
+                found.extend(writes)
+        return found
+
+    def effects(
+        self, exempt: Callable[[list[str]], bool] = lambda _writes: False
+    ) -> dict[str, list[Any]]:
+        """Every non-empty effect a read-only route must not have."""
+
+        found = {
+            "writes": self.writes(exempt),
+            "subprocesses": self.subprocesses,
+            "http": self.http,
+            "remote_reads": self.remote_reads,
+        }
+        return {kind: items for kind, items in found.items() if items}
+
+
+@contextmanager
+def trace_requests(app: Any) -> Iterator[RequestTrace]:
+    """Record what requests to `app` do beyond reading the local store.
+
+    Statements come from the app store's connection factory. Subprocesses and
+    remote reads run as usual and are recorded. Outbound HTTP is recorded and
+    refused, so no test reaches a real network.
+    """
+
+    import urllib.request
+
+    import pytest
+
+    trace = RequestTrace()
+    store = _store_of(app)
+    popen_init = subprocess.Popen.__init__
+
+    def record_popen(self: subprocess.Popen[Any], args: Any, *rest: Any, **kwargs: Any) -> None:
+        trace.subprocesses.append(
+            [args] if isinstance(args, str | bytes) else [str(part) for part in args]
+        )
+        popen_init(self, args, *rest, **kwargs)
+
+    def refuse_urlopen(url: Any, *args: Any, **kwargs: Any) -> Any:
+        trace.http.append(str(getattr(url, "full_url", url)))
+        raise OSError("Outbound HTTP is refused while tracing requests.")
+
+    def refuse_transport(_transport: Any, request: httpx.Request) -> Any:
+        trace.http.append(str(request.url))
+        raise httpx.ConnectError("Outbound HTTP is refused while tracing requests.")
+
+    async def refuse_async_transport(transport: Any, request: httpx.Request) -> Any:
+        return refuse_transport(transport, request)
+
+    def remote_read(owner: type, name: str) -> Callable[..., Any]:
+        original = getattr(owner, name)
+
+        @functools.wraps(original)
+        def recorded(*args: Any, **kwargs: Any) -> Any:
+            trace.remote_reads.append(f"{owner.__name__}.{name}")
+            return original(*args, **kwargs)
+
+        return recorded
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess.Popen, "__init__", record_popen)
+        patch.setattr(urllib.request, "urlopen", refuse_urlopen)
+        patch.setattr(httpx.HTTPTransport, "handle_request", refuse_transport)
+        patch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse_async_transport)
+        for owner, name in (
+            (StateWorkspace, "refresh_if_stale"),
+            (SSHStateWorkspace, "refresh_if_stale"),
+            (ProjectCatalog, "open_display"),
+        ):
+            patch.setattr(owner, name, remote_read(owner, name))
+        connection = store.connection
+
+        def traced() -> AbstractContextManager[sqlite3.Connection]:
+            transaction: list[str] = []
+            trace.transactions.append(transaction)
+            return traced_connection(connection, transaction.append)()
+
+        store.connection = traced
+        try:
+            yield trace
+        finally:
+            del store.connection

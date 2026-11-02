@@ -41,7 +41,7 @@ from rcp.storage import (
 from rcp.storage.command_mailbox import CommandMailboxStore
 from rcp.storage.question_models import QuestionOrigin
 
-from .helpers import NON_UUID4
+from .helpers import NON_UUID4, _TracingAppStore
 from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_compute_jobs_storage import job_record
 
@@ -1135,24 +1135,6 @@ def test_existing_paper_draft_database_gains_ancestor_without_losing_draft(tmp_p
     assert draft["content"] == "# Existing draft"
     assert draft["base_hash"] == "old-base"
     assert draft["ancestor_content"] is None
-
-
-class _TracingAppStore(AppStore):
-    """Count projection reads without changing the production connection path."""
-
-    def __init__(self, path) -> None:
-        self.select_count = 0
-        super().__init__(path)
-
-    @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        with super().connection() as connection:
-            connection.set_trace_callback(self._count_select)
-            yield connection
-
-    def _count_select(self, statement: str) -> None:
-        if statement.lstrip().upper().startswith("SELECT"):
-            self.select_count += 1
 
 
 class _WriteTracingAppStore(AppStore):
