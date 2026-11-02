@@ -89,6 +89,39 @@ extend-exclude = [
   "web/src-tauri/target",
 ]
 
+# Python shipped as source to hosts whose python3 may be 3.9.
+# tests/test_shipped_sources.py derives the set and checks this list.
+[tool.ruff.per-file-target-version]
+"src/rcp/agents/grant_paths.py" = "py39"
+"src/rcp/agents/memory_file_io.py" = "py39"
+"src/rcp/agents/staged_command_broker.py" = "py39"
+"src/rcp/agents/staged_command_client.py" = "py39"
+"src/rcp/agents/staged_hidden_read.py" = "py39"
+"src/rcp/artifact_preview.py" = "py39"
+"src/rcp/browser/host.py" = "py39"
+"src/rcp/browser/libraries.py" = "py39"
+"src/rcp/browser/worker.py" = "py39"
+"src/rcp/git_access.py" = "py39"
+"src/rcp/git_identity.py" = "py39"
+"src/rcp/providers/*/remote.py" = "py39"
+"src/rcp/providers/codex/homes.py" = "py39"
+"src/rcp/providers/session_format.py" = "py39"
+"src/rcp/providers/turn_fence.py" = "py39"
+"src/rcp/rcp_home.py" = "py39"
+"src/rcp/regular_file_reader.py" = "py39"
+"src/rcp/regular_tree_reader.py" = "py39"
+"src/rcp/repository_window.py" = "py39"
+"src/rcp/server_ops/provider_cleanup.py" = "py39"
+"src/rcp/server_ops/remote_*.py" = "py39"
+"src/rcp/sources/record_parsing.py" = "py39"
+"src/rcp/terminals/git_access.py" = "py39"
+"src/rcp/terminals/profile.py" = "py39"
+"src/rcp/transport/compute_process_owner.py" = "py39"
+"src/rcp/transport/conversation_worktree.py" = "py39"
+"src/rcp/transport/provider_discovery.py" = "py39"
+"src/rcp/transport/remote_*.py" = "py39"
+"src/rcp/transport/watcher_process.py" = "py39"
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
