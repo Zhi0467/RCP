@@ -21,6 +21,7 @@ from rcp.limits import (
     TEAM_DEVICE_PAIRING_TTL_MINUTES,
     TEAM_SESSION_IDLE_DAYS,
     TEAM_SESSION_LABEL_MAX_LENGTH,
+    TEAM_SESSION_TOUCH_INTERVAL_SECONDS,
 )
 from rcp.server_ops.config import ServerTeamConfig, render_team_access_config
 from rcp.server_runtime import ServerMetadata
@@ -90,6 +91,23 @@ def test_session_ids_migrate_independently_and_preserve_sessions(tmp_path) -> No
     reopened = AppStore(store.path)
     assert {session.session_id for session in reopened.team_sessions(member.user_id)} == identifiers
     assert all(reopened.resolve_team_session(secret) == member for secret in secrets)
+
+
+def test_session_touch_writes_at_most_once_per_interval(tmp_path, monkeypatch) -> None:
+    store, _, member, token = _claimed_team(tmp_path)
+    secret = store.create_team_session(token)[0]
+    created = datetime.fromisoformat(store.team_sessions(member.user_id)[0].last_seen_at)
+
+    def seen_after(seconds: float) -> str:
+        monkeypatch.setattr(
+            store, "now", lambda: (created + timedelta(seconds=seconds)).isoformat()
+        )
+        assert store.resolve_team_session(secret) == member
+        return store.team_sessions(member.user_id)[0].last_seen_at
+
+    assert seen_after(TEAM_SESSION_TOUCH_INTERVAL_SECONDS - 1) == created.isoformat()
+    later = created + timedelta(seconds=TEAM_SESSION_TOUCH_INTERVAL_SECONDS + 1)
+    assert seen_after(TEAM_SESSION_TOUCH_INTERVAL_SECONDS + 1) == later.isoformat()
 
 
 def test_members_list_and_revoke_only_their_own_device_sessions(tmp_path) -> None:

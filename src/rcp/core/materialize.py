@@ -304,7 +304,7 @@ def finalize_patch_bookkeeping(patch: Patch, staged_state: GraphState) -> Patch:
 
 
 def _fork_state(state: GraphState) -> GraphState:
-    """Fork a state so a failed apply cannot touch the caller's copy.
+    """Fork a state so a failed apply cannot touch the caller's copy (invariant 7b).
 
     Only the mutable containers are copied; the nodes, edges, proposals,
     ambiguities and glossary terms inside them are shared. That is
@@ -570,7 +570,7 @@ def _apply_patch(
             state.edges[edge_id] = edge.model_copy(update={"layer": derived})
 
     state.revision = max(state.revision, revision)
-    # The ingestion watermark moves only for an ingestion Patch that
+    # Invariant 10f: the ingestion watermark moves only for an ingestion Patch that
     # materialized, so a failed or rejected run and every conversation turn
     # leave it alone. It is an overlap-tolerant timestamp, not an exactly-once
     # cursor (tests/test_direct_ingestion_run.py::

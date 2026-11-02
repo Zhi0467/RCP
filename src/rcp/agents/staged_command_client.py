@@ -1174,7 +1174,7 @@ def _run_brokered(namespace, broker, request_content, request_id, deadline=None)
             if not chunk:
                 break
             content.extend(chunk)
-    except (TimeoutError, socket.timeout):  # noqa: UP041 (distinct on Python 3.9)
+    except (TimeoutError, socket.timeout):
         return _not_answered(namespace.verb, namespace.timeout)
     except OSError as exc:
         return _client_failure(

@@ -596,7 +596,7 @@ def _serve(
         try:
             connection, _address = server.accept()
         # Python 3.9 keeps socket.timeout distinct from builtin TimeoutError.
-        except socket.timeout:  # noqa: UP041
+        except socket.timeout:
             workers = [worker for worker in workers if worker.is_alive()]
             continue
         except OSError:

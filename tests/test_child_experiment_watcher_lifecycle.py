@@ -13,14 +13,13 @@ from rcp.service import RunRequest
 from rcp.storage import AppStore, WatcherContinuation
 from rcp.watchers import WatcherPoller
 
-from .helpers import fake_launch_admitted
+from .helpers import _TracingAppStore, fake_launch_admitted
 from .test_auto_research_children_storage import (
     _auto_parent,
     _experiment_route,
     _experiment_task,
     _project,
 )
-from .test_storage import _TracingAppStore
 from .test_watchers import _record
 
 

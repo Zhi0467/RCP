@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import ast
 import fcntl
 import hashlib
 import importlib.resources
+import inspect
 import json
 import os
 import queue
@@ -1151,19 +1151,14 @@ def _select_paper_tree(
 @lru_cache(maxsize=1)
 def _paper_tree_remote_script() -> str:
     """Ship the actual stdlib-only helpers, including in frozen distributions."""
-    source = _remote_script("state.py")
-    names = {"_paper_tree_digest", "_select_paper_tree"}
-    functions = [
-        ast.get_source_segment(source, node)
-        for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef) and node.name in names
-    ]
     return "\n".join(
         [
+            "from __future__ import annotations",
             "from pathlib import Path",
             "import sys",
             f"STATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}",
-            *(function for function in functions if function is not None),
+            inspect.getsource(_paper_tree_digest),
+            inspect.getsource(_select_paper_tree),
             "sys.exit(0 if _select_paper_tree(Path(sys.argv[1]), Path(sys.argv[2]), "
             "int(sys.argv[3]), sys.argv[4], float(sys.argv[5]), "
             "reconcile=sys.argv[6] == 'reconcile') else 3)",

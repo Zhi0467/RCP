@@ -103,6 +103,14 @@ export function steerThreadTurn(
   );
 }
 
+/** Pause stores nothing and repeats as a no-op, so its route takes no Idempotency-Key. */
+export function taskControlHeaders(
+  action: "pause" | "resume" | "retry",
+  requestId: string,
+): Record<string, string> {
+  return action === "pause" ? {} : { "Idempotency-Key": requestId };
+}
+
 export function controlThreadTask(
   thread: ThreadTaskOwner,
   operationId: string,
@@ -112,7 +120,7 @@ export function controlThreadTask(
 ): Promise<AgentTask> {
   return request(`${threadTasksPath(thread)}/${encodeURIComponent(operationId)}/${action}`, {
     method: "POST",
-    headers: { "Idempotency-Key": requestId },
+    headers: taskControlHeaders(action, requestId),
   });
 }
 

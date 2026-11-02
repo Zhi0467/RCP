@@ -729,7 +729,7 @@ def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    """Publish the manifest so a reader never sees a partial file.
+    """Publish the manifest so a reader never sees a partial file (invariant 7).
 
     The bytes reach a same-directory temporary file, are fsynced, and replace
     the manifest in one rename; the directory is fsynced so the rename itself
