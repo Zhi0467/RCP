@@ -231,3 +231,13 @@ def test_space_limits_derive_lacking_commands_from_grants(manifest, tmp_path):
     # Granted verbs never show as lacking; lifecycle verbs the turn lacks do.
     assert "`episode`" in section and "`launch`" in section
     assert "`schedule`" not in section and "`bulletin`" not in section
+
+
+def test_task_result_keeps_bounded_space_project_results():
+    import json
+
+    from rcp.storage import AppStore
+
+    stored = AppStore._bounded_result_json({"project_results": {"p": "applied", "q": 3}})
+    assert stored is not None
+    assert json.loads(stored)["project_results"] == {"p": "applied"}
