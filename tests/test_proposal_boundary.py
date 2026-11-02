@@ -898,7 +898,6 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
     ("truth_repository", "expected_code"),
     [
         ("repo-z", "source-outside-run-scope"),
-        # Agents read every project repository, so one they may not write is citable.
         ("repo-b", None),
     ],
 )

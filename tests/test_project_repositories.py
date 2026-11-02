@@ -28,7 +28,7 @@ from tests.test_write_scope import _resolve_local
 def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
     manifest, tmp_path
 ) -> None:
-    state = GraphState(project_truth_scope=["repo-a"])  # repo-b: agents only read it
+    state = GraphState(project_truth_scope=["repo-a"])
     assembler = ContextAssembler(manifest)
     run = assembler.assemble(state)
     chat = assembler.chat_context(state, graph_target=GraphTargetRef())
@@ -39,7 +39,6 @@ def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
     assert run.run_truth_scope == chat.run_truth_scope == ["repo-a"]
     with pytest.raises(ValueError):
         assembler.chat_context(state, graph_target=GraphTargetRef(), writable=["repo-b"])
-    # A client's pick never selects; only a worktree names its one writable repository.
     assert admitted_write_repositories(state, ["repo-b"], worktree=False) == ["repo-a"]
     assert admitted_write_repositories(state, ["repo-a"], worktree=True) == ["repo-a"]
     with pytest.raises(ValueError):
@@ -50,7 +49,6 @@ def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
 
 @pytest.mark.parametrize("mode", ["admission", "replay"])
 def test_agent_patches_record_reads_of_any_project_repository(mode) -> None:
-    # An older Patch stamped a narrower run scope than the truth scope; it still replays.
     patch = Patch(
         kind="refresh",
         author="agent",
@@ -62,13 +60,11 @@ def test_agent_patches_record_reads_of_any_project_repository(mode) -> None:
     if mode == "replay":
         patch = patch.model_copy(update={"revision": 1})
     context = ValidationContext(["repo-a", "repo-c"], ["repo-a", "repo-b", "repo-c"], mode=mode)
-    # A Patch written before reads were stamped keeps its exact bytes.
     stored = patch.model_dump(mode="json")
     assert Patch.model_validate(stored).model_dump(mode="json") == stored
     assert "run_read_scope" not in stored
 
     assert not validate_patch(GraphState(), patch, context).rejected
-    # Without a stamp, a read outside this project is refused, a group sibling's included.
     for outside in ("repo-z", "11111111-1111-4111-8111-111111111111:repo-a"):
         unread = patch.model_copy(update={"repositories_read": [outside]})
         assert "read-outside-run-scope" in {
@@ -96,7 +92,6 @@ def test_a_group_sibling_repository_read_is_stamped_and_admitted(
     read_scope = context.read_scope
     sibling_refs = [f"{sibling_id}:repo-a", f"{sibling_id}:repo-b"]
     assert read_scope.refs == sorted(["repo-a", "repo-b", *sibling_refs])
-    # The prompt names the same refs RCP stamps.
     rendered = render_chat_read_context(context)
     assert all(ref in rendered for ref in sibling_refs)
 
@@ -113,7 +108,6 @@ def test_a_group_sibling_repository_read_is_stamped_and_admitted(
     assert patch.repositories_read == ["repo-a", *sibling_refs]
     assert patch.run_read_scope == read_scope.refs
 
-    # Apply checks the stamp, never the live group: the verdict holds after the sibling leaves.
     validation = ValidationContext(["repo-a", "repo-b"], ["repo-a", "repo-b"])
     assert not validate_patch(GraphState(), patch, validation).rejected
     stranger = patch.model_copy(
@@ -125,7 +119,6 @@ def test_a_group_sibling_repository_read_is_stamped_and_admitted(
 
 
 def test_a_resumed_task_keeps_its_recorded_write_set(manifest, tmp_path) -> None:
-    # Authorized under an older, narrower scope; resuming must not widen it.
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     service = ProjectService(
         manifest, history, PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))

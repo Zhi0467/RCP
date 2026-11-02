@@ -40,8 +40,6 @@ def test_episode_wake_after_login_switch(
     store = accounts.store
     stage = tmp_path / "stage"
     old, new, member, _ = switched_session(accounts, stage, provider, direction)
-    # Setup the pre-switch episode through its normal admission, then persist the
-    # login/receipt shape emitted by the old writer on its exact native session.
     store.mark_provider_login_verified(old, member_id=member.user_id, detail="setup")
     store.mark_provider_login_signed_out(
         new, member_id=member.user_id, source="restore", detail="setup"

@@ -50,7 +50,6 @@ def _fake_claude(tmp_path: Path) -> Path:
         "    print(json.dumps({'type': 'system', 'subtype': 'init', 'skills': ['review']}))\n"
         "elif 'Reply with OK only.' in args:\n"
         "    print('OK')\n"
-        # Every turn carries --settings now; only the Work probe skips persistence.
         "elif '--no-session-persistence' in args:\n"
         "    assert sys.stdin.read() == ''\n"
         "else:\n"
@@ -118,7 +117,6 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     assert environment.local_env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(environment.local_env)
     assert environment.remote_prefix is None
-    # Codex has no RCP-managed credential; it inherits the service environment.
     assert (
         AgentLauncher(credentials=credentials)
         .process_environment(LoginKey("codex", "", MACHINE_LOGIN_ID))
@@ -151,7 +149,6 @@ def test_local_environment_drops_a_hosting_claude_session(
     assert environment.local_env is not None
     assert "CLAUDE_CODE_MESSAGING_SOCKET" not in environment.local_env
     assert "CLAUDE_CODE_ENTRYPOINT" not in environment.local_env
-    # Member configuration still reaches the provider.
     assert environment.local_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
@@ -193,6 +190,9 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
 async def test_every_local_claude_start_receives_the_stored_token(
     tmp_path: Path, credentials: ProviderCredentialStore
 ) -> None:
+    """The turn is the stream-json start that is neither the Work probe (`--no-session-
+    persistence`) nor the skill probe.
+    """
     binary = _fake_claude(tmp_path)
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(credentials=credentials, readiness_snapshots=store)
@@ -221,8 +221,6 @@ async def test_every_local_claude_start_receives_the_stored_token(
     argvs = [start["argv"] for start in starts]
     assert ["--version"] in argvs and ["auth", "status"] in argvs
     assert any("/context" in argv for argv in argvs), "the skill probe never ran"
-    # The prompt travels on stdin; the turn is the stream-json start that is
-    # neither the Work probe (`--no-session-persistence`) nor the skill probe.
     assert any(
         "--input-format" in argv
         and "--no-session-persistence" not in argv
@@ -244,19 +242,16 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     assert ["auth", "status"] in probed
     (tmp_path / "starts.jsonl").unlink()
 
-    # A new process has no memory; the durable snapshot answers for it.
     fresh = AgentLauncher(credentials=credentials, readiness_snapshots=store)
     reused = fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert reused == first
     assert [start["argv"] for start in _starts(tmp_path)] == [["--version"]]
     (tmp_path / "starts.jsonl").unlink()
 
-    # An explicit Refresh is the human asking for a real probe.
     fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     (tmp_path / "starts.jsonl").unlink()
 
-    # An upgraded executable is probed again, and the snapshot follows it.
     (tmp_path / "version.txt").write_text("2.1.271 (Claude Code)\n")
     upgraded = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
         LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)

@@ -249,7 +249,6 @@ def test_codex_work_parked_on_signed_out_shared_login_moves_to_own_login(account
     store = accounts.store
     _project(store)
     machine = _login(accounts, "codex", machine=True)
-    # Rows as v0.4.36 wrote them: the session's turns ran on the machine login.
     _turn(accounts, machine, status="succeeded", operation_id="earlier")
     queued = _turn(accounts, machine, status="queued", operation_id="queued")
     assert queued.authorized_by is not None
@@ -309,7 +308,6 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
         key = LoginKey("codex", "", "")
     store.mark_provider_login_verified(key, member_id=member.user_id, detail="verified")
     if event != "verify_own":
-        # A shared verify cannot release work while only Own is enabled.
         provider_login_changed(
             background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
         )

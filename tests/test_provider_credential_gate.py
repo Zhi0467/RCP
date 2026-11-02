@@ -131,10 +131,10 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
             self.spoke = False
 
         async def read(self, size):
+            """Stands in for provider auth initialization, the window where a second
+            process would rotate the same refresh token.
+            """
             if not self.spoke:
-                # Stand in for the provider's auth initialization: without the
-                # gate this is exactly the window in which a second process
-                # would start and rotate the same refresh token.
                 for _ in range(8):
                     await asyncio.sleep(0)
                 self.spoke = True
@@ -396,7 +396,6 @@ def test_a_win_during_loop_teardown_does_not_strand_the_credential() -> None:
         waiting = asyncio.create_task(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
         await asyncio.sleep(0.05)
         waiting.cancel()
-        # Hand the lock over exactly while the cancelled wrapper unwinds.
         blocker.release()
 
     asyncio.run(queue_then_tear_down())
@@ -598,9 +597,8 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
     holding: list[str] = []
 
     def probe(_host, command, **_):
+        """The version read touches no credential and runs before the hold."""
         if command[-1:] == ["--version"]:
-            # The version read touches no credential and decides whether the
-            # stored answer is current; it runs before the hold.
             return subprocess.CompletedProcess(command, 0, "2.1.267", "")
         assert not launcher.credential_gate._lock_for(
             LoginKey("claude", "", MACHINE_LOGIN_ID)

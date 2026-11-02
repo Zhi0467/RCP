@@ -26,7 +26,6 @@ def test_startup_releases_old_auth_failure_on_available_login(
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET failure_kind='provider_auth'")
         if not machine_row:
-            # A machine sign-in that was never written is implicitly signed in.
             connection.execute("DELETE FROM provider_login_states WHERE login_id=''")
         connection.execute("UPDATE projects SET locator=?", (str(manifest.path),))
     selected = []
@@ -37,7 +36,6 @@ def test_startup_releases_old_auth_failure_on_available_login(
     with TestClient(app):
         wait_until(lambda: bool(selected))
         assert selected == [(new, "session", None)]
-        # Startup may adopt the manifest's project id, so find the child by parent.
         child = wait_until(lambda: _child_of(store, "previous"))
         wait_for_task(store, child.operation_id, expect="succeeded")
 

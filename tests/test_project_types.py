@@ -8,6 +8,9 @@ persisted or wire names, such as the ``"experiment"`` Auto-research child kind,
 that the decision record lists. After lowering a count, lock it in with::
 
     uv run python -m tests.test_project_types
+
+The research layer lists the modules another project type would replace, not edit. Meta
+relations such as ``supersedes`` belong to every graph.
 """
 
 from __future__ import annotations
@@ -24,9 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "rcp"
 BASELINE = Path(__file__).resolve().parent / "fixtures" / "node_type_coupling_baseline.json"
 
-# The research layer: the research type, its node models, and the modules that
-# hold one node type's own rules or a research-only feature (the Experiment
-# loop). Another project type would replace these modules, not edit them.
 RESEARCH_LAYER = frozenset(
     {
         "core/models.py",
@@ -56,7 +56,6 @@ RESEARCH_LAYER = frozenset(
 )
 NODE_MODELS = typing.get_args(typing.get_args(ProjectNode)[0])
 NODE_CLASS_NAMES = frozenset(model.__name__ for model in NODE_MODELS) | {"RESEARCH"}
-# Meta relations such as ``supersedes`` belong to every graph, not to research.
 RESEARCH_RELATIONS = frozenset(name for name, spec in RELATION_SPEC.items() if spec.layer != "meta")
 RESEARCH_NAMES = ALL_NODE_TYPES | RESEARCH_RELATIONS
 

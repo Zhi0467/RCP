@@ -162,7 +162,6 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     response = TestClient(app).get("/api/providers/logins")
     assert response.status_code == 200, response.text
     accounts = response.json()
-    # The removed host's row is history nobody can act on; Verify would refuse it.
     assert [(a["provider"], a["host"], a["state"]) for a in accounts] == [
         ("claude", "", "signed_in"),
         ("codex", "", "signed_out"),
@@ -219,7 +218,6 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     assert started.status_code == 200, started.text
     operation = started.json()["attempt_id"]
     assert client.post(f"{route}/sign-in", json={}).status_code == 409
-    # The page is gone: no status GET or other HTTP request completes the work.
     (tmp_path / "signed-in").write_text("")
     wait_until(lambda: runner.sign_in_status(operation).state == "succeeded" or None, timeout=10)
     runner.reconcile_recovery()
@@ -306,8 +304,6 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
             host=host, reachable=True, os_account=reached["account"]
         ),
     )
-    # With no project path saved, the machine's own discovery resolves the
-    # provider, so an install off the login shell's PATH still signs in.
     monkeypatch.setattr(
         launcher,
         "discover_provider",
@@ -317,8 +313,6 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
         "/home/alice/.local/bin/codex",
         set(),
     )
-    # A host that gave no discovery verdict is refused with that reason, not
-    # as a missing executable.
     from rcp.agents.launcher import ProviderDiscoveryUnavailable
 
     def unanswered(provider, *, host):
@@ -330,7 +324,6 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
     assert refused.value.detail == "gpu.example did not answer the discovery probe."
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "unknown.example")
-    # SSH configuration now lands on another account; its provider state is not the card's.
     reached["account"] = "bob"
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "gpu.example")
@@ -437,7 +430,6 @@ def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monk
     )
     listed = TestClient(app).get("/api/providers/logins").json()
     used = {(a["provider"], a["host"]) for a in listed if a["agent_used"]}
-    # Settings still lists the compute-only machine; only its agent flag is off.
     assert {a["host"] for a in listed} == {"", "gpu.example"}
     assert used and all(host == "" for _provider, host in used)
 
@@ -621,7 +613,6 @@ def test_personal_login_rules(tmp_path, monkeypatch):
     app.include_router(provider_login.router)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
-    # Only the unsaved default differs from a team space.
     assert client_store.provider_login_setting("member", "claude", "").setting == "shared"
     assert client.post("/api/providers/claude/logins/add", json={"kind": "own"}).status_code == 200
     assert (

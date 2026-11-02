@@ -38,7 +38,6 @@ from .test_auto_research_recovery import (
 
 
 def _resume_app(store, background, monkeypatch):
-    # Exercise the same composed episode pass the timer and sign-in share.
     from rcp.api import app as app_module
 
     callback = background.on_task_settled
@@ -54,6 +53,9 @@ def _resume_app(store, background, monkeypatch):
 
 
 def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, monkeypatch):
+    """Claude has no observed signatures, so the recovery is built at its storage
+    boundary.
+    """
     store = _store(tmp_path)
     project = store.project("project")
     store.upsert_project(project.model_copy(update={"locator": str(manifest.path)}))
@@ -99,8 +101,6 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         )
         roots.append(wait_for_task(store, root.operation_id, expect="failed"))
         _wait_for_recovery(store, f"task:root-{project_id}")
-    # Claude has no observed signatures. Construct the already-classified recovery
-    # at its storage boundary so the route's account isolation is tested separately.
     store.schedule_auto_research_task_recovery(
         roots[1].operation_id,
         failure_kind="provider_auth",
@@ -279,7 +279,6 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     from .test_episode_report import _ReportLauncher, _setup_report
 
     service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
-    # The report fixture omits the mode adapter; its admitted visible turn is finished.
     store.complete_agent_task(f"{request.episode_id}-operation", applied_revision=None, result={})
     report_launcher = _ReportLauncher(["auth", "valid"])
 
@@ -327,7 +326,6 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     )
 
     async def stream(_project, _kind, _request, execution):
-        # The real launch captures the generation under the credential gate.
         execution.login_generation = store.provider_login_state(
             LoginKey("codex", "", MACHINE_LOGIN_ID)
         ).generation
@@ -414,11 +412,9 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
         store.project("project").model_copy(update={"locator": str(manifest.path)})
     )
     watcher = _arm_completed_graph_condition(store, episode, root)
-    # The alias is gone from the manifest, but the watcher froze the local account.
     stale = watcher.model_copy(
         update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed-alias"})}
     )
-    # Frozen to another account: the verified local login must not touch it.
     elsewhere = watcher.model_copy(
         update={"watcher_id": "elsewhere", "execution_host": "other.example"}
     )
