@@ -20,6 +20,9 @@ from rcp.providers.codex.app_server import CodexAppServerRuntime
 
 
 def _render(provider, request):
+    """OpenCode addresses the permission-bearing agent by its policy hash, so only that identifier
+    is normalized.
+    """
     profile = profile_for(provider.split("_")[0])
     runtime = (
         CodexAppServerRuntime()
@@ -38,8 +41,6 @@ def _render(provider, request):
         settings = json.loads(environment.pop("OPENCODE_CONFIG_CONTENT"))
         agent_name = command[command.index("--agent") + 1]
         assert list(settings["agent"]) == [agent_name]
-        # OpenCode addresses the permission-bearing agent by its policy hash.
-        # Compare its full definition, with only that derived identifier normalized.
         settings["agent"] = {"<agent>": settings["agent"][agent_name]}
         command[command.index("--agent") + 1] = "<agent>"
         result["settings"] = settings
@@ -110,8 +111,10 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
 @pytest.mark.parametrize("capability", get_args(AgentCapability))
 @pytest.mark.parametrize("browser_enabled", (False, True))
 def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp_path):
-    # The empty baseline passes every variable in the current launch, including
-    # provider authentication. The populated scope may filter tool environments.
+    """The empty baseline passes every launch variable, including provider authentication, while the
+    populated scope may filter tool environments. Full structural equality catches removed tools,
+    write grants, Git access, sandbox changes, and altered browser permissions or flags.
+    """
     environment = {**os.environ, "TEST_PRIVATE_TOKEN": "secret", "LAB_DATA_ROOT": "/data"}
     identity = {
         "execution_machine": "local",
@@ -193,14 +196,11 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
                 _render(provider, summary_request)
         return
     baseline = _render(provider, request)
-    # The wrapper lives in a folder named by the policy fingerprint.
     hidden = json.loads(
         json.dumps(_render(provider, hidden_request)).replace(
             populated.fingerprint, empty.fingerprint
         )
     )
     _remove_only_added_denies(provider, hidden, empty, populated)
-    # Full structural equality catches removed tools, write grants, Git access,
-    # network/sandbox changes, and altered browser permissions or command flags.
     assert hidden == baseline
     assert hidden_request.browser_grant == request.browser_grant == grant

@@ -643,6 +643,10 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     legacy_layout: bool,
     provider: str,
 ) -> None:
+    """The wake continues inline beside a pointer to its master and sends only its own command
+    client; only the legacy layout moves it to other roots. A resume whose session does not match
+    opens a fresh master.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -768,7 +772,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert any(name.startswith("chat-master-v") for name in input_names)
     assert any(name.startswith("rcp-agent-client-") for name in input_names)
     assert stage / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
-    # A fresh child receives the group pointers its read scope grants.
     assert (
         json.dumps({"group_context": group.model_dump(mode="json")}, ensure_ascii=False)
         in launcher.prompts[0]
@@ -810,17 +813,14 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert wake_id is not None
     wake = wait_for_task(store, wake_id, expect="failed")
 
-    # The wake continues its session inline, beside a pointer to the master it holds.
     continuation_contract = launcher.prompts[1]
     assert SECTIONS["master_pointer"].split("{path}")[0] in continuation_contract
     assert "messages.json" in continuation_contract
     wake_turn, wake_inputs = child_turns[1]
-    # The wake sends only what changed since its master: this turn's own command client.
     changed = changed_values(continuation_contract)
     assert changed["patch.command_client"] == wake_turn.patch_inputs.command_client
     assert child_turns[0][0].patch_inputs.command_client not in continuation_contract
     assert not any(key.startswith(("skills", "repositories")) for key in changed)
-    # Only the legacy layout moves the wake to another workspace, and so to other roots.
     assert ("work.write_roots" in changed) is legacy_layout
     assert str(wake_inputs.artifact_directory) in continuation_contract
     assert '"name": "native-review"' in continuation_contract
@@ -887,7 +887,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert resumed_task.native_session_id == "resume-session"
     resume_contract = launcher.prompts[3]
     resume_turn, resume_inputs = child_turns[3]
-    # Its session does not match, so the resume opens a fresh master holding the boundary.
     assert current_command_client(resume_contract) == resume_turn.patch_inputs.command_client
     master = launch_contract_path(resume_contract).read_text(encoding="utf-8")
     assert resume_turn.patch_inputs.schema_path in master

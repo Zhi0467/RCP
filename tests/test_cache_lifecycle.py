@@ -173,6 +173,7 @@ def test_cache_limits_match_the_rebuildable_storage_contract() -> None:
 def test_file_cache_expires_then_uses_deterministic_lru_and_ignores_mtime(
     tmp_path,
 ) -> None:
+    """Equal access times are broken by relative path."""
     clock = FakeClock()
     root = tmp_path / "source-cache"
     root.mkdir()
@@ -207,7 +208,7 @@ def test_file_cache_expires_then_uses_deterministic_lru_and_ignores_mtime(
     assert before.reclaimable_count == 4
     assert before.reclaimable_bytes == 4
     assert not expired.exists()
-    assert not a.exists()  # Equal access times are broken by relative path.
+    assert not a.exists()
     assert b.exists()
     assert newest.exists()
     assert after.count == 2

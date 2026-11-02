@@ -752,6 +752,9 @@ def _supporting_edge(evidence_id: str) -> dict[str, object]:
 
 @pytest.mark.parametrize("operation", ["supersede_nodes", "merge_nodes", "remove_nodes"])
 def test_agent_can_prune_evidence(manifest, operation) -> None:
+    """Evidence records retirement in ``validity`` and has no ``status`` field; the research
+    rendering drops it and keeps its replacement.
+    """
     history = _seeded_history(manifest)
     history.append(
         _approval_patch(
@@ -806,11 +809,9 @@ def test_agent_can_prune_evidence(manifest, operation) -> None:
             "ev/duplicate" not in (edge.source, edge.target) for edge in state.edges.values()
         )
     else:
-        # Evidence records retirement in ``validity``; it has no ``status`` field.
         assert state.nodes["ev/duplicate"].validity == "superseded"
         assert f"ev/duplicate::{relation}::ev/canonical" in state.edges
     assert state.nodes["ev/canonical"].validity == "qualified"
-    # The research rendering drops retired Evidence and keeps its replacement.
     research = render_research_md(state)
     assert "Result ev/canonical" in research
     assert "Result ev/duplicate" not in research

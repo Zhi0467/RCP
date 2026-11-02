@@ -81,14 +81,13 @@ def test_self_name_is_once_and_cannot_replace_human_name(tmp_path):
 
 
 def test_agent_name_cap_cuts_starting_names_and_refuses_longer_names(tmp_path):
+    """A cut lands just after a word, trimming the trailing space, and never ends inside a word."""
     store = AppStore(tmp_path / "store.sqlite")
     _project(store)
     chat = str(uuid.uuid4())
-    # The cut lands just after a word, so the trailing space is trimmed too.
     words = "w" * (AGENT_NAME_MAX_CHARS - 1) + " tail"
     task = _turn(store, chat, words, store.now())
     assert store.agent_name_state("project", chat)["name"] == "w" * (AGENT_NAME_MAX_CHARS - 1)
-    # A cut never ends inside a word.
     mid_word = str(uuid.uuid4())
     _turn(store, mid_word, "abcdefg " * AGENT_NAME_MAX_CHARS, store.now())
     assert set(store.agent_name_state("project", mid_word)["name"].split(" ")) == {"abcdefg"}
@@ -108,7 +107,9 @@ def test_agent_name_cap_cuts_starting_names_and_refuses_longer_names(tmp_path):
 
 
 def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
-    # A released old writer produced this database, before conversation names.
+    """A released old writer produced this database before conversation names existed; its names
+    were stored under earlier, longer caps.
+    """
     fixture = Path(__file__).parent / "fixtures/server_upgrade/pre-graph-branches-v29-daad53e"
     metadata = json.loads((fixture / "fixture.json").read_text())
     path = tmp_path / "store.sqlite"
@@ -142,7 +143,6 @@ def test_old_database_backfills_first_turn_and_preserves_human_name(tmp_path):
             "VALUES (?, ?, 'Human choice', ?)",
             (project_id, renamed, metadata["user_id"]),
         )
-        # Names stored under the earlier, longer caps, human renames included.
         connection.execute(
             "INSERT INTO chat_display (project_id, chat_id, title, titled_user_id) "
             "VALUES (?, ?, ?, ?)",

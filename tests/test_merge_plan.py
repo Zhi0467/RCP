@@ -451,9 +451,9 @@ def test_remerge_keeps_pending_effects_and_never_resurrects_settled_work(status)
 
 
 def test_identical_inputs_bind_stable_plan_and_do_not_mutate_snapshots(monkeypatch):
+    """Candidate encoding is slice 3's contract seam, so this test isolates planning."""
     base = _state()
     context = _context(base, _edit(base, title="Branch"), base)
-    # Candidate encoding is slice 3's contract seam; this test isolates planning.
     monkeypatch.setattr(merge_plan, "_route_changes", lambda ctx, changes, conflicts: (changes, ()))
     before = context.model_dump_json()
     first, second = plan_merge(context), plan_merge(context)

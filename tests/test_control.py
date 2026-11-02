@@ -227,6 +227,9 @@ def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart()
     observer leaves that parent live with nothing to wake it, so the loop reads
     as inactive while a new episode is still impossible. Readers must not have to
     tell that operational reason from a graph gate by matching its prose.
+
+    A narrower operational reason says more, so the open parent stays quiet rather than restating
+    it.
     """
 
     state = _state()
@@ -244,8 +247,6 @@ def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart()
     assert len(both.graph_reasons) == 1
     assert len(both.reasons) == 2
 
-    # A narrower operational reason says more, so the open parent stays quiet
-    # rather than restating it.
     active = derive_experiment_control_state(
         state,
         EXPERIMENT_ID,
@@ -290,7 +291,6 @@ def test_a_half_completed_watcher_group_reads_unready_while_the_episode_is_close
     assert len(split.reasons) == 1
     assert split.graph_reasons == []
 
-    # The same group one write later, with both watchers completed, is ready.
     settled = derive_experiment_control_state(
         state,
         EXPERIMENT_ID,
@@ -379,19 +379,20 @@ def _belief_patch_ops(
 
 
 def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
+    """The status move is the only thing the human is asked to accept. Approval authorizes it, while
+    the scientific cause stays the same-patch evidence edge, and a hypothesis this experiment does
+    not test is refused as a target.
+    """
     state = _state()
     assert not validate_patch(
         state, _patch(_belief_patch_ops()), ValidationContext(["repo"])
     ).rejected
 
-    # The status move is the only thing the human is being asked to accept.
     wider = _belief_patch_ops(changes={"status": "rejected", "scope": "Narrower."})
     assert "experiment-loop-belief-proposal-operations" in _codes(
         validate_patch(state, _patch(wider), ValidationContext(["repo"]))
     )
 
-    # Approval authorizes the move, while the scientific cause remains the
-    # same-patch evidence edge rather than the Proposal itself.
     approval_as_cause = _belief_patch_ops(
         cause={"kind": "proposal_resolution", "ref_id": "proposal/belief"}
     )
@@ -406,7 +407,6 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
         validate_patch(state, _patch(borrowed), ValidationContext(["repo"]))
     )
 
-    # And the same patch must actually point evidence at that hypothesis.
     ungrounded = deepcopy(_belief_patch_ops())
     ungrounded[1]["edges"] = [
         {"source": EXPERIMENT_ID, "target": "ev/result", "relation": "produces"}
@@ -415,8 +415,6 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
         validate_patch(state, _patch(ungrounded), ValidationContext(["repo"]))
     )
 
-    # A hypothesis this experiment does not test is neither a belief target nor a
-    # governing decision, so its semantic update target is refused.
     foreign = _belief_patch_ops(target="hyp/unrelated")
     assert "experiment-loop-proposal-operations" in _codes(
         validate_patch(state, _patch(foreign), ValidationContext(["repo"]))
@@ -424,6 +422,7 @@ def test_a_loop_proposes_the_belief_change_its_own_evidence_implies() -> None:
 
 
 def test_a_proposal_that_only_references_a_decision_does_not_gate_the_run() -> None:
+    """A seed may name a decision it merely read while raising this."""
     state = _state()
     state.proposals["proposal/elsewhere"] = Proposal(
         id="proposal/elsewhere",
@@ -436,7 +435,6 @@ def test_a_proposal_that_only_references_a_decision_does_not_gate_the_run() -> N
                 "nodes": [{"id": "hyp/target", "changes": {"scope": "Narrower."}}],
             }
         ],
-        # A seed may name a decision it merely read while raising this.
         related_node_ids=[DECISION_ID, "hyp/target"],
         base_rev=3,
     )
@@ -505,6 +503,9 @@ def test_run_pins_the_governing_decision_bundle_in_stable_order() -> None:
 
 
 def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
+    """Lowering the human-owned ceiling stops new attempts but must not prevent the watcher turn
+    from closing already launched work.
+    """
     state = _state()
     append = _patch(
         [
@@ -533,8 +534,6 @@ def test_loop_patch_can_append_and_close_its_own_attempt() -> None:
     )
     assert not validate_patch(state, close, ValidationContext(["repo"])).rejected
 
-    # Lowering the human-owned ceiling stops new attempts; it must not prevent
-    # the watcher turn from closing work that was already launched.
     first = _attempt(status="completed")
     second = _attempt(attempt_id="attempt-2").model_copy(update={"sequence": 2})
     state = _state(attempts=[first, second], ceiling=1)
@@ -615,6 +614,8 @@ def test_replaying_a_legacy_loop_patch_accepts_the_fields_its_own_migration_adde
     Those two system fields are added in memory by `adapt_persisted_patch_document`,
     never by the original write. Refusing them halted canonical history at the
     first legacy Experiment-loop Patch and left the whole graph read-only.
+
+    A live write still may not set these fields.
     """
 
     document = _patch(
@@ -645,7 +646,6 @@ def test_replaying_a_legacy_loop_patch_accepts_the_fields_its_own_migration_adde
 
     state = _state()
     assert not _codes(validate_patch(state, adapted, ValidationContext(["repo"], mode="replay")))
-    # A live write still may not set them.
     assert "experiment-loop-experiment-field" in _codes(
         validate_patch(state, adapted, ValidationContext(["repo"], mode="admission"))
     )
@@ -848,6 +848,9 @@ def test_loop_may_hand_new_evidence_to_existing_decisions_and_blockers() -> None
 
 
 def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None:
+    """Attaching a node the patch did not create would let the loop claim someone else's evidence or
+    block on an unrelated blocker, and it may attach only to its own experiment.
+    """
     state = _state()
     evidence = {
         "id": "ev/result",
@@ -875,8 +878,6 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
     attached = _patch(attached_ops)
     assert not validate_patch(state, attached, ValidationContext(["repo"])).rejected
 
-    # Attaching a node the patch did not create would let the loop claim
-    # someone else's evidence or block itself on an unrelated blocker.
     foreign = deepcopy(attached_ops)
     foreign[1]["edges"] = [
         {"source": EXPERIMENT_ID, "target": "blk/capacity", "relation": "blocked_by"}
@@ -885,7 +886,6 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
         validate_patch(state, _patch(foreign), ValidationContext(["repo"]))
     )
 
-    # And it may only attach to its own experiment.
     foreign_source = deepcopy(attached_ops)
     foreign_source[1]["edges"] = [
         {"source": "exp/other", "target": "ev/result", "relation": "produces"}
@@ -896,6 +896,9 @@ def test_loop_attaches_its_own_evidence_and_blockers_to_its_experiment() -> None
 
 
 def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() -> None:
+    """Proposal dependencies are RCP bookkeeping, not an authority input; the semantic target
+    controls scope.
+    """
     state = _state()
     proposal = {
         "id": "prop/activate-target",
@@ -985,8 +988,6 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
         running_state, close_and_propose, ValidationContext(["repo"])
     ).rejected
 
-    # Proposal dependencies are RCP bookkeeping, not an agent declaration or
-    # an experiment-loop authority input. The semantic target controls scope.
     stale_bookkeeping = deepcopy(proposal)
     stale_bookkeeping["related_node_ids"] = [DECISION_ID]
     codes = _codes(
@@ -999,7 +1000,6 @@ def test_proposal_only_iteration_is_typed_and_scoped_to_a_tested_hypothesis() ->
     assert "experiment-loop-proposal-scope" not in codes
     assert "experiment-loop-proposal-operations" not in codes
 
-    # A target that is not a Hypothesis this experiment tests is refused.
     hidden_foreign_update = deepcopy(proposal)
     hidden_foreign_update["ops"] = [
         {
@@ -1106,10 +1106,9 @@ def test_old_attempts_load_with_backward_compatible_control_defaults() -> None:
 
 
 def test_experiment_loop_may_queue_its_pinned_decision_but_never_decide_it() -> None:
-    # A queue and a decision are the same operation shape on the same node: one
-    # update_nodes changing only "status". Only the requested status separates
-    # the move the loop may make from the one reserved for the human, so the
-    # rule has to be read off the status rather than off the shape.
+    """A queue and a decision share one operation shape, an update_nodes changing only "status", so
+    the rule must read the requested status rather than the shape.
+    """
     state = _state()
 
     for queued in ("open", "ready", "revisit"):
@@ -1129,11 +1128,10 @@ def test_experiment_loop_may_queue_its_pinned_decision_but_never_decide_it() -> 
 
 
 def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quietly() -> None:
-    # Queueing a pinned Decision puts it back in human attention as a ballot. The
-    # loop that found the reason is the only author holding it, so the queued
-    # ballot must be able to carry the option its new evidence raises. Editing
-    # that Decision without queueing it is a different move: a settled choice
-    # rewritten underneath the human, so the status is what opens the content.
+    """Queueing a pinned Decision returns it to human attention as a ballot, so the loop may add the
+    option its evidence raises, even in a later turn. Editing it without queueing would rewrite a
+    settled choice under the human. An agent may reword an option but never write `selected_option`.
+    """
     state = _state()
 
     restated = _patch(
@@ -1186,10 +1184,6 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
         validate_patch(state, unqueued, ValidationContext(["repo"]))
     )
 
-    # An agent may reword an option but may never write `selected_option`, so a
-    # restatement that replaces the chosen wording is the ordinary shape of
-    # reopening a decision rather than an error to refuse. The Decision card
-    # names the prior choice when no option carries it.
     reworded = _patch(
         [
             {
@@ -1208,9 +1202,6 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
     )
     assert not validate_patch(state, reworded, ValidationContext(["repo"])).rejected
 
-    # The queued status licenses the restatement, not the transition into it. A
-    # loop that queued a Decision in an earlier turn still has to be able to add
-    # the option a later turn's evidence raises.
     queued = _state()
     queued.nodes[DECISION_ID] = queued.nodes[DECISION_ID].model_copy(update={"status": "revisit"})
     later_option = _patch(
@@ -1233,10 +1224,9 @@ def test_experiment_loop_may_restate_the_ballot_it_reopens_but_not_edit_it_quiet
 
 
 def test_experiment_loop_cannot_rewrite_an_attempt_it_already_closed() -> None:
-    # A finished attempt is a record. Reopening one is caught elsewhere; this is
-    # the subtler move of rewriting a closed attempt into a different closed
-    # state, which leaves every fixed field untouched and so reaches the
-    # close check rather than the mutation check.
+    """Reopening an attempt is caught elsewhere; rewriting a closed attempt into another closed
+    state leaves fixed fields untouched and so reaches the close check.
+    """
     closed = _attempt(status="completed")
     state = _state(attempts=[closed])
 

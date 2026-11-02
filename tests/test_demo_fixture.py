@@ -35,6 +35,9 @@ def demo_state(tmp_path: Path) -> Path:
 
 
 def test_demo_fixture_replays_from_its_patch_log(demo_state: Path) -> None:
+    """Flags are expected: the fixture keeps a deliberately mistyped historical `supports` edge to
+    demonstrate endpoint diagnostics. A reject means replay hit something structurally broken.
+    """
     manifest = load_manifest(demo_state / ".research" / "manifest.toml")
     state = HistoryManager(manifest, write_authority=unchecked_write_authority()).initialize().state
 
@@ -43,9 +46,6 @@ def test_demo_fixture_replays_from_its_patch_log(demo_state: Path) -> None:
     assert state.revision > 0
     assert state.nodes
 
-    # Flags are allowed and currently expected: the fixture keeps a deliberately
-    # mistyped historical `supports` edge to demonstrate endpoint diagnostics. A
-    # *reject* is different: it means replay hit something structurally broken.
     rejects = [item for item in state.validation_messages if item.level == "reject"]
     assert rejects == []
 
@@ -53,6 +53,9 @@ def test_demo_fixture_replays_from_its_patch_log(demo_state: Path) -> None:
 def test_demo_fixture_still_offers_the_work_the_scenarios_open_it_for(
     demo_state: Path,
 ) -> None:
+    """S08 approves a pending Proposal, S11 coaches against the introduction, and S94 keeps the
+    historical Ambiguity as a replay-compatibility fixture.
+    """
     state = (
         HistoryManager(
             load_manifest(demo_state / ".research" / "manifest.toml"),
@@ -62,13 +65,9 @@ def test_demo_fixture_still_offers_the_work_the_scenarios_open_it_for(
         .state
     )
 
-    # S08 approves a pending Proposal. S94 keeps the historical Ambiguity as a
-    # replay-compatibility fixture even though Ambiguities no longer render or
-    # admit new authoring operations.
     assert state.proposals, "S08 needs a proposal waiting on judgment"
     assert state.ambiguities, "S94 needs a historical Ambiguity replay fixture"
 
-    # S11 coaches against an existing introduction.
     introduction = demo_state / ".research" / "paper" / "introduction.md"
     assert introduction.read_text().strip(), "S11 needs authored introduction text"
 

@@ -88,9 +88,9 @@ def test_dead_hold_is_replaced(machine):
 
 
 def test_disabling_drops_hold_and_persists(machine):
+    """Turning it off drops the hold itself, never waiting on a demand read."""
     machine.controller.safety_pass()
     machine.controller.update({"idle_hold": False})
-    # Turning it off drops the hold itself, never waiting on a demand read.
     assert machine.holds[0].returncode is not None
     machine.controller.safety_pass()
     assert machine.controller.status()["idle_hold"] == {"enabled": False, "active": False}
@@ -485,6 +485,7 @@ def test_broken_installation_releases_immediately(lid_machine):
 
 
 def test_battery_floor_stays_released_until_ac_then_rearms(lid_machine):
+    """A recovering percent on battery is insufficient to rearm."""
     lid_machine.activate()
     lid_machine.profile.readings["battery"] = (False, 20)
     lid_machine.controller.safety_pass()
@@ -493,7 +494,7 @@ def test_battery_floor_stays_released_until_ac_then_rearms(lid_machine):
     lid_machine.profile.readings["battery"] = (
         False,
         75,
-    )  # recovering percent on battery is insufficient
+    )
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["lid_mode"]["active"] is False
     lid_machine.profile.readings["battery"] = (True, 75)
@@ -607,6 +608,7 @@ def test_external_flag_is_never_adopted_or_cleared(lid_machine):
 
 
 def test_machine_lock_prevents_two_data_directories_from_owning_lid_mode(lid_machine, tmp_path):
+    """Lock contention gates lid mode only; this backend's idle hold still runs."""
     lid_machine.activate()
     other_store = AppStore(tmp_path / "second.sqlite3")
     other = power.MachinePowerController(
@@ -625,7 +627,6 @@ def test_machine_lock_prevents_two_data_directories_from_owning_lid_mode(lid_mac
     other.safety_pass()
     assert other.status()["external_owner"] is True
     assert other._watchdog is None
-    # Lock contention gates lid mode only; this backend's idle hold still runs.
     assert other.status()["idle_hold"]["active"] is True
     assert power.read_record(lid_machine.root / "heartbeat")["pid"] == "123"
     other.stop()
@@ -721,12 +722,12 @@ def test_shutdown_replaces_dead_watchdog_to_release(lid_machine, off_published):
 
 @pytest.mark.parametrize("group_alive", [False, True, "exits_after_kill"])
 def test_watchdog_dies_while_shutdown_waits(lid_machine, group_alive):
+    """The killed group is still visible on the first probe after SIGKILL."""
     lid_machine.activate()
     previous = lid_machine.controller._watchdog
     previous.on_wait = lambda: setattr(previous, "returncode", -9)
     lid_machine.group_alive = bool(group_alive)
     if group_alive == "exits_after_kill":
-        # The killed group is still visible on the first probe after SIGKILL.
         lid_machine.linger_after_kill = 1
     lid_machine.controller.stop()
     assert (previous.pid, signal.SIGTERM) in lid_machine.commands
@@ -802,7 +803,7 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
         wait_until(lambda: "on" in fake.calls(), timeout=5)
         controller.safety_pass()
         assert controller.status()["lid_mode"]["active"] is True
-        children[0].kill()  # Kill only this disposable fake-power process.
+        children[0].kill()
         children[0].wait(timeout=5)
         controller.safety_pass()
         heartbeat = power.read_record(root / "heartbeat")
@@ -908,12 +909,12 @@ def test_admin_clear_failure_uses_persisted_cleanup_warning(lid_machine, action)
 
 @pytest.mark.parametrize("failure", ["sleep_failed", "clear_failed", "thermal"])
 def test_restart_consumes_previous_executor_result_before_rearming(lid_machine, failure):
+    """Simulates backend death without consuming the completed executor result."""
     lid_machine.activate()
     lid_machine.controller._release("thermal" if failure == "thermal" else "shutdown")
     lid_machine.execute(
         clear_failed=failure == "clear_failed", sleep_failed=failure == "sleep_failed"
     )
-    # Simulate backend death without consuming the completed executor result.
     lid_machine.controller._close_owner()
     lid_machine.controller = lid_machine.new_controller()
     lid_machine.controller.safety_pass()

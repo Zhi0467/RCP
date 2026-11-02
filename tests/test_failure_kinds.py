@@ -1,4 +1,7 @@
-"""Naming one provider failure so recovery can offer the right next step."""
+"""Naming one provider failure so recovery can offer the right next step.
+
+REVOKED_LOGIN is the exact diagnostic a revoked Codex login produced on a real remote run.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,6 @@ from rcp.providers import classify_terminal_error, profile_for
 
 CODEX = profile_for("codex")
 
-# The exact diagnostic a revoked Codex login produced on a real remote run.
 REVOKED_LOGIN = (
     "Your access token could not be refreshed because your refresh token was revoked. "
     "Please log out and sign in again. ERROR codex_login::auth::manager: Failed to "
@@ -19,8 +21,8 @@ REVOKED_LOGIN = (
 
 @pytest.mark.parametrize("return_code", [255, -15])
 def test_ssh_exit_codes_are_transport_failures_only_for_a_remote_run(return_code: int) -> None:
+    """The same codes on a local run mean the provider itself, not a link."""
     assert transport_failure(return_code, "gpu.example.edu") is True
-    # The same codes on a local run mean the provider itself, not a link.
     assert transport_failure(return_code, "") is False
 
 

@@ -44,6 +44,9 @@ class _Engine:
     [(["old", "start"], 2), (["old", "external", "start"], 1), (["old", "rejected", "start"], 3)],
 )
 def test_commit_observes_snapshot_and_only_uninterleaved_apply(tmp_path, owners, expected):
+    """Staging or a failed turn leaves the observation unknown, and a repeated settlement must not
+    regress the absorbed head.
+    """
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)
     execution = cast(AgentTaskExecution, _task(store, "start", tmp_path))
@@ -57,7 +60,6 @@ def test_commit_observes_snapshot_and_only_uninterleaved_apply(tmp_path, owners,
         revision=1,
         native_session_id="session",
     )
-    # Staging or a failed turn leaves the observation unknown.
     assert store.graph_seen_head("project", "chat:c", "session", target) is None
     assert prepared_graph_observation_delta(execution, "session") == {}
     commit_prepared_graph_observation(
@@ -65,7 +67,6 @@ def test_commit_observes_snapshot_and_only_uninterleaved_apply(tmp_path, owners,
     )
     seen = store.graph_seen_head("project", "chat:c", "session", target)
     assert seen is not None and seen.revision == expected
-    # A repeated settlement must not regress the absorbed head.
     commit_prepared_graph_observation(execution, service, native_session_id="session")
     seen = store.graph_seen_head("project", "chat:c", "session", target)
     assert seen is not None and seen.revision == expected

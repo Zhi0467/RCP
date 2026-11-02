@@ -62,6 +62,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     tmp_path,
     kind: str,
 ) -> None:
+    """The contract names the project machines resolved at this launch."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     patch = seed_patch() if kind == "seed" else refresh_patch()
@@ -98,7 +99,6 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"messages": [answer]}
     assert completed["applied_revision"] == (2 if kind == "seed" else 3)
-    # The contract names the project machines resolved at this launch.
     contract = app.state.background_tasks.store.agent_task_contract(
         completed["operation_id"], "base"
     )

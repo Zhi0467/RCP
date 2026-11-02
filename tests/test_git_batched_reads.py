@@ -23,8 +23,6 @@ from .test_project_checkout import ALIAS, PROJECT_ID, REPOSITORY, _git_command, 
         ),
         ('[Core "different"]\n HooksPath = /unsafe\n[Core]\n HooksPath = /dev/null\n', None),
     ],
-    # Short ids: pytest exports the node id in PYTEST_CURRENT_TEST, and Linux
-    # refuses any child process whose environment holds a string over 128 KiB.
     ids=[
         "large-unrelated-value",
         "uppercase-remote-section",
@@ -38,6 +36,9 @@ from .test_project_checkout import ALIAS, PROJECT_ID, REPOSITORY, _git_command, 
 def test_checkout_batched_config_preserves_values_case_and_refusal_order(
     tmp_path: Path, configuration: str, error: str | None
 ) -> None:
+    """Ids are short because pytest exports the node id in PYTEST_CURRENT_TEST, and Linux refuses a
+    child environment string over 128 KiB.
+    """
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, _runner = _manager(tmp_path, origin)
     checkout = layout.projects_root / PROJECT_ID / "repositories" / ALIAS

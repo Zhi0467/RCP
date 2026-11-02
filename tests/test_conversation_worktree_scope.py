@@ -436,6 +436,7 @@ def test_work_turn_history_uses_only_durable_ordinary_chat_mode(
 def test_episode_scope_admits_one_worktree_without_shared_ancestor_grants(
     manifest: Manifest, tmp_path: Path, capability: str
 ) -> None:
+    """The prompt's worktree fact is the binding's own identity."""
     chat_binding = _binding(manifest, tmp_path)
     binding = EpisodeWorktreeBinding(
         **chat_binding.model_dump(
@@ -447,7 +448,6 @@ def test_episode_scope_admits_one_worktree_without_shared_ancestor_grants(
     assert scope.repository_roots == [binding.worktree_path]
     assert scope.git_metadata_roots == [binding.git_common_dir]
     assert not any(Path(binding.shared_path).is_relative_to(root) for root in scope.granted_roots)
-    # The prompt's worktree fact is the binding's own identity.
     assert scope.episode_worktree is not None
     assert (scope.episode_worktree.branch, scope.episode_worktree.shared_path) == (
         binding.branch,

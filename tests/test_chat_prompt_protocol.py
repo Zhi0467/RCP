@@ -60,7 +60,6 @@ class _RecordingLauncher:
             assert argv[len(prefix) : len(prefix) + len(authority)] == authority
         if kwargs["capability"] == "work_auto":
             write_turn_outcome(Path(kwargs["cwd"]))
-            # This turn's launches run through its own gate, named by the current client.
             argv = shlex.split(current_command_client(prompt))
             gate = kwargs["invocation_gate"]
             authority = list(gate.client_arguments())
@@ -151,6 +150,10 @@ def _set_access_hint(app, host: str, hint: str) -> None:
 async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     manifest, tmp_path, stale
 ) -> None:
+    """A release that only changes graph rules must reach existing chats as surely as a bumped
+    master-context version. A continuation names its replacement master last, after the turn's own
+    parts.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -187,8 +190,6 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     current = store.chat_session_context("codex", "laptop", session_id)
     assert current is not None
     stale_snapshot = json.loads(current.snapshot_json)
-    # A release that only changes graph rules must reach existing chats as surely as a
-    # hand-bumped master-context version does.
     stale_version = CHAT_MASTER_CONTEXT_VERSION - (stale == "version")
     stale_snapshot["master_context_version"] = stale_version
     with pytest.MonkeyPatch.context() as older_rules:
@@ -236,7 +237,6 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         pass
 
     second_prompt = launcher.prompts[1]
-    # A continuation names its replacement master last, after the turn's own parts.
     master_line = second_prompt.split("\n\n")[-1].splitlines()[1]
     assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in master_line
     committed = store.chat_session_context("codex", "laptop", session_id)
@@ -253,6 +253,10 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     manifest, tmp_path, state, watcher_wake
 ) -> None:
+    """A watcher wakes a Work session, where a Discuss master would be replaced. A snapshot
+    committed before master records names only a path, and when nothing proves what the session held
+    a fresh master is sent as a replacement.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -265,7 +269,6 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
         chat_id="session-master-chat",
         message="Start the native chat.",
         run_truth_scope=["repo-a"],
-        # A watcher wakes a Work session; a Discuss master would be replaced on that Work turn.
         mode="work" if watcher_wake else "discuss",
     )
 
@@ -295,7 +298,6 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     assert snapshot["master_sha256"] == hashlib.sha256(recorded.encode("utf-8")).hexdigest()
 
     if state != "recorded":
-        # A snapshot committed before master records existed names only a path.
         legacy = {
             key: value
             for key, value in snapshot.items()
@@ -331,7 +333,6 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
         ),
     )
     assert launcher.sessions == [None, session_id]
-    # The settled turn becomes the session's committed baseline.
     assert (
         store.chat_session_context("codex", "laptop", session_id).committed_operation_id
         == "session-master-second"
@@ -348,7 +349,6 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     captured = store.agent_task_contract("session-master-second", "session_master")
     committed = json.loads(store.chat_session_context("codex", "laptop", session_id).snapshot_json)
     if state == "legacy_missing":
-        # Nothing proves what the session held, so a fresh master is sent as a replacement.
         master_path = Path(committed["master_context_path"])
         assert last_section == SECTIONS["master_rebootstrap"].format(path=master_path)
         assert captured == master_path.read_text(encoding="utf-8")
@@ -632,6 +632,7 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
 
 
 def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest, tmp_path) -> None:
+    """A release with per-turn compute selection persisted this shape."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -656,7 +657,6 @@ def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest
         run_truth_scope=["repo-a"],
         mode="discuss",
     ).model_dump(mode="json")
-    # What a release with per-turn compute selection persisted.
     legacy["active_compute_ids"] = ["old-gpu"]
     legacy["resolved_compute_context"] = {
         "active": [
@@ -852,6 +852,9 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
 def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settings(
     manifest, tmp_path, legacy_layout: bool, first_mode: str
 ) -> None:
+    """The Discuss master lacks Work's launch instructions, so the first Work turn reopens a staged
+    Work master instead of carrying them inline.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     _enable_graph_audit(service)
@@ -922,8 +925,6 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     delta = changed_values(launcher.prompts[1])
 
     if first_mode == "discuss":
-        # The Discuss master lacks Work's launch instructions, so the first Work turn
-        # reopens a staged Work master instead of carrying them inline.
         master = Path(delta["master_context.path"])
         assert master.is_file()
         assert str(master) != launcher.prompts[0].splitlines()[1]
@@ -939,6 +940,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
 async def test_node_chat_master_carries_the_focused_node_and_its_relations(
     manifest, tmp_path
 ) -> None:
+    """The master carries the node's own prose, not a pointer to read it."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -968,13 +970,13 @@ async def test_node_chat_master_carries_the_focused_node_and_its_relations(
         pass
 
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
-    # The node's own prose, not a pointer to go read it.
     assert service.history.state().nodes[request.node_id].statement in master
     assert '"id": "hyp/replanning-restores-plasticity"' in master
     assert '"other_node_id": "rq/learning-after-shift"' in master
 
 
 def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tmp_path) -> None:
+    """A human Sync between turns is the case this signal exists for."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -1013,7 +1015,6 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     turn("First question.", resume=False)
     turn("Second question, nothing moved.", resume=True)
 
-    # A human Sync between turns is the case this signal exists for.
     append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
@@ -1040,6 +1041,7 @@ class _PatchWritingLauncher(_RecordingLauncher):
 
 
 def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest, tmp_path) -> None:
+    """A Sync by someone else still reaches the conversation."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -1081,7 +1083,6 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert "current.graph_head" not in second_delta
     assert "rcp-agent-client-" in second_delta["patch.command_client"]
 
-    # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
     third_delta = changed_values(launcher.prompts[2])
@@ -1156,6 +1157,9 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
 async def test_discuss_group_payload_occurs_once_per_actual_turn(
     manifest, tmp_path, monkeypatch, grouped
 ):
+    """The referenced master is included because a group section there would duplicate the live
+    pointer.
+    """
     import re
 
     from rcp.agents.group_context import GroupContext, GroupProjectContext
@@ -1210,7 +1214,6 @@ async def test_discuss_group_payload_occurs_once_per_actual_turn(
             pass
         store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
         prompt = launcher.prompts[turn]
-        # Include the referenced master: a group section there would duplicate the live pointer.
         text = prompt + "\n" + launch_contract_path(prompt).read_text()
         payloads = [json.loads(block) for block in re.findall(r"```json\n(.*?)\n```", text, re.S)]
         groups = [

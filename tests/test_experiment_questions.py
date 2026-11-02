@@ -354,6 +354,7 @@ def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path, 
 
 
 def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path, monkeypatch):
+    """A succeeded follow-up whose receipt was never recorded is swept again to replay it."""
     store, _, question, _ = _ready_answer(tmp_path)
     launches = []
     tasks = _recording_tasks(monkeypatch, store, launches)
@@ -365,7 +366,6 @@ def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path, m
     store.mark_agent_task_running(launches[0])
     assert store.questions_needing_experiment_reconciliation(project_id=project_id) == []
     assert reconcile_experiment_question_answers(tasks) == {}
-    # A succeeded follow-up whose receipt was never recorded is swept again to replay it.
     store.complete_agent_task(launches[0], applied_revision=None, result={})
     (pending,) = store.questions_needing_experiment_reconciliation()
     assert pending.question_id == question.question_id

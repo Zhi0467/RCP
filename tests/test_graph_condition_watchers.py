@@ -665,6 +665,9 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
     manifest,
     tmp_path,
 ) -> None:
+    """`status` reads "stopped" once the origin episode has an ending, and this wake spends the last
+    invocation, so the claimed notification id is the race-free proof.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     episode_id = str(uuid.uuid4())
@@ -734,12 +737,6 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
         assert response.status_code == 200, response.text
         stored = store.watcher("sync-graph")
         assert isinstance(stored, GraphWatcherRecord)
-        # The claim is durable; `status` is not. A watcher row reads "stopped"
-        # whenever its origin episode has an ending, and the wake this Sync just
-        # dispatched spends the last invocation and gives the episode one. So
-        # asserting "completed" here races the very task being asserted about.
-        # The claimed notification id is the race-free proof: a watcher stopped
-        # without ever being claimed never carries one.
         assert stored.notified is True
         assert stored.notification_operation_id is not None
         wake = _wait_for_terminal_task(store, stored.notification_operation_id)
@@ -917,14 +914,15 @@ def test_no_patch_arming_settlement_catches_revision_between_validation_and_inse
     tmp_path,
     monkeypatch,
 ) -> None:
+    """Validation saw R1, and R2 committed before the durable insert, so its boundary handling could
+    not see this row.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     _initial, initial_result = append_fixture_patch(
         service,
         _canonical_fixture_patch(blocker_status="open"),
     )
 
-    # Validation observed the open R1 state. R2 committed before the durable
-    # insert, so its original boundary handling could not see this row.
     append_fixture_patch(service, _blocker_status_patch("resolved"))
     store.create_watchers(
         [
@@ -966,6 +964,9 @@ def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """A degraded replay is fail-closed until a real boundary or startup trigger; the periodic
+    worker retries ready delivery only for this project.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     satisfying_prefix = _state(blocker_status="resolved", revision=2)
     degraded_head = _state(
@@ -1025,8 +1026,6 @@ def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
     assert stored.last_evaluated_at is None
     assert replay_calls == 1
 
-    # A degraded replay is fail-closed until a real boundary/startup trigger;
-    # the periodic worker retries ready delivery only for this project.
     retry_passed.clear()
     app.state.graph_watcher_retry_worker.start()
     try:
@@ -1096,6 +1095,9 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
 def test_startup_reconciles_healthy_target_after_another_target_fails(
     manifest, tmp_path, monkeypatch, failure
 ):
+    """Kept independent of Auto-research admission. A successful main-only callback must not erase
+    the branch retry.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     delivery = app.state.services.watcher_delivery
     _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
@@ -1105,7 +1107,6 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
         update={"project_id": project_id}
     )
     store.create_agent_task(origin)
-    # Keep this reconciliation fixture independent of Auto-research admission.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = ?",
@@ -1170,7 +1171,6 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
         assert delivered == [["z-main"]]
         assert store.graph_watcher_reconciliation_head(project_id, branch) is None
         if failure == "unavailable":
-            # A successful main-only callback must not erase the branch retry.
             delivery.evaluate_graph_wake_boundary(
                 project_id, None, graph_target=GraphTargetRef(), source="main callback"
             )
@@ -1350,6 +1350,9 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The stale generation selects the due project and observes its invalid lease; the replacement
+    must still process that work.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
@@ -1437,8 +1440,6 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
         worker.signal()
         assert replacement_started.wait(1), "replacement retry generation did not start"
 
-        # The stale generation selects the due project, then observes its invalid
-        # lease. The replacement must still find and process that same due work.
         release_first.set()
         wait_until(lambda: bool(deliveries), detail="replacement generation lost due retry")
         assert replay_calls == 2
@@ -1528,6 +1529,9 @@ def test_reversed_task_settlement_uses_canonical_boundary_order(
     boundaries,
     expected_status,
 ) -> None:
+    """The later task settles first, but its captured state is only an arrival signal;
+    reconciliation still visits R1 before R2.
+    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     store.create_watchers(
         [
@@ -1551,8 +1555,6 @@ def test_reversed_task_settlement_uses_canonical_boundary_order(
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
 
-    # The later task settles first, but its captured state is only an arrival
-    # signal; reconciliation must still visit R1 before R2.
     callback(
         project_id,
         "node_chat",
@@ -1767,6 +1769,9 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The condition was satisfied while RCP was down and its canonical read is slow, so the API
+    must serve before the read completes.
+    """
     data_dir = tmp_path / "startup-data"
     first = create_app(str(manifest.path), data_dir=data_dir)
     append_fixture_patch(
@@ -1787,8 +1792,6 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
     )
     first.state.background_tasks.shutdown()
 
-    # The condition was satisfied while RCP was down, and its canonical read
-    # is slow: the API must serve before that read completes.
     reopened = create_app(str(manifest.path), data_dir=data_dir)
     delivery = reopened.state.services.watcher_delivery
     open_service = delivery._graph_project_service
@@ -2117,6 +2120,9 @@ def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
 
 
 def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() -> None:
+    """Shutdown is bounded even while the callback is slow, and a new lifespan gets a fresh
+    generation instead of reusing the stopping thread.
+    """
     first_started = threading.Event()
     release_first = threading.Event()
     first_finished = threading.Event()
@@ -2143,8 +2149,6 @@ def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() ->
     worker.signal()
     assert first_started.wait(1), "first retry generation did not start"
 
-    # Shutdown is bounded even while the callback is slow. A new lifespan gets
-    # a replacement generation instead of silently reusing the stopping thread.
     worker.stop(timeout=0.01)
     worker.start()
     worker.signal()
@@ -2274,6 +2278,9 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """`notified` is written after the delivery callback returns, so waiting on the callback alone
+    races the flag.
+    """
     app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     authorizer = _test_authorizer(store)
     origin = _completed_origin(store, project_id, "periodic-mixed-origin")
@@ -2310,8 +2317,6 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
     app.state.graph_watcher_retry_worker.start()
     try:
         groups = app.state.watcher_poller.poll_once()
-        # `notified` is written after the delivery callback returns, so waiting on
-        # the callback alone races the flag this test asserts.
         wait_until(
             lambda: all(
                 store.watcher(watcher_id).notified
@@ -2336,6 +2341,9 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The retry attempt is recorded before `notified` is written, so waiting on the retry alone
+    races the flag.
+    """
     app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     authorizer = _test_authorizer(store)
     origin = _completed_origin(store, project_id, "periodic-retry-origin")
@@ -2372,7 +2380,6 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
         assert first.notified is False
 
         assert app.state.watcher_poller.poll_once() == []
-        # Same race: the retry attempt is recorded before `notified` is written.
         wait_until(
             lambda: len(attempts) == 2 and store.watcher("periodic-retry-graph").notified,
             detail="graph delivery retry did not mark the watcher notified",
@@ -2456,6 +2463,10 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(store) -> None:
 def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
     store,
 ) -> None:
+    """One unknown id retires none of the list. A condition the agent stopped waiting for would hold
+    the loop open and spend an invocation, so it retires like an observer and leaves the evaluation
+    index.
+    """
     episode_id = str(uuid.uuid4())
     root = _completed_episode(store, "stop-list-root", episode_id)
     _bind_episode_session(store, root, "native-stop-list", "/tmp/stop-list-stage")
@@ -2488,7 +2499,6 @@ def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
         ),
     ]
 
-    # One unknown id retires none of the list, including the pair it names.
     with pytest.raises(ValueError, match="unknown staged watcher: absent"):
         store.persist_experiment_watchers_idempotently(
             [],
@@ -2497,8 +2507,6 @@ def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
         )
     assert [store.watcher(item.stop_watcher_id).status for item in stops] == ["active", "active"]
 
-    # A condition the agent has stopped waiting for would otherwise hold the loop
-    # open and spend an invocation when it fires, so it retires like an observer.
     store.persist_experiment_watchers_idempotently([], stops=stops, binding=binding)
 
     external = store.watcher("stoppable-external")
@@ -2509,7 +2517,6 @@ def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
     assert graph.status == "stopped"
     assert graph.stopped_by == "agent"
     assert graph.stop_reason == "The canonical condition is no longer needed."
-    # A retired condition leaves the canonical evaluation index for good.
     assert "protected-graph" not in {
         item.watcher_id for item in store.active_graph_watchers("project")
     }

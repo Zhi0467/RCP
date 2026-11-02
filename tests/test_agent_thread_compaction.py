@@ -42,6 +42,7 @@ from tests.test_storage import _task_record
     ],
 )
 def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
+    """Simulates a restart after saving the seed but before publishing its reason."""
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.runs.agent_threads import provider_switch_seed
 
@@ -253,7 +254,6 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         assert (seed == "transcript tail") == (not success)
         if success:
             assert asyncio.run(run()) == seed
-            # Restart after saving the seed but before publishing its reason.
             store.record_agent_task_receipt(
                 task.operation_id,
                 "chat_session_resolution",

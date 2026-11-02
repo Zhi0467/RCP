@@ -5,6 +5,8 @@ the test replaced ``launch_admitted`` with a fake that skipped validation.
 ``helpers.fake_launch_admitted`` is the one way to fake the launch: it runs the
 real parse and roundtrip check on a queued row first. This guard fails when a
 test replaces ``launch_admitted`` any other way, so the allowlist stays empty.
+
+ALLOWED maps a path relative to tests/ to why that file may fake the launch without the helper.
 """
 
 from __future__ import annotations
@@ -18,15 +20,14 @@ TARGET = "launch_admitted"
 
 _PATCHERS = frozenset({"setattr", "patch", "object"})
 
-# Path relative to tests/ -> why that file may fake the launch without the helper.
 ALLOWED: dict[str, str] = {}
 
 
 def _raw_fakes(tree: ast.AST) -> list[int]:
+    """setattr, patch.object, and dotted-string patch forms all name the target."""
     lines = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            # setattr, patch.object and dotted-string patch forms all name the target.
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name in _PATCHERS and any(

@@ -696,6 +696,10 @@ def test_kickoff_replay_is_deterministic_and_exact_resume_does_not_respend_e(
     manifest: Manifest,
     tmp_path: Path,
 ) -> None:
+    """A same-key retry returns the committed recovery row without another attempt or E unit. A
+    crash after the Stop intent commits but before the exit is recorded is settled by reissuing
+    Stop.
+    """
     stage = tmp_path / "experiment-stage"
     stage.mkdir()
     resumed_requests: list[RunRequest] = []
@@ -765,8 +769,6 @@ def test_kickoff_replay_is_deterministic_and_exact_resume_does_not_respend_e(
     assert resumed_requests[0].session_id == "child-experiment-session"
     assert store.auto_research_experiment_allowance(parent_id).used == 1
 
-    # A same-key retry after the recovery row committed returns that exact row;
-    # it neither creates another attempt nor spends another E unit.
     replayed_resume = coordinator.resume(
         parent_id,
         child_id,
@@ -781,9 +783,6 @@ def test_kickoff_replay_is_deterministic_and_exact_resume_does_not_respend_e(
         if task.parent_operation_id == failed.operation_id
     ] == [resume_operation_id]
 
-    # A crash can happen after the monotonic episode Stop intent commits but
-    # before the command exit is recorded. Reissuing Stop settles that same
-    # episode and remains safe on another same-key replay.
     store.request_episode_stop(child_id)
     stopped = coordinator.stop(parent_id, child_id)
     replayed_stop = coordinator.stop(parent_id, child_id)
@@ -1418,6 +1417,9 @@ def test_a_provider_switch_never_inherits_the_settings_effort(
     monkeypatch: pytest.MonkeyPatch,
     catalog: list[ModelChoice],
 ) -> None:
+    """The Settings effort belongs to another provider, so the switch starts from none and resolves
+    to the head's or the CLI's default.
+    """
     from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 
     service = _setup(manifest, tmp_path)[0]
@@ -1433,8 +1435,6 @@ def test_a_provider_switch_never_inherits_the_settings_effort(
     monkeypatch.setattr(service.launcher, "readiness", ready)
     monkeypatch.setattr(service.launcher, "cached_readiness", ready)
     pick = require_auto_research_child_profile_pick
-    # The Settings effort belongs to another provider: the switch starts from none,
-    # which resolves to the head's default, or to the CLI's own with no catalog.
     assert pick(service, provider=other, model=None, reasoning=None) == ""
     with pytest.raises(AutoResearchChildProfileInvalid):
         pick(service, provider=other, model=None, reasoning="unlisted")
@@ -1468,6 +1468,9 @@ def test_a_model_that_takes_no_effort_drops_the_settings_effort(
 
 
 def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(manifest, tmp_path):
+    """Only the parent advances to blocked, so readiness must come from the saved target; routes
+    written before target deduplication still replay from the episode.
+    """
     from rcp.runs.graph_forks import create_graph_fork
 
     service, store, background, coordinator, parent_id, root_id = _setup(manifest, tmp_path)
@@ -1485,7 +1488,6 @@ def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(
         authorized_by=parent.authorized_by,
         created_by=f"orchestrator:{root_id}",
     )
-    # Only the parent advances to blocked; readiness must come from the saved target.
     service.history.append(_blocking_patch())
     coordinator.project_service = lambda _project, _episode: service.for_graph_target(
         branch.graph_target
@@ -1514,7 +1516,6 @@ def test_fork_experiment_uses_target_readiness_and_replays_its_persisted_target(
     assert route is not None
     with pytest.raises(ValueError):
         kickoff(graph_target=parent.graph_target)
-    # Routes written before target deduplication still replay from the episode.
     with store.connection() as connection:
         connection.execute(
             "UPDATE auto_research_child_experiments SET request_json="

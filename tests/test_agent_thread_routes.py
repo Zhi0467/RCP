@@ -27,7 +27,6 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
             assert client.put(base + "/browser", json={"browser_requested": False}).json() == {
                 "browser_requested": False
             }
-            # A project thread's transcript is its project chat's.
             transcript = client.get(
                 base + "/transcript"
                 if row["kind"] == "space"
@@ -92,6 +91,9 @@ def test_thread_admission_refuses_discuss(manifest, tmp_path):
 
 
 def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path):
+    """An ordinary finished reply only marks the thread unread; a failure pushes, and so does a
+    schedule wake's reply because it is the reminder itself.
+    """
     from datetime import datetime, timedelta
 
     from rcp.storage import AgentTaskRecord
@@ -127,7 +129,6 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         store.create_agent_task(task)
         sender = app.state.notification_sender
         sender.run_pass()
-        # An ordinary finished reply only marks the thread unread; a failure pushes.
         assert not [n for n in store.notification_outbox() if n["kind"] == "agent_thread"]
         store.create_agent_task(
             task.model_copy(update={"operation_id": "thread-failure", "status": "failed"})
@@ -162,7 +163,6 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         assert not store.guard_notification_delivery(
             device["device_id"], notices[0]["notification_id"]
         )
-        # A schedule wake's reply is the reminder itself, so it pushes.
         later = (datetime.fromisoformat(now) + timedelta(seconds=1)).isoformat()
         store.create_agent_task(
             task.model_copy(
@@ -184,6 +184,7 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
 
 
 def test_mark_read_through_the_reported_finish_clears_unread(manifest, tmp_path):
+    """The turn's messages carry its creation time; it finishes later."""
     from datetime import datetime, timedelta
 
     from rcp.storage import AgentTaskRecord
@@ -194,7 +195,6 @@ def test_mark_read_through_the_reported_finish_clears_unread(manifest, tmp_path)
     with signed_in_client(app) as client:
         row = client.get("/api/agent-threads").json()["threads"][0]
         started = datetime.fromisoformat(store.now())
-        # The turn's messages carry its creation time; it finishes later.
         store.create_agent_task(
             AgentTaskRecord(
                 operation_id="space-reply",
@@ -222,6 +222,9 @@ def test_mark_read_through_the_reported_finish_clears_unread(manifest, tmp_path)
 
 
 def test_unread_counts_only_the_threads_own_finished_turns(manifest, tmp_path):
+    """A stopped turn has not finished, and an Experiment the thread started is not one of its
+    turns.
+    """
     from datetime import datetime, timedelta
 
     from rcp.storage import AgentTaskRecord
@@ -265,7 +268,6 @@ def test_unread_counts_only_the_threads_own_finished_turns(manifest, tmp_path):
         base = "/api/agent-threads/" + row["thread_id"]
         read = client.post(base + "/read", json={"read_through": listed()["last_finished_at"]})
         assert read.status_code == 200, read.text
-        # A stopped turn has not finished, and an Experiment the thread started is no turn of it.
         task("stopped", "project_chat", "paused", 2)
         task("experiment", "node_chat", "succeeded", 3)
         thread = listed()
@@ -337,7 +339,6 @@ def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
         hidden = launcher.launch_kwargs[0]["hidden_read_scope"]
         assert isinstance(hidden, HiddenReadScope)
         assert not any(stage.is_relative_to(root) for root in hidden.hidden_directories)
-        # The history is one staged file in the owner's private stage, behind a pointer.
         (seed,) = [
             path
             for path in stage.rglob("*")
@@ -347,6 +348,7 @@ def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
 
 
 def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
+    """The row names the turn before its member message reaches the transcript."""
     import uuid
 
     from tests.helpers import fake_launch_admitted
@@ -380,13 +382,13 @@ def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
             "/api/agent-threads/" + thread["thread_id"] + "/tasks/" + task.operation_id
         )
         assert status.status_code == 200, status.text
-        # The row names the turn before its member message reaches the transcript.
         rows = client.get("/api/agent-threads").json()["threads"]
         assert rows[0]["latest_operation_id"] == task.operation_id
 
 
 @pytest.mark.parametrize("action", ["retry", "resume"])
 def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monkeypatch, action):
+    """Resume's own checkpoint rules are not under test; both share one admission."""
     import uuid
 
     from tests.helpers import fake_launch_admitted
@@ -394,7 +396,6 @@ def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monke
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     tasks = app.state.background_tasks
     fake_launch_admitted(monkeypatch, tasks)
-    # Resume's own checkpoint rules are not under test; both share one admission.
     monkeypatch.setattr(tasks, "resume", tasks.retry)
     with signed_in_client(app) as client:
         thread = client.get("/api/agent-threads").json()["threads"][0]
@@ -555,6 +556,9 @@ def test_corrupt_space_transcript_is_a_visible_conflict(manifest, tmp_path):
 
 
 def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypatch):
+    """The web names the backend machine by its id and a Space thread runs there anyway; retry
+    follows the pick made after the failure.
+    """
     from rcp.core.models import AuthorizedHuman
     from rcp.service import RunRequest
     from tests.helpers import fake_launch_admitted
@@ -594,17 +598,14 @@ def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypa
                 ).model_dump(mode="json"),
             )
         )
-        # The web names the backend machine by its id; a Space thread runs there anyway.
         picked = client.post(
             f"/api/agent-threads/{space['thread_id']}/agent",
             json={"provider": "claude", "run_on": "backend-machine-id"},
         )
         assert picked.status_code == 200, picked.text
         assert picked.json()["agent"]["provider"] == "claude"
-        # Retry follows the pick the member made after the failure.
         retried = background.retry("failed", authorized_by=store.agent_task("failed").authorized_by)
         assert retried.request["provider"] == "claude"
-        # The turn records the backend machine's Space card id, as the picker names it.
         assert retried.request["run_on"] == store.backend_space_machine().machine_id
 
 

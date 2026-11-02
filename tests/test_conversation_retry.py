@@ -55,13 +55,13 @@ class _FailThenSucceedLauncher:
         self.workspaces: list[Path] = []
 
     async def stream(self, _provider, prompt, **kwargs):
+        """An inline continuation is recorded beside the master it names."""
         attempt = len(self.contracts)
         self.prompts.append(prompt)
         master_path = _master_path(prompt)
         if master_path is None:
             contract_path = Path(prompt.splitlines()[1])
         else:
-            # An inline continuation is recorded beside the master it names.
             contract_path = next(
                 item
                 for item in master_path.parent.iterdir()
@@ -155,6 +155,8 @@ def _assert_retry_contract(
 
     An inline continuation carries it in the prompt beside its master; a contract
     launch stages a current contract beside the original.
+
+    The master pointer is the continuation's only contract pointer.
     """
 
     assert launcher.sessions == [None, launcher.native_session_id]
@@ -170,7 +172,6 @@ def _assert_retry_contract(
         "prior_attempt_diagnostics": expected_diagnostics
     }
     if inline:
-        # The master pointer is the continuation's only contract pointer.
         assert str(_first_prompt_contract(launcher)) not in retry_contract
         master_path = _master_path(launcher.prompts[1])
         assert master_path is not None and master_path.parent == stage_inputs
@@ -240,6 +241,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
 
 
 def test_work_retry_does_not_publish_the_failed_attempts_outcome(manifest, tmp_path) -> None:
+    """The retry and its one correction left the predecessor's file untouched."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -267,7 +269,6 @@ def test_work_retry_does_not_publish_the_failed_attempts_outcome(manifest, tmp_p
             "mode": "work",
         },
     )
-    # The retry and its one correction left the predecessor's file untouched.
     assert len(launcher.sessions) == 3
     assert retried["result"]["turn_outcome"] == {"status": "not_stated", "reason": None}
 
@@ -410,6 +411,9 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
 
 
 def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest, tmp_path) -> None:
+    """A session start opens its master directly, and a forced bootstrap reopens the same master
+    rather than rendering a new one.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -444,7 +448,7 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
     assert wait_for_task_response(client, project_id, first.json()["operation_id"])["status"] == (
         "succeeded"
     )
-    assert _master_path(prompts[0]) is None  # A session start opens its master directly.
+    assert _master_path(prompts[0]) is None
     master_path = Path(prompts[0].splitlines()[1])
     _, retried = _retry_task(
         client,
@@ -461,7 +465,6 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
         assert graph_rules(edits=True, ontology_extensions=extensions) not in retry
     assert store.agent_task_contract(str(retried["operation_id"]), "work_retry") == retry
 
-    # A forced bootstrap reopens the same master rather than rendering a new one.
     execution = AgentTaskExecution(
         operation_id=str(retried["operation_id"]),
         store=store,
@@ -651,6 +654,9 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
 def test_same_provider_paper_coach_retry_receives_exact_failure(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """The Retry is inline with current diagnostics and request, the master a pointer opened now or
+    held already.
+    """
     from rcp.agents import hidden_read
 
     host_facts = hidden_read.host_facts
@@ -690,7 +696,6 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(
 
     assert launcher.sessions == [None, launcher.native_session_id]
     assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
-    # The Retry is inline: its diagnostics and request are current, the master a pointer.
     prompt = launcher.prompts[1]
     token = retried["operation_id"]
     store = app.state.background_tasks.store
@@ -701,7 +706,6 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(
     }
     master = _master_path(prompt)
     assert master is not None and master.read_text(encoding="utf-8") not in prompt
-    # They reach the session in a master it opens now, or else inline against the one it holds.
     bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
     sent = prompt + (master.read_text(encoding="utf-8") if bootstrap else "")
     assert f"task-{token}-retry-diagnostics.json" in sent
@@ -715,6 +719,9 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(
 def test_recovery_delivers_current_guidance_in_the_retained_session(
     manifest, tmp_path, monkeypatch, kind: str, recovery: str
 ) -> None:
+    """The first turn never committed a chat baseline, so the continuation opens a freshly rendered
+    master.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -786,8 +793,6 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     assert completed["parent_operation_id"] == first["operation_id"]
     assert updated_guidance not in launcher.contracts[0]
     if kind == "node_chat":
-        # The first turn never committed a chat baseline, so the continuation opens a
-        # freshly rendered master rather than pointing to one.
         master_path = _master_path(launcher.prompts[1])
         assert master_path is not None
         assert SECTIONS["master_pointer"].split("{path}")[0] not in launcher.prompts[1]
@@ -808,6 +813,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
 def test_browser_grant_precedes_persisted_prompt_and_turns_off(
     manifest, tmp_path, monkeypatch, mode, browser_status
 ):
+    """The session hears the browser state when it changes, not on every turn."""
     from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
     from rcp.runs import browser_runtime_seam
 
@@ -895,7 +901,6 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
     assert [grant.lease_id for grant in finished] == (
         ["test-lease"] if browser_status == "granted" else []
     )
-    # The session hears the browser state when it changes, not on every turn.
     assert changed_fields == [False, True, False]
 
 

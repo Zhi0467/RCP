@@ -30,13 +30,13 @@ def _publish(store, operation_id, *, base=None, data=None):
 
 
 def _edit(store, *, status="queued", base=None, kind="artifact_edit", artifact_id="one"):
+    """A chat comment is a plain turn's context; only an origin edit has its binding."""
     return store.create_agent_task(
         AgentTaskRecord(
             operation_id="edit",
             project_id="project",
             kind=kind,
             status=status,
-            # A chat comment is a plain turn's context; only an origin edit has its binding.
             request={
                 "artifact_edit": {
                     "artifact_id": artifact_id,
@@ -98,6 +98,7 @@ def test_versions_compare_and_set_retry_retention_and_keep(store, tmp_path, monk
 
 
 def test_capture_allows_reads_and_creation_but_holds_pruned_files(store, tmp_path, monkeypatch):
+    """Another store for the same directory must share the capture guard."""
     import rcp.storage.artifacts as module
 
     monkeypatch.setattr(module, "ARTIFACT_RECENT_VERSIONS", 1)
@@ -111,7 +112,6 @@ def test_capture_allows_reads_and_creation_but_holds_pruned_files(store, tmp_pat
     )
     captured_path = store.artifact_file_path(captured_version)
     snapshot_path = store.artifact_file_path(captured_snapshot)
-    # Another store for the same directory must share the capture guard.
     writer = AppStore(store.path)
     with ThreadPoolExecutor(max_workers=3) as pool:
         with store.artifact_capture():
@@ -154,6 +154,9 @@ def test_capture_allows_reads_and_creation_but_holds_pruned_files(store, tmp_pat
 
 
 def test_migration_check_uses_throwaway_files_and_relocation(tmp_path, monkeypatch):
+    """A legacy view keeps all its bytes in SQLite, and an agent may be granted system temp, so the
+    rehearsal inspects neither the stage nor system temp.
+    """
     fixture = (
         Path(__file__).parent
         / "fixtures/server_upgrade/pre-artifacts-v15-ff090e1/data/rcp.sqlite3.gz"
@@ -161,7 +164,6 @@ def test_migration_check_uses_throwaway_files_and_relocation(tmp_path, monkeypat
     path = tmp_path / "rcp.sqlite3"
     path.write_bytes(gzip.decompress(fixture.read_bytes()))
     with sqlite3.connect(path) as connection:
-        # A legacy view has all its bytes in SQLite; migration must not inspect its stage.
         insert_legacy_view(connection)
     connection.close()
     before = path.read_bytes()
@@ -175,7 +177,6 @@ def test_migration_check_uses_throwaway_files_and_relocation(tmp_path, monkeypat
         rehearsed.append(file_root)
 
     monkeypatch.setattr(storage_base_module, "migrate_artifacts", recording_migrate_artifacts)
-    # An agent may be granted system temp, so the rehearsal must never reach it.
     system_temp = tmp_path / "system-temp"
     system_temp.touch()
     monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
@@ -367,13 +368,13 @@ def test_orphan_report_migration_refuses_without_dropping_html(tmp_path):
 
 
 def test_a_retried_interrupted_edit_releases_its_base(store, monkeypatch):
+    """Its retry edits the current version, so the interrupted attempt pins nothing."""
     import rcp.storage.artifacts as module
 
     monkeypatch.setattr(module, "ARTIFACT_MAX_VERSION_BYTES", 16)
     artifact = _artifact(store)
     base = _publish(store, "base", base=artifact.current_version)
     _edit(store, status="interrupted", base=base.version_id)
-    # Its retry edits the current version, so the interrupted attempt pins nothing.
     retry = store.agent_task("edit").model_copy(
         update={"operation_id": "retry", "status": "succeeded", "parent_operation_id": "edit"}
     )

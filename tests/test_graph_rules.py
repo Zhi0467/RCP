@@ -42,6 +42,7 @@ def test_every_graph_field_and_relation_carries_its_meaning_in_code() -> None:
 
 
 def test_rendered_rules_name_every_field_and_relation() -> None:
+    """Layers are derived per endpoint pair, so one relation can span two layers."""
     rendered = graph_rules(edits=True, ontology_extensions=True)
 
     for model in NODE_MODELS:
@@ -50,7 +51,6 @@ def test_rendered_rules_name_every_field_and_relation() -> None:
             assert f"- `{name}`" in rendered, f"{model.__name__}.{name}"
     for name, spec in RELATION_SPEC.items():
         assert (f"- `{name}`:" in rendered) == spec.authorable
-    # Layers are derived per endpoint pair, so one relation can span two layers.
     assert "Hypothesis -> Decision (seam)" in rendered
 
 

@@ -155,6 +155,9 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
 def test_preparation_confirms_before_resolving_and_stages_same_policy(
     monkeypatch, tmp_path, manifest, provider, failed, remote
 ):
+    """The wrapper is staged outside the writable workspace, inside a folder the scope hides, and
+    OpenCode executes it directly as its SHELL.
+    """
     from rcp import ssh_agent
     from rcp.agents import hidden_read
 
@@ -233,14 +236,12 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         assert scope.enforcement.reasons
         return
     wrapper = Path(scope.wrapper_path())
-    # Staged outside the writable workspace, inside a folder the scope hides.
     assert not wrapper.is_relative_to(tmp_path / "workspace")
     if remote:
         files = stage.installed[str(wrapper.parent)]
     else:
         files = {path.name: path.read_text() for path in wrapper.parent.iterdir()}
         assert all(path.stat().st_mode & 0o222 == 0 for path in wrapper.parent.iterdir())
-        # OpenCode executes the wrapper directly as its SHELL.
         assert os.access(wrapper, os.X_OK)
     assert HiddenReadScope.model_validate_json(files[wrapper.name + ".policy.json"]) == scope
     assert files[wrapper.name] == staged_hidden_read_source()
@@ -249,6 +250,7 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
 
 
 def test_claude_prefix_runs_as_claude_invokes_it(tmp_path):
+    """Claude runs the prefix as one executable path with the command as its argument."""
     from rcp.agents.staged_hidden_read import install, probe_hidden_read_wrapper
 
     readiness = probe_hidden_read_wrapper()
@@ -276,15 +278,14 @@ def test_claude_prefix_runs_as_claude_invokes_it(tmp_path):
         provider_version="2.1.288",
     )
     settings = json.loads(command[command.index("--settings") + 1])
-    # Claude runs the prefix as one executable path with the command as its argument.
     prefix = settings["env"]["CLAUDE_CODE_SHELL_PREFIX"]
     assert subprocess.run([prefix, "exit 7"], capture_output=True).returncode == 7
 
 
 def test_every_task_launch_resolves_or_carries_a_scope():
+    """A call with neither would silently launch with the empty unhidden scope."""
     from rcp import runs
 
-    # A call with neither would silently launch with the empty unhidden scope.
     calls = [
         (path.stem, node.lineno, {keyword.arg for keyword in node.keywords})
         for path in sorted(Path(runs.__file__).parent.rglob("*.py"))
@@ -298,10 +299,11 @@ def test_every_task_launch_resolves_or_carries_a_scope():
 
 
 def _browser_admission_calls():
+    """Discovers every call, including future task owners, rather than keeping a second inventory
+    that could miss a new launch path.
+    """
     from rcp import runs
 
-    # Discover every call, including future task owners, rather than maintaining
-    # a second inventory that could silently miss a new launch path.
     for path in sorted(Path(runs.__file__).parent.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             if (
@@ -315,6 +317,9 @@ def _browser_admission_calls():
 @pytest.mark.parametrize(("path", "call"), list(_browser_admission_calls()))
 @pytest.mark.asyncio
 async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_path, path, call):
+    """Runs the task's actual admission expression through browser_turn; staging and settlement are
+    outside this invariant.
+    """
     from rcp.providers.browser_grant import BrowserGrant
     from rcp.runs import browser_lifecycle
 
@@ -337,8 +342,6 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
         stage=tmp_path,
     )
     stage = SimpleNamespace(workspace=tmp_path, execution_host="", remote=None)
-    # Execute the actual task's admission expression through browser_turn. The
-    # task's unrelated staging/settlement machinery is outside this invariant.
     admission = eval(
         compile(ast.Expression(call), str(path), "eval"),
         {"browser_turn": browser_lifecycle.browser_turn},

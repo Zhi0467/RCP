@@ -327,9 +327,9 @@ def _start_modern_experiment_episode(
 
 
 def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> None:
+    """Auto-research is live per branch, so each fresh episode owns its own."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "auto-1", mode="auto_research"))
-    # Auto-research is live per branch; each fresh episode owns its own.
     store.create_episode(_episode(store, "auto-2", mode="auto_research"))
 
     first_experiment = _episode(
@@ -744,6 +744,9 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
 def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
     tmp_path, monkeypatch
 ) -> None:
+    """Restores the preceding schema with its original report bytes, and closes both stores so any
+    write would leave the WAL and reach the file.
+    """
     path = tmp_path / "rcp.sqlite3"
     store = AppStore(path)
     reports = []
@@ -784,7 +787,6 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
         store.finish_episode_report_ready(attempt.attempt_id, report)
         reports.append(report)
 
-    # Restore the immediately preceding schema, retaining its original report bytes.
     with sqlite3.connect(path) as connection:
         downgrade_artifacts(
             connection,
@@ -807,7 +809,6 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
         pytest.fail("existing report titles were reparsed")
 
     monkeypatch.setattr(storage_base_module, "html_document_title", unexpected_extraction)
-    # Close both stores so any write would leave the WAL and reach the file.
     upgraded.close()
     before = path.read_bytes()
     reopened = AppStore(path)
@@ -1002,6 +1003,9 @@ def test_unlaunchable_wrapup_is_terminal_without_a_hidden_allocation(tmp_path) -
 
 
 def test_ending_without_a_report_terminalizes_and_leaves_no_wrapup(tmp_path) -> None:
+    """No wrap-up began, so there is no report state or error, and a terminal status lets the
+    Experiment start again.
+    """
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "episode"))
     store.allocate_episode_invocation(
@@ -1018,7 +1022,6 @@ def test_ending_without_a_report_terminalizes_and_leaves_no_wrapup(tmp_path) -> 
     assert episode.status == "failed"
     assert episode.ending == "failed"
     assert episode.ended_at is not None
-    # No wrap-up began, so there is no report state and no report error to show.
     assert episode.wrapup_state == "not_started"
     assert episode.wrapup_error is None
     assert episode.report_attempts_used == 0
@@ -1027,7 +1030,6 @@ def test_ending_without_a_report_terminalizes_and_leaves_no_wrapup(tmp_path) -> 
     assert all(
         task.kind != "episode_report" for task in store.agent_tasks("project", include_hidden=True)
     )
-    # A terminal status is not a live episode, so the Experiment can start again.
     store.create_episode(_episode(store, "replacement"))
 
 
@@ -1051,6 +1053,9 @@ def test_ending_without_a_report_is_idempotent_and_immutable(tmp_path) -> None:
 
 
 def test_ending_without_a_report_settles_an_episode_already_fenced_into_wrapup(tmp_path) -> None:
+    """`wrapping_up` is a live status; leaving an episode parked there is the deadlock this path
+    prevents.
+    """
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "episode"))
     store.allocate_episode_invocation(
@@ -1062,8 +1067,6 @@ def test_ending_without_a_report_settles_an_episode_already_fenced_into_wrapup(t
 
     episode = store.end_episode_without_report("episode", ending="failed", diagnostic="No session.")
 
-    # `wrapping_up` is a live status; leaving an episode parked there is exactly the
-    # deadlock this path exists to prevent.
     assert episode.status == "failed"
     assert episode.wrapup_state == "not_started"
     store.create_episode(_episode(store, "replacement"))
@@ -1844,6 +1847,8 @@ def test_an_unclassifiable_legacy_exit_deliberately_has_no_ending() -> None:
     diagnostic. Recording it as `completed` or `failed` would write a claim about
     somebody's research that nothing supports, so the column carries the absence
     instead.
+
+    `legacy_unavailable` is not `not_started`, so this combination writes a wrapup.
     """
 
     status, ending, wrapup_state, diagnostic, _ended_at = _legacy_experiment_lifecycle(
@@ -1859,7 +1864,6 @@ def test_an_unclassifiable_legacy_exit_deliberately_has_no_ending() -> None:
 
     assert ending is None
     assert status == "needs_action"
-    # Not `not_started`, so this is exactly the combination that writes a wrapup.
     assert wrapup_state == "legacy_unavailable"
 
 
@@ -1898,6 +1902,9 @@ def test_stop_provenance_round_trips_and_first_fence_wins(tmp_path, initiated_by
 
 
 def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) -> None:
+    """Later migrations only add columns; dropping them too keeps this a version-18 database as more
+    migrations land.
+    """
     path = tmp_path / "rcp.sqlite3"
     store = AppStore(path)
     original = store.create_episode(_episode(store, "legacy"))
@@ -1907,8 +1914,6 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
         connection.execute(
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN wake_suppressed"
         )
-        # Later migrations only add columns; dropping them too keeps this a
-        # version-18 database as more migrations land.
         connection.execute(
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN acknowledged_operation_id"
         )
@@ -1957,6 +1962,7 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
 
 
 def test_a_request_persisted_before_isolation_fields_still_roundtrips():
+    """A stored value that differs from the parsed one still fails."""
     from rcp.service import AutoResearchRunRequest
     from rcp.storage.request_compat import persisted_request_roundtrips
 
@@ -1967,23 +1973,23 @@ def test_a_request_persisted_before_isolation_fields_still_roundtrips():
     for key in ("code_worktree", "graph_isolation", "isolation_owner_episode_id"):
         stored.pop(key, None)
     assert persisted_request_roundtrips(AutoResearchRunRequest.model_validate(stored), stored)
-    # A stored value that differs from the parsed one still fails.
     assert not persisted_request_roundtrips(
         request.model_copy(update={"code_worktree": True}), stored
     )
 
 
 def test_a_nested_request_roundtrips_only_across_omitted_defaults():
+    """Attachments written before ``reference`` existed omit it, while a dropped key, a changed
+    nested value, or a lost nested object fails.
+    """
     from rcp.service import RunRequest
     from rcp.storage.request_compat import persisted_request_roundtrips
 
     attachment = {"attachment_id": "a", "name": "n", "media_type": "text/plain", "size": 1}
     attachment["expires_at"] = "2026-01-01T00:00:00Z"
-    # Attachments written before ``reference`` existed omit it.
     stored = RunRequest().model_dump(mode="json") | {"attachments": [attachment]}
     request = RunRequest.model_validate(stored)
     assert persisted_request_roundtrips(request, stored)
-    # A key the model drops, a changed nested value, or a lost nested object fails.
     assert not persisted_request_roundtrips(request, stored | {"retired_key": 1})
     changed = [attachment | {"name": "other"}]
     assert not persisted_request_roundtrips(request, stored | {"attachments": changed})
@@ -2009,6 +2015,7 @@ def test_branch_name_validation(name):
 
 
 def test_branch_fallbacks_are_utc_and_legacy_names_survive_other_rename(tmp_path):
+    """Canonical branch labels survive removal of the retired name projection."""
     from rcp.storage.branch_names import BranchNameTaken
 
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -2029,7 +2036,6 @@ def test_branch_fallbacks_are_utc_and_legacy_names_survive_other_rename(tmp_path
     assert store.branch_names("project") == expected
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM graph_branches").fetchone()[0] == 3
-        # Canonical branch labels survive removal of the retired name projection.
         connection.execute("DELETE FROM branch_names")
         connection.execute("DELETE FROM branch_name_reservations")
     assert store.branch_names("project") == expected

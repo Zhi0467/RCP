@@ -121,7 +121,6 @@ def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_pat
             connection.execute("SELECT state,disabled_reason FROM agent_schedules").fetchone()
         ) == ("disabled", "restore")
         assert connection.execute("SELECT expires_at FROM approval_cards").fetchone()[0] == now
-        # Nothing remains for startup to launch or wake on the restored host.
         assert not connection.execute(
             "SELECT 1 FROM agent_handoffs WHERE target_operation_id IS NULL "
             "OR notified_operation_id IS NULL"

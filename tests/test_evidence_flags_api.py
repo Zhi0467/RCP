@@ -82,6 +82,10 @@ def test_flags_get_and_dismiss_disposition(flagged):
 
 @pytest.mark.parametrize("on_branch", [False, True])
 def test_address_admits_one_ordinary_work_turn_and_replays(flagged, on_branch):
+    """The turn settles the flag, so it is held until both requests answer and the replay sees the
+    admission's flag state. A lost response replays to the bound chat even after the Evidence leaves
+    main.
+    """
     app, client, store, project, flag = flagged
     branch_id = str(uuid.uuid4()) if on_branch else None
     if branch_id:
@@ -100,8 +104,6 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged, on_branch):
                 (branch_id, flag["flag_id"]),
             )
     launches = []
-    # The turn settles the flag; hold it until both requests answered so the
-    # replay sees the same flag state as the admission.
     answered = threading.Event()
 
     async def stream(project_id, kind, request, execution):
@@ -136,10 +138,8 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged, on_branch):
     assert task.dispatch_authority.task_contract == "work_auto"
     assert task.graph_target.branch_id == branch_id
     assert len(launches) == 1
-    # The finished turn closed the flag; only the original request still replays.
     assert client.get(base).json()["evidence_flags"] == []
     assert client.post(url, json={"request_id": "another-click"}).status_code == 409
-    # A lost response replays to the bound chat even after the Evidence leaves main.
     with store.connection() as connection:
         connection.execute(
             "UPDATE evidence_flags SET evidence_id='ev/missing' WHERE flag_id=?",
@@ -152,6 +152,7 @@ def test_address_admits_one_ordinary_work_turn_and_replays(flagged, on_branch):
 
 
 def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
+    """Each request keeps its own turn across later attempts and their outcomes."""
     app, client, store, project, flag = flagged
     outcomes = iter(["error", "error", "done"])
 
@@ -170,7 +171,6 @@ def test_a_failed_address_turn_reopens_the_flag_for_another(flagged):
     first = address("first", "failed")
     [reopened] = client.get(base).json()["evidence_flags"]
     assert (reopened["state"], reopened["chat_id"]) == ("open", first["chat_id"])
-    # Each request keeps its own turn across later attempts and their outcomes.
     second = address("second", "failed")
     assert address("first", "failed")["operation_id"] == first["operation_id"]
     third = address("third", "succeeded")
@@ -196,6 +196,7 @@ def test_an_address_turn_that_did_not_finish_the_work_reopens_the_flag(flagged, 
 
 
 def test_a_retried_address_turn_carries_the_flag(flagged):
+    """An older release left the flag addressing on the failed first turn."""
     app, client, store, project, flag = flagged
     outcomes = iter(["error", "done"])
 
@@ -210,7 +211,6 @@ def test_a_retried_address_turn_carries_the_flag(flagged):
     retried = client.post(f"/api/projects/{project}/tasks/{first['operation_id']}/retry", json={})
     wait_for_task(store, retried.json()["operation_id"], expect="succeeded")
     assert client.get(base).json()["evidence_flags"] == []
-    # An older release left the flag addressing on the failed first turn.
     with store.connection() as connection:
         connection.execute(
             "UPDATE evidence_flags SET state='addressing', operation_id=? WHERE flag_id=?",
@@ -221,6 +221,7 @@ def test_a_retried_address_turn_carries_the_flag(flagged):
 
 
 def test_a_request_answered_by_a_running_turn_replays_it(flagged):
+    """The flag reopened, yet a retry of the second request still returns its turn."""
     app, client, store, project, flag = flagged
     release = threading.Event()
     launches = []
@@ -239,7 +240,6 @@ def test_a_request_answered_by_a_running_turn_replays_it(flagged):
     finally:
         release.set()
     wait_for_task(store, first["operation_id"], expect="failed")
-    # The flag reopened, yet a retry of the second request still returns its turn.
     replay = client.post(url, json={"request_id": "second"}).json()
     assert replay["operation_id"] == first["operation_id"]
     assert len(launches) == 1
@@ -267,6 +267,7 @@ def test_a_restart_reopens_an_addressing_flag(flagged):
 
 @pytest.mark.parametrize(("outcome", "state"), [("done", None), ("error", "open")])
 def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcome, state):
+    """An older release never settled the flag when its turn ended."""
     app, client, store, project, flag = flagged
 
     async def stream(project_id, kind, request, execution):
@@ -277,7 +278,6 @@ def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcom
     url = f"{base}/evidence-flags/{flag['flag_id']}/address"
     result = client.post(url, json={"request_id": "old-release"}).json()
     wait_for_task(store, result["operation_id"])
-    # An older release never settled the flag when its turn ended.
     with store.connection() as connection:
         connection.execute(
             "UPDATE evidence_flags SET state='addressing' WHERE flag_id=?", (flag["flag_id"],)
@@ -289,6 +289,7 @@ def test_startup_settles_a_flag_an_older_release_left_addressing(flagged, outcom
 
 
 def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(flagged):
+    """An older release kept the request only on the flag and left it addressing."""
     app, client, store, project, flag = flagged
     launches = []
 
@@ -300,7 +301,6 @@ def test_startup_adopts_an_address_request_an_older_release_kept_on_the_flag(fla
     url = f"/api/projects/{project}/consolidation/evidence-flags/{flag['flag_id']}/address"
     result = client.post(url, json={"request_id": "legacy"}).json()
     wait_for_task(store, result["operation_id"], expect="succeeded")
-    # An older release kept the request only on the flag and left it addressing.
     with store.connection() as connection:
         connection.execute("DELETE FROM client_requests WHERE key='legacy'")
         connection.execute(
@@ -340,6 +340,7 @@ def test_address_refuses_a_flag_only_kind(flagged, kind):
 
 @pytest.mark.parametrize("evidence", ["missing", "retired"])
 def test_address_refuses_absent_or_retired_evidence(flagged, evidence):
+    """An operational flag can outlive the current graph node it named."""
     app, client, store, project, flag = flagged
     evidence_id = f"ev/{evidence}"
     if evidence == "retired":
@@ -368,7 +369,6 @@ def test_address_refuses_absent_or_retired_evidence(flagged, evidence):
                 ],
             ),
         )
-    # An operational flag can outlive the current graph node it named.
     with store.connection() as connection:
         connection.execute(
             "UPDATE evidence_flags SET evidence_id=? WHERE flag_id=?",
@@ -436,6 +436,7 @@ def _batch_flags(flagged):
 
 @pytest.mark.parametrize("outcome", ["done", "error"])
 def test_batch_one_turn_atomic_binding_settlement_and_replay(flagged, outcome):
+    """A later attempt never changes the original request's replay target."""
     app, client, store, project, _ = flagged
     flags = _batch_flags(flagged)
     ids = [flag["flag_id"] for flag in flags]
@@ -504,7 +505,6 @@ def test_batch_one_turn_atomic_binding_settlement_and_replay(flagged, outcome):
                     "SELECT operation_id FROM evidence_flags WHERE project_id=?", (project,)
                 )
             } == {new_id}
-        # A later attempt never changes the original request's replay target.
         assert client.post(url, json=body).json()["operation_id"] == task.operation_id
 
 

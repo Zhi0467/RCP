@@ -105,7 +105,7 @@ def _apply_request(key):
 
 
 def _command(app, execution, tmp_path):
-    # The command mailbox exists only inside a launched turn.
+    """The command mailbox exists only inside a launched turn."""
     execution.store.record_agent_task_receipt(execution.operation_id, "agent_launch", {})
     mailbox = RunStageMailbox(tmp_path)
     handler = consolidation_apply_handler(lambda: app.state.service, execution, mailbox, ["repo-a"])
@@ -146,6 +146,7 @@ def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(mani
 
 
 def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path):
+    """Simulates a process lost before the hold while another writer's Evidence lands."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     _, execution = _admit(app)
@@ -167,7 +168,6 @@ def test_consolidation_apply_holds_added_evidence_for_review(manifest, tmp_path)
     )
     mailbox.write_text("patch.json", agent_patch_json(patch))
     assert apply("add").status == "ok"
-    # A process lost before the hold, and another writer's Evidence landing meanwhile.
     with execution.store.connection() as connection:
         connection.execute("DELETE FROM evidence_flags")
         connection.execute("DELETE FROM evidence_flag_command_receipts")
@@ -353,6 +353,7 @@ def test_consolidation_queued_launch_rechecks_authorization(
 async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     manifest, tmp_path, outcome
 ):
+    """The task contract invokes the staged workflow, not just the request field."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     request, execution = _admit(app)
@@ -378,7 +379,6 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     assert not any(item["event"] == "error" for item in payloads)
     assert execution.turn_outcome is not None
     assert execution.turn_outcome.status == ("done" if outcome else "not_stated")
-    # The task contract invokes the staged workflow, not just the request field.
     contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
     invoked = [
         Path(line.rstrip().rstrip("`").rsplit("`", 1)[-1])
@@ -529,6 +529,9 @@ async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
 
     class ApplyingLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
+            """Simulates a handoff surviving consumption, including crash-after-append; a restarted
+            execution has only the durable keyed result.
+            """
             async for event in super().stream(provider, prompt, **kwargs):
                 if event.event == "answer":
                     if interleaved:
@@ -539,10 +542,8 @@ async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
                     )
                     assert response.status == "ok"
                     if handoff == "surviving":
-                        # Simulate a handoff surviving consumption (including crash-after-append).
                         (self.workspaces[-1] / "patch.json").write_text(text)
                     elif handoff == "recovered_receipt":
-                        # A restarted execution has only the durable keyed result.
                         execution.applied_revision = None
                         execution.applied_graph_state = None
                         replay = handlers[-1](

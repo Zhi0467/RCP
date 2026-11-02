@@ -106,6 +106,9 @@ def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) ->
 
 
 def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) -> None:
+    """With no session to resume no report was ever possible, so the episode terminalizes with its
+    own reason and no report error.
+    """
     store, _stage = _store_with_episode(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -125,8 +128,6 @@ def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) ->
         ),
     )
 
-    # There is no session to resume, so no report was ever possible. The episode
-    # terminalizes with its own reason and carries no report error.
     assert admission.launchable is False
     assert admission.task is None
     assert admission.wrapup is None

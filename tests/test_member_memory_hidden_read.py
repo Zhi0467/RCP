@@ -10,6 +10,7 @@ from rcp.agents.hidden_read import HiddenFolderRejected
 
 @pytest.mark.parametrize("owner", [None, "alice", "bob"])
 def test_thread_stages_and_member_notes_are_hidden_except_from_their_owner(owner):
+    """Transcripts stay hidden from every run, the owner's included."""
     from rcp.agents.hidden_read import hidden_read_defaults
 
     directories, _, globs = hidden_read_defaults(
@@ -25,7 +26,6 @@ def test_thread_stages_and_member_notes_are_hidden_except_from_their_owner(owner
         for member in ("alice", "bob"):
             stage = Path(root) / member / "stages/turn"
             assert any(stage.is_relative_to(path) for path in directories) == (member != owner)
-            # Transcripts stay hidden from every run, the owner's included.
             transcript = Path(root) / member / "thread.jsonl"
             assert any(transcript.is_relative_to(path) for path in directories) or any(
                 fnmatch.fnmatch(str(transcript), pattern) for pattern in globs

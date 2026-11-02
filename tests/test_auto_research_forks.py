@@ -43,6 +43,7 @@ def test_autoarchive_uses_exact_canonical_head_and_all_writer_settlement(manifes
 
 
 def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
+    """The first fork is unchanged and eligible once its incoming merge settles."""
     from rcp.runs.branch_merge_request import BranchMergeRunRequest
     from tests.test_owned_merge_storage import _owned_merge
 
@@ -60,7 +61,6 @@ def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
         authorized_by=harness.episode.authorized_by,
         created_by="orchestrator:test",
     )
-    # The first fork is unchanged and eligible once its incoming merge settles.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_branches SET auto_archive=1 WHERE branch_id=?",

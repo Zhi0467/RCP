@@ -165,6 +165,7 @@ def test_state_live_classification(viewer_app, live, finished, expected):
     ],
 )
 def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
+    """A failure that settles after the send succeeded still reaches the viewer."""
     app, client, store = viewer_app
     origin = _task(store, app.state.default_project_id)
     artifact = _artifact(store, origin)
@@ -177,7 +178,6 @@ def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
     )
     state = _state(client, artifact)
     assert state["editing_operation_id"] == (edit.operation_id if active else None)
-    # A failure that settles after the send succeeded still reaches the viewer.
     assert (state["edit_failure"] is not None) == (status in {"failed", "interrupted"})
 
 
@@ -265,7 +265,6 @@ def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(v
         child_report.artifact_id,
         kept.artifact_id,
     ]
-    # An unkept turn artifact or child Experiment report offers Keep; the chain's report is saved.
     assert not _state(client, report)["can_keep"]
     assert _state(client, child_artifact)["can_keep"]
     assert _state(client, child_report)["can_keep"]
@@ -365,6 +364,9 @@ def test_a_delete_after_expiry_leaves_the_artifact_deleted(viewer_app):
 
 
 def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
+    """A stopped edit holds nothing, and a backup copying files refuses Delete instead of holding
+    the project's writes.
+    """
     app, client, store = viewer_app
     project = app.state.default_project_id
     artifact = _artifact(store, _task(store, project))
@@ -378,14 +380,12 @@ def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
     assert not _state(client, artifact)["can_delete"]
     assert client.delete(url).status_code == 409
     assert store.artifact(artifact.artifact_id) is not None
-    # A stopped edit holds nothing; a resumed turn finds its artifact gone.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status = 'interrupted' WHERE operation_id = ?",
             (edit.operation_id,),
         )
     assert _state(client, artifact)["can_delete"]
-    # A backup copying files refuses Delete instead of holding the project's writes.
     with store.artifact_capture():
         assert client.delete(url).status_code == 409
     assert store.artifact(artifact.artifact_id) is not None

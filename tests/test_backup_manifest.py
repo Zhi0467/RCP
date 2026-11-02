@@ -511,6 +511,7 @@ def test_machine_access_hint_and_compute_survive_backup_and_restore(tmp_path: Pa
 
 
 def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Path) -> None:
+    """Every earlier archive recorded this machine shape, even for a Slurm machine."""
     from rcp.projects import _render_restored_manifest
 
     record, _ = _completed_registration(tmp_path)
@@ -520,7 +521,6 @@ def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Pa
     path.write_text(tomlkit.dumps(document), encoding="utf-8")
     manifest = load_manifest(path)
     payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
-    # The machine shape every earlier archive recorded, even for a Slurm machine.
     for machine in payload["machines"]:
         machine.pop("compute", None)
     assert {frozenset(machine) for machine in payload["machines"]} == {

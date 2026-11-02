@@ -116,6 +116,7 @@ def test_agentless_merge_publishes_warm_inbox_with_live_proposal(manifest, tmp_p
 
 
 def test_warning_carry_recovers_after_success_and_keeps_dismissal(manifest, tmp_path, monkeypatch):
+    """The internal markers remain readable after inspector and count overflow."""
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     original = _flag(harness, state="addressing")
     carry = harness.store.carry_merge_evidence_flags
@@ -131,7 +132,6 @@ def test_warning_carry_recovers_after_success_and_keeps_dismissal(manifest, tmp_
     assert [task.operation_id for task in harness.store.pending_merge_effect_tasks()] == [task_id]
     head = harness.service.history.head_ref()
     monkeypatch.setattr(harness.store, "carry_merge_evidence_flags", carry)
-    # The internal markers remain readable after inspector/count overflow.
     for index in range(450):
         harness.store.record_agent_task_receipt(task_id, "noise", {"index": index})
     path = harness.store.path
@@ -461,6 +461,7 @@ def test_keyed_code_delivery_receipt_survives_a_later_graph_attempt(
 def test_fresh_request_that_settles_an_older_merge_is_not_accepted_as_that_merge(
     manifest, tmp_path, monkeypatch, reconciliation_owner
 ):
+    """The older attempt appeared after the route's reconciliation read."""
     import rcp.runs.episodes.merge as coordinator
     from rcp.api import episode_routes
 
@@ -481,7 +482,6 @@ def test_fresh_request_that_settles_an_older_merge_is_not_accepted_as_that_merge
     head = harness.service.history.head_ref()
     with monkeypatch.context() as admission:
         if reconciliation_owner == "coordinator":
-            # The older attempt appeared after the route's reconciliation read.
             admission.setattr(episode_routes, "reconcile_episode_merge", lambda *_args: None)
         refused = _merge(harness, request_id=request_b)
     assert refused.status_code == 409, refused.text

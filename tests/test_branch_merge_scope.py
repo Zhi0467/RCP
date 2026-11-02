@@ -190,6 +190,7 @@ def _plan(harness, operation):
 @pytest.mark.parametrize("sourced_branch", ["node", "proposal"], indirect=True)
 @pytest.mark.parametrize("removed_from_main", [False, True])
 def test_merge_provenance_uses_current_project_membership(sourced_branch, removed_from_main):
+    """A run that writes only repo-a may still cite any project repository it read."""
     from rcp.runs.merge_contract import MergeRefused
     from rcp.runs.merge_patch import prepare_merge_candidate
     from tests.test_merge_patch import answers
@@ -223,7 +224,6 @@ def test_merge_provenance_uses_current_project_membership(sourced_branch, remove
         assert harness.service.history.head_ref() == before
     assert harness.branch.merge_receipts() == []
 
-    # A run that writes only repo-a may still cite any project repository it read.
     report = validate_patch(
         harness.branch.base_state(),
         branch_patch.model_copy(update={"run_truth_scope": ["repo-a"]}),
@@ -259,8 +259,10 @@ def test_merge_fails_closed_when_membership_changes_after_plan(sourced_branch):
 def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
     sourced_branch, monkeypatch, before_launch
 ):
+    """A real conflict requires the checked agent turn whose live scope is exercised. A preflight
+    refusal can settle before the response projection is returned.
+    """
     harness, _operation, _branch_patch = sourced_branch
-    # A real conflict requires the checked agent turn whose live scope we exercise.
     for destination, title in ((harness.branch, "Branch title"), (None, "Main title")):
         state = (destination or harness.service.history).state()
         patch = Patch(
@@ -310,7 +312,6 @@ def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
-    # A preflight refusal can settle before the response projection is returned.
     (admitted,) = [
         task
         for task in harness.store.agent_tasks(harness.project_id)

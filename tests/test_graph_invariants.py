@@ -2,6 +2,9 @@
 
 A development test, not a runtime check: it proves the per-operation checks
 are complete. A failure names an operation whose checks miss a case.
+
+Node fields named as ids are each a live node reference, history kept as written, or not a node id.
+The attempt ledger pins the Decision revision it ran under.
 """
 
 from __future__ import annotations
@@ -54,12 +57,8 @@ REQUIRED = {
     "blocker": {"description": "The cluster is down."},
 }
 ASSESSED = {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-# Node fields whose name says they hold an id. Each is either a reference to a
-# live node, history kept as written, or not a node id at all.
 LIVE_NODE_REFS: frozenset[str] = frozenset()
 HISTORY_NODE_REFS = {
-    # The attempt ledger records the Decision revision it ran under; later graph
-    # edits must not rewrite what an attempt was launched with.
     "attempts.decision_bundle.decision_id": "attempt pins are a ledger snapshot",
 }
 NOT_NODE_REFS = {
@@ -276,20 +275,21 @@ def test_node_id_fields_are_classified() -> None:
 
 
 def _random_accepted_patches(seed: int) -> tuple[Counter[str], Counter[str]]:
+    """Records the first patch that broke each invariant as a minimal reproducer, checking both
+    gates without live membership and task lookups.
+    """
     rng = random.Random(seed)
     generator = _Generator(rng)
     state = apply_valid_patch(GraphState(project_truth_scope=SCOPE), seed_patch())
     accepted: Counter[str] = Counter()
     node_types: Counter[str] = Counter()
     relation_types: Counter[str] = Counter()
-    # The first patch that broke each invariant, as a minimal reproducer.
     first_break: dict[str, tuple[set[str], list[dict[str, Any]], str | None]] = {}
     for _ in range(STEPS):
         try:
             patch = generator.patch(state)
         except ValidationError:
             continue
-        # Both gates, without the live membership and task lookups.
         if WriteAuthority().validate_permissions(state, patch).rejected:
             continue
         if validate_patch(state, patch, ValidationContext(SCOPE)).rejected:
@@ -370,7 +370,7 @@ def _merge_oracle(base, source, destination, plan, answers):
 
 
 def _assert_content(state, expected):
-    # The merge files its own review Proposals; every other collection is exact.
+    """The merge files its own review Proposals; every other collection is exact."""
     for collection in ("nodes", "edges", "glossary"):
         assert set(getattr(state, collection)) == {
             identity for kind, identity, _ in expected if kind == collection
@@ -399,6 +399,10 @@ def _agent_append(owner, operation_id, scope, *ops):
 
 @pytest.mark.parametrize("seed", range(4))
 def test_generated_three_way_merge_preserves_content_through_approval(manifest, seed, monkeypatch):
+    """A carried choice and its queued lifecycle are independent content fields. One fork filing is
+    stamped as a pre-rule-2 release filed it, and the merge refiles both under the destination's
+    rule. Every sampled approval order must preserve all remaining cards.
+    """
     rng = random.Random(seed)
     generator = _Generator(rng)
     nodes, edges = generator.merge_base()
@@ -437,7 +441,6 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
             _append(
                 owner, {"op": "create_nodes", "nodes": [generator.new_node(kind, f"{side}{seed}")]}
             )
-    # A carried choice and its queued lifecycle are independent content fields.
     decision_id = f"dec/branch{seed}"
     _append(
         branch,
@@ -478,8 +481,6 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
     ):
         term = {"term": f"{side} term {seed}", "plain_definition": f"Defined on the {side}."}
         _agent_append(owner, operation_id, scope, {"op": "upsert_glossary", "terms": [term]})
-    # Fork filings carry their writer's stamps; one is stamped as a pre-rule-2
-    # release filed it. The merge refiles both under the destination's rule.
     for rule, (node_id, field) in zip(
         (1, 2),
         ((f"hyp/branch{seed}", "rationale"), (f"rq/branch{seed}", "motivation")),
@@ -527,7 +528,6 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
     assert {merged.proposals[identity].dependency_rule for identity in source.proposals} == {2}
     pending = [p for p in merged.proposals.values() if p.id not in source.proposals]
     assert pending
-    # Protected content and relation changes are still the destination's values.
     for proposal in pending:
         assert proposal.status == "pending"
         assert not proposal_is_stale(merged, proposal)
@@ -546,7 +546,6 @@ def test_generated_three_way_merge_preserves_content_through_approval(manifest, 
                     merged.nodes[operation.node_id].standing
                     == destination.nodes[operation.node_id].standing
                 )
-    # Every approval order sampled by these seeds must preserve all remaining cards.
     rng.shuffle(pending)
     for proposal in pending:
         state = history.state()

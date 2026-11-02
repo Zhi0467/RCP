@@ -37,10 +37,8 @@ def test_platforms_bound_only_the_local_role() -> None:
     assert sudo not in required("server_install", "darwin")
 
 
-# Layer 1: the shipped script under the machine's real `sh`.
-
-
 def test_real_script_reports_only_programs_it_cannot_start(tmp_path: Path) -> None:
+    """Runs the shipped script under the machine's real `sh`."""
     for name, body in (("uname", "echo Linux"), ("rsync", "")):
         program = tmp_path / name
         program.write_text(f"#!/bin/sh\n{body}\n")
@@ -65,9 +63,6 @@ def test_real_script_reports_only_programs_it_cannot_start(tmp_path: Path) -> No
     ]
 
 
-# Layer 2: the parser over recorded answers.
-
-
 @pytest.mark.parametrize(
     ("stdout", "outcome"),
     [
@@ -79,6 +74,7 @@ def test_real_script_reports_only_programs_it_cannot_start(tmp_path: Path) -> No
     ],
 )
 def test_only_a_complete_linux_frame_gives_a_definite_answer(stdout: str, outcome: str) -> None:
+    """Parses recorded answers."""
     assert parse_output(stdout, NONCE, ["remote"]).outcome == outcome
 
 
@@ -109,7 +105,6 @@ def test_missing_required_program_carries_install_guidance(release: list[str], a
         assert status.install_notes == ()
     else:
         assert status.install_command is None
-        # One step per package, each naming it.
         assert len(status.install_notes) == 2
         assert all(any(p in n for n in status.install_notes) for p in ("python3", "rsync"))
 
@@ -151,18 +146,19 @@ def test_real_script_looks_up_login_names_in_the_login_shell() -> None:
 
 
 def test_undecodable_banner_bytes_do_not_break_the_check() -> None:
+    """The frame is still read: Linux gives ready or missing, macOS unsupported."""
+
     def with_banner(argv: list[str]) -> list[str]:
         return ["sh", "-c", 'printf "\\377\\376 motd\\n"; exec "$@"', "banner", *argv]
 
-    # The frame is still read: Linux gives ready or missing, macOS unsupported.
     assert script_check(with_banner, ["remote"]).outcome != "not_checked"
 
 
-# Layer 3: the checker's retry, single flight, cache, and recheck.
-
-
 class FakeRunner:
-    """Answers each call from a queue of results; a nonce is copied from argv."""
+    """Answers each call from a queue of results; a nonce is copied from argv.
+
+    Drives the checker's retry, single flight, cache, and recheck.
+    """
 
     def __init__(self, *answers: tuple[int, tuple[str, ...]]) -> None:
         self.answers = list(answers)
@@ -220,12 +216,12 @@ def test_dropped_connection_is_retried_to_a_definite_answer() -> None:
 
 
 def test_exhausted_attempts_are_not_checked_and_admit() -> None:
+    """The cache is reused briefly, so the refusal check did not wait out the retries again."""
     runner = FakeRunner(DROPPED)
     checker = _checker(runner)
     status = checker.status("gpu")
     assert status.outcome == "not_checked" and status.reason
     assert checker.launch_refusal("gpu") is None
-    # Reused briefly, so the refusal check above did not wait out the retries again.
     assert runner.calls == 3
 
 
@@ -238,7 +234,7 @@ def test_timeouts_count_as_failed_attempts() -> None:
     calls: list[float] = []
     status = script_check(lambda argv: argv, ["remote"], runner=timing_out, sleep=calls.append)
     assert status.outcome == "not_checked"
-    assert calls  # retried with backoff
+    assert calls
 
 
 def test_concurrent_callers_for_one_host_share_one_check() -> None:

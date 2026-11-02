@@ -20,11 +20,11 @@ from .test_branch_context import branch_services as branch_services
 def test_group_payload_and_read_roots_leave_writes_unchanged(
     branch_services, tmp_path, monkeypatch, grouped
 ):
+    """The second repository is on another state machine, so it is a read pointer only."""
     service, _ = branch_services
     sibling = service.manifest.model_copy(deep=True)
     sibling.repository_map["repo-a"].path = str(tmp_path / "sibling")
     sibling.repository_map["repo-b"].path = "/other/repository"
-    # The second repository is on another state machine; it is a read pointer only.
     remote = sibling.machines[0].model_copy(update={"alias": "remote", "host": "remote.example"})
     sibling.machines.append(remote)
     sibling.repository_map["repo-b"].machine = "remote"
@@ -76,8 +76,8 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
     assert Path(tmp_path / "sibling") in group.read_dirs()
     assert str(tmp_path / "sibling") not in before.writable_roots
 
-    # A continued chat whose project leaves the group is told so by its delta.
     def values():
+        """A continued chat whose project leaves the group is told so by its delta."""
         return chat_prompt_values(
             context,
             RunRequest(),

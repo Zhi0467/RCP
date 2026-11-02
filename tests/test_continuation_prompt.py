@@ -32,6 +32,7 @@ def test_the_session_id_decides_start_versus_continuation(phase, continued) -> N
 
 
 def test_chat_master_key_versions_the_shared_contract() -> None:
+    """Gaining the first ontology extension changes the rules a master holds."""
     assert chat_master_contract_key(ontology_extensions=False) == (
         f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-master-v{MASTER_VERSION}"
         f"-rules-{GRAPH_RULES_VERSION}"
@@ -39,7 +40,6 @@ def test_chat_master_key_versions_the_shared_contract() -> None:
     assert chat_master_contract_key(ontology_extensions=False, owner="episode:child") != (
         chat_master_contract_key(ontology_extensions=False)
     )
-    # Gaining the first ontology extension changes the rules a master holds.
     assert chat_master_contract_key(ontology_extensions=True) != chat_master_contract_key(
         ontology_extensions=False
     )

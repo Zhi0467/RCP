@@ -50,6 +50,7 @@ def _distinct_orchestrator_profile(manifest) -> None:
 
 
 def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_path) -> None:
+    """An Auto-research root writes every repository the agents can write."""
     _distinct_orchestrator_profile(manifest)
     app = create_named_app(
         str(manifest.path),
@@ -97,7 +98,6 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         assert request.model == "orchestrator-only"
         assert request.reasoning == "high"
         assert request.run_on == "laptop"
-        # An Auto-research root writes every repository the agents can write.
         assert request.run_truth_scope == ["repo-a", "repo-b"]
         assert request.instruction == "Investigate the unresolved evidence."
         assert root.kind == "auto_research"
@@ -330,6 +330,9 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
 def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """The worker seat must exist on the target graph, where main stands in for the branch; a worker
+    inherits the orchestrator's recorded write set.
+    """
     profiles = {
         name: manifest.agent_profile(name).model_copy(deep=True) for name in _EXECUTION_PROFILES
     }
@@ -391,7 +394,6 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         display_name="Researcher",
     )
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    # The worker seat must exist on the target graph; main stands in for the branch.
     append_fixture_patch(service, seed_patch())
     monkeypatch.setattr(service, "for_graph_target", lambda _target: service)
     episode = EpisodeRecord(
@@ -438,7 +440,6 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         "low",
     )
     assert worker.run_on == profiles["node_chat"].run_on
-    # A worker inherits the orchestrator's recorded write set.
     assert worker.run_truth_scope == request.run_truth_scope
     assert worker.chat_id == worker_id
     assert worker.chat_scope == "node"

@@ -16,8 +16,9 @@ from rcp.storage.models import MACHINE_LOGIN_ID
 
 @pytest.fixture(autouse=True)
 def idle_legacy_homes(monkeypatch: pytest.MonkeyPatch) -> None:
-    # These disposable fixture homes have no legacy Codex processes. The guard
-    # itself is covered below; the sandbox can prohibit host process inspection.
+    """These disposable homes have no legacy Codex processes; the guard is covered separately
+    because the sandbox can prohibit host process inspection.
+    """
     monkeypatch.setattr("rcp.providers.codex.homes._legacy_home_idle", lambda home: True)
 
 
@@ -279,6 +280,9 @@ def test_home_cli_dispatch_preserves_command_arguments(tmp_path, monkeypatch):
 
 
 def test_home_command_keeps_lease_through_exec(tmp_path, monkeypatch):
+    """The exec'ed process opens a second descriptor, and the inherited shared lease must keep it
+    from taking an exclusive migration lock.
+    """
     import subprocess
     import sys
 
@@ -288,8 +292,6 @@ def test_home_command_keeps_lease_through_exec(tmp_path, monkeypatch):
     environment = CodexAuthentication().process_environment(
         ProviderCredentialStore(tmp_path / "providers"), "", str(uuid4())
     )
-    # The exec'ed process opens a second descriptor. An inherited shared lease
-    # must prevent it from acquiring an exclusive migration lock.
     child = """
 import fcntl, os
 from pathlib import Path
@@ -416,6 +418,9 @@ def test_remote_home_diagnostic_is_visible_without_shell_output(tmp_path, monkey
 
 @pytest.mark.parametrize("live", [False, True])
 def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monkeypatch, live):
+    """The 0.4.36 layout kept the home inside the hidden `providers/` namespace. A rolled-back
+    release finds the same home at its old path, new sign-ins too.
+    """
     import fcntl
 
     from rcp.providers.codex.auth import CodexAuthentication
@@ -424,7 +429,6 @@ def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monk
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
     credentials = ProviderCredentialStore(tmp_path / "providers")
     login_id = str(uuid4())
-    # The 0.4.36 layout: the home inside the hidden `providers/` namespace.
     legacy = credentials.account_dir("codex", "", login_id) / "codex-home"
     (legacy / "sessions").mkdir(parents=True)
     (legacy / "sessions/rollout.jsonl").write_text("rollout\n")
@@ -446,7 +450,6 @@ def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monk
     assert (moved / "auth.json").read_text() == "credential"
     assert (tmp_path / "machine/sessions/rollout.jsonl").read_text() == "rollout\n"
     assert (moved.with_name(moved.name + "-retained") / "snapshot").is_dir()
-    # A rolled-back release finds the same home at its old path, new sign-ins too.
     fresh = str(uuid4())
     CodexAuthentication().process_environment(credentials, "", fresh)
     for login, path in ((login_id, moved), (fresh, credentials.login_home("codex", fresh))):

@@ -73,6 +73,9 @@ def test_remote_artifact_read_does_not_stall_health(
     url = f"/api/projects/{project_id}/tasks/operation/artifacts/{descriptor.artifact_id}/{action}"
 
     async def drive_concurrently():
+        """The promise is ordering, not latency: health answers while the artifact read is parked,
+        and a real stall still fails because the loader holds until this block exits.
+        """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
@@ -82,10 +85,6 @@ def test_remote_artifact_read_does_not_stall_health(
                 health = await asyncio.wait_for(
                     client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
                 )
-                # The promise is ordering, not latency: health answered while the
-                # artifact read was still parked in the patched loader. An absolute
-                # bound instead measures how loaded the runner is, and a real stall
-                # still fails here because the loader holds until this block exits.
                 assert not artifact.done()
             finally:
                 release.set()

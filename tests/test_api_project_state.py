@@ -232,6 +232,7 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
 def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """A teammate's new task changes no graph revision, but its resource token moves."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     client = signed_in_client(app)
@@ -244,7 +245,6 @@ def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
             AssertionError("a watermark must not rebuild the display snapshot")
         ),
     )
-    # A teammate's new task changes no graph revision; its resource token moves.
     store = app.state.background_tasks.store
     now = store.now()
     store.create_agent_task(
@@ -283,6 +283,7 @@ def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
 
 
 def test_task_status_watermark_moves_on_finish_not_progress(manifest, tmp_path) -> None:
+    """The first read warms the display cache, as a page does."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     client = signed_in_client(app)
@@ -300,14 +301,13 @@ def test_task_status_watermark_moves_on_finish_not_progress(manifest, tmp_path) 
             status_message="running",
         )
     )
-    client.get(f"/api/projects/{project_id}")  # warms the display cache, as a page does
+    client.get(f"/api/projects/{project_id}")
 
     def signal() -> str:
         return resource_watermark_tokens(client, project_id, {"name": "tasks.status"})[0]
 
     running = signal()
     store.update_agent_task_message("background-task", "still working")
-    # Progress leaves the task status token unchanged.
     assert signal() == running
     store.complete_agent_task("background-task", applied_revision=None, result={})
     assert signal() != running
@@ -339,6 +339,9 @@ def test_settings_watermark_signals_a_save_the_page_has_not_rendered(manifest, t
 
 
 def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> None:
+    """Reopening loads the durable alias into the catalog's request-path snapshot; the first read
+    warms the display cache, as a page does.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -360,11 +363,10 @@ def test_legacy_project_alias_reaches_canonical_tasks(manifest, tmp_path) -> Non
             "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
             ("legacy-project-url", project_id),
         )
-    # Reopen to load the durable alias into the catalog's request-path snapshot.
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     base = "/api/projects/legacy-project-url"
-    assert client.get(base).status_code == 200  # warms the display cache, as a page does
+    assert client.get(base).status_code == 200
     assert resource_watermark_tokens(client, "legacy-project-url", {"name": "tasks.status"}) == (
         resource_watermark_tokens(client, project_id, {"name": "tasks.status"})
     )
@@ -391,14 +393,13 @@ def test_project_snapshot_file_read_does_not_block_the_event_loop(
     monkeypatch.setattr(display_cache, "cached_project_snapshot", blocked_snapshot)
 
     async def drive() -> tuple[httpx.Response, httpx.Response]:
+        """Ordering, not latency: health answers while the cached snapshot read is still parked."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
             revision_task = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             await asyncio.to_thread(wait_for_entry, entered)
             health = await asyncio.wait_for(client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT)
-            # Ordering, not latency: health answered while the cached snapshot
-            # read was still parked in the patched call.
             still_reading = not revision_task.done()
             release.set()
             return await revision_task, health, still_reading
@@ -478,9 +479,9 @@ def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch
 def test_space_runs_read_a_cache_written_when_the_coach_had_its_own_machine(
     manifest, tmp_path
 ) -> None:
-    # Releases before 0.4.35 let the coach pick its machine and cached that
-    # choice. The Runs list refuses a project whose cache is invalid, so the
-    # cache must stay valid, with the coach on the base like a fresh load.
+    """Releases before 0.4.35 let the coach pick its machine and cached that choice. The Runs list
+    refuses an invalid cache, so the cache must stay valid with the coach on the base.
+    """
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = signed_in_client(app)
@@ -500,11 +501,10 @@ def test_space_runs_read_a_cache_written_when_the_coach_had_its_own_machine(
 def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
     manifest, tmp_path
 ) -> None:
-    # A cache written before `decision_prior_choices` existed decodes it as the
-    # model default. For a project holding a Decision whose options no longer
-    # offer its recorded choice the expected map is not empty, so without a
-    # backfill the snapshot comparison rejects the cache and the project loses
-    # its offline copy.
+    """A cache written before `decision_prior_choices` existed decodes it as the model default.
+    Without a backfill the snapshot comparison rejects the cache and the project loses its offline
+    copy.
+    """
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = signed_in_client(app)
@@ -541,9 +541,9 @@ def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
 
 
 def test_cached_project_serves_the_graph_a_fresh_replay_would(manifest, tmp_path) -> None:
-    # A cache written before a graph field gained a default lacks that key. The
-    # live release's projection must still equal the replayed one a release update
-    # verified, so the cache is served in the current model's shape.
+    """A cache written before a graph field gained a default lacks that key; it is served in the
+    current model's shape so it equals a fresh replay.
+    """
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     append_fixture_patch(app.state.service, seed_patch())
@@ -757,6 +757,7 @@ def test_cached_snapshot_serves_the_running_release_skill_catalog(manifest, tmp_
 
 
 def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path) -> None:
+    """Cache maintenance is not an open, so the landing page's recency is kept."""
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = signed_in_client(app)
@@ -767,7 +768,6 @@ def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path
     cleared = client.delete(f"/api/projects/{project_id}/caches")
     assert cleared.status_code == 200
     assert cleared.json()["project_page_rebuilt"] is True
-    # Cache maintenance is not an open: the landing page's recency is kept.
     assert app.state.catalog.store.project(project_id).last_opened_at == opened
     rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
     assert rebuilt["snapshot"]["skill_catalog"] == official_registry().catalog()
@@ -906,7 +906,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
     skill_refreshes: list[tuple[str, str, str | None]] = []
 
     def refresh_skills(provider: str, host: str, binary: str | None, _readiness, *, reuse_cached):
-        # The explicit Refresh is the product path that re-probes skills uncached.
+        """The explicit Refresh is the product path that re-probes skills uncached."""
         assert reuse_cached is False
         skill_refreshes.append((provider, host, binary))
 
@@ -924,7 +924,6 @@ def test_project_readiness_does_not_open_or_materialize_project(
     assert response.status_code == refreshed.status_code == cached.status_code == 200
     assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
     assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
-    # The cold path exports the effective profiles too, without opening history.
     assert set(response.json()["agent_profiles"]) >= {"seed", "refresh", "node_chat"}
     assert all(
         "effective_model" in profile for profile in response.json()["agent_profiles"].values()
@@ -936,12 +935,14 @@ def test_project_readiness_does_not_open_or_materialize_project(
         (provider, refresh) for provider in PROVIDER_IDS for refresh in (False, True)
     }
     assert inventory_waits == [(provider, "", None) for provider in PROVIDER_IDS] * 3
-    # Only the explicit refresh probed skills; the two implicit reads started none.
     assert sorted(skill_refreshes) == sorted((provider, "", None) for provider in PROVIDER_IDS)
     assert project_id not in app.state.catalog._services
 
 
 def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, tmp_path) -> None:
+    """The settings form shows this text, so it names the profile to fix without the Pydantic
+    envelope.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     project_id = app.state.default_project_id
@@ -990,8 +991,6 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         },
     )
     assert mismatched_runtime.status_code == 422
-    # The settings form shows this text, so it names the profile to fix and
-    # carries none of the Pydantic envelope around the reason.
     detail = mismatched_runtime.json()["detail"]
     assert "does not support runtime 'app-server'" in detail
 

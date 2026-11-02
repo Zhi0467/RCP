@@ -138,7 +138,7 @@ def test_a_folder_action_refuses_a_file_added_after_its_files_were_read(manifest
     snapshot = live.snapshot
 
     async def stale_snapshot(project_id, revision=None):
-        # A peer adds a file under the folder between the read and the admitted mutation.
+        """A peer adds a file under the folder between the read and the admitted mutation."""
         read = await snapshot(project_id, revision)
         await live.apply(project_id, [PaperOp(kind="create", path="draft/late.md")], "peer", {})
         live.snapshot = snapshot
@@ -155,6 +155,9 @@ def test_a_folder_action_refuses_a_file_added_after_its_files_were_read(manifest
 
 
 def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
+    """The page is the author's own document, so it renders as written, never repainted with the
+    app's theme.
+    """
     import html
     import re
     from urllib.parse import parse_qs, urlsplit
@@ -198,8 +201,6 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
             r'<iframe id="artifact" sandbox="allow-scripts" srcdoc="([^"]*)"', content.text
         )
         assert framed and 'id="mark">hello' in html.unescape(framed.group(1))
-        # The page is the author's own document: it renders as written, never
-        # repainted with the app's theme, which would hide text on its own backgrounds.
         inline = client.get(
             file_url + "/preview/content",
             params={"revision": revision, "presentation": "inline", "color_mode": "dark"},

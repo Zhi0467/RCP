@@ -115,6 +115,9 @@ def _main_fixture_patch() -> Patch:
 
 
 def _branch_patch(operation_id: str, change: BranchChange, *, suffix: str = "") -> Patch:
+    """The operation advances the branch transition chain but leaves its only domain value
+    unchanged, so the semantic branch delta is empty.
+    """
     if change == "evidence":
         operations: list[dict[str, object]] = [
             {
@@ -143,8 +146,6 @@ def _branch_patch(operation_id: str, change: BranchChange, *, suffix: str = "") 
             }
         ]
     elif change == "bookkeeping":
-        # The operation advances the branch transition chain, but its only
-        # domain value is unchanged. The resulting semantic branch delta is empty.
         operations = [
             {
                 "op": "update_nodes",
@@ -306,6 +307,7 @@ def test_episode_list_reads_all_branches_from_one_snapshot_without_publishing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """One snapshot means at most one main replay, none once the shared engine is warm."""
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     tasks = harness.app.state.background_tasks
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **_kwargs: record)
@@ -350,7 +352,6 @@ def test_episode_list_reads_all_branches_from_one_snapshot_without_publishing(
 
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 2
-    # One snapshot: at most one main replay (none once the shared engine is warm).
     assert calls["refresh"] == 1 and calls["main_replay"] <= 1
     assert refresh_bounds == [REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS]
 
@@ -560,7 +561,6 @@ def test_start_episode_projects_the_exact_main_transition_into_its_branch_head(
     )
     assert launch_observations == [payload["root_operation_id"]]
 
-    # A second start runs beside the first on its own branch.
     second = signed_in_client(app).post(
         f"/api/projects/{app.state.default_project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
@@ -577,6 +577,9 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The root failed before provider launch, so it never bound a session and the episode carries
+    no report error.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -605,8 +608,6 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     episode = episodes[0]
     assert episode.status == "failed"
     assert episode.ending == "failed"
-    # The root failed before provider launch, so it never bound a session to report
-    # from and the episode carries no report error for work that never ran.
     assert episode.wrapup_state == "not_started"
     assert episode.wrapup_error is None
     assert tasks.store.episode_wrapup(episode.episode_id) is None
@@ -838,6 +839,7 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     ended: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Merge admission gates on the branch summary, so it keeps the short window."""
     harness = _create_branch_harness(manifest, tmp_path, change=change, ended=ended)
 
     summary = _episode_payload(harness)["graph_branch"]
@@ -857,7 +859,6 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     monkeypatch.undo()
 
     assert refused.status_code == 409
-    # Merge admission gates on the branch summary, so it keeps the short window.
     assert refresh_bounds
     assert set(refresh_bounds) == {REMOTE_STATE_RECONCILE_WINDOW_SECONDS}
     assert refused.json()["detail"]["code"] == (
@@ -966,8 +967,9 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
 def test_ended_branch_merges_over_an_unresolved_paused_writer(
     manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
-    # Merge is decided on branch facts: a paused turn is not writing, so it
-    # neither blocks the merge nor is ended by it.
+    """Merge is decided on branch facts: a paused turn is not writing, so it neither blocks the
+    merge nor is ended by it.
+    """
     harness = _create_branch_harness(manifest, tmp_path, change="evidence", ended=False)
     store = harness.store
     store.mark_agent_task_running(harness.root.operation_id)
@@ -1197,11 +1199,12 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Delivery stays pending after the condition completes; this test is about which graph the
+    merge boundary evaluates, not the later chat turn.
+    """
     harness = _create_branch_harness(manifest, tmp_path, change="status")
     launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
-    # Keep delivery pending after the condition is completed; this test is about
-    # which graph the merge boundary evaluates, not the subsequent chat turn.
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", lambda *_args, **_kwargs: None)
     settled = threading.Event()
     after_task_settled = harness.app.state.background_tasks.on_task_settled
@@ -1607,7 +1610,12 @@ def test_independent_episode_branch_merges_into_main(manifest, tmp_path, monkeyp
 def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     manifest, tmp_path, monkeypatch
 ):
-    """A dropped link leaves the merge to its host; the recorded pass then commits."""
+    """A dropped link leaves the merge to its host; the recorded pass then commits.
+
+    The test settles the recorded pass itself, so probing a host is not under test. Recovery reads
+    back the exact plan however many answer checks ran, the host can keep checking answers while RCP
+    is away, and a turn recorded as failed commits nothing.
+    """
 
     import threading
 
@@ -1641,7 +1649,6 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
             harness.branch.append(patch, expected_revision=harness.branch.state().revision)
         else:
             append_fixture_patch(harness.service, patch)
-    # This test settles the recorded pass itself; probing a host is not under test.
     monkeypatch.setattr(
         harness.app.state.background_tasks, "_reconcile_remote_results", lambda: False
     )
@@ -1658,7 +1665,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
     saved = {}
 
     def remote_mailbox(staged, **kwargs):
-        # A remote stage serves its mailbox on a thread; only that kind can detach.
+        """A remote stage serves its mailbox on a thread; only that kind can detach."""
         saved.update(kwargs["resume_context"])
         mailbox = start(staged, **kwargs)
         mailbox.thread = threading.Thread(target=lambda: None)
@@ -1684,8 +1691,6 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         )
     )
     assert harness.branch.merge_receipts() == []
-    # Recovery reads back the exact plan this turn was given, however many
-    # answer checks the turn ran before its link dropped.
     for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["diagnostic"] + 1):
         harness.store.record_agent_task_receipt(
             operation_id, "merge_answers_checked", {"index": index}, tier="diagnostic"
@@ -1700,10 +1705,8 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         ),
     )
     assert turn_plan is not None and turn_plan[1] == ()
-    # The host's turn can still check its answers while RCP is away.
     assert [mailbox.detached for mailbox in mailboxes] == [True]
 
-    # A relaunch serves that turn's checks and graph reads from what it saved.
     restored = {}
     monkeypatch.setattr(merge_task, "load_work_mailbox_context", lambda _execution: saved)
     monkeypatch.setattr(
@@ -1757,9 +1760,10 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
 
     recorded = _recorded_pass("", "Merged.")
 
-    # A host that drops while the stage reattaches, or while the merge prepares,
-    # is an outage, not a verdict.
     def unreachable(*_args, **_kwargs):
+        """A host that drops while the stage reattaches or the merge prepares is an outage, not a
+        verdict.
+        """
         raise StateUnavailable("ssh exited 255")
 
     for owner, name in (
@@ -1771,7 +1775,6 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
             execution = recorded_execution()
             assert asyncio.run(settle(recorded, execution))[-1].event == "error"
             assert execution.stage_unreachable
-    # A turn its host recorded as failed commits nothing it left behind.
     failed = dataclasses.replace(
         recorded,
         events=recorded.events.replace(

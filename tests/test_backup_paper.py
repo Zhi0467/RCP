@@ -30,6 +30,7 @@ def _database() -> sqlite3.Connection:
 
 
 def _saved_paper(connection, monkeypatch, project_id="p"):
+    """Shared content owned only by another project must not leak into export."""
     text = "saved unpublished text"
     previous = b"named ancestor"
     figure = b"\x89PNG\r\n\x1a\nfigure"
@@ -65,7 +66,6 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
     connection.execute(
         "INSERT INTO paper_version_texts VALUES (?, ?)", (text_digest, zlib.compress(previous))
     )
-    # Shared content owned only by another project must not leak into export.
     connection.execute("INSERT INTO paper_blobs VALUES ('unrelated', x'00', 1)")
 
     saved_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -167,6 +167,7 @@ def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
 
 
 def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, monkeypatch):
+    """Publication and live rows may advance after SQLite capture."""
     import uuid
 
     from rcp.server_ops.backup_capture import (
@@ -205,7 +206,6 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
         publication.receipt_path.chmod(0o600)
         publication.receipt_path.unlink()
         digest = write_immutable_backup_receipt(publication.receipt_path, receipt)
-        # Publication and live rows may advance after SQLite capture.
         (paper / "published.md").write_text("newer published tree")
         with store.connection() as connection:
             assert (
@@ -258,6 +258,7 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
     live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
 
     async def scenario():
+        """An accepted card no longer pins the old snapshot, but Undo still needs bytes."""
         created = await live.apply(
             "p", [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"image")], "h"
         )
@@ -270,7 +271,6 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
                 changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
             )
             await asyncio.to_thread(changes.accept, "p", groups[0].group_id, "h")
-            # An accepted card no longer pins the old snapshot, but Undo still needs bytes.
             await live.apply("p", [PaperOp(kind="create", path="later.md")], "h")
         else:
             await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
@@ -351,6 +351,7 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
     live, restored = owners
 
     async def scenario():
+        """A rejected card's proposed body is collected because backup no longer needs it."""
         created = await live.apply(
             "p",
             [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"before")],
@@ -379,7 +380,6 @@ def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
         snapshot = await restored.snapshot("p")
         figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
         assert restored.blob(figure.blob_sha256) == b"before"
-        # A rejected card's proposed body is collected, and backup no longer needs it.
         await asyncio.to_thread(changes.reject, "p", groups[0].group_id, "h")
         with source.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")

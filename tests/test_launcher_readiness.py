@@ -17,6 +17,7 @@ _WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
 
 
 def _claude_binary(tmp_path: Path, *, authenticated: bool = True, work_ready: bool = False) -> Path:
+    """Every turn carries --settings now; only the Work probe skips persistence."""
     binary = tmp_path / "claude"
     binary.write_text(
         f"#!{sys.executable}\n"
@@ -26,7 +27,6 @@ def _claude_binary(tmp_path: Path, *, authenticated: bool = True, work_ready: bo
         "    print('2.1.266 (Claude Code)')\n"
         "elif args == ['auth', 'status']:\n"
         f"    print(json.dumps({{'loggedIn': {authenticated!r}}}))\n"
-        # Every turn carries --settings now; only the Work probe skips persistence.
         "elif '--no-session-persistence' in args:\n"
         "    settings = json.loads(args[args.index('--settings') + 1])\n"
         "    assert settings['sandbox'] == {'enabled': False}\n"
@@ -50,15 +50,15 @@ def _claude_binary(tmp_path: Path, *, authenticated: bool = True, work_ready: bo
 
 @pytest.mark.parametrize("work_ready", [False, True])
 def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_ready: bool) -> None:
+    """A Work-only fault never becomes the general readiness reason, which also carries benign notes
+    and would make a usable Discuss provider read as broken.
+    """
     binary = _claude_binary(tmp_path, work_ready=work_ready)
     launcher = AgentLauncher()
 
     readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
     assert readiness.authenticated
     assert readiness.work_like_available is work_ready
-    # A Work-only fault never becomes the general readiness reason: `reason` also
-    # carries benign notes, so folding them together makes a usable Discuss
-    # provider read as broken.
     assert readiness.reason is None
     if work_ready:
         assert readiness.work_like_reason is None
@@ -116,6 +116,7 @@ async def test_failed_work_readiness_refuses_before_launch_but_discuss_runs(
 def test_probe_transport_failure_is_not_a_rejected_setting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
+    """ssh's own 255 means the host is gone, not that the saved path is wrong."""
     binary = _claude_binary(tmp_path)
     launcher = AgentLauncher()
 
@@ -131,7 +132,6 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
     assert readiness.work_like_available is None
     assert _WORK_PROBE_REASON not in (readiness.work_like_reason or "")
     if host:
-        # ssh's own 255: the host is gone, the saved path is not wrong.
         assert readiness.path_state == "unreachable" and readiness.link_lost
         assert "unreachable" in (readiness.reason or "")
     else:
@@ -142,6 +142,7 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
 async def test_first_provider_error_contains_stderr_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The task engine stops consuming on the first error, so this exercises that edge."""
     binary = tmp_path / "failing-claude"
     binary.write_text(
         f"#!{sys.executable}\n"
@@ -162,7 +163,6 @@ async def test_first_provider_error_contains_stderr_cause(
             provider=login.provider, installed=True, authenticated=True, binary_path=str(binary)
         ),
     )
-    # The task engine stops consuming on the first error. Exercise that exact edge.
     async with aclosing(
         launcher.stream("claude", "Run", cwd=tmp_path, capability="discuss")
     ) as stream:
@@ -188,6 +188,7 @@ def test_remote_probe_closes_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
+    """A probe that could not run is still a refusal, so Work never starts blind."""
     ready = ProviderReadiness(provider="claude", installed=True, authenticated=True)
     assert work_like_launch_problem(ready) is None
     unchecked = ready.model_copy(update={"work_like_available": None})
@@ -199,7 +200,6 @@ def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
     inconclusive = ready.model_copy(
         update={"work_like_available": None, "work_like_reason": "could not be checked"}
     )
-    # A probe that could not run is still a refusal: Work must not start blind.
     assert work_like_launch_problem(inconclusive) == "could not be checked"
 
 
@@ -328,13 +328,13 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
     selected = []
 
     async def stream(_project, _kind, request, execution):
+        """A session's shared login outside the member's setting is not kept."""
         execution.checkpoint_stage("", str(tmp_path))
         if execution.continuation == "fresh":
             human = store.agent_task_authorizer(execution.operation_id)
             own = _login(accounts, "codex", own=True, member=human.user_id)
             store.set_provider_login_setting(human.user_id, "codex", "", "own")
             key = own if binding == "own" else _login(accounts, "codex")
-            # A session's shared login outside the member's setting is not kept.
             selected.append(own if binding == "session" else key)
             store.assign_provider_login(execution.operation_id, lambda _: key)
             store.record_agent_task_receipt(execution.operation_id, "provider_runtime_selected", {})

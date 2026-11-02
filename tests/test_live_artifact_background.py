@@ -12,7 +12,9 @@ from tests.helpers import create_named_app, signed_in_client
 
 @pytest.mark.parametrize("owner", ["startup", "watcher"])
 def test_shutdown_drains_active_live_capture(manifest, tmp_path, monkeypatch, owner):
-    # Drive the actual lifespan, with watcher callbacks controlled by this test.
+    """Drives the actual lifespan with test-controlled watcher callbacks; a callback after drain
+    cannot start another write.
+    """
     monkeypatch.setattr(app_module.WatcherPoller, "start", lambda self: None)
     monkeypatch.setattr(app_module.WatcherPoller, "stop", lambda self: None)
     entered = threading.Event()
@@ -53,7 +55,6 @@ def test_shutdown_drains_active_live_capture(manifest, tmp_path, monkeypatch, ow
         if poll is not None:
             poll.result(timeout=5)
     assert finished.is_set()
-    # A callback arriving after drain cannot start another write.
     finished.clear()
     app.state.watcher_poller.on_poll_completed()
     assert not finished.is_set()

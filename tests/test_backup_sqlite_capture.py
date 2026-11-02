@@ -373,6 +373,7 @@ def test_unresolved_kept_artifact_inventory_is_bound_to_its_base_digest(
 
 
 def test_store_kept_artifact_keeps_its_project_capturable(tmp_path: Path) -> None:
+    """The Keep route's own write: the store keeps the bytes, the task records only `kept_at`."""
     data_dir = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Capture lab")
     project = _register_completed_project(store, data_dir, name="Store keep")
@@ -403,7 +404,6 @@ def test_store_kept_artifact_keeps_its_project_capturable(tmp_path: Path) -> Non
             status_message="Completed.",
         )
     )
-    # The Keep route's own write: the store keeps the bytes, the task records only `kept_at`.
     kept = store.keep_artifact(artifact.artifact_id)
     store.mark_agent_artifact_kept(operation_id, artifact.artifact_id, kept_at=kept.kept_at)
 

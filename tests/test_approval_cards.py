@@ -73,6 +73,7 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
 
 
 def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
+    """The episode merge accepted its task before the process stopped."""
     action = {"kind": "merge_episode", "project_id": "project", "episode_id": "episode"}
     question = store.create_or_get_question(
         origin=origin,
@@ -83,7 +84,6 @@ def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
     )
     assert store.claim_approval_card(question.question_id)
     request_id = store.approval_card(question.question_id)["request_id"]
-    # The episode merge accepted its task before the process stopped.
     with store.connection() as connection:
         connection.execute(
             """INSERT INTO episode_merge_request_receipts(project_id,owner_episode_id,
@@ -154,6 +154,7 @@ def api_card(questions_api, action=None):
     ],
 )
 def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, action):
+    """A closed admission is not the member's answer, so the card stays open for a later tap."""
     from rcp.api import approval_cards
 
     app, client, store, project_id = questions_api
@@ -169,7 +170,6 @@ def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, act
         f"/api/approval-cards/{question.question_id}",
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
-    # A closed admission is not the member's answer: the card stays open for a later tap.
     assert response.status_code == 409
     assert calls == []
     assert store.get_question(question.question_id).state == "pending"
@@ -244,9 +244,9 @@ def test_snapshot_carries_card_action_and_result_ids(store, origin):
 
 
 def test_restart_settles_a_committed_truth_scope_card(store, origin):
+    """Membership already matches the action because the change committed before the stop."""
     question = make_card(store, origin)
     assert store.claim_approval_card(question.question_id)
-    # Membership already matches the action: the change committed before the stop.
     settle_interrupted_approval_cards(
         store,
         service_for=lambda project_id: _scope_service(["code"]),
@@ -256,10 +256,10 @@ def test_restart_settles_a_committed_truth_scope_card(store, origin):
 
 
 def test_restart_leaves_a_card_this_process_claimed_running(store, origin):
+    """A live tap claimed it after this process started; its own request settles it."""
     started = store.now()
     question = make_card(store, origin)
     assert store.claim_approval_card(question.question_id)
-    # A live tap claimed it after this process started; its own request settles it.
     settle_interrupted_approval_cards(store, service_for=_no_service, claimed_before=started)
     card = store.approval_card(question.question_id)
     assert card is not None and card["result"] is None
@@ -351,6 +351,7 @@ def test_private_questions_and_cards_only_owner_and_no_plain_resolution(question
 
 
 def test_old_writer_question_is_unchanged_by_card_migration(tmp_path, origin):
+    """Old writer SQL has neither action nor card, and the migration must preserve it."""
     import sqlite3
 
     from rcp.storage.approval_cards import migrate_approval_cards
@@ -359,7 +360,6 @@ def test_old_writer_question_is_unchanged_by_card_migration(tmp_path, origin):
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as connection:
         migrate_questions(connection)
-        # Old writer SQL has neither action nor card; the migration must preserve it.
         connection.execute("""INSERT INTO questions(question_id,project_id,owner_kind,owner_id,key,
             origin_json,argument_hash,question,choices_json,multiple,state,created_at)
             VALUES ('old','project','chat','chat','key','{}','old-hash','Pick?','[]',0,'pending','2020-01-01')""")
@@ -422,6 +422,7 @@ def test_expired_tap_is_single_use(questions_api):
 
 
 def test_card_request_id_is_persisted_uuid4(store, origin):
+    """Episode merge retains its native UUID contract while cards still mint UUID4 keys."""
     from uuid import NAMESPACE_URL, UUID, uuid5
 
     from rcp.api.episode_routes import MergeBranchBody
@@ -438,7 +439,6 @@ def test_card_request_id_is_persisted_uuid4(store, origin):
         assert model(request_id=key).request_id == key
     with pytest.raises(ValidationError):
         MergeBranchBody(request_id=uuid5(NAMESPACE_URL, "card"))
-    # Episode merge retains its native UUID contract; cards still mint UUID4 keys.
     episode_key = uuid5(NAMESPACE_URL, "card")
     assert MergeEpisodeBody(request_id=episode_key).request_id == episode_key
     store.settle_approval_card(question.question_id, {"outcome": "declined"})
@@ -498,7 +498,6 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
             "VALUES ('chat',?,'project','project',?)",
             (human.user_id, store.now()),
         )
-    # Work resolves the card grant with its verbs, once per turn handler.
     handler = work_command_handler(
         execution, None, service=cast(ProjectService, SimpleNamespace(project_catalog=None))
     )
@@ -580,8 +579,9 @@ def refuse_transfer(_project):
 
 
 def bounded_admission_lock(monkeypatch):
-    # Keep the real route and fence; bound lock acquisition so a regression fails
-    # instead of leaving pytest stuck inside a non-reentrant lock.
+    """The real route and fence stay; lock acquisition is bounded so a regression fails instead of
+    hanging in a non-reentrant lock.
+    """
     from contextlib import contextmanager
     from threading import Lock
 
@@ -732,8 +732,9 @@ def test_merge_episode_card_rechecks_heads_under_admission(
 
     @contextmanager
     def acquire(project_id):
-        # Advance after the card's optimistic recheck, just as a writer that
-        # already holds admission can do while the merge waits for its lock.
+        """Advances after the card's optimistic recheck, as a writer already holding admission can
+        while the merge waits for its lock.
+        """
         patch = _branch_patch(harness.root.operation_id, "evidence", suffix="-raced")
         if changed_head == "source":
             harness.branch.append(patch, expected_revision=harness.branch.head_ref().revision)

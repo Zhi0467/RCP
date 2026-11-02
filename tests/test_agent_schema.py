@@ -1076,6 +1076,9 @@ def test_a_repository_read_is_named_by_its_ref_whether_declared_as_ref_or_path()
 
     Both spellings name the same repository, so an honest declaration must not
     depend on which namespace the agent happened to copy.
+
+    The nested repository wins over its parent, a shared path prefix is not containment, and an
+    unregistered path survives so scope validation reports it.
     """
 
     sibling = "11111111-1111-4111-8111-111111111111"
@@ -1104,8 +1107,6 @@ def test_a_repository_read_is_named_by_its_ref_whether_declared_as_ref_or_path()
         draft, kind="work", run_truth_scope=["vista"], read_scope=read_scope
     )
 
-    # The nested repository wins over its parent, a shared path prefix is not
-    # containment, and an unregistered path survives so scope validation reports it.
     assert prepared.repositories_read == [
         "vista",
         "vista-docs",

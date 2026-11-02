@@ -463,6 +463,7 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
 def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
+    """Server-only code is a supported setup: a warning, never a doctor problem."""
     from io import StringIO
     from types import SimpleNamespace
 
@@ -520,7 +521,6 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         assert expected in receipt.projects[0].unavailable_reason
     problems = backup.project_capture_problems(receipt.projects)
     warnings = backup.project_capture_warnings(receipt.projects)
-    # Server-only code is a supported setup: a warning, never a doctor problem.
     reported, field = (warnings, "warnings") if failure == "server_only" else (problems, "problems")
     assert len(problems + warnings) == 1
     assert inventory.project_id in reported[0]

@@ -8,6 +8,7 @@ from tests.test_api_questions import _question
 
 
 def test_other_members_private_thread_is_hidden_from_existing_routes(manifest, tmp_path):
+    """Per-operation controls resolve the private owner through the task's chat."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -38,7 +39,6 @@ def test_other_members_private_thread_is_hidden_from_existing_routes(manifest, t
         f"tasks/{task.operation_id}",
     ):
         assert client.get(f"{base}/{path}").status_code == 404
-    # Per-operation controls resolve the private owner through the task's chat.
     for control in ("steer", "pause", "resume", "retry"):
         assert (
             client.post(f"{base}/tasks/{task.operation_id}/{control}", json={}).status_code == 404
@@ -154,6 +154,7 @@ def test_task_ownership_filter_precedes_recent_limit(tmp_path):
 
 
 def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
+    """A private artifact cannot be pulled into another member's turn as a reference."""
     import uuid
 
     from rcp.artifacts import descriptor_for
@@ -219,7 +220,6 @@ def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
     assert {row["artifact_id"] for row in listed.json()} == (
         artifacts_by_owner[own] | artifacts_by_owner[None]
     )
-    # A private artifact cannot be pulled into another member's turn as a reference.
     from rcp.project_references import resolve_project_artifact
 
     for owner, ids in artifacts_by_owner.items():
@@ -232,6 +232,7 @@ def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
 
 
 def test_space_references_resolve_only_the_members_projects(manifest, tmp_path):
+    """Paths outside every member project, and another member's private output, read as missing."""
     import uuid
 
     from rcp.storage import Artifact
@@ -273,7 +274,6 @@ def test_space_references_resolve_only_the_members_projects(manifest, tmp_path):
     assert client.get(url, params={"artifact_id": saved(project_id, None)}).json() == {
         "project_id": project_id
     }
-    # Outside every member project, and another member's private output, read as missing.
     for params in (
         {"path": str(tmp_path / "elsewhere" / "file.py")},
         {"artifact_id": saved("not-a-member-project", None)},

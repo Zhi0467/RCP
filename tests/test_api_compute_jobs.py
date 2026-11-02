@@ -32,6 +32,7 @@ def _laptop_card(client):
 
 
 def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_api, monkeypatch):
+    """A setting that changes no route keeps the recorded checks."""
     from rcp.compute_jobs import probe as probe_module
 
     app, client, url = compute_api
@@ -57,7 +58,6 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
         assert calls == [
             ("laptop", route, "slurm" if job_manager == "slurm" else None) for route in routes
         ]
-        # The returned card already carries the new checks.
         assert [route for route, probe in response.json()["compute_probes"].items() if probe] == (
             sorted(routes, key=["scheduler", "helper"].index)
         )
@@ -70,7 +70,6 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
             "slurm" if job_manager == "slurm" else None
         )
         assert resource_watermark_tokens(client, project_id, {"name": "settings"}) != before
-    # A setting that changes no route keeps the recorded checks.
     calls.clear()
     hinted = client.patch(
         f"/api/space/machines/{card['machine_id']}", json={"access_hint": "Use /shared"}
@@ -84,6 +83,7 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
 def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
     compute_api, monkeypatch, found
 ):
+    """Detection never overrides a decision made while it ran."""
     from rcp.compute_jobs import probe as probe_module
 
     app, client, _ = compute_api
@@ -104,12 +104,10 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
     )
     expected = {True: "slurm", False: "none"}.get(found)
     assert store.space_machine_for("").job_manager == expected
-    # Detection never overrides a decision made while it ran.
     decided = store.create_space_machine(name="decided", host="decided.example", os_account="")
     store.update_space_machine(decided.machine_id, job_manager="none")
     store.decide_job_manager(decided.machine_id, "slurm")
     assert store.space_machine(decided.machine_id).job_manager == "none"
-    # A card no project uses yet settles the same way when it is checked.
     unused = store.create_space_machine(name="spare", host="spare.example", os_account="")
     checked = client.post(f"/api/space/machines/{unused.machine_id}/compute/check", json={})
     assert checked.status_code == 200, checked.text
@@ -125,7 +123,6 @@ def test_only_the_base_machine_offers_the_helper_route(compute_api, monkeypatch)
     app.state.service.add_machine("gpu", "gpu.example", "alice")
     gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="alice")
     store.update_space_machine(gpu.machine_id, job_manager="slurm")
-    # A helper check recorded when a turn could still run on any machine.
     store.record_compute_backend_probe(
         project_id, _result("gpu", "systemd_user", "ready", ""), "helper"
     )

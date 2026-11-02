@@ -95,6 +95,9 @@ def _adopted_loop(manifest, tmp_path, *, branch: bool, old_status: str = "comple
 def test_adopted_completions_wake_current_episode_once_with_current_authority(
     manifest, tmp_path, monkeypatch, branch, origin_authorizer, current_has_skills
 ):
+    """Retained historical attribution comes from another human or a legacy origin, while the
+    current episode keeps its validated authorizer.
+    """
     loop, target, old_episode = _adopted_loop(manifest, tmp_path, branch=branch)
     current_policy = {
         "code_worktree": False,
@@ -116,8 +119,6 @@ def test_adopted_completions_wake_current_episode_once_with_current_authority(
             SkillReference(id="old-skill", kind="skill", version="1.0.0").model_dump()
         ],
     )
-    # Model retained historical attribution from another human or a legacy
-    # origin. The current episode still has its validated authorizer.
     with loop.store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'current-root'",
@@ -216,9 +217,10 @@ def test_adoption_keeps_target_and_host_preflight_checks(manifest, tmp_path, mis
 
 
 def test_stop_preserves_an_already_delivered_older_completion(manifest, tmp_path):
+    """A historical receipt already consumed by its originating episode is not an observation
+    adopted by the current loop.
+    """
     loop, target, _ = _adopted_loop(manifest, tmp_path, branch=False)
-    # A historical receipt already consumed by its originating episode is not
-    # an observation adopted by the current loop.
     with loop.store.connection() as connection:
         connection.execute(
             "UPDATE watchers SET notified = 1, notification_operation_id = 'loop-root' "

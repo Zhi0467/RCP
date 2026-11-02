@@ -213,7 +213,6 @@ def test_graph_only_scope_has_no_repository_roots(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="code merge roots"):
         require_graph_only_merge_scope(broadened, context=context, stage=stage)
-    # A code merge admits exactly its named roots and no others.
     require_graph_only_merge_scope(broadened, context=context, stage=stage, code_roots=[str(repo)])
     with pytest.raises(ValueError, match="code merge roots"):
         require_graph_only_merge_scope(
@@ -684,11 +683,11 @@ async def test_hidden_clash_promotes_once_and_repeated_answer_error_ends_turn(
 
 
 def test_rebase_card_reuse_binds_effect_digest():
+    """This is a planner-output fake; only review identity is this boundary's concern."""
     context = _context()
     group = ReviewGroup.model_construct(
         subject_key="review", effect_digest="a" * 64, changes=(), footprint={}
     )
-    # This is a planner-output fake; only review identity is this boundary's concern.
     previous = _plan(context).model_copy(update={"review_groups": (group,)})
     card = ReviewCard(situation_cold="s", why_human_now="w", consequences="c", decision_needed="d")
     answers = MergeAnswers(answers={}, cards={"review": card})
@@ -969,6 +968,7 @@ async def test_promotion_survives_rebase_and_reasks_only_changed_group(
 
 @pytest.mark.asyncio
 async def test_a_recorded_promoted_turn_rebases_onto_a_moved_destination(tmp_path, monkeypatch):
+    """The recorded turn answered the promoted plan, so its answers name only that group."""
     run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
     diagnostic = MergeDiagnostic(code="coupled", message="coupled", related_node_ids=("rq/merge",))
     promotion = NodeGroupPromotion(node_ids=("rq/merge",), diagnostics=(diagnostic,))
@@ -981,7 +981,6 @@ async def test_a_recorded_promoted_turn_rebases_onto_a_moved_destination(tmp_pat
         destination={"rq/merge": PresentValue(value={})},
         diagnostic_codes=("coupled",),
     )
-    # The recorded turn answered the promoted plan; its answers name only that group.
     run.checks.set_plan(_plan(run.context, conflicts=(group,)), turn_id="recorded")
     run.move()
     monkeypatch.setattr(

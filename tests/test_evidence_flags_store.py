@@ -150,6 +150,7 @@ def test_flag_fields_are_single_line_and_sources_are_paths(store, field, value, 
 
 
 def test_batch_binding_conflict_rolls_back_every_flag_and_receipt(store):
+    """The second compare-and-set is forced to fail after the first update."""
     from rcp.storage.client_requests import record_client_request
     from rcp.storage.evidence_flags import record_evidence_flag_address
 
@@ -179,7 +180,6 @@ def test_batch_binding_conflict_rolls_back_every_flag_and_receipt(store):
     ):
         connection.execute("BEGIN IMMEDIATE")
         record_client_request(store, connection, task)
-        # Force the second compare-and-set to fail after the first update.
         connection.execute("UPDATE evidence_flags SET state='dismissed' WHERE flag_id=?", (ids[1],))
         record_evidence_flag_address(store, connection, task)
     assert store.evidence_flag("project", ids[0]) == first

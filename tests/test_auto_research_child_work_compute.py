@@ -85,7 +85,6 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             assert handler.episode_id == "child-compute"
             assert kwargs["invocation_gate"] is staged.invocation_gate
             if len(self.calls) == 1:
-                # The session start's master names this turn's client and the launch helper.
                 contract = launch_contract_path(prompt).read_text()
                 assert current_command_client(prompt) == staged.client_command()
                 assert (
@@ -118,7 +117,6 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 elif state == "malformed":
                     (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
             elif self.job_id and len(self.calls) == 2:
-                # A correction continues the session inline.
                 correction = prompt
                 assert '"job_id"' not in correction
                 if state == "running":
@@ -127,7 +125,6 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     json.dumps({"external": [self.watcher], "graph": []})
                 )
             if len(self.calls) == 3:
-                # A wake continues the session inline and sends only what changed.
                 self.wake_contract = prompt
                 turn, inputs = child_turns[-1]
                 changed = changed_values(self.wake_contract)
@@ -264,6 +261,10 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
 
 
 def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp_path):
+    """Only the fixture lifecycle is controlled, so one routed session exercises both master
+    transitions with real admission and prompts. A routed wake records its active master apart from
+    the chat baseline kept for humans.
+    """
     from rcp.agents.continuation_prompt import master_key
     from rcp.agents.prompts import WORK_POLICY_VERSION, chat_master_contract_key
     from rcp.runs.auto_research_admission import start_auto_research_child_work_message_wake
@@ -357,8 +358,6 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
         snapshots.append(snapshot)
 
     capture_master(child, f"episode:{episode.episode_id}")
-    # Control only the fixture lifecycle so the same routed session can exercise
-    # both master transitions; admission and all three prompt streams stay real.
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET status = 'completed' WHERE episode_id = ?", (episode.episode_id,)
@@ -399,8 +398,6 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
     assert wake is not None
     wake = wait_for_task(store, wake.operation_id, expect="succeeded")
     assert wake.episode_id == episode.episode_id
-    # A routed wake uses the Work continuation protocol; its active master is
-    # recorded separately from the ordinary chat baseline retained for humans.
     expected = master_key(
         f"{WORK_POLICY_VERSION}:episode:{episode.episode_id}", ontology_extensions=False
     )

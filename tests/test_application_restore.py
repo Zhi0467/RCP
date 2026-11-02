@@ -633,6 +633,7 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
 def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     restore_request, tmp_path, monkeypatch
 ):
+    """Reviewing a restore never reaches a host, because the old deployment may still run."""
     from rcp.storage.models import LoginKey
 
     value, _, previous = restore_request
@@ -673,7 +674,6 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
 
     monkeypatch.setattr("rcp.runs.provider_login.cleanup_provider_login_credential", unreachable)
     review = prepare_restore(RestorePrepareRequest(**value))
-    # Reviewing a restore never reaches a host: the old deployment may still run.
     assert cleanups == []
     result = prepare_restore(_confirm(value, review, tmp_path / "removed-member-ready"))
     assert result["status"] == "prepared"

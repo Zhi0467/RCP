@@ -3,6 +3,12 @@
 Each test here is the executable form of a rule whose owner is a single module:
 the rule itself is documented at that owner, and this file keeps the rest of
 the tree from quietly acquiring a second owner.
+
+Routes compose service and history owners and never hold a file handle on canonical or operational
+state; any `.open(<computed>)` counts as a write unless its receiver opens projects or records.
+`str.replace` and `Path.replace` share a name, so only the one-positional Path form counts. A
+resolved transcript path may reach only approved sinks, so a helper cannot split the resolver and
+the read past a per-function scan.
 """
 
 from __future__ import annotations
@@ -19,8 +25,6 @@ from tests.architecture import (
     _python_files,
 )
 
-# Any call that puts bytes on disk. Routes compose service and history owners;
-# they never hold a file handle on canonical or operational state themselves.
 PATH_WRITE_METHODS = {
     "write_text",
     "write_bytes",
@@ -32,15 +36,9 @@ PATH_WRITE_METHODS = {
     "hardlink_to",
     "link_to",
 }
-# `str.replace(old, new)` and `Path.replace(target)` share a name; the Path
-# form takes exactly one positional argument and no keywords.
 PATH_SINGLE_TARGET_METHODS = {"rename", "replace"}
-# Receivers whose `.open(x)` opens a project or record, never a file. Every
-# other `.open(<computed>)` counts as a write until proven otherwise.
 NON_FILE_OPEN_RECEIVERS = {"catalog", "_catalog"}
-# Callables with the builtin `open(file, mode)` signature, by canonical name.
 BUILTIN_OPENERS = {"open", "builtins.open", "io.open", "codecs.open"}
-# Path classes whose methods may be called unbound with the path first.
 UNBOUND_PATH_PREFIXES = tuple(
     f"pathlib.{name}." for name in ("Path", "PurePath", "PosixPath", "WindowsPath")
 )
@@ -143,6 +141,10 @@ def _os_open_writes(call: ast.Call) -> bool:
 
 
 def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """An unbound `Path.write_text(path, payload)` takes the receiver as its first positional
+    argument. A computed mode is a write unless it is positional on a receiver known not to open
+    files.
+    """
     name, receiver = _call_name(call, aliases)
     if name in BUILTIN_OPENERS or name == "os.fdopen":
         mode, _ = _open_mode(call, builtin=True)
@@ -155,8 +157,6 @@ def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
         return name.removeprefix("shutil.").startswith(SHUTIL_WRITE_PREFIXES)
     positional = list(call.args)
     if name.startswith(UNBOUND_PATH_PREFIXES):
-        # `Path.write_text(path, payload)`: the method called unbound, with the
-        # receiver as its first positional argument.
         method = name.rsplit(".", 1)[1]
         receiver = positional[0] if positional else None
         positional = positional[1:]
@@ -173,8 +173,6 @@ def _writes_a_file(call: ast.Call, aliases: dict[str, str]) -> bool:
     if method != "open":
         return False
     mode, by_keyword = _open_mode(call, builtin=len(positional) != len(call.args))
-    # A computed mode is a write until proven otherwise. The one exemption is a
-    # positional argument on a receiver known not to open files.
     computed_default = by_keyword or _receiver_name(receiver) not in NON_FILE_OPEN_RECEIVERS
     return _mode_writes(mode, computed_default=computed_default)
 
@@ -291,7 +289,6 @@ def route(path, target, payload):
     assert _flagged_lines(source, _is_write_call) == [6, 7, 8, 9, 12]
 
 
-# The transcript readers live on the project service for display and backup.
 TRANSCRIPT_READERS = {
     "chat_transcript",
     "chat_transcripts",
@@ -335,8 +332,6 @@ async def builder(service, chat_id):
     assert _flagged_lines(source, _references_transcript_reader) == [5, 6, 7]
 
 
-# Path methods and attributes whose result is still the same file (or its
-# directory): provenance flows through them.
 PATH_PRESERVING_METHODS = {"resolve", "absolute", "expanduser", "with_suffix", "with_name"}
 PATH_PRESERVING_ATTRIBUTES = {"parent"}
 
@@ -510,13 +505,9 @@ def holder(service, request):
     }
 
 
-# The only callees a resolved transcript path may be handed to. Everything
-# else is an escape: a helper that reads the file would otherwise split the
-# resolver and the read across two functions and slip past a per-function scan.
 APPROVED_PATH_SINKS = {
     "_append_chat_records",
     "rcp.runs.chat._append_chat_records",
-    # Dispatches a steer receipt to the project or Space append sink, nothing else.
     "_append_steering_records",
 }
 
@@ -580,6 +571,10 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     One reader is the contract: a private agent thread that starts a fresh
     native session gets a bounded tail of its own display history, labelled
     as history and not authority (conversations spec, private agent threads).
+
+    In the task runtime a transcript path is obtained only to append. The allowed identity-only
+    reads dedupe, locate the addressed message, or check the prompt is recorded, and none feeds
+    transcript text to a provider. A helper returning a resolver result is itself a resolver.
     """
 
     history_seed = {("runs/agent_threads.py", "thread_history_seed")}
@@ -604,12 +599,6 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
                     )
     assert offenders == [], "\n".join(offenders)
 
-    # Anywhere in the task runtime, the transcript path is obtained only to
-    # append to it. A function that resolves that path must not read any file.
-    # Identity-only reads: the append helper dedupes by message UUID, the
-    # steer entry point looks up the stored human message it addresses, and the
-    # steer recorder checks whether the turn's prompt is recorded. None feeds
-    # transcript text to a provider.
     identity_only = {
         ("runs/chat.py", "_append_chat_records"),
         ("runs/steering.py", "begin_chat_steer"),
@@ -620,8 +609,6 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
         for path in _python_files(SOURCE / package):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             parsed.append((path, tree, _import_aliases(tree, path)))
-    # A helper that returns a resolver result is itself a resolver, so a
-    # caller that reads what the helper returned is a path holder too.
     wrappers = _resolver_wrappers(parsed)
     assert "rcp.runs.chat._chat_path" in wrappers
     readers_in_path_holders: list[str] = []
