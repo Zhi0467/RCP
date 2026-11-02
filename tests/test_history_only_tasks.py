@@ -84,6 +84,9 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     monkeypatch,
     retained_temporary: bool,
 ) -> None:
+    """Only a still-stored artifact names its turn folder. Composer admission uses the current chat,
+    so origin history-only status does not mask ordinary comment validation.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     store = app.state.background_tasks.store
@@ -360,7 +363,6 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_download": retained_temporary,
         "can_keep": False,
         "can_discuss": False,
-        # Only a still-stored artifact names its turn folder.
         "turn_folder": chat_operation_id if retained_temporary else None,
         "forked_from": None,
     }
@@ -402,8 +404,6 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
             },
         },
     )
-    # Composer admission uses the current chat, so origin history-only status
-    # does not mask ordinary comment validation.
     assert context_response.status_code == 422
     assert "comment needs text" in context_response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count

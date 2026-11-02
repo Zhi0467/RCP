@@ -23,8 +23,9 @@ from rcp.storage import AgentTaskRecord, AppStore, Artifact, ProjectRecord
 
 @pytest.fixture
 def live(tmp_path, manifest):
-    # The real store and file readers run end to end; only graph opening is a
-    # fixed owner, so these tests do not start providers or an HTTP server.
+    """The real store and file readers run end to end; only graph opening is fixed, so no providers
+    or HTTP server start.
+    """
     store = AppStore(tmp_path / "data" / "rcp.sqlite3")
     store.upsert_project(
         ProjectRecord(
@@ -754,6 +755,7 @@ def test_graph_projection_is_complete_lean_and_never_final(live):
 
 
 def test_graph_head_gates_only_graph_and_validates_binding(live, monkeypatch):
+    """Sampling precedes graph reads, even if publication happens during the read."""
     from rcp.api import resource_watermarks
 
     metrics = live.root / "values"
@@ -780,7 +782,6 @@ def test_graph_head_gates_only_graph_and_validates_binding(live, monkeypatch):
         resource_watermarks, "_PROJECTION_VERSION", resource_watermarks._PROJECTION_VERSION + 1
     )
     assert cached().snapshots[0].head != head
-    # Sampling precedes graph reads, even if publication happens during the read.
     head = read(live, artifact).snapshots[0].head
     graph = live.service.history.state()
 
@@ -808,6 +809,9 @@ def test_graph_head_gates_only_graph_and_validates_binding(live, monkeypatch):
     ],
 )
 def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, cap, code):
+    """UTF-8 bytes, not character count, cross this boundary, and declaration order still names
+    every slot when the envelope is too large.
+    """
     from rcp import live_artifact_runtime as runtime
     from rcp.core.models import Hypothesis
 
@@ -816,7 +820,6 @@ def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, ca
     artifact = live.create([{"kind": "graph"}])
     full = read(live, artifact)
     payload = full.snapshots[0] if cap == "LIVE_ARTIFACT_GRAPH_MAX_BYTES" else full
-    # UTF-8 bytes, not character count, cross this boundary.
     limit = len(payload.model_dump_json()) + 1
     monkeypatch.setattr(runtime, cap, limit)
     message = read(live, artifact)
@@ -824,7 +827,6 @@ def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, ca
     assert not message.static and not message.final and not message.complete
     assert len(message.model_dump_json().encode()) < limit
     if cap == "LIVE_ARTIFACT_MESSAGE_MAX_BYTES":
-        # Declaration order still names every slot when the envelope is too large.
         mixed = read(
             live, live.create([{"kind": "node", "id": "n"}, {"kind": "graph"}], artifact_id="mixed")
         )
@@ -837,6 +839,9 @@ def test_graph_byte_caps_return_bounded_errors_and_recover(live, monkeypatch, ca
 
 
 def test_unrecoverable_oversized_messages_stop_polling(monkeypatch):
+    """A saved final is immutable, so its slotted error is terminal; declared identities alone over
+    the cap still yield a bounded, terminal reply.
+    """
     from rcp import live_artifact_runtime as runtime
     from rcp.live_artifacts import FileSnapshot, LiveDataMessage
 
@@ -846,11 +851,9 @@ def test_unrecoverable_oversized_messages_stop_polling(monkeypatch):
         refresh_seconds=2,
     )
     monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 1000)
-    # A saved final is immutable: its slotted error is terminal, not retried.
     saved = runtime._bounded_message(message, saved=True)
     assert (saved.static, saved.snapshots[0].error) == (True, "message_too_large")
     assert not runtime._bounded_message(message).static
-    # Declared identities alone over the cap still yield a bounded, terminal reply.
     monkeypatch.setattr(runtime, "LIVE_ARTIFACT_MESSAGE_MAX_BYTES", 200)
     bare = runtime._bounded_message(message)
     assert (bare.snapshots, bare.static, bare.reason) == ([], True, "message_too_large")

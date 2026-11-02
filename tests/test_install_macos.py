@@ -1,3 +1,8 @@
+"""Runs scripts/install-macos.sh with shims for macOS-only tools.
+
+curl, shasum, and mv run for real; the mv shim fails only the swap into place when asked.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -15,16 +20,13 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "install-macos.sh"
 TAG = "v9.9.9"
 ZIP = f"RCP-{TAG}-macos-arm64.zip"
 
-# macOS-only tools the script calls; the rest (curl, shasum, mv) run for real.
 SHIMS = {
     "uname": "echo Darwin",
     "sysctl": 'echo "$FAKE_ARM64"',
     "sw_vers": "echo 14.5",
-    # `pgrep -f PATTERN` against one fake process command line.
     "pgrep": 'printf "%s\\n" "$FAKE_PROCESS" | grep -Eq -- "$2"',
     "ditto": 'exec python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$3" "$4"',
     "codesign": "exit 0",
-    # Fails only the rename that puts the new app in place, when asked to.
     "mv": 'case "$FAKE_FAIL_SWAP:$1" in 1:*/.rcp-install.*/RCP.app) exit 1 ;; esac; exec /bin/mv "$@"',
 }
 
@@ -101,12 +103,12 @@ def test_replaces_the_installed_app_and_leaves_no_staging(install):
     "reason", ["intel", "running", "unwritable", "checksum", "unpublished", "swap"]
 )
 def test_refusal_leaves_the_existing_app_untouched(install, reason):
+    """The backend can outlive the app window because it runs from Resources."""
     run, applications, release = install
     fake = {}
     if reason == "intel":
         fake["FAKE_ARM64"] = ""
     elif reason == "running":
-        # The backend can outlive the app window; it runs from Resources.
         fake["FAKE_PROCESS"] = "/Applications/RCP.app/Contents/Resources/backend/rcp-backend serve"
     elif reason == "unwritable":
         applications.chmod(0o555)

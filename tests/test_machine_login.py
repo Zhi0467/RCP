@@ -15,13 +15,13 @@ def _runner(tmp_path, *, login_stderr="", key=KEY, fingerprint="SHA256:abc"):
     global_hosts = tmp_path / "ssh_known_hosts"
 
     def run(argv, **kwargs):
+        """SSH records the offered key in its scratch file, then fails auth."""
         if argv[:2] == ["ssh", "-G"]:
             out = (
                 f"hostname 10.0.0.5\nport 22\nuserknownhostsfile {known_hosts}\n"
                 f"globalknownhostsfile {global_hosts}\n"
             )
         elif argv[0] == "ssh" and "StrictHostKeyChecking=accept-new" in argv:
-            # SSH records the offered key in the scratch file it was given, then fails auth.
             scratch = next(o for o in argv if o.startswith("UserKnownHostsFile="))
             Path(scratch.partition("=")[2]).write_text(f"10.0.0.5 ssh-ed25519 {key}\n")
             return subprocess.CompletedProcess(argv, 255, "", "Permission denied (none).")
@@ -66,6 +66,7 @@ def test_login_names_the_account_or_the_kind_of_failure(tmp_path) -> None:
 
 
 def test_trust_records_only_the_compared_key_once(tmp_path) -> None:
+    """A recorded key is never replaced or joined from the UI."""
     moved, known_hosts = _runner(tmp_path, fingerprint="SHA256:other")
     with pytest.raises(MachineLoginFailure, match="host_key_changed"):
         trust_host_key("gpu", "SHA256:abc", runner=moved)
@@ -75,7 +76,6 @@ def test_trust_records_only_the_compared_key_once(tmp_path) -> None:
     trust_host_key("gpu", "SHA256:abc", runner=run)
     assert known_hosts.read_text() == f"10.0.0.5 ssh-ed25519 {KEY}\n"
     assert known_hosts.parent.stat().st_mode & 0o777 == 0o700
-    # A recorded key is never replaced or joined from the UI.
     with pytest.raises(MachineLoginFailure, match="host_key_changed"):
         trust_host_key("gpu", "SHA256:abc", runner=run)
     assert known_hosts.read_text().count("\n") == 1

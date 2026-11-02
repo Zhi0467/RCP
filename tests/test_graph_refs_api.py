@@ -53,6 +53,7 @@ def test_graph_refs_includes_main_without_episodes(manifest, tmp_path) -> None:
 def test_graph_refs_lists_unique_branches_past_episode_window_and_archive_filters(
     manifest, tmp_path
 ) -> None:
+    """Episode archives are a separate visibility choice and must not hide a ref either."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -113,7 +114,6 @@ def test_graph_refs_lists_unique_branches_past_episode_window_and_archive_filter
         attempt=attempt.model_copy(update={"phase": "done"}),
         graph_archived=True,
     )
-    # Episode archives are a separate visibility choice and must not hide a ref either.
     store.set_episode_archived(project_id, roots[-2].episode_id, authorizer.user_id, archived=True)
     root = roots[0]
     store.end_episode_without_report(root.episode_id, ending="failed", diagnostic="Ended turn")
@@ -195,12 +195,14 @@ def test_graph_refs_names_a_branch_by_its_owner(manifest, tmp_path) -> None:
 
 
 def test_rename_archive_and_unarchive_preserve_branch_history(manifest, tmp_path) -> None:
+    """Older branch roots need not have isolation state, and a later Merge can establish the legacy
+    binding without erasing Archive.
+    """
     harness = _create_branch_harness(manifest, tmp_path, change="evidence")
     branch_id = harness.episode.episode_id
     path = f"/api/projects/{harness.project_id}/graph-refs/{branch_id}"
     history = cast(BranchHistoryManager, harness.branch)
     before = history.load_patches()
-    # Older branch roots need not have any isolation state.
     with harness.store.connection() as connection:
         connection.execute(
             "DELETE FROM episode_isolation_states WHERE owner_episode_id = ?", (branch_id,)
@@ -216,7 +218,6 @@ def test_rename_archive_and_unarchive_preserve_branch_history(manifest, tmp_path
         saved = harness.store.episode_isolation_state(harness.project_id, branch_id)
         assert saved is not None and saved.graph_archived is archived
         if archived:
-            # A subsequent Merge can establish the legacy binding without erasing Archive.
             harness.store.create_episode_isolation(
                 harness.project_id,
                 EpisodeIsolation(owner_episode_id=branch_id, graph_branch_id=branch_id),
@@ -262,8 +263,8 @@ def _unreachable_ref_read(*_args: object, **_kwargs: object) -> None:
 
 @pytest.mark.parametrize("name", ["", "main", "A-name", "a", "-name", "name-", "a" * 33])
 def test_rename_branch_invalid_names(manifest, tmp_path, monkeypatch, name) -> None:
+    """An invalid name is refused before the possibly remote branch read."""
     harness = _create_branch_harness(manifest, tmp_path, change="none")
-    # An invalid name is refused before the (possibly remote) branch read.
     monkeypatch.setattr(episode_routes, "_branch_ref_for_http", _unreachable_ref_read)
     path = f"/api/projects/{harness.project_id}/graph-refs/{harness.episode.episode_id}/name"
     response = harness.client.put(path, json={"name": name})
@@ -272,6 +273,7 @@ def test_rename_branch_invalid_names(manifest, tmp_path, monkeypatch, name) -> N
 
 
 def test_branch_routes_reject_unknown_main_and_taken_name(manifest, tmp_path) -> None:
+    """A branch may take back a name it held before."""
     harness = _create_branch_harness(manifest, tmp_path, change="none")
     path = f"/api/projects/{harness.project_id}/graph-refs"
     for branch_id, expected in ((str(uuid.uuid4()), 404), ("main", 422)):
@@ -305,7 +307,6 @@ def test_branch_routes_reject_unknown_main_and_taken_name(manifest, tmp_path) ->
     response = harness.client.put(f"{path}/{branch_id}/name", json={"name": second_name})
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "branch_name_taken"
-    # A branch may take back a name it held before.
     original = harness.store.branch_names(harness.project_id)[branch_id]
     for name in ("interim-name", original):
         response = harness.client.put(f"{path}/{branch_id}/name", json={"name": name})
@@ -331,11 +332,11 @@ def test_branch_mutations_require_project_membership(tmp_path) -> None:
 
 
 def test_graph_refs_attention_tracks_branch_graph_and_pending_questions(manifest, tmp_path) -> None:
+    """The main blocker is resolved only on this branch, so main attention must not leak."""
     from rcp.storage.question_models import QuestionOrigin
 
     harness = _create_branch_harness(manifest, tmp_path, change="status")
     path = f"/api/projects/{harness.project_id}/graph-refs"
-    # The main blocker is resolved only on this branch; main attention must not leak.
     assert harness.client.get(path).json()[1]["needs_you"] is False
     question = harness.store.create_or_get_question(
         origin=QuestionOrigin(
@@ -519,6 +520,7 @@ def test_human_fork_unavailable_state_is_retryable(manifest, tmp_path, monkeypat
 
 
 def test_human_fork_experiments_record_and_share_branch_isolation(manifest, tmp_path) -> None:
+    """A Run admitted before the first launch binds the fork already shares its owner."""
     from .test_episode_lifecycle_acceptance import _add_worker_seat
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -543,7 +545,6 @@ def test_human_fork_experiments_record_and_share_branch_isolation(manifest, tmp_
     assert episode is not None and episode.graph_isolation is True
     assert first.request["graph_isolation"] is episode.graph_isolation
     assert first.request["isolation_owner_episode_id"] == episode.isolation_owner_episode_id
-    # A Run admitted before the first launch binds the fork already shares its owner.
     second = admit("exp/fork-2")
     assert second.request["isolation_owner_episode_id"] == first.episode_id
     store.create_episode_isolation(
@@ -603,6 +604,7 @@ def _admit_fork_experiment(app, store, project_id, target, node_id):
 def test_human_fork_merge_uses_parent_without_episode_or_budget(
     manifest, tmp_path, monkeypatch, destination_kind, conflict
 ):
+    """An orchestrator's fork of main has no owned destination, so a member merges it."""
     from rcp.agents.hidden_read import host_facts
     from rcp.core.models import Patch
     from rcp.history import HistoryManager
@@ -627,7 +629,6 @@ def test_human_fork_merge_uses_parent_without_episode_or_budget(
     parent = destination.head_ref()
     refs = f"/api/projects/{harness.project_id}/graph-refs"
     if destination_kind == "main":
-        # An orchestrator's fork of main has no owned destination; a member merges it.
         from rcp.runs.graph_forks import create_graph_fork
 
         fork_id = str(uuid.uuid4())

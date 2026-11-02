@@ -238,6 +238,9 @@ def test_fork_before_home_transfer_retains_current_authorizer(manifest, kind):
 
 
 def test_merge_delivery_is_bound_to_parent_across_crash_and_later_history(history):
+    """A crash before receipt publication proves delivery by reads alone. A later parent-to-main
+    merge or a descendant inheriting the Patch cannot redirect delivery.
+    """
     from rcp.core.models import BranchMergeProvenance, BranchMergeReceipt
     from rcp.history import BranchMergeAlreadyCommitted
     from rcp.history.branches import read_branch_snapshots
@@ -267,7 +270,6 @@ def test_merge_delivery_is_bound_to_parent_across_crash_and_later_history(histor
     )
     committed, _ = destination.append(patch)
     destination.append(_branch_patch("ev/later"))
-    # Crash before receipt publication: reads prove delivery without writing a receipt.
     snapshot = read_branch_snapshots(history, [(source.branch_id, None, "project")])[
         source.branch_id
     ]
@@ -281,7 +283,6 @@ def test_merge_delivery_is_bound_to_parent_across_crash_and_later_history(histor
     assert receipt == snapshot.receipts[0]
     assert receipt.result_main_head.target == destination.graph_target
     assert receipt.result_main_head.revision == committed.revision
-    # A later parent-to-main merge and a descendant inheriting the Patch cannot redirect delivery.
     parent_metadata = destination.branch_metadata()
     parent_merge = BranchMergeProvenance(
         merge_id=branch_merge_id(parent_metadata),
@@ -367,6 +368,7 @@ def test_no_change_fork_receipt_suppresses_later_destination_append(history):
 def test_first_no_change_receipt_checks_destination_after_acquiring_append_lock(
     history, monkeypatch, parent_branch
 ):
+    """Main's public writer delegates to the same guarded source-branch writer."""
     from contextlib import contextmanager
 
     from rcp.core.models import BranchMergeProvenance, BranchMergeReceipt
@@ -405,7 +407,6 @@ def test_first_no_change_receipt_checks_destination_after_acquiring_append_lock(
             yield
 
     monkeypatch.setattr(history, "_append_lock", moved_before_lock)
-    # Main's public writer delegates to the same guarded source-branch writer.
     writer = source.write_merge_receipt if parent_branch else history.write_merge_receipt
     with pytest.raises(RevisionConflict):
         writer(receipt)

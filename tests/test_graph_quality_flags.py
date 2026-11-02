@@ -110,8 +110,9 @@ def test_new_unconnected_nodes_of_every_type_receive_isolation_advice(node: dict
 
 
 def test_a_connected_node_needs_no_particular_link() -> None:
-    # Evidence need not bear on what its Experiment tests, nor a Hypothesis answer a
-    # question: any real connection ends the advice, so no edge is invented to clear it.
+    """Evidence need not bear on what its Experiment tests, nor a Hypothesis answer a question: any
+    real connection ends the advice, so no edge is invented to clear it.
+    """
     claim = {"id": "hyp/claim", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
     patch = _patch(
         {"op": "create_nodes", "nodes": [claim, _experiment(), _evidence()]},
@@ -171,7 +172,7 @@ def test_removing_last_edge_introduces_provenance_and_isolation_issues() -> None
 
 
 def test_only_valid_produces_endpoint_types_count_as_evidence_provenance() -> None:
-    # Historical/custom graph data must not make any produces-shaped edge proof.
+    """Historical or custom graph data must not make any produces-shaped edge proof."""
     state = _state(_evidence("analytic"))
     state.edges["legacy"] = Edge(
         id="legacy", source="ev/result", target="ev/result", relation="produces"

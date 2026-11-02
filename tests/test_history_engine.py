@@ -272,6 +272,7 @@ def test_memory_eviction_reloads_verified_store(history, tmp_path, monkeypatch):
 
 
 def test_log_keeps_creation_and_removal_when_net_diff_is_empty(history):
+    """Newest first, like git log."""
     from rcp.core.models import Patch
     from rcp.core.operations import RemoveNodesOperation
 
@@ -291,7 +292,6 @@ def test_log_keeps_creation_and_removal_when_net_diff_is_empty(history):
     )
     after = head(engine, "main@head")
     assert not engine.diff(before, after, ids=frozenset({"ev/transient"})).changes
-    # Newest first, like git log.
     assert [entry.change.change for entry in engine.log("ev/transient", after).entries] == [
         "removed",
         "created",
@@ -557,11 +557,11 @@ def test_stateful_projection_starts_at_requested_predecessor(history, monkeypatc
 
 
 def test_replay_validation_halt_keeps_a_readable_prefix(history):
+    """A decodable Patch that no longer replays because it recreates an existing node."""
     engine = history.history_engine
     history.append(_branch_patch("ev/later"))
     history.append(_branch_patch("ev/third"))
     path = history._patch_paths()[-1]
-    # A decodable Patch that no longer replays: it recreates an existing node.
     path.write_text(path.read_text().replace("ev/third", "ev/later"))
 
     result, steps = engine.projection(GraphTargetRef())
