@@ -28,7 +28,8 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
-import { ChatComposer } from "../chat/ChatComposer";
+import { ChatComposer, ComposerField } from "../chat/ChatComposer";
+import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
@@ -420,10 +421,14 @@ export function PaperCoach({
         {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
       </div>
       <ChatComposer
-        project={project}
-        config={config}
-        tasks={sessionTasks}
-        sessionId={currentSessionId}
+        hint={
+          <ProviderSwitchHint
+            project={project}
+            config={config}
+            tasks={sessionTasks}
+            sessionId={currentSessionId}
+          />
+        }
         mode="discuss"
         composer={composer}
         comments={comments}
@@ -431,7 +436,7 @@ export function PaperCoach({
         addDisabled={composer.full || composer.preparing || submitting}
         className={error ? "paper-failure" : undefined}
         field={
-          <textarea
+          <ComposerField
             ref={textarea}
             aria-label="Message"
             value={message}

@@ -1,9 +1,13 @@
 import {
+  Bell,
   BookOpen,
+  Bot,
   Check,
+  Gauge,
   GitBranch,
   HardDrive,
   LoaderCircle,
+  Moon,
   RotateCcw,
   ScanSearch,
   Save,
@@ -11,6 +15,7 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  Users,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, clearProjectCaches, removeProjectMachine } from "../core/api";
@@ -20,7 +25,6 @@ import { ProjectMembers } from "./ProjectMembers";
 import { MachineCard } from "./MachineCard";
 import { ProjectNotifications } from "../desktop/ProjectNotifications";
 import { ProjectConsolidation } from "./ProjectConsolidation";
-import { ProjectLessons } from "./ProjectLessons";
 import { AddMachineTile, MachineTile, type MachineSignal } from "./MachineTile";
 import { AddProjectMachine } from "./AddProjectMachine";
 import { useSpaceMachines } from "./useSpaceMachines";
@@ -37,6 +41,8 @@ import {
   settingsFingerprint,
 } from "./settingsDraft";
 import { providerPathPresentation } from "./providerPaths";
+import { SettingsRail, type SettingsSection } from "../ui/SettingsRail";
+import { hasRow, rowOf } from "../core/agentRows";
 import type { ProjectReadinessRetention } from "../graph/projectSession";
 import type {
   AgentExecutionProfile,
@@ -72,6 +78,8 @@ interface Props {
   consolidation: ConsolidationView | null;
   consolidationError: string | null;
   onConsolidationChanged: () => void;
+  /** The pane to open on; absent or unknown opens the first. */
+  initialSection?: string;
 }
 
 export function publishCacheMetrics(
@@ -84,13 +92,14 @@ export function publishCacheMetrics(
 }
 
 const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed" },
+  { id: "seed", label: "Seed and refresh" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
+const executionRows = executionProfiles.filter(({ id }) => hasRow(id));
 
 /** Every agent runs on the base: the machine that holds the canonical state repository. */
 function baseMachine(project: ProjectSnapshot): string {
@@ -169,6 +178,7 @@ export function ProjectSettings({
   consolidation,
   consolidationError,
   onConsolidationChanged,
+  initialSection,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
@@ -389,7 +399,9 @@ export function ProjectSettings({
     setStatus(null);
     const body: ProjectSettingsRequest = {
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
-      agent_profiles: profiles,
+      agent_profiles: Object.fromEntries(
+        executionProfiles.map(({ id }) => [id, profiles[rowOf(id)]]),
+      ) as Record<AgentExecutionProfile, AgentProfileSettings>,
       skill_defaults: skillDefaults,
     };
     try {
@@ -472,364 +484,441 @@ export function ProjectSettings({
     }
   };
 
-  return (
-    <section className="settings-page" data-settings-level="project">
-      <AgentUsageWidgets usage={usage} providers={project.providers} />
-
-      <ProjectMembers
-        key={project.id}
-        projectId={project.id}
-        identity={identity}
-        api={api}
-        onLeft={onLeftProject}
-        headerAction={
-          spaceKind === "personal" && onMovePersonalProjectToTeam ? (
-            <button
-              className="button secondary project-move-to-team"
-              type="button"
-              disabled={writesDisabled}
-              onClick={() => onMovePersonalProjectToTeam(project.id)}
-            >
-              <Server size={14} /> Move to team space
-            </button>
-          ) : null
-        }
-      />
-      <article className="settings-section boundary-settings">
-        <header>
-          <span>
-            <GitBranch size={16} />
-          </span>
-          <h2>Repos</h2>
-        </header>
-        <div className="settings-repositories">
-          {project.repositories.map((repository) => {
-            const machine = machineByAlias[repository.machine];
-            const canonical = repository.alias === project.state_repository;
-            const selected = canonical || project.project_truth_scope.includes(repository.alias);
-            return (
-              <label
-                className={selected ? "settings-repository selected" : "settings-repository"}
-                key={repository.alias}
-                title="Agents can write"
-              >
-                <input
-                  type="checkbox"
-                  aria-label={`Agents can write ${repository.alias}`}
-                  checked={selected}
-                  disabled={writesDisabled || canonical || writableSaving !== null}
-                  onChange={(event) =>
-                    void setRepositoryWritable(repository.alias, event.target.checked)
-                  }
-                />
-                <span className="settings-check">{selected && <Check size={12} />}</span>
-                <span className="settings-repository-copy">
-                  <strong>{repository.alias}</strong>
-                  <span className="settings-repository-path">
-                    {machine?.host ? `${machine.host}:${repository.path}` : repository.path}
-                  </span>
-                </span>
-                <span className="settings-repository-meta">
-                  <Server size={12} /> {machine?.host ? repository.machine : "local"}
-                  {canonical && <em>canonical state</em>}
-                  {repository.source === "server_only" && <em>server only, not backed up</em>}
-                  {repository.can_connect && spaceKind === "team" && (
-                    <button
-                      type="button"
-                      className="button ghost tiny"
-                      disabled={writesDisabled}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        setConnectAlias(repository.alias);
-                      }}
-                    >
-                      Connect to GitHub
-                    </button>
-                  )}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        <RepositoryRequests
+  const sections: SettingsSection[] = [
+    {
+      id: "usage",
+      label: "Usage",
+      icon: <Gauge size={16} />,
+      content: <AgentUsageWidgets usage={usage} providers={project.providers} />,
+    },
+    {
+      id: "members",
+      label: "Members",
+      icon: <Users size={16} />,
+      content: (
+        <ProjectMembers
           key={project.id}
-          project={project}
-          spaceKind={spaceKind}
-          baseMachineId={
-            spaceMachines.machines
-              ? (spaceMachineForProject(spaceMachines.machines, project.id, {
-                  alias: baseMachine(project),
-                })?.machine_id ?? null)
-              : null
+          projectId={project.id}
+          identity={identity}
+          api={api}
+          onLeft={onLeftProject}
+          headerAction={
+            spaceKind === "personal" && onMovePersonalProjectToTeam ? (
+              <button
+                className="button secondary project-move-to-team"
+                type="button"
+                disabled={writesDisabled}
+                onClick={() => onMovePersonalProjectToTeam(project.id)}
+              >
+                <Server size={14} /> Move to team space
+              </button>
+            ) : null
           }
-          disabled={writesDisabled}
-          connectAlias={connectAlias}
-          onCloseConnect={() => setConnectAlias(null)}
-          onAdded={(saved) => {
-            if (requestIsCurrent()) onSaved(saved);
-          }}
         />
-      </article>
-
-      <section className="settings-section provider-path-settings">
-        <header>
-          <span>
-            <Server size={16} />
-          </span>
-          <h2>Machines</h2>
-          <button
-            className="button secondary compact"
-            type="button"
-            disabled={writesDisabled || readinessRequest?.pending}
-            title="Probe machine reachability"
-            onClick={() => void onRefreshReadiness().catch(() => {})}
-          >
-            {readinessRequest?.pending ? (
-              <LoaderCircle className="spin" size={14} />
-            ) : (
-              <ScanSearch size={14} />
-            )}
-            Probe
-          </button>
-        </header>
-        <div className="machine-tiles" role="group" aria-label="Machines">
-          {machineGroups.map(({ key, machines }) => (
-            <MachineTile
-              key={key}
-              name={machines.map((machine) => machine.alias).join(", ")}
-              hostLabel={machineHostLabel(machines[0].host, spaceKind)}
-              account={machines[0].os_account}
-              base={machines.some((machine) => machine.alias === baseMachine(project))}
-              signals={[
-                ...new Map(
-                  machines.flatMap(machineSignals).map((signal) => [signal.label, signal]),
-                ).values(),
-              ]}
-              selected={openMachine === key}
-              onSelect={() => {
-                setAddingMachine(false);
-                setOpenMachine((current) => (current === key ? null : key));
-              }}
-            />
-          ))}
-          <AddMachineTile
-            label="Add machine"
-            selected={addingMachine}
-            disabled={writesDisabled}
-            onSelect={() => {
-              setOpenMachine(null);
-              setAddingMachine((current) => !current);
-            }}
-          />
-        </div>
-        <div className="provider-machine-list">
-          {machineGroups
-            .filter((group) => group.key === openMachine)
-            .map(({ key, machines: group }) => {
-              const record = spaceMachines.machines
-                ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
-                : null;
-              const removable = group.every((machine) => machine.removable);
+      ),
+    },
+    {
+      id: "repos",
+      label: "Repos",
+      icon: <GitBranch size={16} />,
+      content: (
+        <article className="settings-section boundary-settings">
+          <header>
+            <span>
+              <GitBranch size={16} />
+            </span>
+            <h2>Repos</h2>
+          </header>
+          <div className="settings-repositories">
+            {project.repositories.map((repository) => {
+              const machine = machineByAlias[repository.machine];
+              const canonical = repository.alias === project.state_repository;
+              const selected = canonical || project.project_truth_scope.includes(repository.alias);
               return (
-                <MachineCard
-                  key={`${project.id}:${record?.machine_id ?? key}`}
-                  title={record?.name ?? group.map((item) => item.alias).join(", ")}
-                  hostLabel={machineHostLabel(group[0].host, spaceKind)}
-                  osAccount={group[0].os_account}
-                  record={record}
-                  writesDisabled={writesDisabled}
-                  onRecordChange={spaceMachines.replace}
-                  onRemoveFromProject={
-                    removable
-                      ? async () => {
-                          for (const machine of group) {
-                            const saved = await removeProjectMachine(project.id, machine.alias);
-                            if (!requestIsCurrent()) return;
-                            onSaved(saved, { provider: false });
-                          }
-                          void spaceMachines.reload();
-                          setOpenMachine(null);
-                        }
-                      : undefined
-                  }
-                />
+                <label
+                  className={selected ? "settings-repository selected" : "settings-repository"}
+                  key={repository.alias}
+                  title="Agents can write"
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`Agents can write ${repository.alias}`}
+                    checked={selected}
+                    disabled={writesDisabled || canonical || writableSaving !== null}
+                    onChange={(event) =>
+                      void setRepositoryWritable(repository.alias, event.target.checked)
+                    }
+                  />
+                  <span className="settings-check">{selected && <Check size={12} />}</span>
+                  <span className="settings-repository-copy">
+                    <strong>{repository.alias}</strong>
+                    <span className="settings-repository-path">
+                      {machine?.host ? `${machine.host}:${repository.path}` : repository.path}
+                    </span>
+                  </span>
+                  <span className="settings-repository-meta">
+                    <Server size={12} /> {machine?.host ? repository.machine : "local"}
+                    {canonical && <em>canonical state</em>}
+                    {repository.source === "server_only" && <em>server only, not backed up</em>}
+                    {repository.can_connect && spaceKind === "team" && (
+                      <button
+                        type="button"
+                        className="button ghost tiny"
+                        disabled={writesDisabled}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setConnectAlias(repository.alias);
+                        }}
+                      >
+                        Connect to GitHub
+                      </button>
+                    )}
+                  </span>
+                </label>
               );
             })}
-        </div>
-        {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
-        {addingMachine && (
-          <AddProjectMachine
-            projectId={project.id}
+          </div>
+          <RepositoryRequests
+            key={project.id}
+            project={project}
             spaceKind={spaceKind}
-            takenAliases={project.machines.map((machine) => machine.alias)}
-            onClose={() => setAddingMachine(false)}
-            machines={spaceMachines.machines ?? []}
-            writesDisabled={writesDisabled}
-            onCreated={spaceMachines.replace}
-            onAdded={(saved, alias) => {
-              if (!requestIsCurrent()) return;
-              onSaved(saved, { provider: false });
-              void spaceMachines.reload();
-              void onRefreshReadiness().catch(() => {});
-              setAddingMachine(false);
-              setOpenMachine(alias);
+            baseMachineId={
+              spaceMachines.machines
+                ? (spaceMachineForProject(spaceMachines.machines, project.id, {
+                    alias: baseMachine(project),
+                  })?.machine_id ?? null)
+                : null
+            }
+            disabled={writesDisabled}
+            connectAlias={connectAlias}
+            onCloseConnect={() => setConnectAlias(null)}
+            onAdded={(saved) => {
+              if (requestIsCurrent()) onSaved(saved);
             }}
           />
-        )}
-      </section>
-
-      <ProjectNotifications key={`notifications:${project.id}`} projectId={project.id} api={api} />
-      <ProjectConsolidation
-        key={`consolidation:${project.id}:${consolidation?.schedule?.authorization_id ?? ""}`}
-        apiBase={apiBase}
-        schedule={consolidation?.schedule ?? null}
-        recentNights={consolidation?.recent_nights ?? []}
-        loaded={consolidation !== null}
-        loadError={consolidationError}
-        writesDisabled={!consolidation?.can_write}
-        onChanged={onConsolidationChanged}
-      />
-      <ProjectLessons
-        key={`lessons:${project.id}`}
-        apiBase={apiBase}
-        writesDisabled={!consolidation?.can_write}
-      />
-
-      <div className="settings-section agent-defaults">
-        <header className="agent-defaults-heading">
-          <div>
-            <h2>Agent defaults</h2>
-          </div>
-          <label
-            className="agent-auto-research-default"
-            title="Operational invocations per newly authorized episode"
-          >
-            <span>Auto-research ceiling</span>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              value={autoResearchInvocationCeiling}
+        </article>
+      ),
+    },
+    {
+      id: "machines",
+      label: "Machines",
+      icon: <Server size={16} />,
+      content: (
+        <section className="settings-section provider-path-settings">
+          <header>
+            <span>
+              <Server size={16} />
+            </span>
+            <h2>Machines</h2>
+            <button
+              className="button secondary compact"
+              type="button"
+              disabled={writesDisabled || readinessRequest?.pending}
+              title="Probe machine reachability"
+              onClick={() => void onRefreshReadiness().catch(() => {})}
+            >
+              {readinessRequest?.pending ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <ScanSearch size={14} />
+              )}
+              Probe
+            </button>
+          </header>
+          <div className="machine-tiles" role="group" aria-label="Machines">
+            {machineGroups.map(({ key, machines }) => (
+              <MachineTile
+                key={key}
+                name={machines.map((machine) => machine.alias).join(", ")}
+                hostLabel={machineHostLabel(machines[0].host, spaceKind)}
+                account={machines[0].os_account}
+                base={machines.some((machine) => machine.alias === baseMachine(project))}
+                signals={[
+                  ...new Map(
+                    machines.flatMap(machineSignals).map((signal) => [signal.label, signal]),
+                  ).values(),
+                ]}
+                selected={openMachine === key}
+                onSelect={() => {
+                  setAddingMachine(false);
+                  setOpenMachine((current) => (current === key ? null : key));
+                }}
+              />
+            ))}
+            <AddMachineTile
+              label="Add machine"
+              selected={addingMachine}
               disabled={writesDisabled}
-              onChange={(event) => {
-                setAutoResearchInvocationCeiling(Number(event.target.value));
-                setStatus(null);
+              onSelect={() => {
+                setOpenMachine(null);
+                setAddingMachine((current) => !current);
               }}
             />
-          </label>
-        </header>
-        <div className="settings-agent-list">
-          {executionProfiles.map(({ id, label }) => (
-            <article className="settings-agent" key={id}>
-              <header>
-                <span>
-                  <strong>{label}</strong>
-                </span>
-                <span className="tag">
-                  {id === "paper_coach"
-                    ? "read-only coach"
-                    : id === "orchestrator"
-                      ? "auto-research"
-                      : "graph patch only"}
-                </span>
-              </header>
-              <AgentConfigControls
-                project={project}
-                value={profiles[id]}
-                // The exported head describes the saved provider on the saved
-                // machine; a draft that moved either shows blank until saved.
-                effectiveModel={
-                  profiles[id].provider === project.agent_profiles[id]?.provider &&
-                  profiles[id].run_on === project.agent_profiles[id]?.run_on
-                    ? project.agent_profiles[id]?.effective_model
-                    : ""
-                }
-                locked={writesDisabled}
-                workLikeCapable={project.agent_profiles[id]?.work_like_capable ?? true}
-                onRefreshReadiness={onRefreshReadiness}
-                readinessPending={readinessRequest?.pending ?? false}
-                readinessError={readinessRequest?.providerError ?? null}
-                runtime={{
-                  value: profiles[id].runtime,
-                  onChange: (runtime) => {
-                    setProfiles((currentProfiles) => ({
-                      ...currentProfiles,
-                      [id]: { ...currentProfiles[id], runtime },
-                    }));
-                    setStatus(null);
-                  },
-                }}
-                onChange={(value) => {
-                  setProfiles((currentProfiles) => ({
-                    ...currentProfiles,
-                    [id]: { ...currentProfiles[id], ...value },
-                  }));
+          </div>
+          <div className="provider-machine-list">
+            {machineGroups
+              .filter((group) => group.key === openMachine)
+              .map(({ key, machines: group }) => {
+                const record = spaceMachines.machines
+                  ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
+                  : null;
+                const removable = group.every((machine) => machine.removable);
+                return (
+                  <MachineCard
+                    key={`${project.id}:${record?.machine_id ?? key}`}
+                    title={record?.name ?? group.map((item) => item.alias).join(", ")}
+                    hostLabel={machineHostLabel(group[0].host, spaceKind)}
+                    osAccount={group[0].os_account}
+                    record={record}
+                    writesDisabled={writesDisabled}
+                    onRecordChange={spaceMachines.replace}
+                    onRemoveFromProject={
+                      removable
+                        ? async () => {
+                            for (const machine of group) {
+                              const saved = await removeProjectMachine(project.id, machine.alias);
+                              if (!requestIsCurrent()) return;
+                              onSaved(saved, { provider: false });
+                            }
+                            void spaceMachines.reload();
+                            setOpenMachine(null);
+                          }
+                        : undefined
+                    }
+                  />
+                );
+              })}
+          </div>
+          {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
+          {addingMachine && (
+            <AddProjectMachine
+              projectId={project.id}
+              spaceKind={spaceKind}
+              takenAliases={project.machines.map((machine) => machine.alias)}
+              onClose={() => setAddingMachine(false)}
+              machines={spaceMachines.machines ?? []}
+              writesDisabled={writesDisabled}
+              onCreated={spaceMachines.replace}
+              onAdded={(saved, alias) => {
+                if (!requestIsCurrent()) return;
+                onSaved(saved, { provider: false });
+                void spaceMachines.reload();
+                void onRefreshReadiness().catch(() => {});
+                setAddingMachine(false);
+                setOpenMachine(alias);
+              }}
+            />
+          )}
+        </section>
+      ),
+    },
+    {
+      id: "notifications",
+      label: "Notifications",
+      icon: <Bell size={16} />,
+      content: (
+        <ProjectNotifications
+          key={`notifications:${project.id}`}
+          projectId={project.id}
+          api={api}
+        />
+      ),
+    },
+    {
+      id: "consolidation",
+      label: "Nightly consolidation",
+      icon: <Moon size={16} />,
+      content: (
+        <ProjectConsolidation
+          key={`consolidation:${project.id}:${consolidation?.schedule?.authorization_id ?? ""}`}
+          apiBase={apiBase}
+          schedule={consolidation?.schedule ?? null}
+          recentNights={consolidation?.recent_nights ?? []}
+          loaded={consolidation !== null}
+          loadError={consolidationError}
+          writesDisabled={!consolidation?.can_write}
+          onChanged={onConsolidationChanged}
+        />
+      ),
+    },
+    {
+      id: "agent-defaults",
+      drafts: true,
+      label: "Agent defaults",
+      icon: <Bot size={16} />,
+      content: (
+        <div className="settings-section agent-defaults">
+          <header className="agent-defaults-heading">
+            <div>
+              <h2>Agent defaults</h2>
+            </div>
+            <label
+              className="agent-auto-research-default"
+              title="Operational invocations per newly authorized episode"
+            >
+              <span>Auto-research ceiling</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={autoResearchInvocationCeiling}
+                disabled={writesDisabled}
+                onChange={(event) => {
+                  setAutoResearchInvocationCeiling(Number(event.target.value));
                   setStatus(null);
                 }}
               />
-            </article>
-          ))}
+            </label>
+          </header>
+          <div className="settings-agent-list">
+            {executionRows.map(({ id, label }) => (
+              <article className="settings-agent" key={id}>
+                <header>
+                  <span>
+                    <strong>{label}</strong>
+                  </span>
+                  <span className="tag">
+                    {id === "paper_coach"
+                      ? "read-only coach"
+                      : id === "orchestrator"
+                        ? "auto-research"
+                        : "graph patch only"}
+                  </span>
+                </header>
+                <AgentConfigControls
+                  project={project}
+                  value={profiles[id]}
+                  // The exported head describes the saved provider on the saved
+                  // machine; a draft that moved either shows blank until saved.
+                  effectiveModel={
+                    profiles[id].provider === project.agent_profiles[id]?.provider &&
+                    profiles[id].run_on === project.agent_profiles[id]?.run_on
+                      ? project.agent_profiles[id]?.effective_model
+                      : ""
+                  }
+                  locked={writesDisabled}
+                  workLikeCapable={project.agent_profiles[id]?.work_like_capable ?? true}
+                  onRefreshReadiness={onRefreshReadiness}
+                  readinessPending={readinessRequest?.pending ?? false}
+                  readinessError={readinessRequest?.providerError ?? null}
+                  runtime={{
+                    value: profiles[id].runtime,
+                    onChange: (runtime) => {
+                      setProfiles((currentProfiles) => ({
+                        ...currentProfiles,
+                        [id]: { ...currentProfiles[id], runtime },
+                      }));
+                      setStatus(null);
+                    },
+                  }}
+                  onChange={(value) => {
+                    setProfiles((currentProfiles) => ({
+                      ...currentProfiles,
+                      [id]: { ...currentProfiles[id], ...value },
+                    }));
+                    setStatus(null);
+                  }}
+                />
+              </article>
+            ))}
+          </div>
         </div>
-      </div>
+      ),
+    },
+    {
+      id: "skills",
+      drafts: true,
+      label: "Skills & workflows",
+      icon: <Sparkles size={16} />,
+      content: (
+        <section className="settings-section skill-settings">
+          <header>
+            <span>
+              <Sparkles size={16} />
+            </span>
+            <h2>Skills &amp; workflows</h2>
+          </header>
+          <div className="skill-card-groups">
+            {renderSkillGroup("Workflows", workflowCatalog, skillDefaults.workflow_ids)}
+            {renderSkillGroup("Skills", directSkillCatalog, skillDefaults.skill_ids)}
+          </div>
+        </section>
+      ),
+    },
+    {
+      id: "cache",
+      label: "Project cache",
+      icon: <HardDrive size={16} />,
+      content: (
+        <section className="settings-section cache-settings">
+          <header>
+            <span>
+              <HardDrive size={16} />
+            </span>
+            <h2>Project cache</h2>
+            <button
+              className="button secondary compact"
+              disabled={cacheClearDisabled || clearingCaches}
+              aria-label="Clear project cache"
+              onClick={() => void clearCaches()}
+            >
+              {clearingCaches ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
+              {clearingCaches ? "Clearing" : "Clear project cache"}
+            </button>
+          </header>
+          <div className="cache-meter-list">
+            <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
+            <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
+          </div>
+        </section>
+      ),
+    },
+  ];
+  // An invalid ceiling is explained on every pane, since only Agent defaults shows the field.
+  const barStatus: typeof status = autoResearchInvocationCeilingIsValid
+    ? status
+    : {
+        kind: "error",
+        text: "Agent defaults: the auto-research ceiling must be a whole number of at least 1.",
+      };
 
-      <section className="settings-section skill-settings">
-        <header>
-          <span>
-            <Sparkles size={16} />
-          </span>
-          <h2>Skills &amp; workflows</h2>
-        </header>
-        <div className="skill-card-groups">
-          {renderSkillGroup("Workflows", workflowCatalog, skillDefaults.workflow_ids)}
-          {renderSkillGroup("Skills", directSkillCatalog, skillDefaults.skill_ids)}
-        </div>
-      </section>
-
-      <section className="settings-section cache-settings">
-        <header>
-          <span>
-            <HardDrive size={16} />
-          </span>
-          <h2>Project cache</h2>
-          <button
-            className="button secondary compact"
-            disabled={cacheClearDisabled || clearingCaches}
-            aria-label="Clear project cache"
-            onClick={() => void clearCaches()}
-          >
-            {clearingCaches ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
-            {clearingCaches ? "Clearing" : "Clear project cache"}
-          </button>
-        </header>
-        <div className="cache-meter-list">
-          <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
-          <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
-        </div>
-      </section>
-
+  return (
+    <section className="settings-page" data-settings-level="project">
+      <SettingsRail key={project.id} sections={sections} initialSection={initialSection}>
+        {/* The bar shows where drafts are edited, or when it has unsaved edits or a result to show. */}
+        {(section) =>
+          (section.drafts || dirty || barStatus) && (
+            <footer className="settings-savebar">
+              <div
+                className={
+                  barStatus ? `settings-save-status ${barStatus.kind}` : "settings-save-status"
+                }
+              >
+                {barStatus?.kind === "error" && <TriangleAlert size={16} />}
+                {barStatus?.kind === "saved" && <Check size={16} />}
+                <span>{barStatus?.text}</span>
+              </div>
+              <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
+                <RotateCcw size={14} /> Reset
+              </button>
+              <button
+                className="button primary"
+                disabled={
+                  writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid
+                }
+                onClick={() => void save()}
+              >
+                {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
+                {saving ? "Saving" : "Save"}
+              </button>
+            </footer>
+          )
+        }
+      </SettingsRail>
       {inspectedPackage && (
         <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />
       )}
-
-      <footer className="settings-savebar">
-        <div className={status ? `settings-save-status ${status.kind}` : "settings-save-status"}>
-          {status?.kind === "error" && <TriangleAlert size={16} />}
-          {status?.kind === "saved" && <Check size={16} />}
-          <span>{status?.text}</span>
-        </div>
-        <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
-          <RotateCcw size={14} /> Reset
-        </button>
-        <button
-          className="button primary"
-          disabled={writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid}
-          onClick={() => void save()}
-        >
-          {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
-          {saving ? "Saving" : "Save"}
-        </button>
-      </footer>
     </section>
   );
 }

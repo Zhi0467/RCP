@@ -3,6 +3,7 @@ import { after, beforeEach, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { memberDraftKey } from "../src/core/draftStorage.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -26,7 +27,7 @@ after(() => server.close());
 
 beforeEach(() => {
   globalThis.localStorage = {
-    getItem: () => null,
+    getItem: (key) => (key === memberDraftKey(userId, "space-home-view") ? "cards" : null),
     setItem() {},
     removeItem() {},
   };
@@ -47,11 +48,7 @@ const identity = {
 
 function landingProps(identityValue = identity) {
   return {
-    themeChoice: "classic",
-    colorModeChoice: "system",
     palette: "classic-light",
-    onThemeChoiceChange() {},
-    onColorModeChoiceChange() {},
     projects: [],
     invitations: [],
     async onAnswerInvitation() {},

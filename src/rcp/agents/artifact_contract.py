@@ -113,14 +113,47 @@ def live_contract(*, allow_episode: bool = False) -> str:
     return "\n".join(lines)
 
 
-def artifact_contract(artifact_path: str, *, allow_episode: bool = False) -> str:
+# A saved artifact's link and embed target; the Bulletin's `<artifact:ID>` token is
+# the same URL. web/src/core/repositoryFileLinks.ts mirrors it.
+ARTIFACT_REFERENCE_SCHEME = "artifact:"
+
+# What each reply surface's references resolve against: a project thread's client
+# reads its own project, and the Space resolver route reads the member's projects.
+ReferenceScope = Literal["project", "space"]
+REFERENCE_SCOPES: dict[ReferenceScope, str] = {
+    "project": "this project's repositories listed in this prompt and its saved artifacts",
+    "space": "the repositories and saved artifacts of the member's projects",
+}
+
+
+def reference_contract(scope: ReferenceScope) -> str:
+    """How a reply links or shows an original in place, without copying it."""
+
+    example = f"{ARTIFACT_REFERENCE_SCHEME}ID"
+    return (
+        "- Reference originals where they live; never copy them into the artifact directory, "
+        "which is only for new files. Link a repository file by its absolute path, "
+        "`[train.py](/abs/repo/train.py:42)`, or show it in the reply with image syntax, "
+        "`![train.py](/abs/repo/train.py)`. Link or show a saved artifact by its id: "
+        f"`[Loss curve]({example})` or `![Loss curve]({example})`. These resolve against "
+        f"{REFERENCE_SCOPES[scope]}; a reference outside that shows as a plain link."
+    )
+
+
+def artifact_contract(
+    artifact_path: str,
+    *,
+    allow_episode: bool = False,
+    references: ReferenceScope = "project",
+) -> str:
     media_types = get_args(Artifact.model_fields["media_type"].annotation)
     viewable = ", ".join(
         media_type for media_type in media_types if artifact_view(media_type) not in {"file", "pdf"}
     )
     return f"""Reply and artifact contract:
 - The final assistant message is the complete independent Markdown reply the human reads.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line` suffix only for a repository file. Only an authorized repository file or an artifact in a turn folder of this session's workspace resolves in RCP.
+- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line` suffix only for a repository file. Only an authorized repository file, a saved artifact, or an artifact in a turn folder of this session's workspace resolves in RCP.
+{reference_contract(references)}
 - Artifacts are optional; an empty directory is normal. RCP discovers direct regular files in `{artifact_path}`, at most {CHAT_ARTIFACT_MAX_COUNT} files, {CHAT_ARTIFACT_MAX_FILE_BYTES} bytes per file and {CHAT_ARTIFACT_MAX_TOTAL_BYTES} bytes total. Do not use nested directories or symlinks.
 - Viewable media types: {viewable}. PDFs open separately; other types are download-only. Artifact cards offer Download and Keep.
 - Artifacts from earlier turns of this session stay in their own turn folders under the workspace's `turns` directory. Changing one in place, under the same name, makes its next version; whether to change one in place or write a new file is your judgement: in place when the request corrects or enriches it, a new file in this turn's directory when asked for something different alongside it.

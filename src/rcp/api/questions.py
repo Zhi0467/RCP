@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -71,6 +71,7 @@ class QuestionResponse(BaseModel):
     # "ending": the episode is still settling, so its last card waits.
     answer_continues: Literal["turns", "ending"] | None
     created_at: str
+    card: dict[str, Any] | None = None
 
 
 _ENDED_EPISODE_STATUSES = frozenset({"completed", "failed", "needs_action", "stopped"})
@@ -120,10 +121,45 @@ def _serialize(
     *,
     continues: Literal["turns", "ending"] | None = None,
 ) -> QuestionResponse:
-    task = store.agent_task(question.origin.operation_id)
+    return _serialize_all(
+        store, [question], continues_id=question.question_id, continues=continues
+    )[0]
+
+
+def _serialize_all(
+    store: AppStore,
+    questions: list[QuestionRecord],
+    *,
+    continues_id: str | None = None,
+    continues: Literal["turns", "ending"] | None = None,
+) -> list[QuestionResponse]:
+    """One card read for the whole list; only a pending question loads its turn."""
+    cards = store.approval_cards([question.question_id for question in questions])
+    return [
+        _response(
+            store,
+            question,
+            cards.get(question.question_id),
+            continues if question.question_id == continues_id else None,
+        )
+        for question in questions
+    ]
+
+
+def _response(
+    store: AppStore,
+    question: QuestionRecord,
+    card: dict[str, Any] | None,
+    continues: Literal["turns", "ending"] | None,
+) -> QuestionResponse:
+    if card is not None and card["state"] == "expired" and question.state == "pending":
+        # Reading the cards just expired this one and answered its question.
+        question = store.get_question(question.question_id) or question
     state = question.state
     if state == "pending" and (
-        question.origin.capability == "orchestrate" or task is None or task.settled
+        question.origin.capability == "orchestrate"
+        or (task := store.agent_task(question.origin.operation_id)) is None
+        or task.settled
     ):
         state = "parked"
     return QuestionResponse(
@@ -133,6 +169,7 @@ def _serialize(
         operation_id=question.origin.operation_id,
         capability=question.origin.capability,
         state=state,
+        card={key: value for key, value in card.items() if key != "result"} if card else None,
         can_answer=_can_answer(question),
         agent_waiting=(
             _can_answer(question) and store.question_activity.is_waiting(question.question_id)
@@ -143,16 +180,20 @@ def _serialize(
 
 @router.get("/api/projects/{project_id}/chats/{chat_id}/questions")
 def chat_questions(
-    project_id: str, chat_id: str, *, store: StoreDependency, catalog: CatalogDependency
+    project_id: str,
+    chat_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
 ) -> list[QuestionResponse]:
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
-    return [
-        _serialize(store, question)
-        for question in store.list_questions(
-            project_id=project_id, owner_kind="chat", owner_id=chat_id
-        )
-    ]
+    _require_question_owner(store, chat_id, identity_access.acting_user(request).user_id)
+    return _serialize_all(
+        store, store.list_questions(project_id=project_id, owner_kind="chat", owner_id=chat_id)
+    )
 
 
 @router.get("/api/projects/{project_id}/episodes/{episode_id}/questions")
@@ -166,15 +207,32 @@ def episode_questions(
     open_cards = [item for item in questions if _can_answer(item)]
     lone = open_cards[0] if len(open_cards) == 1 else None
     continues = _answer_continues(store, lone, _newest_episode(store, lone)) if lone else None
-    return [
-        _serialize(store, item, continues=continues if item is lone else None) for item in questions
-    ]
+    return _serialize_all(
+        store, questions, continues_id=lone.question_id if lone else None, continues=continues
+    )
 
 
-def _question_for_http(store: AppStore, project_id: str, question_id: str) -> QuestionRecord:
+def _require_question_owner(store: AppStore, chat_id: str, user_id: str) -> None:
+    owner = store.private_chat_owner(chat_id)
+    if owner is not None and owner != user_id:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+
+def _refuse_private_or_card(store: AppStore, question: QuestionRecord, user_id: str) -> None:
+    if question.origin.owner_kind == "chat":
+        _require_question_owner(store, question.origin.owner_id, user_id)
+    if store.approval_card(question.question_id) is not None:
+        raise HTTPException(status_code=409, detail={"code": "approval_card"})
+
+
+def _question_for_http(
+    store: AppStore, project_id: str, question_id: str, user_id: str
+) -> QuestionRecord:
     question = store.get_question(question_id)
     if question is None or question.origin.project_id != project_id:
         raise HTTPException(status_code=404, detail="Question not found")
+    if question.origin.owner_kind == "chat":
+        _require_question_owner(store, question.origin.owner_id, user_id)
     if question.withdrawn_readonly:
         raise HTTPException(status_code=409, detail="Question is withdrawn and read-only")
     return question
@@ -194,7 +252,13 @@ def answer_question(
     project_id = catalog.resolve_project_id(project_id)
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
-        current = _question_for_http(store, project_id, question_id)
+        current = _question_for_http(store, project_id, question_id, human.user_id)
+        _refuse_private_or_card(store, current, human.user_id)
+        # A stored answer would later wake the quiet conversation.
+        if current.origin.owner_kind == "chat" and (
+            refusal := store.chat_turn_refusal(project_id, current.origin.owner_id)
+        ):
+            raise HTTPException(status_code=409, detail=refusal)
         newest = _newest_episode(store, current)
         continues = _answer_continues(store, current, newest)
         if current.resolved_at is not None and not (
@@ -303,7 +367,8 @@ def dismiss_question(
     project_id = catalog.resolve_project_id(project_id)
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
-        _question_for_http(store, project_id, question_id)
+        current = _question_for_http(store, project_id, question_id, human.user_id)
+        _refuse_private_or_card(store, current, human.user_id)
         try:
             question = store.dismiss_question(question_id, resolved_by=human)
         except QuestionStateConflict as exc:

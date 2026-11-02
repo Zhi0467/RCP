@@ -281,7 +281,21 @@ def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(v
     assert client.post(kept_url, json={}).status_code == 200
     assert child_report.artifact_id in saved()
     assert entries[1]["worker_label"] == "Summarize results"
-    assert all(entry["worker_label"] is None for index, entry in enumerate(entries) if index != 1)
+    assert entries[0]["worker_label"] == entries[4]["worker_label"] == "Orchestrator"
+    assert entries[2]["worker_label"] is entries[3]["worker_label"] is None
+    for actor_id, title in ((worker_id, "New worker"), (episode.episode_id, "New orchestrator")):
+        store.set_chat_title(project_id, actor_id, "human", title)
+    renamed = client.get(
+        f"/api/projects/{project_id}/episodes/{episode.episode_id}/artifacts"
+    ).json()
+    assert renamed[0]["worker_label"] == "New orchestrator"
+    assert renamed[1]["worker_label"] == "New worker"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM chat_display WHERE chat_id=?", (worker_id,))
+    fallback = client.get(
+        f"/api/projects/{project_id}/episodes/{episode.episode_id}/artifacts"
+    ).json()
+    assert fallback[1]["worker_label"] == "Summarize results"
     child_response = client.get(f"/api/projects/{project_id}/episodes/{child.episode_id}/artifacts")
     assert [entry["artifact_id"] for entry in child_response.json()] == [
         child_report.artifact_id,

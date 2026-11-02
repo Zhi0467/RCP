@@ -24,7 +24,7 @@ import {
   BULLETIN_SUGGEST_MAX_HEIGHT,
 } from "../src/chat/bulletinModel.ts";
 
-test("threads group replies under parents and retain server author snapshots", () => {
+test("threads group replies under parents and use server-resolved authors", () => {
   const post = (id, reply_to = null) => ({
     post_id: id,
     reply_to,
@@ -46,7 +46,9 @@ test("threads group replies under parents and retain server author snapshots", (
     "Worker",
   );
   const named = { author: { kind: "agent", actor_id: "chat:c", actor_label: "Old" } };
-  assert.equal(bulletinAuthor(named, new Map([["chat:c", "Renamed"]])), "Renamed");
+  assert.equal(bulletinAuthor(named), "Old");
+  named.author.actor_label = "Renamed";
+  assert.equal(bulletinAuthor(named), "Renamed");
 });
 
 test("text splits into prose, node links, and known or recorded mentions", () => {

@@ -331,6 +331,151 @@ def test_answer_admission_continues_the_origin_session(manifest, tmp_path, monke
     assert [request.session_id for request in admitted] == ["origin-session"]
 
 
+@pytest.mark.parametrize("projection_first", [False, True])
+def test_approval_answer_keeps_question_identity_through_followup(
+    manifest, tmp_path, projection_first
+):
+    from types import SimpleNamespace
+
+    from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
+
+    service, store, original, chat_id = _project_chat_question(manifest, tmp_path)
+    question = store.create_or_get_question(
+        origin=original.origin,
+        key="approval",
+        question="Allow?",
+        choices=["Approve", "Decline"],
+        card={
+            "action": {
+                "kind": "truth_scope",
+                "project_id": "project",
+                "alias": "state",
+                "writable": True,
+            },
+            "pinned": {"writable": False},
+        },
+    )
+    store.settle_approval_card(question.question_id, {"outcome": "declined"})
+    question = store.get_question(question.question_id)
+    if projection_first:
+        project_chat_question_answer(service, store, question)
+    followup = store.admit_chat_question_followup(question.question_id)
+    assert followup.request["message"] == "declined"
+    _append_chat_exchange(
+        service,
+        RunRequest.model_validate(followup.request),
+        "Understood",
+        "origin-session",
+        None,
+        execution=SimpleNamespace(store=store, operation_id=followup.operation_id),
+    )
+    project_chat_question_answer(service, store, question)
+    messages = service.chat_transcript(chat_id).messages
+    answers = [item for item in messages if item.question_id == question.question_id]
+    assert len(answers) == 1
+    assert (answers[0].role, answers[0].text) == ("user", "declined")
+    assert answers[0].operation_id == followup.operation_id
+    assert all(item.question_id is None for item in messages if item.role == "assistant")
+
+
+@pytest.mark.parametrize("question_id", [None, "older-question"])
+def test_old_transcript_records_preserve_optional_question_identity(question_id):
+    from rcp.service import _chat_message_from_record, _StoredChatRecord
+
+    # The old writer already recorded questionId on projected answers; ordinary
+    # messages omitted it. Both records must retain their original meaning.
+    record = _StoredChatRecord.model_validate(
+        {
+            "sessionId": "chat",
+            "chatScope": "project",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "uuid": "message",
+            "type": "user",
+            "role": "user",
+            "text": "declined",
+            **({"questionId": question_id} if question_id else {}),
+        }
+    )
+    message = _chat_message_from_record(record)
+    assert message.question_id == question_id
+    assert ("question_id" in message.model_dump()) == (question_id is not None)
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_task_projection_identifies_answer_before_transcript_refresh(tmp_path, recovery):
+    from rcp.api.tasks import _agent_task_response
+    from rcp.background import BackgroundAgentTasks
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    task = store.admit_chat_question_followup(question.question_id)
+    if recovery:
+        store.fail_agent_task(task.operation_id, "Provider interrupted")
+        task = task.model_copy(
+            update={
+                "operation_id": "answer-recovery",
+                "parent_operation_id": task.operation_id,
+                "attempt": 2,
+            }
+        )
+        store.create_agent_task(task, continuation_cause="retry")
+    background = BackgroundAgentTasks(store, lambda *_args: None)
+    response = _agent_task_response(store, task, background)
+    assert response["question_id"] == question.question_id
+    assert "question_id" not in response["request"]
+    assert "question_id" not in _agent_task_response(store, store.agent_task("origin"), background)
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_task_list_batches_question_bindings(tmp_path, monkeypatch, recovery):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from rcp.api.tasks import agent_tasks
+    from rcp.background import BackgroundAgentTasks
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    followup = store.admit_chat_question_followup(question.question_id)
+    answer_ids = {followup.operation_id}
+    if recovery:
+        store.fail_agent_task(followup.operation_id, "Provider interrupted")
+        child = followup.model_copy(
+            update={
+                "operation_id": "answer-recovery",
+                "parent_operation_id": followup.operation_id,
+                "attempt": 2,
+            }
+        )
+        store.create_agent_task(child, continuation_cause="retry")
+        answer_ids.add(child.operation_id)
+    background = BackgroundAgentTasks(store, lambda *_args: None)
+    monkeypatch.setattr("rcp.api.tasks.require_registered_project", lambda *_args: None)
+    monkeypatch.setattr(
+        "rcp.api.tasks.get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: _identity(store)),
+    )
+    connection_factory = store.connection
+    queries = []
+
+    @contextmanager
+    def traced_connection():
+        with connection_factory() as connection:
+            connection.set_trace_callback(queries.append)
+            yield connection
+
+    monkeypatch.setattr(store, "connection", traced_connection)
+    rows = agent_tasks("project", None, catalog=None, store=store, background_tasks=background)
+    assert {row["operation_id"]: row.get("question_id") for row in rows} == {
+        "origin": None,
+        **dict.fromkeys(answer_ids, question.question_id),
+    }
+    assert len([sql for sql in queries if "JOIN lineage" in sql]) == 1
+    queries.clear()
+    assert store.questions_for_followups([]) == {}
+    assert queries == []
+
+
 def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
     from rcp.runs.chat import project_chat_question_answer
 
@@ -539,3 +684,25 @@ def test_question_receipt_keeps_asking_mode(tmp_path, mode):
     assert store.record_question_continuation_receipt(
         question.question_id, answer_revision=1, operation_id="origin", request_id="client"
     )
+
+
+@pytest.mark.parametrize("refusal", ["chat_archived", "thread_closed"])
+def test_archived_question_answer_creates_no_followup(tmp_path, refusal):
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    if refusal == "chat_archived":
+        store.set_chat_archived("project", "chat", "member", archived=True)
+    else:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at,closed_at) "
+                "VALUES('chat','member','project','project',?,?)",
+                (store.now(), store.now()),
+            )
+    with pytest.raises(AgentTaskAdmissionConflict, match=refusal):
+        store.admit_chat_question_followup(question.question_id)
+    assert store.get_question(question.question_id).followup_operation_id is None
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 1

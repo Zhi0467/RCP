@@ -2,6 +2,7 @@
 // the current page can run; a voice session sends the whole list to its model and
 // resolves each call against the same definitions App publishes for the page.
 // Voice-only tools are published for voice but never registered with WebMCP.
+// The bound thread's tools resolve in the voice session, not from the page.
 
 import {
   PROJECT_INDEX_TOOLS,
@@ -10,6 +11,7 @@ import {
   type WebMcpToolDefinition,
 } from "../webmcp/index";
 import { VOICE_TERMINAL_TOOLS } from "./voiceTerminal";
+import { VOICE_THREAD_TOOLS } from "./voiceThread";
 
 export type CatalogTool = {
   name: string;
@@ -34,7 +36,12 @@ export type ToolResolution =
 
 export type ToolSurfaceKind = "project-index" | "project" | null;
 
-const SPECS = [...PROJECT_INDEX_TOOLS, ...PROJECT_TOOLS, ...VOICE_TERMINAL_TOOLS];
+const SPECS = [
+  ...PROJECT_INDEX_TOOLS,
+  ...PROJECT_TOOLS,
+  ...VOICE_TERMINAL_TOOLS,
+  ...VOICE_THREAD_TOOLS,
+];
 
 const CATALOG: readonly CatalogTool[] = SPECS.map(
   ({ name, description, inputSchema, annotations, confirm, alwaysConfirm }) => ({

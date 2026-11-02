@@ -77,10 +77,6 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
       assert.equal(await page.locator("#phone-more-panels").isHidden(), true);
       assert.match(await moreTab.getAttribute("class"), /active/);
 
-      // Ask floats above the tab bar rather than under it.
-      const ask = await page.getByRole("button", { name: "Ask about this project" }).boundingBox();
-      assert.ok(ask.y + ask.height <= (await tabs.boundingBox()).y);
-
       assert.deepEqual(await page.evaluate(() => window.chosen), [
         "project-29",
         "review",
@@ -142,6 +138,41 @@ test("a phone page never pans sideways and a tall dialog reaches its last contro
       return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
     });
     assert.equal(cancelLines, 1);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("hidden labels deep in a scrolling panel never scroll the page past the panel", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/stylesOnly.html`,
+    );
+    await page.waitForFunction(() => document.documentElement.dataset.stylesReady === "true");
+    // Settings' agent rows carry a hidden readiness sentence 3000px down the panel.
+    await page.evaluate(() => {
+      document.body.innerHTML = `
+        <div class="app-shell" style="height: 100vh; display: flex; flex-direction: column">
+          <main class="project-panel">
+            <div style="height: 3000px"></div>
+            <span class="visually-hidden">Claude ready on this machine</span>
+          </main>
+        </div>`;
+    });
+    assert.equal(
+      await page.evaluate(() => document.scrollingElement.scrollHeight),
+      await page.evaluate(() => innerHeight),
+    );
   } finally {
     await browser?.close();
     await server.close();

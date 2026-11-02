@@ -64,7 +64,9 @@ class TerminalResize(BaseModel):
 async def repositories(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_service(services.catalog, project_id).manifest
-    work = running_repository_work(services.store, project_id, manifest)
+    work = running_repository_work(
+        services.store, project_id, manifest, services.identity_access.acting_user(request).user_id
+    )
     capabilities = {}
     for machine in manifest.machines:
         probe = services.terminals.probes.get(machine) if machine.host else None
@@ -115,7 +117,9 @@ async def sessions(request: Request, project_id: str = _member) -> list[dict[str
     # repointed or unregistered alias is noticed. A session it kept listing
     # would also keep hiding the control that replaces it.
     await services.terminals.reconcile_registrations(project_id, manifest)
-    work = running_repository_work(services.store, project_id, manifest)
+    work = running_repository_work(
+        services.store, project_id, manifest, services.identity_access.acting_user(request).user_id
+    )
     return [
         terminal_session_payload(session, work) for session in services.terminals.list(project_id)
     ]
@@ -144,7 +148,7 @@ async def open_session(
         raise HTTPException(503, str(exc)) from exc
     if body.repository_id not in manifest.repository_map:
         raise HTTPException(404, "Repository not found")
-    work = running_repository_work(services.store, project_id, manifest)
+    work = running_repository_work(services.store, project_id, manifest, member.user_id)
     for session in services.terminals.list(project_id):
         if session.repository_id == body.repository_id:
             # Registrations were just settled, so a session still listed here
@@ -211,7 +215,8 @@ async def open_session(
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(503, str(exc)) from exc
     return terminal_session_payload(
-        session, running_repository_work(services.store, project_id, manifest)
+        session,
+        running_repository_work(services.store, project_id, manifest, member.user_id),
     )
 
 

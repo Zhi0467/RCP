@@ -23,11 +23,13 @@ class _StageLifecycleStore:
         return self.records
 
 
+@pytest.mark.parametrize("parent", ["run-stage", "agent-threads/member/stages"])
 def test_local_recovery_stage_inventory_uses_the_task_ledger_and_ignores_remote(
     tmp_path: Path,
+    parent: str,
 ) -> None:
     data_dir = tmp_path / "data"
-    local = data_dir / "run-stage" / "local-stage"
+    local = data_dir / parent / "local-stage"
     local.mkdir(parents=True)
     local_operation = str(uuid.uuid4())
     local_episode = str(uuid.uuid4())
@@ -105,3 +107,25 @@ def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: 
 
     with pytest.raises(ValueError, match="recovery-critical local run stage"):
         checkpoint_local_recovery_stages(store, data_dir)
+
+
+def test_thread_stage_sweep_preserves_live_stages_and_transcripts(tmp_path):
+    import os
+
+    from rcp.runs.shared import _swept_stage_root
+
+    parent = tmp_path / "agent-threads/member/stages"
+    stale, live = parent / "stale", parent / "live"
+    for stage in (stale, live):
+        stage.mkdir(parents=True)
+        os.utime(stage, (1, 1))
+    transcript = parent.parent / "thread.jsonl"
+    transcript.write_text("private")
+
+    class Store:
+        def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]:
+            return (str(live),)
+
+    _swept_stage_root(tmp_path, store=Store())
+    assert not stale.exists()
+    assert live.is_dir() and transcript.read_text() == "private"

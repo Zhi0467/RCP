@@ -611,7 +611,7 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     manifest,
     tmp_path,
 ) -> None:
-    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    service, store, request, execution, stage = _setup_report(manifest, tmp_path)
     launcher = _ReportLauncher(["missing", "invalid", "valid"])
 
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
@@ -628,17 +628,21 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     assert episode.invocations_used == 1
     assert episode.report_attempts_used == 3
     assert episode.wrapup_state == "ready"
-    # Each attempt travels inline, revokes the operational instructions, and names no
-    # master contract; only the corrections carry a diagnostic.
+    # Each attempt points to its staged report contract, revokes the operational
+    # instructions inline, and names no master contract; only the corrections carry a
+    # diagnostic.
     for number, prompt in enumerate(launcher.prompts, start=1):
         assert (
             store.agent_task_contract(execution.operation_id, f"episode_report_attempt_{number}")
             == prompt
         )
+        contract = next(stage.glob(f"inputs/*-episode-report-contract-{number}.md"))
+        assert str(contract) in prompt
+        assert len(prompt) < 1000
         assert SECTIONS["report_revocation"] in prompt
         for master_section in ("master_pointer", "master_bootstrap", "master_rebootstrap"):
             assert SECTIONS[master_section].split("{path}")[0] not in prompt
-        assert ("- exact report correction diagnostic: `" in prompt) == (number > 1)
+        assert ("- exact report correction diagnostic: `" in contract.read_text()) == (number > 1)
 
 
 @pytest.mark.parametrize(

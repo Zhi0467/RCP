@@ -44,6 +44,20 @@ class SpaceMachineStoreMixin(StoreMixinBase):
             ).fetchone()
         return _record(row) if row else None
 
+    def backend_space_machine(self) -> SpaceMachineRecord:
+        """The card for the backend's own machine, the one with no host.
+
+        A project on that machine usually made it. Otherwise it is made here with
+        no account, which checks nothing, as a Space turn without a card did.
+        """
+
+        card = self.space_machine_for("")
+        if card is None:
+            self.ensure_space_machines([("", "", "Backend")])
+            card = self.space_machine_for("")
+        assert card is not None
+        return card
+
     def provider_shell_timeout_seconds(self, provider: str, host: str) -> int | None:
         """This machine's configured shell timeout for `provider`; None keeps its default."""
 

@@ -1,0 +1,125 @@
+/* Settings rail: the section list beside one pane at a time. */
+.settings-rail-layout {
+  align-items: start;
+  display: grid;
+  gap: 28px;
+  grid-template-columns: 210px minmax(0, 1fr);
+}
+.settings-rail {
+  display: grid;
+  gap: 3px;
+  position: sticky;
+  top: 16px;
+}
+.settings-rail-item {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: var(--type-sm);
+  font-weight: 650;
+  gap: 10px;
+  min-height: 36px;
+  min-width: 0;
+  padding: 0 12px;
+  text-align: left;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+.settings-rail-item > svg {
+  flex: none;
+}
+.settings-rail-item:hover {
+  color: var(--ink);
+}
+.settings-rail-item[aria-current="true"] {
+  background: var(--segmented-selected);
+  border-color: var(--rule);
+  box-shadow: var(--segmented-selected-shadow);
+  color: var(--ink);
+}
+.settings-rail-item:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 1px;
+}
+.settings-rail-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-rail-panes {
+  min-width: 0;
+}
+.settings-pane[hidden] {
+  display: none;
+}
+
+/* Space Settings panes and header that the rail introduced. */
+.appearance-settings > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  padding: 18px 20px;
+}
+.appearance-settings > header > span {
+  align-items: center;
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.appearance-settings h2 {
+  font-family: var(--editorial);
+  font-size: var(--type-2xl);
+  font-weight: 550;
+  margin: 0;
+}
+.appearance-settings .appearance-picker {
+  max-width: 520px;
+}
+.space-settings-header .release-check-row {
+  display: flex;
+  margin: 0 0 0 auto;
+  min-width: 0;
+  padding: 0;
+}
+
+@media (max-width: 560px) {
+  .settings-rail-layout {
+    gap: 16px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-rail {
+    display: flex;
+    overflow-x: auto;
+    position: static;
+    scrollbar-width: none;
+  }
+  .settings-rail-item {
+    flex: none;
+  }
+  .settings-rail-label {
+    overflow: visible;
+  }
+  .space-settings-header:has(.release-check-row) {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 62px;
+    padding-block: 10px;
+  }
+  .space-settings-header .release-check-row {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}

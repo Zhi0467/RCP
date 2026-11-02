@@ -43,6 +43,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
 
     for path in (
         "/data/rcp.sqlite3-wal",
+        "/data/chat-attachments/member/file",
         "/data/run-stage/project-transfer-activation/request/rcp.sqlite3",
         "/data/run-stage/backup-123/rcp.sqlite3",
         "/data/providers/claude/token",
@@ -244,6 +245,10 @@ def test_login_homes_are_readable_only_to_their_provider(
         denials = _codex_read_denials(scope)
         assert len(homes) == 2
         assert all(json.dumps(item) + '="deny"' in denials for item in homes)
+        # A capped `**` scan keeps Codex's Linux glob warning out of turn errors.
+        import tomllib
+
+        assert tomllib.loads("f={" + denials + "}")["f"]["glob_scan_max_depth"] >= 1
     else:
         assert str(tmp_path / "data/provider-homes") in scope.hidden_directories
         assert str(tmp_path / "home/.rcp/provider-homes") in scope.hidden_directories
@@ -395,3 +400,24 @@ def test_installed_copies_and_native_tool_gap(manifest, tmp_path, monkeypatch):
     )
     assert str(tmp_path / "checkpoints") in scope.hidden_directories
     assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+
+
+def test_private_transcripts_are_hidden_for_every_launch(manifest, tmp_path, monkeypatch):
+    from rcp.agents.write_scope import RegisteredRepositoryRoot
+
+    other = str(tmp_path / "other-project")
+    scope = _resolve(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        repository_inventory=[
+            RegisteredRepositoryRoot(
+                project_id="other", alias="repo", machine="laptop", execution_host="", path=other
+            )
+        ],
+    )
+    assert str(tmp_path / "data" / "agent-threads") in scope.hidden_directories
+    assert (
+        glob.escape(str(manifest.research_dir / "chat")) + "/private-*.jsonl" in scope.hidden_globs
+    )
+    assert glob.escape(other + "/.research/chat") + "/private-*.jsonl" in scope.hidden_globs

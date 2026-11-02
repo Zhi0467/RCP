@@ -21,6 +21,7 @@ import {
   taskArtifactEditOutcomes,
   taskArtifactOmissions,
   taskArtifacts,
+  withoutRepeatedTurnPrompts,
 } from "../src/agents/agentTasks.ts";
 
 function task(overrides) {
@@ -1015,5 +1016,38 @@ test("a coach conversation follows a provider switch into its fresh session and 
       "next",
     ]).tasks.map((item) => item.operation_id),
     ["earlier", "switched", "next"],
+  );
+});
+
+test("a retry shows its turn's member message once, from the attempt that recorded it", () => {
+  const prompt = { message: "Say hi", mode: "work" };
+  const retry = task({
+    operation_id: "third",
+    status: "running",
+    parent_operation_id: "second",
+    created_at: "2026-07-28T00:02:00Z",
+    request: prompt,
+  });
+  const recorded = chatMessageTranscriptLine({
+    message_id: "m",
+    operation_id: "first",
+    role: "user",
+    trigger: "human",
+    text: "Say hi",
+    timestamp: "2026-07-28T00:00:00Z",
+  });
+  const reconstructed = reconstructTaskTranscript([retry]);
+  const parents = new Map([
+    ["third", "second"],
+    ["second", "first"],
+  ]);
+  assert.deepEqual(
+    withoutRepeatedTurnPrompts([recorded, ...reconstructed], parents).map((line) => line.lineId),
+    ["message:m"],
+  );
+  // With no earlier attempt shown, the continuation carries the message itself.
+  assert.deepEqual(
+    withoutRepeatedTurnPrompts(reconstructed, parents).map((line) => line.role),
+    ["human"],
   );
 });

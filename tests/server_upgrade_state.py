@@ -95,6 +95,20 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
         {"blk/recovery": {"description": "The recovery host needs a second disk."}},
         branch_id=branch_id,
     )
+    with request("/openapi.json") as response:
+        routes = set(json.load(response)["paths"])
+    if "/api/projects/{project_id}/chats/{chat_id}/archive" in routes:
+        # Releases before 0.4.38 let a member archive the consolidation chat; the
+        # candidate must still admit this branch's night.
+        from rcp.consolidation import consolidation_chat_id
+
+        with request(
+            f"{base}/chats/{consolidation_chat_id(fixture['project_id'], branch_id)}/archive",
+            method="POST",
+            body={"archived": True},
+            cookie=cookie,
+        ):
+            pass
     return branch_id
 
 

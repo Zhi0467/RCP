@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import uuid
 from concurrent.futures import Future
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -16,6 +17,12 @@ from rcp.runs.chat import (
     question_answer_message_id,
     question_answer_text,
 )
+from rcp.runs.space_chat import (
+    SpaceThreadOwner,
+    append_space_message,
+    append_space_records,
+    space_transcript_lock,
+)
 from rcp.runs.task_policy import load_stored_request
 from rcp.service import (
     ChatMessage,
@@ -24,6 +31,8 @@ from rcp.service import (
     SteeringReceipt,
     _fold_chat_receipts,
     _StoredChatRecord,
+    canonical_space_chat_path,
+    read_space_chat_records,
 )
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_models import QuestionRecord
@@ -33,7 +42,7 @@ from rcp.storage.questions import question_receiver_binds
 def chat_steering_visible(store: AppStore, record: AgentTaskRecord) -> bool:
     """Steering belongs to human conversations, never episode or routed work."""
     return (
-        record.kind in {"node_chat", "project_chat"}
+        record.kind in {"node_chat", "project_chat", "space_chat"}
         and record.request.get("trigger", "human") == "human"
         and record.episode_id is None
         and store.auto_research_child_work_for_operation(record.operation_id) is None
@@ -88,6 +97,7 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
     return ChatMessage(
         message_id=record.uuid,
         operation_id=record.operation_id,
+        question_id=record.question_id,
         role=record.role,
         text=record.text,
         timestamp=record.timestamp,
@@ -98,11 +108,17 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
         execution_machine=record.execution_machine,
         mode=record.mode,
         trigger=record.trigger,
+        source=record.source,
         steering=record.steering,
     )
 
 
-def _chat_records(path: Path) -> list[_StoredChatRecord]:
+def _chat_records(
+    service: ProjectService | SpaceThreadOwner, path: Path
+) -> list[_StoredChatRecord]:
+    if isinstance(service, SpaceThreadOwner):
+        thread = service.thread
+        return read_space_chat_records(service.catalog.data_dir, thread.user_id, thread.thread_id)
     if not path.exists():
         return []
     return _fold_chat_receipts(
@@ -114,22 +130,62 @@ def _chat_records(path: Path) -> list[_StoredChatRecord]:
     )
 
 
+def _steering_path(service: ProjectService | SpaceThreadOwner, request: RunRequest) -> Path:
+    if isinstance(service, SpaceThreadOwner):
+        return canonical_space_chat_path(
+            service.catalog.data_dir, service.thread.user_id, service.thread_id
+        )
+    return _chat_path(service, request)
+
+
+def _steering_transaction(
+    service: ProjectService | SpaceThreadOwner,
+) -> AbstractContextManager[object]:
+    if isinstance(service, SpaceThreadOwner):
+        return space_transcript_lock(service.store, service.thread_id)
+    return service.history.workspace.transaction()
+
+
+def _append_steering_records(
+    service: ProjectService | SpaceThreadOwner,
+    path: Path,
+    records: list[dict[str, object]],
+    *,
+    reserve_prompt: bool = False,
+) -> None:
+    if isinstance(service, SpaceThreadOwner):
+        records = [
+            {key: value for key, value in record.items() if key not in {"nodeId", "graphTarget"}}
+            for record in records
+        ]
+        append_space_records(
+            service.store,
+            service.catalog.data_dir,
+            service.thread,
+            records,
+            reserve_prompt=reserve_prompt,
+        )
+    else:
+        _append_chat_records(service, path, records, reserve_prompt=reserve_prompt)
+
+
 def _record_steer(
-    service: ProjectService,
+    service: ProjectService | SpaceThreadOwner,
     request: RunRequest,
     record: AgentTaskRecord,
     *,
     message_id: str,
     text: str,
     receipt: SteeringReceipt,
+    question_id: str | None = None,
 ) -> _StoredChatRecord:
     """Append one steer to the transcript inside the caller's transaction, once.
 
     Reads the transcript for identity only: whether this steer or the turn's
     prompt is recorded.
     """
-    path = _chat_path(service, request)
-    records = _chat_records(path)
+    path = _steering_path(service, request)
+    records = _chat_records(service, path)
     existing = next((item for item in records if item.uuid == message_id), None)
     if existing is not None:
         return existing
@@ -143,24 +199,41 @@ def _record_steer(
         "model": request.model or "provider-default",
         "reasoning": request.reasoning,
         "executionMachine": request.run_on,
-        "cwd": str(service.manifest.research_dir.parent),
+        "cwd": str(service.catalog.data_dir)
+        if isinstance(service, SpaceThreadOwner)
+        else str(service.manifest.research_dir.parent),
         "timestamp": timestamp,
         "operationId": record.operation_id,
         "mode": request.mode,
         "trigger": "human",
+        **({"source": request.source} if request.source is not None else {}),
         "type": "user",
         "role": "user",
     }
+    if isinstance(service, SpaceThreadOwner):
+        common.update({"chatScope": "space", "privateOwner": service.thread.user_id})
+        common.pop("nodeId", None)
     stored = _StoredChatRecord.model_validate(
-        {**common, "uuid": message_id, "text": text, "steering": receipt.model_dump()}
+        {
+            **common,
+            "uuid": message_id,
+            "text": text,
+            "steering": receipt.model_dump(),
+            "questionId": question_id,
+        }
     )
     # The normal exchange arrives only on completion. Reserve its prompt first
     # so a steer cannot become the conversation title or precede its own turn.
-    if not any(
+    if isinstance(service, SpaceThreadOwner):
+        # Once for the whole turn, as at launch, so a Retry adds no second copy.
+        append_space_message(
+            service, request, record.operation_id, role="user", text=request.message or ""
+        )
+    elif not any(
         item.operation_id == record.operation_id and item.role == "user" and item.steering is None
         for item in records
     ):
-        _append_chat_records(
+        _append_steering_records(
             service,
             path,
             [
@@ -174,12 +247,12 @@ def _record_steer(
             ],
             reserve_prompt=True,
         )
-    _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+    _append_steering_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
     return stored
 
 
 def begin_chat_steer(
-    service: ProjectService,
+    service: ProjectService | SpaceThreadOwner,
     background: BackgroundAgentTasks,
     record: AgentTaskRecord,
     *,
@@ -192,9 +265,9 @@ def begin_chat_steer(
     if not chat_steering_visible(background.store, record):
         raise ValueError("Only human conversation turns can be steered.")
     request = load_stored_request(RunRequest, record.request, operation_id=record.operation_id)
-    path = _chat_path(service, request)
-    with service.history.workspace.transaction():
-        records = _chat_records(path)
+    path = _steering_path(service, request)
+    with _steering_transaction(service):
+        records = _chat_records(service, path)
         existing = next((item for item in records if item.uuid == message_id), None)
         if existing is not None:
             if (
@@ -255,7 +328,7 @@ def begin_chat_steer(
 
 
 def finish_chat_steer(
-    service: ProjectService,
+    service: ProjectService | SpaceThreadOwner,
     background: BackgroundAgentTasks,
     record: AgentTaskRecord,
     delivery: tuple[_StoredChatRecord, Future[ProviderSteerReceipt] | None],
@@ -282,11 +355,12 @@ def finish_chat_steer(
         stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
     )
     stored = stored.model_copy(update={"steering": receipt})
-    with service.history.workspace.transaction():
-        path = service.chat_path(
-            stored.session_id, chat_scope=stored.chat_scope, node_id=stored.node_id
+    with _steering_transaction(service):
+        path = _steering_path(
+            service,
+            load_stored_request(RunRequest, record.request, operation_id=record.operation_id),
         )
-        _append_chat_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+        _append_steering_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
     # The final receipt replaces the queued one other members may already show.
     background.bump_steer_revision(record.operation_id)
     return _message(stored)
@@ -408,6 +482,7 @@ def _record_answer_steer(
             message_id=question_answer_message_id(question),
             text=question_answer_text(question),
             receipt=_receipt(target.attempt, turn_id, "delivered", None),
+            question_id=question.question_id,
         )
     background.bump_steer_revision(target.operation_id)
 

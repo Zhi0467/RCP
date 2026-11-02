@@ -41,7 +41,7 @@ from rcp.storage import (
 from rcp.storage.command_mailbox import CommandMailboxStore
 from rcp.storage.question_models import QuestionOrigin
 
-from .helpers import NON_UUID4
+from .helpers import NON_UUID4, _TracingAppStore
 from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_compute_jobs_storage import job_record
 
@@ -311,7 +311,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (67, "episode_merge_requests_v1")
+    assert migrations[-1] == (73, "approval_cards_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -1135,24 +1135,6 @@ def test_existing_paper_draft_database_gains_ancestor_without_losing_draft(tmp_p
     assert draft["content"] == "# Existing draft"
     assert draft["base_hash"] == "old-base"
     assert draft["ancestor_content"] is None
-
-
-class _TracingAppStore(AppStore):
-    """Count projection reads without changing the production connection path."""
-
-    def __init__(self, path) -> None:
-        self.select_count = 0
-        super().__init__(path)
-
-    @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
-        with super().connection() as connection:
-            connection.set_trace_callback(self._count_select)
-            yield connection
-
-    def _count_select(self, statement: str) -> None:
-        if statement.lstrip().upper().startswith("SELECT"):
-            self.select_count += 1
 
 
 class _WriteTracingAppStore(AppStore):
@@ -2248,7 +2230,12 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "notification_episode_observations": 0,
         "notification_project_baselines": 0,
         "notification_question_events": 1,
+        "approval_cards": 0,
         "questions": 1,
+        "agent_handoffs": 0,
+        "agent_schedules": 0,
+        "space_turn_project_bindings": 0,
+        "agent_threads": 0,
         "digest_events": 1,
         "digest_marks": 0,
         "digest_heads": 0,
@@ -2264,6 +2251,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "bulletin_command_receipts": 0,
         "bulletin_reads": 0,
         "bulletin_mention_observations": 0,
+        "memory_migrations": 0,
         "operational_lessons": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,

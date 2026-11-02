@@ -35,7 +35,12 @@ from rcp.storage import (
 )
 from tests.helpers import signed_in_client
 
-from .helpers import create_named_app, fabricated_authorizer, wait_for_task
+from .helpers import (
+    create_named_app,
+    fabricated_authorizer,
+    wait_for_task,
+    write_local_test_manifest,
+)
 from .test_auto_research_children_storage import _experiment_task
 
 
@@ -48,7 +53,7 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -63,7 +68,7 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
         role="orchestrator",
         actor_operation_id="root",
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=["repo-a"],
     )
     episode, root = store.create_auto_research_episode_with_root_task(
@@ -123,7 +128,7 @@ def _worker_request(
 ) -> RunRequest:
     return RunRequest(
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=["repo-a"],
         chat_id=worker_id,
         chat_scope="node",

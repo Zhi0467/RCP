@@ -29,6 +29,7 @@ from rcp.limits import (
     EPISODE_TIMELINE_PREVIEW_MAX_LENGTH,
 )
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage.chat_names import chat_titles
 from rcp.storage.models import GraphWatcherRecord
 
 
@@ -161,7 +162,12 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     children = store.episodes_by_ids(list(routes))
     owners = {member.episode_id: member for member in chain} | children
 
+    with store.connection() as connection:
+        titles = chat_titles(connection, episode.project_id, [chain[0].episode_id, *works])
+
     def add_actor(actor_id: str, kind: str, label: str, owner: str, **values: Any) -> None:
+        if kind in {"orchestrator", "worker"}:
+            label = titles.get(actor_id.split(":", 2)[2], label)
         actors[actor_id] = EpisodeTimelineActor(
             actor_id=actor_id,
             kind=kind,

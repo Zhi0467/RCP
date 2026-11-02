@@ -2675,7 +2675,9 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
     terminal_event,
     expected_status,
 ) -> None:
-    store = AppStore(tmp_path / f"{terminal_event}.sqlite3")
+    from .test_auto_research_recovery import _store
+
+    store = _store(tmp_path)
     boundary = _state(blocker_status="resolved", revision=7)
     observed: list[tuple[str, int | None, bool]] = []
 

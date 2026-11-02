@@ -42,7 +42,7 @@ AgentTaskContinuation = Literal[
 _StoredRequest = TypeVar("_StoredRequest", bound=BaseModel)
 
 _AUTO_RESEARCH_GRAPH_ROLES = frozenset({"orchestrator", "worker"})
-_CHAT_TASK_KINDS = frozenset({"node_chat", "project_chat"})
+_CHAT_TASK_KINDS = frozenset({"node_chat", "project_chat", "space_chat"})
 _INGEST_TASK_KINDS = frozenset({"seed", "refresh"})
 
 

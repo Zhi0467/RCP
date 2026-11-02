@@ -49,6 +49,7 @@ export function episodeProfile(
 ): ResourceProfile<EpisodeResource> {
   const base = `${projectBase(projectId)}/episodes/${encodeURIComponent(episodeId)}`;
   return {
+    watch: [{ name: "chats" }],
     key: episodeResourceKey(projectId, episodeId),
     fetch: async (signal) => {
       const [episodes, messages, timeline] = await Promise.all([

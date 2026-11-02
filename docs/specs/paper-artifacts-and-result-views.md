@@ -85,7 +85,8 @@ by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backen
 with `--untrusted` and bounded time, output, and concurrency. Compilation changes
 no state and is available to members. Identical concurrent requests join. A newer,
 different request cancels the project's older request and shows Retry. Previous
-PDFs remain readable within retention.
+PDFs remain readable within retention. An uploaded PDF renders in the in-app PDF
+viewer, with Download in the panel header and area comments, but without SyncTeX.
 
 Preview selects the one compile root that reaches the open file. A LaTeX file
 with its own `\documentclass` is its own root, so the file the user is in
@@ -401,6 +402,18 @@ navigate. Older turns fetch the exact task before declaring an artifact absent.
 They retain it across list refreshes. HTML, images, video, Markdown, and text embed
 with Expand, Keep, and Download actions; HTML and images also offer Comment. Surrounding links are dropped.
 Unembedded video uses the same player. PDF and unknown embeds point to cards.
+A reply also references originals where they live, never copied into the turn's
+artifact folder, which holds only new files. A repository file is its absolute
+path, `artifact:ID` is a saved artifact, and each links or, as an image, embeds.
+An embedded file is the project's repository preview; an embedded saved artifact
+is its project viewer, read-only in place. Both read through the project's own
+routes, so membership and private-thread ownership apply. A project chat or
+thread resolves against its own project. The Space thread's
+`/api/agent-threads/{thread_id}/references` names the member project holding a
+path or id, and resolves nothing outside the member's projects or another
+member's private artifact. An unresolved reference stays a plain link with its
+reason on hover. `artifact_contract` renders the syntax and the scope for each
+thread kind.
 `/viewer` is the explicit shell. `/preview` is its compatibility alias, including
 old image byte requests. `/content` renders raw sandboxed content and is not
 another entrance.
@@ -411,10 +424,13 @@ reload it. Expand and Download use authored fallback colors. Markdown and text
 run no script. The fixed embed height persists through loading, refreshes, and
 version changes. Content scrolls internally, and images are centered. The caption
 stays on one row until an action, avoiding chat motion. Frames mount near the
-reader in the chat scroll box. They refresh when turns settle, the version or
-visibility changes, and on a slow live interval. Live relay is one-way.
+reader in the chat scroll box. A mounted frame re-reads its state when the
+project's artifacts watermark moves and reloads when the current version changes.
+Live relay is one-way.
 
-Comment mode defaults off to preserve interaction. Readers can select with a
+An inline artifact opens in comment mode, whose dashed outline is also its
+visible edge. Done hands the page back for clicks and drags until the reader
+turns comment mode on again. Readers can select with a
 mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
 one artifact and version in the composer. Admission refuses moved versions.
 Cancel or Escape in the window discards its text. A cancel in the frame, a new
@@ -427,8 +443,8 @@ references. Both paths can publish tracked next versions. Keep follows viewer st
 
 ### Selection and comments
 
-HTML, raster images, and SVG support gestures immediately in the panel and by
-opt-in inline. Other viewable types allow whole-file comments. PDFs and types
+HTML, raster images, and SVG support gestures immediately in the panel and
+inline, where comment mode starts on until the reader presses Done. Other viewable types allow whole-file comments. PDFs and types
 available only for download refuse comments. Text selection highlights text.
 Dragging on figures or blank space selects a boxed region. Add saves a comment
 in the tray.
@@ -521,7 +537,8 @@ traces, and other formats. See [current exclusions](../design.md).
 
 ## Keeping an artifact
 
-Keep stops expiry without writing to the canonical repository. SQLite owns the
+Keep stops expiry without writing to the canonical repository. Inline embeds
+and chat cards present it as saving to Artifacts; the viewer calls it Keep. SQLite owns the
 metadata. Immutable digest files for each artifact write atomically in RCP data.
 Original and recent versions are bounded. Publication checks the base and
 idempotency under the shared lock. Capture guards delay pruning and unlinking.

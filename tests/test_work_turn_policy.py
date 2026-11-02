@@ -102,7 +102,6 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    # This task holds no lesson grant; tests/test_lesson_commands.py owns that gate.
     assert restored["command_handler"].allowed_verbs == {"validate", "bulletin", "name"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]

@@ -204,7 +204,7 @@ class RunStageMailbox:
 
 
 def clear_turn_handoff_files(mailbox: RunStageMailbox) -> None:
-    """Fail closed while clearing every reusable per-turn handoff channel.
+    """Fail closed while clearing every reusable per-turn handoff channel (invariant 10c).
 
     Conversation scratch belongs to the stable chat, not to one turn: every
     task surface calls this on entry so the previous turn's `patch.json` and

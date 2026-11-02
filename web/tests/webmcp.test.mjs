@@ -54,6 +54,9 @@ const { projectBroadReadToolDefinitions } = await server.ssrLoadModule("/src/web
 const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } = await server.ssrLoadModule(
   "/src/voice/voiceTerminal.ts",
 );
+const { VOICE_THREAD_TOOLS, threadToolDefinitions } = await server.ssrLoadModule(
+  "/src/voice/voiceThread.ts",
+);
 const { parseProjectHash } = await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
 const { graphTargetFromHash } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 
@@ -2225,9 +2228,13 @@ test("the catalog lists every tool any page state can publish, independent of st
   const states = ["landing", "project_ready", "project_live", "project_completed"];
   const names = catalog().map((tool) => tool.name);
   assert.equal(new Set(names).size, names.length);
+  // The bound thread's tools come from the voice session, not from page state.
   assert.deepEqual(
     new Set(names),
-    new Set(states.flatMap(evalToolDefinitions).map((tool) => tool.name)),
+    new Set([
+      ...states.flatMap(evalToolDefinitions).map((tool) => tool.name),
+      ...VOICE_THREAD_TOOLS.map((tool) => tool.name),
+    ]),
   );
   publishToolSurface("project", evalToolDefinitions("project_completed"));
   assert.deepEqual(
@@ -2268,8 +2275,73 @@ test("only Work, Experiment Start, Auto-research, and terminal runs ask for conf
       "rcp_run_terminal_command",
       "rcp_send_conversation_message",
       "rcp_start_experiment",
+      "rcp_thread_send",
     ],
   );
+});
+
+test("voice offers the bound thread's tools, and no tool catalog resolves an approval card", async () => {
+  const thread = {
+    thread_id: "thread-1",
+    kind: "project",
+    project_id: "project-1",
+    project_name: "Project",
+    agent_name: "Pip",
+  };
+  const requests = [];
+  const definitions = threadToolDefinitions(thread, async (path, init) => {
+    requests.push([init?.method ?? "GET", path]);
+    return { truncated: false };
+  });
+  const voiceNames = catalog().map((tool) => tool.name);
+  for (const name of ["rcp_thread_send", "rcp_thread_memory"]) {
+    assert.ok(voiceNames.includes(name), name);
+    assert.ok(
+      definitions.some((tool) => tool.name === name),
+      name,
+    );
+  }
+  // Thread tools act as the member, so WebMCP host agents never receive them.
+  assert.deepEqual(webMcpHostDefinitions(definitions), []);
+  // Card resolution is the member's tap: neither catalog names it or reaches its route.
+  const webMcp = ["landing", "project_ready", "project_live", "project_completed"].flatMap(
+    evalToolDefinitions,
+  );
+  for (const tool of [...catalog(), ...webMcp]) {
+    assert.doesNotMatch(tool.name, /card|approv/i, tool.name);
+  }
+  await definitions.find((tool) => tool.name === "rcp_thread_memory").execute({});
+  assert.deepEqual(requests, [["GET", "/api/agent-threads/thread-1/memory"]]);
+});
+
+test("voice steers the thread's live task at its attempt and reports the steer receipt", async () => {
+  const thread = { thread_id: "thread-1", kind: "space", project_id: null, agent_name: "Pip" };
+  const receipt = { attempt: 2, turn_id: "turn-9", status: "refused", label: "Not delivered" };
+  const requests = [];
+  const [send] = threadToolDefinitions(thread, async (path, init) => {
+    requests.push([init?.method ?? "GET", path, init?.body && JSON.parse(init.body)]);
+    if (path === "/api/agent-threads")
+      // The member's prompt of a running turn is not in the transcript yet.
+      return { threads: [{ ...thread, latest_operation_id: "live" }] };
+    if (path.endsWith("/tasks/live"))
+      return {
+        operation_id: "live",
+        active: true,
+        attempt: 2,
+        can_steer: true,
+        steer_turn_id: "turn-9",
+      };
+    if (path.endsWith("/tasks/live/steer")) return { steering: receipt };
+    throw new Error(`unexpected ${path}`);
+  });
+  const result = JSON.parse(
+    (await send.execute({ text: "also check B" }, "req-1")).content[0].text,
+  );
+  const steer = requests.find(([, path]) => path.endsWith("/steer"));
+  assert.equal(steer[2].attempt, 2);
+  assert.equal(steer[2].expected_turn_id, "turn-9");
+  assert.deepEqual(result.steering, receipt);
+  assert.equal(result.steered, undefined);
 });
 
 test("voice-only terminal tools resolve for voice but never register with WebMCP", () => {

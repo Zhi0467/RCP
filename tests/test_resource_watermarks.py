@@ -376,3 +376,231 @@ def test_graph_token_moves_with_canonical_reachability(endpoint, monkeypatch):
     assert offline[0]["version"] != healthy[0]["version"]
     assert offline[1]["version"] == healthy[1]["version"]
     assert beat(endpoint, keys)["projects"][0]["resources"] == healthy
+
+
+def test_agent_threads_watermark_accepts_web_body(endpoint, monkeypatch):
+    body = {"client_id": "agent-threads", "open": [], "due": []}
+    response = endpoint.client.post("/api/resource-watermarks", json=body)
+    assert response.status_code == 200
+    assert response.json()["agent_threads"] is None
+    body["agent_threads"] = True
+    response = endpoint.client.post("/api/resource-watermarks", json=body)
+    assert response.status_code == 200, response.text
+    first = response.json()
+    assert first["projects"] == [] and first["unavailable"] == []
+    assert isinstance(first["agent_threads"]["version"], str)
+    assert endpoint.client.post("/api/resource-watermarks", json=body).json() == first
+    endpoint.store.ensure_agent_threads(endpoint.other_member, [], default_names=("Pip",))
+    assert endpoint.client.post("/api/resource-watermarks", json=body).json() == first
+    endpoint.store.ensure_agent_threads(endpoint.member, [], default_names=("Pip",))
+    changed = endpoint.client.post("/api/resource-watermarks", json=body).json()
+    assert changed["agent_threads"] != first["agent_threads"]
+    monkeypatch.setattr(watermarks, "_PROCESS_EPOCH", "restarted")
+    assert (
+        endpoint.client.post("/api/resource-watermarks", json=body).json()["agent_threads"]
+        != changed["agent_threads"]
+    )
+
+
+@pytest.mark.parametrize("kind", ["space", "project"])
+@pytest.mark.parametrize("owner", ["member", "other_member", None])
+@pytest.mark.parametrize(
+    "table,change",
+    [
+        ("agent_threads", "closed_at='later'"),
+        ("graph_runs", "status='succeeded',finished_at='later'"),
+        ("chat_reads", "read_through='later'"),
+        ("chat_display", "title='Renamed'"),
+        ("chat_browser_preferences", "browser_requested=0"),
+        ("agent_schedules", "state='cancelled'"),
+        ("questions", "state='answered',answer='Yes'"),
+        ("approval_cards", "running_since='later'"),
+        ("agent_handoffs", "target_operation_id='delivered'"),
+        ("project_members", "seated_by='admin'"),
+    ],
+)
+def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, table, change):
+    store = endpoint.store
+    members = [endpoint.member, endpoint.other_member]
+    threads = {
+        user: next(
+            row
+            for row in store.ensure_agent_threads(user, [endpoint.project], default_names=("Pip",))
+            if row.kind == kind
+        )
+        for user in members
+    }
+    user = getattr(endpoint, owner) if owner else "unrelated"
+    thread_id = threads[user].thread_id if owner else "ordinary-chat"
+    scope = endpoint.project if kind == "project" else store.space_id
+    now = store.now()
+    rows = {
+        "agent_threads": dict(
+            thread_id="new-thread",
+            user_id=user,
+            kind=kind,
+            project_id="new-project" if kind == "project" else None,
+            created_at=now,
+        ),
+        "graph_runs": dict(
+            operation_id="turn",
+            project_id=scope,
+            kind=f"{kind}_chat",
+            status="running",
+            request_json=json.dumps({"chat_id": thread_id}),
+            created_at=now,
+            updated_at=now,
+            status_message="Running",
+        ),
+        "chat_reads": dict(project_id=scope, chat_id=thread_id, user_id=user, read_through=now),
+        "chat_display": dict(project_id=scope, chat_id=thread_id, title="Pip"),
+        "chat_browser_preferences": dict(project_id=scope, chat_id=thread_id, browser_requested=1),
+        "agent_schedules": dict(
+            schedule_id="schedule",
+            thread_id=thread_id,
+            created_operation_id="turn",
+            idempotency_key="key",
+            cron="0 9 * * *",
+            timezone="UTC",
+            note="Check",
+            state="active",
+            created_at=now,
+        ),
+        "questions": dict(
+            question_id="question",
+            project_id=scope,
+            owner_kind="chat",
+            owner_id=thread_id,
+            key="key",
+            origin_json="{}",
+            argument_hash="hash",
+            question="Proceed?",
+            choices_json="[]",
+            multiple=0,
+            state="pending",
+            created_at=now,
+        ),
+        "approval_cards": dict(
+            question_id="question",
+            action_json="{}",
+            pinned_json="{}",
+            pinned_sha256="hash",
+            expires_at=now,
+            request_id="request",
+        ),
+        "agent_handoffs": dict(
+            handoff_id="handoff",
+            source_thread_id="source",
+            source_operation_id="turn",
+            idempotency_key="key",
+            target_thread_id=thread_id,
+            message="Check",
+            created_at=now,
+        ),
+        "project_members": dict(project_id="new-project", user_id=user, seated_at=now),
+    }
+
+    def insert(connection, name):
+        row = rows[name]
+        connection.execute(
+            f"INSERT INTO {name} ({','.join(row)}) VALUES ({','.join('?' for _ in row)})",
+            tuple(row.values()),
+        )
+
+    def versions():
+        with store.connection() as connection:
+            return dict(
+                connection.execute(
+                    "SELECT entity,generation FROM resource_versions WHERE scope='' AND resource='agent_threads'"
+                )
+            )
+
+    with store.connection() as connection:
+        if table == "approval_cards":
+            insert(connection, "questions")
+        if table == "agent_threads" and kind == "space":
+            connection.execute(
+                "DELETE FROM agent_threads WHERE user_id=? AND kind='space'", (user,)
+            )
+        if table in {"chat_display", "chat_browser_preferences"}:
+            connection.execute(f"DELETE FROM {table} WHERE chat_id=?", (thread_id,))
+    row = rows[table]
+    key = "chat_id" if "chat_id" in row else next(iter(row))
+    for action in ("insert", "update", "noop", "delete"):
+        before = versions()
+        with store.connection() as connection:
+            if action == "insert":
+                insert(connection, table)
+            elif action == "delete":
+                connection.execute(f"DELETE FROM {table} WHERE {key}=?", (row[key],))
+            else:
+                connection.execute(f"UPDATE {table} SET {change} WHERE {key}=?", (row[key],))
+        after = versions()
+        for member in members:
+            entity = f"member:{member}"
+            assert (after[entity] > before[entity]) == (member == user and action != "noop")
+        assert "" not in after
+        if owner is None and table not in {"agent_threads", "project_members"}:
+            assert after == before
+    if table == "chat_reads" and owner is not None:
+        before = versions()
+        rows[table]["user_id"] = next(member for member in members if member != user)
+        with store.connection() as connection:
+            insert(connection, table)
+        assert versions() == before
+
+
+@pytest.mark.parametrize("change", ["rename", "delete", "task_status"])
+def test_space_chat_changes_only_invalidate_reads_with_space_names(endpoint, change):
+    store = endpoint.store
+    thread = store.ensure_agent_threads(endpoint.other_member, [], default_names=("Pip",))[0]
+    keys = [
+        {"name": "chats"},
+        {"name": "graph", "ref": "main"},
+        {"name": "refs"},
+        {"name": "episodes"},
+        {"name": "artifacts"},
+        {"name": "bulletin"},
+        {"name": "digest"},
+        {"name": "tasks.status"},
+        {"name": "task", "entity": "turn"},
+    ]
+
+    def versions():
+        return {
+            row["name"]: row["version"] for row in beat(endpoint, keys)["projects"][0]["resources"]
+        }
+
+    if change == "task_status":
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO graph_runs(operation_id, project_id, kind, status, request_json, "
+                "created_at, updated_at, status_message) VALUES('space-turn', ?, 'space_chat', 'running', ?, ?, ?, '')",
+                (
+                    store.space_id,
+                    json.dumps({"chat_id": thread.thread_id}),
+                    store.now(),
+                    store.now(),
+                ),
+            )
+    before = versions()
+    if change == "rename":
+        store.set_chat_title(store.space_id, thread.thread_id, endpoint.other_member, "Renamed")
+    elif change == "delete":
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM chat_display WHERE project_id=? AND chat_id=?",
+                (store.space_id, thread.thread_id),
+            )
+    else:
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='succeeded' WHERE operation_id='space-turn'",
+            )
+    after = versions()
+    assert {name for name in before if before[name] != after[name]} == {
+        "bulletin",
+        "digest",
+        "tasks.status",
+        "task",
+    }

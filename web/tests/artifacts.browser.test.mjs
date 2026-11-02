@@ -919,6 +919,11 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.ok((await notice.getAttribute("title")).includes("inline-failure"));
     assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
     assert.ok(await embed.locator("[download]").count());
+    // Comment mode starts on, which also draws the artifact's edge; Done hands
+    // the page back to the reader.
+    assert.match(await embed.getAttribute("class"), /\bcommenting\b/);
+    await embed.getByRole("button", { name: "Done commenting" }).click();
+    assert.doesNotMatch(await embed.getAttribute("class"), /\bcommenting\b/);
     await embed.locator("[data-artifact-action=fix]").click();
     assert.equal(
       await page.locator(".chat-annotation-composer textarea").inputValue(),

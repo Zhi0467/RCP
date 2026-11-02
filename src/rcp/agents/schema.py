@@ -605,7 +605,7 @@ def prepare_agent_patch(
     source_effect_sha256: str | None = None,
     profile: AgentProfile | None = None,
 ) -> Patch:
-    """Wrap one semantic agent deliverable in RCP-owned canonical metadata.
+    """Wrap one semantic agent deliverable in RCP-owned canonical metadata (invariant 10).
 
     Conversation and ingestion are different lifecycles that share launch
     plumbing only: the agent Patch schema has no coverage or cursor operation

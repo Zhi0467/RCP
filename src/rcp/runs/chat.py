@@ -7,7 +7,8 @@ import os
 import shutil
 import tempfile
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -321,8 +322,14 @@ def _prepare_chat_prompt_state(
     master_context: str,
     contract_key: str,
     values: dict[str, object],
+    required_master_value: str | None = None,
 ) -> tuple[PromptNode, MasterRef, dict[str, object] | None]:
-    """Persist a candidate baseline and return the turn's node, master, and compact delta."""
+    """Persist a candidate baseline and return the turn's node, master, and compact delta.
+
+    A session whose committed values lack ``required_master_value`` holds a master rendered
+    without it, so ``master_context`` replaces that master and the first turn that needs the
+    value reopens a master holding it instead of carrying it inline.
+    """
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
     latest, revoked = _chat_master_status(execution, request.session_id)
@@ -337,7 +344,12 @@ def _prepare_chat_prompt_state(
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_source = "rendered"
-    if previous is not None and previous.contract_key == contract_key:
+    lacking = (
+        previous is not None
+        and required_master_value is not None
+        and required_master_value not in previous.values
+    )
+    if previous is not None and previous.contract_key == contract_key and not lacking:
         if previous.master_operation_id is not None and previous.master_sha256 is not None:
             master_operation_id = previous.master_operation_id
             master_sha256 = previous.master_sha256
@@ -1287,7 +1299,7 @@ def _attempt_was_resumed(receipts: list[AgentTaskReceiptRecord], record: AgentTa
         or not isinstance(attempt, int)
         or attempt != record.attempt
         or payload.get("kind") != record.kind
-        or record.kind not in {"node_chat", "project_chat"}
+        or record.kind not in {"node_chat", "project_chat", "space_chat"}
     ):
         raise _resume_lineage_error(
             f"task {record.operation_id!r} has invalid operation-created provenance"
@@ -1542,6 +1554,23 @@ def _project_write_scope(
             include_shared = request.worktree_integration in {"starting_branch", "default_branch"}
             if include_shared and not request.worktree_integration_target:
                 raise ValueError("The integration turn has no admitted target branch.")
+    from rcp.agents.memory_files import (
+        prepare_member_memory,
+        prepare_project_memory,
+        task_has_project_memory,
+        task_member_memory_owner,
+    )
+
+    memory_roots = []
+    if task is not None and execution is not None and task_has_project_memory(task):
+        shared, _index_bytes = prepare_project_memory(execution.store, project_id, remote_stage)
+        memory_roots = [] if shared is None else [shared]
+    member_memory_root = None
+    # Member memory lives on the backend, so only a backend-run turn can write it.
+    if execution is not None and remote_stage is None:
+        owner = task_member_memory_owner(execution.store, task)
+        if owner is not None:
+            member_memory_root, _index_bytes = prepare_member_memory(execution.store, owner)
     scope = resolve_project_write_scope(
         manifest=service.manifest,
         truth_scope=write_repositories(service.history.state()),
@@ -1550,6 +1579,8 @@ def _project_write_scope(
         capability=capability,
         stage_root=stage_root,
         workspace_root=str(workspace),
+        memory_roots=memory_roots,
+        member_memory_root=member_memory_root,
         admitted_aliases=admitted_aliases,
         repository_pointers=context.repositories,
         remote_stage=remote_stage,
@@ -1575,6 +1606,7 @@ def _chat_path(service: ProjectService, request: RunRequest) -> Path:
         request.chat_id,
         chat_scope=request.chat_scope,
         node_id=request.node_id,
+        private_owner=service.paper.store.private_chat_owner(request.chat_id),
     )
 
 
@@ -1699,6 +1731,9 @@ def reconcile_chat_question_answers(
     for question in store.questions_needing_chat_reconciliation(project_id=project_id):
         origin_task = store.agent_task(question.origin.operation_id)
         if origin_task is not None and origin_task.kind not in {"node_chat", "project_chat"}:
+            continue
+        if refusal := store.chat_turn_refusal(question.origin.project_id, question.origin.owner_id):
+            statuses[question.question_id] = refusal
             continue
         try:
             from rcp.runs.questions import reconcile_question_receipt
@@ -1827,6 +1862,8 @@ def _append_chat_exchange(
                     "type": "user",
                     "role": "user",
                     "text": request.message,
+                    **({"source": request.source} if request.source is not None else {}),
+                    **({"questionId": question.question_id} if question is not None else {}),
                     "attachments": [item.model_dump(mode="json") for item in request.attachments],
                 }
             )
@@ -1885,62 +1922,84 @@ def _append_chat_graph_receipt(
     service.invalidate_source_index()
 
 
+@contextmanager
+def chat_lock(service: ProjectService, operation: int) -> Iterator[None]:
+    """The graph target's transcript lock: appenders hold it exclusive, readers shared."""
+    with (service.history.workspace.root / ".chat.lock").open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), operation)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _append_chat_records(
     service: ProjectService,
     path: Path,
     records: list[dict[str, object]],
     *,
     reserve_prompt: bool = False,
-) -> None:
-    """Append under the chat lock; callers own the StateWorkspace transaction."""
+) -> int:
+    """Append under the chat lock and return how many records it wrote.
+
+    Callers own the StateWorkspace transaction.
+    """
     records = [
-        {**record, "graphTarget": service.history.graph_target.model_dump(mode="json")}
+        {
+            **record,
+            "graphTarget": service.history.graph_target.model_dump(mode="json"),
+            **(
+                {"privateOwner": owner}
+                if (
+                    owner := service.paper.store.private_chat_owner(
+                        str(record.get("sessionId", ""))
+                    )
+                )
+                else {}
+            ),
+        }
         for record in records
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = service.history.workspace.root / ".chat.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            if path.exists():
-                existing_ids = {
-                    json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
-                }
-                # Steering appends receipt snapshots under the original message
-                # UUID; the transcript reader folds them and validates identity.
-                records = [
-                    item
-                    for item in records
-                    if item.get("steering") is not None or item.get("uuid") not in existing_ids
-                ]
-            if reserve_prompt and path.exists():
-                # A live steer may already have recorded this attempt's original
-                # human prompt, or finalization may be resuming after appending
-                # the answer. Inspect only identity, never use transcript as input:
-                # the transcript exists for display, and continuity comes from the
-                # provider's native session
-                # (tests/test_module_boundaries.py::test_task_runtime_never_reads_chat_transcripts).
-                existing = [json.loads(line) for line in path.read_text().split("\n") if line]
-                recorded = {
-                    (item.get("operationId"), item.get("role"))
-                    for item in existing
-                    if item.get("role") in {"user", "assistant"}
-                    and item.get("steering") is None
-                    and item.get("questionId") is None
-                }
-                records = [
-                    item
-                    for item in records
-                    if not item.get("operationId")
-                    or (item.get("operationId"), item.get("role")) not in recorded
-                ]
-            if not records:
-                return
-            with path.open("a", encoding="utf-8") as handle:
-                for record in records:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with chat_lock(service, fcntl.LOCK_EX):
+        if path.exists():
+            existing_ids = {
+                json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
+            }
+            # Steering appends receipt snapshots under the original message
+            # UUID; the transcript reader folds them and validates identity.
+            records = [
+                item
+                for item in records
+                if item.get("steering") is not None or item.get("uuid") not in existing_ids
+            ]
+        if reserve_prompt and path.exists():
+            # A live steer may already have recorded this attempt's original
+            # human prompt, or finalization may be resuming after appending
+            # the answer. Inspect only identity, never use transcript as input:
+            # the transcript exists for display, and continuity comes from the
+            # provider's native session
+            # (tests/test_module_boundaries.py::test_task_runtime_never_reads_chat_transcripts).
+            existing = [json.loads(line) for line in path.read_text().split("\n") if line]
+            recorded = {
+                (item.get("operationId"), item.get("role"))
+                for item in existing
+                if item.get("role") in {"user", "assistant"}
+                and item.get("steering") is None
+                and item.get("questionId") is None
+            }
+            records = [
+                item
+                for item in records
+                if not item.get("operationId")
+                or (item.get("operationId"), item.get("role")) not in recorded
+            ]
+        if not records:
+            return 0
+        with path.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+    return len(records)

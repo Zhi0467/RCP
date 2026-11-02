@@ -35,15 +35,22 @@ def test_personal_preferences_and_device_registration(manifest, tmp_path) -> Non
         "episode_finished": False,
         "consolidation": True,
         "bulletin_mention": True,
+        "agent_thread": True,
     }
     updated = client.patch(
         preferences_url,
-        json={"proposal": False, "episode_finished": True, "bulletin_mention": False},
+        json={
+            "proposal": False,
+            "episode_finished": True,
+            "bulletin_mention": False,
+            "agent_thread": False,
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["proposal"] is False
     assert updated.json()["episode_finished"] is True
     assert updated.json()["bulletin_mention"] is False
+    assert updated.json()["agent_thread"] is False
     assert client.get(preferences_url).json() == updated.json()
     assert client.patch(preferences_url, json={"unknown": True}).status_code == 422
     device = client.post("/api/notifications/devices/desktop", json={})

@@ -57,6 +57,7 @@ import {
   withDefaultRepositoryName,
 } from "./projectSetupModel";
 import { OperatorActionPanel } from "./OperatorActionPanel";
+import { hasRow, rowOf } from "../core/agentRows";
 import type {
   AgentExecutionProfile,
   ProjectProvisioningCreateRequest,
@@ -98,13 +99,14 @@ const steps = [
 ] as const;
 
 const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed" },
+  { id: "seed", label: "Seed and refresh" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
+const agentRows = agentProfiles.filter(({ id }) => hasRow(id));
 
 let machineSequence = 1;
 let repositorySequence = 1;
@@ -412,10 +414,10 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       })),
       providerChecks: agentProfiles.map(({ id }) => ({
         profile: id,
-        provider: agents[id].provider,
-        runtime_id: agents[id].runtime,
-        model: agents[id].model,
-        reasoning: agents[id].reasoning,
+        provider: agents[rowOf(id)].provider,
+        runtime_id: agents[rowOf(id)].runtime,
+        model: agents[rowOf(id)].model,
+        reasoning: agents[rowOf(id)].reasoning,
         machine_alias: canonicalMachine,
       })),
     });
@@ -805,7 +807,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               />
             </label>
             <div className="agent-role-stack">
-              {agentProfiles.map(({ id, label }) => {
+              {agentRows.map(({ id, label }) => {
                 const profile = agents[id];
                 const readiness = readinessFor(providers, profile.provider);
                 const models = readiness?.models ?? [];

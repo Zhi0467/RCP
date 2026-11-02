@@ -23,6 +23,7 @@ from contextlib import suppress
 STAGE_NAME = re.compile(r"rcp-run\.[A-Za-z0-9._-]+")
 #: Where stages lived before `~/.rcp/stages`; a later release drops it.
 LEGACY_PARENT = "/tmp"
+MEMBER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 READ_CONTEXT_INPUT = re.compile(r"(main-graph-|loop-status-watchers-)[0-9a-f]{64}\.json")
 
 
@@ -62,16 +63,23 @@ def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = Tru
     return present
 
 
-def create_stage(label: str, reuse: bool) -> str:
+def create_stage(label: str, reuse: bool, thread_owner: str | None = None) -> str:
     """The stage root for `label` (a fresh one when empty); refuses an unsafe parent."""
 
     rcp = os.path.join(os.path.expanduser("~"), ".rcp")
     base = os.path.join(rcp, "stages")
-    for directory in (rcp, base):
+    parents = [rcp, base]
+    if thread_owner is not None:
+        if MEMBER_ID.fullmatch(thread_owner) is None:
+            raise ValueError("invalid thread stage owner")
+        threads = os.path.join(rcp, "agent-threads")
+        member = os.path.join(threads, thread_owner)
+        base = os.path.join(member, "stages")
+        parents = [rcp, threads, member, base]
+    for directory in parents:
         with suppress(FileExistsError):
             os.mkdir(directory, 0o700)
-    # A parent another user can write could swap a retained stage, so both must be ours.
-    for directory in (rcp, base):
+        # Validate each parent before creating anything beneath it.
         info = os.lstat(directory)
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
             raise ValueError("remote stage directory is unsafe")
@@ -83,7 +91,7 @@ def create_stage(label: str, reuse: bool) -> str:
     root = os.path.join(base, "rcp-run." + label)
     legacy = os.path.join(LEGACY_PARENT, "rcp-run." + label)
     # Legacy: a reused stage made before RCP left /tmp stays there; a later release removes this.
-    if reuse and not os.path.lexists(root) and os.path.lexists(legacy):
+    if thread_owner is None and reuse and not os.path.lexists(root) and os.path.lexists(legacy):
         return legacy
     try:
         os.mkdir(root, 0o700)
@@ -142,7 +150,10 @@ def sweep_stages(retain_days: int, protected: set[str]) -> None:
 
     cutoff = time.time() - retain_days * 86400
     base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
-    for parent in (base, LEGACY_PARENT):
+    thread_parents = glob.glob(os.path.join(os.path.dirname(base), "agent-threads", "*", "stages"))
+    for parent in (base, LEGACY_PARENT, *thread_parents):
+        if parent != LEGACY_PARENT and os.path.realpath(parent) != parent:
+            continue
         for target in glob.glob(os.path.join(parent, "rcp-run.*")):
             if target in protected or not STAGE_NAME.fullmatch(os.path.basename(target)):
                 continue
@@ -158,9 +169,17 @@ def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
     """
 
     base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
-    legacy = os.path.dirname(root) == LEGACY_PARENT
+    parent = os.path.dirname(root)
+    member = os.path.dirname(parent)
+    thread_stage = (
+        os.path.basename(parent) == "stages"
+        and MEMBER_ID.fullmatch(os.path.basename(member)) is not None
+        and os.path.dirname(member) == os.path.join(os.path.dirname(base), "agent-threads")
+        and os.path.realpath(parent) == parent
+    )
+    legacy = parent == LEGACY_PARENT
     if not STAGE_NAME.fullmatch(os.path.basename(root)) or (
-        os.path.dirname(root) != base and not legacy
+        parent != base and not legacy and not thread_stage
     ):
         print("remote run stage is outside this account", file=sys.stderr)
         raise SystemExit(1)
@@ -436,8 +455,8 @@ def main(argv: list[str]) -> int:
             if os.path.islink(root) or not os.path.isdir(root):
                 raise ValueError("run stage is unavailable")
             print(json.dumps(prepare_read_context_input(os.path.join(root, "inputs"), argv[3])))
-        elif len(argv) == 4 and argv[1] == "create":
-            print(create_stage(argv[2], argv[3] == "1"))
+        elif len(argv) in {4, 5} and argv[1] == "create":
+            print(create_stage(argv[2], argv[3] == "1", argv[4] if len(argv) == 5 else None))
         else:
             print("remote stage request is invalid", file=sys.stderr)
             return 2

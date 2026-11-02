@@ -45,7 +45,7 @@ type Route = { template: string; parameters: Parameter[]; scope: "displayed_grap
  * reads remote files or job logs over SSH on every request.
  * /chats/{chat_id}/worktree: remote Git inspection can contact the network
  * using the member's transport credentials (including ls-remote).
- * Other GETs were audited in project_state, chats, questions, history, lessons,
+ * Other GETs were audited in project_state, chats, questions, history,
  * paper, notifications, artifacts, tasks, watchers, consolidation, episode_routes,
  * result_views and sync. Actual MIME admission also applies to undocumented responses.
  */

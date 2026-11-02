@@ -979,7 +979,12 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
     class _Task:
         active, queued, kind = True, False, "chat"
         operation_id, status_message = "op-1", "Refit the damping window"
-        request = {"mode": "work", "run_truth_scope": ["code"], "run_on": "remote-1"}
+        request = {
+            "mode": "work",
+            "run_truth_scope": ["code"],
+            "run_on": "remote-1",
+            "chat_id": "thread-1",
+        }
 
     class _Receipt:
         payload = {"canonical_repository_roots": ["/canonical/elsewhere/code"]}
@@ -991,6 +996,9 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
         def agent_task_receipts(self, operation_id):
             return [_Receipt()]
 
+        def private_chat_ids_except(self, user_id):
+            return set() if user_id == "owner" else {"thread-1"}
+
     class _Repo:
         alias, machine, path = "code", "remote-1", "/symlinked/code"
 
@@ -1001,8 +1009,13 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
         repositories = [_Repo()]
         machine_map = {"remote-1": _Machine()}
 
-    work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest())
+    work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest(), "owner")
     assert [entry["operation_id"] for entry in work["code"]] == ["op-1"]
+    # Another member still sees the collision, without the private turn's id or status.
+    other = terminal_projection.running_repository_work(_Store(), "p1", _Manifest(), "member")
+    assert len(other["code"]) == 1
+    assert other["code"][0]["operation_id"] == ""
+    assert _Task.status_message not in other["code"][0]["title"]
 
 
 def test_terminal_missing_deploy_key_names_provisioning_action(tmp_path, terminal_pty):

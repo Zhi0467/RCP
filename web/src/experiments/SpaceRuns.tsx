@@ -64,6 +64,24 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
     actionable: { background: "#4d3032", foreground: "#efb4ad" },
     completed: { background: "#24443e", foreground: "#a5dace" },
   },
+  "snowbound-light": {
+    running: { background: "#d6efe0", foreground: "#155232" },
+    waiting: { background: "#fbefc4", foreground: "#5c4300" },
+    degraded: { background: "#f6dcdc", foreground: "#8c1a1e" },
+    stopping: { background: "#fbefc4", foreground: "#5c4300" },
+    stopped: { background: "#dfe7f2", foreground: "#33415e" },
+    actionable: { background: "#f6dcdc", foreground: "#8c1a1e" },
+    completed: { background: "#d6efe0", foreground: "#155232" },
+  },
+  "snowbound-dark": {
+    running: { background: "#12352a", foreground: "#8ee6a6" },
+    waiting: { background: "#3a3416", foreground: "#ffd36e" },
+    degraded: { background: "#3e1d24", foreground: "#ff9c84" },
+    stopping: { background: "#3a3416", foreground: "#ffd36e" },
+    stopped: { background: "#1f2d55", foreground: "#b8c6ea" },
+    actionable: { background: "#3e1d24", foreground: "#ff9c84" },
+    completed: { background: "#12352a", foreground: "#8ee6a6" },
+  },
 };
 
 export function SpaceRuns({ entries, theme, onOpen, onArchive }: Props) {

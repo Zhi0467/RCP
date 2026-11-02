@@ -98,7 +98,9 @@ class ClaudeSessionFormat(SessionFormat):
                 )
             return
         if not source.is_file():
-            raise ValueError("The source Claude session transcript is unavailable on this machine.")
+            raise FileNotFoundError(
+                "The source Claude session transcript is unavailable on this machine."
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:

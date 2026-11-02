@@ -17,6 +17,7 @@ from rcp.limits import (
     TEAM_SESSION_IDLE_DAYS,
     TEAM_SESSION_LABEL_MAX_LENGTH,
     TEAM_SESSION_TOKEN_MAX_LENGTH,
+    TEAM_SESSION_TOUCH_INTERVAL_SECONDS,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
@@ -998,8 +999,11 @@ class SpaceStoreMixin(StoreMixinBase):
         expires_at = (
             datetime.fromisoformat(now) + timedelta(days=TEAM_SESSION_IDLE_DAYS)
         ).isoformat()
+        stale_expiry = (
+            datetime.fromisoformat(expires_at)
+            - timedelta(seconds=TEAM_SESSION_TOUCH_INTERVAL_SECONDS)
+        ).isoformat()
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM team_sessions WHERE session_hash = ?",
                 (session_hash,),
@@ -1008,7 +1012,8 @@ class SpaceStoreMixin(StoreMixinBase):
                 return None
             if row["expires_at"] <= now:
                 connection.execute(
-                    "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
+                    "DELETE FROM team_sessions WHERE session_hash = ? AND expires_at <= ?",
+                    (session_hash, now),
                 )
                 return None
             member = self._space_user_from_connection(connection, row["user_id"])
@@ -1022,7 +1027,7 @@ class SpaceStoreMixin(StoreMixinBase):
                     "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
                 )
                 return None
-            if touch:
+            if touch and row["expires_at"] <= stale_expiry:
                 connection.execute(
                     """
                     UPDATE team_sessions SET last_seen_at = ?, expires_at = ?

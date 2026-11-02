@@ -18,6 +18,8 @@ import type {
 } from "../core/types";
 
 export interface TaskTranscriptLine {
+  source?: ChatMessage["source"];
+  questionId?: string | null;
   browserStatus?: BrowserTurnStatus | null;
   lineId: string;
   role: "human" | "agent" | "error" | "meta";
@@ -211,6 +213,8 @@ export function chatTasksMissingFromHistory(
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
   return {
     lineId: `message:${message.message_id}`,
+    source: message.source,
+    questionId: message.question_id,
     role: message.role === "user" && message.trigger !== "watcher" ? "human" : "agent",
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
@@ -292,13 +296,25 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const message = textValue(task.request.message);
     const mode = conversationMode(task.request.mode);
     const trigger = taskTrigger(task.request.trigger);
+    const source =
+      task.request.source === "voice" ||
+      task.request.source === "handoff" ||
+      task.request.source === "slack"
+        ? task.request.source
+        : undefined;
     const graphUpdate = task.result?.graph_update ?? null;
     const turnOutcome = task.result?.turn_outcome ?? null;
     // A Paper refresh carries its source request but is not a new human message.
-    if (message && trigger === "human" && !task.request.refresh_source_task_id) {
+    if (
+      message &&
+      (trigger === "human" || trigger === "schedule") &&
+      !task.request.refresh_source_task_id
+    ) {
       const attachments = taskAttachments(task.request.attachments);
       lines.push({
         lineId: `task:${task.operation_id}:human`,
+        source,
+        questionId: task.question_id,
         role: "human",
         text: message,
         taskId: task.operation_id,
@@ -412,6 +428,38 @@ function taskAttachments(value: unknown): ChatAttachmentDescriptor[] {
   );
 }
 
+/** The provider's notice for a pause RCP asked for: a person pressed Stop. */
+const REQUESTED_PAUSE_NOTICE = "Provider process paused.";
+
+/** A paused turn's line, in a person's words when they stopped it. */
+export function pausedTaskText(task: AgentTask): string {
+  return task.status_message === REQUESTED_PAUSE_NOTICE ? "Stopped." : task.status_message;
+}
+
+/**
+ * A Resume or Retry continues its turn: when an earlier attempt already shows the
+ * member's message, the continuation's own copy of it is left out.
+ */
+export function withoutRepeatedTurnPrompts(
+  lines: TaskTranscriptLine[],
+  parentOf: ReadonlyMap<string, string | null>,
+): TaskTranscriptLine[] {
+  const prompted = new Set(
+    lines.flatMap((line) =>
+      line.role === "human" && !line.steering && !line.questionId ? [line.taskId] : [],
+    ),
+  );
+  return lines.filter((line) => {
+    if (line.role !== "human" || !line.lineId.startsWith("task:")) return true;
+    const seen = new Set<string>();
+    for (let id = parentOf.get(line.taskId); id && !seen.has(id); id = parentOf.get(id)) {
+      if (prompted.has(id)) return false;
+      seen.add(id);
+    }
+    return true;
+  });
+}
+
 export function orderTranscriptLines(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {
   return [...lines].sort(
     (left, right) => comparableTime(left.timestamp) - comparableTime(right.timestamp),
@@ -477,7 +525,10 @@ function conversationMode(value: unknown): ConversationMode | null {
 }
 
 function taskTrigger(value: unknown): TaskTrigger {
-  return value === "experiment_run" || value === "watcher" || value === "orchestrator"
+  return value === "experiment_run" ||
+    value === "watcher" ||
+    value === "orchestrator" ||
+    value === "schedule"
     ? value
     : "human";
 }

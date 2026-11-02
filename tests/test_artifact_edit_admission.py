@@ -124,7 +124,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
 
 @pytest.mark.parametrize("mode", ["experiment_loop", "auto_research"])
 @pytest.mark.parametrize("report", [False, True])
-def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report):
+def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report, monkeypatch):
     app, store, task = edit_origin
     episode_id = str(uuid.uuid4())
     request = dict(task.request)
@@ -210,6 +210,22 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
     assert parse_qs(urlsplit(state["thread_href"][1:]).query) == expected
     assert state["supplier"] == ("episode_ending" if report else "turn")
     assert client.get(state["viewer_url"]).status_code == 200
+    from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+    chat_id = episode_id if mode == "auto_research" else request["chat_id"]
+    # An archive written before archive waited for live work.
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO chat_display(project_id,chat_id,archived_at) VALUES(?,?,?) "
+            "ON CONFLICT DO UPDATE SET archived_at=excluded.archived_at",
+            (task.project_id, chat_id, store.now()),
+        )
+    monkeypatch.setattr(app.state.background_tasks, "admit_provider_task", lambda *a, **k: None)
+    with pytest.raises(AgentTaskAdmissionConflict, match="chat_archived"):
+        start_artifact_edit(
+            app.state.background_tasks, task.project_id, admitted, authorized_by=task.authorized_by
+        )
+    assert store.agent_task(admitted.artifact_edit.operation_id) is None
 
 
 def test_text_edits_refuse_selection_gestures(edit_origin):

@@ -50,12 +50,24 @@ repos:
         pass_filenames: false
         require_serial: true
 
-      # React's hook rules only; web/eslint.config.js explains the scope.
+      # Whole-tree count against `.ratchet/baseline.json`; the script's
+      # docstring has the commands.
+      - id: comment-ratchet
+        name: comment ratchet
+        entry: uv run python scripts/comment_ratchet.py
+        language: system
+        files: \.py$|^\.ratchet/baseline\.json$
+        pass_filenames: false
+        require_serial: true
+
+      # React's hook rules and the comment ban; web/eslint.config.js explains
+      # the scope. Comments are counted against web/eslint-suppressions.json;
+      # after removing some, run `npm --prefix web run lint -- --prune-suppressions`.
       - id: eslint
-        name: eslint (react hooks)
+        name: eslint
         entry: npm --prefix web run lint
         language: system
-        files: ^web/src/.*\.(ts|tsx)$
+        files: ^web/(src|tests)/.*\.(ts|tsx|mjs)$|^web/(eslint\.config\.js|eslint-suppressions\.json)$
         pass_filenames: false
         require_serial: true
 
@@ -64,14 +76,16 @@ repos:
         entry: npm --prefix web exec -- prettier --write --ignore-unknown
         language: system
         files: ^web/(src|tests)/.*\.(ts|tsx|mjs|css)$|^web/[^/]*\.(json|html|ts)$|^web/src-tauri/(capabilities/.*|[^/]+\.json)$
+        # ESLint writes its own suppressions file.
+        exclude: ^web/eslint-suppressions\.json$
         require_serial: true
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
-        # basedpyright rewrites its baseline without a final newline.
-        exclude: ^\.basedpyright/
+        # basedpyright and ESLint rewrite their baselines without a final newline.
+        exclude: ^\.basedpyright/|^web/eslint-suppressions\.json$
       - id: trailing-whitespace
       - id: check-yaml
       - id: check-toml

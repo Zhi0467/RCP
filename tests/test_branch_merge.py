@@ -19,6 +19,8 @@ from rcp.core.models import (
     BranchMergeReceipt,
     GraphBranchMetadata,
     GraphState,
+    OntologyState,
+    OntologyTypeDefinition,
     Patch,
     ResearchQuestion,
 )
@@ -417,7 +419,19 @@ class _Run:
             )
         ]
 
-    def move(self, *, changed_conflict=False):
+    def move(self, *, changed_conflict=False, ontology=False):
+        main_graph = _state(5)
+        if ontology:
+            main_graph.ontology = OntologyState(
+                types=[
+                    OntologyTypeDefinition(
+                        name="training_run",
+                        definition="A training run.",
+                        base_type="experiment",
+                        layer="action",
+                    )
+                ]
+            )
         self.context = BranchMergeContext.create(
             merge_task_id=self.initial.merge_task_id,
             authorized_by=self.initial.authorized_by,
@@ -426,7 +440,7 @@ class _Run:
             base_graph=self.initial.base_graph,
             branch_graph=self.initial.branch_graph,
             main_head=_head(5, marker="e"),
-            main_graph=_state(5),
+            main_graph=main_graph,
             run_truth_scope=["repo"],
         )
         conflicts = self.plan.conflicts
@@ -558,6 +572,26 @@ async def test_destination_movement_reuses_only_unchanged_answers(tmp_path, monk
         assert run.launches[1][1]["required_session_id"] == "merge-session"
     assert run.commits[0][1]["expected_main_head"] == run.context.main_head
     assert run.preparations[-1][0] == run.next_plan
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_new_ontology_extensions_points_to_the_staged_master(
+    tmp_path, monkeypatch
+):
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+
+    def first_turn():
+        run.answer()
+        if len(run.launches) == 1:
+            run.move(changed_conflict=True, ontology=True)
+
+    run.behavior = first_turn
+    await run.run()
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    rebase = run.launches[1][0]
+    master = next((run.stage.local_stage / "inputs").glob("task-*-branch-merge.md"))
+    assert str(master) in rebase
+    assert len(rebase) < 3000
 
 
 @pytest.mark.asyncio

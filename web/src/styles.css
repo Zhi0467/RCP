@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./themes/aqua.css";
+@import "./themes/snowbound.css";
 @import "./styles/01-base.css";
 @import "./styles/02-landing.css";
 @import "./styles/03-spaces.css";
@@ -13,3 +14,4 @@
 @import "./styles/11-runs.css";
 @import "./styles/12-operations.css";
 @import "./styles/13-phone.css";
+@import "./styles/14-agent.css";

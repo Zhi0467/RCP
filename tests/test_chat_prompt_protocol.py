@@ -265,7 +265,8 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
         chat_id="session-master-chat",
         message="Start the native chat.",
         run_truth_scope=["repo-a"],
-        mode="discuss",
+        # A watcher wakes a Work session; a Discuss master would be replaced on that Work turn.
+        mode="work" if watcher_wake else "discuss",
     )
 
     async def turn(operation_id: str, request: RunRequest) -> None:
@@ -919,10 +920,17 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     assert str(work_artifacts) in launcher.prompts[1]
     assert launcher.prompts[1].count(work_message) == 1
     delta = changed_values(launcher.prompts[1])
-    assert delta["settings.reasoning"] == "high"
-    assert not any(key.startswith(("repositories", "skills")) for key in delta)
 
-    if first_mode == "work":
+    if first_mode == "discuss":
+        # The Discuss master lacks Work's launch instructions, so the first Work turn
+        # reopens a staged Work master instead of carrying them inline.
+        master = Path(delta["master_context.path"])
+        assert master.is_file()
+        assert str(master) != launcher.prompts[0].splitlines()[1]
+        assert len(launcher.prompts[1]) < 4000
+    else:
+        assert delta["settings.reasoning"] == "high"
+        assert not any(key.startswith(("repositories", "skills")) for key in delta)
         assert json.loads(delta["discuss.execution_instructions"])
         assert launcher.launch_kwargs[1]["write_scope"] is None
 

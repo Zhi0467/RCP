@@ -58,7 +58,7 @@ export function saveAgentBoardColumn(
   return [...columnIds, ...order.filter((chatId) => !placed.has(chatId))].slice(0, ORDER_LIMIT);
 }
 
-export type AgentBoardDrop = "reorder" | "archive" | "restore";
+export type AgentBoardDrop = "reorder" | "archive" | "restore" | "remove";
 
 /** A working agent cannot be archived; a state column takes no drop from another
  *  state column, because the run decides the state. */
@@ -66,9 +66,10 @@ export function agentBoardDrop(
   from: AgentBoardColumn,
   to: AgentBoardColumn,
   working: boolean,
+  draft = false,
 ): AgentBoardDrop | null {
   if (from === to) return "reorder";
-  if (to === "archived") return working ? null : "archive";
+  if (to === "archived") return working ? null : draft ? "remove" : "archive";
   if (from === "archived") return "restore";
   return null;
 }

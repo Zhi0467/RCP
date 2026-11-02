@@ -308,6 +308,15 @@ function useStagedAnnotations(
   // The list belongs to its key: a key that arrives late, like Paper's once the
   // member is known, loads that key's list instead of overwriting it with this one.
   const [loadedKey, setLoadedKey] = useState(storageKey);
+  const currentKey = useRef(storageKey);
+  currentKey.current = storageKey;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   if (loadedKey !== storageKey) {
     setLoadedKey(storageKey);
     setAnnotations(readStagedAnnotations(storageKey));
@@ -352,6 +361,13 @@ function useStagedAnnotations(
   /** After an admitted turn: the turn carries its comments now. With `sent`, only
    * those comments clear; any staged since then stay. */
   const clear = (sent?: StagedChatAnnotation[]) => {
+    if (!mounted.current || currentKey.current !== storageKey) {
+      writeStagedAnnotations(
+        storageKey,
+        sent ? unsentChatAnnotations(readStagedAnnotations(storageKey), sent) : [],
+      );
+      return;
+    }
     setOpen(false);
     if (sent) {
       setAnnotations((current) => unsentChatAnnotations(current, sent));
@@ -362,8 +378,18 @@ function useStagedAnnotations(
   };
 
   /** Drops staged comments that no longer apply. */
-  const discard = (items: StagedChatAnnotation[]) =>
-    setAnnotations((current) => current.filter((annotation) => !items.includes(annotation)));
+  const discard = (items: StagedChatAnnotation[]) => {
+    // A send can finish after its thread has been left. Consume that owner's
+    // saved comments without changing the newly opened thread's state.
+    if (!mounted.current || currentKey.current !== storageKey) {
+      writeStagedAnnotations(
+        storageKey,
+        unsentChatAnnotations(readStagedAnnotations(storageKey), items),
+      );
+      return;
+    }
+    setAnnotations((current) => unsentChatAnnotations(current, items));
+  };
 
   return {
     annotations,

@@ -18,7 +18,6 @@ from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -71,9 +70,10 @@ from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
     ProviderSignedOut,
-    provider_login_host,
+    run_on_host,
 )
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.provider_usage import record_provider_usage
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -270,6 +270,7 @@ class AgentTaskExecution:
     #: Set only by the ordinary Work owner from its validated stage file; provider
     #: event text can never supply it.
     turn_outcome: TurnOutcome | None = None
+    project_results: dict[str, str] | None = None
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
     #: setting refused. Only the read that failed knows which happened, and by
@@ -460,6 +461,8 @@ class BackgroundAgentTasks:
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
         self._transport_retry_timers: list[threading.Timer] = []
+        # Live workers whose settlement already decided their automatic retry.
+        self._retry_decided: set[str] = set()
         # An automatic reattempt that has passed its shutdown check is admitting
         # a child. Shutdown waits for it under this condition before it fences
         # spawns, so the child it admits gets a worker instead of being left
@@ -506,13 +509,7 @@ class BackgroundAgentTasks:
             )
         host = execution_host
         if host is None:
-            if request.run_on in {None, "local"}:
-                host = ""
-            else:
-                project = self.store.project(project_id)
-                if project is None:
-                    raise KeyError(project_id)
-                host = provider_login_host(load_manifest(project.locator), request.run_on)
+            host = run_on_host(self.store, project_id, request.run_on)
         accounts = ProviderAccounts.for_store(self.store)
         resolved, _ = accounts.resolve_launch_login(
             request.provider,
@@ -603,6 +600,16 @@ class BackgroundAgentTasks:
                 and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
             ):
                 question_followups.append(task.operation_id)
+        from rcp.runs.agent_schedules import queued_schedule_wakes
+        from rcp.runs.agent_thread_commands import restart_handoff_turns, unstarted_handoff_turns
+
+        handoff_dispatches = unstarted_handoff_turns(self.store)
+        # The schedule poller relaunches these; its claim already consumed their notes.
+        schedule_wakes = [
+            operation_id
+            for operation_id in queued_schedule_wakes(self.store)
+            if self.store.agent_task_dispatch_was_proven_not_started(operation_id)
+        ]
         consolidation_dispatches = {
             operation_id
             for operation_id in self.store.pending_consolidation_operation_ids()
@@ -617,9 +624,12 @@ class BackgroundAgentTasks:
                 *[task.operation_id for _episode, task, _request in reserved_roots],
                 *[task.operation_id for _episode, task in reserved_experiments],
                 *question_followups,
+                *[task.operation_id for task in handoff_dispatches],
+                *schedule_wakes,
             }
         )
         self._discard_orphan_mailbox_checkpoints()
+        restart_handoff_turns(self, handoff_dispatches)
         restart_stopping_experiment_recoveries(self)
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
@@ -717,6 +727,8 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         *,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
@@ -769,13 +781,15 @@ class BackgroundAgentTasks:
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
-        return self._create_and_spawn(
+        record = self._create_and_spawn(
             project_id,
             kind,
             request,
             estimate_seconds=estimate,
             estimate_samples=samples,
             operation_id=operation_id,
+            handoff_id=handoff_id,
+            handoff_wake_id=handoff_wake_id,
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
@@ -783,6 +797,8 @@ class BackgroundAgentTasks:
             graph_base_head=graph_base_head,
             ensure_graph_target=ensure_graph_target,
         )
+        assert record is not None
+        return record
 
     def resume(
         self,
@@ -868,6 +884,14 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        thread = self.store.agent_thread(str(previous.request.get("chat_id") or ""))
+        if thread is not None and thread.agent and provider is model is reasoning is run_on is None:
+            # A thread's stored pick replaces the failed turn's agent, as the member chose.
+            from rcp.runs.agent_thread_commands import thread_agent
+
+            pick = thread_agent(self.store, thread)
+            provider, run_on = pick["provider"], pick["run_on"]
+            model, reasoning = pick["model"] or "", pick["reasoning"] or ""
         if (
             isinstance(original, RunRequest)
             and original.artifact_edit is not None
@@ -1519,6 +1543,8 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
@@ -1778,6 +1804,8 @@ class BackgroundAgentTasks:
                 record = self.store.create_agent_task(
                     task_record,
                     continuation_cause=continuation,
+                    handoff_id=handoff_id,
+                    handoff_wake_id=handoff_wake_id,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -1878,6 +1906,8 @@ class BackgroundAgentTasks:
             if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
         if record.status != "queued":
+            return record
+        if self.store.agent_task_turn_refusal(record):
             return record
 
         request = self._launchable_request(record)
@@ -2451,6 +2481,8 @@ class BackgroundAgentTasks:
                 )
             return
         result: dict[str, object] = {"messages": outcome.messages}
+        if execution.project_results is not None:
+            result["project_results"] = execution.project_results
         if outcome.artifacts:
             result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
         if outcome.turn_outcome is not None:
@@ -2476,17 +2508,13 @@ class BackgroundAgentTasks:
             )
 
     def _bound_execution_host(self, operation_id: str, request: AgentTaskRequest) -> str:
-        """The host a request runs on, or "" when it is local or cannot be resolved."""
+        """The host a request runs on, or "" when it is the backend or cannot be resolved."""
 
-        run_on = getattr(request, "run_on", None)
-        if run_on in {None, "local"}:
-            return ""
         record = self.store.agent_task(operation_id)
-        project = self.store.project(record.project_id) if record is not None else None
-        if project is None:
+        if record is None:
             return ""
         try:
-            return provider_login_host(load_manifest(project.locator), run_on)
+            return run_on_host(self.store, record.project_id, getattr(request, "run_on", None))
         except (OSError, ValueError, KeyError):
             return ""
 
@@ -3044,16 +3072,35 @@ class BackgroundAgentTasks:
 
         for operation_id in self.store.owed_transport_retry_operation_ids():
             record = self.store.agent_task(operation_id)
-            if (
-                record is None
-                or not record.can_retry
-                or self.store.episode_child_recovery_refusal(record) is not None
-            ):
-                continue
-            attempt = self._transport_retry_attempt(record)
-            if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
-                continue
-            self._schedule_transport_retry(operation_id, attempt=attempt)
+            if record is not None and self.transport_retry_owed(record):
+                self._schedule_transport_retry(
+                    operation_id, attempt=self._transport_retry_attempt(record)
+                )
+
+    def transport_retry_owed(self, record: AgentTaskRecord) -> bool:
+        """Whether a lost-link turn still has an automatic reattempt coming.
+
+        Re-arming after a restart and anything waiting on the turn's final result
+        share this answer. A reattempt that stood down, ran out, or can no longer
+        run owes nothing, so the failure is final.
+        """
+
+        operation_id = record.operation_id
+        return (
+            record.status == "failed"
+            and record.failure_kind == "transport_lost"
+            and self.store.agent_task_has_receipt(operation_id, "transport_auto_retry")
+            and not self.store.agent_task_has_receipt(
+                operation_id, "transport_auto_retry_exhausted"
+            )
+            and not self.store.agent_task_has_receipt(
+                operation_id, "transport_auto_retry_superseded"
+            )
+            and not self.store.agent_task_has_continuation(operation_id)
+            and record.can_retry
+            and self.store.episode_child_recovery_refusal(record) is None
+            and self._transport_retry_attempt(record) < AGENT_TRANSPORT_RETRY_LIMIT
+        )
 
     def _transport_retry_superseded(self, operation_id: str) -> bool:
         """Whether this turn was already taken over while the wait ran.
@@ -3106,6 +3153,8 @@ class BackgroundAgentTasks:
                     {"exception_type": type(exc).__name__},
                     tier="diagnostic",
                 )
+        with self._controls_lock:
+            self._retry_decided.add(record.operation_id)
         if self.experiment_resumer is not None:
             try:
                 start_scheduled_experiment_resumes(
@@ -3196,30 +3245,9 @@ class BackgroundAgentTasks:
                 if event.status is not None:
                     live_status.observe(event.status)
                 if event.usage is not None:
-                    usage_record = self.store.record_agent_usage(
-                        execution.operation_id,
-                        event.usage,
-                        idempotent=recorded,
+                    record_provider_usage(
+                        self.store, execution.operation_id, event.usage, recorded=recorded
                     )
-                    usage_receipt_exists = recorded and any(
-                        receipt.category == "provider_usage"
-                        and receipt.payload.get("usage_id") == usage_record.usage_id
-                        for receipt in self.store.agent_task_receipts(execution.operation_id)
-                    )
-                    if not usage_receipt_exists:
-                        self.store.record_agent_task_receipt(
-                            execution.operation_id,
-                            "provider_usage",
-                            {
-                                "usage_id": usage_record.usage_id,
-                                "counted": usage_record.counted,
-                                "count_reason": usage_record.count_reason,
-                                "provider_profile": usage_record.provider_profile,
-                                "processed_input_tokens": usage_record.processed_input_tokens,
-                                "generated_tokens": usage_record.generated_tokens,
-                            },
-                            tier="diagnostic",
-                        )
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text
@@ -3512,6 +3540,18 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
+            self._retry_decided.discard(operation_id)
+
+    def retry_undecided(self, operation_id: str) -> bool:
+        """Whether this task's live worker has yet to decide its automatic retry.
+
+        A failure commits before its settlement records a transport or Codex retry,
+        so until then the failure is not final. A task with no live worker here
+        has nothing left to decide.
+        """
+
+        with self._controls_lock:
+            return operation_id in self._workers and operation_id not in self._retry_decided
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:

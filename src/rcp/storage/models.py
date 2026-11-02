@@ -2012,6 +2012,7 @@ class ProviderSkillInventoryRecord(BaseModel):
 
 
 AgentTaskKind = Literal[
+    "space_chat",
     "seed",
     "refresh",
     "node_chat",
@@ -2153,7 +2154,7 @@ class ChatSessionContextRecord(BaseModel):
     execution_machine: str = Field(min_length=1)
     native_session_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
-    kind: Literal["node_chat", "project_chat"]
+    kind: Literal["node_chat", "project_chat", "space_chat"]
     chat_id: str = Field(min_length=1)
     node_id: str | None = None
     protocol_version: int = Field(ge=1)
@@ -3742,6 +3743,8 @@ _PROJECT_ID_TABLES = (
     "auto_research_child_work",
     "auto_research_child_experiments",
     "auto_research_child_admissions",
+    "agent_threads",
+    "space_turn_project_bindings",
 )
 
 

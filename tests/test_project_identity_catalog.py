@@ -136,7 +136,15 @@ def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(
     paper_source.parent.mkdir(parents=True, exist_ok=True)
     paper_source.write_text("legacy introduction", encoding="utf-8")
 
+    from rcp.agents.memory_files import prepare_project_memory
+
+    shared, _ = prepare_project_memory(store, old_project_id)
+    Path(shared, "MEMORY.md").write_text("retained memory")
     adopted = catalog.register(str(manifest.path))
+    assert not Path(shared).exists()
+    assert (
+        data_dir / "memory" / adopted.project_id / "shared/MEMORY.md"
+    ).read_text() == "retained memory"
     reopened = catalog.register(str(manifest.path))
 
     assert adopted == reopened

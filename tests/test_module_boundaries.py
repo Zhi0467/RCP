@@ -11,7 +11,13 @@ import ast
 import re
 from pathlib import Path
 
-SOURCE = Path(__file__).resolve().parent.parent / "src" / "rcp"
+from tests.architecture import (
+    SOURCE,
+    _call_name,
+    _import_aliases,
+    _module_package,
+    _python_files,
+)
 
 # Any call that puts bytes on disk. Routes compose service and history owners;
 # they never hold a file handle on canonical or operational state themselves.
@@ -56,67 +62,6 @@ OS_WRITE_FUNCTIONS = {
 }
 SHUTIL_WRITE_PREFIXES = ("copy", "move", "rmtree")
 WRITE_MODE = re.compile(r"[wax+]")
-
-
-def _python_files(directory: Path) -> list[Path]:
-    return sorted(path for path in directory.rglob("*.py") if path.is_file())
-
-
-def _module_package(module: Path | None) -> list[str]:
-    """Dotted package parts of a module under `src/rcp`, e.g. ['rcp', 'runs']."""
-    if module is None:
-        return []
-    return ["rcp", *module.relative_to(SOURCE).parent.parts]
-
-
-def _import_aliases(tree: ast.AST, module: Path | None = None) -> dict[str, str]:
-    """Local name to dotted origin for every import in a module.
-
-    `import os as o` maps `o` to `os`; `from io import open as io_open` maps
-    `io_open` to `io.open`; a plain `import os` maps `os` to itself. A relative
-    import is resolved against the module's own package, so `from .chat import
-    _chat_path` inside `rcp/runs/` maps to `rcp.runs.chat._chat_path`. A name
-    not in the map is a local binding, not a module.
-    """
-    package = _module_package(module)
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    aliases[alias.asname] = alias.name
-                else:
-                    root = alias.name.split(".")[0]
-                    aliases[root] = root
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0:
-                base = node.module or ""
-            else:
-                anchor = package[: len(package) - (node.level - 1)] if package else []
-                base = ".".join([*anchor, *([node.module] if node.module else [])])
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{base}.{alias.name}" if base else alias.name
-    return aliases
-
-
-def _call_name(call: ast.Call, aliases: dict[str, str]) -> tuple[str, ast.expr | None]:
-    """The callee's canonical dotted name, and its receiver when it is a method
-    call on something other than an imported module (None otherwise)."""
-    function = call.func
-    if isinstance(function, ast.Name):
-        return aliases.get(function.id, function.id), None
-    if isinstance(function, ast.Attribute):
-        # Walk `a.b.c(...)` down to its root; a root that is an imported name
-        # makes the whole chain module-qualified, anything else is a method call.
-        chain = [function.attr]
-        owner = function.value
-        while isinstance(owner, ast.Attribute):
-            chain.append(owner.attr)
-            owner = owner.value
-        if isinstance(owner, ast.Name) and owner.id in aliases:
-            return ".".join([aliases[owner.id], *reversed(chain)]), None
-        return f".{function.attr}", function.value
-    return "", None
 
 
 def _receiver_name(receiver: ast.expr | None) -> str | None:
@@ -571,6 +516,8 @@ def holder(service, request):
 APPROVED_PATH_SINKS = {
     "_append_chat_records",
     "rcp.runs.chat._append_chat_records",
+    # Dispatches a steer receipt to the project or Space append sink, nothing else.
+    "_append_steering_records",
 }
 
 
@@ -629,14 +576,28 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     the approved append sink. This is a guardrail against a cooperative edit,
     in the same spirit as the repository's write-scope enforcement, not a
     sound dataflow analysis against a hostile author.
+
+    One reader is the contract: a private agent thread that starts a fresh
+    native session gets a bounded tail of its own display history, labelled
+    as history and not authority (conversations spec, private agent threads).
     """
 
+    history_seed = {("runs/agent_threads.py", "thread_history_seed")}
     offenders: list[str] = []
     for package in TASK_RUNTIME:
         for path in _python_files(SOURCE / package):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             aliases = _import_aliases(tree, path)
+            module = path.relative_to(SOURCE).as_posix()
+            seeded = {
+                id(node)
+                for function in ast.walk(tree)
+                if isinstance(function, ast.FunctionDef) and (module, function.name) in history_seed
+                for node in ast.walk(function)
+            }
             for node in ast.walk(tree):
+                if id(node) in seeded:
+                    continue
                 if _references_transcript_reader(node, aliases):
                     offenders.append(
                         f"{path.relative_to(SOURCE)}:{node.lineno} references a reader"

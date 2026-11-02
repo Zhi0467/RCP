@@ -5,7 +5,7 @@ import json
 import math
 import secrets
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
 
 
@@ -26,15 +26,22 @@ class ProviderInvocationGate:
     _token: str = field(repr=False)
     # Older persisted Work gates predate exact-client Discuss grants.
     client_path: str | None = None
+    children: tuple[ProviderInvocationGate, ...] = ()
     _ready_nonce: str = field(default_factory=lambda: secrets.token_hex(16), repr=False)
 
     @property
     def ready_line(self) -> str:
         return f"RCP_COMMAND_BROKER_READY:{self._ready_nonce}"
 
+    @property
+    def ready_lines(self) -> set[str]:
+        return {self.ready_line, *(line for child in self.children for line in child.ready_lines)}
+
     def _broker_argv(self) -> list[str]:
         return [
             *isolated_python_argv(self.broker_path),
+            "--workspace",
+            self.workspace,
             "--socket",
             self.socket_path,
             "--mailbox-id",
@@ -48,6 +55,8 @@ class ProviderInvocationGate:
     def wrap_command(self, command: list[str]) -> list[str]:
         if not command:
             raise ValueError("provider command must not be empty")
+        for child in reversed(self.children):
+            command = child.wrap_command(command)
         return [*self._broker_argv(), "--", *command]
 
     def bootstrap(self, prompt: bytes) -> bytes:
@@ -56,6 +65,8 @@ class ProviderInvocationGate:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
+        for child in reversed(self.children):
+            prompt = child.bootstrap(prompt)
         return document + b"\n" + prompt
 
     def client_executable_argv(self) -> tuple[str, str, str, str]:
@@ -93,7 +104,12 @@ class ProviderInvocationGate:
                         stderr = await asyncio.wait_for(process.stderr.read(), timeout=0.2)
                 detail = stderr.decode("utf-8", errors="replace").strip()
                 raise RuntimeError(detail or "episode command broker did not become ready")
-            yield
+            async with AsyncExitStack() as children:
+                for child_gate in self.children:
+                    await children.enter_async_context(
+                        child_gate.serve_current_session(timeout_seconds=timeout_seconds)
+                    )
+                yield
         finally:
             process.stdin.close()
             with suppress(BrokenPipeError, ConnectionResetError):

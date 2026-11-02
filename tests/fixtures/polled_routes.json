@@ -1,0 +1,32 @@
+{
+  "routes": [
+    {"method": "POST", "path": "/api/resource-watermarks", "json": {"client_id": "polled-routes", "open": [{"project_id": "{project_id}", "current_ref": "main", "resources": []}], "due": ["{project_id}"], "agent_threads": true}},
+    {"method": "GET", "path": "/api/agent-threads"},
+    {"method": "GET", "path": "/api/agent-threads/{thread_id}/transcript"},
+    {"method": "GET", "path": "/api/agent-threads/{thread_id}/tasks/{operation_id}"},
+    {"method": "GET", "path": "/api/agent-threads/{thread_id}/schedules"},
+    {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}"},
+    {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}/questions"},
+    {"method": "GET", "path": "/api/projects/{project_id}/tasks/{operation_id}"},
+    {"method": "GET", "path": "/api/projects/{project_id}/episodes"},
+    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_alias}/browser"},
+    {"method": "GET", "path": "/api/projects/{project_id}/paper/engines"},
+    {"method": "GET", "path": "/api/space/runs"},
+    {"method": "GET", "path": "/api/space/machines/{machine_id}/browser"},
+    {"method": "GET", "path": "/api/machine-power"},
+    {"method": "GET", "path": "/api/notifications/devices"},
+    {"method": "GET", "path": "/api/providers/logins"},
+    {"method": "GET", "path": "/api/providers/logins/settings"},
+    {"method": "GET", "path": "/api/providers/{provider}/logins/sign-in/{attempt_id}", "status": 404},
+    {"method": "GET", "path": "/api/update-notice"},
+    {"method": "GET", "path": "/api/project-provisioning/requests/{request_id}", "space": "team"},
+    {"method": "GET", "path": "/api/team/devices/pairings/{pairing_id}", "space": "team"}
+  ],
+  "allowlist": [
+    {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}", "reason": "Opens the project through open_display, which refreshes remote state."},
+    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_alias}/browser", "reason": "Opens the project through open_display, then probes the machine's browser like the Space machine route."},
+    {"method": "GET", "path": "/api/space/machines/{machine_id}/browser", "reason": "Probes browser readiness on every call: a login shell, launchctl and node here, SSH on a remote machine."},
+    {"method": "GET", "path": "/api/update-notice", "reason": "Looks up the latest release over HTTP when the cached check is stale, then runs git rev-parse in a source checkout."},
+    {"method": "GET", "path": "/api/team/devices/pairings/{pairing_id}", "reason": "Reads the code inside BEGIN IMMEDIATE so it can withdraw a code whose issuer is gone."}
+  ]
+}

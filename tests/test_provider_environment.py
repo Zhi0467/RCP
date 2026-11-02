@@ -137,6 +137,24 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(without)
 
 
+def test_local_environment_drops_a_hosting_claude_session(
+    credentials: ProviderCredentialStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/host-session.sock")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    environment = AgentLauncher(credentials=credentials).process_environment(
+        LoginKey("claude", "", MACHINE_LOGIN_ID)
+    )
+
+    assert environment.local_env is not None
+    assert "CLAUDE_CODE_MESSAGING_SOCKET" not in environment.local_env
+    assert "CLAUDE_CODE_ENTRYPOINT" not in environment.local_env
+    # Member configuration still reaches the provider.
+    assert environment.local_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
+
+
 def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
     credentials: ProviderCredentialStore,
 ) -> None:

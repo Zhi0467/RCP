@@ -105,15 +105,11 @@ export function bulletinThreads(posts: readonly BulletinPost[]) {
     }));
 }
 
-/** An agent author shows its current name; the label stored with the post covers agents no longer listed. */
-export function bulletinAuthor(
-  post: Pick<BulletinPost, "author">,
-  names: ReadonlyMap<string, string> = new Map(),
-): string {
+/** The server resolves the live name and retains the stored label for deleted agents. */
+export function bulletinAuthor(post: Pick<BulletinPost, "author">): string {
   if (post.author.kind === "member")
     return post.author.display_name ?? post.author.user_id ?? "Member";
-  const current = post.author.actor_id ? names.get(post.author.actor_id) : undefined;
-  return current ?? post.author.actor_label ?? post.author.operation_id ?? "Agent";
+  return post.author.actor_label ?? post.author.operation_id ?? "Agent";
 }
 
 export function bulletinDate(iso: string): string {

@@ -27,7 +27,11 @@ from rcp.agents.context import CoachContext
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import (
+    ProjectWriteScope,
+    ProviderWriteScope,
+    RegisteredRepositoryRoot,
+)
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
@@ -100,7 +104,6 @@ def checkpoint_local_recovery_stages(
 
     if not data_dir.is_absolute() or ".." in data_dir.parts:
         raise ValueError("recovery-stage inventory requires one absolute data directory")
-    stage_root = data_dir / "run-stage"
     bindings = tuple(item for item in store.run_stage_lifecycles() if not item.stage_host)
     if not bindings:
         return ()
@@ -113,7 +116,13 @@ def checkpoint_local_recovery_stages(
             not root.is_absolute()
             or ".." in root.parts
             or str(root) != stage_value
-            or root.parent != stage_root
+            or not (
+                root.parent == data_dir / "run-stage"
+                or (
+                    root.parent.name == "stages"
+                    and root.parent.parent.parent == data_dir / "agent-threads"
+                )
+            )
         ):
             raise ValueError("a saved local run stage escaped its exact data boundary")
         try:
@@ -124,6 +133,8 @@ def checkpoint_local_recovery_stages(
             continue
         except OSError as exc:
             raise ValueError("a saved local run stage cannot be inspected") from exc
+        if root.resolve() != root:
+            raise ValueError("a saved local run stage has a noncanonical parent")
         if not stat.S_ISDIR(metadata.st_mode) or root.is_symlink():
             raise ValueError("a saved local run stage is not an ordinary directory")
         inventory.append(
@@ -132,14 +143,6 @@ def checkpoint_local_recovery_stages(
                 owner_refs=binding.owner_refs,
             )
         )
-    if not inventory:
-        return ()
-    try:
-        root_metadata = stage_root.lstat()
-    except OSError as exc:
-        raise ValueError("the local run-stage root is unavailable") from exc
-    if not stat.S_ISDIR(root_metadata.st_mode) or stage_root.is_symlink():
-        raise ValueError("the local run-stage root is not an ordinary directory")
     return tuple(inventory)
 
 
@@ -400,16 +403,20 @@ def _swept_stage_root(
     data_dir: Path,
     *,
     store: _RunStageProtectionStore | None = None,
+    thread_owner: str | None = None,
 ) -> Path:
     """The local scratch root, with expired folders reclaimed before it is used."""
     stage_root = data_dir / "run-stage"
     protected_roots = _protected_run_stage_roots(store, "")
     if protected_roots is not None:
-        _sweep_stale_stages(
-            stage_root,
-            now=time.time(),
-            protected_roots=protected_roots,
-        )
+        parents = [stage_root, *(data_dir / "agent-threads").glob("*/stages")]
+        for parent in parents:
+            if parent.resolve() == parent:
+                _sweep_stale_stages(parent, now=time.time(), protected_roots=protected_roots)
+    if thread_owner is not None:
+        if _safe_stage_name(thread_owner) != thread_owner or thread_owner in {".", ".."}:
+            raise ValueError("invalid thread stage owner")
+        return data_dir / "agent-threads" / thread_owner / "stages"
     return stage_root
 
 
@@ -794,14 +801,20 @@ async def _prepare_hidden_read_scope(
     data_dir: Path | None = None,
     local_stage: Path | None = None,
     execution_host: str = "",
+    repository_inventory: list[RegisteredRepositoryRoot] | None = None,
 ) -> HiddenReadScope:
-    """Resolve and stage the launch policy before its browser is acquired."""
+    """Resolve and stage the launch policy before its browser is acquired.
+
+    A Space turn passes the catalog inventory it already read for every project.
+    """
+    from rcp.agents.hidden_read import HiddenFolderRejected
     from rcp.agents.provider_environment import (
         ProviderProcessEnvironment,
         prepare_hidden_read_launch,
     )
 
     execution_machine = request.run_on or execution_host or "unresolved"
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     try:
         if execution is not None and execution.git_access is not None:
             await execution.git_access.prepare(ProviderProcessEnvironment())
@@ -828,12 +841,30 @@ async def _prepare_hidden_read_scope(
             app_data_dir=data_dir
             or (execution.store.path.parent if execution is not None else None),
             remote_stage=remote_stage,
-            repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+            repository_inventory=(
+                repository_inventory
+                if repository_inventory is not None
+                else service.repository_ownership_inventory(project_id=project_id)
+            ),
             machine_hidden_folders=list(card.hidden_folders) if card is not None else [],
             machine_provider_paths=list(card.provider_paths.values()) if card is not None else [],
             git_access=execution.git_access if execution is not None else None,
             browser_enabled=bool(getattr(request, "browser_requested", False)),
+            thread_owner=(
+                execution.store.private_chat_owner(request.chat_id)
+                if execution is not None
+                and isinstance(request, RunRequest)
+                and request.chat_id is not None
+                and task is not None
+                and task.kind in {"space_chat", "project_chat"}
+                else None
+            ),
+            member_ids=tuple(member.user_id for member in execution.store.space_users())
+            if execution is not None
+            else (),
         )
+    except HiddenFolderRejected:
+        raise
     except Exception:
         from rcp.agents.provider_environment import unhidden_read_scope
 
@@ -850,7 +881,7 @@ async def _stream_agent_events(
     session_id: str | None,
     read_dirs: list[Path],
     write_dirs: list[Path],
-    write_scope: ProjectWriteScope | None,
+    write_scope: ProviderWriteScope | None,
     execution_host: str,
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
@@ -883,6 +914,8 @@ async def _stream_agent_events(
 
         task = execution.store.agent_task(execution.operation_id)
         if task is not None and task.episode_id is not None:
+            if not isinstance(write_scope, ProjectWriteScope):
+                raise ValueError("Episodes require a single project write scope")
             await asyncio.to_thread(
                 validate_episode_launch,
                 execution.store,

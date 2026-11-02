@@ -31,16 +31,25 @@ test("project watermarks refresh target-specific digest and question payloads", 
   await settle();
   store.observe("p", [
     { name: "digest", version: "1" },
+    { name: "chats", version: "1" },
     { name: "questions", version: "1" },
   ]);
   await settle();
   assert.deepEqual(reads, [2, 2, 2]);
   store.observe("p", [
     { name: "digest", version: "1" },
+    { name: "chats", version: "1" },
     { name: "questions", version: "1" },
   ]);
   await settle();
   assert.deepEqual(reads, [2, 2, 2]);
+  store.observe("p", [
+    { name: "digest", version: "1" },
+    { name: "chats", version: "2" },
+    { name: "questions", version: "1" },
+  ]);
+  await settle();
+  assert.deepEqual(reads, [3, 3, 2]);
   assert.notEqual(resourceKeyId(profiles[0].key), resourceKeyId(profiles[1].key));
 });
 
@@ -73,11 +82,17 @@ test("a previous digest target stays cached but dormant until reopened", async (
   store.suspend("p", [id]);
   assert.equal(store.view(id).value, 1);
   assert.deepEqual(store.requests("p"), []);
-  store.observe("p", [{ name: "digest", version: "2" }]);
+  store.observe("p", [
+    { name: "digest", version: "2" },
+    { name: "chats", version: "1" },
+  ]);
   await settle();
   assert.equal(reads, 1);
   store.register("p", read);
-  store.observe("p", [{ name: "digest", version: "2" }]);
+  store.observe("p", [
+    { name: "digest", version: "2" },
+    { name: "chats", version: "1" },
+  ]);
   await settle();
   assert.ok(reads > 1);
   assert.equal(store.view(id).value, reads);

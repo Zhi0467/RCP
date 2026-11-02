@@ -212,7 +212,7 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
             className="transcription-picker"
             title={
               voiceConnection
-                ? "Billed to that OpenAI account at OpenAI's rate for each minute of talk."
+                ? "Billed to that OpenAI account at OpenAI's rate for each minute of talk. Your audio, the thread you talk in and your own memory notes go to OpenAI."
                 : undefined
             }
           >

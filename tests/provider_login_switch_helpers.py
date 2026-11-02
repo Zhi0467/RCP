@@ -13,6 +13,7 @@ from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import ProjectRecord
 from rcp.storage.models import AuthorizedHuman
 
+from .helpers import write_local_test_manifest
 from .test_provider_login_resolver import _login, _task
 
 PROJECT = "00000000-0000-4000-8000-000000000003"
@@ -34,7 +35,7 @@ def switched_session(accounts, stage, provider, direction, *, status="failed", r
     store.upsert_project(
         ProjectRecord(
             project_id=PROJECT,
-            locator="unused",
+            locator=str(write_local_test_manifest(stage.parent)),
             name="Project",
             state_location="unused",
             state_remote=False,
@@ -46,7 +47,7 @@ def switched_session(accounts, stage, provider, direction, *, status="failed", r
     request = RunRequest(
         provider=provider,
         mode="work" if repair else "discuss",
-        run_on="local",
+        run_on="laptop",
         chat_scope="project",
         chat_id="00000000-0000-4000-8000-000000000004",
         reasoning="medium",

@@ -254,6 +254,10 @@ def leave_project(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     fence_episodes_for_departed_member(store, background_tasks, canonical, leaving.user_id)
+    # Closing the member's thread here, not on a later list, refuses its pending handoffs.
+    for thread in store.agent_threads(leaving.user_id):
+        if thread.project_id == canonical:
+            store.close_agent_thread(thread.thread_id, reason="access_lost")
     return Response(status_code=204)
 
 
@@ -504,7 +508,10 @@ def remove_project_machine(
     *,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    """Drop a machine no repository or agent profile uses; its space card stays."""
+    """Drop a machine no repository lives on; agent profiles on it move to the base machine.
+
+    Its space card stays.
+    """
 
     with MACHINE_ATTACHMENT_LOCK:
         return detach_project_machine(project_display_cache, project_id, machine_alias)

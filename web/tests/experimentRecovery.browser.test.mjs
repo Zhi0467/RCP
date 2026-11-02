@@ -410,6 +410,55 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       assert.equal(submissions.length, 1);
       assert.deepEqual(unexpectedRequests, []);
       assert.deepEqual(errors, []);
+
+      if (scenario === "retry") {
+        // Threads load on entering Agents, and the late list still opens our thread.
+        const thread = {
+          thread_id: "own-thread",
+          kind: "project",
+          project_id: "demo",
+          project_name: "Recovery project",
+          agent_name: "Moss",
+          unread: false,
+          last_activity_at: null,
+          live_state: "idle",
+          browser_requested: true,
+        };
+        await page.route("**/api/agent-threads", (route) =>
+          route.fulfill({ json: { threads: [thread] } }),
+        );
+        await page.route("**/api/agent-threads/own-thread/schedules", (route) =>
+          route.fulfill({ json: { schedules: [] } }),
+        );
+        await page.route("**/api/projects/demo/chats/own-thread", (route) =>
+          route.fulfill({
+            json: {
+              chat_id: thread.thread_id,
+              kind: "project_chat",
+              node_id: null,
+              title: thread.agent_name,
+              graph_target: target,
+              messages: [],
+            },
+          }),
+        );
+        await page.route("**/api/projects/demo/chats/own-thread/questions", (route) =>
+          route.fulfill({ json: [] }),
+        );
+        await page.route("**/api/projects/demo/chat-display", (route) =>
+          route.fulfill({ json: { archived: [], titles: {}, pinned: [] } }),
+        );
+        await page
+          .getByRole("button", { name: /^Agents/ })
+          .first()
+          .click();
+        await page.getByRole("region", { name: "Moss", exact: true }).waitFor();
+        await page
+          .getByRole("complementary", { name: "Project conversations" })
+          .waitFor({ state: "hidden" });
+        assert.deepEqual(unexpectedRequests, []);
+        assert.deepEqual(errors, []);
+      }
     },
   );
 }

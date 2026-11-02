@@ -24,6 +24,8 @@ export interface ResourceKey extends ResourceRequest {
 
 export interface ResourceProfile<T> {
   key: ResourceKey;
+  /** Other watermarks whose live projections are included in this response. */
+  watch?: readonly ResourceRequest[];
   fetch(signal: AbortSignal): Promise<T>;
   /** Keeps unchanged parts of the previous value so consumers keep identity. */
   reconcile?(previous: T | undefined, next: T): T;
@@ -441,6 +443,8 @@ export class ResourceStore {
       if (key.ref !== undefined) entry.ref = key.ref;
       if (key.entity !== undefined) entry.entity = key.entity;
       seen.set(watermarkId(project, entry), entry);
+      for (const dependency of state.profile.watch ?? [])
+        seen.set(watermarkId(project, dependency), dependency);
     }
     return [...seen.values()];
   }
@@ -485,8 +489,10 @@ export class ResourceStore {
     for (const state of this.states.values()) {
       const key = state.profile.key;
       if (key.project !== project || !this.watched(state)) continue;
-      const version = versions.get(watermarkId(project, key));
-      if (version === undefined) continue;
+      const dependencies = [key, ...(state.profile.watch ?? [])];
+      const tokens = dependencies.map((entry) => versions.get(watermarkId(project, entry)));
+      if (tokens.some((token) => token === undefined)) continue;
+      const version = tokens.length === 1 ? (tokens[0] as string) : JSON.stringify(tokens);
       state.observed = version;
       state.seen = true;
       for (const entry of this.presentations.values()) {

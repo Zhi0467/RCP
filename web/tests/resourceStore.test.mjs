@@ -774,3 +774,130 @@ test("admitted subscribers retain their value during polling and pending mutatio
   );
   unsubscribe();
 });
+
+test("name projections follow project chat renames through the chats watermark", async () => {
+  const store = new ResourceStore();
+  let name = "Original";
+  let reads = 0;
+  const ids = [];
+  for (const [module, factory] of [
+    ["artifacts/artifactResources", "runArtifactsProfile"],
+    ["agents/taskResources", "taskStatusProfile"],
+    ["experiments/episodeResources", "episodeProfile"],
+  ]) {
+    const profile = (await server.ssrLoadModule(`/src/${module}.ts`))[factory]("p", "run");
+    ids.push(
+      store.register("view", {
+        ...profile,
+        reconcile: undefined,
+        fetch: async () => {
+          reads++;
+          return name;
+        },
+      }),
+    );
+  }
+  for (const renamed of ["Original", "Renamed agent", "Renamed again"]) {
+    name = renamed;
+    store.observe(
+      "p",
+      store.requests("p").map((entry) => ({
+        ...entry,
+        version: entry.name === "chats" ? name : "fixed",
+      })),
+    );
+    await settle();
+    assert.deepEqual(
+      ids.map((id) => store.view(id).value),
+      ids.map(() => name),
+    );
+  }
+  const completed = reads;
+  store.observe(
+    "p",
+    store.requests("p").map((entry) => ({
+      ...entry,
+      version: entry.name === "chats" ? name : "fixed",
+    })),
+  );
+  await settle();
+  assert.equal(reads, completed);
+});
+
+test("chat activity refreshes name projections without refetching graph or inventories", async () => {
+  const { graphProfile, historyProfile, refsProfile } = await server.ssrLoadModule(
+    "/src/graph/graphResources.ts",
+  );
+  const { episodesProfile, experimentIndexProfile, episodeProfile } = await server.ssrLoadModule(
+    "/src/experiments/episodeResources.ts",
+  );
+  const { taskStatusProfile } = await server.ssrLoadModule("/src/agents/taskResources.ts");
+  const store = new ResourceStore();
+  store.setActiveProject("p");
+  const profiles = [
+    graphProfile("p"),
+    historyProfile("p", { kind: "main" }),
+    refsProfile("p"),
+    episodesProfile("p"),
+    experimentIndexProfile("p"),
+    episodeProfile("p", "run"),
+    taskStatusProfile("p"),
+  ];
+  const reads = profiles.map(() => 0);
+  profiles.forEach((profile, index) =>
+    store.register("view", { ...profile, fetch: async () => ++reads[index] }),
+  );
+  await settle();
+  const tokens = store.requests("p").map((request) => ({ ...request, version: "1" }));
+  store.observe("p", tokens);
+  await settle();
+  const before = [...reads];
+  store.observe(
+    "p",
+    tokens.map((token) => (token.name === "chats" ? { ...token, version: "2" } : token)),
+  );
+  await settle();
+  assert.deepEqual(
+    reads.map((count, index) => count - before[index]),
+    [0, 0, 0, 0, 0, 1, 1],
+  );
+  store.release("view");
+});
+
+test("agent-thread watchers ride the beat with no project open, and only while watching", async () => {
+  const time = fakeClock();
+  const requests = [];
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [],
+    activeProjectId: () => null,
+    send: async (request) => {
+      requests.push(request);
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [],
+        unavailable: [],
+        agent_threads: { version: "v" },
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  await time.advance(2500);
+  assert.equal(requests.length, 0);
+  const seen = [];
+  const unwatch = scheduler.watchAgentThreads((version) => seen.push(version));
+  await time.advance(2500);
+  assert.ok(requests.length >= 2 && requests.every((request) => request.agent_threads === true));
+  assert.equal(seen.length, requests.length);
+  assert.ok(seen.every((version) => version === "v"));
+  unwatch();
+  const before = requests.length;
+  await time.advance(2500);
+  assert.equal(requests.length, before);
+  scheduler.stop();
+});
