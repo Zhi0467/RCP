@@ -1,3 +1,5 @@
+"""The macOS machine-power installer, whose admin script uses BSD tools (`stat -f`, `mv -h`)."""
+
 from __future__ import annotations
 
 import fcntl
@@ -19,7 +21,6 @@ from rcp.machine_power_macos import (
     _sudoers,
 )
 
-# The admin script runs only on macOS and uses BSD tools (`stat -f`, `mv -h`).
 macos_tools = pytest.mark.skipif(sys.platform != "darwin", reason="macOS BSD tools")
 
 
@@ -34,18 +35,18 @@ def installer(tmp_path):
     pmset.chmod(0o700)
 
     def run(argv, timeout):
+        """Runs the real installation shell with every privileged executor replaced, so nothing
+        reaches host power settings or system directories. Content embedded in sudoers and plist
+        stays canonical; only execution lines use the fake pmset.
+        """
         assert argv[:2] == ["/usr/bin/osascript", "-e"]
         script = json.loads(
             argv[2].removeprefix("do shell script ").removesuffix(" with administrator privileges")
         )
-        # Execute the actual installation shell with all privileged executors
-        # replaced. Nothing can reach host power settings or system directories.
         for command in ("/usr/sbin/chown", "/usr/sbin/visudo", "/bin/launchctl"):
             script = script.replace(command, "/usr/bin/true")
         script = script.replace("/usr/bin/stat", str(stat))
         script = script.replace("/usr/bin/pmset", str(pmset))
-        # Keep content embedded in sudoers and plist canonical; only execution
-        # lines use the fake pmset executable.
         script = script.replace(f"{pmset} -a", "/usr/bin/pmset -a")
         script = script.replace(f"<string>{pmset}</string>", "<string>/usr/bin/pmset</string>")
         script = script.replace("/private/tmp/rcp-", str(tmp_path / "rcp-"))
@@ -251,19 +252,24 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
 
 @macos_tools
 def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
-    """Work after approval is not bounded by what is left of the prompt's window."""
+    """Work after approval is not bounded by what is left of the prompt's window.
+
+    The post-approval flag check outlasts the 4 s prompt window; the script takes about 1.6 s
+    unloaded, so the 8 s bound leaves over 2 s of slack.
+    """
 
     monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 4)
-    # The post-approval flag check outlasts the whole 4 s prompt window. The
-    # script's own commands take about 1.6 s unloaded, so the 8 s bound keeps
-    # over 2 s of slack for a loaded machine.
     (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 4.2\necho ' SleepDisabled 0'\n")
     assert installer.install().installed
 
 
 @macos_tools
 def test_setup_before_approval_marker_gets_its_own_window(installer, monkeypatch, tmp_path):
-    """A late approval is not cut off by the setup that precedes the approved marker."""
+    """A late approval is not cut off by the setup that precedes the approved marker.
+
+    The prompt plus two parent checks before the marker outlast the 5 s window, while each bound
+    leaves over 2 s of slack for a loaded machine.
+    """
     monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 5)
     run = installer.run
 
@@ -272,8 +278,6 @@ def test_setup_before_approval_marker_gets_its_own_window(installer, monkeypatch
         return run(argv, timeout - 3.5)
 
     installer.run = late_approval
-    # The prompt plus two parent checks before the marker outlast the 5 s window,
-    # while each bound still leaves over 2 s of slack for a loaded machine.
     stat = tmp_path / "stat"
     stat.write_text("#!/bin/sh\nsleep 0.8\n" + stat.read_text().split("\n", 1)[1])
     assert installer.install().installed
@@ -296,11 +300,12 @@ def test_repair_lock_symlink_swap_does_not_modify_target(installer, tmp_path):
     original = installer.run
 
     def run(argv, timeout):
+        """Swaps after provenance validation, right before the ownership operation; the fake
+        ownership command rejects any later chown.
+        """
         script = json.loads(
             argv[2].removeprefix("do shell script ").removesuffix(" with administrator privileges")
         )
-        # Swap after provenance validation, immediately before the ownership
-        # operation. The fake ownership command rejects any following chown.
         ownership = f"bounded /usr/sbin/chown -h {installer.uid} {shlex.quote(str(lock))}"
         attack = (
             f"/bin/rm {shlex.quote(str(lock))}\n"

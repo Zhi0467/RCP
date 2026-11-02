@@ -218,6 +218,7 @@ def test_launch_withholds_a_redirected_shared_folder(tmp_path, monkeypatch):
 def test_only_a_backend_private_thread_turn_adds_its_owner_notes(
     chat_id, episode_id, remote, member_root, tmp_path, monkeypatch
 ):
+    """Project shared memory stays; the owner's notes join only a backend private thread turn."""
     from rcp.agents import memory_files
     from rcp.runs import chat
     from rcp.storage.agent_threads import AgentThreadRecord
@@ -261,7 +262,6 @@ def test_only_a_backend_private_thread_turn_adds_its_owner_notes(
         stage_only=True,
     )
     notes = tmp_path.resolve() / "memory" / "members" / "alice"
-    # Project shared memory stays; the owner's notes join only a backend private thread turn.
     assert result["memory_roots"] == [shared]
     assert result["member_memory_root"] == (str(notes) if member_root else None)
     assert (notes / "MEMORY.md").is_file() is member_root

@@ -405,6 +405,7 @@ def test_answer_that_connects_separate_reviews_is_correctable():
 
 
 def test_a_merged_edge_answer_meets_current_shape_rules():
+    """Neither side admitted Evidence `addresses` a Hypothesis, so the answer goes back."""
     from rcp.core.models import Blocker, Edge, Evidence, Hypothesis
     from rcp.runs.merge_patch import build_merge_patch
     from rcp.runs.merge_plan import plan_merge
@@ -431,7 +432,6 @@ def test_a_merged_edge_answer_meets_current_shape_rules():
     destination.edges[edge.id] = edge.model_copy(update={"target": blockers[2].id})
     plan = plan_merge(_context(base, source, destination))
     (conflict,) = plan.conflicts
-    # Neither side admitted Evidence `addresses` a Hypothesis; the answer goes back.
     selected = answers(plan, {conflict.conflict_id: {"kind": "merged", "value": claim.id}})
     with pytest.raises(MergeAnswersRejected) as rejected:
         build_merge_patch(plan, selected)
