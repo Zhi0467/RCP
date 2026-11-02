@@ -529,6 +529,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             # Archive never strands work: the conversation must be quiet first.
             if archived and self._chat_owns_live_work(connection, project_id, chat_id):
                 raise AgentTaskAdmissionConflict("chat_has_live_work")
+            # Nightly consolidation owns its chat and must keep admitting turns.
+            if (
+                archived
+                and connection.execute(
+                    "SELECT 1 FROM consolidation_runs WHERE project_id=? AND chat_id=?",
+                    (project_id, chat_id),
+                ).fetchone()
+            ):
+                raise AgentTaskAdmissionConflict("consolidation_chat_cannot_be_archived")
             connection.execute(
                 "INSERT INTO chat_display(project_id,chat_id,archived_user_id,archived_at) "
                 "VALUES(?,?,?,?) ON CONFLICT(project_id,chat_id) DO UPDATE SET "

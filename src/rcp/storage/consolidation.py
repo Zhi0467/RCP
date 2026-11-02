@@ -501,6 +501,12 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         },
                     )
                 if task:
+                    # RCP owns this chat; clear an archive flag older releases allowed.
+                    conn.execute(
+                        "UPDATE chat_display SET archived_at=NULL, archived_user_id=NULL "
+                        "WHERE project_id=? AND chat_id=?",
+                        (task.project_id, task.request["chat_id"]),
+                    )
                     task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
             skipped_dates = json.loads(target_state["skipped_dates_json"] or "[]")
