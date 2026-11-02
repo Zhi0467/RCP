@@ -1,4 +1,11 @@
-import { ArrowLeft, LayoutGrid, LoaderCircle, PanelLeft, TriangleAlert } from "lucide-react";
+import {
+  ArrowLeft,
+  LayoutGrid,
+  LoaderCircle,
+  MessageCircle,
+  PanelLeft,
+  TriangleAlert,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { isChatListToggleShortcut } from "../chat/chatLayout";
 import { readPref, writePref } from "../core/prefStorage";
@@ -50,7 +57,9 @@ function RailRow({
             <span className="needs-you-dot" />
           ) : thread.unread ? (
             <span className="unread-dot" />
-          ) : null}
+          ) : (
+            <MessageCircle size={14} />
+          )}
         </span>
         <span className="agent-row-body">
           <span className="agent-row-title">{thread.agent_name}</span>

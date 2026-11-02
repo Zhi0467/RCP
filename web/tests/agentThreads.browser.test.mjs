@@ -319,6 +319,7 @@ test("personal home remembers each member's tab at phone width and honors links"
     await cards.click();
     await page.goto(base);
     assert.equal(await cards.getAttribute("aria-pressed"), "true");
+    if (shots) await page.screenshot({ path: `${shots}/home-390.png` });
     await page.goto(`${base}&member=other`);
     assert.equal(await agent.getAttribute("aria-pressed"), "true");
     await page.goto(base);
@@ -491,10 +492,16 @@ test("inside a project, Agents opens the member's thread with the team list one 
     assert.equal(await list.isHidden(), true);
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/project-agents-1440.png` });
-    await page.getByRole("button", { name: "Expand conversation list" }).click();
+    const expand = page.getByRole("button", { name: "Expand conversation list" });
+    const folded = Number(await expand.locator(".team-count").textContent());
+    await expand.click();
     const options = list.getByRole("option");
     assert.match(await options.first().getAttribute("aria-label"), /^Moss,/);
     assert.equal(await options.count(), 3);
+    // The member's own row counts like every other listed row, folded or not.
+    const all = list.locator('.agent-list-filters [data-filter="all"] span');
+    assert.equal(Number(await all.textContent()), 3);
+    assert.equal(folded, 3);
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/project-agents-team-list-1440.png` });
     assert.deepEqual(errors, []);
@@ -1429,7 +1436,8 @@ test("an empty thread welcomes the member until its first turn, and a starter on
       const thread = page.getByRole("region", { name: "Pip" });
       const welcome = thread.locator(".thread-welcome");
       await welcome.waitFor();
-      assert.equal(await welcome.getByRole("heading", { name: "Pip" }).count(), 1);
+      // The header names the agent, so the welcome carries no heading of its own.
+      assert.equal(await welcome.getByRole("heading").count(), 0);
       assert.equal(await welcome.locator("li").count(), capabilities.space.length);
       const starters = welcome.getByRole("button");
       assert.equal(await starters.count(), 3);

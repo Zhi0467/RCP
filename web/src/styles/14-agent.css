@@ -234,7 +234,8 @@
   padding: 6px;
   position: absolute;
   right: 40px;
-  top: 38px;
+  /* Clear the header's bottom padding and border. */
+  top: calc(100% + 14px);
   width: 320px;
   z-index: 20;
 }
@@ -305,11 +306,22 @@
   height: 28px;
   width: 28px;
 }
-/* A pause, or a stop with no error row, sits in the message column. */
+/* A pause, or a stop with no error row, sits in the message column shaped like
+   the failed-turn row: one rounded line with its actions at the end. */
 .agent-thread .node-chat-lines > .chat-task-inline.paused {
+  border: 0;
+  border-radius: 8px;
   display: flex;
+  flex-wrap: nowrap;
+  font-size: var(--type-md);
+  gap: 8px;
   margin: 0 auto 24px;
   max-width: var(--thread-column);
+  padding: 10px 12px;
+}
+.agent-thread .node-chat-lines > .chat-task-inline.paused > span {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .upcoming-error {
   color: var(--coral);
@@ -357,21 +369,11 @@
   min-height: 100%;
   text-align: center;
 }
-.thread-welcome h2 {
-  font-size: var(--type-2xl);
-  font-weight: 650;
-  margin: 0;
-}
-.thread-welcome-subtitle {
-  color: var(--muted);
-  font-size: var(--type-base);
-  margin: 4px 0 0;
-}
 .thread-welcome ul {
   font-size: var(--type-base);
   line-height: 1.6;
   list-style: "·\00a0\00a0" outside;
-  margin: 20px 0 0;
+  margin: 0;
   padding-left: 1.2em;
   text-align: left;
 }
@@ -413,6 +415,11 @@
   margin-bottom: 8px;
   padding: 4px 8px;
 }
+/* A schedule's wake line holds only its chip, which then leads the answer below. */
+.agent-thread .node-chat-line.schedule-wake {
+  display: flex;
+  margin-bottom: 0;
+}
 .chat-turn-trigger.handoff {
   align-items: center;
   background: color-mix(in srgb, var(--cobalt) 10%, transparent);
@@ -439,11 +446,14 @@
   color: var(--ink);
   font-weight: 650;
 }
-.handoff-result-row span::before {
+.handoff-result-row .chat-turn-trigger {
+  margin: 0 2px 0 0;
+}
+.handoff-result-status::before {
   content: "· ";
 }
-.handoff-result[data-status="failed"] .handoff-result-row span,
-.handoff-result[data-status="refused"] .handoff-result-row span {
+.handoff-result[data-status="failed"] .handoff-result-status,
+.handoff-result[data-status="refused"] .handoff-result-status {
   color: var(--coral);
 }
 .agent-turn-live {
@@ -686,6 +696,13 @@
 /* ---------- Inside a project: your thread, roomy, with the team list one press away ---------- */
 .your-thread-row [role="option"] {
   border-color: var(--cobalt);
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.your-thread-row .agent-row-meta .thread-row-icon {
+  height: 1.15em;
+  margin-right: 5px;
+  vertical-align: -0.2em;
+  width: 1.15em;
 }
 .conversation-list-fold .team-count {
   font: 700 var(--type-3xs) var(--mono);
@@ -717,9 +734,14 @@
     width: 100%;
   }
   /* Title, toggle, settings, and account share one line; an open project tab
-     wraps to its own row below them (12-operations.css), never under them. */
+     wraps to its own row below them (12-operations.css), never under them. The
+     shell's gutter already aligns the header with the cards. */
   .landing-header.space-header {
-    padding: 10px 12px 10px 16px;
+    padding: 10px 0;
+  }
+  /* The view toggle shows its icons alone so the title keeps its room. */
+  .space-view-toggle button > span {
+    display: none;
   }
   /* A zero basis lets the title ellipsize instead of pushing settings and
      account onto a second row. */
@@ -803,15 +825,21 @@
   .thread-agent-picker .agent-config-fields select {
     min-height: 44px;
   }
+  /* The selects keep iOS's 16px zoom guard, so every menu item reads at the same size. */
+  .thread-menu-list button,
+  .thread-agent-picker .agent-config-fields select {
+    font-size: 16px;
+    font-weight: 400;
+  }
   .approval-actions .button {
     flex: 1 1 0;
     min-height: 44px;
   }
   .upcoming-popover {
     right: 0;
+    top: calc(100% + 12px);
     width: min(340px, calc(100vw - 20px));
   }
-  .upcoming-actions .button,
   .thread-welcome-prompts .button {
     min-height: 44px;
   }

@@ -593,19 +593,23 @@ export function ProjectLanding({
           <div className="segmented space-view-toggle" role="group" aria-label="Space view">
             <button
               type="button"
+              aria-label="Projects"
               aria-pressed={!agentRoute}
+              title="Projects"
               onClick={() => chooseHomeView("cards")}
             >
               <LayoutGrid size={13} aria-hidden="true" />
-              Projects
+              <span>Projects</span>
             </button>
             <button
               type="button"
+              aria-label="Agent"
               aria-pressed={Boolean(agentRoute)}
+              title="Agent"
               onClick={() => chooseHomeView("agent")}
             >
               <MessageCircle size={13} aria-hidden="true" />
-              Agent
+              <span>Agent</span>
             </button>
           </div>
         </div>
