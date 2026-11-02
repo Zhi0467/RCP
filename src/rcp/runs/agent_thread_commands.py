@@ -460,8 +460,8 @@ def dispatch_thread_handoffs(
                 admitted.append(operation_id)
         except Exception:
             logger.exception("Handoff %s delivery failed", handoff.handoff_id)
-    _project_delivered_handoff_messages(store, catalog)
-    for handoff in _settle_delivered_handoffs(store):
+    deferred = _project_delivered_handoff_messages(store, catalog)
+    for handoff in _settle_delivered_handoffs(store, deferred):
         try:
             if operation_id := _wake_space(store, background, handoff):
                 admitted.append(operation_id)
@@ -470,14 +470,20 @@ def dispatch_thread_handoffs(
     return admitted
 
 
-def _settle_delivered_handoffs(store: AppStore) -> list[AgentHandoffRecord]:
-    """Settle delivered handoffs whose newest turn settled; return those owed a wake."""
+def _settle_delivered_handoffs(store: AppStore, deferred: set[str]) -> list[AgentHandoffRecord]:
+    """Settle delivered handoffs whose newest turn settled; return those owed a wake.
+
+    A handoff whose request message is not yet in the project transcript (`deferred`)
+    stays unsettled, so the next pass projects it before it can settle.
+    """
     with store.connection() as connection:
         delivered = connection.execute(
             "SELECT handoff_id,target_operation_id FROM agent_handoffs "
             "WHERE settled_at IS NULL AND target_operation_id IS NOT NULL"
         ).fetchall()
         for handoff_id, operation_id in delivered:
+            if operation_id in deferred:
+                continue
             newest = _newest_continuation(connection, operation_id)
             if _handoff_turn_settled(store, newest):
                 connection.execute(
@@ -740,8 +746,11 @@ def restart_handoff_turns(background: BackgroundAgentTasks, tasks: list[AgentTas
             )
 
 
-def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog) -> None:
-    """Replay the file projection from committed admissions, including crash recovery."""
+def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog) -> set[str]:
+    """Replay the file projection from committed admissions, including crash recovery.
+
+    Returns the target operations whose projection was deferred this pass.
+    """
     from rcp.runs.agent_threads import task_owner
     from rcp.runs.chat import _append_chat_records, _chat_path
     from rcp.runs.space_chat import SpaceThreadOwner
@@ -751,6 +760,7 @@ def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog
         rows = connection.execute(
             "SELECT target_operation_id FROM agent_handoffs WHERE target_operation_id IS NOT NULL AND settled_at IS NULL"
         ).fetchall()
+    deferred: set[str] = set()
     for row in rows:
         task = store.agent_task(row[0])
         if task is None or task.kind != "project_chat":
@@ -795,3 +805,5 @@ def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog
             store.record_agent_task_event(
                 task.operation_id, f"Handoff message projection deferred: {exc}", level="warning"
             )
+            deferred.add(task.operation_id)
+    return deferred

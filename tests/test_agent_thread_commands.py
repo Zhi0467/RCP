@@ -230,7 +230,9 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
     assert (refused["state"], refused["reason"]) == ("refused", "source_turn_paused")
 
 
-@pytest.mark.parametrize("refusal", [None, "archived", "closed", "paused", "retried"])
+@pytest.mark.parametrize(
+    "refusal", [None, "archived", "closed", "paused", "retried", "unprojected"]
+)
 def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     manifest, tmp_path: Path, monkeypatch, refusal
 ) -> None:
@@ -363,6 +365,23 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
             )
         report = store.agent_task(drain()[0]).request["handoff_report"]
         assert report["status"] == "paused"
+        return
+    if refusal == "unprojected":
+        # The request message must reach the project transcript before the handoff settles.
+        from rcp.runs import chat
+
+        store.complete_agent_task(
+            settled, applied_revision=None, result={"turn_outcome": {"status": "done"}}
+        )
+        append = chat._append_chat_records
+
+        def unavailable(*args, **kwargs):
+            raise OSError("workspace unavailable")
+
+        monkeypatch.setattr(chat, "_append_chat_records", unavailable)
+        assert drain() == []
+        monkeypatch.setattr(chat, "_append_chat_records", append)
+        assert len(drain()) == 1
         return
     if refusal == "retried":
         # A lost link RCP retries itself is not a settlement; the retry's result is.
