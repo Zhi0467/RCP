@@ -233,11 +233,20 @@ def schedule_instructions(store, operation_id: str, usages: tuple[str, ...] = ()
     task = store.agent_task(operation_id)
     timezone = member_timezone(store, task) if task else None
     clock = schedule_clock(timezone, datetime.fromisoformat(store.now()))
+    # The same decision `_add_schedule` enforces, so the turn knows its own limit.
+    limit = (
+        "This turn carries the member's own message, so a repeat may fire as often as "
+        "every minute. "
+        if task is not None and member_turn(store, task)
+        else f"This turn is a wake, so cron or --every fires must be at least "
+        f"{AGENT_SCHEDULE_MIN_GAP_MINUTES} minutes apart; the member's own message may "
+        "schedule more often. "
+    )
     text = (
         "Add, pause, resume or cancel a schedule when the member asks for a reminder or a "
         "recurring check; any turn, including a wake, may do so. "
-        f"A wake turn's cron or --every fires must be at least {AGENT_SCHEDULE_MIN_GAP_MINUTES} "
-        f"minutes apart. Cron: {CRON_FORMAT}. Bound one repeating schedule with --until or "
+        + limit
+        + f"Cron: {CRON_FORMAT}. Bound one repeating schedule with --until or "
         f"--count rather than adding one-time schedules ({AGENT_SCHEDULES_MAX_ACTIVE} active "
         "at most); local times are in the schedule's zone. "
         "Pass --timezone only when the member named a zone; otherwise their zone applies"
