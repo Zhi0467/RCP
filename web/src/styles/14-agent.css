@@ -328,6 +328,55 @@
 .agent-thread .node-chat-line.agent .chat-markdown p:last-child {
   margin-bottom: 0;
 }
+
+/* An empty thread's welcome sits centered in the transcript until the first message. */
+.thread-welcome {
+  align-items: center;
+  animation: agent-pop-in 0.18s ease-out;
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 0 auto;
+  max-width: 520px;
+  min-height: 100%;
+  text-align: center;
+}
+.thread-welcome h2 {
+  font-size: var(--type-2xl);
+  font-weight: 650;
+  margin: 0;
+}
+.thread-welcome-subtitle {
+  color: var(--muted);
+  font-size: var(--type-base);
+  margin: 4px 0 0;
+}
+.thread-welcome ul {
+  font-size: var(--type-base);
+  line-height: 1.6;
+  list-style: "·\00a0\00a0" outside;
+  margin: 20px 0 0;
+  padding-left: 1.2em;
+  text-align: left;
+}
+.thread-welcome li::marker {
+  color: var(--muted);
+}
+.thread-welcome-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 22px;
+}
+.thread-welcome-prompts .button {
+  font-weight: 500;
+  max-width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+
 .chat-human-message:has(> .chat-message-source) {
   align-items: baseline;
   display: flex;
@@ -642,6 +691,7 @@
 @media (prefers-reduced-motion: reduce) {
   .upcoming-popover,
   .approval-card,
+  .thread-welcome,
   .thread-agent-picker .agent-config.compact {
     animation: none;
   }
@@ -746,7 +796,8 @@
     right: 0;
     width: min(340px, calc(100vw - 20px));
   }
-  .upcoming-actions .button {
+  .upcoming-actions .button,
+  .thread-welcome-prompts .button {
     min-height: 44px;
   }
 }

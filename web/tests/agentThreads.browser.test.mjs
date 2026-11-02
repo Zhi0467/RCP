@@ -65,6 +65,12 @@ const threads = [
   },
 ];
 
+// What the backend renders for each thread kind from its granted verbs.
+const capabilities = {
+  space: ["Answers questions about any project's graph", "Hands work to a project's own agent"],
+  project: ["Answers questions about this project's graph", "Records results in the project graph"],
+};
+
 const message = (id, role, text, operation, extra = {}) => ({
   message_id: id,
   operation_id: operation,
@@ -216,7 +222,11 @@ const schedules = [
 async function mockApi(page, writes) {
   // Each thread's stored agent pick, as the backend keeps it across reloads.
   const agents = new Map();
-  const withAgent = (thread) => ({ ...thread, agent: agents.get(thread.thread_id) ?? null });
+  const withAgent = (thread) => ({
+    ...thread,
+    agent: agents.get(thread.thread_id) ?? null,
+    capabilities: capabilities[thread.kind],
+  });
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1334,6 +1344,43 @@ test("a provider signed in after mount is offered when the thread menu opens", a
     );
     await provider.selectOption("codex");
     assert.match(await menu.getByRole("button", { name: /^Pip agent:/ }).textContent(), /Codex/);
+  });
+});
+
+test("an empty thread welcomes the member until its first turn, and a starter only fills the composer", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      const writes = [];
+      await mockApi(page, writes);
+      await page.route("**/api/agent-threads/space/transcript", (route) =>
+        route.fulfill({ json: transcript("space", []) }),
+      );
+      await page.goto(`${base}#/agent/space`);
+      const thread = page.getByRole("region", { name: "Pip" });
+      const welcome = thread.locator(".thread-welcome");
+      await welcome.waitFor();
+      assert.equal(await welcome.getByRole("heading", { name: "Pip" }).count(), 1);
+      assert.equal(await welcome.locator("li").count(), capabilities.space.length);
+      const starters = welcome.getByRole("button");
+      assert.equal(await starters.count(), 3);
+      // The last starter names the member's first open project.
+      assert.ok((await starters.last().textContent()).includes(threads[1].project_name));
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await page.waitForTimeout(250);
+      if (shots) await page.screenshot({ path: `${shots}/welcome-${width}.png` });
+      const starter = await starters.first().textContent();
+      await starters.first().click();
+      const field = thread.getByRole("textbox", { name: "Message" });
+      assert.equal(await field.inputValue(), starter);
+      assert.equal(await field.evaluate((element) => element === document.activeElement), true);
+      const turns = () => writes.filter((write) => write.path.endsWith("/turns"));
+      assert.equal(turns().length, 0);
+      await thread.getByRole("button", { name: "Send", exact: true }).click();
+      await welcome.waitFor({ state: "detached" });
+      assert.equal(turns()[0].body.message, starter);
+      await page.close();
+    }
   });
 });
 

@@ -449,7 +449,11 @@ member picks, the row shows the project's Settings profile, or for the Space
 thread the backend machine's first signed-in provider. When the browser was
 unavailable on the latest turn, the browser item carries a warning icon and the
 fix on hover; turns carry no browser notice. The composer holds the voice
-button. A failed turn shows its error once, in the message column, with Retry.
+button. Once a thread's transcript has loaded empty, a centered welcome names the
+agent and lists what it can do, rendered from the capability lines the backend
+gives each verb the thread kind's turns are granted, above three starters. A
+starter fills the composer without sending, and the first turn removes the welcome.
+A failed turn shows its error once, in the message column, with Retry.
 Switching threads shows each thread's last loaded view while it reloads. Each
 schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake

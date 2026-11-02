@@ -68,6 +68,8 @@ import type {
 } from "../core/types";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { ApprovalCardView } from "./ApprovalCard";
+import { AgentThreadWelcome } from "./AgentThreadWelcome";
+import { threadWelcome } from "./threadWelcome";
 import {
   browserTimezone,
   handoffReport,
@@ -892,6 +894,21 @@ export function AgentThreadView({
     (browserStatus?.status === "unavailable" || browserStatus?.status === "lost")
       ? browserReason(browserStatus.reason_code)
       : null;
+  // A thread with nothing in it yet greets the member, once its empty transcript loaded.
+  const welcome =
+    messages !== null &&
+    !shownLoadError &&
+    !lines.transcript.length &&
+    !questions.length &&
+    !pending &&
+    !latest
+      ? threadWelcome(
+          thread,
+          threads?.find((item) => item.kind === "project" && item.live_state !== "closed")
+            ?.project_name ?? null,
+        )
+      : null;
+
   const menuItems = [
     { label: "Rename", onSelect: () => setRenaming(true) },
     {
@@ -986,6 +1003,15 @@ export function AgentThreadView({
               <RotateCcw size={14} />
             </button>
           </div>
+        )}
+        {welcome && (
+          <AgentThreadWelcome
+            welcome={welcome}
+            onPrompt={(text) => {
+              draft.set(text);
+              textareaRef.current?.focus();
+            }}
+          />
         )}
         <AgentWindowTranscript
           transcript={lines.transcript}
