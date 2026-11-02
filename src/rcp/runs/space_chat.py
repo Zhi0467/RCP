@@ -873,12 +873,18 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
     from rcp.turn_outcomes import WorkTurnOutcome
 
     stated = read_space_output(stage / "outcome.json")
-    if stated is None:
+    try:
+        outcome = WorkTurnOutcome.model_validate_json(stated) if stated is not None else None
+    except ValueError:
+        # Project updates have already applied, so a bad outcome file must still
+        # settle the turn rather than fail it.
+        outcome = WorkTurnOutcome(
+            status="could_not", reason="The agent wrote an invalid turn outcome."
+        )
+    if outcome is None:
         outcome = WorkTurnOutcome(
             status="could_not", reason="The agent did not write its turn outcome."
         )
-    else:
-        outcome = WorkTurnOutcome.model_validate_json(stated)
     failed = [
         f"{item.get('name', project_id)} {item['status']}"
         + (f" ({item['reason']})" if "reason" in item else "")

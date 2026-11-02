@@ -414,3 +414,13 @@ def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
     assert len(pointer) < 1000
     (staged,) = (tmp_path / "inputs").glob("thread-history-*.md")
     assert str(staged) in pointer and "turn 39 " in staged.read_text()
+
+
+@pytest.mark.parametrize("written", [None, "{not json", '{"status": "nope"}'])
+def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written):
+    from rcp.runs.space_chat import settle_space_turn_outcome
+
+    if written is not None:
+        (tmp_path / "outcome.json").write_text(written)
+    # Project updates may already have applied; the turn still settles.
+    assert settle_space_turn_outcome(tmp_path, {}).status == "could_not"
