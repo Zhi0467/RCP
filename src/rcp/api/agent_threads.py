@@ -29,8 +29,9 @@ from rcp.api.chats import (
     IdentityDependency,
     StoreDependency,
     _delete_browser_if_still_off,
-    chat,
+    add_attachment,
     mark_chat_read,
+    remove_attachment,
     rename_chat,
     set_chat_browser,
 )
@@ -44,6 +45,8 @@ from rcp.api.tasks import (
     _reject_history_only_control,
     content_agent_artifact,
     download_agent_artifact,
+    released_unless_started,
+    require_attachment_pair,
 )
 from rcp.attachments import ChatAttachmentUpload
 from rcp.config import load_manifest
@@ -52,13 +55,22 @@ from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
-from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_id
+from rcp.runs.agent_threads import (
+    task_owner,
+    thread_projection,
+    thread_projections,
+    thread_scope_id,
+)
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
 from rcp.service_connections import ConnectionError
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.agent_threads import AgentThreadRecord, private_artifact_owner
+from rcp.storage.agent_threads import (
+    AgentThreadRecord,
+    private_artifact_owner,
+    thread_binds_task,
+)
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter()
@@ -90,11 +102,14 @@ def agent_threads(request: Request, *, store: StoreDependency, identity_access: 
     for thread in threads:
         if thread.project_id and thread.project_id not in project_ids and not thread.closed_at:
             store.close_agent_thread(thread.thread_id, reason="access_lost")
-    rows = [
-        thread_projection(store, thread)
-        for thread in threads
-        if thread.project_id is None or thread.project_id in project_ids
-    ]
+    rows = thread_projections(
+        store,
+        [
+            thread
+            for thread in threads
+            if thread.project_id is None or thread.project_id in project_ids
+        ],
+    )
     rows.sort(key=lambda row: str(row["last_activity_at"] or ""), reverse=True)
     rows.sort(key=lambda row: row["kind"] != "space")
     return {"threads": rows}
@@ -167,31 +182,26 @@ def thread_transcript(
     request: Request,
     *,
     store: StoreDependency,
-    catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ):
+    """The Space thread's transcript; a project thread's is its project chat's."""
     thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    title = store.chat_name(thread_scope_id(store, thread), thread_id, "")
-    if thread.project_id:
-        try:
-            return chat(thread.project_id, thread_id, catalog=catalog, store=store)
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-    else:
-        try:
-            # Under the appenders' lock, so a read never sees a half-written record.
-            with space_transcript_lock(store, thread_id):
-                transcript = read_space_chat_transcript(
-                    store.path.parent, thread.user_id, thread_id, title=title
-                )
-        except ConnectionError as exc:
-            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
-        if transcript is not None:
-            return transcript
+    if thread.kind != "space":
+        raise HTTPException(status_code=404, detail="Space thread not found")
+    title = store.chat_name(store.space_id, thread_id, "")
+    try:
+        # Under the appenders' lock, so a read never sees a half-written record.
+        with space_transcript_lock(store, thread_id):
+            transcript = read_space_chat_transcript(
+                store.path.parent, thread.user_id, thread_id, title=title
+            )
+    except ConnectionError as exc:
+        raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
+    if transcript is not None:
+        return transcript
     return ChatTranscript(
         chat_id=thread_id,
-        kind="project_chat" if thread.project_id else "space_chat",
+        kind="space_chat",
         node_id=None,
         title=title,
         updated_at=thread.created_at,
@@ -322,21 +332,10 @@ def upload_space_attachment(
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
 ) -> ChatAttachmentUpload:
-    try:
-        owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
-        return attachment_store.add(
-            project_id=store.space_id,
-            chat_id=thread_id,
-            client_id=client_id,
-            filename=file.filename or "",
-            media_type=file.content_type,
-            source=file.file,
-            attachment_set_id=attachment_set_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        file.file.close()
+    owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    return add_attachment(
+        attachment_store, store.space_id, thread_id, file, client_id, attachment_set_id
+    )
 
 
 @router.delete("/api/agent-threads/{thread_id}/attachments/{attachment_id}")
@@ -352,17 +351,9 @@ def remove_space_attachment(
     attachment_store: AttachmentStoreDependency,
 ) -> dict[str, bool]:
     owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    try:
-        attachment_store.remove(
-            project_id=store.space_id,
-            chat_id=thread_id,
-            client_id=client_id,
-            attachment_set_id=attachment_set_id,
-            attachment_id=attachment_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"removed": True}
+    return remove_attachment(
+        attachment_store, store.space_id, thread_id, attachment_id, client_id, attachment_set_id
+    )
 
 
 class SpaceTurnBody(BaseModel):
@@ -378,8 +369,7 @@ class SpaceTurnBody(BaseModel):
 
     @model_validator(mode="after")
     def validate_attachment_pair(self) -> Self:
-        if (self.attachment_set_id is None) != (self.attachment_client_id is None):
-            raise ValueError("Attachments require both attachment_set_id and attachment_client_id")
+        require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
         return self
 
 
@@ -388,10 +378,8 @@ def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -
     if (
         thread.kind != "space"
         or task is None
-        or task.kind != "space_chat"
-        or task.project_id != store.space_id
-        or task.request.get("chat_id") != thread.thread_id
         or not task.visible
+        or not thread_binds_task(thread, task, store.space_id)
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     return task
@@ -448,7 +436,8 @@ def space_turn(
                         "attachments": claimed.attachments,
                     }
                 )
-            try:
+            batch = claimed.attachment_batch_id if claimed is not None else None
+            with released_unless_started(store, attachment_store, batch, operation_id):
                 task = background_tasks.start(
                     store.space_id,
                     "space_chat",
@@ -456,10 +445,6 @@ def space_turn(
                     operation_id=operation_id,
                     authorized_by=authorized,
                 )
-            except BaseException:
-                if claimed is not None and store.agent_task(operation_id) is None:
-                    attachment_store.release(claimed.attachment_batch_id, operation_id)
-                raise
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}

@@ -2278,9 +2278,10 @@ from the record of each verb its turns can be granted: the Space handler's verb
 table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
 thread. A test holds every grantable verb to a line.
 
-Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
-require ownership; another member gets 404. A project thread otherwise uses the
-ordinary project chat, task and question routes. Its Send must be
+Thread title, read and browser routes under `/api/agent-threads/{id}`
+require ownership; another member gets 404. The transcript route there serves
+only the Space thread. A project thread otherwise uses the ordinary project chat,
+task and question routes. Its Send must be
 `project_chat` Work on main; anything else returns 422.
 
 Space threads upload and remove attachments at

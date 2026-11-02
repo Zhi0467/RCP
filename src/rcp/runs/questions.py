@@ -24,6 +24,7 @@ from rcp.agents.command_protocol import (
     ScheduleCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_MAX_ATTEMPTS
 from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
@@ -32,6 +33,7 @@ from rcp.runs.work_experiment_commands import (
     work_experiment_allowed,
 )
 from rcp.storage import AppStore
+from rcp.storage.agent_threads import bound_thread
 from rcp.storage.question_models import (
     QuestionArgumentConflict,
     QuestionOrigin,
@@ -52,6 +54,7 @@ def handle_ask(
     *,
     parked: bool = False,
     service: ProjectService | None = None,
+    approval_card_member: AuthorizedHuman | None = None,
 ) -> CommandResponse:
     """Persist or read a question without granting authority or admitting follow-ups.
 
@@ -66,7 +69,7 @@ def handle_ask(
         if request.arguments.action is not None:
             from rcp.runs.approval_cards import approval_card_for_ask
 
-            card = approval_card_for_ask(store, request, origin, service)
+            card = approval_card_for_ask(store, request, origin, service, approval_card_member)
             arguments["choices"] = ["Approve", "Decline"]
         question = store.create_or_get_question(
             origin=origin,
@@ -350,6 +353,8 @@ class WorkCommandHandler:
     mailbox: RunStageMailbox | None = None
     #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
+    #: The member an `ask` may present an approval card to; the usage renders it.
+    approval_card_member: AuthorizedHuman | None = None
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         graph_history = isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
@@ -469,7 +474,12 @@ class WorkCommandHandler:
         # waiting ask would hold the drain on a human it locked out.
         maintenance = execution.admission is not None and execution.admission.closed
         response = handle_ask(
-            execution.store, request, origin, parked=maintenance, service=self.service
+            execution.store,
+            request,
+            origin,
+            parked=maintenance,
+            service=self.service,
+            approval_card_member=self.approval_card_member,
         )
         if maintenance and response.result.get("state") == "parked":
             response.message = (
@@ -688,19 +698,21 @@ def work_command_handler(
             verbs.add("bulletin")
     if execution is not None and service is not None and service.project_catalog is not None:
         task = execution.store.agent_task(execution.operation_id)
-        if (
-            task is not None
-            and isinstance(thread_id := task.request.get("chat_id"), str)
-            and execution.store.agent_thread(thread_id) is not None
-        ):
+        if task is not None and bound_thread(execution.store, task) is not None:
             verbs.add("projects")
     if execution is not None:
         from rcp.runs.agent_schedules import schedule_thread
 
         if schedule_thread(execution.store, execution.operation_id) is not None:
             verbs.add("schedule")
+    card_member = None
     if work_ask_authorized(execution):
+        from rcp.runs.approval_cards import approval_card_member
+
+        assert execution is not None
         verbs.add("ask")
+        task = execution.store.agent_task(execution.operation_id)
+        card_member = approval_card_member(execution.store, task) if task else None
     if work_experiment_allowed(execution):
         verbs.add("episode")
     return WorkCommandHandler(
@@ -710,4 +722,5 @@ def work_command_handler(
         service=service,
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,
+        approval_card_member=card_member,
     )

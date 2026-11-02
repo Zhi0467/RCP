@@ -290,8 +290,10 @@ does. Projections derive
 origin operation's thread; nothing new enters a Patch, so replay is unchanged.
 Protected acts wait for the member through a card.
 
-A private project thread may attach a strict action to `ask`. The action names
-that thread's project and supplies no choices or multiple selection; RCP offers
+A private project thread may attach a strict action to `ask`. Work resolves
+this grant once with its verbs (`approval_card_member`); the prompt shows the
+card usage and the ask handler accepts an action only from that value, while the
+thread is still open. The action names that thread's project and supplies no choices or multiple selection; RCP offers
 Approve and Decline. The action models live in
 [`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
 repository truth membership, Auto-research authorization, graph-branch merge,

@@ -48,12 +48,17 @@ Both are private to the member and continue indefinitely. Listing
 threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
 board chats remain public. Every thread turn, wake and schedule fire is a
-captured Work turn on main, authorized by the owning member. Threads have no
+captured Work turn on main, authorized by the owning member. A task counts as a
+thread's turn only when its chat, kind, scope and authorizing member all match
+the thread (`bound_thread` in `storage/agent_threads.py`); member memory, the
+`projects`, `schedule` and approval-card grants, Space controls and handoff
+claims all use it. Threads have no
 Discuss mode. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view or a project's Agents view is shown.
 Private threads cannot be archived. Ensuring the thread list clears legacy
-archive flags along with reopening eligible threads.
+archive flags along with reopening eligible threads. It takes the write lock only
+when a thread is missing, closed or archived.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base

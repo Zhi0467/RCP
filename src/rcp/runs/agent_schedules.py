@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIVE
 from rcp.storage.agent_schedules import AgentSchedule, local_instant, repeat_fire, resume_fire
+from rcp.storage.agent_threads import bound_thread
 
 if TYPE_CHECKING:
     from rcp.storage.agent_threads import AgentThreadRecord
@@ -247,21 +248,14 @@ def schedule_instructions(store, operation_id: str, usages: tuple[str, ...] = ()
 
 
 def schedule_thread(store, operation_id: str) -> dict | None:
+    """The open thread this turn belongs to, while its member still sees the project."""
     task = store.agent_task(operation_id)
-    if task is None or task.authorized_by is None:
+    thread = bound_thread(store, task) if task is not None else None
+    if thread is None or thread.closed_at is not None:
         return None
-    with store.connection() as connection:
-        row = connection.execute(
-            "SELECT * FROM agent_threads WHERE thread_id=? AND user_id=? AND closed_at IS NULL",
-            (task.request.get("chat_id"), task.authorized_by.user_id),
-        ).fetchone()
-    if (
-        row is not None
-        and row["project_id"]
-        and not store.is_project_member(row["project_id"], row["user_id"])
-    ):
+    if thread.project_id and not store.is_project_member(thread.project_id, thread.user_id):
         return None
-    return dict(row) if row else None
+    return thread.model_dump()
 
 
 def lineage_root(store, task) -> str:

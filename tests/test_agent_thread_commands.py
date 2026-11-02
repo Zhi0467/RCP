@@ -640,11 +640,64 @@ def test_project_work_thread_exposes_projects_with_open_graph_items(
     assert "handoff" not in handler.allowed_verbs
 
 
+def test_only_the_thread_members_own_turn_gets_thread_grants(manifest, tmp_path: Path) -> None:
+    """Memory, projects and schedules share one binding: a turn on another member's
+    thread, or of the wrong kind or scope, is not the thread's turn."""
+    import uuid
+
+    from rcp.agents import AgentProcessControl
+    from rcp.agents.memory_files import task_member_memory_owner
+    from rcp.background import AgentTaskExecution
+    from rcp.core.models import AuthorizedHuman
+    from rcp.runs.questions import work_command_handler
+    from tests.helpers import authorized_human, create_named_app
+    from tests.test_storage import _task_record
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    actor = authorized_human(store)
+    stranger = AuthorizedHuman(space_id=store.space_id, user_id=str(uuid.uuid4()), display_name="S")
+    project_id = app.state.default_project_id
+    thread = next(
+        row
+        for row in store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
+        if row.kind == "project"
+    )
+    service = catalog.open_execution(project_id)
+    request = {"chat_id": thread.thread_id, "chat_scope": "project", "mode": "work"}
+    turns = {
+        "own": (actor, "project_chat", project_id),
+        "stranger": (stranger, "project_chat", project_id),
+        "kind": (actor, "space_chat", store.space_id),
+    }
+    for operation_id, (human, kind, scope) in turns.items():
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id=operation_id,
+                project_id=scope,
+                kind=kind,
+                status="succeeded",
+                finished_at=store.now(),
+                authorized_by=human,
+                request=request,
+            )
+        )
+    for operation_id in turns:
+        task = store.agent_task(operation_id)
+        verbs = work_command_handler(
+            AgentTaskExecution(operation_id, store, AgentProcessControl()), None, service=service
+        ).allowed_verbs
+        own = operation_id == "own"
+        assert (task_member_memory_owner(store, task) == actor.user_id) is own
+        assert ("projects" in verbs, "schedule" in verbs) == (own, own)
+
+
 def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from rcp.agents.graph_read_scope import GraphReadScope
-    from rcp.runs import agent_names, agent_schedules, questions
+    from rcp.runs import agent_names, agent_schedules, approval_cards, questions
     from rcp.runs.agent_thread_commands import _THREAD_VERBS, thread_capabilities
     from rcp.runs.tasks.compute_commands import WorkComputeCommands
 
@@ -659,10 +712,11 @@ def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypat
         consolidation_run_for_operation=lambda _: None,
         agent_task=lambda _: task,
         bulletin_enabled_for_task=lambda _: True,
-        agent_thread=lambda _: object(),
     )
     monkeypatch.setattr(agent_names, "resolve_agent_name_state", lambda _: {"can_self_name": True})
     monkeypatch.setattr(agent_schedules, "schedule_thread", lambda *_: {})
+    monkeypatch.setattr(questions, "bound_thread", lambda *_: object())
+    monkeypatch.setattr(approval_cards, "approval_card_member", lambda *_: None)
     monkeypatch.setattr(questions, "work_ask_authorized", lambda _: True)
     monkeypatch.setattr(questions, "work_experiment_allowed", lambda _: True)
     compute = SimpleNamespace(

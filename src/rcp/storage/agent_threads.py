@@ -62,6 +62,24 @@ class AgentThreadRecord(BaseModel):
         }
 
 
+def thread_binds_task(thread: AgentThreadRecord, task: AgentTaskRecord, space_id: str) -> bool:
+    """The task is a turn of this thread: its kind and scope, authorized by its member."""
+    return (
+        task.request.get("chat_id") == thread.thread_id
+        and task.kind == ("space_chat" if thread.kind == "space" else "project_chat")
+        and task.project_id == (thread.project_id or space_id)
+        and task.authorized_by is not None
+        and task.authorized_by.user_id == thread.user_id
+    )
+
+
+def bound_thread(store: AppStore, task: AgentTaskRecord) -> AgentThreadRecord | None:
+    """The member thread this task is a turn of; callers add their own conditions."""
+    chat_id = task.request.get("chat_id")
+    thread = store.agent_thread(chat_id) if isinstance(chat_id, str) else None
+    return thread if thread and thread_binds_task(thread, task, store.space_id) else None
+
+
 class AgentHandoffRecord(BaseModel):
     handoff_id: str
     source_thread_id: str
@@ -185,6 +203,22 @@ class AgentThreadStoreMixin(StoreMixinBase):
         if not default_names:
             raise ValueError("default names must not be empty")
         names = tuple(normalize_chat_name(name) for name in default_names)
+        # The common call finds every thread open and shown; it takes no write lock.
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT t.*, d.archived_at AS display_archived_at FROM agent_threads t "
+                "LEFT JOIN chat_display d ON d.chat_id=t.thread_id AND d.project_id="
+                "coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1)) "
+                "WHERE t.user_id=? ORDER BY t.kind DESC, t.project_id",
+                (user_id,),
+            ).fetchall()
+        shown = {
+            row["project_id"]
+            for row in rows
+            if row["closed_at"] is None and row["display_archived_at"] is None
+        }
+        if {None, *project_ids} <= shown:
+            return [AgentThreadRecord.model_validate(dict(row)) for row in rows]
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             space_id = str(
@@ -464,20 +498,18 @@ def _require_handoff_thread(
     connection: sqlite3.Connection, row: sqlite3.Row, record: AgentTaskRecord, *, wake: bool
 ) -> None:
     """The turn runs on the open thread it names, authorized by that thread's member."""
-    column, kind = (
-        ("source_thread_id", "space_chat") if wake else ("target_thread_id", "project_chat")
-    )
-    thread_id = row[column]
+    column, kind = ("source_thread_id", "space") if wake else ("target_thread_id", "project")
     thread = connection.execute(
-        "SELECT user_id, project_id FROM agent_threads WHERE thread_id=? AND closed_at IS NULL",
-        (thread_id,),
+        "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (row[column],)
     ).fetchone()
-    if thread is None:
-        raise ValueError("Handoff turn changed its member or thread binding")
-    user_id = record.authorized_by.user_id if record.authorized_by else None
-    binding = (user_id, record.request.get("chat_id"), record.request.get("mode"), record.kind)
-    if binding != (thread["user_id"], thread_id, "work", kind) or (
-        not wake and record.project_id != thread["project_id"]
+    space_id = connection.execute(
+        "SELECT space_id FROM space_identity WHERE singleton=1"
+    ).fetchone()[0]
+    if (
+        thread is None
+        or thread["kind"] != kind
+        or record.request.get("mode") != "work"
+        or not thread_binds_task(AgentThreadRecord.model_validate(dict(thread)), record, space_id)
     ):
         raise ValueError("Handoff turn changed its member or thread binding")
 

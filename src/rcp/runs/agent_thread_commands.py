@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import stat
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
@@ -30,10 +28,11 @@ from rcp.limits import (
     AGENT_PROJECTS_MAX_ITEMS,
 )
 from rcp.projects import ProjectCatalog
+from rcp.regular_file_reader import RegularFileTooLargeError, read_local_regular_file
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.provider_login import AdmissionRefused, auth_retry_candidates
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore
-from rcp.storage.agent_threads import AgentHandoffRecord, AgentThreadRecord
+from rcp.storage.agent_threads import AgentHandoffRecord, AgentThreadRecord, bound_thread
 from rcp.turn_outcomes import TurnOutcome
 
 logger = logging.getLogger(__name__)
@@ -111,22 +110,20 @@ def project_details(
 
 
 def _read_handoff_message(workspace: Path, filename: str) -> str:
-    path = workspace / filename
+    too_large = f"Handoff message exceeds {AGENT_HANDOFF_MAX_CHARS} characters"
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        content = read_local_regular_file(
+            workspace, filename, max_bytes=AGENT_HANDOFF_MAX_CHARS * 4
+        )
     except FileNotFoundError as exc:
         raise ValueError(f"Handoff message file {filename} does not exist") from exc
+    except RegularFileTooLargeError as exc:
+        raise ValueError(too_large) from exc
+    except ValueError as exc:
+        kind = "a symlink" if (workspace / filename).is_symlink() else "not a regular file"
+        raise ValueError(f"Handoff message file {filename} is {kind}") from exc
     except OSError as exc:
-        if path.is_symlink():
-            raise ValueError(f"Handoff message file {filename} is a symlink") from exc
         raise ValueError(f"Handoff message file {filename} cannot be read") from exc
-    with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ValueError(f"Handoff message file {filename} is not a regular file")
-        content = stream.read(AGENT_HANDOFF_MAX_CHARS * 4 + 1)
-    too_large = f"Handoff message exceeds {AGENT_HANDOFF_MAX_CHARS} characters"
-    if len(content) > AGENT_HANDOFF_MAX_CHARS * 4:
-        raise ValueError(too_large)
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -174,14 +171,8 @@ class ThreadCommandHandler:
         task = self.store.agent_task(self.operation_id)
         if task is None or identity.task_id != self.operation_id or identity.authority != "broker":
             raise ValueError("Thread command requires this turn's broker authority")
-        chat_id = task.request.get("chat_id")
-        thread = self.store.agent_thread(chat_id) if isinstance(chat_id, str) else None
-        if (
-            thread is None
-            or thread.closed_at
-            or task.authorized_by is None
-            or task.authorized_by.user_id != thread.user_id
-        ):
+        thread = bound_thread(self.store, task)
+        if thread is None or thread.closed_at:
             raise ValueError("Thread owner is unavailable")
         return task, thread
 

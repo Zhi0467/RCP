@@ -235,7 +235,7 @@ def _owned_card(
     if (
         question is None
         or question.origin.owner_kind != "chat"
-        or store.private_question_owner(question.origin.owner_id) != human.user_id
+        or store.private_chat_owner(question.origin.owner_id) != human.user_id
     ):
         raise HTTPException(status_code=404, detail="Question not found")
     require_project_membership(question.origin.project_id, request)
