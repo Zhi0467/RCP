@@ -400,15 +400,17 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     assert verbs is not None
     instructions = []
-    if "schedule" in verbs:
+    if "schedule" in verbs and turn.execution is not None:
         from rcp.agents.staged_command_client import schedule_usages
+        from rcp.runs.agent_schedules import schedule_instructions
 
         command = client or turn.patch_inputs.validator_staged.client_command()
         instructions.append(
-            "Create a schedule only when the member asked for it. "
-            "Schedule add is available only on turns admitted from a member message, "
-            "not wakes or question follow-ups. Commands: "
-            + "; ".join(f"{command} {usage}" for usage in schedule_usages())
+            schedule_instructions(
+                turn.execution.store,
+                turn.execution.operation_id,
+                tuple(f"{command} {usage}" for usage in schedule_usages()),
+            )
         )
     if "flag" in verbs:
         instructions.append(
@@ -2720,16 +2722,18 @@ async def _stream_work_run(
 
         from rcp.runs.agent_threads import (
             prepare_project_summary_scope,
-            provider_switch_seed,
+            staged_history_seed,
             thread_history_seed,
         )
 
-        history_seed = await provider_switch_seed(
+        history_seed = await staged_history_seed(
             launcher,
             turn.request,
             execution,
             thread_history_seed(service, turn.request),
             prepare_scope=partial(prepare_project_summary_scope, service, execution, data_dir),
+            local_stage=turn.local_stage,
+            remote_stage=turn.remote_stage,
         )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(

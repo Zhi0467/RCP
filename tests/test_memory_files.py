@@ -71,6 +71,17 @@ def test_migrate_old_writer_rows_once_in_order(tmp_path):
         assert connection.execute("SELECT count(*) FROM operational_lessons").fetchone()[0] == 3
 
 
+def test_migrated_index_title_is_bounded(tmp_path):
+    from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_lesson(store, "long", text="x" * 10_000)
+    shared, _ = prepare_project_memory(store, "project")
+    line = (Path(shared) / "MEMORY.md").read_text().splitlines()[0]
+    assert line.count("x") == MEMORY_MIGRATED_TITLE_MAX_CHARS
+    assert "x" * 10_000 in (Path(shared) / "notes/lesson-long.md").read_text()
+
+
 def test_partial_migration_preserves_existing_note(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     old_lesson(store, "existing")
@@ -355,6 +366,34 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
     retry_browser_cleanup(AppStore(store.path))
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 0
+
+
+def test_a_deletion_owed_on_another_base_does_not_block_launch(tmp_path):
+    from rcp.storage.models import ProjectRecord
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project = ProjectRecord(
+        project_id="project",
+        locator="/project/manifest.toml",
+        name="Project",
+        state_location=str(tmp_path / "new" / ".research"),
+        state_remote=False,
+        added_at=store.now(),
+    )
+    store.upsert_project(project)
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO memory_deletions VALUES (?,?,?,?)",
+            ("project", "gone:/old/.research", project.model_dump_json(), None),
+        )
+    shared, _size = prepare_project_memory(store, "project")
+    assert Path(shared).is_dir()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE memory_deletions SET state_location=?", (project.state_location,)
+        )
+    with pytest.raises(ValueError, match="deletion remains pending"):
+        prepare_project_memory(store, "project")
 
 
 @pytest.mark.parametrize("lost_response", [False, True])

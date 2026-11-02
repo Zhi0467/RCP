@@ -489,6 +489,18 @@ the provider contract. Discuss, Seed and Refresh receive their read context as
 write access to project files. The code-defined shared memory folder is separately
 admitted through `--add-dir` for ordinary Discuss chats.
 
+Every Claude launch names its tools with `--tools`, from one code-defined set
+per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
+`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Paper coach
+gets the file tools, `Bash`, `WebFetch` and `WebSearch`. Session summaries get
+none. `--tools` decides which tools exist; the permission rules above decide
+which run unprompted. The local process also drops a hosting Claude Code
+session's identity and channel variables, named in `ClaudeAuthentication`.
+**Why:** RCP runs Claude headless. The default set includes tools that schedule
+work outside the turn, message other local sessions, switch worktrees, or
+publish to outside services. A desktop session's environment would add its own
+system prompt and Artifact tools to a turn started from inside it.
+
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
 `Edit` rules confine all file-writing tools, including `Write`, to that folder.
@@ -1803,10 +1815,25 @@ and Auto-research. No agent has a `lesson` verb; memory files replace it.
 
 A Space turn runs locally in its persistent
 [member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
-Admission checks the registered state host before opening execution, skips remote
-projects without contacting them, and records unavailable or broken local projects
-as `space_project_not_admitted` while admitting the others. The prompt names
-each project left out, with a short reason, as a `handoff` target. Its
+Admission checks the registered state host before opening execution and skips a
+project whose state is remote without contacting it. A project whose state is
+local but whose base machine is remote gets a read-only client. Each project left
+out carries a code and a short line from `SPACE_EXCLUSIONS` in
+[space_projects.py](../../src/rcp/runs/space_projects.py). Raw errors stay in the
+`space_project_not_admitted` receipt, which every exclusion writes. A project is
+left out the same way, without failing the turn, in three cases:
+- its Git transport cannot be prepared;
+- its read-hiding policy is rejected, or preparation returns the
+  `wrapper_unavailable` fallback that the account policy lacks;
+- its policy cannot join the merged policy.
+
+Shared preparation turns most errors into that fallback. Space treats it as that
+project's failure, so it never widens the whole turn. Each
+project's policy is prepared with only its own Git transport. Admission binds the
+remaining writers only after that preparation. The turn's Git access is then the
+union of the bound writers' transports, so an excluded project's checkouts never
+reach the provider. The prompt lists every member project with its client, or with
+its reason and `handoff` as the next step. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1816,14 +1843,22 @@ is NULL. A changed admitted project set is recorded on the turn and does not
 change the thread's native-session identity.
 
 The top-level client grants `projects`, `handoff` and `schedule`; it has no
-`ask`. Each project client has its own authenticated mailbox and grants only
-`validate`, `graph_log`, `graph_diff` and `bulletin`. A Space turn has no
-project memory root. Native subagents remain permitted; MCP servers remain off.
-Project lifecycle work, including protected-action approval cards, goes through
-`handoff` to the member's own project thread. The top-level usage text renders
+`ask`. Each project client has its own authenticated mailbox. It grants its
+`GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. Only
+a writer posts to the Bulletin; a read-only client reads it. The
+mailbox allowlist, the handler guard and the rendered usage all read that one set.
+A Space turn has no project memory root. Native subagents remain permitted; MCP
+servers remain off. The prompt lists the protocol's mutating verbs that no client
+of the turn grants, so the list follows enforcement. Work that needs one of
+them, a project memory note, or a change the graph authority contract withholds
+from agents goes to that project's own thread through `handoff`, with the
+project, node ids and exact request. The project thread runs what its own
+grants allow and raises an approval card for what needs the member. The Space
+agent relays the answer when the handoff settles. Only the member's tap on a card
+is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
 from the same resolved verbs the handler enforces.
-The provider receives the union of project Git transports and read-hiding
-policies; the combined policy is installed before launch. Even a turn without
+The prompt renders one write boundary from the composite scope. The provider
+receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without
 local write projects retains the local account's default secret and private
 transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 `too_many_hidden_folders`.
@@ -1841,12 +1876,26 @@ Patch files are removed; an `unavailable` Patch, whose commit Apply could not
 settle, stays for the retry. Project-local failures do not stop collection of
 others, and cleanup failures are receipted per project. A Patch in the folder of a
 project left out of admission, including one whose binding changed mid-turn, is
-reported `rejected` with its reason. Other Patch files and all watch files are
+reported `rejected` with its reason. So is a Patch for a member project added
+after the turn started. Other Patch files and all watch files are
 receipted and discarded. A `rejected` or `unavailable` project makes the turn
-outcome partial, naming each project and reason, without undoing another
-project's accepted transition. The next turn's prompt carries the last turn's
+outcome partial, naming each project by display name with its reason, without
+undoing another project's accepted transition. The assistant transcript record
+carries that outcome. The next turn's prompt carries the last turn's
 per-project results. Watcher
 storage also refuses a Space-task origin.
+
+A Space turn's fixed contract is a session master, staged with the
+`session_master` mechanism project chat uses. The master holds the role, the
+authority contract, the top-level usage, what the turn routes elsewhere, each
+project client's grant and write boundary, a pointer to the staged Patch schema,
+and the outcome and artifact contracts, including live pages. It also states the
+per-project context values and unreachable projects. Its key is the digest of
+the fixed part, so a changed contract restages the master. A new native session,
+after a provider switch for example, opens it again. A continuation of the
+same session sends a pointer, a context delta of changed values, the last turn's
+results and the turn envelope. That envelope holds this turn's artifact
+directory, attachments and message. Every Space turn kind takes this path.
 
 Space attachments reuse the ordinary chat attachment owner and stage immutable
 copies into the Space stage. Their paths enter the provider's read directories

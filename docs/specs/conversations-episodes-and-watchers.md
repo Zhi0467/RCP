@@ -137,8 +137,8 @@ under that lock before appending.
 Private chats, their tasks and their questions are visible and controllable only
 by their owner. Project question pushes target that owner. A failed or
 interrupted project thread turn that stays unread uses the owner-only
-`agent_thread` notification, linking to the thread; an ordinary reply only marks
-the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
+`agent_thread` notification, linking to the thread, as does a schedule wake's
+reply; any other reply, including watcher and handoff wakes, only marks the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
 An Experiment a thread starts is project work: its run conversation and goal are
 visible to project members like any Experiment, while the thread stays private.
@@ -165,7 +165,7 @@ summarize its captured native session in one read-only turn, using the existing
 branched-chat fork path in a temporary working directory for local Claude and
 Codex launches. Remote summaries resume the original session and append their
 prompt and answer because this unsupervised launch cannot use the remote fork path. A completed, nonempty
-summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new prompt and records
+summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new session and records
 `provider_switch_compacted`. The old account, session, runtime, and privacy policy
 must remain usable. Failure, including timeout after
 `AGENT_THREAD_COMPACT_TIMEOUT_SECONDS` (300 seconds), oversized output, or an
@@ -176,7 +176,9 @@ or `provider_error`; unexpected implementation errors propagate. Both resolution
 reasons appear on the thread's fresh-start marker.
 
 Seeds are labelled earlier conversation for context, not instructions or
-authority, and never staged as files. The compacted seed is retained in the
+authority. `staged_history_seed` stages each seed as a content-addressed file in
+the thread's own private stage, which only its owner's turns read. The prompt
+carries one pointer that says to read the file again after a compaction. The compacted seed is retained in the
 task's immutable database contract so a same-task restart reuses it without
 another summary call. Other fresh starts retain their existing
 reasons and receive the tail, bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and

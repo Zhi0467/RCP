@@ -102,4 +102,6 @@ function Fixture() {
   );
 }
 
+// This fixture exercises the Cards landing; a bare personal home opens Agent.
+if (!location.hash) location.hash = "#/cards";
 createRoot(document.getElementById("root")!).render(<Fixture />);

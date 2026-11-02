@@ -25,7 +25,7 @@ def test_cron_grammar_and_dst():
 
 @pytest.mark.parametrize(
     "cron",
-    ["09:00", "* * * *", "60 * * * *", "* * * * MON", "*/0 * * * *", "1-0 * * * *", "0 0 30 2 *"],
+    ["09:00", "* * * *", "60 * * * *", "* * * * XYZ", "*/0 * * * *", "1-0 * * * *", "0 0 30 2 *"],
 )
 def test_invalid_cron(cron):
     with pytest.raises(ValueError):
@@ -45,6 +45,14 @@ def test_local_one_shot():
         validate_schedule(
             cron=None, at="2020-01-01T12:00", timezone="UTC", after=datetime(2026, 1, 1, tzinfo=UTC)
         )
+
+
+@pytest.fixture(autouse=True)
+def admitted_provider(monkeypatch):
+    """Fixture requests carry no provider; production admission is checked separately."""
+    from rcp.background import BackgroundAgentTasks
+
+    monkeypatch.setattr(BackgroundAgentTasks, "admit_provider_task", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -81,7 +89,7 @@ def schedule_store(tmp_path):
     store.close()
 
 
-def command(**arguments):
+def command(key="daily", **arguments):
     from rcp.agents.command_protocol import ScheduleCommandRequest
 
     return ScheduleCommandRequest.model_validate(
@@ -90,7 +98,7 @@ def command(**arguments):
             credential="c" * 64,
             request_id="a" * 32,
             verb="schedule",
-            idempotency_key="daily",
+            idempotency_key=key,
             arguments=arguments,
         )
     )
@@ -119,17 +127,17 @@ def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_stor
 
 
 @pytest.mark.parametrize(
-    "trigger,source,followup,member_message",
+    "trigger,source,followup,every_minute_ok",
     [
-        ("schedule", None, False, True),
-        ("watcher", None, False, True),
-        ("human", "slack", False, True),
-        ("human", None, True, True),
-        ("human", None, False, False),
+        ("human", None, False, True),
+        ("human", "voice", False, True),
+        ("schedule", None, False, False),
+        ("watcher", None, False, False),
+        ("human", None, True, False),
     ],
 )
-def test_add_requires_admitting_member_message(
-    schedule_store, monkeypatch, trigger, source, followup, member_message
+def test_any_thread_turn_adds_but_only_member_turns_schedule_often(
+    schedule_store, monkeypatch, trigger, source, followup, every_minute_ok
 ):
     import json
 
@@ -137,22 +145,51 @@ def test_add_requires_admitting_member_message(
 
     with schedule_store.connection() as connection:
         request = dict(schedule_store.agent_task("origin").request)
-        request.update(trigger=trigger, message="Check" if member_message else "")
-        if source:
-            request["source"] = source
+        request.update(trigger=trigger, source=source, timezone="Europe/Berlin")
         connection.execute(
             "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
             (json.dumps(request), "origin"),
         )
     if followup:
         monkeypatch.setattr(schedule_store, "question_for_followup", lambda _: object())
-    result = handle_schedule(
-        schedule_store,
-        "origin",
-        command(action="add", cron="0 9 * * *", timezone="UTC", note="Check"),
+    often = handle_schedule(
+        schedule_store, "origin", command(key="often", action="add", cron="* * * * *", note="Play")
     )
-    assert result.status == "invalid"
-    assert schedule_store.agent_schedules() == []
+    assert (often.status == "ok") is every_minute_ok
+    daily = handle_schedule(
+        schedule_store, "origin", command(action="add", cron="@daily", note="Check")
+    )
+    assert daily.status == "ok", daily.message
+    assert daily.result["timezone"] == "Europe/Berlin" and daily.result["now_local"]
+
+
+def test_cron_names_aliases_and_vixie_stepped_day():
+    after = datetime(2026, 11, 2, tzinfo=UTC)  # a Monday
+    assert next_occurrence("0 9 * JAN-DEC MON-FRI", "UTC", after) == datetime(
+        2026, 11, 2, 9, tzinfo=UTC
+    )
+    assert next_occurrence("@weekly", "UTC", after) == datetime(2026, 11, 8, tzinfo=UTC)
+    # A stepped day-of-month starting with * is unrestricted: both days must match.
+    assert next_occurrence("0 0 */2 * 1", "UTC", after) == datetime(2026, 11, 9, tzinfo=UTC)
+
+
+def test_retry_readds_the_same_schedule_and_list_carries_the_member_clock(schedule_store):
+    from rcp.runs.agent_schedules import handle_schedule
+
+    origin = schedule_store.agent_task("origin")
+    schedule_store.create_agent_task(
+        origin.model_copy(update={"operation_id": "retry", "parent_operation_id": "origin"}),
+        continuation_cause="retry",
+    )
+    add = command(action="add", cron="0 9 * * *", timezone="UTC", note="Check")
+    first = handle_schedule(schedule_store, "origin", add)
+    assert (
+        handle_schedule(schedule_store, "retry", add).result["schedule"]
+        == (first.result["schedule"])
+    )
+    assert len(schedule_store.agent_schedules("thread")) == 1
+    listed = handle_schedule(schedule_store, "retry", command(action="list"))
+    assert "now_utc" in listed.result or listed.result["now_local"]
 
 
 def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store):
@@ -175,13 +212,27 @@ def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store)
     assert all(row.pending_since == "2026-01-01T09:00:00+00:00" for row in pending)
     assert all(row.next_fire_at == "2026-01-04T09:00:00+00:00" for row in pending)
     assert schedule_wake_message(pending, now).count('"missed_fires": 2') == 2
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="once",
+        cron=None,
+        at="2026-01-02T09:00",
+        timezone="UTC",
+        note="once",
+        next_fire_at="2026-01-02T09:00:00+00:00",
+    )
+    schedule_store.advance_agent_schedules(now)
     schedule_store.detach_restored_lifecycle(
         diagnostic="test copy", confirmed_by="test", detached_at=now.isoformat()
     )
-    assert all(
-        row.state == "disabled" and row.disabled_reason == "restore" and row.pending_since is None
-        for row in schedule_store.agent_schedules()
-    )
+    rows = {row.note: row for row in schedule_store.agent_schedules()}
+    assert all(row.pending_since is None for row in rows.values())
+    assert {note: (row.state, row.disabled_reason) for note, row in rows.items()} == {
+        "a": ("disabled", "restore"),
+        "b": ("disabled", "restore"),
+        "once": ("done", None),
+    }
 
 
 @pytest.mark.parametrize("archived", [False, True])
@@ -314,6 +365,23 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     with schedule_store.connection() as connection:
         connection.execute("UPDATE agent_schedules SET state='disabled', disabled_reason='restore'")
     assert client.post(path + "/" + schedule.schedule_id + "/enable").json()["state"] == "active"
+    past = schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="past",
+        cron=None,
+        at="2020-01-01T09:00",
+        timezone="UTC",
+        note="Old",
+        next_fire_at="2020-01-01T09:00:00+00:00",
+    )
+    with schedule_store.connection() as connection:
+        connection.execute(
+            "UPDATE agent_schedules SET state='disabled' WHERE schedule_id=?", (past.schedule_id,)
+        )
+    refused = client.post(path + "/" + past.schedule_id + "/enable")
+    assert refused.status_code == 409
+    assert client.delete(path + "/" + past.schedule_id).status_code == 204
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 204
     assert client.get(path).json()["schedules"][0]["state"] == "cancelled"
 
@@ -613,3 +681,116 @@ def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
     monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kwargs: None)
     restarted.recover_at_startup()
     assert restarted.store.agent_task(launched[0]).status == "queued"
+
+
+def test_unschedulable_row_is_disabled_without_blocking_consolidation(schedule_store, monkeypatch):
+    from unittest.mock import Mock
+
+    from rcp.consolidation import ConsolidationPoller
+
+    for key in ("good", "poison"):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron="0 9 * * *",
+            at=None,
+            timezone="UTC",
+            note=key,
+            next_fire_at="2026-01-01T09:00:00+00:00",
+        )
+    with schedule_store.connection() as connection:
+        connection.execute("UPDATE agent_schedules SET timezone='Nowhere/Gone' WHERE note='poison'")
+    poller = ConsolidationPoller(
+        schedule_store, Mock(), service_for=Mock(), clock=lambda: "2026-01-01T10:00:00+00:00"
+    )
+    monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
+    monkeypatch.setattr(poller, "dispatch_due", Mock())
+    monkeypatch.setattr(poller, "dispatch_agent_schedules", Mock())
+    poller.poll_once()
+    poller.dispatch_due.assert_called_once()
+    pending = poller.dispatch_agent_schedules.call_args.args[1]
+    assert [row.note for row in pending] == ["good"]
+    states = {
+        row.note: (row.state, row.disabled_reason) for row in schedule_store.agent_schedules()
+    }
+    assert states["poison"][0] == "disabled" and states["poison"][1]
+    assert states["good"] == ("active", None)
+
+
+def test_deferred_wake_keeps_notes_then_fires_after_restore_and_closing_settles(
+    schedule_store, monkeypatch
+):
+    import json
+    from types import SimpleNamespace
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.agent_schedules import dispatch_agent_schedules
+    from rcp.runs.provider_login import ProviderSignedOut
+    from tests.helpers import fake_launch_admitted
+
+    for key, cron, at in (("once", None, "2026-01-01T09:00"), ("daily", "0 9 * * *", None)):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron=cron,
+            at=at,
+            timezone="Europe/Berlin",
+            note=key,
+            next_fire_at="2026-01-01T08:00:00+00:00",
+        )
+    # A restore made the thread's latest turn history-only; re-enabled wakes still fire.
+    with schedule_store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='origin'")
+    launched = []
+    tasks = BackgroundAgentTasks(schedule_store, lambda *_args: None)
+    fake_launch_admitted(monkeypatch, tasks, launched.append)
+
+    def signed_out(*_args, **_kwargs):
+        raise ProviderSignedOut("Sign in to Codex")
+
+    monkeypatch.setattr(tasks, "admit_provider_task", signed_out)
+    poller = SimpleNamespace(store=schedule_store, tasks=tasks)
+    now = datetime(2026, 1, 1, 9, 30, tzinfo=UTC)
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
+    assert launched == []
+    assert all(
+        row.pending_since and "Sign in" in (row.deferred_reason or "")
+        for row in schedule_store.agent_schedules()
+    )
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *_a, **_k: None)
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
+    assert len(launched) == 1
+    wake = schedule_store.agent_task(launched[0])
+    notes = json.loads(wake.request["message"].split("\n", 1)[1])
+    assert {note["due_at"] for note in notes} == {"2026-01-01T09:00+01:00"}
+    assert {note["now"] for note in notes} == {"2026-01-01T10:30+01:00"}
+    assert all(row.deferred_reason is None for row in schedule_store.agent_schedules())
+    # The claimed wake never started; closing the thread settles it instead of leaving it queued.
+    schedule_store.close_agent_thread("thread", reason="access_lost")
+    later = datetime(2026, 1, 2, 9, 30, tzinfo=UTC)
+    dispatch_agent_schedules(poller, later, schedule_store.advance_agent_schedules(later))
+    assert schedule_store.agent_task(launched[0]).status == "failed"
+    states = {row.note: row.state for row in schedule_store.agent_schedules()}
+    assert states == {"once": "done", "daily": "disabled"}
+
+
+def test_a_turn_without_a_zone_uses_the_members_latest_composer_zone(schedule_store):
+    from rcp.runs.agent_schedules import handle_schedule, schedule_instructions
+
+    origin = schedule_store.agent_task("origin")
+    schedule_store.create_agent_task(
+        origin.model_copy(
+            update={
+                "operation_id": "composer",
+                "created_at": "2000-01-01T00:00:00+00:00",
+                "request": {**origin.request, "timezone": "Asia/Tokyo"},
+            }
+        )
+    )
+    assert "Asia/Tokyo" in schedule_instructions(schedule_store, "origin")
+    added = handle_schedule(
+        schedule_store, "origin", command(action="add", cron="0 9 * * *", note="Check")
+    )
+    assert added.result["schedule"]["timezone"] == added.result["timezone"] == "Asia/Tokyo"

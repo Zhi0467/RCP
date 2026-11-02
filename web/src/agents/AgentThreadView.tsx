@@ -2,6 +2,7 @@ import {
   CalendarClock,
   ChevronRight,
   GitPullRequestArrow,
+  Hourglass,
   LoaderCircle,
   Mic,
   MicOff,
@@ -9,16 +10,23 @@ import {
   RotateCcw,
   Send,
   Square,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useAgentConfigPicker } from "../core/AgentConfigPicker";
-import type { AgentConfigSource } from "../core/AgentConfigControls";
+import {
+  AgentConfigChip,
+  AgentConfigControls,
+  type AgentConfigSource,
+} from "../core/AgentConfigControls";
 import { loadProjectReadiness, loadSpaceMachines } from "../core/api";
+import { browserReason } from "../core/browserStatus";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
 import { graphProfile } from "../graph/graphResources";
+import { providerChange } from "../projects/providers";
 import { ChatComposer } from "../chat/ChatComposer";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "../chat/composerDraft";
 import { useComposerAttachments } from "../chat/composerAttachments";
@@ -62,8 +70,11 @@ import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { ApprovalCardView } from "./ApprovalCard";
 import {
   browserTimezone,
+  handoffReport,
   latestTurnId,
+  oneShotPassed,
   readThrough,
+  scheduleInstant,
   scheduleWhen,
   turnCommands,
   turnCommandsSummary,
@@ -78,6 +89,7 @@ import {
   markThreadRead,
   renameThread,
   sendThreadTurn,
+  setThreadAgent,
   setThreadBrowser,
 } from "./agentThreadsApi";
 
@@ -92,12 +104,22 @@ const TURN_BATCH_SIZE = 12;
 
 type Picker = { source: AgentConfigSource; value: AgentRunConfig } | null;
 
-/** What the provider chip reads: the project's readiness, or the backend machine's. */
-function useThreadPicker(thread: AgentThread): Picker {
+/**
+ * What the agent pick reads, the project's readiness or the backend machine's,
+ * and its default: the project's Settings profile, or the Space machine's first
+ * signed-in provider with that provider's first model.
+ */
+function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => void } {
   const [picker, setPicker] = useState<Picker>(null);
+  // A sign-in from Settings changes readiness after mount; opening the menu reads it again.
+  const [reads, setReads] = useState(0);
+  const reload = useCallback(() => setReads((count) => count + 1), []);
+  const shownFor = useRef<string | null>(null);
   useEffect(() => {
     let current = true;
-    setPicker(null);
+    const key = `${thread.kind}:${thread.project_id}`;
+    if (shownFor.current !== key) setPicker(null);
+    shownFor.current = key;
     const load = async (): Promise<Picker> => {
       if (thread.kind === "project" && thread.project_id) {
         const readiness = await loadProjectReadiness(
@@ -120,6 +142,7 @@ function useThreadPicker(thread: AgentThread): Picker {
       const providers = Object.values(machine.provider_readiness) as ProviderReadiness[];
       const first = providers.find((item) => item.authenticated) ?? providers[0];
       if (!first) return null;
+      const { model, reasoning = "" } = providerChange(first.models ?? [], first.provider, "");
       return {
         source: {
           provider_readiness: {
@@ -127,18 +150,86 @@ function useThreadPicker(thread: AgentThread): Picker {
           },
           machines: [],
         },
-        value: { provider: first.provider, model: "", reasoning: "", run_on: machine.machine_id },
+        value: { provider: first.provider, model, reasoning, run_on: machine.machine_id },
       };
     };
-    // Without readiness the chip stays away and the backend picks the provider.
+    // Without readiness the pick stays away and the backend picks the provider.
     load()
       .then((loaded) => current && setPicker(loaded))
       .catch(() => current && setPicker(null));
     return () => {
       current = false;
     };
-  }, [thread.kind, thread.project_id]);
-  return picker;
+  }, [thread.kind, thread.project_id, reads]);
+  return { picker, reload };
+}
+
+/**
+ * The thread's agent pick, one row of its menu: `provider · model · effort`,
+ * which opens the shared fields beneath it. Space and project threads alike.
+ */
+function ThreadAgentPicker({
+  source,
+  value,
+  label,
+  onChange,
+  onShown,
+}: {
+  source: AgentConfigSource;
+  value: AgentRunConfig;
+  label: string;
+  onChange: (value: AgentRunConfig) => void;
+  /** The menu opened, so readiness is read again. */
+  onShown: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const shown = useRef(onShown);
+  useEffect(() => shown.current(), []);
+  return (
+    <div className="thread-agent-picker">
+      <AgentConfigChip
+        project={source}
+        value={value}
+        open={open}
+        label={label}
+        workLike
+        onToggle={() => setOpen(!open)}
+      />
+      {open && <AgentConfigControls project={source} value={value} onChange={onChange} compact />}
+    </div>
+  );
+}
+
+const HANDOFF_STATUS: Record<string, string> = {
+  succeeded: "Done",
+  failed: "Failed",
+  refused: "Not started",
+  interrupted: "Stopped",
+  canceled: "Stopped",
+};
+
+/** A handed-off turn's settlement: the agent that ran it, how it ended, its answer. */
+function HandoffResult({
+  report,
+  agentName,
+}: {
+  report: NonNullable<ReturnType<typeof handoffReport>>;
+  agentName: string;
+}) {
+  return (
+    <div className="handoff-result" data-status={report.status}>
+      <div className="handoff-result-row">
+        <GitPullRequestArrow size={12} aria-hidden="true" />
+        <strong>{agentName}</strong>
+        <span>{HANDOFF_STATUS[report.status] ?? report.status.replaceAll("_", " ")}</span>
+      </div>
+      {report.answer && (
+        <div className="chat-markdown">
+          <MarkdownAnswer text={report.answer} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function FreshSessionMarker({
@@ -188,6 +279,12 @@ function TurnProgress({ task }: { task: AgentTask }) {
   );
 }
 
+const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, string> = {
+  restore: "Paused by a restore",
+  access_lost: "Paused while you had no access to the project",
+  unschedulable: "Paused because its time can no longer be worked out",
+};
+
 function SchedulesPopover({
   thread,
   schedules,
@@ -231,46 +328,70 @@ function SchedulesPopover({
       {open && (
         <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
           <h3>Upcoming</h3>
-          {upcoming.map((schedule) => (
-            <div
-              className="upcoming-row"
-              data-state={schedule.state}
-              key={schedule.schedule_id}
-              title={
-                schedule.disabled_reason === "restore"
-                  ? "Paused by a restore"
-                  : schedule.disabled_reason === "access_lost"
-                    ? "Paused while you had no access to the project"
-                    : undefined
-              }
-            >
-              <strong>{schedule.note}</strong>
-              <time>{scheduleWhen(schedule)}</time>
-              {schedule.state === "active" ? (
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label={`Cancel ${schedule.note}`}
-                  title="Cancel"
-                  onClick={() =>
-                    void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id))
-                  }
-                >
-                  <X size={14} />
-                </button>
-              ) : (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() =>
-                    void act(() => enableThreadSchedule(thread.thread_id, schedule.schedule_id))
-                  }
-                >
-                  Enable
-                </button>
-              )}
-            </div>
-          ))}
+          {upcoming.map((schedule) => {
+            const cancel = () =>
+              void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
+            const next = schedule.state === "active" && schedule.cron && schedule.next_fire_at;
+            return (
+              <div
+                className="upcoming-row"
+                data-state={schedule.state}
+                key={schedule.schedule_id}
+                title={
+                  schedule.disabled_reason ? PAUSED_BECAUSE[schedule.disabled_reason] : undefined
+                }
+              >
+                <strong title={schedule.note}>{schedule.note}</strong>
+                <span className="upcoming-when">
+                  <time>{scheduleWhen(schedule)}</time>
+                  <span className="upcoming-zone">{schedule.timezone}</span>
+                  {next && (
+                    <time className="upcoming-next" dateTime={next} title="Next run">
+                      → {scheduleInstant(next)}
+                    </time>
+                  )}
+                </span>
+                {schedule.pending_since && (
+                  <span
+                    className="upcoming-pending"
+                    data-deferred={schedule.deferred_reason ? "" : undefined}
+                    title={
+                      schedule.deferred_reason ? undefined : "Starts when the current turn ends"
+                    }
+                  >
+                    <Hourglass size={11} aria-hidden="true" />
+                    <time dateTime={schedule.pending_since}>
+                      {scheduleInstant(schedule.pending_since)}
+                    </time>
+                    {/* A wake that cannot start says why in the row; it retries each minute. */}
+                    {schedule.deferred_reason && <span>{schedule.deferred_reason}</span>}
+                  </span>
+                )}
+                <span className="upcoming-actions">
+                  {schedule.state === "disabled" && !oneShotPassed(schedule) && (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() =>
+                        void act(() => enableThreadSchedule(thread.thread_id, schedule.schedule_id))
+                      }
+                    >
+                      Enable
+                    </button>
+                  )}
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Cancel ${schedule.note}`}
+                    title="Cancel"
+                    onClick={cancel}
+                  >
+                    <X size={14} />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
           {error && (
             <p className="upcoming-error" role="alert">
               {error}
@@ -284,8 +405,8 @@ function SchedulesPopover({
 
 /**
  * One of the member's agent threads: its transcript with progress, links and
- * approval cards, its Upcoming list, and one composer with the agent picker and
- * the mic. Every send is a Work turn as the member.
+ * approval cards, its Upcoming list, its menu with the agent pick, and one
+ * composer with the mic. Every send is a Work turn as the member.
  */
 /** A transcript as loaded for one thread; another thread's never renders here. */
 type LoadedThread = {
@@ -312,6 +433,7 @@ type ThreadNote = { threadId: string; text: string };
 
 export function AgentThreadView({
   thread,
+  threads,
   actorId = null,
   project,
   revision = null,
@@ -320,6 +442,8 @@ export function AgentThreadView({
   onThreadChanged,
 }: {
   thread: AgentThread;
+  /** The member's threads, which name the agent a handoff report came from. */
+  threads?: readonly AgentThread[];
   actorId?: string | null;
   project?: ProjectSnapshot;
   /** The member's agent-thread watermark; a change reloads this thread. */
@@ -329,32 +453,31 @@ export function AgentThreadView({
   voice: VoiceAgent | null;
   onThreadChanged: (thread: AgentThread) => void;
 }) {
-  const [loaded, setLoaded] = useState<LoadedThread | null>(null);
+  // Each thread's last view stays, so a switch shows it at once while it reloads.
+  const [loaded, setLoaded] = useState<ReadonlyMap<string, LoadedThread>>(() => new Map());
+  const [freshThreadId, setFreshThreadId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<ThreadNote | null>(null);
   const [notice, setNotice] = useState<ThreadNote | null>(null);
-  const [scheduleList, setScheduleList] = useState<{
-    threadId: string;
-    schedules: AgentSchedule[];
-  } | null>(null);
+  const [scheduleLists, setScheduleLists] = useState<ReadonlyMap<string, AgentSchedule[]>>(
+    () => new Map(),
+  );
   const [turnTasks, setTurnTasks] = useState<ReadonlyMap<string, AgentTask>>(() => new Map());
   const composers = useRef(new Map<string, Composer>());
   const [, refreshComposer] = useState(0);
-  const [chosen, setChosen] = useState<AgentRunConfig | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
   const linesRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const picker = useThreadPicker(thread);
+  const { picker, reload: reloadPicker } = useThreadPicker(thread);
   const threadRef = useRef(thread);
   threadRef.current = thread;
   const isCurrent = (threadId: string) => threadRef.current.thread_id === threadId;
 
-  const view = loaded?.threadId === thread.thread_id ? loaded : null;
+  const view = loaded.get(thread.thread_id) ?? null;
   const messages = view?.messages ?? null;
   const questions = view?.questions ?? NO_QUESTIONS;
   const latest = view?.latest ?? null;
-  const schedules =
-    scheduleList?.threadId === thread.thread_id ? scheduleList.schedules : NO_SCHEDULES;
+  const schedules = scheduleLists.get(thread.thread_id) ?? NO_SCHEDULES;
   const shownLoadError = loadError?.threadId === thread.thread_id ? loadError.text : null;
   const shownNotice = notice?.threadId === thread.thread_id ? notice.text : null;
   const endpoints = useMemo(
@@ -479,12 +602,15 @@ export function AgentThreadView({
       const latestTask = turnId ? await owner.loadTask(turnId) : null;
       if (!fresh()) return;
       refreshSeq.current.shown = seq;
-      setLoaded({
-        threadId: current.thread_id,
-        messages: transcript.messages,
-        questions: asked,
-        latest: latestTask,
-      });
+      setLoaded((known) =>
+        new Map(known).set(current.thread_id, {
+          threadId: current.thread_id,
+          messages: transcript.messages,
+          questions: asked,
+          latest: latestTask,
+        }),
+      );
+      setFreshThreadId(current.thread_id);
       setLoadError(null);
     } catch (failure) {
       if (fresh()) setLoadError({ threadId: current.thread_id, text: errorMessage(failure) });
@@ -496,15 +622,14 @@ export function AgentThreadView({
     try {
       const list = await loadThreadSchedules(current.thread_id);
       if (threadRef.current.thread_id === current.thread_id)
-        setScheduleList({ threadId: current.thread_id, schedules: list.schedules });
+        setScheduleLists((known) => new Map(known).set(current.thread_id, list.schedules));
     } catch {
       // Upcoming is a side list; the thread stays usable without it.
     }
   }, []);
 
-  // Another thread starts with its own picks; the watermark reloads the open one.
+  // The watermark reloads the open thread; another thread opens without a rename.
   useEffect(() => {
-    setChosen(null);
     setRenaming(false);
   }, [thread.thread_id]);
   useEffect(() => {
@@ -550,23 +675,26 @@ export function AgentThreadView({
     };
   }, [messages, turnTasks, latestId]);
 
-  // Reading marks the open thread read through its own newest message, once it loaded.
-  const loadedThreadId = view?.threadId ?? null;
+  // Reading marks the open thread read through its own newest message, once it reloaded.
   const newest = messages ? readThrough(messages) : null;
   useEffect(() => {
-    if (!thread.unread || !newest || loadedThreadId !== thread.thread_id) return;
+    if (!thread.unread || !newest || freshThreadId !== thread.thread_id) return;
     markThreadRead(thread.thread_id, newest).then(onThreadChanged, () => undefined);
-  }, [thread.unread, thread.thread_id, loadedThreadId, newest, onThreadChanged]);
+  }, [thread.unread, thread.thread_id, freshThreadId, newest, onThreadChanged]);
 
-  const config = chosen ?? picker?.value ?? null;
-  const agentPicker = useAgentConfigPicker({
-    project: picker?.source ?? { provider_readiness: {}, machines: [] },
-    value: config ?? { provider: "codex", model: "", reasoning: "", run_on: "" },
-    onChange: setChosen,
-    label: `${thread.agent_name} agent`,
-    workLike: true,
-    panelClassName: "chat-agent-config-panel",
-  });
+  // The thread stores its pick and every turn runs it, retries and wakes included;
+  // until the member picks, the default shows and the next send stores it.
+  const config = thread.agent ?? picker?.value ?? null;
+  const pickAgent = (agent: AgentRunConfig) => {
+    const target = thread;
+    onThreadChanged({ ...target, agent });
+    act(target.thread_id, () =>
+      setThreadAgent(target.thread_id, agent).then(onThreadChanged, (failure: unknown) => {
+        onThreadChanged(target);
+        throw failure;
+      }),
+    );
+  };
 
   // A resend repeats the captured request, including its attachment set and provider.
   const send = async (pending: PendingThreadTurn) => {
@@ -611,6 +739,21 @@ export function AgentThreadView({
   const sendBlocked = Boolean(
     latest?.active && (!steeringTask || attachments.staged || artifactContext),
   );
+  // A disabled Send says why on hover.
+  const sendReason =
+    composer.sending && !composer.error
+      ? "Sending"
+      : sendBlocked
+        ? steeringTask
+          ? "Attachments and comments wait until this turn ends"
+          : "Wait until this turn ends"
+        : attachments.unready
+          ? "Attachments are still uploading"
+          : !comments.complete
+            ? "Finish the comment first"
+            : !(draftSendable || artifactContext)
+              ? "Write a message"
+              : undefined;
   const submit = () => {
     const text = assembleChatTurn(draft.get(), comments.annotations);
     if (
@@ -659,11 +802,11 @@ export function AgentThreadView({
                 : {}),
             }),
         ...(artifactContext ? { artifact_context: artifactContext } : {}),
-        ...(chosen
+        ...(config
           ? {
-              provider: chosen.provider,
-              ...(chosen.model ? { model: chosen.model } : {}),
-              ...(chosen.reasoning ? { reasoning: chosen.reasoning } : {}),
+              provider: config.provider,
+              ...(config.model ? { model: config.model } : {}),
+              ...(config.reasoning ? { reasoning: config.reasoning } : {}),
             }
           : {}),
         timezone: browserTimezone(),
@@ -672,7 +815,9 @@ export function AgentThreadView({
   };
 
   const control = async (action: "pause" | "resume" | "retry", task: AgentTask) => {
+    if (controlBusy) return;
     const target = thread;
+    setNotice(null);
     setControlBusy(true);
     try {
       await endpoints.control(task.operation_id, action, crypto.randomUUID());
@@ -684,8 +829,11 @@ export function AgentThreadView({
       if (isCurrent(target.thread_id)) void refresh();
     }
   };
-  const noteFailure = (threadId: string) => (failure: unknown) =>
-    setNotice({ threadId, text: errorMessage(failure) });
+  // Each menu action replaces the last notice: it clears as the action starts.
+  const act = (threadId: string, run: () => Promise<unknown>) => {
+    setNotice(null);
+    run().catch((failure: unknown) => setNotice({ threadId, text: errorMessage(failure) }));
+  };
 
   const renderQuestion = (question: AgentQuestion) =>
     question.card ? (
@@ -722,15 +870,39 @@ export function AgentThreadView({
   const pausedTask = latest?.paused && latest.can_resume ? latest : null;
   const failedTask =
     latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
+  // A failed turn's error row carries its Retry; a stop with no error row shows it here.
+  const stoppedTask =
+    failedTask &&
+    !lines.transcript.some(
+      (line) => line.role === "error" && line.taskId === failedTask.operation_id,
+    )
+      ? failedTask
+      : null;
 
+  // Browser loss shows once, on the browser item, rather than on every turn.
+  const browserStatus = [...lines.transcript]
+    .reverse()
+    .find((line) => line.browserStatus)?.browserStatus;
+  const browserLoss =
+    thread.browser_requested &&
+    (browserStatus?.status === "unavailable" || browserStatus?.status === "lost")
+      ? browserReason(browserStatus.reason_code)
+      : null;
   const menuItems = [
     { label: "Rename", onSelect: () => setRenaming(true) },
     {
       label: thread.browser_requested ? "Turn browser off" : "Turn browser on",
+      ...(browserLoss
+        ? {
+            icon: TriangleAlert,
+            title: [browserLoss.reason, browserLoss.fix].filter(Boolean).join(" "),
+          }
+        : {}),
       onSelect: () =>
-        void setThreadBrowser(thread.thread_id, !thread.browser_requested).then(
-          (result) => onThreadChanged({ ...thread, ...result }),
-          noteFailure(thread.thread_id),
+        act(thread.thread_id, () =>
+          setThreadBrowser(thread.thread_id, !thread.browser_requested).then((result) =>
+            onThreadChanged({ ...thread, ...result }),
+          ),
         ),
     },
   ];
@@ -751,9 +923,8 @@ export function AgentThreadView({
               onDone={(title) => {
                 setRenaming(false);
                 if (title && title !== thread.agent_name)
-                  void renameThread(thread.thread_id, title).then(
-                    onThreadChanged,
-                    noteFailure(thread.thread_id),
+                  act(thread.thread_id, () =>
+                    renameThread(thread.thread_id, title).then(onThreadChanged),
                   );
               }}
             />
@@ -762,18 +933,29 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
-          <AgentStatusStrip tasks={lines.statusTasks} />
           <SchedulesPopover
             thread={thread}
             schedules={schedules}
             onChanged={() => void refreshSchedules()}
           />
+          {/* The context ring sits just left of the menu, as in a project chat. */}
+          <AgentStatusStrip tasks={lines.statusTasks} />
           <OverflowMenu
             label="Thread menu"
             items={menuItems}
             className="chat-header-menu"
-            listClassName="chat-header-menu-list"
-          />
+            listClassName="chat-header-menu-list thread-menu-list"
+          >
+            {picker && config && (
+              <ThreadAgentPicker
+                source={picker.source}
+                value={config}
+                label={`${thread.agent_name} agent`}
+                onChange={pickAgent}
+                onShown={reloadPicker}
+              />
+            )}
+          </OverflowMenu>
         </div>
       </header>
       <div
@@ -790,6 +972,15 @@ export function AgentThreadView({
         {shownLoadError && (
           <div className="node-chat-line error" role="alert">
             {shownLoadError}
+            <button
+              type="button"
+              className="icon-button chat-error-retry"
+              aria-label="Retry"
+              title="Retry"
+              onClick={() => void refresh()}
+            >
+              <RotateCcw size={14} />
+            </button>
           </div>
         )}
         <AgentWindowTranscript
@@ -808,7 +999,27 @@ export function AgentThreadView({
             line.trigger === "schedule" && line.role === "human" ? "agent" : line.role
           }
           humanBody={(line) => (line.trigger === "schedule" ? <></> : undefined)}
+          browserNotices={false}
+          agentBody={(line) => {
+            const report = handoffReport(line);
+            if (!report) return undefined;
+            const target = threads?.find((item) => item.thread_id === report.threadId);
+            return (
+              <HandoffResult
+                report={report}
+                agentName={target?.agent_name ?? target?.project_name ?? "Project agent"}
+              />
+            );
+          }}
+          triggerChip={(line) =>
+            line.trigger !== "watcher" ? null : handoffReport(line) ? (
+              <span className="chat-turn-trigger handoff">Handoff</span>
+            ) : (
+              <span className="chat-turn-trigger watcher">Watcher</span>
+            )
+          }
           pendingTurn={pending}
+          onRetryTask={(task) => void control("retry", task)}
           submitting={Boolean(pending && !composer.error)}
           onResend={() => pending && void send(pending)}
           nodes={snapshot?.graph?.nodes}
@@ -879,9 +1090,9 @@ export function AgentThreadView({
             </span>
           </div>
         )}
-        {(pausedTask || failedTask) && (
+        {(pausedTask || stoppedTask) && (
           <div className="chat-task-inline paused" role="status">
-            <span>{(pausedTask ?? failedTask)!.status_message}</span>
+            <span>{(pausedTask ?? stoppedTask)!.status_message}</span>
             {pausedTask && (
               <button
                 type="button"
@@ -896,7 +1107,7 @@ export function AgentThreadView({
               type="button"
               className="button compact secondary"
               disabled={controlBusy}
-              onClick={() => void control("retry", (pausedTask ?? failedTask)!)}
+              onClick={() => void control("retry", (pausedTask ?? stoppedTask)!)}
             >
               <RotateCcw size={12} /> Retry
             </button>
@@ -929,7 +1140,7 @@ export function AgentThreadView({
             }}
           />
         }
-        tools={picker && config && agentPicker.chip}
+        tools={null}
         actions={
           <>
             {voice && (
@@ -960,13 +1171,8 @@ export function AgentThreadView({
               className="icon-button primary chat-send-button"
               type="button"
               aria-label="Send"
-              disabled={
-                sendBlocked ||
-                !(draftSendable || artifactContext) ||
-                attachments.unready ||
-                !comments.complete ||
-                Boolean(pending && !composer.error)
-              }
+              title={sendReason}
+              disabled={sendReason !== undefined}
               onClick={submit}
             >
               {pending && !composer.error ? (
@@ -979,7 +1185,6 @@ export function AgentThreadView({
         }
         notice={composer.error && <span role="alert">{composer.error}</span>}
       />
-      {agentPicker.panel}
       <AnswerCommentLayers comments={comments} mode="work" />
     </div>
   );

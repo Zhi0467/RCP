@@ -404,9 +404,10 @@ class NotificationSender:
             self.store.observe_consolidation_notification(event, notification)
 
     def _recheck_agent_threads(self, project: ProjectRecord) -> None:
-        """Push unread failed private turns with a stable turn id and an exact recipient.
+        """Push unread failed turns and schedule-wake replies to the thread's member.
 
-        A finished reply only marks the thread unread; questions and cards push on their own.
+        Other finished replies, including watcher and handoff wakes, only mark the
+        thread unread; questions and cards push on their own.
         """
         since = (
             datetime.fromisoformat(self.store.now()) - timedelta(seconds=NOTIFICATION_TTL_SECONDS)
@@ -419,7 +420,8 @@ class NotificationSender:
                 "LEFT JOIN chat_reads seen ON seen.project_id=t.project_id "
                 "AND seen.chat_id=t.thread_id AND seen.user_id=t.user_id "
                 "WHERE t.project_id=? AND t.closed_at IS NULL AND r.visible=1 "
-                "AND r.status IN ('failed','interrupted') AND r.finished_at>? "
+                "AND (r.status IN ('failed','interrupted') OR (r.status='succeeded' "
+                "AND json_extract(r.request_json, '$.trigger')='schedule')) AND r.finished_at>? "
                 "AND (seen.read_through IS NULL OR seen.read_through<r.finished_at)",
                 (project.project_id, since),
             ).fetchall()

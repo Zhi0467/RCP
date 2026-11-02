@@ -23,7 +23,7 @@ from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import GroupContext
 from rcp.agents.project_repositories import sibling_repository_paths
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
@@ -266,7 +266,7 @@ _GRANT_REQUEST_RULE = """- If the work needs a folder outside the roots, such as
   this machine's card -> Writable paths. It applies from your next launch."""
 
 
-def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
+def _episode_worktree_rule(scope: ProviderWriteScope) -> str:
     worktree = scope.episode_worktree
     if worktree is None:
         return ""
@@ -277,7 +277,7 @@ def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
 """
 
 
-def write_scope_section(scope: ProjectWriteScope) -> str:
+def write_scope_section(scope: ProviderWriteScope) -> str:
     """Render the exact filesystem boundary the provider is launched with.
 
     The contract has to name the same roots the provider enforces. A prompt that

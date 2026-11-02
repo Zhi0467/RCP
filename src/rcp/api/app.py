@@ -1656,6 +1656,9 @@ def create_app(
 
     def after_watcher_poll() -> None:
         provider_sign_ins.reconcile_recovery()
+        # Expired cards answer their questions; delivery wakes each asking thread.
+        for project_id in store.expire_approval_cards():
+            reconcile_question_answers(project_id)
         graph_watcher_retry_worker.signal()
         reconcile_episodes()
         for project in store.projects():
@@ -2213,7 +2216,10 @@ def create_app(
                                 source="startup",
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
-                await asyncio.to_thread(settle_interrupted_approval_cards, store)
+                await asyncio.to_thread(
+                    settle_interrupted_approval_cards, store, service_for=catalog.open
+                )
+                await asyncio.to_thread(store.expire_approval_cards)
                 await asyncio.to_thread(reconcile_question_answers)
                 # Work parked on a login that is now unusable resolves to whichever
                 # signed-in login the queue picks, without waiting for a sign-in event.

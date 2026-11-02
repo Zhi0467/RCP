@@ -12,6 +12,7 @@ from rcp.agents.memory_file_io import (
     safe_component,
 )
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -88,15 +89,19 @@ def prepare_project_memory(
     """
     safe_component(project_id)
     with _MEMORY_LOCKS(f"{store.path.resolve()}:{project_id}"):
+        project = store.project(project_id)
+        location = project.state_location if project else None
+        # Only a deletion still owed on this same base could remove the new notes;
+        # one left on an old or unreachable base never blocks a launch.
         with store.connection() as connection:
             pending = connection.execute(
-                "SELECT 1 FROM memory_deletions WHERE project_id = ? OR project_id IN "
-                "(SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?)",
-                (project_id, project_id),
+                "SELECT 1 FROM memory_deletions WHERE (? IS NULL OR state_location = ?) "
+                "AND (project_id = ? OR project_id IN (SELECT alias_id FROM project_aliases "
+                "WHERE canonical_project_id = ?))",
+                (location, location, project_id, project_id),
             ).fetchone()
         if pending:
             raise ValueError("Project memory deletion remains pending; retry cleanup before launch")
-        project = store.project(project_id)
         if project is not None:
             finish_project_memory_rename(store, project)
         with store.connection() as connection:
@@ -114,11 +119,17 @@ def prepare_project_memory(
                 ]
             )
         if remote_stage is not None:
-            result = remote_stage.project_memory({"project_id": project_id, "lessons": lessons})
+            result = remote_stage.project_memory(
+                {
+                    "project_id": project_id,
+                    "lessons": lessons,
+                    "title_max_chars": MEMORY_MIGRATED_TITLE_MAX_CHARS,
+                }
+            )
             root, size = Path(result["root"]), result["index_bytes"]
         else:
             root = project_memory_root(store.path.parent, project_id)
-            size = prepare_files(root, lessons)
+            size = prepare_files(root, lessons, MEMORY_MIGRATED_TITLE_MAX_CHARS)
         if not migrated:
             with store.connection() as connection:
                 connection.execute(

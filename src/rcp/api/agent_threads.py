@@ -12,6 +12,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -43,16 +44,18 @@ from rcp.api.tasks import (
     download_agent_artifact,
 )
 from rcp.attachments import ChatAttachmentUpload
+from rcp.config import load_manifest
 from rcp.providers import ProviderId
+from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_id
-from rcp.runs.space_chat import SpaceThreadOwner
+from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
 from rcp.service_connections import ConnectionError
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.agent_threads import AgentThreadRecord
+from rcp.storage.agent_threads import AgentThreadRecord, private_artifact_owner
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter()
@@ -94,6 +97,67 @@ def agent_threads(request: Request, *, store: StoreDependency, identity_access: 
     return {"threads": rows}
 
 
+class SpaceReference(BaseModel):
+    project_id: str
+
+
+@router.get("/api/agent-threads/{thread_id}/references", response_model=SpaceReference)
+def space_reference(
+    thread_id: str,
+    request: Request,
+    path: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+    artifact_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> SpaceReference:
+    """The member project a Space reply's file path or saved artifact id belongs to.
+
+    Only the member's own projects resolve, and another member's private artifact
+    reads like a missing one. The caller then reads it through the project's routes.
+    """
+
+    user_id = identity_access.acting_user(request).user_id
+    owned_space_thread(store, thread_id, user_id)
+    if (path is None) == (artifact_id is None):
+        raise HTTPException(status_code=422, detail="Name one path or one artifact id")
+    projects = store.member_project_ids(user_id)
+    if artifact_id is not None:
+        artifact = store.artifact(artifact_id)
+        readable = (
+            store.readable_artifact(artifact.project_id, artifact_id)
+            if artifact is not None and artifact.project_id in projects
+            else None
+        )
+        if readable is not None:
+            with store.connection() as connection:
+                owner = private_artifact_owner(connection, readable)
+            if owner in {None, user_id}:
+                return SpaceReference(project_id=readable.project_id)
+        raise HTTPException(
+            status_code=404, detail="No saved artifact of your projects has this id"
+        )
+    assert path is not None
+    matches = []
+    for project_id in sorted(projects):
+        record = store.project(project_id)
+        if record is None:
+            continue
+        try:
+            repository_for_path(load_manifest(record.locator), path)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        matches.append(project_id)
+    if len(matches) != 1:
+        raise HTTPException(
+            status_code=404,
+            detail="The path is in no repository of your projects"
+            if not matches
+            else "The path is in repositories of several of your projects",
+        )
+    return SpaceReference(project_id=matches[0])
+
+
 @router.get("/api/agent-threads/{thread_id}/transcript", response_model=ChatTranscript)
 def thread_transcript(
     thread_id: str,
@@ -113,9 +177,11 @@ def thread_transcript(
                 raise
     else:
         try:
-            transcript = read_space_chat_transcript(
-                store.path.parent, thread.user_id, thread_id, title=title
-            )
+            # Under the appenders' lock, so a read never sees a half-written record.
+            with space_transcript_lock(store, thread_id):
+                transcript = read_space_chat_transcript(
+                    store.path.parent, thread.user_id, thread_id, title=title
+                )
         except ConnectionError as exc:
             raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
         if transcript is not None:

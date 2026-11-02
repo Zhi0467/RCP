@@ -29,6 +29,17 @@ def test_action_is_strict_and_cannot_offer_choices():
         AskArguments.model_validate({"question": "Allow?", "action": {**action, "writable": "yes"}})
 
 
+def _no_service(project_id):
+    raise AssertionError("no graph read for this card")
+
+
+def _scope_service(scope):
+    from types import SimpleNamespace
+
+    state = SimpleNamespace(project_truth_scope=scope, proposals={})
+    return SimpleNamespace(history=SimpleNamespace(state=lambda: state))
+
+
 def make_card(store, origin):
     action = {"kind": "truth_scope", "project_id": "project", "alias": "code", "writable": True}
     return store.create_or_get_question(
@@ -49,7 +60,7 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
     assert sorted(results) == [False, True]
     reopened = AppStore(store.path)
     assert not reopened.claim_approval_card(question.question_id)
-    settle_interrupted_approval_cards(reopened)
+    settle_interrupted_approval_cards(reopened, service_for=lambda project_id: _scope_service([]))
     answered = reopened.get_question(question.question_id)
     assert answered is not None and answered.answer == "failed: interrupted"
     card = reopened.approval_card(question.question_id)
@@ -76,7 +87,7 @@ def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
             ("project", "episode", request_id, "alex", "{}", "d", "a", "{}", "merge-task", "t"),
         )
     reopened = AppStore(store.path)
-    settle_interrupted_approval_cards(reopened)
+    settle_interrupted_approval_cards(reopened, service_for=_no_service)
     card = reopened.approval_card(question.question_id)
     assert card is not None and card["result"]["outcome"] == "approved"
     answered = reopened.get_question(question.question_id)
@@ -151,10 +162,97 @@ def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, act
         f"/api/approval-cards/{question.question_id}",
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
-    assert response.status_code == 200
-    assert response.json() == {"outcome": "failed", "reason": "project_transfer_in_progress"}
+    # A closed admission is not the member's answer: the card stays open for a later tap.
+    assert response.status_code == 409
     assert calls == []
-    assert store.get_question(question.question_id).answer == "failed: project_transfer_in_progress"
+    assert store.get_question(question.question_id).state == "pending"
+    assert store.claim_approval_card(question.question_id)
+
+
+def test_an_outage_releases_the_card_and_a_failure_keeps_its_reason(questions_api, monkeypatch):
+    from rcp.api import approval_cards
+    from rcp.core.models import ValidationMessage
+    from rcp.core.validation.report import ValidationReport
+    from rcp.history import PatchRejected
+    from rcp.transport.state import StateUnavailable
+
+    app, client, store, project_id = questions_api
+    question, card = api_card(questions_api)
+    url = f"/api/approval-cards/{question.question_id}"
+    body = {"decision": "approve", "pinned_sha256": card["pinned_sha256"]}
+
+    def offline(*args):
+        raise StateUnavailable("base unreachable")
+
+    monkeypatch.setattr(approval_cards, "approval_pins", offline)
+    assert client.post(url, json=body).status_code == 503
+    assert store.get_question(question.question_id).state == "pending"
+
+    report = ValidationReport()
+    report.messages.append(ValidationMessage(level="reject", code="cycle", message="cycle"))
+
+    def rejected(*args):
+        raise PatchRejected(report)
+
+    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    monkeypatch.setattr(approval_cards, "_execute", rejected)
+    result = client.post(url, json=body).json()
+    assert result["outcome"] == "failed"
+    assert result["reason"] == str(PatchRejected(report))
+
+
+def test_unknown_merge_branch_is_refused_at_ask_with_its_code(questions_api):
+    from uuid import uuid4
+
+    from rcp.approval_actions import MergeBranchAction
+    from rcp.runs.approval_cards import approval_pins
+
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    action = MergeBranchAction(kind="merge_branch", project_id=project_id, branch_id=str(uuid4()))
+    with pytest.raises(ValueError, match="branch_not_found"):
+        approval_pins(service, store, action, store.local_owner)
+
+
+def test_snapshot_carries_card_action_and_result_ids(store, origin):
+    import json
+
+    from rcp.runs.question_snapshots import question_snapshot
+
+    question = make_card(store, origin)
+    assert store.claim_approval_card(question.question_id)
+    store.settle_approval_card(
+        question.question_id, {"outcome": "approved", "result": {"operation_id": "merge-task"}}
+    )
+    snapshot = question_snapshot(
+        store,
+        project_id="project",
+        owner_kind="chat",
+        owner_ids=["chat"],
+        operation_id=origin.operation_id,
+    )
+    entry = json.loads(snapshot.text)["questions"][0]
+    assert entry["card"]["action"]["kind"] == "truth_scope"
+    assert entry["card"]["result"]["result"] == {"operation_id": "merge-task"}
+
+
+def test_restart_settles_a_committed_truth_scope_card(store, origin):
+    question = make_card(store, origin)
+    assert store.claim_approval_card(question.question_id)
+    # Membership already matches the action: the change committed before the stop.
+    settle_interrupted_approval_cards(
+        store, service_for=lambda project_id: _scope_service(["code"])
+    )
+    assert store.get_question(question.question_id).answer == "approved"
+
+
+def test_sweep_expires_cards_without_a_read(store, origin):
+    question = make_card(store, origin)
+    with store.connection() as connection:
+        connection.execute("UPDATE approval_cards SET expires_at=?", (store.now(),))
+    assert store.expire_approval_cards() == {"project"}
+    assert store.get_question(question.question_id).answer == "expired"
+    assert store.expire_approval_cards() == set()
 
 
 @pytest.mark.parametrize("changed", ["client", "live", "none"])
@@ -525,7 +623,8 @@ def test_proposal_approval_real_route(questions_api, monkeypatch, fenced):
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
     if fenced:
-        assert response.json() == {"outcome": "failed", "reason": "project_transfer_in_progress"}
+        assert response.status_code == 409
+        assert store.get_question(question.question_id).state == "pending"
         return
     assert response.json()["outcome"] == "approved", response.text
     assert service.history.state().proposals[action["proposal_id"]].status == "rejected"
@@ -551,7 +650,8 @@ def test_merge_episode_approval_real_route(manifest, tmp_path, monkeypatch, fenc
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
     if fenced:
-        assert response.json() == {"outcome": "failed", "reason": "project_transfer_in_progress"}
+        assert response.status_code == 409
+        assert harness.store.get_question(question.question_id).state == "pending"
         return
     assert response.json()["outcome"] == "approved", response.text
     assert len(harness.branch.merge_receipts()) == 1
@@ -569,7 +669,7 @@ def test_merge_episode_approval_real_route(manifest, tmp_path, monkeypatch, fenc
     )
     assert receipt["attempt_id"] == attempt.attempt_id
     assert receipt["accepted_task_id"] == attempt.attempt_id
-    assert response.json()["result"]["accepted_merge_task"]["operation_id"] == attempt.attempt_id
+    assert response.json()["result"]["operation_id"] == attempt.attempt_id
 
 
 def test_card_table_includes_required_request_id_from_creation(store):
@@ -677,3 +777,103 @@ def test_closed_thread_card_tap_is_refused_before_acting(questions_api, monkeypa
     )
     assert response.status_code == 409
     assert store.get_question(question.question_id).answer is None
+
+
+def test_usage_names_every_action_field_and_outcome():
+    from typing import get_args
+
+    from rcp.approval_actions import ApprovalAction, ApprovalOutcome
+    from rcp.runs.approval_cards import approval_card_usage
+
+    usage = approval_card_usage("rcp")
+    for model in get_args(get_args(ApprovalAction)[0]):
+        assert all(name in usage for name in model.model_fields)
+    assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected"),
+    [
+        ({"code": "merge_heads_changed"}, {"outcome": "stale"}),
+        ({"code": "branch_name_taken"}, {"outcome": "failed", "reason": "branch_name_taken"}),
+        ({"code": "x", "message": "why"}, {"outcome": "failed", "reason": "why"}),
+        ("plain", {"outcome": "failed", "reason": "plain"}),
+        (503, None),
+        ("state", None),
+    ],
+)
+def test_handler_outcomes_map_to_card_results(raised, expected):
+    from fastapi import HTTPException
+
+    from rcp.api.approval_cards import _NotNow, _run
+    from rcp.transport.state import StateUnavailable
+
+    def execute():
+        if raised == "state":
+            raise StateUnavailable("offline")
+        if raised == 503:
+            raise HTTPException(status_code=503, detail="offline")
+        raise HTTPException(status_code=409, detail=raised)
+
+    if expected is None:
+        with pytest.raises(_NotNow):
+            _run(execute, "request")
+    else:
+        assert _run(execute, "request") == expected
+
+
+@pytest.mark.parametrize(
+    ("installed", "authenticated", "problem", "refused"),
+    [(True, True, None, False), (True, False, None, True), (True, True, "sandbox", True)],
+)
+def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
+    monkeypatch, installed, authenticated, problem, refused
+):
+    from types import SimpleNamespace
+
+    from rcp.approval_actions import AutoResearchAction
+    from rcp.runs import approval_cards
+
+    profile = {"provider": "codex", "run_on": "local"}
+    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"profile": profile})
+    readiness = SimpleNamespace(
+        installed=installed,
+        authenticated=authenticated,
+        reason=None,
+        work_like_available=problem is None,
+        work_like_reason=problem,
+    )
+    service = SimpleNamespace(
+        manifest=SimpleNamespace(machine_map={"local": SimpleNamespace(host="")}),
+        launcher=SimpleNamespace(
+            member_readiness=lambda *args, **kwargs: readiness,
+            provider_binary=lambda *args: "codex",
+        ),
+    )
+    action = AutoResearchAction(kind="auto_research", project_id="p", invocation_ceiling=1)
+    human = SimpleNamespace(user_id="alex")
+    if refused:
+        with pytest.raises(ValueError, match="provider_not_ready"):
+            approval_cards.approval_card_pins(service, None, action, human)  # type: ignore[arg-type]
+    else:
+        assert approval_cards.approval_card_pins(service, None, action, human) == {  # type: ignore[arg-type]
+            "profile": profile
+        }
+
+
+def test_request_receipts_need_their_durable_row(store):
+    from rcp.runs.approval_cards import committed_receipt
+
+    for kind in ("auto_research", "merge_branch", "merge_episode"):
+        card = {
+            "action": {"kind": kind, "project_id": "project"},
+            "request_id": "r",
+            "user_id": "alex",
+        }
+        assert committed_receipt(store, _no_service, card) is None
+    card = {
+        "action": {"kind": "merge_branch", "project_id": "p"},
+        "request_id": "r",
+        "user_id": None,
+    }
+    assert committed_receipt(store, _no_service, card) is None

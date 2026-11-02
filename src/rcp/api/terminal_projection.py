@@ -11,9 +11,15 @@ from rcp.terminals.backends import COOPERATIVE_NOTICE
 
 
 def running_repository_work(
-    store: AppStore, project_id: str, manifest: Manifest
+    store: AppStore, project_id: str, manifest: Manifest, viewer_id: str
 ) -> dict[str, list[dict[str, str]]]:
+    """Work running in each repository, as `viewer_id` may see it.
+
+    Another member's private thread turn still warns of the collision, but
+    without its id or status, which the thread reserves for its owner.
+    """
     work: dict[str, list[dict[str, str]]] = {repo.alias: [] for repo in manifest.repositories}
+    hidden = store.private_chat_ids_except(viewer_id)
     for task in store.all_project_agent_tasks(project_id):
         if not task.active or task.queued:
             continue
@@ -49,10 +55,11 @@ def running_repository_work(
             else:
                 matches = str(Path(repository.path).resolve()) in roots
             if matches:
+                private = request.get("chat_id") in hidden
                 work[repository.alias].append(
                     {
-                        "operation_id": task.operation_id,
-                        "title": task.status_message or "Work turn",
+                        "operation_id": "" if private else task.operation_id,
+                        "title": (None if private else task.status_message) or "Work turn",
                     }
                 )
     return work

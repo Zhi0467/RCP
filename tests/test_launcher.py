@@ -1298,7 +1298,7 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
     assert command[command.index("--permission-mode") + 1] == "acceptEdits"
     assert command[command.index("--model") + 1] == "claude-test"
     assert command[command.index("--effort") + 1] == "high"
-    assert "--tools" not in command
+    assert "Read" in command[command.index("--tools") + 1].split(",")
     allowed_index = command.index("--allowedTools")
     assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "--json-schema" not in command
@@ -1327,6 +1327,7 @@ def test_claude_coach_command_scopes_edits() -> None:
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     assert "acceptEdits" not in command
     assert "Edit(//stage/changes/**)" in command
+    assert "Task" not in command[command.index("--tools") + 1].split(",")
     assert command[command.index("--resume") + 1] == "paper-session"
 
 
@@ -1499,6 +1500,30 @@ def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:
     allowed_index = command.index("--allowedTools")
     assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "auto" not in command
+
+
+@pytest.mark.parametrize("capability", ["work_auto", "discuss"])
+def test_claude_launch_names_its_tools_without_host_session_tools(capability) -> None:
+    stage = "/data/chat-stage"
+    work = capability == "work_auto"
+    command = _command(
+        "claude",
+        "go",
+        cwd=Path(stage),
+        write_dirs=[Path("/project/repo-a")] if work else [],
+        write_scope=_project_write_scope(
+            capability="work_auto", stage=stage, repository_paths=["/project/repo-a"]
+        )
+        if work
+        else None,
+        capability=capability,
+        provider_version="2.1.312",
+    )
+
+    tools = set(command[command.index("--tools") + 1].split(","))
+    assert {"Bash", "Read", "Edit", "Task", "Skill", "WebFetch", "WebSearch"} <= tools
+    # Tools that outlive the turn, reach another session, or publish never exist.
+    assert not {"CronCreate", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "Artifact"} & tools
 
 
 def test_remote_provider_command_uses_login_shell_path() -> None:

@@ -173,11 +173,50 @@ export function scheduleWhen(schedule: AgentSchedule, now = new Date()): string 
   return schedule.cron ?? "";
 }
 
-/** Active schedules and those the member can switch back on; the rest are history. */
+/** Active schedules, those the member can switch back on, and a done one-shot whose
+ *  wake still waits; the rest are history. */
 export function upcomingSchedules(schedules: readonly AgentSchedule[]): AgentSchedule[] {
   return schedules.filter(
-    (schedule) => schedule.state === "active" || schedule.state === "disabled",
+    (schedule) =>
+      schedule.state === "active" ||
+      schedule.state === "disabled" ||
+      (schedule.state === "done" && Boolean(schedule.pending_since)),
   );
+}
+
+/** Whether a one-shot's local time has passed in its own zone, so it cannot resume. */
+export function oneShotPassed(schedule: AgentSchedule, now = new Date()): boolean {
+  if (!schedule.at_local) return false;
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: schedule.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+  } catch {
+    return false;
+  }
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  const wall = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
+  return schedule.at_local <= wall;
+}
+
+/** An instant as the reader's short weekday and time, such as `Mon 09:00`. */
+export function scheduleInstant(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime())
+    ? ""
+    : at.toLocaleString([], {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      });
 }
 
 /** The newest message time, which Mark read sends as `read_through`. */
@@ -192,6 +231,40 @@ export function latestTurnId(messages: readonly ChatMessage[]): string | null {
     if (id) return id;
   }
   return null;
+}
+
+/** A handoff's settlement, as the Space thread's wake reports it. */
+export interface HandoffReport {
+  threadId: string | null;
+  projectId: string | null;
+  status: string;
+  answer: string | null;
+}
+
+// Mirrors the wake message in src/rcp/runs/agent_thread_commands.py. Until the wake
+// carries its own trigger and field, this is the one place that recognizes it.
+const HANDOFF_WAKE_LEAD = "Your handed-off work settled.";
+
+/** The handoff report a wake line carries, or null for any other line. */
+export function handoffReport(line: { text: string }): HandoffReport | null {
+  if (!line.text.startsWith(HANDOFF_WAKE_LEAD)) return null;
+  try {
+    const report: unknown = JSON.parse(line.text.slice(line.text.indexOf("\n") + 1));
+    if (!report || typeof report !== "object") return null;
+    const value = report as Record<string, unknown>;
+    const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string) : null);
+    const status = text("status");
+    return status
+      ? {
+          threadId: text("thread_id"),
+          projectId: text("project_id"),
+          status,
+          answer: text("answer"),
+        }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The browser's IANA zone, sent with each message so schedules default to it. */

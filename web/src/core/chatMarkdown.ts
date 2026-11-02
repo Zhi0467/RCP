@@ -9,7 +9,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math-extended";
@@ -17,7 +17,7 @@ import type { Element as HastElement } from "hast";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
 import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
-import { isRepositoryFileHrefCandidate } from "./repositoryFileLinks";
+import { artifactReferenceId, isReferenceHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
 /** The Markdown syntax every reply is read with; embed detection parses with it too. */
@@ -232,7 +232,7 @@ function MarkdownLink({ href, children, className, node, ...props }: MarkdownLin
   if (renderEmbed && wrapsEmbed(node, renderEmbed)) return createElement(Fragment, null, children);
   const nodeId = nodeIdFromReferenceHref(href, nodeIds);
   const repositoryFile =
-    !nodeId && Boolean(onOpenRepositoryFileLink) && isRepositoryFileHrefCandidate(href);
+    !nodeId && Boolean(onOpenRepositoryFileLink) && isReferenceHrefCandidate(href);
   const nextClassName = [
     className,
     nodeId ? "chat-node-reference" : null,
@@ -272,11 +272,7 @@ function MarkdownLink({ href, children, className, node, ...props }: MarkdownLin
       ...props,
       href,
       className: nextClassName || undefined,
-      "aria-label": nodeId
-        ? `Open node ${nodeId}`
-        : repositoryFile
-          ? "Open repository file preview"
-          : props["aria-label"],
+      "aria-label": nodeId ? `Open node ${nodeId}` : props["aria-label"],
       onClick,
       onKeyDown,
     },
@@ -310,6 +306,11 @@ function MarkdownImage({ node: _node, ...props }: MarkdownImageProps) {
   const embedded =
     renderEmbed && typeof props.src === "string" ? renderEmbed(props.src, props.alt ?? "") : null;
   return embedded ?? createElement("img", props);
+}
+
+// A saved artifact reference survives the default transform, which drops unknown schemes.
+function keepReferenceUrls(url: string): string {
+  return artifactReferenceId(url) ? url : defaultUrlTransform(url);
 }
 
 const MARKDOWN_COMPONENTS: Components = {
@@ -365,5 +366,6 @@ const MarkdownBody = memo(function MarkdownBody({
     ],
     rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
     components: MARKDOWN_COMPONENTS,
+    urlTransform: keepReferenceUrls,
   });
 });

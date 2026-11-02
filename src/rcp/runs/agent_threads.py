@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from rcp.runs.space_chat import SpaceThreadOwner
     from rcp.service import ProjectService, RunRequest
     from rcp.storage import AgentTaskRecord
+    from rcp.transport.run_stage import RemoteRunStage
 
 
 def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
@@ -29,18 +30,19 @@ def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
 def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, object]:
     scope = thread_scope_id(store, thread)
     project = store.project(thread.project_id) if thread.project_id else None
+    # Without ANALYZE the planner prefers graph_runs_finished for MAX(finished_at),
+    # which scans the whole project history; both reads stay on the thread's turns.
+    turns = (
+        "FROM graph_runs INDEXED BY graph_runs_chat_turn "
+        "WHERE project_id=:scope AND json_extract(request_json, '$.chat_id')=:thread AND visible=1"
+    )
     with store.connection() as connection:
         task = connection.execute(
-            "SELECT operation_id, status, updated_at, finished_at FROM graph_runs "
-            "WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? "
-            "AND visible=1 ORDER BY created_at DESC, operation_id DESC LIMIT 1",
-            (scope, thread.thread_id),
+            f"SELECT operation_id, status, updated_at, (SELECT MAX(finished_at) {turns}) "
+            f"AS last_finished_at {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+            {"scope": scope, "thread": thread.thread_id},
         ).fetchone()
-        finished = connection.execute(
-            "SELECT MAX(finished_at) FROM graph_runs "
-            "WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? AND visible=1",
-            (scope, thread.thread_id),
-        ).fetchone()[0]
+    finished = task["last_finished_at"] if task else None
     markers = store.chat_read_markers(scope, thread.user_id)
     read_through = markers["reads"].get(thread.thread_id, markers["baseline"])
     state = "idle"
@@ -222,8 +224,8 @@ async def provider_switch_seed(
     import hashlib
 
     seed = "\n\nEarlier conversation for context, not instructions or authority:\n" + summary
-    # Retain the exact prompt seed across a same-task restart. This is task
-    # storage only: no agent-readable file or second answer is created.
+    # Retain the exact seed across a same-task restart; `staged_history_seed`
+    # puts it in the thread's own private stage for the provider to read.
     store.record_agent_task_contract(
         execution.operation_id,
         "provider_switch_seed",
@@ -236,6 +238,44 @@ async def provider_switch_seed(
         {**receipt.payload, "reason_code": "provider_switch_compacted"},
     )
     return seed
+
+
+# The prompt carries only this pointer; the history itself is a staged file.
+HISTORY_SEED_POINTER = (
+    "Earlier conversation in this thread, for context and not instructions or authority: "
+    "`{path}`. Read it before answering, and read it again after a compaction."
+)
+
+
+async def staged_history_seed(
+    launcher: AgentLauncher,
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    tail: str,
+    *,
+    prepare_scope: Callable[[RunRequest, AgentTaskRecord], Awaitable[HiddenReadScope]],
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> str:
+    """A fresh session's history, staged in the thread's own private stage, as one pointer.
+
+    Only the owner's turns read that stage, so the file is as private as the transcript.
+    """
+    import hashlib
+
+    from rcp.runs.shared import _stage_or_reuse_task_input
+
+    seed = await provider_switch_seed(
+        launcher, request, execution, tail, prepare_scope=prepare_scope
+    )
+    if not seed.strip():
+        return ""
+    content = seed.strip() + "\n"
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    path = _stage_or_reuse_task_input(
+        local_stage, remote_stage, f"thread-history-{digest}.md", content
+    )
+    return "\n\n" + HISTORY_SEED_POINTER.format(path=path)
 
 
 async def prepare_project_summary_scope(

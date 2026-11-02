@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import tarfile
 import uuid
+from collections.abc import Collection
 from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -51,17 +52,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Single-entry agent tables (v68-73): fresh, immutable fixtures, and in-place upgrades.
-        "056bb19de8f6bb948cf266a6e8348bce3ce27e4bf551c0af9c58b8bb65be00fb",
-        "182a1c3d76e511aebdb0f1eaee7c2a4c5b625e485e313f0e8cef5873ec377452",
-        "3975299e3b5ac699567fb7eafd3fbc7aa0f47470f098ef48e97809dd70c57027",
-        "4264762d0c05288abec3c3eaa6043678e1beae8b62ffbb1e64592904bc89da4d",
-        "76120a6ee5c5375df4906767b8cee37de0f2e507e20bf70735f5885f86c2af74",
-        "8e291af96d04cf786ce5ad8c4d49710db7f30ec6ba5d8633df9794dcf996192a",
-        "8eeb7b3b4fbc6485f3c331110a7eb9ade07ee2eb4ffeeef08cf31ea1ddb9dd74",
-        "9c93f7df0ef2a570059da802d6548d8aa97f6ba744d3dc8264d4ef1bd796fb9a",
-        "b452901feab393ee6077e2ecb99b3c10b5b8c2ad0f204e65df7600d127c4bd2f",
-        "baaa7c3c5fa26e1722a4561e9ced9cd328a281578e61214e70e1048824f0cdac",
-        "bbda7a76dc46d427aa503f1f62d9edde0bcfc61cadac41d11cdcda1f7af38bdd",
+        "617340c2267fe3dbd2a8f115384bd6ccfbd8664268e9dccf31aaa8121926a014",
+        "61d9cddaf9c10dbb4406f77bbbad3269fa2d40ae7ee7f305c39c325d565ee5a4",
+        "724a68455cbb43e41a53508f0ef97745c44b3f35688e600b0fa59532bc9ab3b9",
+        "ab7969156a6740e983c35248ba2359775011b11b4d93a06c316b677246d92c61",
+        "b9d07488c8f7b8dab8a89920b351946d1204658cbaaada8639849edc760339f0",
+        "c150e407c6285ed439908cd9d5c428c6148c1d16850ee73072106af417e241cd",
+        "eab496897a9a7347912d1afe54d94281190d07e67d23735ae1816de6cb5576f3",
+        "fb24381c689f8cdfd37a95ee458494347331164a3105fafda471f30bdfd0b21b",
+        "972bd226a8a87b610fa0961383b118d35f056fc7c16c5d3994dc4da554abdd30",
+        "38fadd40a3f6b614cba76a8a9f58ecba017b970e2e55a4397086bb7d18029421",
+        "2b17efd8b903d8f0d05e6047b3ef55e727d31e5f03d1d0bcd6ec1998e2bbdc00",
+        "662a2eba962ce2221e5bbf08e078ae49a2e8ad0f1dbb1700967c0556b58fd460",
+        "647b6a44f3b6c2cfd9c2f64d77f5c7702129eec859feab30d11218961f638510",
         # Evidence flag origins and episode merge requests (v66-67): fresh,
         # immutable fixture upgrades, and the in-place compatibility boundaries.
         "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",
@@ -672,6 +675,7 @@ def detach_restore_database(
     *,
     confirmed_by: str,
     detached_at: datetime,
+    restored_memory_projects: Collection[str] = (),
 ) -> None:
     with closing(AppStore(database)) as store:
         store.detach_restored_lifecycle(
@@ -681,6 +685,7 @@ def detach_restore_database(
             ),
             confirmed_by=confirmed_by,
             detached_at=detached_at.isoformat(),
+            restored_memory_projects=restored_memory_projects,
         )
     _verify_sqlite_integrity(database)
 
@@ -1542,7 +1547,14 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     if has_artifact_storage and "artifact_inventory" not in manifest.model_fields_set:
         raise RestoreRefused("An artifact-storage database requires its protected inventory.")
     detach_restore_database(
-        database, confirmed_by=request.confirmed_by, detached_at=request.detached_at
+        database,
+        confirmed_by=request.confirmed_by,
+        detached_at=request.detached_at,
+        restored_memory_projects={
+            PurePosixPath(entry.source_relative_path).parts[1]
+            for entry in manifest.app_data_files
+            if entry.group == "local_memory"
+        },
     )
     app_data_files = tuple(
         entry

@@ -618,7 +618,11 @@ class _LocalBackedRemoteStage:
         from rcp.agents.memory_file_io import memory_root, prepare_files
 
         root = memory_root(self.base, request["project_id"])
-        size = prepare_files(root, request["lessons"]) if "lessons" in request else 0
+        size = (
+            prepare_files(root, request["lessons"], request["title_max_chars"])
+            if "lessons" in request
+            else 0
+        )
         return {"root": str(root), "index_bytes": size}
 
     def __init__(self, host: str) -> None:

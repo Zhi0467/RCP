@@ -43,6 +43,8 @@ EPISODE_RECEIPT_MAX_BYTES = 8 * 1024
 TURN_OUTCOME_REASON_MAX_CHARS = 240
 TURN_OUTCOME_CORRECTION_MAX_ROUNDS = 1
 AGENT_TASK_RESULT_MAX_BYTES = 64 * 1024
+# A Space turn's per-project Apply statuses kept on its task result.
+SPACE_PROJECT_RESULTS_MAX_COUNT = 64
 AGENT_COMMAND_EVENT_MAX_BYTES = 32 * 1024
 PATCH_OUTPUT_RETENTION_DAYS = 7
 RUN_TRACE_RETENTION_DAYS = 90
@@ -616,6 +618,8 @@ PROJECT_GROUP_NAME_MAX_CHARS = 120
 
 # The memory index is notes, independent of graph authority.
 MEMORY_INDEX_MAX_BYTES = 32 * 1024
+# A migrated lesson's index title is its first line, capped so one lesson cannot fill the index.
+MEMORY_MIGRATED_TITLE_MAX_CHARS = 120
 
 # In-memory dictation uploads and bounded service calls.
 TRANSCRIPTION_AUDIO_MAX_BYTES = 4 * 1024 * 1024
@@ -815,6 +819,8 @@ AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
 # Member-requested standing schedules per private agent thread.
 AGENT_SCHEDULES_MAX_ACTIVE = 20
 AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+# Consecutive fires of one schedule, or one-shots on one thread, stay this far apart.
+AGENT_SCHEDULE_MIN_GAP_MINUTES = 15
 
 # Human approval cards expire on read or resolution, with no background sweeper.
 APPROVAL_CARD_TTL_HOURS = 72

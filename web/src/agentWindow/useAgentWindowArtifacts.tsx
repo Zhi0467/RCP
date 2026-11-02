@@ -10,11 +10,20 @@ import {
   type InlineArtifactSelectionEvent,
 } from "../artifacts/InlineArtifact";
 import { inlineArtifactIds, isInlineViewable, turnArtifactFor } from "../artifacts/inlineArtifacts";
-import { openRepositoryFile as openRepositoryFilePanel } from "../artifacts/artifactViewerModel";
-import { resolveRepositoryFileHref, turnArtifactLocation } from "../core/repositoryFileLinks";
+import {
+  openArtifact as openArtifactPanel,
+  openRepositoryFile as openRepositoryFilePanel,
+} from "../artifacts/artifactViewerModel";
+import {
+  artifactReferenceId,
+  isReferenceHrefCandidate,
+  resolveRepositoryFileHref,
+  turnArtifactLocation,
+} from "../core/repositoryFileLinks";
 import { formatBytes } from "../chat/composerAttachments";
 import type { AnswerComments } from "../chat/answerComments";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
+import { ReferenceEmbed, resolveReference } from "./ReferenceEmbed";
 
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 const NO_REPOSITORIES: ProjectSnapshot["repositories"] = [];
@@ -222,7 +231,28 @@ export function useAgentWindowArtifacts({
     }
   };
 
+  // A repository file or saved artifact the reply references where it lives.
+  const resolveOriginal = (href: string) => resolveReference(href, endpoints, repositories);
+  const openOriginal = async (messageId: string, href: string) => {
+    const found = await resolveOriginal(href);
+    if (!isCurrent()) return;
+    if (found.kind === "unresolved") {
+      setRepositoryFileErrors((current) => withMapValue(current, messageId, found.reason));
+      return;
+    }
+    setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
+    if (found.kind === "artifact")
+      openArtifactPanel({ projectId: found.projectId, artifactId: found.artifactId });
+    else
+      openRepositoryFilePanel({
+        projectId: found.projectId,
+        path: found.target.path,
+        line: found.target.line ?? undefined,
+      });
+  };
+
   const openRepositoryFile = async (messageId: string, taskId: string, href: string) => {
+    if (artifactReferenceId(href)) return openOriginal(messageId, href);
     const resolution = resolveRepositoryFileHref(href, repositories);
     if (resolution.kind === "error") {
       // An answer may cite a file the turn itself wrote. That path is outside every
@@ -262,6 +292,8 @@ export function useAgentWindowArtifacts({
           return;
         }
       }
+      // A Space window's repositories are its member's projects', which its resolver reads.
+      if (endpoints.referenceProject) return openOriginal(messageId, href);
       // A path no repository or turn folder owns, such as an API route, is an inert link.
       if (resolution.reason !== "no-match")
         setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
@@ -348,7 +380,17 @@ export function useAgentWindowArtifacts({
     const found = turnArtifactFor(src, taskId, (id) =>
       id === taskId && artifacts !== undefined ? artifacts : knownTaskArtifacts(id),
     );
-    if (!found) return null;
+    // Any other repository file or saved artifact shows from where it lives.
+    if (!found)
+      return isReferenceHrefCandidate(src) ? (
+        <ReferenceEmbed
+          key={src}
+          href={src}
+          title={alt}
+          resolve={resolveOriginal}
+          refreshToken={inlineArtifactRefreshToken}
+        />
+      ) : null;
     const { artifact } = found;
     // An older reply's task, or the earlier turn it cites, has aged out of the recent
     // list, so fetch the exact task before deciding the artifact is missing.

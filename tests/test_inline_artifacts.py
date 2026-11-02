@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents.artifact_contract import artifact_contract
+from rcp.agents.artifact_contract import (
+    ARTIFACT_REFERENCE_SCHEME,
+    REFERENCE_SCOPES,
+    artifact_contract,
+)
 from rcp.artifact_theme import ARTIFACT_THEME_TOKENS, artifact_theme_css, theme_tokens
 from rcp.artifact_views import (
     InlineAppearance,
@@ -156,6 +160,10 @@ def test_the_agent_is_told_to_embed_with_the_tokens_and_bound_rcp_applies() -> N
     assert f"{ARTIFACT_INLINE_HEIGHT_PX}px" in contract
     # Every advertised token is one the frame actually receives.
     assert set(theme_tokens("aqua", "light")) == set(ARTIFACT_THEME_TOKENS)
+    # Saved artifacts are referenced by the scheme the reply renderer resolves, in each scope.
+    for scope, reach in REFERENCE_SCOPES.items():
+        contract = artifact_contract("/stage/turns/op/artifacts", references=scope)
+        assert f"]({ARTIFACT_REFERENCE_SCHEME}" in contract and reach in contract
 
 
 def _stored(app, name: str, data: bytes) -> AgentArtifactDescriptor:

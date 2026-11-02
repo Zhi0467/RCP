@@ -160,6 +160,50 @@
 .thread-back {
   margin-left: -8px;
 }
+/* The agent pick is the menu's last row; it opens the shared fields beneath it. */
+.thread-menu-list {
+  width: min(300px, calc(100vw - 24px));
+}
+.thread-agent-picker {
+  border-top: 1px solid var(--line);
+  display: grid;
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.thread-agent-picker .agent-config-chip {
+  font-weight: inherit;
+  min-width: 0;
+  width: 100%;
+}
+.thread-agent-picker .agent-config-chip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-agent-picker .agent-config-chip > svg {
+  color: var(--muted);
+  flex: none;
+  transition: transform 0.16s ease;
+}
+.thread-agent-picker .agent-config-chip[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+.thread-agent-picker .agent-config.compact {
+  animation: agent-pop-in 0.14s ease-out;
+  background: transparent;
+  border: 0;
+  padding: 2px 10px 6px;
+}
+/* Each select names its own value; the field captions stay for screen readers. */
+.thread-agent-picker .agent-config-fields label > span {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
 .upcoming-button {
   align-items: center;
   background: transparent;
@@ -184,11 +228,14 @@
   border-radius: 10px;
   box-shadow: var(--shadow);
   display: grid;
+  max-height: min(420px, calc(100dvh - 120px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   position: absolute;
   right: 40px;
   top: 38px;
-  width: 300px;
+  width: 320px;
   z-index: 20;
 }
 :root[data-theme="aqua"] .upcoming-popover {
@@ -223,18 +270,44 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.upcoming-row time {
+.upcoming-when,
+.upcoming-pending {
+  align-items: center;
   color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
   font: var(--type-2xs) var(--mono);
+  gap: 2px 8px;
   grid-column: 1;
+  min-width: 0;
 }
-.upcoming-row > button {
+.upcoming-zone {
+  color: var(--faint);
+}
+.upcoming-pending {
+  color: var(--slate);
+}
+.upcoming-pending[data-deferred] {
+  color: var(--coral);
+}
+.upcoming-pending[data-deferred] > span {
+  overflow-wrap: anywhere;
+}
+.upcoming-actions {
+  align-items: center;
+  display: flex;
+  gap: 4px;
   grid-column: 2;
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
 }
 .upcoming-row .icon-button {
   height: 28px;
   width: 28px;
+}
+/* A pause, or a stop with no error row, sits in the message column. */
+.agent-thread .node-chat-lines > .chat-task-inline.paused {
+  margin: 0 auto 24px;
+  max-width: 820px;
 }
 .upcoming-error {
   color: var(--coral);
@@ -275,6 +348,39 @@
   gap: 4px;
   margin-bottom: 8px;
   padding: 4px 8px;
+}
+.chat-turn-trigger.handoff {
+  align-items: center;
+  background: color-mix(in srgb, var(--cobalt) 10%, transparent);
+  border-radius: 999px;
+  color: var(--cobalt);
+  display: inline-flex;
+  font: 700 var(--type-3xs) / 1 var(--mono);
+  margin-bottom: 8px;
+  padding: 4px 8px;
+}
+/* A handed-off turn's settlement: who ran it and how it ended, then its answer. */
+.handoff-result {
+  display: grid;
+  gap: 6px;
+}
+.handoff-result-row {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--type-sm);
+  gap: 6px;
+}
+.handoff-result-row strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+.handoff-result-row span::before {
+  content: "· ";
+}
+.handoff-result[data-status="failed"] .handoff-result-row span,
+.handoff-result[data-status="refused"] .handoff-result-row span {
+  color: var(--coral);
 }
 .agent-turn-live {
   align-items: center;
@@ -538,7 +644,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .upcoming-popover,
-  .approval-card {
+  .approval-card,
+  .thread-agent-picker .agent-config.compact {
     animation: none;
   }
 }
@@ -619,6 +726,16 @@
   }
   .approval-see {
     flex-basis: 100%;
+    min-height: 44px;
+  }
+  .upcoming-button {
+    height: 44px;
+    min-width: 44px;
+    justify-content: center;
+  }
+  .thread-agent-picker .agent-config-chip,
+  .thread-agent-picker .agent-config-fields select {
+    min-height: 44px;
   }
   .approval-actions .button {
     flex: 1 1 0;
@@ -626,6 +743,9 @@
   }
   .upcoming-popover {
     right: 0;
-    width: min(320px, calc(100vw - 20px));
+    width: min(340px, calc(100vw - 20px));
+  }
+  .upcoming-actions .button {
+    min-height: 44px;
   }
 }

@@ -95,6 +95,55 @@ def _settle(
         append_question_attention(connection, row, now)
 
 
+def _expire(
+    connection: sqlite3.Connection, where: str, parameters: tuple[str, ...], now: str
+) -> set[str]:
+    rows = connection.execute(
+        f"""SELECT c.question_id, q.project_id FROM approval_cards c
+        JOIN questions q ON q.question_id=c.question_id
+        LEFT JOIN agent_threads t ON t.thread_id=q.owner_id
+        WHERE c.result_json IS NULL AND c.running_since IS NULL
+        AND (c.expires_at<=? OR t.closed_at IS NOT NULL) AND {where}""",
+        (now, *parameters),
+    ).fetchall()
+    for row in rows:
+        _settle(connection, row["question_id"], {"outcome": "expired"}, now)
+    return {row["project_id"] for row in rows}
+
+
+def _due(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> bool:
+    """An open card past its expiry or in a closed thread."""
+    if row["result_json"] is not None or row["running_since"] is not None:
+        return False
+    if row["expires_at"] <= now:
+        return True
+    closed = connection.execute(
+        """SELECT 1 FROM questions q JOIN agent_threads t
+        ON t.thread_id=q.owner_id WHERE q.question_id=? AND t.closed_at IS NOT NULL""",
+        (row["question_id"],),
+    ).fetchone()
+    return closed is not None
+
+
+def _card_view(row: sqlite3.Row) -> dict[str, Any]:
+    result = json.loads(row["result_json"]) if row["result_json"] else None
+    action = json.loads(row["action_json"])
+    if result and result["outcome"] == "expired":
+        state = "expired"
+    else:
+        state = "running" if row["running_since"] else "pending"
+    return {
+        "request_id": row["request_id"],
+        "kind": action["kind"],
+        "action": action,
+        "pinned": json.loads(row["pinned_json"]),
+        "pinned_sha256": row["pinned_sha256"],
+        "expires_at": row["expires_at"],
+        "state": state,
+        "result": result,
+    }
+
+
 class ApprovalCardStoreMixin(StoreMixinBase):
     def private_question_owner(self, chat_id: str) -> str | None:
         with self.connection() as connection:
@@ -104,41 +153,26 @@ class ApprovalCardStoreMixin(StoreMixinBase):
         return row["user_id"] if row else None
 
     def approval_card(self, question_id: str) -> dict[str, Any] | None:
+        """A deferred read; only a card that has just expired takes the write lock."""
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM approval_cards WHERE question_id=?", (question_id,)
             ).fetchone()
             if row is None:
                 return None
-            result = json.loads(row["result_json"]) if row["result_json"] else None
-            closed = connection.execute(
-                """SELECT 1 FROM questions q JOIN agent_threads t
-                ON t.thread_id=q.owner_id WHERE q.question_id=? AND t.closed_at IS NOT NULL""",
-                (question_id,),
-            ).fetchone()
-            if (
-                result is None
-                and row["running_since"] is None
-                and (closed or row["expires_at"] <= self.now())
-            ):
-                result = {"outcome": "expired"}
-                _settle(connection, question_id, result, self.now())
-            action = json.loads(row["action_json"])
-            return {
-                "request_id": row["request_id"],
-                "kind": action["kind"],
-                "action": action,
-                "pinned": json.loads(row["pinned_json"]),
-                "pinned_sha256": row["pinned_sha256"],
-                "expires_at": row["expires_at"],
-                "state": "expired"
-                if result and result["outcome"] == "expired"
-                else "running"
-                if row["running_since"]
-                else "pending",
-                "result": result,
-            }
+            if _due(connection, row, self.now()):
+                connection.execute("BEGIN IMMEDIATE")
+                _expire(connection, "c.question_id=?", (question_id,), self.now())
+                row = connection.execute(
+                    "SELECT * FROM approval_cards WHERE question_id=?", (question_id,)
+                ).fetchone()
+            return _card_view(row)
+
+    def expire_approval_cards(self) -> set[str]:
+        """Settle every open card past its expiry or in a closed thread; return projects."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return _expire(connection, "1", (), self.now())
 
     def take_expired_approval_card(self, question_id: str) -> bool:
         with self.connection() as connection:
@@ -174,6 +208,15 @@ class ApprovalCardStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             _settle(connection, question_id, result, self.now(), resolved_by)
+
+    def release_approval_card(self, question_id: str) -> None:
+        """Undo a claim whose action could not start; the member may tap again."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE approval_cards SET running_since=NULL "
+                "WHERE question_id=? AND result_json IS NULL",
+                (question_id,),
+            )
 
     def interrupted_approval_cards(self) -> list[dict[str, Any]]:
         """Claimed cards without a result: the process stopped during the action."""

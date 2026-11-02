@@ -4101,6 +4101,8 @@ export interface AgentThread {
   /** The thread's newest visible task, running or settled. */
   latest_operation_id: string | null;
   browser_requested: boolean;
+  /** The member's agent pick, which every turn of the thread runs; null until one is made. */
+  agent: AgentRunConfig | null;
 }
 
 export interface AgentThreadList {
@@ -4131,9 +4133,13 @@ export interface AgentSchedule {
   timezone: string;
   note: string;
   state: AgentScheduleState;
-  disabled_reason?: "restore" | "access_lost" | null;
+  disabled_reason?: "restore" | "access_lost" | "unschedulable" | null;
   next_fire_at?: string | null;
   last_fired_at?: string | null;
+  /** First due fire still waiting for its wake. */
+  pending_since?: string | null;
+  /** Why the waiting wake has not started yet; it retries each minute. */
+  deferred_reason?: string | null;
 }
 
 export interface AgentScheduleList {
