@@ -214,12 +214,16 @@ class ThreadCommandHandler:
             )
             if item.project_id == project_id
         )
-        self._store_handoff_pick(request.arguments, target)
+        key = request.idempotency_key or ""
+        # Only a new handoff stores its pick: a replay already did, and a reused
+        # key with other arguments is refused below before anything changes.
+        if self.store.agent_handoff_for_key(self.operation_id, key) is None:
+            self._store_handoff_pick(request.arguments, target)
         # The SQL join owns the same-member, Space-to-project rule.
         handoff = self.store.create_agent_handoff(
             source_thread_id=thread.thread_id,
             source_operation_id=self.operation_id,
-            idempotency_key=request.idempotency_key or "",
+            idempotency_key=key,
             target_thread_id=target.thread_id,
             message=message,
         )

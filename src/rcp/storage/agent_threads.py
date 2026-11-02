@@ -340,6 +340,16 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 (self.now(), reason, handoff_id),
             )
 
+    def agent_handoff_for_key(
+        self, source_operation_id: str, idempotency_key: str
+    ) -> AgentHandoffRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_handoffs WHERE source_operation_id=? AND idempotency_key=?",
+                (source_operation_id, idempotency_key),
+            ).fetchone()
+        return AgentHandoffRecord.model_validate(dict(row)) if row is not None else None
+
     def agent_handoff(self, handoff_id: str) -> AgentHandoffRecord | None:
         with self.connection() as connection:
             row = connection.execute(

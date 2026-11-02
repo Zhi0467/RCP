@@ -202,6 +202,21 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
     )
     assert handler(picked, identity).result["state"] == "pending"
     assert store.agent_thread(target_id).agent["provider"] == "claude"
+    # A reused key with other arguments is refused before it can repick.
+    (tmp_path / "other.md").write_text("Something else")
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
+        lambda *args, **kwargs: {"claude": {}, "codex": {}},
+    )
+    reused = picked.model_copy(
+        update={
+            "arguments": HandoffArguments(
+                project_id=project_id, message_file="other.md", provider="codex"
+            )
+        }
+    )
+    assert handler(reused, identity).status == "invalid"
+    assert store.agent_thread(target_id).agent["provider"] == "claude"
     monkeypatch.setattr(
         "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
         lambda *args, **kwargs: {},
