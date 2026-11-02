@@ -75,7 +75,8 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
     The candidate consolidates main and each branch. The previous release's
     queued run holds main, so only this branch makes the candidate admit a run.
 
-    Releases before 0.4.38 let a member archive the consolidation chat.
+    Releases before 0.4.38 let a member archive the consolidation chat. Later
+    ones refuse, so their archive request seeds nothing.
     """
     if not fixture["upgrade_state"]["schedule"]:
         return None
@@ -101,13 +102,17 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
     if "/api/projects/{project_id}/chats/{chat_id}/archive" in routes:
         from rcp.consolidation import consolidation_chat_id
 
-        with request(
-            f"{base}/chats/{consolidation_chat_id(fixture['project_id'], branch_id)}/archive",
-            method="POST",
-            body={"archived": True},
-            cookie=cookie,
-        ):
-            pass
+        try:
+            with request(
+                f"{base}/chats/{consolidation_chat_id(fixture['project_id'], branch_id)}/archive",
+                method="POST",
+                body={"archived": True},
+                cookie=cookie,
+            ):
+                pass
+        except AssertionError as exc:
+            if "consolidation_chat_cannot_be_archived" not in str(exc):
+                raise
     return branch_id
 
 
