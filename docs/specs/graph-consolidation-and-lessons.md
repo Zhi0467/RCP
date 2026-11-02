@@ -311,8 +311,9 @@ disables active schedules; done one-shots keep their pending note.
 A schedule whose next occurrence cannot be computed is disabled with reason
 `unschedulable`; it never blocks other schedules or consolidation.
 
-Schedule controls are owner-only. Backup restore keeps schedules disabled with reason
-`restore`, clears their pending wakes, and requires explicit re-enabling. A past
+Schedule controls are owner-only. Backup restore disables active and disabled
+schedules with reason `restore`, clears every pending wake, and requires explicit
+re-enabling; a done one-shot stays done. A past
 one-shot cannot be re-enabled. Consolidation's separate restore behavior remains
 delete-on-restore. Restore deletes undelivered handoffs and marks delivered ones
 notified, so the restored host neither launches nor wakes for them.

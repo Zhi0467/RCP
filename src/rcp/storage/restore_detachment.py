@@ -80,10 +80,12 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
                 now=now,
             )
             self.detach_consolidation_for_restore(connection, diagnostic=recorded_detail, now=now)
+            # A done one-shot stays done (it cannot be re-enabled); only its captured wake goes.
             connection.execute(
                 "UPDATE agent_schedules SET state='disabled', disabled_reason='restore', "
-                "pending_since=NULL, next_fire_at=NULL WHERE state IN ('active','disabled','done')"
+                "pending_since=NULL, next_fire_at=NULL WHERE state IN ('active','disabled')"
             )
+            connection.execute("UPDATE agent_schedules SET pending_since=NULL WHERE state='done'")
             connection.execute(
                 "UPDATE approval_cards SET expires_at=? "
                 "WHERE running_since IS NULL AND result_json IS NULL AND expires_at > ?",

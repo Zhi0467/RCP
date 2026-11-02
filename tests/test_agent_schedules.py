@@ -212,13 +212,27 @@ def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store)
     assert all(row.pending_since == "2026-01-01T09:00:00+00:00" for row in pending)
     assert all(row.next_fire_at == "2026-01-04T09:00:00+00:00" for row in pending)
     assert schedule_wake_message(pending, now).count('"missed_fires": 2') == 2
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="once",
+        cron=None,
+        at="2026-01-02T09:00",
+        timezone="UTC",
+        note="once",
+        next_fire_at="2026-01-02T09:00:00+00:00",
+    )
+    schedule_store.advance_agent_schedules(now)
     schedule_store.detach_restored_lifecycle(
         diagnostic="test copy", confirmed_by="test", detached_at=now.isoformat()
     )
-    assert all(
-        row.state == "disabled" and row.disabled_reason == "restore" and row.pending_since is None
-        for row in schedule_store.agent_schedules()
-    )
+    rows = {row.note: row for row in schedule_store.agent_schedules()}
+    assert all(row.pending_since is None for row in rows.values())
+    assert {note: (row.state, row.disabled_reason) for note, row in rows.items()} == {
+        "a": ("disabled", "restore"),
+        "b": ("disabled", "restore"),
+        "once": ("done", None),
+    }
 
 
 @pytest.mark.parametrize("archived", [False, True])
