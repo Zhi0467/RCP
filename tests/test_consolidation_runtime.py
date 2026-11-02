@@ -8,10 +8,17 @@ from typing import cast
 
 import pytest
 
-from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
+from rcp.consolidation import (
+    ConsolidationPoller,
+    consolidation_chat_id,
+    next_occurrence,
+    occurrence_at,
+    operation_outcome,
+)
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.storage import AgentTaskAdmissionConflict
 from rcp.storage.artifact_models import Artifact
 
 from .helpers import (
@@ -641,6 +648,28 @@ def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
     assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
     assert schedule.covered_head == runtime.schedule.covered_head
     assert runtime.store.agent_task(pending.operation_id).can_resume
+
+
+def test_legacy_archived_consolidation_chat_keeps_consolidating(runtime):
+    project_id = runtime.schedule.project_id
+    chat_id = consolidation_chat_id(project_id)
+    # The chat is RCP's even before its first night has run.
+    assert runtime.store.consolidation_runs() == []
+    with pytest.raises(AgentTaskAdmissionConflict):
+        runtime.store.set_chat_archived(project_id, chat_id, "member", archived=True)
+    # Releases before 0.4.38 let a member archive the consolidation chat.
+    with runtime.store.connection() as conn:
+        conn.execute(
+            "INSERT INTO chat_display(project_id,chat_id,archived_user_id,archived_at) "
+            "VALUES(?,?,?,?)",
+            (project_id, chat_id, "member", runtime.store.now()),
+        )
+    runtime.poller.poll_once()
+    runs = runtime.store.consolidation_runs()
+    assert len(runs) == 1 and runs[0].operation_id is not None
+    assert not runtime.store.chat_archived(project_id, chat_id)
+    with pytest.raises(AgentTaskAdmissionConflict):
+        runtime.store.set_chat_archived(project_id, chat_id, "member", archived=True)
 
 
 @pytest.mark.parametrize("failure", ["incomplete", "history", "profile", "machine", "unexpected"])

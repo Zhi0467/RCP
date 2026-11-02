@@ -26,6 +26,12 @@ from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 
 
+def consolidation_chat_id(project_id: str, target: str = "main") -> str:
+    """The one chat each project target's nightly consolidation runs in."""
+    suffix = "" if target == "main" else f":{target}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:consolidation:{project_id}{suffix}"))
+
+
 class ConsolidationSchedule(BaseModel):
     project_id: str
     authorization_id: str
@@ -501,6 +507,12 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         },
                     )
                 if task:
+                    # RCP owns this chat; clear an archive flag older releases allowed.
+                    conn.execute(
+                        "UPDATE chat_display SET archived_at=NULL, archived_user_id=NULL "
+                        "WHERE project_id=? AND chat_id=?",
+                        (task.project_id, task.request["chat_id"]),
+                    )
                     task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
             skipped_dates = json.loads(target_state["skipped_dates_json"] or "[]")
