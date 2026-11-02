@@ -1109,30 +1109,6 @@
   padding: 13px;
   white-space: pre-wrap;
 }
-.final-confirmation {
-  align-items: flex-start;
-  background: var(--green-soft);
-  border: 1px solid color-mix(in srgb, var(--teal) 42%, var(--rule));
-  border-radius: 8px;
-  cursor: pointer;
-  display: flex;
-  gap: 10px;
-  margin-top: 18px;
-  padding: 13px;
-}
-.final-confirmation.disabled {
-  background: var(--rose-paper);
-  border-color: color-mix(in srgb, var(--coral) 42%, var(--rule));
-}
-.final-confirmation input {
-  accent-color: var(--green);
-  margin-top: 3px;
-}
-.final-confirmation > span {
-  color: var(--ink-soft);
-  font-size: var(--type-3xs);
-  line-height: 1.5;
-}
 .existing-research-review {
   align-items: center;
   background: var(--cobalt-soft);
