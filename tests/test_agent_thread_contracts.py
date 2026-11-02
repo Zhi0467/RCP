@@ -110,9 +110,14 @@ def test_space_record_reader_refuses_moved_or_project_records(tmp_path):
         _validate_stored_chat_record(
             _StoredChatRecord.model_validate(record), first=None, root=tmp_path, path=path
         )
-    record["chatScope"] = "project"
-    path.write_text(json.dumps(record) + "\n")
-    assert read_space_chat_transcript(tmp_path, "user_test", record["sessionId"]) is None
+    from rcp.service_connections import ConnectionError
+
+    # A mislabeled or corrupt file is an error, never an empty history.
+    for text in (json.dumps({**record, "chatScope": "project"}), "{"):
+        path.write_text(text + "\n")
+        with pytest.raises(ConnectionError) as refused:
+            read_space_chat_transcript(tmp_path, "user_test", record["sessionId"])
+        assert refused.value.status == 409
 
 
 def test_private_project_reader_roundtrip_and_pre_pagination_filter(manifest, tmp_path):
