@@ -1,9 +1,8 @@
 .appearance-picker {
-  border-top: 1px solid var(--rule);
   color: var(--ink);
   display: grid;
   gap: 12px;
-  padding: 14px 16px 16px;
+  padding: 16px 20px 20px;
 }
 .appearance-picker-row {
   display: grid;

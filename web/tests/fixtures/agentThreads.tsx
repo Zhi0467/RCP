@@ -41,10 +41,6 @@ const identity = {
 function Space() {
   return (
     <ProjectLanding
-      themeChoice="aqua"
-      colorModeChoice="light"
-      onThemeChoiceChange={() => {}}
-      onColorModeChoiceChange={() => {}}
       palette="light"
       projects={[]}
       groups={[]}

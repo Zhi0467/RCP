@@ -32,12 +32,16 @@ async function openFixture(t, { query = "", configure = async () => undefined } 
   await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
   await configure(page);
   await page.goto(`${origin}/tests/fixtures/settingsRequestRaces.html${query}`);
+  await selectPane(page, "agent-defaults");
   await ceilingEditor(page).waitFor();
   return page;
 }
 
 // A form field each project restores with its own value.
 const ceilingEditor = (page) => page.locator(".agent-auto-research-default input");
+// Settings shows one pane at a time, and a project switch starts on the first.
+const selectPane = (page, id) =>
+  page.locator(`.settings-rail [data-settings-section="${id}"]`).click();
 
 async function holdRequest(page, suffix) {
   const { promise, resolve } = Promise.withResolvers();
@@ -65,7 +69,11 @@ const operations = [
   {
     name: "Save",
     path: "settings",
-    prepare: (page, value) => ceilingEditor(page).fill(value),
+    pane: "agent-defaults",
+    prepare: async (page, value) => {
+      await selectPane(page, "agent-defaults");
+      await ceilingEditor(page).fill(value);
+    },
     click: (page) => page.getByRole("button", { name: "Save", exact: true }).click(),
     pending: (page) => page.getByRole("button", { name: "Saving", exact: true }),
     result: (page) => savedProject(page),
@@ -73,7 +81,8 @@ const operations = [
   {
     name: "Clear project cache",
     path: "caches",
-    prepare: async () => undefined,
+    pane: "cache",
+    prepare: (page) => selectPane(page, "cache"),
     click: (page) => page.getByRole("button", { name: "Clear project cache", exact: true }).click(),
     pending: (page) => page.getByRole("button", { name: "Clear project cache", exact: true }),
     result: async (page) => {
@@ -99,15 +108,18 @@ for (const operation of operations) {
         await page.waitForFunction(
           () => document.querySelector(".agent-auto-research-default input").value === "20",
         );
+        await selectPane(page, operation.pane);
         assert.equal(await operation.pending(page).count(), operation.name === "Save" ? 0 : 1);
         if (operation.name !== "Save")
           assert.equal(await operation.pending(page).isDisabled(), false);
+        await selectPane(page, "agent-defaults");
         await editor.fill("21");
         let currentRoute;
         if (returns) {
           // An id-only fence would admit the old request after this return to A.
           await page.getByRole("button", { name: "Open alpha", exact: true }).click();
           await page.getByLabel("Current project").filter({ hasText: "alpha" }).waitFor();
+          await selectPane(page, "agent-defaults");
           await editor.fill("12");
           const current = await holdRequest(page, operation.path);
           await operation.prepare(page, "12");
@@ -150,6 +162,7 @@ test("Agents can write applies at once and leaves the Save form clean", async (t
     saved.project_truth_scope = ["repo", "data"];
     await route.fulfill({ json: saved });
   });
+  await selectPane(page, "repos");
   // The canonical state repository is always writable.
   const state = page.getByRole("checkbox", { name: "Agents can write repo" });
   assert.equal(await state.isChecked(), true);
@@ -200,6 +213,7 @@ test("project member responses and invite selections stay with their project", a
   });
   const alphaRoute = await initialAlpha.started;
   await page.getByRole("button", { name: "Open beta", exact: true }).click();
+  await selectPane(page, "members");
   const memberList = page.locator(".project-member-list");
   await memberList.getByText("Ben", { exact: true }).waitFor();
   const invitation = page.getByLabel("Invite a member of this space");
@@ -228,6 +242,7 @@ test("project member responses and invite selections stay with their project", a
   await invitation.selectOption("candidate");
   assert.equal(await page.getByRole("button", { name: "Invite", exact: true }).isDisabled(), false);
   await page.getByRole("button", { name: "Open alpha", exact: true }).click();
+  await selectPane(page, "members");
   await memberList.getByText("Alice", { exact: true }).waitFor();
   assert.equal(await invitation.inputValue(), "");
   assert.equal(await page.getByRole("button", { name: "Invite", exact: true }).isDisabled(), true);

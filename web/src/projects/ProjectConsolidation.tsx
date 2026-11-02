@@ -4,7 +4,6 @@ import {
   browserTimeZone,
   CONSOLIDATION_AUTHORIZATION_DAYS,
   CONSOLIDATION_RECENT_NIGHTS,
-  CONSOLIDATION_SETTINGS_ANCHOR,
   consolidationAuthorization,
   consolidationCountdown,
   consolidationNeedsRenewal,
@@ -185,7 +184,7 @@ export function ProjectConsolidation({
   const save = () => run(() => enableConsolidation(apiBase, localTime, timezone));
 
   return (
-    <section className="settings-section project-consolidation" id={CONSOLIDATION_SETTINGS_ANCHOR}>
+    <section className="settings-section project-consolidation">
       <header>
         <span aria-hidden="true">
           <Moon size={16} />
