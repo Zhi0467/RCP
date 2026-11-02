@@ -18,6 +18,9 @@ from rcp.server_ops.models import ServerPlanEvent, ServerStepEvent
 
 @pytest.mark.parametrize("mode", [0o700, 0o755])
 def test_new_root_storage_has_exact_mode_under_private_wrapper_umask(tmp_path, monkeypatch, mode):
+    """Test users cannot chown to root, so only this directory's expected root identity
+    is supplied.
+    """
     path = tmp_path / "storage"
     original_lstat = Path.lstat
 
@@ -25,8 +28,6 @@ def test_new_root_storage_has_exact_mode_under_private_wrapper_umask(tmp_path, m
         info = original_lstat(item)
         return SimpleNamespace(st_mode=info.st_mode, st_uid=0) if item == path else info
 
-    # Ordinary test users cannot chown to root; permission creation and reads
-    # remain real, with only this directory's expected root identity supplied.
     monkeypatch.setattr(Path, "lstat", root_owned_metadata)
     previous = os.umask(0o077)
     try:
@@ -395,7 +396,6 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
 def test_update_checks_target_floor_before_deployment(
     monkeypatch, capsys, version, floor, allowed, untested
 ):
-    # Below the floor the update still runs; only an uncomparable version stops it.
     previous = {"build": 1, "version_string": version}
     target = {"release_tag": "v0.5.0", "manifest_sha256": "a" * 64, "build": 2}
     calls = []
@@ -659,7 +659,6 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
     assert driver.prepare_release(runtime, release) == receipt
     assert calls == ["install", "capability", "capability"]
     assert target.is_dir()
-    # Installed and sealed: nothing to do but verify.
     assert driver.prepare_release(runtime, release) == receipt
     assert calls == ["install", "capability", "capability", "capability"]
 
@@ -710,7 +709,6 @@ def test_browser_libraries_run_only_from_the_verified_operator(monkeypatch, tmp_
 
 
 def test_browser_libraries_never_block_an_update_or_rollback(monkeypatch, tmp_path):
-    # A release from before the browser has no module: nothing runs, nothing is reported.
     calls = []
     monkeypatch.setattr(
         driver.subprocess,
@@ -720,7 +718,6 @@ def test_browser_libraries_never_block_an_update_or_rollback(monkeypatch, tmp_pa
     assert driver.install_browser_libraries(tmp_path) is None
     assert len(calls) == 1
 
-    # A failed apt run becomes a reported warning instead of a failed update.
     def failing(argv, **kwargs):
         if "--install" in argv:
             raise driver.subprocess.CalledProcessError(100, argv, stderr="apt lock held")
@@ -757,5 +754,4 @@ def test_dry_run_refuses_only_an_unfinished_adoption(monkeypatch, tmp_path, unfi
         driver.update.__wrapped__(
             SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
         )
-    # An adoption may stop before the schema 3 config exists.
     assert inspected[0] == {"allow_legacy_config": True}

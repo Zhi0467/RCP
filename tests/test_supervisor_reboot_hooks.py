@@ -18,6 +18,9 @@ from tests.supervisor_reboot_live import scenarios
 def test_guest_fault_wrapper_interrupts_only_after_each_durable_root_move(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The real wrapper exits after one operation; this test restores instrumentation
+    because it shares an interpreter.
+    """
     live = tmp_path / "server"
     live.mkdir(mode=0o700)
     payload = tmp_path / "payload"
@@ -47,8 +50,6 @@ def test_guest_fault_wrapper_interrupts_only_after_each_durable_root_move(
         observed.append(name)
 
     monkeypatch.setattr(guest, "boundary", boundary)
-    # The actual wrapper exits after one worker operation. Restore its process
-    # instrumentation explicitly here because this test shares an interpreter.
     monkeypatch.setattr(os, "replace", os.replace)
     monkeypatch.setattr(checkpoint, "_fsync_directory", checkpoint._fsync_directory)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(json.dumps(request).encode())))

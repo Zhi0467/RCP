@@ -25,8 +25,9 @@ def test_disposable_data_has_canonical_project_retained_stage_and_attachment(
     monkeypatch: pytest.MonkeyPatch,
     initialized: bool,
 ) -> None:
-    # The actual guest uses the production layout and rcp account; this fixture
-    # test substitutes only that host layout, not the project or backup owners.
+    """Only the host layout is substituted; the guest uses the production layout and rcp
+    account.
+    """
     account = pwd.getpwuid(os.geteuid()).pw_name
     monkeypatch.setattr(
         storage_models,

@@ -51,10 +51,8 @@ def _machine(client: TestClient, name: str) -> dict[str, object]:
 def test_listing_always_offers_the_backend_machine(app) -> None:
     client = signed_in_client(app)
     _store(app).delete_space_machine(_machine(client, "laptop")["machine_id"])
-    # The Space thread's picker reads this card before any Space turn has run.
     machines = client.get("/api/space/machines").json()["machines"]
     assert [machine["host"] for machine in machines].count("") == 1
-    # A provider that declares its models lists them before any probe has run.
     backend = next(machine for machine in machines if not machine["host"])
     declared = {entry["provider"]: entry["models"] for entry in backend["providers"]}
     assert declared["claude"]
@@ -102,7 +100,7 @@ def test_delete_detaches_a_listed_machine_without_repositories(
     listed = _machine(client, "GPU")
     assert listed["in_use"] is True and listed["deletable"] is True
     if fenced:
-        # A project that takes no new work, such as one mid-transfer, keeps the card.
+
         def refuse(_project_id):
             raise ValueError("transfer in progress")
 
@@ -161,7 +159,6 @@ def test_failed_detachment_keeps_card_and_surfaces_error(app, manifest, monkeypa
     monkeypatch.setattr(ProjectDisplayCache, "remove_machine", fail_second)
     response = client.delete(f"/api/space/machines/{machine['machine_id']}")
     assert response.status_code == 422
-    # The first alias detached before the second failed; the card stays for a retry.
     assert len({"gpu", "gpu-two"} & set(load_manifest(manifest.path).machine_map)) == 1
     assert _store(app).space_machine(str(machine["machine_id"]))
 
@@ -171,7 +168,6 @@ def test_projects_naming_two_accounts_for_one_host_leave_its_card_with_none(app)
     assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
     assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
     assert store.space_machine_for("gpu.example").os_account == "alice"
-    # Neither manifest is picked at random; an empty account checks nothing.
     assert store.ensure_space_machines([("gpu.example", "bob", "gpu")]) == ["gpu.example"]
     assert store.space_machine_for("gpu.example").os_account == ""
     assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
@@ -179,6 +175,7 @@ def test_projects_naming_two_accounts_for_one_host_leave_its_card_with_none(app)
 
 
 def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
+    """The store holds one card per host even when a racing request skipped the check."""
     client = signed_in_client(app)
     body = {"name": "GPU", "host": "alice@gpu.example", "os_account": "alice"}
     created = client.post("/api/space/machines", json=body)
@@ -192,7 +189,6 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
         client.post("/api/space/machines", json={**body, "host": "-oProxyCommand=sh"}).status_code
         == 422
     )
-    # The store holds one card per host even when a racing request skipped the check.
     with pytest.raises(ValueError):
         _store(app).create_space_machine(name="Other", host=body["host"], os_account="bob")
 
@@ -227,7 +223,6 @@ def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     ):
         assert client.patch(url, json={"provider_autocompact": refused}).status_code == 422
     assert _store(app).space_machine(str(machine["machine_id"])).provider_autocompact == saved
-    # Saves merge per provider, so one row's save never erases another's.
     merged = client.patch(url, json={"provider_autocompact": {"claude": "AUTO"}})
     assert merged.json()["provider_autocompact"] == {"claude": "auto", "codex": "200000"}
     cleared = client.patch(url, json={"provider_autocompact": {"codex": ""}})
@@ -273,14 +268,12 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
 
     saved = client.patch(path, json={"writable_paths": [f"{shared}/", str(shared), str(tmp_path)]})
     assert saved.status_code == 200, saved.text
-    # A grant containing the data folder is allowed; it stays read-only inside.
     assert saved.json()["writable_paths"] == sorted([str(shared), str(tmp_path)])
 
     inside_data = tmp_path / "data" / "inside"
     inside_data.mkdir()
     research = Path(load_manifest(manifest.path).repositories[0].path) / ".research"
     research.mkdir(exist_ok=True)
-    # A clean spelling whose folder no launcher can mount.
     (tmp_path / "cache:v1").mkdir()
     (tmp_path / "cache").symlink_to(tmp_path / "cache:v1")
     for refused in (
@@ -293,7 +286,6 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
         assert client.patch(path, json={"writable_paths": [str(refused)]}).status_code == 422
     assert _machine(client, "laptop")["writable_paths"] == sorted([str(shared), str(tmp_path)])
 
-    # A retained /tmp stage stays read-only for launches, so it is neither saved nor offered.
     stage = Path("/tmp") / f"rcp-run.test-{uuid.uuid4().hex[:8]}"
     stage.mkdir(mode=0o700)
     try:
@@ -356,7 +348,6 @@ def test_directories_filter_before_paging_and_lock_rcp_storage(app, tmp_path, mo
     assert filtered["parent"] == str(tmp_path)
 
     monkeypatch.setattr("rcp.setup.MACHINE_DIRECTORY_PAGE_SIZE", 200)
-    # A shortcut is judged by where it lands, the same way saving judges it.
     (tmp_path / "data-link").symlink_to(tmp_path / "data")
     (tmp_path / "browse-link").symlink_to(browse)
     top = client.post(path, json={"path": str(tmp_path)}).json()
@@ -424,7 +415,6 @@ def test_team_machines_name_only_the_viewers_projects_and_fill_the_account(
     created = client.post("/api/space/machines", json=body)
     assert created.status_code == 200 and created.json()["os_account"] == "bob"
 
-    # A fix command for that machine runs through the service account's SSH route.
     monkeypatch.setattr(
         "rcp.api.space_machines.readiness",
         lambda **kwargs: BrowserReadiness(
@@ -459,7 +449,6 @@ def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
 
     assert {entry["name"]: entry["protected"] for entry in entries}[".research"] is True
 
-    # State kept elsewhere through a symlink is locked where it really lives.
     research = repository / ".research"
     elsewhere = tmp_path / "state-home"
     elsewhere.mkdir()
@@ -494,7 +483,6 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
     assert calls[0]["data_dir"] == tmp_path / "data"
     assert client.post("/api/space/machines/absent/browser/install", json={}).status_code == 404
     assert len(calls) == 1
-    # Enabling linger is a separate explicit request on that machine's account.
     monkeypatch.setattr("rcp.api.space_machines.enable_linger", install)
     assert (
         client.post(f"/api/space/machines/{machine['machine_id']}/linger", json={}).status_code
@@ -560,7 +548,6 @@ def test_machine_hidden_folders_round_trip_and_atomic_refusal(
     ]
 
     checkout = Path(load_manifest(manifest.path).repositories[0].path)
-    # A configured provider binary's folder is refused at save, as launch would refuse it.
     for folder in (checkout, checkout / ".research", checkout.parent, agents):
         refused = client.patch(url, json={"name": "Not saved", "hidden_folders": [str(folder)]})
         assert refused.status_code == 422
@@ -658,7 +645,6 @@ def test_machine_card_column_upgrades_preserve_existing_card(app) -> None:
     assert card.hidden_folders == []
     assert card.provider_autocompact == {}
     assert card.provider_shell_timeout == {}
-    # An existing card has not decided Slurm and may still have manifest settings.
     assert card.job_manager is None
     assert card.legacy_settings_pending
     upgraded.update_space_machine(
@@ -741,6 +727,9 @@ def test_local_wrapper_readiness_cache_expires(monkeypatch):
 
 
 def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_path, monkeypatch):
+    """Startup registers the default project before the sweep; that read alone must not
+    settle a card another project shares.
+    """
     from types import SimpleNamespace
 
     import tomlkit
@@ -767,11 +756,8 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
         projects.append(SimpleNamespace(project_id=name, locator=str(path)))
     monkeypatch.setattr(store, "projects", lambda: projects)
 
-    # Startup registers the default project before the sweep; that read alone
-    # must not settle a card another project shares.
     record_space_machines(store, load_manifest(projects[0].locator))
     assert store.space_machine_for("gpu.example").legacy_settings_pending
-    # While any project's manifest cannot be read, no card settles.
     unreadable = SimpleNamespace(project_id="c", locator=str(tmp_path / "missing.toml"))
     monkeypatch.setattr(store, "projects", lambda: [*projects, unreadable])
     fill_space_machines(store)
@@ -787,7 +773,6 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
         "Use /scratch",
     )
     assert card.provider_paths == {"codex": "/a/codex", "claude": "/b/claude"}
-    # The card owns them now: a cleared field stays cleared on the next start.
     store.update_space_machine(card.machine_id, access_hint="")
     fill_space_machines(store)
     assert store.space_machine_for("gpu.example").access_hint == ""
@@ -814,7 +799,6 @@ def test_card_provider_paths_merge_and_a_bad_edit_changes_nothing(app) -> None:
     card = _store(app).space_machine(local["machine_id"])
     assert card.provider_paths == {"codex": "/opt/agents/codex", "claude": "/opt/agents/claude"}
     assert card.access_hint == ""
-    # The human's edit owns the card; no later start refills it from a manifest.
     assert not card.legacy_settings_pending
 
 

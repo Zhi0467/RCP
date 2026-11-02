@@ -17,6 +17,10 @@ from rcp_supervisor.runtime import Paths, SystemRuntime
 
 @pytest.fixture
 def runtime(tmp_path: Path, monkeypatch):
+    """Production requires Linux; this local fixture bypasses prctl only where its
+    kernel proof cannot run, and the Linux VM qualification proves the UID
+    transition.
+    """
     runtime = object.__new__(SystemRuntime)
     runtime.paths = Paths(service_home=tmp_path)
     runtime.uid, runtime.gid = os.getuid(), os.getgid()
@@ -26,8 +30,6 @@ def runtime(tmp_path: Path, monkeypatch):
     runtime._deployment_lock_fd = None
     runtime.update_warnings = []
     if sys.platform != "linux":
-        # Production requires Linux. This local framing fixture explicitly
-        # bypasses prctl only on hosts where its kernel proof cannot run.
         runtime.owned_argv = lambda argv: argv
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -43,8 +45,6 @@ def runtime(tmp_path: Path, monkeypatch):
     actual_popen = subprocess.Popen
 
     def popen(*args, **kwargs):
-        # The Linux VM qualification proves the UID transition. These real local
-        # subprocesses exercise framing, deadlines, output bounds and diagnostics.
         assert kwargs.pop("user") == os.getuid()
         assert kwargs.pop("group") == os.getgid()
         assert kwargs.pop("extra_groups") == []
@@ -183,6 +183,7 @@ def test_probe_arms_parent_ownership_in_supervisor_code_after_service_uid_drop(
 
 @pytest.fixture
 def control_runtime(runtime, tmp_path, monkeypatch):
+    """The local account cannot own /run, so only ancestry ownership is modeled."""
     parent = tmp_path / "runtime-parent"
     parent.mkdir()
     runtime.paths = Paths(control_socket=parent / "rcp/control.sock", service_home=tmp_path)
@@ -203,18 +204,17 @@ def control_runtime(runtime, tmp_path, monkeypatch):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
         return info
 
-    # The local test account cannot own /run. Only ancestry ownership is modeled;
-    # mkdir/open/chown/chmod/fsync and runtime entry validation operate on real files.
     monkeypatch.setattr(Path, "lstat", protected_ancestor)
     monkeypatch.setattr(os, "fstat", protected_parent_fd)
     return runtime
 
 
 def test_probe_recreates_runtime_directory_removed_by_systemd(control_runtime, monkeypatch):
+    """RuntimeDirectoryPreserve=no removes the directory on systemctl stop."""
     runtime = control_runtime
     directory = runtime.paths.control_socket.parent
     runtime.prepare_control_directory()
-    directory.rmdir()  # RuntimeDirectoryPreserve=no removes this on systemctl stop.
+    directory.rmdir()
     monkeypatch.setattr(runtime, "require_capability", lambda _release: None)
     monkeypatch.setattr(runtime, "environment", lambda _release: {})
 
@@ -377,7 +377,7 @@ def test_candidate_requires_inventory_command(runtime):
         "maintenance_protocol": 10,
         "commands": ["prepare", "validate"],
     }
-    runtime.require_capability({})  # The source release needs no new command.
+    runtime.require_capability({})
     with pytest.raises(
         SupervisorError, match="application_maintenance_commands_missing: inventory"
     ):
@@ -551,7 +551,7 @@ def test_update_preparation_uses_candidate_and_keeps_stopped_checkpoint(runtime,
         {"receipt_path": "receipt", "receipt_sha256": "b" * 64},
     )
     assert result[0] is checkpoint
-    assert result[1] is None  # Old startup probes never consume a new-release proof.
+    assert result[1] is None
     assert calls == ["prepare", "check-roots", "validate"]
 
 

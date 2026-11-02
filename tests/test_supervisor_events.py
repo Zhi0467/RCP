@@ -41,7 +41,6 @@ def test_terminal_keeps_one_live_line_and_expands_only_the_stop(color_terminal):
         fields=[{"name": "deployment_phase", "value": "candidate_probe"}],
     )
     text = color_terminal.getvalue()
-    # The running line is replaced in place, never appended as its own block.
     assert text.count("\r\x1b[2K") == 2
     assert "Invalid journal; service remains closed." in text
     resume = f"sudo /usr/local/bin/rcp server update --confirm-target {CONFIRMATION}"

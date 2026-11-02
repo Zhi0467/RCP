@@ -39,7 +39,6 @@ def test_coordinator_serves_different_event_loops_and_threads(tmp_path, monkeypa
         coordinator.note_demand("tab", {"p"}, "p")
         await async_wait_until(lambda: len(calls) == 2)
         await coordinator.stop()
-        # A new lifespan can restart the same process-owned coordinator.
         coordinator.start()
         coordinator.note_demand("tab", {"p"}, "p")
         await async_wait_until(lambda: len(calls) == 3)
@@ -72,7 +71,6 @@ def test_client_lease_union_expiry_and_local_bypass(tmp_path, monkeypatch):
             now[0] = 10
             coordinator.note_demand("local", {"local"}, "local")
             await async_wait_until(lambda: len(calls) == 2)
-            # The second client's lease expires independently of local heartbeats.
             now[0] = 61
             coordinator.note_demand("local", {"local"}, "local")
             await async_wait_until(lambda: not coordinator._leases)
@@ -206,7 +204,6 @@ def test_remote_display_never_prepares_and_cannot_lag_its_content_token(
     workspace._generations.publish(stage)
     first = client.get(f"/api/projects/{project_id}")
     assert first.status_code == 200, first.text
-    # Readiness and repeated display/digest reads reuse the generation's replay.
     catalog.open_display(project_id)
 
     def forbid_replay(*_args, **_kwargs):
@@ -235,7 +232,6 @@ def test_remote_display_never_prepares_and_cannot_lag_its_content_token(
     assert after["graph:main"] == before["graph:main"]
     second = client.get(f"/api/projects/{project_id}")
     assert second.status_code == 200, second.text
-    # Canonical transport changes do not replace the saved live Paper tree.
     assert second.json()["paper"] == first.json()["paper"]
 
 
@@ -349,7 +345,6 @@ def test_watermark_route_leases_continue_expire_and_activation_bypasses_cadence(
             response = client.post("/api/resource-watermarks", json=body)
             assert response.status_code == 200, response.text
             await async_wait_until(lambda: calls == [0])
-            # No further request is needed to keep the leased project syncing.
             now[0] = 10
             coordinator._wake.set()
             await async_wait_until(lambda: calls == [0, 10])
