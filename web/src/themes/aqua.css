@@ -308,12 +308,12 @@
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .chat-composer textarea {
+/* The theme's field well and focus ring would box the message inside its card again. */
+:root[data-theme="aqua"] .chat-composer-row > textarea {
   background: transparent;
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  /* The field's frame shows focus; the theme-wide ring would draw a square box outside it. */
   outline: none;
 }
 

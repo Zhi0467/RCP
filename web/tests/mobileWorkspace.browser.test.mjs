@@ -89,7 +89,8 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       );
       assert.equal(await page.getByRole("separator").count(), 0, "No narrow resize strip");
       const composerWidth = (await composer.boundingBox()).width;
-      assert.ok(composerWidth >= viewport.width - 50, "Composer uses the full narrow column");
+      const card = await page.locator(".chat-composer").boundingBox();
+      assert.ok(card.width >= viewport.width - 50, "Composer uses the full narrow column");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), viewport.width);
       await page.locator(".chat-markdown table").waitFor();
       assert.deepEqual(

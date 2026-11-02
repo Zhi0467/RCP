@@ -1337,6 +1337,37 @@ test("a provider signed in after mount is offered when the thread menu opens", a
   });
 });
 
+test("the thread composer is one row that grows with its text and settles back", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      await page.goto(`${base}#/agent/space`);
+      const thread = page.getByRole("region", { name: "Pip" });
+      const field = thread.getByRole("textbox", { name: "Message" });
+      await field.waitFor();
+      const box = async (name) => thread.getByRole("button", { name, exact: true }).boundingBox();
+      const one = await field.boundingBox();
+      const [add, send] = [await box("Add"), await box("Send")];
+      // Add, the field and Send share one row.
+      assert.ok(add.x + add.width <= one.x && one.x + one.width <= send.x);
+      assert.ok(add.y < one.y + one.height && send.y < one.y + one.height);
+      await field.fill("one\ntwo\nthree\nfour");
+      await page.waitForTimeout(300);
+      const four = await field.boundingBox();
+      assert.ok(four.height > one.height * 2);
+      assert.equal(
+        await field.evaluate((element) => element.scrollHeight <= element.clientHeight),
+        true,
+      );
+      await field.fill("");
+      await page.waitForTimeout(300);
+      assert.equal(Math.round((await field.boundingBox()).height), Math.round(one.height));
+      await page.close();
+    }
+  });
+});
+
 test("both thread kinds show the context ring just left of the thread menu", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });

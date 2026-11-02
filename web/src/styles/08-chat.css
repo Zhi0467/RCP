@@ -139,8 +139,7 @@
   gap: 7px;
   padding: 9px;
 }
-.coach-composer textarea,
-.chat-composer textarea {
+.coach-composer textarea {
   background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -150,12 +149,36 @@
   padding: 8px 9px;
   resize: none;
 }
-/* The message field reads as a field. Shape and ground mark where to type, so no
-   instructional placeholder copy is needed; it keeps the shared composer border. */
-.chat-composer textarea {
+/* The composer card is the one field: the message has no box of its own, and the
+   card's frame marks where to type and shows focus. ComposerField sets the height
+   from the text; the transition eases it. */
+.chat-composer-row {
+  align-items: flex-end;
+  display: flex;
+  flex-basis: 100%;
+  gap: 4px;
+  min-width: 0;
+}
+.chat-composer-row > textarea {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  flex: 1 1 0;
   font-size: var(--type-base);
-  height: 72px;
-  padding: 8px 9px;
+  line-height: 20px;
+  max-height: 40vh;
+  min-height: var(--composer-control, 34px);
+  min-width: 0;
+  outline: none;
+  padding: calc((var(--composer-control, 34px) - 20px) / 2) 4px;
+  resize: none;
+  transition: height 0.12s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer-row > textarea {
+    transition: none;
+  }
 }
 
 .chat-steering-receipt {
@@ -171,35 +194,22 @@
   font-size: var(--type-sm);
 }
 
-.chat-send {
-  align-items: flex-end;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-/* The message is the subject of the composer, so it takes its own full-width row
-   and every control sits together on the row beneath it. */
-.chat-composer textarea {
-  flex-basis: 100%;
-}
-.chat-composer .chat-send {
-  align-items: center;
-  flex-basis: 100%;
-  flex-direction: row;
-  justify-content: space-between;
-  min-width: 0;
-}
 .chat-composer-tools {
   align-items: center;
   display: flex;
-  flex: 1 1 auto;
+  flex-basis: 100%;
   flex-wrap: wrap;
   gap: 7px;
   min-width: 0;
 }
+/* A notice sits under the send actions it speaks for. */
+.chat-composer-tools > :is(.chat-dictation-error, .chat-dictation-status, [role="alert"]) {
+  margin-left: auto;
+}
 .chat-send-actions {
   align-items: center;
   display: flex;
+  flex: none;
   gap: 5px;
 }
 /* Every control on the tools row is as tall as its icon buttons: 34px, or the 44px
@@ -210,11 +220,11 @@
     --composer-control: 44px;
   }
 }
-.chat-composer .chat-send :is(.segmented, .agent-config-chip, .chat-compute-trigger) {
+.chat-composer-tools :is(.segmented, .agent-config-chip, .chat-compute-trigger) {
   height: var(--composer-control, 34px);
   min-height: var(--composer-control, 34px);
 }
-.chat-composer .chat-send .segmented button {
+.chat-composer-tools .segmented button {
   align-self: stretch;
   min-height: 0;
 }
@@ -1410,6 +1420,11 @@
   border-radius: 10px;
   flex: none;
 }
+/* Add and the mic are quiet glyphs inside the card; a theme may still dress them. */
+.chat-composer-row :where(.chat-add-file, .chat-voice-button, .chat-dictation-button) {
+  background: transparent;
+  border-color: transparent;
+}
 .chat-attachment-chips {
   display: flex;
   flex-basis: 100%;
@@ -1556,10 +1571,6 @@
 }
 .coach-composer {
   position: relative;
-}
-.chat-composer textarea:focus-visible {
-  border-color: transparent;
-  outline: 0;
 }
 .chat-composer:focus-within {
   border-color: var(--chat-mode-accent);
