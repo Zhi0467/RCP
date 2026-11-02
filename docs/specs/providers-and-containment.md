@@ -1805,7 +1805,8 @@ A Space turn runs locally in its persistent
 [member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
 Admission checks the registered state host before opening execution, skips remote
 projects without contacting them, and records unavailable or broken local projects
-as `space_project_not_admitted` while admitting the others. Its
+as `space_project_not_admitted` while admitting the others. The prompt names
+each project left out, with a short reason, as a `handoff` target. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1827,17 +1828,24 @@ local write projects retains the local account's default secret and private
 transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 `too_many_hidden_folders`.
 
-Collection reads only admitted project Patch files, applies each independently
-in project-id order under its project lock and live membership check, and records
-`project_results` in the task result. Missing authority bindings refuse Apply.
-Settled project Patch files are removed after Apply or rejection. Each project's
+Collection reads only `patch.json` and `watch.json` at the stage top level and
+in each `projects/<id>` folder. It applies each admitted project's Patch through
+Work Apply, in project-id order, under that project's lock and live membership
+check. Each project's Work graph-update status (`applied`, `none`, `rejected` or
+`unavailable`) goes to `project_results`, and its first reason to the
+`space_project_results` receipt. Missing
+authority bindings refuse Apply. An empty Patch appends nothing. Each project's
 effect key uses the original operation in the recovery lineage, so a replayed file
-cannot append a second transition after a post-collection failure. Project-local
-state or lookup failures reject that project without stopping collection of others.
-Cleanup failures are receipted per project and do not stop later collection.
-Other Patch files and all watch files are receipted and discarded; invalid stray
-files cannot prevent another project's collection. Rejection yields a partial
-turn outcome without undoing another project's accepted transition. Watcher
+cannot append a second transition after a post-collection failure. Settled project
+Patch files are removed; an `unavailable` Patch, whose commit Apply could not
+settle, stays for the retry. Project-local failures do not stop collection of
+others, and cleanup failures are receipted per project. A Patch in the folder of a
+project left out of admission, including one whose binding changed mid-turn, is
+reported `rejected` with its reason. Other Patch files and all watch files are
+receipted and discarded. A `rejected` or `unavailable` project makes the turn
+outcome partial, naming each project and reason, without undoing another
+project's accepted transition. The next turn's prompt carries the last turn's
+per-project results. Watcher
 storage also refuses a Space-task origin.
 
 Space attachments reuse the ordinary chat attachment owner and stage immutable

@@ -114,9 +114,11 @@ def test_space_runtime_real_storage_and_partial_apply(
     monkeypatch.setattr("rcp.runs.shared._prepare_hidden_read_scope", prepare_policy)
 
     calls = []
+    prompts = []
 
     async def provider(_provider, prompt, **kwargs):
         calls.append(kwargs.get("session_id"))
+        prompts.append(prompt)
         stage = kwargs["cwd"]
         assert json.loads((stage / "workspace" / "agent-name.json").read_text()) == {
             "name": "Pip",
@@ -180,9 +182,16 @@ def test_space_runtime_real_storage_and_partial_apply(
     assert any("artifact" in frame and "note.md" in frame for frame in frames)
     assert len(execution.project_results) == project_count
     if project_count:
+        failed = "unavailable" if broken == "collection" else "rejected"
         assert set(execution.project_results.values()) == (
-            {"applied", "rejected"} if project_count == 2 else {"applied"}
+            {"applied", failed} if project_count == 2 else {"applied"}
         )
+        if project_count == 2:
+            (failed_id,) = [
+                key for key, value in execution.project_results.items() if value == failed
+            ]
+            assert execution.turn_outcome.reason is not None
+            assert failed_id in execution.turn_outcome.reason
         from rcp.core.transition_models import GraphTargetRef
 
         for project_id in execution.project_results:
@@ -200,13 +209,16 @@ def test_space_runtime_real_storage_and_partial_apply(
     else:
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
+    if broken in {"unavailable", "missing", "remote"}:
+        # A project the turn cannot write is named to the agent, for handoff.
+        assert f'"{unavailable_id}":' in prompts[0]
     transcript = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
     assert transcript is not None
     assert [message.role for message in transcript.messages] == ["user", "assistant"]
     assert transcript.messages[-1].text == "Finished the requested work."
     assert store.chat_session_context("claude", "local", "space-native").kind == "space_chat"
 
-    if project_count == 0:
+    if broken is None:
         from rcp.service import RunRequest
 
         store.checkpoint_agent_task(task.operation_id, native_session_id="space-native")
@@ -257,6 +269,13 @@ def test_space_runtime_real_storage_and_partial_apply(
         continued = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
         assert continued is not None
         assert len(continued.messages) == 4
+        if project_count:
+            # The next turn learns which project was not applied, and why.
+            (receipt,) = store.agent_task_receipts_by_category(
+                task.operation_id, "space_project_results"
+            )
+            last = json.dumps(receipt.payload["project_results"], ensure_ascii=False)
+            assert "rejected" in last and last in prompts[1]
 
 
 def test_space_output_clear_removes_agent_directories_without_following_links(tmp_path):

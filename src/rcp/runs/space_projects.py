@@ -7,7 +7,7 @@ import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandRequest, CommandResponse
@@ -28,8 +28,8 @@ from rcp.runs.bulletin import handle_bulletin
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import PatchValidationResult
 from rcp.runs.tasks.compute_commands import compute_recovery_lineage
-from rcp.service import ProjectService, RunRequest
-from rcp.transport import StateUnavailable
+from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.transport import RunLockCancelled, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.runs.space_chat import SpaceThreadOwner
@@ -99,8 +99,10 @@ class SpaceProjectTurn:
 
 def prepare_space_projects(
     owner: SpaceThreadOwner, request: RunRequest, execution: AgentTaskExecution, stage: Path
-) -> tuple[list[SpaceProjectTurn], CompositeWriteScope]:
+) -> tuple[list[SpaceProjectTurn], CompositeWriteScope, dict[str, str]]:
+    """Admit same-machine projects; return the others with why they are not writable."""
     projects: list[SpaceProjectTurn] = []
+    excluded: dict[str, str] = {}
     turn_id = compute_recovery_lineage(
         owner.store, execution.operation_id, continuation=execution.continuation
     )[-1]
@@ -108,10 +110,12 @@ def prepare_space_projects(
         try:
             owner.store.require_project_accepts_new_work(project_id)
             if not owner.catalog.same_machine(project_id):
+                excluded[project_id] = "state lives on another machine"
                 continue
             service = owner.catalog.open_execution(project_id)
             machine = service.manifest.machine_map[service.manifest.base_machine]
             if machine.host:
+                excluded[project_id] = "base machine is remote"
                 continue
             truth = write_repositories(service.history.state())
             context = service.assemble_chat(
@@ -166,10 +170,11 @@ def prepare_space_projects(
                 )
             )
         except (KeyError, OSError, ValueError, StateUnavailable, ReplayHalted) as exc:
+            excluded[project_id] = str(exc) or type(exc).__name__
             owner.store.record_agent_task_receipt(
                 execution.operation_id,
                 "space_project_not_admitted",
-                {"project_id": project_id, "reason": str(exc)},
+                {"project_id": project_id, "reason": excluded[project_id]},
             )
     composite = CompositeWriteScope(
         stage_root=str(stage), projects=tuple(project.scope for project in projects)
@@ -189,9 +194,10 @@ def prepare_space_projects(
         {
             "project_ids": [project.project_id for project in projects],
             "write_scope_fingerprint": composite.fingerprint,
+            "excluded": excluded,
         },
     )
-    return projects, composite
+    return projects, composite, excluded
 
 
 def read_space_output(path: Path) -> str | None:
@@ -218,77 +224,144 @@ def clear_space_output(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def space_result_summary(results: dict[str, GraphUpdateResult]) -> dict[str, dict[str, object]]:
+    """Each project's status and, when it did not apply, the first reason."""
+    summary: dict[str, dict[str, object]] = {}
+    for project_id, result in results.items():
+        item: dict[str, object] = {"status": result.status}
+        if result.status in {"rejected", "unavailable"} and result.validation_messages:
+            item["reason"] = result.validation_messages[0]
+        if result.commit_status is not None:
+            item["commit_status"] = result.commit_status
+        summary[project_id] = item
+    return summary
+
+
+def _space_stage_outputs(stage: Path) -> list[Path]:
+    """Only the locations a Space agent could mean as a deliverable, not the whole stage."""
+    paths = [stage / "patch.json", stage / "watch.json"]
+    root = stage / "projects"
+    if root.is_dir() and not root.is_symlink():
+        for folder in sorted(root.iterdir()):
+            paths.extend((folder / "patch.json", folder / "watch.json"))
+    return [path for path in paths if path.is_symlink() or path.exists()]
+
+
+def _apply_space_project(
+    owner: SpaceThreadOwner,
+    execution: AgentTaskExecution,
+    project: SpaceProjectTurn,
+    text: str,
+) -> GraphUpdateResult:
+    from rcp.runs.tasks.work import _bounded_graph_messages, _work_patch_proposal_ids
+    from rcp.runs.tasks.work_turn_runtime import apply_work_patch, failed_graph_update
+
+    def still_admitted() -> None:
+        owner.store.require_project_accepts_new_work(project.project_id)
+        if not owner.store.is_project_member(project.project_id, owner.thread.user_id):
+            raise ValueError("Project membership ended before Space Apply")
+
+    try:
+        result, failure = apply_work_patch(
+            project.service,
+            execution,
+            text,
+            prepare_candidate=project.candidate,
+            source_operation_id=project.operation_id,
+            source_effect_id=project.source_effect_id,
+            canonical_matches=lambda canonical, candidate: (
+                canonical.source_effect_sha256 == candidate.source_effect_sha256
+            ),
+            canonical_binding_error="Space Apply effect conflicts with its committed Patch",
+            rejected_patch_error="The graph rejected the Space project Patch.",
+            proposal_ids_for_patch=_work_patch_proposal_ids,
+            bounded_messages=_bounded_graph_messages,
+            under_lock=still_admitted,
+        )
+    except RunLockCancelled as exc:
+        # Paused before the lock was owned: nothing was appended.
+        return GraphUpdateResult(
+            status="unavailable", validation_messages=[str(exc)], commit_status="absent"
+        )
+    if failure is not None:
+        return failed_graph_update(failure, bounded_messages=_bounded_graph_messages)
+    assert result is not None
+    return result
+
+
 def collect_space_projects(
     owner: SpaceThreadOwner,
     execution: AgentTaskExecution,
     projects: list[SpaceProjectTurn],
+    excluded: dict[str, str],
     stage: Path,
-) -> dict[str, Literal["applied", "rejected", "no_patch"]]:
-    results: dict[str, Literal["applied", "rejected", "no_patch"]] = {}
+) -> dict[str, GraphUpdateResult]:
+    """Apply each admitted project's Patch through Work Apply, in project-id order."""
+    results: dict[str, GraphUpdateResult] = {}
     admitted = {project.patch_path for project in projects}
-    for name in ("patch.json", "watch.json"):
-        for path in stage.rglob(name):
-            if path in admitted:
-                continue
-            receipt: dict[str, object] = {"path": str(path.relative_to(stage))}
-            try:
-                receipt["text"] = read_space_output(path)
-            except (OSError, ValueError) as exc:
-                receipt["reason"] = str(exc)
+    for path in _space_stage_outputs(stage):
+        if path in admitted:
+            continue
+        relative = str(path.relative_to(stage))
+        receipt: dict[str, object] = {"path": relative}
+        try:
+            receipt["text"] = read_space_output(path)
+        except (OSError, ValueError) as exc:
+            receipt["reason"] = str(exc)
+        project_id = path.parent.name if path.parent.parent == stage / "projects" else None
+        if path.name == "patch.json" and project_id in excluded:
+            # A project dropped at admission, including a changed binding, is a
+            # rejection the member and the next turn can see, not a stray file.
+            results[project_id] = GraphUpdateResult(
+                status="rejected", validation_messages=[excluded[project_id]]
+            )
             owner.store.record_agent_task_receipt(
                 execution.operation_id,
-                "space_stray_output_discarded",
-                receipt,
+                "space_project_rejected",
+                {"project_id": project_id, "reason": excluded[project_id]},
             )
-            try:
-                clear_space_output(path)
-            except (OSError, ValueError) as exc:
-                owner.store.record_agent_task_receipt(
-                    execution.operation_id,
-                    "space_stray_output_kept",
-                    {"path": receipt["path"], "reason": str(exc)},
-                )
+        else:
+            owner.store.record_agent_task_receipt(
+                execution.operation_id, "space_stray_output_discarded", receipt
+            )
+        try:
+            clear_space_output(path)
+        except (OSError, ValueError) as exc:
+            owner.store.record_agent_task_receipt(
+                execution.operation_id,
+                "space_stray_output_kept",
+                {"path": relative, "reason": str(exc)},
+            )
     for project in sorted(projects, key=lambda item: item.project_id):
         try:
             # This exact binding is checked even when an earlier retry committed.
             owner.store.agent_task_authority(project.project_id, execution.operation_id)
             text = read_space_output(project.patch_path)
+        except (KeyError, OSError, ValueError) as exc:
+            result = GraphUpdateResult(
+                status="rejected", validation_messages=[str(exc) or type(exc).__name__]
+            )
+        else:
             if text is None:
-                results[project.project_id] = "no_patch"
-                continue
-            candidate = project.candidate(text).patch
+                result = GraphUpdateResult(status="none")
+            else:
+                owner.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "space_project_patch",
+                    {"project_id": project.project_id, "patch": text},
+                )
+                result = _apply_space_project(owner, execution, project, text)
+        results[project.project_id] = result
+        if result.status in {"rejected", "unavailable"}:
             owner.store.record_agent_task_receipt(
                 execution.operation_id,
-                "space_project_patch",
-                {"project_id": project.project_id, "patch": text},
+                f"space_project_{result.status}",
+                {"project_id": project.project_id, **space_result_summary({"": result})[""]},
             )
-            with project.service.history.workspace.run_lock() as lease:
-                lease.assert_owned()
-                owner.store.require_project_accepts_new_work(project.project_id)
-                if not owner.store.is_project_member(project.project_id, owner.thread.user_id):
-                    raise ValueError("Project membership ended before Space Apply")
-                previous = [
-                    patch
-                    for patch in project.service.history.load_patches()
-                    if patch.source_effect_id == candidate.source_effect_id
-                    and patch.admission == "accepted"
-                ]
-                if previous:
-                    if (
-                        len(previous) != 1
-                        or previous[0].source_effect_sha256 != candidate.source_effect_sha256
-                    ):
-                        raise ValueError("Space Apply effect conflicts with its committed Patch")
-                else:
-                    project.service.history.append(candidate, discard_on_reject=True)
-            results[project.project_id] = "applied"
-        except (KeyError, OSError, ValueError, StateUnavailable, ReplayHalted) as exc:
-            results[project.project_id] = "rejected"
-            owner.store.record_agent_task_receipt(
-                execution.operation_id,
-                "space_project_rejected",
-                {"project_id": project.project_id, "reason": str(exc)},
-            )
+        if result.status == "unavailable":
+            # The commit may be present or unknown, so the Patch stays for a
+            # retry, whose effect key finds an earlier commit instead of repeating it.
+            continue
         # Invariant 9: settled output must not become a later attempt's input.
         try:
             clear_space_output(project.patch_path)
@@ -299,7 +372,9 @@ def collect_space_projects(
                 {"project_id": project.project_id, "reason": str(exc)},
             )
     owner.store.record_agent_task_receipt(
-        execution.operation_id, "space_project_results", {"project_results": results}
+        execution.operation_id,
+        "space_project_results",
+        {"project_results": space_result_summary(results)},
     )
     return results
 
@@ -309,22 +384,14 @@ def commit_space_seen_heads(
     execution: AgentTaskExecution,
     projects: list[SpaceProjectTurn],
     session_id: str,
-    results: dict[str, Literal["applied", "rejected", "no_patch"]],
+    results: dict[str, GraphUpdateResult],
 ) -> None:
     """Record only the shown snapshot plus this turn's own accepted transition."""
     from rcp.runs.session_master import staged_graph_head
 
     for project in projects:
-        revision = project.context.graph_revision
-        if results[project.project_id] == "applied":
-            applied = [
-                patch.revision
-                for patch in project.service.history.load_patches()
-                if patch.source_effect_id == project.source_effect_id
-                and patch.admission == "accepted"
-            ]
-            if applied:
-                revision = max(applied)
+        applied = results[project.project_id].applied_revision
+        revision = project.context.graph_revision if applied is None else applied
         head = staged_graph_head(project.service, GraphTargetRef(), revision)
         previous = owner.store.graph_seen_head_record(
             project.project_id, owner.thread_id, session_id, GraphTargetRef()
