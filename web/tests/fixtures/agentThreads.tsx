@@ -1,5 +1,6 @@
 import { ArtifactViewer } from "../../src/artifacts/ArtifactViewer";
-import { ResourceRuntime } from "./resourceRuntime";
+import { useLayoutEffect } from "react";
+import { activateProject, ResourceRuntime } from "./resourceRuntime";
 import { createRoot } from "react-dom/client";
 import { ChatsWorkspace } from "../../src/chat/ChatsWorkspace";
 import { ProjectLanding } from "../../src/projects/ProjectLanding";
@@ -107,6 +108,7 @@ const moss: AgentThread = {
 };
 
 function Project() {
+  useLayoutEffect(() => activateProject(project.id), []);
   const team = ["Ablate head count at 16k", "Kernel profile for block size 64"].map((title) => ({
     chatId: title,
     title,

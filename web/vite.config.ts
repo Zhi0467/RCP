@@ -20,5 +20,6 @@ export default defineConfig(({ mode }) => ({
     // build. Keep content-hashed assets until the server is restarted; packaging
     // uses `build:clean` so stale chunks never ship.
     emptyOutDir: false,
+    manifest: true,
   },
 }));
