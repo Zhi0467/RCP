@@ -46,14 +46,16 @@
   outline: 2px solid var(--oxblood);
   outline-offset: 3px;
 }
-:root[data-theme="aqua"] .appearance-picker-options {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .appearance-picker-options {
   box-shadow: var(--aqua-inset);
   border-radius: 8px;
 }
-:root[data-theme="aqua"] .appearance-picker-options button {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .appearance-picker-options button {
   border-radius: 5px;
 }
-:root[data-theme="aqua"] .appearance-picker-options button[aria-pressed="true"] {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  .appearance-picker-options
+  button[aria-pressed="true"] {
   background: var(--aqua-selected);
   border-color: var(--rule);
   box-shadow: var(--aqua-inset);

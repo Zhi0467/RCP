@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
@@ -183,6 +183,19 @@ test("text on the inverting ink surface stays readable in every theme and color 
     const ratio = contrastRatio(resolveToken("--paper", theme), resolveToken("--ink", theme));
     assert.ok(ratio >= 4.5, `${theme} ink surface contrast is ${ratio.toFixed(2)}:1`);
   }
+});
+
+test("Snowbound shares every Aqua element rule; only Aqua's two token blocks stay Aqua-only", () => {
+  const source = new URL("../src/", import.meta.url);
+  const aquaOnly = readdirSync(source, { recursive: true })
+    .filter((path) => path.endsWith(".css"))
+    .flatMap((path) => readFileSync(new URL(path, source), "utf-8").split("\n"))
+    .filter((line) => line.includes(':root[data-theme="aqua"]'))
+    .map((line) => line.trim());
+  assert.deepEqual(aquaOnly.sort(), [
+    ':root[data-theme="aqua"] {',
+    ':root[data-theme="aqua"][data-color-mode="dark"] {',
+  ]);
 });
 
 test("no rule paints a literal text color on a theme-inverting background", () => {

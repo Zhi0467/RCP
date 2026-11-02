@@ -238,7 +238,7 @@
   width: 320px;
   z-index: 20;
 }
-:root[data-theme="aqua"] .upcoming-popover {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .upcoming-popover {
   background: var(--aqua-surface);
 }
 .upcoming-popover h3 {
@@ -479,7 +479,7 @@
   padding: 14px 16px;
   width: 100%;
 }
-:root[data-theme="aqua"] .approval-card {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .approval-card {
   background: var(--aqua-surface);
 }
 .approval-head {

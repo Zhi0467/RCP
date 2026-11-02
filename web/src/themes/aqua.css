@@ -90,7 +90,7 @@
 
 /* Shared controls keep their sizing and semantic colors. Relief is shallow
    enough that a compact toolbar still reads as a usable instrument. */
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .button,
     .icon-button,
@@ -104,7 +104,8 @@
   box-shadow: var(--aqua-raised);
 }
 
-:root[data-theme="aqua"] :is(.button.primary, .icon-button.primary, .draft-sync.active) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  :is(.button.primary, .icon-button.primary, .draft-sync.active) {
   background-image: linear-gradient(rgb(255 255 255 / 12%), transparent 52%, rgb(0 0 0 / 10%));
   box-shadow:
     inset 0 1px 0 var(--aqua-highlight),
@@ -112,18 +113,19 @@
   text-shadow: 0 1px 1px rgb(var(--shadow-rgb) / 30%);
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(.button, .icon-button, .dag-tool-button, .dag-lens, .node-window-dock-item):active:not(
     :disabled
   ) {
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] :is(.button, .icon-button, .dag-tool-button):disabled {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  :is(.button, .icon-button, .dag-tool-button):disabled {
   box-shadow: inset 0 1px 0 var(--aqua-highlight);
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     input:not(
       :where([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="hidden"])
@@ -137,17 +139,18 @@
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
   accent-color: var(--oxblood);
 }
 
-:root[data-theme="aqua"] :focus-visible {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) :focus-visible {
   outline: 3px solid var(--aqua-focus);
   outline-offset: 3px;
 }
 
 /* Satin shell and inset selections: no imitation titlebar or window controls. */
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .project-header,
     .project-tabs,
@@ -162,20 +165,22 @@
     0 2px 5px rgb(var(--shadow-rgb) / 9%);
 }
 
-:root[data-theme="aqua"] .project-tabs {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs {
   gap: 5px;
   padding-top: 6px;
   padding-bottom: 6px;
 }
 
 /* The pinned group spans the padded strip so its inherited gradient lines up. */
-:root[data-theme="aqua"] .project-tabs-trailing {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs-trailing {
   box-shadow: inset 0 1px 0 var(--aqua-highlight);
   margin-block: -6px;
   padding-block: 6px;
 }
 
-:root[data-theme="aqua"] .project-tabs > button:not(.project-tabs-toggle, .project-tabs-back) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  .project-tabs
+  > button:not(.project-tabs-toggle, .project-tabs-back) {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);
   border-radius: 8px;
@@ -184,7 +189,7 @@
   margin-bottom: 0;
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .project-tabs > button.active,
     .project-tabs > button:active,
@@ -196,13 +201,13 @@
   color: var(--oxblood-dark);
 }
 
-:root[data-theme="aqua"] .project-dock-tab.active {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-dock-tab.active {
   background: var(--aqua-selected);
   border-radius: 8px;
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .project-tabs > button .inbox-count {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs > button .inbox-count {
   background: #f0d59a;
   color: #614711;
   box-shadow:
@@ -211,7 +216,7 @@
 }
 
 /* Quiet raised panels share the same material as the controls. */
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .settings-section,
     .overview-card,
@@ -226,7 +231,7 @@
 }
 
 /* Artifacts: every branch is the same raised box; the Archived fold itself is not one. */
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(.artifacts-branch:not(.artifacts-archived), .artifacts-heading + .artifacts-list) {
   background: var(--aqua-surface);
   border-color: var(--rule);
@@ -234,19 +239,19 @@
 }
 
 /* A machine is a raised box; each of its sections is a well inside it. */
-:root[data-theme="aqua"] .provider-machine.machine-card {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .provider-machine.machine-card {
   background: var(--aqua-surface);
   border-color: var(--rule);
   box-shadow: var(--aqua-raised);
 }
 
-:root[data-theme="aqua"] .machine-card > .fold {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .machine-card > .fold {
   background: var(--aqua-field);
   border-color: transparent;
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .detail-drawer,
     .chat-dock,
@@ -260,29 +265,29 @@
     var(--shadow);
 }
 
-:root[data-theme="aqua"] .agent-row-menu-list button {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .agent-row-menu-list button {
   border-radius: 8px;
 }
 
-:root[data-theme="aqua"] .dag-toolbar {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-toolbar {
   background: var(--aqua-toolbar);
   border-radius: 12px;
   box-shadow: inset 1px 1px 0 var(--aqua-highlight);
 }
 
-:root[data-theme="aqua"] .dag-scroll {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-scroll {
   background: var(--aqua-canvas);
   border-radius: 0 0 12px 12px;
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .dag-node {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-node {
   background: var(--aqua-surface);
   border-radius: 11px;
   box-shadow: var(--aqua-raised);
 }
 
-:root[data-theme="aqua"] .dag-node::before {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-node::before {
   background: linear-gradient(
     90deg,
     var(--node-accent),
@@ -291,24 +296,24 @@
   width: 6px;
 }
 
-:root[data-theme="aqua"] .dag-node:hover {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-node:hover {
   box-shadow: var(--aqua-hover);
 }
 
-:root[data-theme="aqua"] .dag-node.is-dragging {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .dag-node.is-dragging {
   box-shadow:
     inset 1px 1px 0 var(--aqua-highlight),
     6px 10px 18px rgb(var(--shadow-rgb) / 28%);
 }
 
 /* The composer is one recessed writing well, rather than nested cavities. */
-:root[data-theme="aqua"] .chat-composer {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .chat-composer {
   background: var(--aqua-field);
   border-radius: 15px;
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .chat-composer textarea {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .chat-composer textarea {
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -317,23 +322,23 @@
   outline: none;
 }
 
-:root[data-theme="aqua"] .chat-composer:focus-within {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .chat-composer:focus-within {
   border-color: var(--aqua-selected-border);
   box-shadow:
     var(--aqua-inset),
     0 0 0 2px rgb(82 133 181 / 20%);
 }
 
-:root[data-theme="aqua"] .bulletin-composer,
-:root[data-theme="aqua"] .bulletin-edit {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-composer,
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-edit {
   background: var(--aqua-field);
   border-color: transparent;
   border-radius: 12px;
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .bulletin-composer textarea,
-:root[data-theme="aqua"] .bulletin-edit textarea {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-composer textarea,
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-edit textarea {
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -342,26 +347,26 @@
   outline: none;
 }
 
-:root[data-theme="aqua"] .bulletin-composer:focus-within,
-:root[data-theme="aqua"] .bulletin-edit:focus-within {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-composer:focus-within,
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .bulletin-edit:focus-within {
   border-color: var(--aqua-selected-border);
   box-shadow:
     var(--aqua-inset),
     0 0 0 2px rgb(82 133 181 / 20%);
 }
 
-:root[data-theme="aqua"] .conversation-list {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .conversation-list {
   background: var(--paper-deep);
   box-shadow: inset -2px 0 5px rgb(var(--shadow-rgb) / 9%);
 }
 
 /* Project tiles retain their content and controls, without book materials. */
-:root[data-theme="aqua"] .project-cover-shell {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover-shell {
   --project-cover: var(--sheet);
   --project-cover-ink: var(--ink);
 }
 
-:root[data-theme="aqua"] .project-cover {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);
   border-radius: 15px;
@@ -369,21 +374,21 @@
   color: var(--ink);
 }
 
-:root[data-theme="aqua"] .project-cover::before,
-:root[data-theme="aqua"] .project-cover::after,
-:root[data-theme="aqua"] .project-cover-spine {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover::before,
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover::after,
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover-spine {
   display: none;
 }
 
-:root[data-theme="aqua"] .project-cover-shell:hover {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover-shell:hover {
   transform: translateY(-2px);
 }
 
-:root[data-theme="aqua"] .project-cover-shell:hover .project-cover {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover-shell:hover .project-cover {
   box-shadow: var(--aqua-hover);
 }
 
-:root[data-theme="aqua"] .project-cover-trigger {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-cover-trigger {
   background: var(--aqua-toolbar);
   border-color: var(--rule);
   border-radius: 7px;
@@ -392,13 +397,13 @@
 }
 
 /* Relief belongs to the actual click target, not its expanded detail. */
-:root[data-theme="aqua"] :is(.overview-questions, .space-runs-rows) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) :is(.overview-questions, .space-runs-rows) {
   display: grid;
   gap: 12px;
   border: 0;
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(.overview-questions > button, .space-run-row, .campaign-run:has(.campaign-run-toggle)) {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);
@@ -406,42 +411,45 @@
   box-shadow: var(--aqua-raised);
 }
 
-:root[data-theme="aqua"] .overview-questions > button {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .overview-questions > button {
   padding-inline: 20px;
   transition: box-shadow 0.16s;
 }
 
-:root[data-theme="aqua"] .space-run-row > button {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .space-run-row > button {
   border-radius: inherit;
 }
 
-:root[data-theme="aqua"] .space-run-row {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .space-run-row {
   border-left: 4px solid var(--space-run-tone);
 }
 
-:root[data-theme="aqua"] .space-run-rail {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .space-run-rail {
   display: none;
 }
 
-:root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .campaign-run:has(.campaign-run-toggle) {
   border-left: 4px solid var(--campaign-tone);
   overflow: visible;
 }
 
-:root[data-theme="aqua"] .campaign-run-heading:has(.campaign-run-toggle) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  .campaign-run-heading:has(.campaign-run-toggle) {
   border-radius: 11px;
 }
 
-:root[data-theme="aqua"] .campaign-run:has(.campaign-run-toggle) > .campaign-state-rail {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  .campaign-run:has(.campaign-run-toggle)
+  > .campaign-state-rail {
   display: none;
 }
 
-:root[data-theme="aqua"] .campaign-run-detail {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .campaign-run-detail {
   background: var(--paper-deep);
   border-radius: 0 0 11px 11px;
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .overview-questions > button:hover,
     .space-run-row:has(> button:hover),
@@ -450,7 +458,7 @@
   box-shadow: var(--aqua-hover);
 }
 
-:root[data-theme="aqua"]
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
   :is(
     .overview-questions > button:active,
     .space-run-row:has(> button:active),
@@ -460,6 +468,7 @@
   box-shadow: var(--aqua-inset);
 }
 
-:root[data-theme="aqua"] .artifact-entry:has(.artifact-entry-open:focus-visible) {
+:root:is([data-theme="aqua"], [data-theme="snowbound"])
+  .artifact-entry:has(.artifact-entry-open:focus-visible) {
   outline-color: var(--aqua-focus);
 }
