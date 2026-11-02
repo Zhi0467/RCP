@@ -246,7 +246,18 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
 
 
 @pytest.mark.parametrize(
-    "refusal", [None, "archived", "closed", "paused", "retried", "unprojected"]
+    "refusal",
+    [
+        None,
+        "archived",
+        "closed",
+        "closed_queued",
+        "deferred",
+        "paused",
+        "retried",
+        "signed_out",
+        "unprojected",
+    ],
 )
 def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     manifest, tmp_path: Path, monkeypatch, refusal
@@ -307,7 +318,13 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         message="Please check",
     )
     monkeypatch.setattr(background, "admit_provider_task", lambda *args, **kwargs: None)
-    monkeypatch.setattr(background, "_spawn_record", lambda record, request, **kwargs: record)
+    spawned: list[str] = []
+
+    def spawn(record, request, **kwargs):
+        spawned.append(record.operation_id)
+        return record
+
+    monkeypatch.setattr(background, "_spawn_record", spawn)
 
     def drain():
         return dispatch_thread_handoffs(
@@ -353,6 +370,27 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
             "UPDATE graph_runs SET status='succeeded',finished_at=? WHERE operation_id='busy'",
             (store.now(),),
         )
+    if refusal == "deferred":
+        # A delivery the machine keeps refusing gives up after a bounded wait.
+        from datetime import datetime, timedelta
+
+        from rcp.limits import AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+        from rcp.runs.provider_login import MachineDependenciesMissing
+
+        def missing(scope, *args, **kwargs):
+            if scope == project_id:  # The project's machine, not the Space wake.
+                raise MachineDependenciesMissing("codex is missing")
+
+        monkeypatch.setattr(background, "admit_provider_task", missing)
+        assert drain() == [] and drain() == []
+        assert len(store.agent_task_events("source")) == 1
+        later = datetime.fromisoformat(store.now()) + timedelta(
+            seconds=AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+        )
+        monkeypatch.setattr(store, "now", lambda: later.isoformat())
+        report = store.agent_task(drain()[0]).request["handoff_report"]
+        assert report["status"] == "refused" and report["reason"].startswith("delivery_timed_out")
+        return
     operations = drain()
     assert len(operations) == 1
     turn = store.agent_task(operations[0])
@@ -366,10 +404,30 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         ("handoff", "Please check")
     ]
     monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **kwargs: None)
+    if refusal == "closed_queued":
+        # A queued turn whose thread closed never starts; it fails and its handoff reports.
+        store.close_agent_thread(target.thread_id, reason="access_lost")
+        spawned.clear()
+        background.recover_at_startup()
+        assert spawned == []
+        report = store.agent_task(drain()[0]).request["handoff_report"]
+        assert report["status"] == "failed"
+        return
     background.recover_at_startup()
     recovered = store.agent_task(turn.operation_id)
     assert recovered is not None and recovered.status == "queued"
+    from rcp.runs import chat
+
+    append = chat._append_chat_records
+    copies: list[object] = []
+
+    def counted(*args, **kwargs):
+        copies.append(args)
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(chat, "_append_chat_records", counted)
     assert drain() == []
+    assert copies == []  # The request message was copied once, on delivery.
     settled = turn.operation_id
     store.mark_agent_task_running(settled)
     if refusal == "paused":
@@ -383,29 +441,55 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         return
     if refusal == "unprojected":
         # The request message must reach the project transcript before the handoff settles.
-        from rcp.runs import chat
-
         store.complete_agent_task(
             settled, applied_revision=None, result={"turn_outcome": {"status": "done"}}
         )
-        append = chat._append_chat_records
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE agent_handoffs SET message_projected_at=NULL WHERE handoff_id=?",
+                (handoff.handoff_id,),
+            )
 
         def unavailable(*args, **kwargs):
             raise OSError("workspace unavailable")
 
         monkeypatch.setattr(chat, "_append_chat_records", unavailable)
         assert drain() == []
+        noted = len(store.agent_task_events(settled))
+        assert drain() == []
+        assert len(store.agent_task_events(settled)) == noted  # Deferral is noted once.
         monkeypatch.setattr(chat, "_append_chat_records", append)
         assert len(drain()) == 1
         return
+    if refusal == "signed_out":
+        # A sign-in failure waits for a sign-in retry until the thread moves past it.
+        store.fail_agent_task(settled, "signed out", failure_kind="provider_auth")
+        assert drain() == []
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="later",
+                project_id=project_id,
+                kind="project_chat",
+                status="succeeded",
+                authorized_by=actor,
+                request=RunRequest(
+                    chat_scope="project", chat_id=target.thread_id, mode="work"
+                ).model_dump(mode="json"),
+            )
+        )
+        report = store.agent_task(drain()[0]).request["handoff_report"]
+        assert (report["status"], report["failure_kind"]) == ("failed", "provider_auth")
+        return
     if refusal == "retried":
         # A lost link RCP retries itself is not a settlement; the retry's result is.
-        store.fail_agent_task(settled, "link lost")
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE graph_runs SET failure_kind='transport_lost' WHERE operation_id=?",
-                (settled,),
-            )
+        import threading
+
+        store.fail_agent_task(settled, "link lost", failure_kind="transport_lost")
+        # Its worker has not yet recorded the retry decision.
+        background._workers[settled] = threading.current_thread()
+        assert drain() == []
+        background._forget_control(settled)
         store.record_agent_task_receipt(settled, "transport_auto_retry", {"attempt": 1})
         assert drain() == []
         settled = "retried"

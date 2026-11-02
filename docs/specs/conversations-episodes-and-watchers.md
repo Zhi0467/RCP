@@ -83,15 +83,25 @@ pending handoffs without a wake. Delivery appends a member message with
 `source: "handoff"` and admits its turn when the target is idle; it runs after
 each settlement, after a provider sign-in release, and at startup. Pending
 handoffs deliver oldest first, one turn each, and the idempotency key prevents
-duplicates. A transient admission refusal keeps the request pending and is noted
-once on the Space turn; any other refusal is final.
+duplicates. A transient admission refusal (a missing program, an offline machine,
+an admission conflict) keeps the request pending and is noted once on the Space
+turn. Once deliveries have been refused that way for
+`AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS`, the next pass refuses the handoff with
+reason `delivery_timed_out` and the last refusal. Any other refusal is final. The
+request message is copied to the project transcript once; the handoff records the
+copy and later passes skip it.
 
 A handoff settles when its delivered turn, or that turn's newest Resume or Retry,
 succeeds, fails, is interrupted, or is paused by Stop. A failure RCP still retries
-itself (a lost link before its retries are exhausted, or a provider sign-in
-failure) does not settle it. A handoff refused because the target is archived,
+itself does not settle it: one whose worker has not yet recorded its transport or
+Codex retry decision, a lost link before its retries are exhausted, or a provider
+sign-in failure that a sign-in release would still retry. A sign-in failure its
+thread has since moved past is final. A handoff refused because the target is archived,
 closed, no longer the member's project, or holding a Stopped turn settles at once
-with that stored reason; leaving a project closes its thread. Each settled
+with that stored reason; leaving a project closes its thread. A delivered turn still
+queued when its thread closes or archives never starts: startup relaunches it
+through admitted launch, which refuses it, and the next pass fails it so its
+handoff reports. Each settled
 handoff admits one Space wake with source `handoff_report`. Its message is
 `render_handoff_report` of a `HandoffReport`: status, refusal reason, failure kind,
 the provider's failure text, the project agent's stated turn outcome, and its

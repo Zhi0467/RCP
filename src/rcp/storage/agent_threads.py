@@ -111,9 +111,15 @@ def migrate_agent_handoffs(connection: sqlite3.Connection) -> None:
         source_operation_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
         target_thread_id TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL,
         target_operation_id TEXT, settled_at TEXT, notified_operation_id TEXT,
-        refusal_reason TEXT, UNIQUE(source_operation_id, idempotency_key))""")
+        refusal_reason TEXT, message_projected_at TEXT, delivery_deferred_at TEXT,
+        UNIQUE(source_operation_id, idempotency_key))""")
+    # Partial indexes keep each dispatcher pass to the unsettled and unreported rows.
     connection.execute("""CREATE INDEX agent_handoffs_pending ON agent_handoffs(target_thread_id, created_at)
-        WHERE target_operation_id IS NULL""")
+        WHERE target_operation_id IS NULL AND settled_at IS NULL""")
+    connection.execute("""CREATE INDEX agent_handoffs_delivered ON agent_handoffs(target_operation_id)
+        WHERE target_operation_id IS NOT NULL AND settled_at IS NULL""")
+    connection.execute("""CREATE INDEX agent_handoffs_owed_wake ON agent_handoffs(settled_at, handoff_id)
+        WHERE settled_at IS NOT NULL AND notified_operation_id IS NULL""")
 
     install_agent_thread_version(
         connection,
@@ -338,6 +344,28 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 "UPDATE agent_handoffs SET settled_at=?, refusal_reason=? "
                 "WHERE handoff_id=? AND target_operation_id IS NULL AND settled_at IS NULL",
                 (self.now(), reason, handoff_id),
+            )
+
+    def defer_agent_handoff_delivery(self, handoff_id: str) -> str:
+        """Note a transiently refused delivery; return when deferral first began."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_handoffs SET delivery_deferred_at=coalesce(delivery_deferred_at,?) "
+                "WHERE handoff_id=?",
+                (self.now(), handoff_id),
+            )
+            row = connection.execute(
+                "SELECT delivery_deferred_at FROM agent_handoffs WHERE handoff_id=?", (handoff_id,)
+            ).fetchone()
+        return str(row[0])
+
+    def mark_agent_handoff_message_projected(self, handoff_id: str) -> None:
+        """The request message reached the project transcript; later passes skip it."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_handoffs SET message_projected_at=coalesce(message_projected_at,?) "
+                "WHERE handoff_id=?",
+                (self.now(), handoff_id),
             )
 
     def agent_handoff_delivered_as(self, operation_id: str) -> AgentHandoffRecord | None:

@@ -461,6 +461,8 @@ class BackgroundAgentTasks:
         self._controls_lock = threading.Lock()
         self._shutdown_requested = False
         self._transport_retry_timers: list[threading.Timer] = []
+        # Live workers whose settlement already decided their automatic retry.
+        self._retry_decided: set[str] = set()
         # An automatic reattempt that has passed its shutdown check is admitting
         # a child. Shutdown waits for it under this condition before it fences
         # spawns, so the child it admits gets a worker instead of being left
@@ -3132,6 +3134,8 @@ class BackgroundAgentTasks:
                     {"exception_type": type(exc).__name__},
                     tier="diagnostic",
                 )
+        with self._controls_lock:
+            self._retry_decided.add(record.operation_id)
         if self.experiment_resumer is not None:
             try:
                 start_scheduled_experiment_resumes(
@@ -3517,6 +3521,18 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
+            self._retry_decided.discard(operation_id)
+
+    def retry_undecided(self, operation_id: str) -> bool:
+        """Whether this task's live worker has yet to decide its automatic retry.
+
+        A failure commits before its settlement records a transport or Codex retry,
+        so until then the failure is not final. A task with no live worker here
+        has nothing left to decide.
+        """
+
+        with self._controls_lock:
+            return operation_id in self._workers and operation_id not in self._retry_decided
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:
