@@ -282,19 +282,25 @@ on every target, and deletes consolidation schedules until a member configures t
 
 ## Private agent schedules
 
-Private threads expose `schedule add`, `list`, and `cancel` to every thread turn,
-wakes included. The agent adds one when the member asks for a reminder or a
-recurring check. Mutations carry an idempotency key keyed on the turn's
+Private threads expose `schedule add`, `list`, `pause`, `resume`, and `cancel` to
+every thread turn, wakes included. The agent adds one when the member asks for a
+reminder or a recurring check. Mutations carry an idempotency key keyed on the turn's
 Resume/Retry lineage root, so a re-run returns the same schedule.
-`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread; a bounded repeat
-such as every minute for ten minutes is a set of one-shots. A turn carrying the
+`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread. A turn carrying the
 member's own message (composer, voice, or the member's Space handoff, with no
-question-follow-up binding) may schedule any cadence. A wake turn's cron fires must
-be at least `AGENT_SCHEDULE_MIN_GAP_MINUTES` apart.
+question-follow-up binding) may schedule any cadence. A wake turn's cron or
+`--every` fires must be at least `AGENT_SCHEDULE_MIN_GAP_MINUTES` apart.
 
-A schedule names an IANA timezone and either a local `YYYY-MM-DDTHH:MM` instant
-or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
+A schedule names an IANA timezone and exactly one time: a local
+`YYYY-MM-DDTHH:MM` one-shot (`--at`), a plain interval (`--every`, such as `1m`,
+`90m`, `2h` or `1d`), or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
 `SUN`-`SAT` names, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+Only a repeat (cron or interval) takes bounds, all local times in its zone.
+`--from` sets its start. Without it, cron starts at its next match and an interval
+starts one interval from now. `--until` makes it done after its last fire at or
+before that time. `--count` makes it done after that many fires; it stores the
+fires left. With both, whichever ends first wins. Fires missed during downtime count
+against `--count`. An interval keeps its phase across downtime.
 Sunday is 0 or 7. As in Vixie cron, when neither day field starts with `*`,
 either matches; otherwise both must. Local times use consolidation's first-fold
 and next-valid-gap-minute rules. The member's zone comes from the turn's composer
@@ -306,7 +312,7 @@ and a plain reason saying what to do.
 The consolidation poller advances due schedules and preserves their first pending
 occurrence in one transaction before the automatic-launch cooldown check. Wake
 dispatch then runs first in the tick, in its own error boundary, per thread.
-One-shot schedules become done. Notes stay pending while the thread's turn is
+One-shot schedules, and repeats past their bounds, become done. Notes stay pending while the thread's turn is
 active or awaiting Resume. A wake that provider sign-in, machine dependencies, or
 a thread refusal defers keeps its notes pending, records `deferred_reason`, and
 retries each tick. Once eligible, one atomic admission claims all observed notes
@@ -321,9 +327,12 @@ disables active schedules; done one-shots keep their pending note.
 A schedule whose next occurrence cannot be computed is disabled with reason
 `unschedulable`; it never blocks other schedules or consolidation.
 
-Schedule controls are owner-only. Backup restore disables active and disabled
+Pause keeps a schedule's next fire and bounds and drops its waiting note; a paused
+schedule never fires. Resume picks the next fire after now, so fires missed while
+paused are skipped. A schedule with no fire left, such as one past `--until`, is
+done on resume. Schedule controls are owner-only. Backup restore disables active and disabled
 schedules with reason `restore`, clears every pending wake, and requires explicit
-re-enabling; a done one-shot stays done. A past
-one-shot cannot be re-enabled. Consolidation's separate restore behavior remains
+re-enabling; a done one-shot stays done. A schedule with no fire left, such as a
+past one-shot, cannot be re-enabled. Consolidation's separate restore behavior remains
 delete-on-restore. Restore deletes undelivered handoffs and marks delivered ones
 notified, so the restored host neither launches nor wakes for them.

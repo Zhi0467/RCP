@@ -120,19 +120,27 @@ def name_usage():
 SCHEDULE_OPTIONS = (
     ("key", "--key", "<key>"),
     ("cron", "--cron", "<five-fields>"),
+    ("every", "--every", "<N>m|<N>h|<N>d"),
     ("at", "--at", "<YYYY-MM-DDTHH:MM>"),
+    ("start", "--from", "<YYYY-MM-DDTHH:MM>"),
+    ("until", "--until", "<YYYY-MM-DDTHH:MM>"),
+    ("count", "--count", "<N>"),
     ("timezone", "--timezone", "<IANA-zone>"),
     ("note", "--note", "<note>"),
     ("schedule_id", "--schedule-id", "<schedule-id>"),
 )
+SCHEDULE_KEYED_ACTIONS = ("cancel", "pause", "resume")
 
 
 def schedule_usages():
-    key, cron, at, timezone, note, schedule_id = map(_option_usage, SCHEDULE_OPTIONS)
+    key, cron, every, at, start, until, count, timezone, note, schedule_id = map(
+        _option_usage, SCHEDULE_OPTIONS
+    )
     return (
-        f"schedule add {key} ({cron} | {at}) [{timezone}] {note}",
+        f"schedule add {key} ({cron} | {every} | {at}) [{start}] [{until}] [{count}] "
+        f"[{timezone}] {note}",
         "schedule list",
-        f"schedule cancel {key} {schedule_id}",
+        *(f"schedule {action} {key} {schedule_id}" for action in SCHEDULE_KEYED_ACTIONS),
     )
 
 
@@ -371,7 +379,7 @@ def _parser():
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
     schedule = subparsers.add_parser("schedule")
-    schedule.add_argument("action", choices=("add", "list", "cancel"))
+    schedule.add_argument("action", choices=("add", "list", *SCHEDULE_KEYED_ACTIONS))
     for dest, flag, metavar in SCHEDULE_OPTIONS:
         schedule.add_argument(flag, dest=dest, metavar=metavar)
 
@@ -553,8 +561,12 @@ def _request_arguments(namespace, workspace):
         return verb, None, arguments
     if verb == "schedule":
         arguments = {"action": namespace.action}
-        for field in ("cron", "at", "timezone", "note", "schedule_id"):
+        for field, flag, _ in SCHEDULE_OPTIONS[1:]:
             value = getattr(namespace, field)
+            if value is not None and field == "count":
+                if not value.isdigit():
+                    raise ClientInputError(f"{flag} must be a whole number")
+                value = int(value)
             if value is not None:
                 arguments[field] = value
         key = namespace.key

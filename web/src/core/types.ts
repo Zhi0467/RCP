@@ -4124,14 +4124,20 @@ export interface AgentThreadTurnRequest {
   timezone: string;
 }
 
-export type AgentScheduleState = "active" | "cancelled" | "disabled" | "done";
+export type AgentScheduleState = "active" | "paused" | "cancelled" | "disabled" | "done";
 
 export interface AgentSchedule {
   schedule_id: string;
-  /** Exactly one of `cron` and `at_local` is set. */
+  /** Exactly one of `cron`, `every_minutes` and `at_local` is set. */
   cron?: string | null;
+  every_minutes?: number | null;
   /** `YYYY-MM-DDTHH:MM` in `timezone`. */
   at_local?: string | null;
+  /** A repeat's local start and last fire time; null is unbounded. */
+  start_local?: string | null;
+  until_local?: string | null;
+  /** Fires left before a `--count` repeat is done; null is unbounded. */
+  fires_left?: number | null;
   timezone: string;
   note: string;
   state: AgentScheduleState;

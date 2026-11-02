@@ -152,17 +152,42 @@ function clock(hour: string, minute: string): string {
   return `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
 }
 
+function localDay(at: Date): string {
+  return [
+    at.getFullYear(),
+    String(at.getMonth() + 1).padStart(2, "0"),
+    String(at.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** A local `YYYY-MM-DDTHH:MM` as its time today, weekday this week, else its date. */
+function wallLabel(local: string, now: Date): string {
+  const [day, time = ""] = local.split("T");
+  if (day === localDay(now)) return time;
+  const date = new Date(`${day}T00:00`);
+  const days = (date.getTime() - new Date(`${localDay(now)}T00:00`).getTime()) / 86_400_000;
+  return days > 0 && days < 7 ? `${WEEKDAYS[date.getDay()]} ${time}` : `${day} ${time}`;
+}
+
+function everyLabel(minutes: number): string {
+  const [count, unit] =
+    minutes % 1440 === 0
+      ? [minutes / 1440, "day"]
+      : minutes % 60 === 0
+        ? [minutes / 60, "hour"]
+        : [minutes, "minute"];
+  return count === 1 ? `Every ${unit}` : `Every ${count} ${unit}s`;
+}
+
 /** When a schedule next runs, as the Upcoming list shows it. */
 export function scheduleWhen(schedule: AgentSchedule, now = new Date()): string {
   if (schedule.at_local) {
     const [day, time = ""] = schedule.at_local.split("T");
-    const today = [
-      now.getFullYear(),
-      String(now.getMonth() + 1).padStart(2, "0"),
-      String(now.getDate()).padStart(2, "0"),
-    ].join("-");
-    return day === today ? `Today ${time}` : `${day} ${time}`;
+    return day === localDay(now) ? `Today ${time}` : `${day} ${time}`;
   }
+  if (schedule.every_minutes) return everyLabel(schedule.every_minutes);
   const fields = (schedule.cron ?? "").trim().split(/\s+/);
   if (fields.length !== 5) return schedule.cron ?? "";
   const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
@@ -173,24 +198,35 @@ export function scheduleWhen(schedule: AgentSchedule, now = new Date()): string 
   return schedule.cron ?? "";
 }
 
-/** Active schedules, those the member can switch back on, and a done one-shot whose
- *  wake still waits; the rest are history. */
+/** A repeat's bounds: fires left, its last time, and a start still to come. */
+export function scheduleLimits(schedule: AgentSchedule, now = new Date()): string[] {
+  const limits: string[] = [];
+  if (schedule.fires_left != null) limits.push(`${schedule.fires_left} left`);
+  if (schedule.until_local) limits.push(`until ${wallLabel(schedule.until_local, now)}`);
+  const wall = zoneWall(schedule.timezone, now);
+  if (schedule.start_local && wall !== null && schedule.start_local > wall)
+    limits.push(`from ${wallLabel(schedule.start_local, now)}`);
+  return limits;
+}
+
+/** Active and paused schedules, those the member can switch back on, and a done
+ *  one-shot whose wake still waits; the rest are history. */
 export function upcomingSchedules(schedules: readonly AgentSchedule[]): AgentSchedule[] {
   return schedules.filter(
     (schedule) =>
       schedule.state === "active" ||
+      schedule.state === "paused" ||
       schedule.state === "disabled" ||
       (schedule.state === "done" && Boolean(schedule.pending_since)),
   );
 }
 
-/** Whether a one-shot's local time has passed in its own zone, so it cannot resume. */
-export function oneShotPassed(schedule: AgentSchedule, now = new Date()): boolean {
-  if (!schedule.at_local) return false;
+/** The wall clock `YYYY-MM-DDTHH:MM` in `timezone`, or null for an unknown zone. */
+function zoneWall(timezone: string, now: Date): string | null {
   let parts: Intl.DateTimeFormatPart[];
   try {
     parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: schedule.timezone,
+      timeZone: timezone,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
@@ -199,11 +235,17 @@ export function oneShotPassed(schedule: AgentSchedule, now = new Date()): boolea
       hourCycle: "h23",
     }).formatToParts(now);
   } catch {
-    return false;
+    return null;
   }
   const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
-  const wall = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
-  return schedule.at_local <= wall;
+  return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
+}
+
+/** Whether a one-shot's local time has passed in its own zone, so it cannot resume. */
+export function oneShotPassed(schedule: AgentSchedule, now = new Date()): boolean {
+  if (!schedule.at_local) return false;
+  const wall = zoneWall(schedule.timezone, now);
+  return wall !== null && schedule.at_local <= wall;
 }
 
 /** An instant as the reader's short weekday and time, such as `Mon 09:00`. */

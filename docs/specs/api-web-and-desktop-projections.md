@@ -1203,13 +1203,16 @@ after that reply or the next agent response. Nothing opens on its own.
 
 The thread owner lists schedules with
 `GET /api/agent-threads/{thread_id}/schedules`, returning `{schedules: [...]}`.
-Each schedule exposes its id, cron or local one-shot time, timezone, note, state,
-disabled reason, next fire, last fire, pending-since and deferred reason. Cancel
-works on any row. Cancel uses
+Each schedule exposes its id, cron, interval minutes or local one-shot time, local
+start and until, fires left, timezone, note, state, disabled reason, next fire,
+last fire, pending-since and deferred reason. Cancel works on any row. Cancel uses
 `DELETE /api/agent-threads/{thread_id}/schedules/{schedule_id}` and returns 204.
 `POST /api/agent-threads/{thread_id}/schedules/{schedule_id}/enable` re-enables a
-disabled schedule and returns it; invalid state, an elapsed one-shot time or the
-active-schedule cap returns 409 with a plain reason. Other members receive 404.
+disabled schedule and returns it; invalid state, no fire left (such as an elapsed
+one-shot time) or the active-schedule cap returns 409 with a plain reason.
+`POST .../{schedule_id}/pause` pauses an active schedule and
+`POST .../{schedule_id}/resume` resumes a paused one; each returns the schedule,
+and another state or the cap returns 409. Other members receive 404.
 Creation is through the thread's `schedule add` command; the
 [scheduling spec](graph-consolidation-and-lessons.md#private-agent-schedules)
 owns the grammar and wake lifecycle.
