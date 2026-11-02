@@ -145,24 +145,34 @@ def schedule_wake_message(schedules, now: datetime) -> str:
     )
 
 
+def queued_schedule_wakes(store) -> list[str]:
+    """Claimed schedule wakes not yet launched; they own their consumed notes."""
+    with store.connection() as connection:
+        return [
+            row["operation_id"]
+            for row in connection.execute(
+                "SELECT operation_id FROM graph_runs JOIN agent_threads "
+                "ON agent_threads.thread_id=json_extract(request_json, '$.chat_id') "
+                "WHERE status='queued' AND json_extract(request_json, '$.trigger')='schedule'"
+            ).fetchall()
+        ]
+
+
 def dispatch_agent_schedules(poller, now: datetime, pending) -> None:
     import logging
     from collections import defaultdict
 
+    from rcp.runs.agent_thread_commands import _thread_busy
+    from rcp.storage import AgentTaskAdmissionConflict
+
     # A crash or transient launch refusal after the atomic claim keeps the same
     # queued operation; never manufacture another wake for its consumed notes.
-    with poller.store.connection() as connection:
-        queued = connection.execute(
-            "SELECT operation_id FROM graph_runs JOIN agent_threads "
-            "ON agent_threads.thread_id=json_extract(request_json, '$.chat_id') "
-            "WHERE status='queued' AND json_extract(request_json, '$.trigger')='schedule'"
-        ).fetchall()
-    for row in queued:
+    for operation_id in queued_schedule_wakes(poller.store):
         try:
-            poller.tasks.launch_admitted(row["operation_id"])
+            poller.tasks.launch_admitted(operation_id)
         except Exception:
             logging.getLogger(__name__).exception(
-                "Queued agent schedule launch failed: %s", row["operation_id"]
+                "Queued agent schedule launch failed: %s", operation_id
             )
     groups = defaultdict(list)
     for schedule in pending:
@@ -188,17 +198,18 @@ def dispatch_agent_schedules(poller, now: datetime, pending) -> None:
                         (thread_id,),
                     )
                     continue
-                busy = connection.execute(
-                    "SELECT 1 FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=? AND status IN ('queued','running','pausing','paused') LIMIT 1",
-                    (thread_id,),
-                ).fetchone()
-            if busy:
+            record = poller.store.agent_thread(thread_id)
+            # A wake waits for the current turn to settle or be resumed; notes stay pending.
+            if record is None or _thread_busy(poller.store, record):
                 continue
             task = schedule_wake_task(
                 poller, dict(thread), schedule_wake_message(schedules, now), now
             )
             if poller.store.claim_agent_schedule_wake(schedules, task):
                 poller.tasks.launch_admitted(task.operation_id)
+        except AgentTaskAdmissionConflict:
+            # Archived, or an unresolved turn awaits the member; try again next poll.
+            continue
         except Exception:
             logging.getLogger(__name__).exception(
                 "Agent schedule wake failed for thread %s", thread_id
@@ -211,12 +222,14 @@ def schedule_wake_task(poller, thread: dict, message: str, now: datetime):
 
     from rcp.runs.task_policy import resolved_dispatch_authority
     from rcp.service import RunRequest
-    from rcp.storage import AgentTaskRecord
+    from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord
 
     user = poller.store.space_user(thread["user_id"])
     if user is None or user.removed_at is not None or user.removal_started_at is not None:
         raise ValueError("schedule_member_unavailable")
     project_id = thread["project_id"] or poller.store.space_id
+    if refusal := poller.store.chat_turn_refusal(project_id, thread["thread_id"]):
+        raise AgentTaskAdmissionConflict(refusal)
     with poller.store.connection() as connection:
         row = connection.execute(
             "SELECT * FROM graph_runs WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? "
@@ -234,7 +247,11 @@ def schedule_wake_task(poller, thread: dict, message: str, now: datetime):
         raise ValueError("schedule_thread_binding_unavailable")
     request = RunRequest.model_validate(previous.request).model_copy(
         update={
-            "session_id": previous.native_session_id,
+            **(
+                poller.store.current_chat_agent(project_id, previous.kind, thread["thread_id"])
+                or {}
+            ),
+            "session_id": None,
             "browser_requested": poller.store.chat_browser_requested(
                 project_id, thread["thread_id"]
             ),
@@ -269,9 +286,6 @@ def schedule_wake_task(poller, thread: dict, message: str, now: datetime):
         request=request.model_dump(mode="json"),
         created_at=now.isoformat(),
         updated_at=now.isoformat(),
-        native_session_id=previous.native_session_id,
-        stage_host=previous.stage_host,
-        stage_root=previous.stage_root,
         graph_target=previous.graph_target,
         runtime_id=previous.runtime_id,
         authorized_by=previous.authorized_by,

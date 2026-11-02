@@ -63,7 +63,9 @@ def test_lazy_thread_creation_seeds_names_and_browser_once(tmp_path: Path) -> No
     closed = store.agent_thread(project.thread_id)
     assert closed is not None
     assert closed.closed_reason == "access_lost"
+    store.set_chat_archived("project-a", project.thread_id, "member", archived=True)
     reopened = store.ensure_agent_threads("member", ["project-a"], default_names=("Pip", "Puck"))
+    assert not store.chat_archived("project-a", project.thread_id)
     assert next(row for row in reopened if row.project_id == "project-a").closed_at is None
 
 

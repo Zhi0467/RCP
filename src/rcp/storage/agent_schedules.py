@@ -214,10 +214,12 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
                     connection, thread["project_id"]
                 )
             busy = connection.execute(
-                "SELECT 1 FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=? AND status IN ('queued','running','pausing','paused') LIMIT 1",
+                "SELECT 1 FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=? AND status IN ('queued','running','pausing') LIMIT 1",
                 (thread["thread_id"],),
             ).fetchone()
-            if busy:
+            if busy or cast("AppStore", self)._has_resumable_paused_chat_task(
+                connection, task.project_id, task.kind, thread["thread_id"]
+            ):
                 return False
             for schedule in schedules:
                 row = connection.execute(

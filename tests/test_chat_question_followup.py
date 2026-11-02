@@ -684,3 +684,25 @@ def test_question_receipt_keeps_asking_mode(tmp_path, mode):
     assert store.record_question_continuation_receipt(
         question.question_id, answer_revision=1, operation_id="origin", request_id="client"
     )
+
+
+@pytest.mark.parametrize("refusal", ["chat_archived", "thread_closed"])
+def test_archived_question_answer_creates_no_followup(tmp_path, refusal):
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    if refusal == "chat_archived":
+        store.set_chat_archived("project", "chat", "member", archived=True)
+    else:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at,closed_at) "
+                "VALUES('chat','member','project','project',?,?)",
+                (store.now(), store.now()),
+            )
+    with pytest.raises(AgentTaskAdmissionConflict, match=refusal):
+        store.admit_chat_question_followup(question.question_id)
+    assert store.get_question(question.question_id).followup_operation_id is None
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 1
