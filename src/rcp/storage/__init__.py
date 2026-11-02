@@ -35,7 +35,6 @@ from rcp.storage.digest import DigestStoreMixin
 from rcp.storage.episodes import EpisodeStoreMixin
 from rcp.storage.evidence_flags import EvidenceFlagStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
-from rcp.storage.lessons import LessonStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.notifications import NotificationStoreMixin
@@ -70,7 +69,6 @@ class AppStore(
     OwnerAuthStoreMixin,
     DigestStoreMixin,
     ConsolidationStoreMixin,
-    LessonStoreMixin,
     BulletinStoreMixin,
     EvidenceFlagStoreMixin,
     QuestionStoreMixin,

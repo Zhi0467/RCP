@@ -1,11 +1,8 @@
-"""Read-only legacy lessons retained for file-memory migration."""
+"""The legacy lessons tables, kept as the file-memory migration source."""
 
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
-
-from rcp.storage.mixin_base import StoreMixinBase
 
 
 def migrate_operational_lessons(connection: sqlite3.Connection) -> None:
@@ -28,29 +25,3 @@ def migrate_operational_lessons(connection: sqlite3.Connection) -> None:
         "args_digest TEXT NOT NULL, result_json TEXT NOT NULL, "
         "PRIMARY KEY(operation_id,subcommand,key))"
     )
-
-
-def _record(row: sqlite3.Row) -> dict[str, Any]:
-    author = {"kind": row["author_kind"]}
-    if row["author_kind"] == "agent":
-        author["operation_id"] = row["operation_id"]
-    else:
-        author.update(user_id=row["user_id"], display_name=row["display_name"])
-    return {
-        **{name: row[name] for name in ("lesson_id", "text", "created_at", "updated_at")},
-        "author": author,
-        "human_owned": bool(row["human_owned"]),
-    }
-
-
-class LessonStoreMixin(StoreMixinBase):
-    def list_lessons(self, project_id: str) -> list[dict[str, Any]]:
-        with self.connection() as connection:
-            return [
-                _record(row)
-                for row in connection.execute(
-                    "SELECT * FROM operational_lessons WHERE project_id=? "
-                    "ORDER BY human_owned DESC,updated_at DESC,lesson_id",
-                    (project_id,),
-                )
-            ]
