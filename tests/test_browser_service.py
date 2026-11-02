@@ -49,6 +49,7 @@ def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypa
 
 
 def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypatch):
+    """Another owner's stuck cleanup never blocks this one."""
     calls = []
     reachable = False
 
@@ -68,7 +69,6 @@ def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypat
     )
     assert isinstance(result, Unavailable) and result.reason_code == "cleanup_pending"
     assert all(call["action"] == "close" for call in calls)
-    # Another owner's stuck cleanup never blocks this one.
     other = service.ensure_session(
         "other", execution=execution, workspace_dir="/other", data_dir=tmp_path
     )

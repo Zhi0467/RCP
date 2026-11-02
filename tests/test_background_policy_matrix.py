@@ -1,3 +1,7 @@
+"""Every engine-owned policy cell is reachable with a deterministic fake stream; none of these rows
+needs or skips for a real provider.
+"""
+
 from __future__ import annotations
 
 import json
@@ -23,8 +27,6 @@ from .helpers import (
     write_local_test_manifest,
 )
 
-# Every engine-owned policy cell is reachable with a deterministic fake stream;
-# none of these rows needs or skips for a real provider.
 POLICY_MATRIX = [
     pytest.param("chat Discuss", "start", "fresh task admitted", id="discuss-start"),
     pytest.param("chat Work", "start", "fresh task admitted", id="work-start"),

@@ -243,11 +243,12 @@ def test_backup_retry_removes_only_recognized_private_interrupted_writes(tmp_pat
 
 
 def test_backup_retry_finishes_interrupted_receipt_retention(tmp_path: Path) -> None:
+    """Simulates a process stop between archive and receipt deletion."""
     age = _fake_age(tmp_path)
     destination = tmp_path / "backups"
     destination.mkdir()
     protected = _protect(tmp_path, destination, age, captured_at=CAPTURED_AT, status="complete")
-    protected.archive_path.unlink()  # A process stop between archive and receipt deletion.
+    protected.archive_path.unlink()
     unrelated = destination / "human.tar.age.receipt.json"
     unrelated.write_text("keep")
 

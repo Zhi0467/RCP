@@ -30,6 +30,10 @@ from tests.test_backup_manifest import _completed_registration
 def test_capture_and_restore_preserve_machine_without_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, added_after_setup: bool
 ) -> None:
+    """Matches the shipped case: an extra local machine never resolved by checkout preparation
+    because no repository is assigned to it. A machine added in Project Settings was never seen by
+    the provisioning record.
+    """
     data_dir = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Backup lab")
     record, request = _completed_registration(tmp_path, unused_machine=True)
@@ -37,7 +41,6 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     root = tmp_path / "projects"
     repository = root / record.project_id / "repositories" / "paper"
     commit = _initialize_git_repository(repository)
-    # Apply the production local-layout validation to this disposable test layout.
     monkeypatch.setattr(
         "rcp.storage.models.DEFAULT_SERVER_LAYOUT",
         SimpleNamespace(service_account=account, projects_root=root),
@@ -52,8 +55,6 @@ def test_capture_and_restore_preserve_machine_without_checkout(
         central_root=str(root),
         resolved_central_root=str(root),
     )
-    # Match the shipped case: an extra configured local machine, never resolved
-    # by checkout preparation because no repository is assigned to it.
     values["machines"][1].update(
         location="local",
         host="",
@@ -79,7 +80,6 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     )
     history.claim_project_identity("created", project_id=record.project_id)
     if added_after_setup:
-        # Project Settings' Add machine: the provisioning record never saw it.
         manifest = history.add_machine(
             MachineConfig(alias="added", host="gpu.example", os_account="alice")
         )

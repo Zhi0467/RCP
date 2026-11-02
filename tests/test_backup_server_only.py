@@ -34,6 +34,10 @@ from tests.test_backup_manifest import _completed_registration
 
 
 def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
+    """A real server-only project can have code the restore must not recover. The server-only alias
+    goes first to exercise its coordinator step before GitHub's separately tested deploy-key stop,
+    and a completed connect supersedes the restore proof for this alias only.
+    """
     data = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data / "rcp.sqlite3", "Backup lab")
     record, original = _completed_registration(tmp_path)
@@ -47,7 +51,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     first = restore_server_only(
         os_account=account, central_root=str(root), repository_path=str(server)
     )
-    # A real server-only project can have code that the restore must not recover.
     (server / "code.py").write_text("print('not archived')\n")
     _git(server, "add", "code.py")
     _git(
@@ -107,7 +110,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         state_repository="notes", project_truth_scope=["notes"], default_run_truth_scope=["notes"]
     )
     addition = reviewed(added)
-    # Canonical manifest already contains the human-confirmed added repository.
     manifest_path = server / ".research" / "manifest.toml"
     manifest_path.parent.mkdir()
     manifest_path.write_text(
@@ -158,14 +160,11 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     restored_store = AppStore(restored / "rcp.sqlite3")
     shutil.rmtree(manifest.research_dir)
     shutil.rmtree(server)
-    # Exercise the real server-only restore command and its durable retry receipt.
     machine = restore._recovery_machine(capture.recovery.machines[0])
     from rcp.server_ops.project_checkout import ProjectCheckoutManager
 
     checkouts = ProjectCheckoutManager(layout)
     repository = capture.recovery.repositories[1]
-    # Put the server-only alias first to exercise its coordinator step before
-    # GitHub's separately tested deploy-key grant stop.
     server_first = capture.model_copy(
         update={
             "recovery": capture.recovery.model_copy(
@@ -234,7 +233,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         record.project_id
     ) == store.completed_project_provisioning_requests(record.project_id)
     assert first["origin"] == ""
-    # A completed connect supersedes the restore proof for this alias only.
     from datetime import datetime, timedelta
 
     connected = addition.model_dump()
@@ -280,12 +278,15 @@ def test_server_only_capture_refuses_an_origin(tmp_path):
 
 
 def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
+    """The folder has an origin RCP did not set. Archives written before adoption existed keep their
+    exact bytes.
+    """
     from rcp.server_ops.backup_models import BackupRecoveryRepository
     from rcp.transport.remote_backup_checkout import main
 
     account = pwd.getpwuid(os.geteuid()).pw_name
     folder = tmp_path / "anywhere" / "notes"
-    commit = _initialize_git_repository(folder)  # with an origin RCP did not set
+    commit = _initialize_git_repository(folder)
     arguments = ["helper", "inspect-adopted", account, str(folder)]
     assert main([*arguments, commit]) == 0
     assert main([*arguments, "0" * 40]) == 3
@@ -294,7 +295,6 @@ def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
             os_account=account, repository_path=str(folder), expected_origin="",
             recorded_commit=commit,
         )  # fmt: skip
-    # Archives written before adoption existed keep their exact bytes.
     repository = BackupRecoveryRepository(
         alias="notes", repository=None, machine_alias="server", resolved_path=str(folder),
         git_commit=commit, deploy_key_label=None, public_key_fingerprint=None,

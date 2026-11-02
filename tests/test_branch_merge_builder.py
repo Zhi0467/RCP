@@ -1165,6 +1165,7 @@ def test_empty_answers_prepare_and_commit_preserve_postfork_destination_standing
 
 
 def test_status_whose_recorded_evidence_edge_was_relabeled_still_merges(manifest):
+    """A later run reads the same result as inconclusive; the status stands."""
     from rcp.core.validation.proposals import proposal_approval_operations
     from tests.test_merge_patch import answers
 
@@ -1223,7 +1224,6 @@ def test_status_whose_recorded_evidence_edge_was_relabeled_still_merges(manifest
             ops=proposal_approval_operations(state, state.proposals["prop/status"]),
         )
     )
-    # A later run reads the same result as inconclusive; the status stands.
     _append(
         branch,
         *_replace_edge(
@@ -1308,6 +1308,7 @@ _LATER_RULE_CONTENT = {
 
 @pytest.mark.parametrize("rule", sorted(_LATER_RULE_CONTENT))
 def test_content_a_branch_admitted_before_a_rule_existed_still_merges(manifest, rule):
+    """An ordinary agent write of the same content still meets today's rule."""
     from tests.test_merge_patch import answers
 
     history, branch, load_context = _forked(manifest, _new_blocker())
@@ -1325,7 +1326,6 @@ def test_content_a_branch_admitted_before_a_rule_existed_still_merges(manifest, 
     prepared = prepare_merge_candidate(plan, answers(plan), history)
 
     assert created <= set(prepared.projection.graph.nodes)
-    # An ordinary agent write of the same content still meets today's rule.
     with pytest.raises(PatchRejected):
         _append(branch, *_renamed(_LATER_RULE_CONTENT[rule]))
 
@@ -1338,6 +1338,9 @@ def _renamed(operations: list[dict]) -> list[dict]:
 
 
 def test_only_what_the_source_head_holds_skips_todays_rules():
+    """The builder resets a created node's status, so any other default is new content, and the
+    source's scope beside the destination's citations is a pairing no side held.
+    """
     from types import SimpleNamespace
 
     from rcp.core.models import Edge, GraphState, Hypothesis, SourceRef
@@ -1356,11 +1359,9 @@ def test_only_what_the_source_head_holds_skips_todays_rules():
     )
     assert carries_edge(ctx, link)
     assert not carries_edge(ctx, link.model_copy(update={"target": "hyp/b"}))
-    # The builder resets a created node's status; any other default is new content.
     created = held.model_copy(update={"status": "proposed"})
     assert carries_new_node(ctx, created)
     assert not carries_new_node(ctx, created.model_copy(update={"source_refs": []}))
-    # The source's scope beside the destination's citations is a pairing no side held.
     assert not carries_update(ctx, claim.id, {"scope": "Held out"}, reads=("source_refs",))
     assert carries_update(ctx, claim.id, {"scope": "Held out", "source_refs": [ref]})
     ctx.patch = SimpleNamespace(branch_merge=None, author="agent", profile="orchestrator")

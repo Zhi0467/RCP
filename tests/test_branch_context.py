@@ -94,10 +94,11 @@ def test_orchestrator_context_and_refresh_keep_branch_pointer(branch_services, t
 
 @pytest.mark.parametrize("target", ["main", "branch"])
 def test_remote_context_preserves_target_namespace_and_shared_paper_path(branch_services, target):
+    """The local cache remains the source of relative paths; the execution host opens the
+    corresponding files in the remote canonical repository.
+    """
     service = branch_services[0 if target == "main" else 1]
     context = service.assemble_chat(RunRequest(chat_scope="project"))
-    # The local cache remains the source of relative paths; the execution host
-    # opens the corresponding files in the remote canonical repository.
     service.manifest.repository_map["repo-a"].path = "/srv/research-project"
     updates = _stage_context_paths(context, service, None, "laptop")  # type: ignore[arg-type]
     canonical = Path("/srv/research-project/.research")

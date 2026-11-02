@@ -146,7 +146,7 @@ def test_discuss_browser_rules_and_command_config_agree(
 
 
 def _claude_edit_denied(path: Path, denied: list[str]) -> bool:
-    # Claude's file rules use gitignore semantics, not fnmatch character classes.
+    """Claude's file rules use gitignore semantics, not fnmatch character classes."""
     patterns = [rule[len("Edit(/") : -1] for rule in denied if rule.startswith("Edit(")]
     result = subprocess.run(
         [
@@ -175,6 +175,10 @@ def _opencode_edit_permission(path: Path, rules: dict[str, str]) -> str:
 
 @pytest.mark.parametrize("layout", ["split", "legacy"])
 def test_staged_client_and_next_broker_ignore_workspace_input_and_site_imports(tmp_path, layout):
+    """Proves an inherited import path would run workspace code without isolation; the planted
+    sitecustomize is a second vector, not the precondition, since venv builds differ. A later turn
+    reuses the workspace, so cleanup must leave arbitrary agent files.
+    """
     staged = _staged_discuss_mailbox(tmp_path, broker=True, layout=layout)
     marker = tmp_path / "outside-scratch-write"
     injected = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
@@ -190,9 +194,6 @@ def test_staged_client_and_next_broker_ignore_workspace_input_and_site_imports(t
         "PATH": str(python_home / "bin") + os.pathsep + os.environ.get("PATH", ""),
         "PYTHONPATH": str(workspace),
     }
-    # Prove an inherited import path would run workspace code without isolation. The
-    # planted sitecustomize stays as a second vector; whether a venv's site runs it
-    # depends on the interpreter build, so it is not the precondition.
     subprocess.run(["python3", "-c", "import argparse"], cwd=tmp_path, env=environment, check=True)
     assert marker.exists()
     marker.unlink()
@@ -207,7 +208,6 @@ def test_staged_client_and_next_broker_ignore_workspace_input_and_site_imports(t
     assert "usage:" in result.stdout
     assert not marker.exists()
     staged.cleanup()
-    # A later turn reuses the workspace; cleanup must leave arbitrary agent files.
     staged = _staged_discuss_mailbox(tmp_path, broker=True, layout=layout)
     assert (workspace / "argparse.py").exists()
     gate = staged.invocation_gate
@@ -353,6 +353,7 @@ def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_p
 
 @pytest.mark.parametrize("module", ["rcp.browser", "rcp.transport", "rcp.storage", "rcp.providers"])
 def test_lower_layers_import_first_in_a_fresh_interpreter(module):
-    # Grant models are shared below storage; importing them from rcp.agents made
-    # these packages fail with a circular import when imported first.
+    """Grant models are shared below storage; importing them from rcp.agents made these packages
+    fail with a circular import when imported first.
+    """
     subprocess.run([sys.executable, "-c", f"import {module}"], check=True)

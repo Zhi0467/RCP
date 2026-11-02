@@ -608,6 +608,7 @@ def test_special_review_intents_are_rejected_outside_canonical_merge(review_bran
 
 
 def test_human_review_fact_retires_when_an_agent_writes_the_field_last(review_branch):
+    """A later non-human writer owns the field even when it restores the human's value."""
     harness = review_branch
     base_revision = harness.branch.branch_metadata().base_head.revision
     base = harness.branch.base_state()
@@ -621,7 +622,6 @@ def test_human_review_fact_retires_when_an_agent_writes_the_field_last(review_br
         change.operation.standing
         for change in branch_human_review_changes(_review_steps(harness, [human]), base, branch)
     ] == ["accepted"]
-    # A later non-human writer owns the field even when it restores the human's value.
     agent_writes = [
         Patch(
             kind="work",
@@ -1361,7 +1361,6 @@ def test_stale_source_proposal_omission_remains_an_advisory(review_branch):
 
 
 def test_merge_carries_a_proposal_on_a_belief_the_branch_created(review_branch):
-    # Main gains the Hypothesis and its pending change in the same revision.
     harness = review_branch
     _agent_patch(
         harness,

@@ -134,7 +134,7 @@ def test_close_defers_active_lease_then_gracefully_deletes_profile(host):
     assert host.release()["alive"]
     assert host.closes == ["first"]
     assert not host.record_path("first").parent.exists()
-    host.close()  # Idempotent deletion.
+    host.close()
 
 
 def test_failed_close_keeps_intent_and_profile(host, monkeypatch):
@@ -438,6 +438,7 @@ def test_enforcement_failure_admits_unhidden_browser(host, monkeypatch, failure)
 def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
     tmp_path, monkeypatch, permitted
 ):
+    """The account enables its own linger; nothing is run as another user."""
     runtime = HostRuntime(request(tmp_path, action="enable_linger"))
     runtime.backend = "systemd_user"
     linger = {"value": "no"}
@@ -460,7 +461,6 @@ def test_missing_linger_is_its_own_reason_and_the_member_can_enable_it(
 
     monkeypatch.setattr(runtime, "readiness", lambda: runtime.owner_ready() or {"status": "ready"})
     result = runtime.enable_linger()
-    # The account enables its own linger; nothing is run as another user.
     assert ["loginctl", "enable-linger"] in calls
     if permitted:
         assert result["status"] == "ready"
@@ -491,6 +491,7 @@ def test_agent_cli_runs_with_the_checked_node_not_the_first_on_path(tmp_path, mo
 
 
 def test_readiness_answers_installing_at_once_and_ignores_a_killed_install(tmp_path):
+    """The lock is free, so the marker is stale: it is dropped, not reported."""
     import fcntl
     import time
 
@@ -507,12 +508,14 @@ def test_readiness_answers_installing_at_once_and_ignores_a_killed_install(tmp_p
         assert result["status"] == "installing"
         assert time.monotonic() - started < 5
         fcntl.flock(held, fcntl.LOCK_UN)
-    # The lock is free, so the marker is stale: it is dropped, not reported.
     assert dispatch(request(tmp_path, action="readiness"))["status"] != "installing"
     assert not marker.exists()
 
 
 def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, monkeypatch):
+    """Probes and CLI calls use runtime.env, the daemon gets daemon_env, and agents get the
+    launcher's.
+    """
     import os
     import platform
 
@@ -520,7 +523,6 @@ def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, mo
     runtime = HostRuntime(request(tmp_path, environment={"PATH": "/usr/bin", "TMPDIR": "/tmp"}))
     runtime.node = "/usr/bin/node"
     runtime_dir = f"/run/user/{os.getuid()}"
-    # Probes and CLI calls use runtime.env; the daemon gets daemon_env; agents the launcher.
     assert runtime.env["TMPDIR"] == runtime_dir
     assert runtime.daemon_env()["TMPDIR"] == runtime_dir
     launcher = Path(runtime.cli_launcher()) / "playwright-cli"
@@ -528,6 +530,7 @@ def test_linux_daemon_probes_and_agent_cli_share_the_runtime_tmpdir(tmp_path, mo
 
 
 def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, monkeypatch):
+    """The marker already covers the owner checks, which can stall on a slow probe."""
     from rcp.browser.host import INSTALL_MARKER, SMOKE_OWNER_TOKEN
 
     runtime = HostRuntime(request(tmp_path, action="install"))
@@ -544,7 +547,6 @@ def test_install_stops_a_leftover_smoke_daemon_instead_of_refusing(tmp_path, mon
     monkeypatch.setattr(runtime, "owner_ready", lambda: None)
     monkeypatch.setattr(runtime, "alive", lambda record: True)
     marker = runtime.root / INSTALL_MARKER
-    # The marker already covers the owner checks, which can stall on a slow probe.
     monkeypatch.setattr(
         runtime, "stop_owner", lambda record: stopped.append((record["handle"], marker.exists()))
     )

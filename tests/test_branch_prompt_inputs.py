@@ -260,6 +260,7 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
 
 @pytest.mark.parametrize("owner", ["work", "experiment_loop"])
 def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, monkeypatch, owner):
+    """An Experiment loop may launch its report right after the repair."""
     import re
     import uuid
 
@@ -319,7 +320,6 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
     )
     graph_update = previous.result["graph_update"]
     assert isinstance(graph_update, dict) and graph_update["repairable"], previous.result
-    # An Experiment loop may launch its report right after the repair.
     repair_prompt = len(launcher.prompts)
     repaired = client.post(f"{base}/tasks/{previous.operation_id}/repair-graph-update", json={})
     assert repaired.status_code == 202, repaired.text
