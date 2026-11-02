@@ -83,6 +83,18 @@ def test_partial_migration_preserves_existing_note(tmp_path):
     assert note.read_text() == "# Kept edit\n"
 
 
+def test_migration_keeps_a_member_written_index(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_lesson(store, "first")
+    index = project_memory_root(tmp_path, "project") / "shared/MEMORY.md"
+    index.parent.mkdir(parents=True)
+    index.write_text("- [Own note](notes/own.md)")
+    prepare_project_memory(store, "project")
+    lines = index.read_text().splitlines()
+    assert lines[0] == "- [Own note](notes/own.md)"
+    assert len(lines) == 2 and "lesson-first.md" in lines[1]
+
+
 def test_remote_uses_shipped_code_and_defers_marker_on_failure(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "rcp.sqlite3")
     old_lesson(store, "remote")

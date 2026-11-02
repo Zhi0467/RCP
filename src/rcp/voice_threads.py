@@ -75,7 +75,7 @@ def _read_records(path: Path, thread: dict) -> list[dict]:
         for directory in (path.parent.parent, path.parent):
             if not stat.S_ISDIR(directory.lstat().st_mode):
                 raise ValueError("Unsafe transcript directory")
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return []
     try:

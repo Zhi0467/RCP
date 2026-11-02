@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -678,6 +679,20 @@ def test_non_object_thread_record_is_refused(voice_setup, monkeypatch, bad_recor
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "thread_transcript_invalid"
     assert calls == []
+
+
+def test_fifo_thread_transcript_is_refused_without_waiting(voice_setup, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store, private, client = voice_setup
+    enable(private)
+    path = store.path.parent / "agent-threads" / private.member_id / f"{THREAD_ID}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path)
+    mock_transport(monkeypatch, lambda request: reply({}))
+    with ThreadPoolExecutor(1) as pool:
+        response = pool.submit(client.post, "/api/voice/sessions", json=OFFER).result(timeout=5)
+    assert response.json()["detail"]["code"] == "thread_transcript_invalid"
 
 
 @pytest.mark.parametrize("closed_at", ["", "2026-01-01T00:00:00+00:00"])

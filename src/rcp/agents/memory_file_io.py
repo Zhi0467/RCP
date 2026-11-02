@@ -90,8 +90,13 @@ def prepare_files(root: Path, lessons: list[dict] | None) -> int | None:
         name = f"lesson-{lesson_id}.md"
         _write(notes / name, f"# {title}\norigin: lesson {lesson_id}\n\n{text}\n", replace=False)
         lines.append(f"- [{title}](notes/{name}) — Migrated operational note.\n")
-    # A fresh project may already have notes supplied by its member.
-    _write(index, "".join(lines), replace=bool(ordered))
+    # A member's existing index survives; only missing lesson links are appended.
+    existing = (
+        index.read_text(encoding="utf-8") if index.is_file() and not index.is_symlink() else ""
+    )
+    missing = [line for line in lines if line not in existing]
+    separator = "\n" if existing and not existing.endswith("\n") and missing else ""
+    _write(index, existing + separator + "".join(missing), replace=bool(missing))
     if index.is_symlink() or not index.is_file():
         raise ValueError("memory index must be a regular file")
     return index.lstat().st_size

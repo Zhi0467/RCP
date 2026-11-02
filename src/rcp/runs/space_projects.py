@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,6 +208,16 @@ def read_space_output(path: Path) -> str | None:
         return handle.read()
 
 
+def clear_space_output(path: Path) -> None:
+    """Remove one stage output, including an agent-made directory, without following links."""
+    if path.parent.resolve() != path.parent:
+        raise ValueError("Space output parent changed")
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def collect_space_projects(
     owner: SpaceThreadOwner,
     execution: AgentTaskExecution,
@@ -229,15 +240,14 @@ def collect_space_projects(
                 "space_stray_output_discarded",
                 receipt,
             )
-            if not path.is_dir() or path.is_symlink():
-                try:
-                    path.unlink()
-                except OSError as exc:
-                    owner.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "space_stray_output_kept",
-                        {"path": receipt["path"], "reason": str(exc)},
-                    )
+            try:
+                clear_space_output(path)
+            except (OSError, ValueError) as exc:
+                owner.store.record_agent_task_receipt(
+                    execution.operation_id,
+                    "space_stray_output_kept",
+                    {"path": receipt["path"], "reason": str(exc)},
+                )
     for project in sorted(projects, key=lambda item: item.project_id):
         try:
             # This exact binding is checked even when an earlier retry committed.
@@ -281,9 +291,7 @@ def collect_space_projects(
             )
         # Invariant 9: settled output must not become a later attempt's input.
         try:
-            if project.patch_path.parent.resolve() != project.patch_path.parent:
-                raise ValueError("Space output parent changed")
-            project.patch_path.unlink(missing_ok=True)
+            clear_space_output(project.patch_path)
         except (OSError, ValueError) as exc:
             owner.store.record_agent_task_receipt(
                 execution.operation_id,

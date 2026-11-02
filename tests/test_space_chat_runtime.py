@@ -257,3 +257,23 @@ def test_space_runtime_real_storage_and_partial_apply(
         continued = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
         assert continued is not None
         assert len(continued.messages) == 4
+
+
+def test_space_output_clear_removes_agent_directories_without_following_links(tmp_path):
+    from rcp.runs.space_projects import clear_space_output
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "kept").write_text("x")
+    stage = tmp_path / "stage"
+    made = stage / "projects/one/patch.json"
+    made.mkdir(parents=True)
+    (made / "inner").write_text("x")
+    linked = stage / "projects/two/patch.json"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(outside)
+    for path in (made, linked, stage / "outcome.json"):
+        clear_space_output(path)
+    # A malformed output never survives into the next fresh turn.
+    assert not made.exists() and not linked.is_symlink()
+    assert (outside / "kept").exists()

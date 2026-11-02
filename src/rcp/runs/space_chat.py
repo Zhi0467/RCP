@@ -230,6 +230,7 @@ async def stream_space_chat_run(
         _swept_stage_root,
     )
     from rcp.runs.space_projects import (
+        clear_space_output,
         collect_space_projects,
         prepare_space_projects,
         read_space_output,
@@ -354,8 +355,7 @@ async def stream_space_chat_run(
     # Outputs from a completed earlier turn never become this turn's input.
     if execution.continuation == "fresh":
         for path in [stage / "outcome.json", *(project.patch_path for project in projects)]:
-            if path.exists() or path.is_symlink():
-                path.unlink()
+            clear_space_output(path)
     lifecycles = []
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
