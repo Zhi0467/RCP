@@ -1769,3 +1769,95 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
     }
   });
 });
+
+test("a live turn polls only its task, pauses while hidden, and reloads on a watermark move", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, []);
+    // Thirty settled turns, then a live one; the newest settled turn's read always fails.
+    const answer = (index) =>
+      Array.from({ length: 4 }, () => `Result ${index}: loss fell and the run finished.`).join(
+        "\n\n",
+      );
+    const history = Array.from({ length: 30 }, (_, index) => [
+      message(`h${index}u`, "user", `Question ${index}`, `op-h${index}`),
+      message(`h${index}a`, "assistant", answer(index), `op-h${index}`),
+    ]).flat();
+    const live = transcript("moss", [...history, message("n1", "user", "Run it", "op-live")]);
+    await page.route("**/api/projects/p1/chats/moss", (route) => route.fulfill({ json: live }));
+    const running = { ...settled("op-live"), active: true, settled: false };
+    await page.route("**/api/projects/p1/tasks/op-live", (route) =>
+      route.fulfill({ json: running }),
+    );
+    await page.route("**/api/projects/p1/tasks/op-h29", (route) =>
+      route.fulfill({ status: 404, contentType: "application/json", body: "{}" }),
+    );
+    const reads = [];
+    page.on("request", (request) => {
+      if (request.method() === "GET") reads.push(new URL(request.url()).pathname);
+    });
+    const count = (path) => reads.filter((read) => read === path).length;
+    const setHidden = (hidden) =>
+      page.evaluate((value) => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          get: () => (value ? "hidden" : "visible"),
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      }, hidden);
+
+    await page.goto(`${base}#/agent/moss`);
+    const moss = page.getByRole("region", { name: "Moss" });
+    await moss.locator(".agent-turn-live").waitFor();
+    await page.waitForTimeout(1000);
+    // Only turns near the view load their detail, each once.
+    const history_reads = reads.filter((read) => read.startsWith("/api/projects/p1/tasks/op-h"));
+    const opened = { total: history_reads.length, distinct: new Set(history_reads).size };
+
+    reads.length = 0;
+    await page.waitForTimeout(4500);
+    const visible = {
+      transcript: count("/api/projects/p1/chats/moss"),
+      questions: count("/api/projects/p1/chats/moss/questions"),
+      failed: count("/api/projects/p1/tasks/op-h29"),
+      live: count("/api/projects/p1/tasks/op-live"),
+    };
+
+    await setHidden(true);
+    reads.length = 0;
+    await page.waitForTimeout(4500);
+    const hidden = reads.filter((read) => read.startsWith("/api/")).length;
+
+    const back = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-live",
+      { timeout: 1000 },
+    );
+    await setHidden(false);
+    await back;
+
+    reads.length = 0;
+    await page.evaluate(() => (window.agentThreadsVersion = "2"));
+    await page.waitForTimeout(2500);
+    const moved = count("/api/projects/p1/chats/moss");
+
+    // Scrolling back loads the oldest turn once its row nears the view.
+    const oldest = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-h0",
+    );
+    await moss.locator(".node-chat-lines").evaluate((lines) => (lines.scrollTop = 0));
+    await oldest;
+
+    assert.ok(opened.distinct < 30, `history reads: ${opened.distinct}`);
+    assert.equal(opened.total, opened.distinct);
+    assert.deepEqual(
+      { transcript: visible.transcript, questions: visible.questions, failed: visible.failed },
+      { transcript: 0, questions: 0, failed: 0 },
+    );
+    assert.ok(visible.live >= 1 && visible.live <= 3, `live polls: ${visible.live}`);
+    assert.equal(hidden, 0);
+    assert.equal(moved, 1);
+    assert.deepEqual(errors, []);
+  });
+});
