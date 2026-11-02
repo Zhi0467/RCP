@@ -45,6 +45,18 @@ def _settled_turn(client: httpx.Client, thread_id: str, *, after: str | None) ->
     )
 
 
+def _finished_task(client: httpx.Client, path: str) -> dict[str, object]:
+    """The task at `path` once it reaches a final status."""
+
+    def probe() -> dict[str, object] | None:
+        response = client.get(path)
+        assert response.status_code == 200, response.text
+        task = response.json()
+        return task if task["status"] in {"succeeded", "failed", "interrupted"} else None
+
+    return wait_until(probe, timeout=TASK_SETTLE_TIMEOUT, detail=f"{path} never finished")
+
+
 def test_space_handoff_delivers_and_wakes_the_space_thread_once(
     manifest, tmp_path, monkeypatch, caplog
 ):
@@ -88,8 +100,10 @@ def test_space_handoff_delivers_and_wakes_the_space_thread_once(
                     json={"message": "Ask the project agent to check the latest run."},
                 )
                 assert sent.status_code == 202, sent.text
-                first = _settled_turn(client, space_id, after=None)
-                assert first["operation_id"] == sent.json()["operation_id"]
+                first = _finished_task(
+                    client,
+                    f"/api/agent-threads/{space_id}/tasks/{sent.json()['operation_id']}",
+                )
                 assert first["status"] == "succeeded", first.get("error")
 
                 delivered = _settled_turn(client, project_thread_id, after=None)

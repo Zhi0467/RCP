@@ -44,7 +44,8 @@ export default [
     },
   },
   {
-    files: ["tests/**/*.mjs"],
+    files: ["tests/**/*.{mjs,ts,tsx}"],
+    languageOptions: { parser: tseslint.parser },
     linterOptions: { reportUnusedDisableDirectives: "error" },
     plugins: { rcp },
     rules: { "rcp/no-comments": "error" },

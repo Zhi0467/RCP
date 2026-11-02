@@ -16,7 +16,8 @@ baseline and fails, so the shrunk baseline gets committed.
     uv run python scripts/comment_ratchet.py --write  # regenerate the whole baseline
 
 Use ``--write`` only to rebuild the baseline after merging branches that each
-shrank it, never to admit new comments.
+shrank it, or after renaming a file whose comments move with it; never to admit
+new comments.
 """
 
 from __future__ import annotations

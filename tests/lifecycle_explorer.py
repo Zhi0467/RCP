@@ -534,12 +534,12 @@ def explore(template: Template, bound: int, saves: Path) -> Exploration:
                         continue
                     child = world.view()
                     children.append((action, child))
+                    result.failures.extend(
+                        ((*trace, action), message) for message in violations(world, view)
+                    )
                     if child not in result.depth:
                         result.depth[child] = depth + 1
                         result.traces[child] = (*trace, action)
-                        result.failures.extend(
-                            ((*trace, action), message) for message in violations(world, view)
-                        )
                         following.append(child)
                         if depth + 1 < bound:
                             saved[child] = world.save(saves / str(len(result.depth)))

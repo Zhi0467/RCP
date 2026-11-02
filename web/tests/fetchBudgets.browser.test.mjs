@@ -71,9 +71,12 @@ async function openPage(browser) {
   page.on("requestfinished", done);
   page.on("requestfailed", done);
   await page.clock.install();
+  /** Waits until no API request is open across three straight checks. */
   const settle = async () => {
-    do await page.waitForTimeout(25);
-    while (pending.size > 0);
+    for (let quiet = 0; quiet < 3;) {
+      await page.waitForTimeout(25);
+      quiet = pending.size > 0 ? 0 : quiet + 1;
+    }
   };
   /** Steps the paused clock through the window and returns the requests it caused. */
   const measure = async () => {

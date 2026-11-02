@@ -1144,9 +1144,104 @@
       "count": 6
     }
   },
+  "tests/fixtures/agentStatusPanel.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/fixtures/agentThreads.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/appearance.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/fixtures/appearanceSettings.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/artifacts.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/autoResearchWorktree.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/chatSend.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/fixtures/episodeArchive.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/graphEditing.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/mobileChats.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/fixtures/operatorAction.tsx": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "tests/fixtures/orchestratorCard.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "tests/fixtures/paperReact.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/paperResource.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/projectTabStrip.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/fixtures/providerLogin.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/settingsProject.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/settingsRail.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
   "tests/fixtures/signInRows.mjs": {
     "rcp/no-comments": {
       "count": 1
+    }
+  },
+  "tests/fixtures/signIns.tsx": {
+    "rcp/no-comments": {
+      "count": 2
     }
   },
   "tests/fixtures/spaceSettingsApi.mjs": {

@@ -1153,6 +1153,7 @@ def _paper_tree_remote_script() -> str:
     """Ship the actual stdlib-only helpers, including in frozen distributions."""
     return "\n".join(
         [
+            "from __future__ import annotations",
             "from pathlib import Path",
             "import sys",
             f"STATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}",
