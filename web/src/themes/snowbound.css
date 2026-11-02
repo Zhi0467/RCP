@@ -275,6 +275,13 @@
 :root[data-theme="snowbound"] .space-agent {
   background: var(--paper);
 }
+/* A tall window stops the chat above the woods; phones and short windows keep
+   every pixel for the chat. */
+@media (min-width: 561px) and (min-height: 700px) {
+  :root[data-theme="snowbound"] .landing-shell.agent-mode .landing-main {
+    padding-bottom: 128px;
+  }
+}
 
 /* Snowfall: one 96px tile of flakes drifting on its own layer. It moves by
    transform so the page is never repainted, and loops on a whole tile. */
