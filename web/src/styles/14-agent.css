@@ -325,6 +325,39 @@
   margin-bottom: 8px;
   padding: 4px 8px;
 }
+.chat-turn-trigger.handoff {
+  align-items: center;
+  background: color-mix(in srgb, var(--cobalt) 10%, transparent);
+  border-radius: 999px;
+  color: var(--cobalt);
+  display: inline-flex;
+  font: 700 var(--type-3xs) / 1 var(--mono);
+  margin-bottom: 8px;
+  padding: 4px 8px;
+}
+/* A handed-off turn's settlement: who ran it and how it ended, then its answer. */
+.handoff-result {
+  display: grid;
+  gap: 6px;
+}
+.handoff-result-row {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--type-sm);
+  gap: 6px;
+}
+.handoff-result-row strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+.handoff-result-row span::before {
+  content: "· ";
+}
+.handoff-result[data-status="failed"] .handoff-result-row span,
+.handoff-result[data-status="refused"] .handoff-result-row span {
+  color: var(--coral);
+}
 .agent-turn-live {
   align-items: center;
   color: var(--muted);

@@ -6,6 +6,7 @@ import { api } from "../core/api.ts";
 import type { WatermarkResponse } from "../core/refreshScheduler.ts";
 import type {
   AgentQuestion,
+  AgentRunConfig,
   AgentSchedule,
   AgentScheduleList,
   AgentTask,
@@ -166,6 +167,18 @@ export function markThreadRead(
   return request(`${threadPath(threadId)}/read`, {
     method: "POST",
     body: JSON.stringify({ read_through: readThrough }),
+  });
+}
+
+/** Stores the thread's agent pick; every later turn of the thread runs it. */
+export function setThreadAgent(
+  threadId: string,
+  agent: AgentRunConfig,
+  request: Request = api,
+): Promise<AgentThread> {
+  return request(`${threadPath(threadId)}/agent`, {
+    method: "POST",
+    body: JSON.stringify(agent),
   });
 }
 

@@ -2,7 +2,6 @@
 // progress line, approval card titles and the Upcoming list.
 
 import type {
-  AgentRunConfig,
   AgentSchedule,
   AgentTask,
   AgentThread,
@@ -195,23 +194,38 @@ export function latestTurnId(messages: readonly ChatMessage[]): string | null {
   return null;
 }
 
-/**
- * The agent the next turn uses before the member picks one: the thread's newest
- * turn's provider, model and effort, else the default. A switch is a pick.
- */
-export function nextTurnConfig(
-  messages: readonly ChatMessage[] | null,
-  fallback: AgentRunConfig,
-): AgentRunConfig {
-  const last = [...(messages ?? [])].reverse().find((message) => message.provider);
-  return last
-    ? {
-        ...fallback,
-        provider: last.provider!,
-        model: last.model ?? "",
-        reasoning: last.reasoning ?? "",
-      }
-    : fallback;
+/** A handoff's settlement, as the Space thread's wake reports it. */
+export interface HandoffReport {
+  threadId: string | null;
+  projectId: string | null;
+  status: string;
+  answer: string | null;
+}
+
+// Mirrors the wake message in src/rcp/runs/agent_thread_commands.py. Until the wake
+// carries its own trigger and field, this is the one place that recognizes it.
+const HANDOFF_WAKE_LEAD = "Your handed-off work settled.";
+
+/** The handoff report a wake line carries, or null for any other line. */
+export function handoffReport(line: { text: string }): HandoffReport | null {
+  if (!line.text.startsWith(HANDOFF_WAKE_LEAD)) return null;
+  try {
+    const report: unknown = JSON.parse(line.text.slice(line.text.indexOf("\n") + 1));
+    if (!report || typeof report !== "object") return null;
+    const value = report as Record<string, unknown>;
+    const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string) : null);
+    const status = text("status");
+    return status
+      ? {
+          threadId: text("thread_id"),
+          projectId: text("project_id"),
+          status,
+          answer: text("answer"),
+        }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The browser's IANA zone, sent with each message so schedules default to it. */

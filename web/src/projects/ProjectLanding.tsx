@@ -603,7 +603,7 @@ export function ProjectLanding({
               onClick={() => chooseHomeView("cards")}
             >
               <LayoutGrid size={13} aria-hidden="true" />
-              Cards
+              Projects
             </button>
             <button
               type="button"

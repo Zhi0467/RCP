@@ -91,7 +91,7 @@ const project = {
   name: "Sparse attention",
   agent_profiles: { node_chat: profile, project_chat: profile },
   provider_readiness: {},
-  repositories: [],
+  repositories: [{ alias: "sa", machine: "local", path: "/repo/sa" }],
   project_truth_scope: [],
   machines: [],
 } as unknown as ProjectSnapshot;
@@ -106,6 +106,7 @@ const moss: AgentThread = {
   last_activity_at: new Date().toISOString(),
   live_state: "needs_you",
   browser_requested: true,
+  agent: null,
 };
 
 function Project() {
