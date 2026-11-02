@@ -251,7 +251,8 @@ the move. Project deletion atomically queues memory cleanup with removal of its
 records, including any old alias folders. The browser lifecycle cleanup owner
 attempts deletion after commit and retries failures at later turn boundaries.
 An unreachable base never rolls back project deletion. Memory preparation waits
-for pending deletion to finish, including when the same project is registered again.
+for a pending deletion only on the same state location, including when the same
+project is registered again there. A deletion owed on another base never blocks a launch.
 Remote deletion retains the resolved host/account identity at removal and checks it
 on retry. An unresolved origin or repointed alias leaves cleanup pending.
 Restore and candidate rehearsal drop every pending cleanup row, because those
