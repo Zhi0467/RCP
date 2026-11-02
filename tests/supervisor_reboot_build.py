@@ -67,6 +67,7 @@ def add_forward_migration(path: Path) -> int:
 
 
 def build_bundles(workspace: Path, output: Path) -> dict:
+    """Uses the production stamping implementation on a disposable copy."""
     if output.exists():
         raise ValueError("Qualification output must be a new directory.")
     if not (workspace / "web" / "dist" / "index.html").is_file():
@@ -124,7 +125,6 @@ def build_bundles(workspace: Path, output: Path) -> dict:
             receipt["target_ledger_head"] = add_forward_migration(
                 source / "src" / "rcp" / "storage" / "base.py"
             )
-        # Use the same production stamping implementation on a disposable copy.
         import importlib.util
 
         spec = importlib.util.spec_from_file_location(

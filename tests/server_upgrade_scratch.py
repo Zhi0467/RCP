@@ -34,6 +34,9 @@ def build_scratch_wheel(directory: Path) -> Path:
 
 
 def populate_agent_scratch(data: Path, projects: Path, wheel: Path) -> Path:
+    """uv releases differ in how their lock mode respects umask. The socket binds
+    relative to cwd because macOS limits Unix socket paths to 104 bytes.
+    """
     scratch = data / "run-stage" / "real-tools"
     scratch.mkdir(parents=True)
     environment = dict(os.environ, UV_LINK_MODE="hardlink", UV_CACHE_DIR=str(scratch / "cache"))
@@ -60,8 +63,7 @@ def populate_agent_scratch(data: Path, projects: Path, wheel: Path) -> Path:
     locks = list(scratch.rglob(".lock"))
     assert locks
     for lock in locks:
-        lock.chmod(0o666)  # uv releases differ in how their lock mode respects umask.
-    # A real uv-created hardlink also crosses the two captured roots.
+        lock.chmod(0o666)
     os.link(installed, projects / "scratch-package-link")
     repository = scratch / "repo"
     subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
@@ -86,7 +88,6 @@ def populate_agent_scratch(data: Path, projects: Path, wheel: Path) -> Path:
         check=True,
     )
     os.mkfifo(scratch / "fifo")
-    # Bind relative to cwd: macOS limits Unix socket addresses to 104 bytes.
     with socket.socket(socket.AF_UNIX) as listener:
         previous = Path.cwd()
         try:
@@ -99,7 +100,7 @@ def populate_agent_scratch(data: Path, projects: Path, wheel: Path) -> Path:
     (scratch / "unreadable-directory").mkdir(mode=0)
     (scratch / "dangling").symlink_to("missing-target")
     (scratch / "empty").mkdir()
-    (scratch / "odd\\name\n").mkdir()  # Agent filenames are not manifest keys.
+    (scratch / "odd\\name\n").mkdir()
     with (scratch / "sparse").open("wb") as stream:
         stream.seek(16 * 1024 * 1024)
         stream.write(b"end")
@@ -112,11 +113,13 @@ def tree_state(roots: tuple[Path, ...]) -> tuple[dict, list]:
     links: dict[tuple[int, int], list[str]] = {}
 
     def visit(path: Path) -> None:
+        """GNU preservation is qualified on Linux; the managed macOS Python lacks these
+        syscalls.
+        """
         info = path.lstat()
         kind, mode = stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode)
         content = os.readlink(path) if stat.S_ISLNK(kind) else None
         if stat.S_ISREG(kind) or stat.S_ISDIR(kind):
-            # The owner may inspect mode-000 fixtures, then put their modes back.
             try:
                 path.chmod(mode | (0o500 if stat.S_ISDIR(kind) else 0o400))
                 if stat.S_ISDIR(kind):
@@ -135,8 +138,6 @@ def tree_state(roots: tuple[Path, ...]) -> tuple[dict, list]:
             info.st_gid,
             info.st_mtime_ns,
             content,
-            # Production GNU preservation is qualified on Linux; the managed
-            # macOS Python does not expose these syscalls.
             {
                 name: os.getxattr(path, name, follow_symlinks=False).hex()
                 for name in os.listxattr(path, follow_symlinks=False)

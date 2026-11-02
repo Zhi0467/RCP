@@ -1,4 +1,8 @@
-"""Create one position-independent, secret-free prior-version server fixture."""
+"""Create one position-independent, secret-free prior-version server fixture.
+
+Older releases have no write-authority constructor argument; this builder only replays
+history, so it uses the read-only form.
+"""
 
 from __future__ import annotations
 
@@ -20,8 +24,6 @@ from rcp.history import HistoryManager
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 
-# Older releases have no write-authority constructor argument. This builder only
-# initializes, claims system identity, and replays history, so the new form is read-only.
 _HISTORY_AUTHORITY: dict[str, Any] = {}
 if "write_authority" in inspect.signature(HistoryManager).parameters:
     from rcp.core.authority import WriteAuthority
@@ -360,8 +362,6 @@ def _create_experiment_fixture(
             watcher_ids=[],
             context_baseline={},
         )
-    # Persist the exact state this boundary produced after a normal server
-    # restart before the next historical boundary upgrades it.
     reopened = AppStore(store.path)
     if reopened.experiment_episode(episode_id) is None:
         raise RuntimeError("fixture Experiment episode did not survive restart")

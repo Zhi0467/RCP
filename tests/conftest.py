@@ -16,8 +16,9 @@ from .shards import SHARD_ENV, parse_shard, shard_items
 
 
 def _skip_xcrun_git_trampoline() -> None:
-    # macOS /usr/bin/git is an xcrun trampoline costing ~10 ms a call; put the
-    # binary it execs just ahead of /usr/bin so git-heavy tests skip the hop.
+    """macOS /usr/bin/git is an xcrun trampoline costing about 10 ms a call, so git-
+    heavy tests run the binary it execs directly.
+    """
     if sys.platform != "darwin" or shutil.which("git") != "/usr/bin/git":
         return
     found = subprocess.run(["xcrun", "-f", "git"], capture_output=True, text=True, check=False)

@@ -103,6 +103,9 @@ def event(name: str, **details) -> dict:
 
 
 def boundary(name: str) -> None:
+    """A lost controller is a bounded failed qualification, never an indefinitely
+    suspended server.
+    """
     details = {}
     if name in {"snapshot_ready", "checkpoint_ready"}:
         checkpoint_facts(capture=True)
@@ -119,8 +122,6 @@ def boundary(name: str) -> None:
         state["next_pause"] = index + 1
         write_json(state_path, state, service_owned=True)
         write_json(STATE / "paused.json", {**value, "pause_index": index}, service_owned=True)
-        # Parent polls outside the guest and cuts power. A lost controller is a
-        # bounded failed qualification, never an indefinitely suspended server.
         time.sleep(600)
         raise RuntimeError("The external controller did not interrupt the armed boundary.")
 
@@ -167,9 +168,9 @@ def health() -> dict:
 
 
 def wait_for(observe, message: str):
-    # This module also runs before dev dependencies exist in the guest. The
-    # controller uses tests.helpers.wait_until; this bounded guest CLI cannot
-    # import the test suite through the isolated supervisor environment.
+    """Cannot import tests.helpers.wait_until, since it runs in the guest before dev
+    dependencies exist.
+    """
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         try:
@@ -191,6 +192,9 @@ def wait_health() -> dict:
 
 
 def bootstrap() -> dict:
+    """Service-account children use the installed interpreter; the root bootstrap may
+    resolve into /root's private managed Python.
+    """
     run(["apt-get", "update"], timeout=300)
     run(
         [
@@ -246,8 +250,6 @@ def bootstrap() -> dict:
     )
     run([str(python), str(SCRIPT), "setup"], timeout=1200)
     shutil.rmtree(python.parent.parent)
-    # Service-account children must use the installed interpreter. The temporary
-    # root bootstrap may resolve into /root's private managed-Python directory.
     result = json.loads(run([SUPERVISOR_PYTHON, str(SCRIPT), "setup-data"], timeout=1200).stdout)
     service(["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"])
     dropin = Path("/etc/systemd/system/rcp.service.d")
@@ -392,6 +394,9 @@ def setup_data() -> dict:
 
 
 def qualified_install() -> dict:
+    """Only the disposable wrapper substitutes artifact provenance; installation and the
+    CLI stay production.
+    """
     from contextlib import redirect_stdout
     from dataclasses import replace
 
@@ -404,8 +409,6 @@ def qualified_install() -> dict:
         release_tag=receipt["release_tag"],
         full_commit=receipt["commit"],
     )
-    # Only the disposable wrapper substitutes artifact provenance. Installation,
-    # service-account preparation, root selection and the CLI remain production.
     driver.followed_release = lambda _runtime: trusted_fixture
     stream = io.StringIO()
     with redirect_stdout(stream):
@@ -450,6 +453,7 @@ def verify_installation() -> dict:
 
 
 def prepare_restore_request(archive: Path, base: dict) -> None:
+    """The fixture holds synthetic authorities and no real deploy keys."""
     from rcp_supervisor.driver import store_for
     from rcp_supervisor.operations import Coordinator
     from rcp_supervisor.restore import RestoreOperatorAction
@@ -469,8 +473,6 @@ def prepare_restore_request(archive: Path, base: dict) -> None:
     try:
         Coordinator(store_for(runtime.paths), runtime).deploy(base, base, kind="restore")
     except RestoreOperatorAction as exc:
-        # The fixture contains synthetic authorities and no real deploy keys.
-        # Review the actual archived boundaries before arming any fault case.
         fields = {item["name"]: item["value"] for item in exc.details["fields"]}
         for argument, field in (
             ("confirm_old_authority", "old_authority_boundary"),
@@ -486,11 +488,12 @@ def prepare_restore_request(archive: Path, base: dict) -> None:
 
 
 def prepare_case(source: Path) -> dict:
+    """Baseline reset sees SSH before RCP startup finishes, so it waits before arming
+    faults. Qualifies a fresh app-data target with a provisioned local Git checkout,
+    not fresh-host GitHub reconstruction.
+    """
     from rcp_supervisor.runtime import Paths
 
-    # Baseline reset observes SSH before systemd necessarily finishes RCP startup.
-    # Wait before arming faults; interrupted recovery boots must remain observable
-    # while their startup guard is deliberately paused.
     wait_health()
     plan = read_json(source)
     write_json(PLAN, plan)
@@ -504,9 +507,6 @@ def prepare_case(source: Path) -> dict:
     if plan["kind"] == "fresh_restore":
         run(["systemctl", "stop", "rcp.service"])
         run(["systemctl", "disable", "rcp.service"])
-        # Preserve the entire synthetic old data tree. This case qualifies a
-        # fresh app-data target with an already provisioned local Git checkout;
-        # it does not claim fresh-host GitHub authorization/reconstruction.
         data = Paths().data_dir
         os.replace(data, STATE / "fresh-original-data")
         data.mkdir(mode=0o700)
@@ -664,6 +664,7 @@ def session_cookie() -> str:
 
 
 def rename_space(name: str) -> dict:
+    """The operator-set access address is absent in a disposable guest."""
     request = urllib.request.Request(
         "http://127.0.0.1:8421/api/team/space",
         data=json.dumps({"name": name}).encode(),
@@ -673,7 +674,6 @@ def rename_space(name: str) -> dict:
     with urllib.request.urlopen(request, timeout=10) as response:
         assert response.status == 200
         value = json.load(response)
-    # The operator-set access address is absent in a disposable guest.
     assert value == {"space_name": name, "access_url": None}
     return value
 
@@ -856,6 +856,9 @@ def verify_case() -> dict:
 
 
 def main() -> int:
+    """The production startup driver owns the lock bypass; only the guest fault observer
+    is injected.
+    """
     action, *arguments = sys.argv[1:]
     require_guest(
         root=action
@@ -921,8 +924,6 @@ def main() -> int:
         from rcp_supervisor import driver
 
         event("recovery_started")
-        # The production startup driver owns the chosen-operation lock bypass.
-        # Inject only the guest fault observer into that actual control path.
         driver.SystemRuntime = runtime_type()
         result = driver.recover(startup=True, boundary=boundary)
         event("recovery_ready")
