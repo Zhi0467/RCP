@@ -90,6 +90,19 @@ def load_repository_source_for_path(
 ) -> RepositorySource:
     """Resolve an absolute host path to exactly one configured repository and read it."""
 
+    repository_alias, relative = repository_for_path(manifest, absolute_path)
+    return load_repository_source(
+        manifest,
+        repository_alias,
+        relative.as_posix(),
+        line=line,
+        max_bytes=max_bytes,
+    )
+
+
+def repository_for_path(manifest: Manifest, absolute_path: str) -> tuple[str, PurePosixPath]:
+    """The one configured repository holding an absolute host path, and the path inside it."""
+
     target = _absolute_posix_path(absolute_path, label="Repository file path")
     matches: list[tuple[str, PurePosixPath]] = []
     for repository in manifest.repositories:
@@ -109,15 +122,7 @@ def load_repository_source_for_path(
     if len(matches) > 1:
         aliases = ", ".join(sorted(alias for alias, _relative in matches))
         raise ValueError(f"Path is ambiguous across configured repositories: {aliases}")
-
-    repository_alias, relative = matches[0]
-    return load_repository_source(
-        manifest,
-        repository_alias,
-        relative.as_posix(),
-        line=line,
-        max_bytes=max_bytes,
-    )
+    return matches[0]
 
 
 def repository_source_document(source: RepositorySource, *, line: int | None = None) -> bytes:

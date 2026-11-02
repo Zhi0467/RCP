@@ -458,7 +458,7 @@ async def stream_space_chat_run(
                     else "",
                     "Patch JSON schema:\n" + json.dumps(agent_output_schema()),
                     work_turn_outcome_contract(str(stage / "outcome.json")),
-                    artifact_contract(str(artifact_directory)),
+                    artifact_contract(str(artifact_directory), references="space"),
                     _attachment_items(attachments),
                     seed,
                     "Member message:\n" + (request.message or ""),
