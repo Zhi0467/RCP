@@ -3,11 +3,11 @@
 // They act as the member, so they never reach WebMCP, whose host agents get no RCP
 // confirmation card. Approval cards are never a tool here: only a tap resolves one.
 
-import { latestTurnId, browserTimezone } from "../agents/agentThreadModel.ts";
+import { browserTimezone } from "../agents/agentThreadModel.ts";
 import {
+  loadAgentThreads,
   loadThreadMemory,
   loadThreadTask,
-  loadThreadTranscript,
   sendThreadTurn,
   steerThreadTurn,
 } from "../agents/agentThreadsApi.ts";
@@ -56,10 +56,6 @@ const THREAD_MEMORY_TOOL: WebMcpToolSpec = {
 
 export const VOICE_THREAD_TOOLS: readonly WebMcpToolSpec[] = [THREAD_SEND_TOOL, THREAD_MEMORY_TOOL];
 
-function json(value: unknown) {
-  return webMcpTextResult(JSON.stringify(value));
-}
-
 /** The executable thread tools for one bound thread. */
 export function threadToolDefinitions(
   thread: AgentThread,
@@ -72,23 +68,37 @@ export function threadToolDefinitions(
       if (text.length > THREAD_MESSAGE_MAX_CHARS)
         throw new Error(`text must be at most ${THREAD_MESSAGE_MAX_CHARS} characters.`);
       const id = requestId ?? crypto.randomUUID();
-      const transcript = await loadThreadTranscript(thread, request);
-      const latest = latestTurnId(transcript.messages);
+      // The live projection, not the transcript: a running turn's prompt is written
+      // to the transcript only when the turn settles.
+      const { threads } = await loadAgentThreads(request);
+      const latest = threads.find(
+        (item) => item.thread_id === thread.thread_id,
+      )?.latest_operation_id;
       const task = latest ? await loadThreadTask(thread, latest, request) : null;
       if (task?.active) {
         if (!task.can_steer || !task.steer_turn_id)
-          return json({
+          return webMcpTextResult({
             ok: false,
             code: "thread_busy",
             error: "The agent is busy with a turn that cannot take input now.",
           });
-        await steerThreadTurn(
+        const steered = await steerThreadTurn(
           thread,
           task.operation_id,
-          { message_id: id, attempt: 1, expected_turn_id: task.steer_turn_id, message: text },
+          {
+            message_id: id,
+            attempt: task.attempt,
+            expected_turn_id: task.steer_turn_id,
+            message: text,
+          },
           request,
         );
-        return json({ ok: true, steered: true, operation_id: task.operation_id });
+        // The receipt says whether the provider took it; a refused steer is not an error.
+        return webMcpTextResult({
+          ok: true,
+          operation_id: task.operation_id,
+          steering: steered.steering,
+        });
       }
       const started = await sendThreadTurn(
         thread,
@@ -96,10 +106,10 @@ export function threadToolDefinitions(
         id,
         request,
       );
-      return json({ ok: true, operation_id: started.operation_id });
+      return webMcpTextResult({ ok: true, operation_id: started.operation_id });
     }),
     withExecute(THREAD_MEMORY_TOOL, async () =>
-      json(await loadThreadMemory(thread.thread_id, request)),
+      webMcpTextResult(await loadThreadMemory(thread.thread_id, request)),
     ),
   ];
 }

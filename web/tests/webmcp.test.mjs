@@ -2314,6 +2314,36 @@ test("voice offers the bound thread's tools, and no tool catalog resolves an app
   assert.deepEqual(requests, [["GET", "/api/agent-threads/thread-1/memory"]]);
 });
 
+test("voice steers the thread's live task at its attempt and reports the steer receipt", async () => {
+  const thread = { thread_id: "thread-1", kind: "space", project_id: null, agent_name: "Pip" };
+  const receipt = { attempt: 2, turn_id: "turn-9", status: "refused", label: "Not delivered" };
+  const requests = [];
+  const [send] = threadToolDefinitions(thread, async (path, init) => {
+    requests.push([init?.method ?? "GET", path, init?.body && JSON.parse(init.body)]);
+    if (path === "/api/agent-threads")
+      // The member's prompt of a running turn is not in the transcript yet.
+      return { threads: [{ ...thread, latest_operation_id: "live" }] };
+    if (path.endsWith("/tasks/live"))
+      return {
+        operation_id: "live",
+        active: true,
+        attempt: 2,
+        can_steer: true,
+        steer_turn_id: "turn-9",
+      };
+    if (path.endsWith("/tasks/live/steer")) return { steering: receipt };
+    throw new Error(`unexpected ${path}`);
+  });
+  const result = JSON.parse(
+    (await send.execute({ text: "also check B" }, "req-1")).content[0].text,
+  );
+  const steer = requests.find(([, path]) => path.endsWith("/steer"));
+  assert.equal(steer[2].attempt, 2);
+  assert.equal(steer[2].expected_turn_id, "turn-9");
+  assert.deepEqual(result.steering, receipt);
+  assert.equal(result.steered, undefined);
+});
+
 test("voice-only terminal tools resolve for voice but never register with WebMCP", () => {
   const definitions = evalToolDefinitions("project_completed");
   publishToolSurface("project", definitions);
