@@ -101,7 +101,11 @@ def demand_snapshot(store, background) -> list[str]:
                 provider = task.request.get("provider")
                 host = task.stage_host
                 if host is None:
-                    host = run_on_host(store, project.project_id, task.request.get("run_on"))
+                    try:
+                        host = run_on_host(store, project.project_id, task.request.get("run_on"))
+                    except (OSError, ValueError, KeyError):
+                        # A task whose machine no longer resolves cannot launch.
+                        continue
                 if not provider or not isinstance(
                     accounts.resolve_login(
                         provider,

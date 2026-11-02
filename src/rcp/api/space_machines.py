@@ -530,6 +530,8 @@ def list_space_machines(
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
     usage = _machine_usage(store)
+    # The Space thread's picker reads the backend's card, so it exists before any turn.
+    store.backend_space_machine()
     return {
         "machines": [
             _machine_view(machine, usage, visible, store, catalog.launcher)

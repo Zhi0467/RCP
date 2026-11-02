@@ -417,12 +417,10 @@ def test_run_on_resolves_through_the_owner_of_its_machine(tmp_path):
     # A project names a machine by its manifest alias; None is its base machine.
     assert run_on_host(store, "project", "gpu") == "gpu.example"
     assert run_on_host(store, "project", None) == run_on_host(store, "project", "laptop") == ""
-    # A Space task names a Space machine card by id; the backend's card has no host.
-    backend = store.backend_space_machine()
+    # A Space task runs on the backend whatever card it names, even a deleted one.
     gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
-    assert run_on_host(store, store.space_id, backend.machine_id) == ""
-    assert run_on_host(store, store.space_id, gpu.machine_id) == "gpu.example"
-    # Neither owner reads the spelling `local` as the backend.
-    for project_id in ("project", store.space_id):
-        with pytest.raises(ValueError, match="unknown execution machine: local"):
-            run_on_host(store, project_id, "local")
+    for run_on in (store.backend_space_machine().machine_id, gpu.machine_id, "gone", None):
+        assert run_on_host(store, store.space_id, run_on) == ""
+    # A project never reads the spelling `local` as its base machine.
+    with pytest.raises(ValueError, match="unknown execution machine: local"):
+        run_on_host(store, "project", "local")
