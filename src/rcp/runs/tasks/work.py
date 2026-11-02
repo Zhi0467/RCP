@@ -2720,16 +2720,18 @@ async def _stream_work_run(
 
         from rcp.runs.agent_threads import (
             prepare_project_summary_scope,
-            provider_switch_seed,
+            staged_history_seed,
             thread_history_seed,
         )
 
-        history_seed = await provider_switch_seed(
+        history_seed = await staged_history_seed(
             launcher,
             turn.request,
             execution,
             thread_history_seed(service, turn.request),
             prepare_scope=partial(prepare_project_summary_scope, service, execution, data_dir),
+            local_stage=turn.local_stage,
+            remote_stage=turn.remote_stage,
         )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(

@@ -156,7 +156,7 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         )
 
 
-def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
+def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
     from typing import cast
 
     from rcp.agents import AgentLauncher
@@ -209,8 +209,7 @@ def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
             client, thread["project_id"], response.json()["operation_id"]
         )
         assert result["status"] == "succeeded", result
-        assert "prior-private-marker" in launcher.prompts[0]
-        assert "prior-private-answer" in launcher.prompts[0]
+        assert "prior-private-marker" not in launcher.prompts[0]
         task = app.state.background_tasks.store.agent_task(response.json()["operation_id"])
         assert task is not None and task.stage_root is not None
         stage = Path(task.stage_root)
@@ -220,9 +219,13 @@ def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):
         hidden = launcher.launch_kwargs[0]["hidden_read_scope"]
         assert isinstance(hidden, HiddenReadScope)
         assert not any(stage.is_relative_to(root) for root in hidden.hidden_directories)
-        for path in stage.rglob("*"):
-            if path.is_file():
-                assert b"prior-private-marker" not in path.read_bytes()
+        # The history is one staged file in the owner's private stage, behind a pointer.
+        (seed,) = [
+            path
+            for path in stage.rglob("*")
+            if path.is_file() and b"prior-private-marker" in path.read_bytes()
+        ]
+        assert str(seed) in launcher.prompts[0] and b"prior-private-answer" in seed.read_bytes()
 
 
 def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
