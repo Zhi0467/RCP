@@ -390,13 +390,18 @@ button:disabled {
     width: 44px;
   }
 }
-/* Read by assistive technology, never drawn; `.chat-task-live` is the chat's live region. */
+/* Read by assistive technology, never drawn; `.chat-task-live` is the chat's live region.
+   Pinned to its containing block's corner: at its static place, one inside a scrolling
+   panel with no positioned ancestor stretched the document and scrolled the page into
+   empty space below the panel. */
 .visually-hidden,
 .chat-task-live {
   clip-path: inset(50%);
   height: 1px;
+  left: 0;
   overflow: hidden;
   position: absolute;
+  top: 0;
   width: 1px;
 }
 /* A vertical splitter: transparent until the pointer or focus finds it. */
