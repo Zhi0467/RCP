@@ -49,6 +49,7 @@ from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_i
 from rcp.runs.space_chat import SpaceThreadOwner
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
+from rcp.service_connections import ConnectionError
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import AgentThreadRecord
 from rcp.storage.chat_names import ChatNameError
@@ -110,9 +111,12 @@ def thread_transcript(
             if exc.status_code != 404:
                 raise
     else:
-        transcript = read_space_chat_transcript(
-            store.path.parent, thread.user_id, thread_id, title=title
-        )
+        try:
+            transcript = read_space_chat_transcript(
+                store.path.parent, thread.user_id, thread_id, title=title
+            )
+        except ConnectionError as exc:
+            raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
         if transcript is not None:
             return transcript
     return ChatTranscript(

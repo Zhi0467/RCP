@@ -381,3 +381,21 @@ def test_thread_task_projects_latest_session_resolution(manifest, tmp_path):
                     tasks = client.get(base + "/tasks").json()
                     task = next(task for task in tasks if task["operation_id"] == operation_id)
                     assert task["chat_session_resolution"] == resolution
+
+
+def test_corrupt_space_transcript_is_a_visible_conflict(manifest, tmp_path):
+    from rcp.service import canonical_space_chat_path
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    client = signed_in_client(app)
+    thread = next(
+        t for t in client.get("/api/agent-threads").json()["threads"] if not t.get("project_id")
+    )
+    owner = store.agent_thread(thread["thread_id"]).user_id
+    path = canonical_space_chat_path(store.path.parent, owner, thread["thread_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{\n")
+    response = client.get(f"/api/agent-threads/{thread['thread_id']}/transcript")
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "thread_transcript_invalid"
