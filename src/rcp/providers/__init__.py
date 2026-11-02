@@ -75,6 +75,18 @@ _REMOTE_BASE_MODULES = (
 )
 
 
+def remote_bundle_modules() -> tuple[str, ...]:
+    """The modules `remote_bundle` ships, in order: the shared bases, then each
+    module defining a registered session format or turn fence."""
+    classes = {
+        type(profile.session_format)
+        for profile in PROVIDERS.values()
+        if profile.session_format is not None
+    } | {fence for profile in PROVIDERS.values() for fence in profile.turn_fences.values()}
+    provider_modules = {cls.__module__ for cls in classes} - set(_REMOTE_BASE_MODULES)
+    return (*_REMOTE_BASE_MODULES, *sorted(provider_modules))
+
+
 @cache
 def remote_bundle(driver: str) -> str:
     """One `python3 -c` program: the shared bases, every provider's remote code, then `driver`.
@@ -93,16 +105,12 @@ def remote_bundle(driver: str) -> str:
         for profile in PROVIDERS.values()
         for runtime_id, fence in profile.turn_fences.items()
     }
-    provider_modules = sorted(
-        {cls.__module__ for cls in (*session_formats.values(), *fences.values())}
-        - set(_REMOTE_BASE_MODULES)
-    )
     names = [cls.__name__ for cls in {*session_formats.values(), *fences.values()}]
     if len(names) != len(set(names)):
         raise ValueError("Shipped provider classes must have distinct names.")
     parts = [
         f"exec(compile({_module_source(module)!r}, {module!r}, 'exec'))"
-        for module in (*_REMOTE_BASE_MODULES, *provider_modules)
+        for module in remote_bundle_modules()
     ]
     parts.append(
         "SESSION_FORMATS.update({"
@@ -232,6 +240,7 @@ __all__ = [
     "legacy_runtime_id",
     "profile_for",
     "remote_bundle",
+    "remote_bundle_modules",
     "project_write_enforcement_mode",
     "require_runtime_id",
     "runtime_label",
