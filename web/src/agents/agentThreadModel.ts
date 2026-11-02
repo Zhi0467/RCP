@@ -241,13 +241,16 @@ export interface HandoffReport {
   answer: string | null;
 }
 
-// Mirrors the wake message in src/rcp/runs/agent_thread_commands.py. Until the wake
-// carries its own trigger and field, this is the one place that recognizes it.
-const HANDOFF_WAKE_LEAD = "Your handed-off work settled.";
-
-/** The handoff report a wake line carries, or null for any other line. */
-export function handoffReport(line: { text: string }): HandoffReport | null {
-  if (!line.text.startsWith(HANDOFF_WAKE_LEAD)) return null;
+/** The handoff report a wake line carries, or null for any other line.
+ *
+ * The wake's source names it; its text is a summary line, then the report as JSON
+ * (`render_handoff_report` in src/rcp/runs/agent_thread_commands.py).
+ */
+export function handoffReport(line: {
+  text: string;
+  source?: string | null;
+}): HandoffReport | null {
+  if (line.source !== "handoff_report") return null;
   try {
     const report: unknown = JSON.parse(line.text.slice(line.text.indexOf("\n") + 1));
     if (!report || typeof report !== "object") return null;
