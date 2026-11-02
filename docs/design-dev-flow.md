@@ -22,7 +22,7 @@ Each piece extends an existing mechanism.
 | 1. Handoff lifecycle explorer | `background_tasks.stream` test seam, store fixtures | `python-shard` |
 | 2. Lint rules | `test_module_boundaries.py`, `test_route_inventory.py`, ruff | `lint`, `python-shard` |
 | 3. Comment ban + ratchet | basedpyright baseline, `test_project_types.py` ratchet, ESLint suppressions | `lint` |
-| 4. Member journeys | `AcceptanceAgentLauncher`, `test_agent_slice_served.py` | `python-shard` |
+| 4. Member journey | `AcceptanceAgentLauncher`, `test_agent_slice_served.py` | `python-shard` |
 | 5. Budgets | `graphProjectionPerformance.test.mjs`, the `agentThreads.browser` harness | `web` |
 
 Real-data regressions are a working rule, not a check; the rule lives in
@@ -60,58 +60,58 @@ explorer checks what that does not settle:
   with no timer.)
 - **Safety** in every reachable state: at most one delivered turn and one
   Space wake per handoff; no wake while the Space thread is busy.
-- **Liveness**: from every reachable state, environment actions alone
-  (settle, timer fire, dispatch pass, restart) reach a state where the handoff
-  is settled, or the delivered task offers `can_retry` or `can_resume` to the
+- **Liveness**, within the bound (see Mechanism): environment actions alone
+  (settle, timer fire, dispatch, restart) reach a state where the handoff is
+  settled, or the delivered task offers `can_retry` or `can_resume` to the
   member.
 
 ### Mechanism
 
-- `tests/lifecycle_explorer.py`:
-  - **Replay, not snapshot.** A state is the action sequence that reached it.
-    Each step builds a fresh `World` and replays the sequence. A `World` is
-    the app `create_named_app` builds, as in the handoff tests in
-    `tests/test_agent_thread_commands.py`: its store, `app.state.catalog`,
-    its `BackgroundAgentTasks`, and the `on_task_settled` wiring that
-    reconciles handoffs. The migrated empty database is created once and
-    copied per `World`. In-memory engine state (`_workers`,
-    `_retry_decided`, `_controls`) is therefore always real, never restored.
-  - The starting state is one Space thread, one project thread, and one
-    handoff created through the real handoff command handler, as those tests
-    do; `admit_provider_task` is patched there the same way.
-  - `Action(name, enabled(view), apply(world))`. `view(world)` is a hashable
-    tuple read from rows: the handoff row's state, each turn's `status`,
-    `failure_kind`, `can_retry`, `can_resume` and receipts, the Space thread's
-    busy flag, and the pending timer list. Two sequences with equal views are
-    one state.
-  - BFS over views to depth 8. A failure prints the shortest action sequence.
-    The test asserts a ceiling on the number of states visited, recorded
-    from the first run, so a growing model fails visibly; the test timeout
-    only stops a hang.
-- Seams, all in the test:
-  - `_schedule_transport_retry` appends to `world.timers` instead of starting a
-    `threading.Timer`; the "timer fires" action pops one and calls the
-    callback.
-  - `store.now` is patched on the instance to a fixed clock that actions
-    advance.
-  - `_schedule_remote_reconciliation` is patched the same way, and
-    `seconds_until_automatic_launch` is patched to 0 where `rcp.background`
-    imports it.
-  - Turn outcomes come through `background_tasks.stream`. The fake stream
-    sets the execution flags the engine reads: `stage_host` and
-    `stage_unreachable` for `transport_lost`, `provider_auth_refused` for
-    `provider_auth`. The world wraps `on_task_settled` to set one
-    `threading.Event` per operation; each action waits on it, so it is
-    atomic.
-- Actions: the source turn settles; the delivered turn settles as succeeded,
-  `transport_lost`, `provider_auth`, other failure, or Stopped; a timer fires
-  (admitted or refused); restart (a fresh engine over the same file, running
-  startup reconciliation); sign-in release; human Retry or Resume; a dispatch
-  pass. Attachment expiry is left out: it reads the wall clock, and a handoff
-  turn carries no attachments.
-- **Limit**: actions run one at a time, so check-then-admit races inside one
-  action (for example around the retry admission in `background.py`) are out
-  of reach. Races stay with targeted thread tests.
+The explorer drives the handoff machine the way the handoff tests in
+`tests/test_agent_thread_commands.py` already do: no worker threads, turns
+settled by direct store writes, delivery and wakes by explicit dispatch.
+
+- **World.** `create_named_app` over the manifest fixture, with
+  `_spawn_record` patched so no worker runs and `admit_provider_task` patched
+  as those tests patch it. The starting state is one Space thread, one project
+  thread, and one handoff created through the real handoff command handler.
+  The whole temporary tree (data directory and manifest fixture) is built
+  once and copied per `World`, because delivery also writes transcripts,
+  scratch and project state outside the database.
+- **Search.** Depth-first with replay: the live world is kept for the first
+  child and rebuilt by replaying the prefix only when backtracking. Depth
+  starts at 6. Before fixing it, the builder measures one `World` build and
+  one action, and picks the deepest bound that keeps the test under 60 s on a
+  CI runner; the test asserts that state-count ceiling so a growing model
+  fails visibly.
+- **View.** A hashable tuple with positional names (operation ids are fresh
+  per replay): the handoff's derived state from `target_operation_id`,
+  `settled_at`, `notified_operation_id` and `refusal_reason`; each turn's
+  `status`, `failure_kind`, `can_retry` and `can_resume`; the Space thread's
+  busy flag; and the pending timers. Equal views are one state.
+- **Actions**, each followed by `dispatch_thread_handoffs`, as the tests do:
+  - the source Space turn, the delivered project turn, or a wake turn settles
+    by `store.complete_agent_task` or `store.fail_agent_task` with
+    `failure_kind` `transport_lost`, `provider_auth`, or `other`;
+  - a pending retry timer fires;
+  - human Retry or Resume of the delivered turn;
+  - sign-in release: `provider_login_changed` for the one `LoginKey` the
+    `provider_auth` failure recorded as signed out;
+  - restart: discard the engine and its timer list, build a new
+    `BackgroundAgentTasks` over the same files, and call
+    `recover_at_startup()`, which re-arms owed retries.
+  Attachment expiry is left out: it reads the wall clock, and a handoff turn
+  carries no attachments. The clock advances only on a timer firing, by that
+  timer's delay.
+- **Seams.** `_schedule_transport_retry` appends to `world.timers`;
+  `_schedule_remote_reconciliation` is a no-op, as in the tests;
+  `seconds_until_automatic_launch` is patched to 0 where `rcp.background`
+  imports it; `store.now` reads the world's clock.
+- **Bounded liveness.** Only states at depth at most bound − 3 are checked:
+  from each, environment actions alone (settle, timer fire, dispatch,
+  restart) must reach a settled handoff or a member offer within 3 steps.
+- **Limit.** Actions are atomic, so check-then-admit races inside one action
+  are out of reach. Races stay with targeted thread tests.
 
 Files: `tests/lifecycle_explorer.py`, `tests/test_lifecycle_handoff.py`.
 Product code changes only for defects the model finds, each with its trace as
@@ -133,25 +133,27 @@ About 50 files are shipped as source to hosts whose `python3` may be 3.9.
   level imports are in `sys.stdlib_module_names` minus modules newer than 3.9
   (for example `tomllib`), and there is no unguarded top-level `rcp` import
   (imports under `if`, `TYPE_CHECKING` or inside functions stay allowed).
-- **The set**, derived from the readers. A call that ships a whole file adds
-  it; a call that ships only extracted functions (`inspect.getsource`) adds
-  nothing.
-  - `remote_bundle`: call the real module-list resolution
-    (`_REMOTE_BASE_MODULES` plus each provider class's `__module__`) and map
-    modules to files.
-  - Wrappers that read a whole file from a fixed package, each named with its
-    package in the test: `_remote_script(name)` → `rcp/transport/`,
-    `terminal_source(name)` → `rcp/terminals/`. The AST scan takes the
+- **The set.** A file is shipped when one of these reads it whole:
+  - `remote_bundle`: its module list moves into a helper,
+    `remote_bundle_modules(driver)` in `providers/__init__.py`, which the test
+    calls and maps to files.
+  - Whole-file wrappers, named with their package in the test:
+    `_remote_script(name)` reads `rcp/transport/<name>`, and
+    `terminal_source(name)` reads `rcp/terminals/<name>`. The scan takes the
     literal `name` at each call.
-  - `importlib.resources.files(pkg).joinpath("x.py")` and `Path` chains with
-    literal segments (`Path(__file__).parent / "x.py"`,
-    `root.parent / "agents" / "staged_hidden_read.py"`): resolved from the
-    literal segments relative to the module.
-  - Any reader call whose target the scan cannot resolve to a literal fails
-    the test with its location, so a new caller is never missed silently.
-    `isolated_python_argv` is not a reader: its scripts are staged from the
-    `importlib.resources` reads in `command_protocol.py`, which the scan
-    already covers.
+  - A reader call: a `.read_text()` or `.read_bytes()` whose receiver chain is
+    rooted at `Path(__file__)` (directly or through a local bound to it, such
+    as `root` in `browser/service.py`) or at `importlib.resources.files(...)`,
+    with literal path segments. Only `.py` targets count; `.js`, `.sh` and
+    `.service` reads are ignored.
+  - A reader call or wrapper call whose target is not literal fails the test
+    with its location. Exempt by name: the wrapper bodies themselves and
+    `_module_source` in `providers/__init__.py`.
+  - `_paper_tree_remote_script` in `transport/state.py` reads all of
+    `state.py` but ships two extracted functions. It switches to
+    `inspect.getsource` on those two functions, as `repository_preview.py`
+    already does, so the whole-file rule holds and `state.py` stays out of the
+    set.
   - Self-tests cover each resolver on a small sample. The test also asserts
     that the ruff glob list equals the derived set.
 - Out of scope: the inline `script = """…"""` strings in `run_stage.py`,
@@ -163,14 +165,19 @@ The web polls about 14 routes (`RefreshScheduler`, `useAgentThreads`, the
 `AgentThreadView` live poll, and others).
 
 - `tests/test_polled_routes.py` with `tests/fixtures/polled_routes.json`, which
-  lists each polled `(method, path)` with its web call site. The test asserts
-  each is in `_FROZEN_ROUTE_INVENTORY`.
-- It calls each route on a seeded app with one tracer, `trace_requests(app)`
-  in `tests/helpers.py`, built from `_TracingAppStore` (`test_storage.py`): a
-  SQLite trace callback on the app's own store connection factory records
-  statement count, `BEGIN IMMEDIATE` and DML; a patched `subprocess` records
-  `git`, `ssh` and `rsync`; `refresh_if_stale` and `open_display` are recorded
-  as remote reads.
+  lists each polled `(method, path)`.
+- It calls each route on an app seeded with one project, one machine, one
+  chat and one agent thread, whose ids fill the path parameters, and with
+  every staleness timestamp old enough that `refresh_if_stale` would fire.
+  One tracer, `trace_requests(app)` in `tests/helpers.py`, built from
+  `_TracingAppStore` (`test_storage.py`), records: statements, `BEGIN
+  IMMEDIATE` and DML through a SQLite trace callback on the app's own store
+  connection factory; `git`, `ssh` and `rsync` through a patched
+  `subprocess`; outbound HTTP through a patched `urllib.request.urlopen`;
+  and `refresh_if_stale` and `open_display` as remote reads.
+- A route passes when it has zero `BEGIN IMMEDIATE`, DML, subprocesses,
+  outbound HTTP and remote reads, and no more statements than its recorded
+  ceiling in the JSON.
 - Today's violators go into a shrinking allowlist in the same JSON, each with a
   one-line reason: team device pairing GET (`BEGIN IMMEDIATE`),
   `GET /api/space/machines/{id}/browser` (SSH), `GET /api/space/runs`
@@ -181,21 +188,20 @@ The web polls about 14 routes (`RefreshScheduler`, `useAgentThreads`, the
 
 ### (c) Idempotency-Key admission
 
-- **Rule**, in `test_route_inventory.py`, over a hand-kept fixture
-  `tests/fixtures/idempotent_routes.json` that lists each keyed
-  `(method, path)` with its web call site, like `polled_routes.json`:
-  - every listed route declares the header, and its endpoint calls
-    `client_request_admission` directly or through a named helper
-    (`_space_control_admission`), checked by AST over the endpoint body;
-  - the web side checks only that the files and counts of the
-    `"Idempotency-Key"` literal in `web/src` match the fixture's call sites,
-    so a new sender cannot appear without an entry.
-- **Today**: only project pause (`api/tasks.py`, the pause handler) and Space
-  thread pause (`api/agent_threads.py`) ignore the key the web sends. Pause
-  stores no operation or episode, and pausing twice is already a no-op, so the
-  fix is on the web: both senders, `controlThreadTask` in
-  `web/src/agents/agentThreadsApi.ts` and `operateTask` in `web/src/App.tsx`,
+- **Rule**, in `test_route_inventory.py`, derived from the server with no
+  fixture: every endpoint that declares the
+  `idempotency_key: Annotated[UUID4 | None, Header()]` parameter calls
+  `client_request_admission` directly or through a named helper
+  (`_space_control_admission`), checked by AST over the endpoint body.
+- **Today**: project pause (`api/tasks.py`) and Space thread pause
+  (`api/agent_threads.py`) do not declare the key, yet the web sends it.
+  Pause stores no operation or episode, and pausing twice is already a no-op,
+  so the fix is on the web: `controlThreadTask` in
+  `web/src/agents/agentThreadsApi.ts` and `operateTask` in `web/src/App.tsx`
   stop sending the key for `pause`.
+- **Web side**: `web/tests/agentWindow.test.mjs` already asserts which
+  headers `controlThreadTask` sends; its pause case changes to assert no key,
+  and it gains resume and retry cases asserting the key.
 
 Shared AST helpers move, unchanged, from `test_module_boundaries.py`
 (`_python_files`, `_call_name`, and what `_call_name` needs: `_import_aliases`,
@@ -268,17 +274,25 @@ The last bullet is the real-data rule. Its first entry ships in the 0.4.38
 release fix PR, which seeds an archived consolidation chat into the
 installed-upgrade data after build 2966's team rehearsal refused on it.
 
-## 4. Headless member journeys on a fake provider
+## 4. Headless member journey on a fake provider
 
 **One HTTP journey over the confirmed problem area, on the acceptance agent.**
 
 - **Provider.** `AcceptanceAgentLauncher` (`agents/acceptance.py`) is already
   a provider mode with no CLI, wired through `create_app(acceptance_agent=True)`.
-  Add a `journey` scenario selected by a structured script file in the chat
-  scratch folder, not by prompt wording. The script lists turns; each has
-  answer text and staged-command calls (handoff). Every turn succeeds: the
-  acceptance agent runs locally, and `transport_lost` is only classified for a
-  remote host, so failure and retry stay with the piece 1 explorer.
+  Add one fixed scenario, `space_handoff`, selected the existing way: the
+  `scenario` key of the state file `_scenario` already reads from the turn's
+  working folder. The test writes that file into the Space thread's scratch
+  before the first message.
+  - The Space turn runs the staged `handoff` command the way other scenarios
+    run staged commands, by the command prefix in the contract
+    (`_run_campaign_argv`); the wording rule covers scenario selection only.
+  - Every turn writes `outcome.json` as `generic_watchers` does, so the report
+    carries a `turn_outcome`.
+  - The delivered project turn and the Space wake turn run the existing
+    generic success path.
+  - Failures and retries stay with the piece 1 explorer: `transport_lost` is
+    only classified for a remote host, and acceptance runs locally.
 - **Runner.** `tests/test_member_journeys_served.py`, cloned from
   `tests/test_agent_slice_served.py`: uvicorn with the lifespan on, `httpx`,
   sign-in via `/api/owner/redeem`. `seconds_until_automatic_launch` is
@@ -286,12 +300,8 @@ installed-upgrade data after build 2966's team rehearsal refused on it.
 - **Journey**, passing or failing on HTTP state: the member asks the Space
   thread to hand work to a project, the handoff delivers, the project turn
   succeeds, and the Space thread wakes once with the report. This covers the
-  prompts, staging and command path the explorer's `stream` seam skips.
-- The approval-card second tap is already covered by
-  `test_agent_slice_served.py`. Schedules gain a journey when a lifecycle bug
-  appears there.
-- Do not fake `launch_admitted` (`test_launch_fakes.py` forbids it). Do not use
-  `background_tasks.stream` here: journeys cover prompts and staging.
+  prompts, staging and command path the explorer skips.
+- Do not fake `launch_admitted` (`test_launch_fakes.py` forbids it).
 
 ## 5. Budgets in CI
 
@@ -321,12 +331,12 @@ installed-upgrade data after build 2966's team rehearsal refused on it.
 
 - **CI time**: the explorer (one model) and one served journey land in
   `python-shard`. The PR reports the added time per shard.
-- **Flaky served tests**: journeys run threads; they wait on HTTP state with
-  the shared wait helpers and never sleep.
+- **Flaky served tests**: the journey runs threads; it waits on HTTP state
+  with the shared wait helpers and never sleeps.
 - **Baseline merge friction**: sorted, one-line-per-file baselines merge by
   line; a conflict is resolved by rerunning the script.
-- **Explorer fidelity**: replay keeps engine state real, but races inside one
-  action are out of reach (see piece 1).
+- **Explorer fidelity**: actions are atomic store writes plus dispatch, so
+  worker-thread races are out of reach (see piece 1).
 
 ## Ownership, order, and checks
 
@@ -336,8 +346,8 @@ Shared contracts stay serial: `pyproject.toml`, `.pre-commit-config.yaml`,
 | Step | Owner files | Check |
 |---|---|---|
 | 1 | `tests/lifecycle_explorer.py`, `tests/test_lifecycle_handoff.py`, fixes it finds | `uv run pytest -n0 tests/test_lifecycle_handoff.py` |
-| 2 | `tests/architecture.py` (moved helpers), `tests/test_shipped_sources.py`, ruff per-file targets, the `with` fix | `uv run ruff check src/rcp`, the pytest file |
-| 3 | `tests/test_polled_routes.py`, `polled_routes.json`, `idempotent_routes.json`, `trace_requests` in `tests/helpers.py`, the Idempotency-Key rule, the web pause change | the pytest files, `node --experimental-strip-types --test web/tests/agentThreads.test.mjs` |
+| 2 | `tests/architecture.py` (moved helpers), `tests/test_shipped_sources.py`, ruff per-file targets, the `with` fix, `remote_bundle_modules`, the `_paper_tree_remote_script` switch | `uv run ruff check src/rcp`, the pytest file |
+| 3 | `tests/test_polled_routes.py`, `polled_routes.json`, `trace_requests` in `tests/helpers.py`, the Idempotency-Key rule, the web pause change | the pytest files, `node --experimental-strip-types --test web/tests/agentWindow.test.mjs` |
 | 4 | The journey scenario in `agents/acceptance.py`, `tests/test_member_journeys_served.py` | the pytest file |
 | 5 | Bundle and fetch budgets | `npm --prefix web run build`, then `node --experimental-strip-types --test web/tests/{bundleBudget,fetchBudgets.browser}.test.mjs` (Playwright Chromium installed) |
 | 6 | `scripts/comment_ratchet.py`, both baselines, hooks, ESLint rule and config, invariant numbers | `uv run pre-commit run --all-files`, `npm --prefix web run lint` |
