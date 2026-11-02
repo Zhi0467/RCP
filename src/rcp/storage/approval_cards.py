@@ -23,6 +23,11 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
         expires_at TEXT NOT NULL, request_id TEXT NOT NULL,
         running_since TEXT, result_json TEXT
     )""")
+    # The 5 s expiry sweep reads only open cards.
+    connection.execute(
+        "CREATE INDEX approval_cards_open ON approval_cards(expires_at) "
+        "WHERE result_json IS NULL AND running_since IS NULL"
+    )
 
     install_agent_thread_version(
         connection,
@@ -95,34 +100,25 @@ def _settle(
         append_question_attention(connection, row, now)
 
 
+_DUE_CARDS = """SELECT c.question_id, q.project_id FROM approval_cards c
+    JOIN questions q ON q.question_id=c.question_id
+    LEFT JOIN agent_threads t ON t.thread_id=q.owner_id
+    WHERE c.result_json IS NULL AND c.running_since IS NULL
+    AND (c.expires_at<=? OR t.closed_at IS NOT NULL) AND {where}"""
+
+
 def _expire(
     connection: sqlite3.Connection, where: str, parameters: tuple[str, ...], now: str
 ) -> set[str]:
-    rows = connection.execute(
-        f"""SELECT c.question_id, q.project_id FROM approval_cards c
-        JOIN questions q ON q.question_id=c.question_id
-        LEFT JOIN agent_threads t ON t.thread_id=q.owner_id
-        WHERE c.result_json IS NULL AND c.running_since IS NULL
-        AND (c.expires_at<=? OR t.closed_at IS NOT NULL) AND {where}""",
-        (now, *parameters),
-    ).fetchall()
+    """Settle open cards past expiry or in a closed thread; lock only when one is due."""
+    query = _DUE_CARDS.format(where=where)
+    if connection.execute(query, (now, *parameters)).fetchone() is None:
+        return set()
+    connection.execute("BEGIN IMMEDIATE")
+    rows = connection.execute(query, (now, *parameters)).fetchall()
     for row in rows:
         _settle(connection, row["question_id"], {"outcome": "expired"}, now)
     return {row["project_id"] for row in rows}
-
-
-def _due(connection: sqlite3.Connection, row: sqlite3.Row, now: str) -> bool:
-    """An open card past its expiry or in a closed thread."""
-    if row["result_json"] is not None or row["running_since"] is not None:
-        return False
-    if row["expires_at"] <= now:
-        return True
-    closed = connection.execute(
-        """SELECT 1 FROM questions q JOIN agent_threads t
-        ON t.thread_id=q.owner_id WHERE q.question_id=? AND t.closed_at IS NOT NULL""",
-        (row["question_id"],),
-    ).fetchone()
-    return closed is not None
 
 
 def _card_view(row: sqlite3.Row) -> dict[str, Any]:
@@ -153,25 +149,23 @@ class ApprovalCardStoreMixin(StoreMixinBase):
         return row["user_id"] if row else None
 
     def approval_card(self, question_id: str) -> dict[str, Any] | None:
-        """A deferred read; only a card that has just expired takes the write lock."""
+        return self.approval_cards([question_id]).get(question_id)
+
+    def approval_cards(self, question_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Cards by question in one deferred read; only a due card takes the write lock."""
+        if not question_ids:
+            return {}
+        marks = ",".join("?" * len(question_ids))
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM approval_cards WHERE question_id=?", (question_id,)
-            ).fetchone()
-            if row is None:
-                return None
-            if _due(connection, row, self.now()):
-                connection.execute("BEGIN IMMEDIATE")
-                _expire(connection, "c.question_id=?", (question_id,), self.now())
-                row = connection.execute(
-                    "SELECT * FROM approval_cards WHERE question_id=?", (question_id,)
-                ).fetchone()
-            return _card_view(row)
+            _expire(connection, f"c.question_id IN ({marks})", tuple(question_ids), self.now())
+            rows = connection.execute(
+                f"SELECT * FROM approval_cards WHERE question_id IN ({marks})", question_ids
+            ).fetchall()
+        return {row["question_id"]: _card_view(row) for row in rows}
 
     def expire_approval_cards(self) -> set[str]:
         """Settle every open card past its expiry or in a closed thread; return projects."""
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             return _expire(connection, "1", (), self.now())
 
     def take_expired_approval_card(self, question_id: str) -> bool:

@@ -121,12 +121,45 @@ def _serialize(
     *,
     continues: Literal["turns", "ending"] | None = None,
 ) -> QuestionResponse:
-    card = store.approval_card(question.question_id)
-    question = store.get_question(question.question_id) or question
-    task = store.agent_task(question.origin.operation_id)
+    return _serialize_all(
+        store, [question], continues_id=question.question_id, continues=continues
+    )[0]
+
+
+def _serialize_all(
+    store: AppStore,
+    questions: list[QuestionRecord],
+    *,
+    continues_id: str | None = None,
+    continues: Literal["turns", "ending"] | None = None,
+) -> list[QuestionResponse]:
+    """One card read for the whole list; only a pending question loads its turn."""
+    cards = store.approval_cards([question.question_id for question in questions])
+    return [
+        _response(
+            store,
+            question,
+            cards.get(question.question_id),
+            continues if question.question_id == continues_id else None,
+        )
+        for question in questions
+    ]
+
+
+def _response(
+    store: AppStore,
+    question: QuestionRecord,
+    card: dict[str, Any] | None,
+    continues: Literal["turns", "ending"] | None,
+) -> QuestionResponse:
+    if card is not None and card["state"] == "expired" and question.state == "pending":
+        # Reading the cards just expired this one and answered its question.
+        question = store.get_question(question.question_id) or question
     state = question.state
     if state == "pending" and (
-        question.origin.capability == "orchestrate" or task is None or task.settled
+        question.origin.capability == "orchestrate"
+        or (task := store.agent_task(question.origin.operation_id)) is None
+        or task.settled
     ):
         state = "parked"
     return QuestionResponse(
@@ -158,12 +191,9 @@ def chat_questions(
     project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
     _require_question_owner(store, chat_id, identity_access.acting_user(request).user_id)
-    return [
-        _serialize(store, question)
-        for question in store.list_questions(
-            project_id=project_id, owner_kind="chat", owner_id=chat_id
-        )
-    ]
+    return _serialize_all(
+        store, store.list_questions(project_id=project_id, owner_kind="chat", owner_id=chat_id)
+    )
 
 
 @router.get("/api/projects/{project_id}/episodes/{episode_id}/questions")
@@ -177,9 +207,9 @@ def episode_questions(
     open_cards = [item for item in questions if _can_answer(item)]
     lone = open_cards[0] if len(open_cards) == 1 else None
     continues = _answer_continues(store, lone, _newest_episode(store, lone)) if lone else None
-    return [
-        _serialize(store, item, continues=continues if item is lone else None) for item in questions
-    ]
+    return _serialize_all(
+        store, questions, continues_id=lone.question_id if lone else None, continues=continues
+    )
 
 
 def _require_question_owner(store: AppStore, chat_id: str, user_id: str) -> None:
