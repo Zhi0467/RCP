@@ -26,7 +26,8 @@ type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
 
 const THREADS = "/api/agent-threads";
 
-function threadPath(threadId: string): string {
+/** The member-owned routes of one thread. */
+export function threadPath(threadId: string): string {
   return `${THREADS}/${encodeURIComponent(threadId)}`;
 }
 
@@ -90,7 +91,7 @@ export function loadThreadTask(
 }
 
 export function steerThreadTurn(
-  thread: AgentThread,
+  thread: ThreadTaskOwner,
   operationId: string,
   steer: SteerRequest,
   request: Request = api,

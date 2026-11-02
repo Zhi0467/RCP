@@ -1,8 +1,13 @@
 import type { ResourceProfile } from "../core/resourceStore";
 import type { ArtifactViewerState } from "../core/types";
-import { api, steerChatTurn } from "../core/api";
+import { api } from "../core/api";
 import { artifactUrl } from "../agents/agentTasks";
-import { controlThreadTask, loadThreadTask, steerThreadTurn } from "../agents/agentThreadsApi";
+import {
+  controlThreadTask,
+  loadThreadTask,
+  steerThreadTurn,
+  threadPath,
+} from "../agents/agentThreadsApi";
 import { artifactStateProfile } from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
 import {
@@ -79,14 +84,14 @@ export function projectAgentWindowEndpoints(
     loadTask: (operationId) => loadThreadTask(owner, operationId),
     control: (operationId, action, requestId) =>
       controlThreadTask(owner, operationId, action, requestId),
-    steer: (operationId, request) => steerChatTurn(projectId, operationId, request),
+    steer: (operationId, request) => steerThreadTurn(owner, operationId, request),
     questionsApiBase: base,
     referenceProject: null,
   };
 }
 
 export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpoints {
-  const base = `/api/agent-threads/${encodeURIComponent(thread.thread_id)}`;
+  const base = threadPath(thread.thread_id);
   const url: AgentWindowEndpoints["artifactUrl"] = (operation, artifact, action) =>
     `${base}/tasks/${encodeURIComponent(operation)}/artifacts/${encodeURIComponent(artifact)}/${action}`;
   return {
