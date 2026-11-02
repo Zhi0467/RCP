@@ -175,15 +175,21 @@ class ApprovalCardStoreMixin(StoreMixinBase):
             connection.execute("BEGIN IMMEDIATE")
             _settle(connection, question_id, result, self.now(), resolved_by)
 
-    def fail_interrupted_approval_cards(self) -> None:
+    def interrupted_approval_cards(self) -> list[dict[str, Any]]:
+        """Claimed cards without a result: the process stopped during the action."""
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            for row in connection.execute(
-                "SELECT question_id FROM approval_cards WHERE running_since IS NOT NULL AND result_json IS NULL"
-            ).fetchall():
-                _settle(
-                    connection,
-                    row["question_id"],
-                    {"outcome": "failed", "reason": "interrupted"},
-                    self.now(),
-                )
+            rows = connection.execute(
+                """SELECT c.question_id, c.action_json, c.request_id, t.user_id
+                FROM approval_cards c JOIN questions q ON q.question_id=c.question_id
+                LEFT JOIN agent_threads t ON t.thread_id=q.owner_id
+                WHERE c.running_since IS NOT NULL AND c.result_json IS NULL"""
+            ).fetchall()
+        return [
+            {
+                "question_id": row["question_id"],
+                "action": json.loads(row["action_json"]),
+                "request_id": row["request_id"],
+                "user_id": row["user_id"],
+            }
+            for row in rows
+        ]

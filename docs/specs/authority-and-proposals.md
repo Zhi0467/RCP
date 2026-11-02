@@ -317,8 +317,10 @@ Episode start, branch merge and episode merge pass it to their native request-id
 admission. Episode merge compares the pinned source and main heads again under
 its admission lock, before reconciliation or merge writes.
 Sync and repository membership have no request-id argument; the durable card
-claim supplies their single-use execution identity. A claimed card without a
-result is failed as interrupted at startup, never automatically rerun.
+claim supplies their single-use execution identity. At startup a claimed card
+without a result is never rerun. It settles as approved when its request id's
+episode-start, branch-merge task or accepted episode-merge receipt exists, and
+otherwise fails as interrupted.
 
 Cards expire after `APPROVAL_CARD_TTL_HOURS`, checked on tap and list. Listing
 also expires cards of closed threads, and restore expires every pending card. Expiry answers the question with `expired`. Other results

@@ -31,11 +31,51 @@ def space(manifest, tmp_path, monkeypatch):
 def upload(client, base, client_id):
     response = client.post(
         base + "/attachments",
-        data={"client_id": client_id, "chat_id": str(uuid.uuid4())},
+        data={"client_id": client_id},
         files={"file": ("notes.txt", b"private attachment", "text/plain")},
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize("method", ["post", "delete", "turn"])
+@pytest.mark.parametrize("target", ["project", "closed_space"])
+def test_space_thread_routes_require_an_open_space_thread(space, method, target):
+    app, client, base, thread_id = space
+    store = app.state.background_tasks.store
+    client_id = str(uuid.uuid4())
+    uploaded = upload(client, base, client_id)
+    params = dict(client_id=client_id, attachment_set_id=uploaded["attachment_set_id"])
+    if target == "project":
+        owner = store.agent_thread(thread_id)
+        assert owner is not None
+        project_id = app.state.default_project_id
+        store.seat_project_member(project_id, owner.user_id)
+        project = next(
+            row
+            for row in store.ensure_agent_threads(
+                owner.user_id, [project_id], default_names=("Pip",)
+            )
+            if row.kind == "project"
+        )
+        base = f"/api/agent-threads/{project.thread_id}"
+    else:
+        store.close_agent_thread(thread_id, reason="access_lost")
+    if method == "post":
+        response = client.post(
+            base + "/attachments", data=params, files={"file": ("next.txt", b"next")}
+        )
+    elif method == "delete":
+        response = client.delete(
+            base + "/attachments/" + uploaded["attachment"]["attachment_id"], params=params
+        )
+    else:
+        response = client.post(
+            base + "/turns",
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={"message": "Hello", "timezone": "America/Los_Angeles"},
+        )
+    assert response.status_code == 404
 
 
 def test_space_upload_send_stage_transcript_and_retry(space, tmp_path, monkeypatch):
@@ -45,6 +85,7 @@ def test_space_upload_send_stage_transcript_and_retry(space, tmp_path, monkeypat
     uploaded = upload(client, base, client_id)
     body = dict(
         message="Read this",
+        timezone="America/Los_Angeles",
         attachment_client_id=client_id,
         attachment_set_id=uploaded["attachment_set_id"],
     )
@@ -101,6 +142,42 @@ def test_space_upload_send_stage_transcript_and_retry(space, tmp_path, monkeypat
     assert retry is not None
     assert retry.request["attachment_batch_id"] == request.attachment_batch_id
     assert retry.request["attachments"] == task.request["attachments"]
+
+
+def test_space_composer_removes_a_file_before_sending_the_same_batch(space):
+    app, client, base, _thread_id = space
+    client_id = str(uuid.uuid4())
+    first = upload(client, base, client_id)
+    params = dict(client_id=client_id, attachment_set_id=first["attachment_set_id"])
+    removed = client.delete(
+        base + "/attachments/" + first["attachment"]["attachment_id"], params=params
+    )
+    assert removed.status_code == 200
+    second = client.post(
+        base + "/attachments",
+        data=params,
+        files={"file": ("replacement.txt", b"replacement", "text/plain")},
+    )
+    assert second.status_code == 200
+    uploaded = second.json()
+    sent = client.post(
+        base + "/turns",
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+        json={
+            "message": "Read the replacement",
+            "timezone": "America/Los_Angeles",
+            "attachment_client_id": client_id,
+            "attachment_set_id": uploaded["attachment_set_id"],
+        },
+    )
+    assert sent.status_code == 202, sent.text
+    task = app.state.background_tasks.store.agent_task(sent.json()["operation_id"])
+    assert task is not None
+    assert len(task.request["attachments"]) == 1
+    saved = task.request["attachments"][0]
+    # Admission renews retention; the staged file's other metadata is unchanged.
+    assert saved == {**uploaded["attachment"], "expires_at": saved["expires_at"]}
+    assert task.request["attachment_batch_id"] == first["attachment_set_id"]
 
 
 def test_space_attachment_owner_and_path_scope(space):

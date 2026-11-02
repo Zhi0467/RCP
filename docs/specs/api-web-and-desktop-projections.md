@@ -2241,8 +2241,9 @@ ordinary project chat, task and question routes. Its Send must be
 Space threads upload and remove attachments at
 `POST /api/agent-threads/{thread_id}/attachments` and
 `DELETE /api/agent-threads/{thread_id}/attachments/{attachment_id}`, using the
-ordinary chat attachment request and response shapes. Both require a Space thread
-owned by the acting member; project threads and other members receive 404.
+ordinary chat attachment request and response shapes. Both require an open Space
+thread owned by the acting member; closed threads, project threads, and other
+members receive 404.
 The attachment owner binds each set to the Space id, the thread id from the path,
 and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.

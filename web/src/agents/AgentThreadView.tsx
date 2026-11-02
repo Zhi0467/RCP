@@ -452,19 +452,33 @@ export function AgentThreadView({
     Boolean(assembleChatTurn(text, comments.annotations)),
   );
 
-  // Every answer names the thread it was asked for; one for a thread no longer open is dropped.
+  // Every answer names the thread it was asked for; one for a thread no longer open is dropped,
+  // and so is one older than a reload already shown.
+  const refreshSeq = useRef({ started: 0, shown: 0 });
+  // A send's own turn leads until the thread row reports a newer latest turn.
+  const sentTurn = useRef<{ threadId: string; operationId: string; after: string | null } | null>(
+    null,
+  );
   const refresh = useCallback(async () => {
     const current = threadRef.current;
     const owner = endpointsRef.current;
+    const seq = ++refreshSeq.current.started;
+    const fresh = () =>
+      threadRef.current.thread_id === current.thread_id && seq > refreshSeq.current.shown;
     try {
       const [transcript, asked] = await Promise.all([
         loadThreadTranscript(current),
         loadThreadQuestions(current),
       ]);
+      const sent = sentTurn.current;
       // A running project turn writes its member message only when it settles.
-      const turnId = current.latest_operation_id ?? latestTurnId(transcript.messages);
+      const turnId =
+        sent?.threadId === current.thread_id && sent.after === current.latest_operation_id
+          ? sent.operationId
+          : (current.latest_operation_id ?? latestTurnId(transcript.messages));
       const latestTask = turnId ? await owner.loadTask(turnId) : null;
-      if (threadRef.current.thread_id !== current.thread_id) return;
+      if (!fresh()) return;
+      refreshSeq.current.shown = seq;
       setLoaded({
         threadId: current.thread_id,
         messages: transcript.messages,
@@ -473,8 +487,7 @@ export function AgentThreadView({
       });
       setLoadError(null);
     } catch (failure) {
-      if (threadRef.current.thread_id === current.thread_id)
-        setLoadError({ threadId: current.thread_id, text: errorMessage(failure) });
+      if (fresh()) setLoadError({ threadId: current.thread_id, text: errorMessage(failure) });
     }
   }, []);
 
@@ -565,7 +578,12 @@ export function AgentThreadView({
       if (pending.steering) {
         await endpoints.steer(pending.steering.taskId, pending.steering.request);
       } else {
-        await sendThreadTurn(target, pending.request, pending.requestId);
+        const { operation_id } = await sendThreadTurn(target, pending.request, pending.requestId);
+        sentTurn.current = {
+          threadId: target.thread_id,
+          operationId: operation_id,
+          after: target.latest_operation_id,
+        };
       }
       pending.clearAttachments();
       comments.discard(sentComments);

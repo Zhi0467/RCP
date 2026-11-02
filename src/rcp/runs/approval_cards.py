@@ -28,6 +28,45 @@ def private_project_thread_turn(store: AppStore, operation_id: str) -> bool:
         )
 
 
+def settle_interrupted_approval_cards(store: AppStore) -> None:
+    """Settle claimed cards left without a result, never rerunning their action.
+
+    Episode start, branch merge and episode merge admit under the card's request
+    id; their durable receipt proves the action committed. Without one the card
+    fails as interrupted.
+    """
+    for card in store.interrupted_approval_cards():
+        receipt = _committed_receipt(store, card)
+        store.settle_approval_card(
+            card["question_id"],
+            {"outcome": "approved", "result": receipt}
+            if receipt is not None
+            else {"outcome": "failed", "reason": "interrupted"},
+        )
+
+
+def _committed_receipt(store: AppStore, card: dict[str, Any]) -> dict[str, str] | None:
+    from rcp.runs.branch_merge_admission import member_merge_operation_id
+
+    action, request_id = card["action"], card["request_id"]
+    project_id = action["project_id"]
+    if action["kind"] == "auto_research":
+        admitted = store.client_request(project_id, request_id)
+        return {"episode_id": admitted.episode_id} if admitted and admitted.episode_id else None
+    if action["kind"] == "merge_branch" and card["user_id"] is not None:
+        operation_id = member_merge_operation_id(project_id, card["user_id"], request_id)
+        return {"operation_id": operation_id} if store.agent_task(operation_id) else None
+    if action["kind"] == "merge_episode":
+        with store.connection() as connection:
+            row = connection.execute(
+                """SELECT accepted_task_id FROM episode_merge_request_receipts
+                WHERE project_id=? AND request_id=? AND accepted_task_id IS NOT NULL""",
+                (project_id, request_id),
+            ).fetchone()
+        return {"operation_id": row["accepted_task_id"]} if row else None
+    return None
+
+
 def approval_card_usage(client: str) -> str:
     return (
         f"Protected actions in this private project thread use {client} ask --key <key> "

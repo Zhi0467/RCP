@@ -27,10 +27,10 @@ const voice = {
 
 const identity = {
   space_id: "space",
-  space_kind: "team" as const,
+  space_kind: new URLSearchParams(location.search).has("personal") ? "personal" : "team",
   space_name: "Team space",
   user: {
-    user_id: "alex",
+    user_id: new URLSearchParams(location.search).get("member") ?? "alex",
     display_name: "Alex",
     identity_kind: "team_member",
     created_at: "2026-10-01T00:00:00Z",
@@ -58,7 +58,20 @@ function Space() {
       onOpenExperiment={() => {}}
       onArchiveEpisode={async () => {}}
       onCreate={() => {}}
-      projectCreation={{ intents: [], requires_authenticated_member: false }}
+      projectCreation={{
+        requires_authenticated_member: false,
+        intents: [
+          {
+            intent: "use_existing_checkout_personally",
+            eligible: true,
+            preselected: true,
+            primary_action_label: "Use existing checkout",
+            required_fields: ["repositories"],
+            pinned_source_project_id: null,
+            unavailable_reason: null,
+          },
+        ],
+      }}
       onDelete={async () => ({ deleted: true, unstopped: [] })}
       openProjectTabs={[]}
       onActivateProjectTab={() => {}}

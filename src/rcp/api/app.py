@@ -139,6 +139,7 @@ from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
 from rcp.release_check import ReleaseCheck
 from rcp.runs.agent_threads import task_owner
+from rcp.runs.approval_cards import settle_interrupted_approval_cards
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -2199,7 +2200,7 @@ def create_app(
                                 source="startup",
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
-                await asyncio.to_thread(store.fail_interrupted_approval_cards)
+                await asyncio.to_thread(settle_interrupted_approval_cards, store)
                 await asyncio.to_thread(reconcile_question_answers)
                 # Work parked on a login that is now unusable resolves to whichever
                 # signed-in login the queue picks, without waiting for a sign-in event.

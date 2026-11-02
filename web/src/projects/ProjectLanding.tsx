@@ -28,6 +28,9 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { agentThreadHash, parseAgentHash } from "../agents/agentThreadModel";
+import { memberDraftKey } from "../core/draftStorage";
+import { readPref, writePref } from "../core/prefStorage";
+import { spaceHomeHash } from "./spaceHome";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { SpaceRuns } from "../experiments/SpaceRuns";
@@ -375,14 +378,31 @@ export function ProjectLanding({
   const [groupId, setGroupId] = useState(() =>
     parseProjectGroupHash(typeof window === "undefined" ? "" : window.location.hash),
   );
-  const [agentRoute, setAgentRoute] = useState(() =>
-    parseAgentHash(typeof window === "undefined" ? "" : window.location.hash),
+  const [homeHash, setHomeHash] = useState(() =>
+    typeof window === "undefined" ? "" : window.location.hash,
   );
+  const homeKey =
+    identity?.space_kind === "personal"
+      ? memberDraftKey(identity.user.user_id, "space-home-view")
+      : null;
+  const agentRoute = parseAgentHash(
+    spaceHomeHash(homeHash, identity?.space_kind, homeKey ? readPref(homeKey) : null),
+  );
+  const homeView = agentRoute ? "agent" : "cards";
+  useEffect(() => {
+    if (homeKey) writePref(homeKey, homeView);
+  }, [homeKey, homeView]);
+  const chooseHomeView = (view: "cards" | "agent") => {
+    if (homeKey) writePref(homeKey, view);
+    const hash = view === "agent" ? agentThreadHash(null) : "#/cards";
+    setHomeHash(hash);
+    window.location.hash = hash;
+  };
   const narrow = useNarrowViewport();
   useEffect(() => {
     const update = () => {
       setGroupId(parseProjectGroupHash(window.location.hash));
-      setAgentRoute(parseAgentHash(window.location.hash));
+      setHomeHash(window.location.hash);
       setGroupMenu(false);
     };
     window.addEventListener("hashchange", update);
@@ -580,7 +600,7 @@ export function ProjectLanding({
             <button
               type="button"
               aria-pressed={!agentRoute}
-              onClick={() => (window.location.hash = projectGroupHash(null))}
+              onClick={() => chooseHomeView("cards")}
             >
               <LayoutGrid size={13} aria-hidden="true" />
               Cards
@@ -588,7 +608,7 @@ export function ProjectLanding({
             <button
               type="button"
               aria-pressed={Boolean(agentRoute)}
-              onClick={() => (window.location.hash = agentThreadHash(null))}
+              onClick={() => chooseHomeView("agent")}
             >
               <MessageCircle size={13} aria-hidden="true" />
               Agent

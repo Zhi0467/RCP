@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from rcp.agents.command_protocol import AskArguments
 from rcp.projects import ProjectCatalog
+from rcp.runs.approval_cards import settle_interrupted_approval_cards
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
@@ -48,11 +49,38 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
     assert sorted(results) == [False, True]
     reopened = AppStore(store.path)
     assert not reopened.claim_approval_card(question.question_id)
-    reopened.fail_interrupted_approval_cards()
+    settle_interrupted_approval_cards(reopened)
     answered = reopened.get_question(question.question_id)
     assert answered is not None and answered.answer == "failed: interrupted"
     card = reopened.approval_card(question.question_id)
     assert card is not None and card["result"]["outcome"] == "failed"
+
+
+def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
+    action = {"kind": "merge_episode", "project_id": "project", "episode_id": "episode"}
+    question = store.create_or_get_question(
+        origin=origin,
+        key="merge",
+        question="Merge?",
+        choices=["Approve", "Decline"],
+        card={"action": action, "pinned": {}},
+    )
+    assert store.claim_approval_card(question.question_id)
+    request_id = store.approval_card(question.question_id)["request_id"]
+    # The episode merge accepted its task before the process stopped.
+    with store.connection() as connection:
+        connection.execute(
+            """INSERT INTO episode_merge_request_receipts(project_id,owner_episode_id,
+            request_id,acting_member,choices_json,choices_digest,attempt_id,attempt_json,
+            accepted_task_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            ("project", "episode", request_id, "alex", "{}", "d", "a", "{}", "merge-task", "t"),
+        )
+    reopened = AppStore(store.path)
+    settle_interrupted_approval_cards(reopened)
+    card = reopened.approval_card(question.question_id)
+    assert card is not None and card["result"]["outcome"] == "approved"
+    answered = reopened.get_question(question.question_id)
+    assert answered is not None and answered.answer == "approved"
 
 
 def test_expiry_answers_question_and_claim_cannot_run(store, origin):

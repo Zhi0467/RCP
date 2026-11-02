@@ -65,6 +65,13 @@ def owned_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRe
     return thread
 
 
+def owned_space_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
+    thread = owned_thread(store, thread_id, user_id)
+    if thread.kind != "space" or thread.closed_at is not None:
+        raise HTTPException(status_code=404, detail="Space thread not found")
+    return thread
+
+
 @router.get("/api/agent-threads")
 def agent_threads(request: Request, *, store: StoreDependency, identity_access: IdentityDependency):
     user = identity_access.acting_user(request)
@@ -214,9 +221,7 @@ def upload_space_attachment(
     attachment_store: AttachmentStoreDependency,
 ) -> ChatAttachmentUpload:
     try:
-        thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-        if thread.kind != "space":
-            raise HTTPException(status_code=404, detail="Space thread not found")
+        owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
         return attachment_store.add(
             project_id=store.space_id,
             chat_id=thread_id,
@@ -244,9 +249,7 @@ def remove_space_attachment(
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
 ) -> dict[str, bool]:
-    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    if thread.kind != "space":
-        raise HTTPException(status_code=404, detail="Space thread not found")
+    owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
     try:
         attachment_store.remove(
             project_id=store.space_id,
@@ -306,9 +309,7 @@ def space_turn(
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
-    thread = owned_thread(store, thread_id, authorized.user_id)
-    if thread.kind != "space":
-        raise HTTPException(status_code=404, detail="Space thread not found")
+    owned_space_thread(store, thread_id, authorized.user_id)
     try:
         with store.client_request_admission(
             store.space_id,
