@@ -155,6 +155,8 @@ function resolveToken(name, theme) {
     if (mode === "dark")
       Object.assign(lookup, rootTokens(':root[data-theme="aqua"][data-color-mode="dark"]'));
   }
+  if (material === "snowbound")
+    Object.assign(lookup, rootTokens(`:root[data-theme="snowbound"][data-color-mode="${mode}"]`));
   let value = lookup[name];
   for (let hop = 0; hop < 4 && value?.startsWith("var("); hop += 1) {
     value = lookup[value.slice(4, value.indexOf(")")).trim()];
@@ -178,10 +180,44 @@ function contrastRatio(foreground, background) {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
+const PAINTED_THEMES = THEME_CHOICES.flatMap((theme) =>
+  ["light", "dark"].map((mode) => resolveTheme(theme, mode)),
+);
+
 test("text on the inverting ink surface stays readable in every theme and color mode", () => {
-  for (const theme of ["classic-light", "classic-dark", "aqua-light", "aqua-dark"]) {
+  for (const theme of PAINTED_THEMES) {
     const ratio = contrastRatio(resolveToken("--paper", theme), resolveToken("--ink", theme));
     assert.ok(ratio >= 4.5, `${theme} ink surface contrast is ${ratio.toFixed(2)}:1`);
+  }
+});
+
+test("Snowbound text and accents stay readable on its paper, sheet, and lit square", () => {
+  const accents = [
+    "--oxblood",
+    "--teal",
+    "--mustard",
+    "--coral",
+    "--indigo",
+    "--plum",
+    "--forest",
+    "--moss",
+    "--slate",
+  ];
+  const pairs = [
+    ["--ink", "--paper"],
+    ["--ink", "--sheet"],
+    ["--ink-soft", "--sheet"],
+    ["--accent-ink", "--oxblood"],
+    ["--ink", "--aqua-selected"],
+    // The selected tab's label sits on the lit square.
+    ["--oxblood-dark", "--aqua-selected"],
+    ...accents.map((accent) => [accent, "--sheet"]),
+  ];
+  for (const theme of ["snowbound-light", "snowbound-dark"]) {
+    for (const [foreground, background] of pairs) {
+      const ratio = contrastRatio(resolveToken(foreground, theme), resolveToken(background, theme));
+      assert.ok(ratio >= 4.5, `${theme} ${foreground} on ${background} is ${ratio.toFixed(2)}:1`);
+    }
   }
 });
 
