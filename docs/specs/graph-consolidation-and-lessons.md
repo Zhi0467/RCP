@@ -214,18 +214,28 @@ Project memory is Markdown on the project's base, outside Git, owned by
 `~/.rcp/memory/<project_id>/`. Launch creates it on demand using the existing
 remote transport where needed. Shared notes live in `shared/notes/`; the index
 is `shared/MEMORY.md`. Each index line links a note and gives a one-line hook.
-Notes begin with `# Title`. Memory is shared within the project; there is no
-member-private index.
+Notes begin with `# Title`. Project memory is shared within the project.
+
+Each member also has private memory on the backend at
+`<data_dir>/memory/members/<user_id>/`, with the same `MEMORY.md` index and
+`notes/` layout. It holds facts about the member, such as preferences and
+standing requests. Launch creates it on demand. A symlinked or non-directory
+folder is never granted.
 
 Ordinary project Work and Discuss chats, including private project threads,
-read and write `shared/`. Space-thread turns receive no memory root. Experiment,
+read and write `shared/`. A member's own thread turns also read and write that
+member's private folder: the Space thread, and each private project thread that
+runs on the backend machine. A private project thread on another machine gets no
+member folder, and its prompt says so. Space-thread turns receive no project
+memory root. Other members' folders are hidden from every run. Experiment,
 Auto-research roots and workers read and add notes; retaining existing notes is
 a prompt rule. Consolidation reads, edits, merges and prunes shared files,
 reports each change, and never touches member folders. Seed, Refresh, branch
 merge, Paper coach and artifact edit receive no memory access. Memory has no
-graph, replay, merge or paper authority.
+graph, replay, merge or paper authority. Member removal deletes the member's
+private folder.
 
-Launch prompts point to the live index and label it as notes, never instructions
+Launch prompts point to each live index and label it as notes, never instructions
 or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
 note storage. Launch uses `lstat` for the index; an oversized index prompts the
 agent to read its start and prune it; add-only runs request consolidation pruning. There

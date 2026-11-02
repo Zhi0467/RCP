@@ -1,12 +1,16 @@
-"""Project memory lives on its base, outside graph history and task stages."""
+"""Project memory lives on its base; member memory on the backend. Both stay outside history."""
 
 from __future__ import annotations
 
+import shutil
+import stat
+from contextlib import suppress
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 from rcp.agents.memory_file_io import (
     change_project_files,
+    ensure_directory,
     memory_root,
     prepare_files,
     safe_component,
@@ -77,6 +81,59 @@ def finish_project_memory_rename(store: AppStore, project: ProjectRecord) -> Non
 def member_memory_root(root: PurePath, user_id: str) -> Path:
     """Return a member's private folder; only the thread owner creates it."""
     return Path(root) / "members" / safe_component(user_id)
+
+
+def task_member_memory_owner(store: AppStore, task: AgentTaskRecord | None) -> str | None:
+    """The member whose private notes this turn uses: only that member's own thread turns."""
+    if (
+        task is None
+        or task.kind not in {"space_chat", "project_chat"}
+        or task.episode_id is not None
+    ):
+        return None
+    chat_id = task.request.get("chat_id")
+    thread = store.agent_thread(chat_id) if isinstance(chat_id, str) else None
+    if thread is None or (thread.kind == "space") != (task.kind == "space_chat"):
+        return None
+    if thread.kind == "project" and thread.project_id != task.project_id:
+        return None
+    return thread.user_id
+
+
+def prepare_member_memory(store: AppStore, user_id: str) -> tuple[str | None, int | None]:
+    """Create the member's backend folder; a redirected folder is never named.
+
+    Returns the folder when it and its parents are real directories, and the
+    index size when the index is a regular file.
+    """
+    memory = store.path.parent.expanduser().resolve() / "memory"
+    root = member_memory_root(memory, user_id)
+    index = root / "MEMORY.md"
+    try:
+        ensure_directory(root / "notes")
+        if not all(
+            stat.S_ISDIR(path.lstat().st_mode)
+            for path in (memory, root.parent, root, root / "notes")
+        ):
+            return None, None
+        # O_EXCL never follows an existing link, so this only ever creates the index.
+        with suppress(FileExistsError):
+            index.touch(mode=0o600, exist_ok=False)
+        metadata = index.lstat()
+    except (OSError, ValueError):
+        return None, None
+    return str(root), metadata.st_size if stat.S_ISREG(metadata.st_mode) else None
+
+
+def remove_member_memory(data_dir: Path, user_id: str) -> None:
+    """Delete a removed member's backend folder without following a link."""
+    root = member_memory_root(data_dir / "memory", user_id)
+    if any(path.is_symlink() for path in (root.parent.parent, root.parent)):
+        raise ValueError("Member memory must not be reached through a symlink")
+    if root.is_symlink() or root.is_file():
+        root.unlink()
+    elif root.exists():
+        shutil.rmtree(root)
 
 
 def prepare_project_memory(

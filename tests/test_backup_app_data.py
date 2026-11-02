@@ -29,9 +29,12 @@ def _capture(data: Path, destination: Path, *, stale_transcript: bool = False):
     store.enroll_team_member(bootstrap, "Member")
     if stale_transcript:
         stale = store.preprovision_team_member("Departed member")
-        path = data / "agent-threads" / stale.user_id / "thread.jsonl"
-        path.parent.mkdir(parents=True)
-        path.write_bytes(b'{"text":"private"}\n')
+        for path in (
+            data / "agent-threads" / stale.user_id / "thread.jsonl",
+            data / "memory" / "members" / stale.user_id / "MEMORY.md",
+        ):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'{"text":"private"}\n')
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO memory_migrations VALUES (?,?,?)", ("project", store.now(), 1)
@@ -98,7 +101,7 @@ def _restore(
     )
     assert reply["status"] == "prepared"
     for entry in manifest.app_data_files:
-        if entry.group == "space_thread" and Path(entry.archive_path).parts[1] == remove_member:
+        if remove_member in Path(entry.archive_path).parts[1:3]:
             assert not (output / "baseline/overlay/data" / entry.archive_path).exists()
             continue
         assert (output / "baseline/overlay/data" / entry.archive_path).read_bytes() == (
@@ -181,9 +184,10 @@ def test_app_data_entries_cannot_escape_owned_roots(group: str, path: str):
         )
 
 
-def test_restore_removing_member_omits_their_space_transcripts(tmp_path: Path):
+def test_restore_removing_member_omits_their_transcripts_and_memory(tmp_path: Path):
     manifest, root = _capture(tmp_path / "data", tmp_path / "backups", stale_transcript=True)
     entry = next(item for item in manifest.app_data_files if item.group == "space_thread")
     member = Path(entry.archive_path).parts[1]
     restored = _restore(tmp_path, manifest, root, remove_member=member)
     assert not (restored / "agent-threads" / member).exists()
+    assert not (restored / "memory" / "members" / member).exists()

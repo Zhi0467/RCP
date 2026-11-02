@@ -1556,12 +1556,20 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             if entry.group == "local_memory"
         },
     )
+    stale = request.remove_stale_member
     app_data_files = tuple(
         entry
         for entry in manifest.app_data_files
         if not (
-            entry.group == "space_thread"
-            and PurePosixPath(entry.source_relative_path).parts[1] == request.remove_stale_member
+            (
+                entry.group == "space_thread"
+                and PurePosixPath(entry.source_relative_path).parts[1] == stale
+            )
+            # Member memory notes: memory/members/<user_id>/...
+            or (
+                entry.group == "local_memory"
+                and PurePosixPath(entry.source_relative_path).parts[1:3] == ("members", stale)
+            )
         )
     )
     try:
