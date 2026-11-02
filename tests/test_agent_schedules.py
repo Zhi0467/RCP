@@ -609,3 +609,38 @@ def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
     monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kwargs: None)
     restarted.recover_at_startup()
     assert restarted.store.agent_task(launched[0]).status == "queued"
+
+
+def test_unschedulable_row_is_disabled_without_blocking_consolidation(schedule_store, monkeypatch):
+    from unittest.mock import Mock
+
+    from rcp.consolidation import ConsolidationPoller
+
+    for key in ("good", "poison"):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron="0 9 * * *",
+            at=None,
+            timezone="UTC",
+            note=key,
+            next_fire_at="2026-01-01T09:00:00+00:00",
+        )
+    with schedule_store.connection() as connection:
+        connection.execute("UPDATE agent_schedules SET timezone='Nowhere/Gone' WHERE note='poison'")
+    poller = ConsolidationPoller(
+        schedule_store, Mock(), service_for=Mock(), clock=lambda: "2026-01-01T10:00:00+00:00"
+    )
+    monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
+    monkeypatch.setattr(poller, "dispatch_due", Mock())
+    monkeypatch.setattr(poller, "dispatch_agent_schedules", Mock())
+    poller.poll_once()
+    poller.dispatch_due.assert_called_once()
+    pending = poller.dispatch_agent_schedules.call_args.args[1]
+    assert [row.note for row in pending] == ["good"]
+    states = {
+        row.note: (row.state, row.disabled_reason) for row in schedule_store.agent_schedules()
+    }
+    assert states["poison"][0] == "disabled" and states["poison"][1]
+    assert states["good"] == ("active", None)

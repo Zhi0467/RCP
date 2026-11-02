@@ -202,11 +202,42 @@ class ConsolidationPoller:
         ):
             self.reconcile_outcomes()
             now = datetime.fromisoformat(self.clock())
-            pending = self.store.advance_agent_schedules(now)
+            pending = self._advance_agent_schedules(now)
             if seconds_until_automatic_launch() > 0:
                 return
             self.dispatch_due(now)
             self.dispatch_agent_schedules(now, pending)
+
+    def _advance_agent_schedules(self, now: datetime):
+        """One unschedulable row is disabled; it never blocks consolidation."""
+        try:
+            return self.store.advance_agent_schedules(now)
+        except Exception:
+            logger.exception("Agent schedule advance failed; checking each due schedule")
+        with self.store.connection() as connection:
+            due = connection.execute(
+                "SELECT schedule_id, cron, timezone FROM agent_schedules "
+                "WHERE state='active' AND next_fire_at<=?",
+                (now.isoformat(),),
+            ).fetchall()
+        for row in due:
+            try:
+                if row["cron"]:
+                    next_occurrence(row["cron"], row["timezone"], now)
+            except Exception:
+                logger.exception("Disabling unschedulable agent schedule %s", row["schedule_id"])
+                with self.store.connection() as connection:
+                    connection.execute(
+                        "UPDATE agent_schedules SET state='disabled', "
+                        "disabled_reason='unschedulable', pending_since=NULL, next_fire_at=NULL "
+                        "WHERE schedule_id=? AND state='active'",
+                        (row["schedule_id"],),
+                    )
+        try:
+            return self.store.advance_agent_schedules(now)
+        except Exception:
+            logger.exception("Agent schedules skipped this tick")
+            return []
 
     def dispatch_agent_schedules(self, now: datetime, pending) -> None:
         from rcp.runs.agent_schedules import dispatch_agent_schedules

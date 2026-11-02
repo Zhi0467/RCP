@@ -252,6 +252,9 @@ records, including any old alias folders. The browser lifecycle cleanup owner
 attempts deletion after commit and retries failures at later turn boundaries.
 An unreachable base never rolls back project deletion. Memory preparation waits
 for pending deletion to finish, including when the same project is registered again.
+Restore keeps a project's migration marker only when the archive brought back its
+local memory folder; a remote base's marker is always dropped, and the next launch
+re-runs the create-if-absent migration.
 Remote deletion retains the resolved host/account identity at removal and checks it
 on retry. An unresolved origin or repointed alias leaves cleanup pending.
 Restore and candidate rehearsal drop every pending cleanup row, because those
@@ -291,8 +294,11 @@ note and its missed fire count. Admission retains the thread's latest provider,
 native session, scratch, and member binding through ordinary current-session
 resolution, including its receipt, and rechecks the ordinary project
 write fence and session constraints. Lost thread access disables pending schedules.
+A schedule whose next occurrence cannot be computed is disabled with reason
+`unschedulable`; it never blocks other schedules or consolidation.
 
 Schedule controls are owner-only. Backup restore keeps schedules disabled with reason
 `restore`, clears their pending wakes, and requires explicit re-enabling. A past
 one-shot cannot be re-enabled. Consolidation's separate restore behavior remains
-delete-on-restore.
+delete-on-restore. Restore deletes undelivered handoffs and marks delivered ones
+notified, so the restored host neither launches nor wakes for them.

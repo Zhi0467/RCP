@@ -133,12 +133,19 @@ def _install(
         )
 
 
-def install_agent_thread_version(connection: sqlite3.Connection, table: str, owner: str) -> None:
+def install_agent_thread_version(
+    connection: sqlite3.Connection,
+    table: str,
+    owner: str,
+    *,
+    columns: tuple[str, ...] | None = None,
+) -> None:
     """Invalidate only a resolved thread owner, including the old owner on update."""
     _install(
         connection,
         table,
         [_bump("''", "agent_threads", f"'member:' || ({owner})", f"({owner}) IS NOT NULL")],
+        columns=columns,
         suffix="_agent_threads",
     )
 
@@ -158,13 +165,23 @@ def install_agent_thread_versions(connection: sqlite3.Connection) -> None:
             owner += " AND t.user_id=ROW.user_id"
         install_agent_thread_version(connection, table, owner)
     # Both project_chat and space_chat name their thread in request_json.chat_id.
-    # Transcripts are file-backed; the turn's task progress/completion publishes them.
+    # Transcripts are file-backed; the turn's completion publishes them. The list
+    # shows a turn's status and finish, so progress writes poll the task instead.
     install_agent_thread_version(
         connection,
         "graph_runs",
         "SELECT t.user_id FROM agent_threads t "
         "WHERE t.thread_id=json_extract(ROW.request_json,'$.chat_id') "
         f"AND {scope}=ROW.project_id",
+        columns=(
+            "project_id",
+            "operation_id",
+            "request_json",
+            "status",
+            "finished_at",
+            "visible",
+            "history_only",
+        ),
     )
     install_agent_thread_version(
         connection,

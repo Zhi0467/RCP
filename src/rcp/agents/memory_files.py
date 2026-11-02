@@ -12,6 +12,7 @@ from rcp.agents.memory_file_io import (
     safe_component,
 )
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -114,11 +115,17 @@ def prepare_project_memory(
                 ]
             )
         if remote_stage is not None:
-            result = remote_stage.project_memory({"project_id": project_id, "lessons": lessons})
+            result = remote_stage.project_memory(
+                {
+                    "project_id": project_id,
+                    "lessons": lessons,
+                    "title_max_chars": MEMORY_MIGRATED_TITLE_MAX_CHARS,
+                }
+            )
             root, size = Path(result["root"]), result["index_bytes"]
         else:
             root = project_memory_root(store.path.parent, project_id)
-            size = prepare_files(root, lessons)
+            size = prepare_files(root, lessons, MEMORY_MIGRATED_TITLE_MAX_CHARS)
         if not migrated:
             with store.connection() as connection:
                 connection.execute(

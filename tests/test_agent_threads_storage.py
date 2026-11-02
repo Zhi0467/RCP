@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from rcp.storage import AppStore
+from rcp.storage.models import ProjectRecord
 from rcp.transfer.archive import inspect_transfer_table_inventory
 from rcp.transfer.records import validate_transfer_table_policy
 
@@ -89,9 +90,10 @@ def test_handoff_deduplication_preserves_pending_delivery(tmp_path: Path) -> Non
     assert store.create_agent_handoff(**arguments).target_operation_id == "target-turn"
 
 
-def test_restore_disables_schedules_expires_cards_and_preserves_handoffs(tmp_path: Path) -> None:
+def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
+    store.upsert_project(_project("remote-project", remote=True))
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('s','thread','op','key','0 9 * * *','UTC','note','active',?)",
@@ -100,20 +102,115 @@ def test_restore_disables_schedules_expires_cards_and_preserves_handoffs(tmp_pat
         connection.execute(
             "INSERT INTO approval_cards(question_id,action_json,pinned_json,pinned_sha256,expires_at,request_id) VALUES('q','{}','{}','hash','2099-01-01T00:00:00+00:00','request')"
         )
-        connection.execute(
-            "INSERT INTO agent_handoffs(handoff_id,source_thread_id,source_operation_id,idempotency_key,target_thread_id,message,created_at) VALUES('h','source','op','key','target','message',?)",
-            (now,),
-        )
-    store.detach_restored_lifecycle(diagnostic="Restored", confirmed_by="Operator", detached_at=now)
+        for handoff_id, delivered in (("pending", None), ("settled", "target-turn")):
+            connection.execute(
+                "INSERT INTO agent_handoffs(handoff_id,source_thread_id,source_operation_id,idempotency_key,target_thread_id,message,created_at,target_operation_id,settled_at) VALUES(?,'source','op',?,'target','message',?,?,?)",
+                (handoff_id, handoff_id, now, delivered, delivered and now),
+            )
+        for project_id in ("captured", "uncaptured", "remote-project"):
+            connection.execute("INSERT INTO memory_migrations VALUES (?,?,0)", (project_id, now))
+    store.detach_restored_lifecycle(
+        diagnostic="Restored",
+        confirmed_by="Operator",
+        detached_at=now,
+        restored_memory_projects={"captured", "remote-project"},
+    )
     with store.connection() as connection:
         assert tuple(
             connection.execute("SELECT state,disabled_reason FROM agent_schedules").fetchone()
         ) == ("disabled", "restore")
         assert connection.execute("SELECT expires_at FROM approval_cards").fetchone()[0] == now
-        assert (
-            connection.execute("SELECT target_operation_id FROM agent_handoffs").fetchone()[0]
-            is None
+        # Nothing remains for startup to launch or wake on the restored host.
+        assert not connection.execute(
+            "SELECT 1 FROM agent_handoffs WHERE target_operation_id IS NULL "
+            "OR notified_operation_id IS NULL"
+        ).fetchall()
+        assert [row[0] for row in connection.execute("SELECT handoff_id FROM agent_handoffs")] == [
+            "settled"
+        ]
+        assert [
+            row[0] for row in connection.execute("SELECT project_id FROM memory_migrations")
+        ] == ["captured"]
+
+
+def _project(project_id: str, *, remote: bool = False) -> ProjectRecord:
+    return ProjectRecord(
+        project_id=project_id,
+        locator=f"/tmp/{project_id}/research.yaml",
+        name=project_id,
+        state_location=f"host:/{project_id}/.research"
+        if remote
+        else f"/tmp/{project_id}/.research",
+        state_remote=remote,
+        added_at="2026-07-31T00:00:00+00:00",
+    )
+
+
+def test_project_deletion_clears_agent_state_and_reregistration_names_a_fresh_thread(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    space, thread = store.ensure_agent_threads("member", ["project"], default_names=("Pip",))
+    store.create_agent_handoff(
+        source_thread_id=space.thread_id,
+        source_operation_id="source-turn",
+        idempotency_key="key",
+        target_thread_id=thread.thread_id,
+        message="Please check",
+    )
+    now = store.now()
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('s',?,'op','key','0 9 * * *','UTC','note','active',?)",
+            (thread.thread_id, now),
         )
+        connection.execute(
+            "INSERT INTO questions(question_id,project_id,owner_kind,owner_id,key,origin_json,"
+            "argument_hash,question,choices_json,multiple,state,created_at) "
+            "VALUES('q','project','chat',?,'key','{}','hash','Question?','[]',0,'pending',?)",
+            (thread.thread_id, now),
+        )
+        connection.execute(
+            "INSERT INTO approval_cards(question_id,action_json,pinned_json,pinned_sha256,expires_at,request_id) VALUES('q','{}','{}','hash','2099-01-01T00:00:00+00:00','request')"
+        )
+        connection.execute(
+            "INSERT INTO space_turn_project_bindings VALUES('turn','project','{}','scope','{}')"
+        )
+    store.delete_project_records("project")
+    with store.connection() as connection:
+        for table in (
+            "agent_handoffs",
+            "agent_schedules",
+            "approval_cards",
+            "space_turn_project_bindings",
+        ):
+            assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
+    store.upsert_project(_project("project"))
+    reopened = store.ensure_agent_threads("member", ["project"], default_names=("Pip",))[1]
+    assert reopened.thread_id != thread.thread_id
+    with store.connection() as connection:
+        assert connection.execute(
+            "SELECT title FROM chat_display WHERE chat_id=?", (reopened.thread_id,)
+        ).fetchone()[0]
+
+
+def test_project_identity_migration_keeps_one_named_thread(tmp_path: Path) -> None:
+    import uuid
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("legacy"))
+    _, thread = store.ensure_agent_threads("member", ["legacy"], default_names=("Pip",))
+    canonical = str(uuid.uuid4())
+    title = store.chat_name("legacy", thread.thread_id, "")
+    store.migrate_project_identity("legacy", canonical, store.space_id)
+    threads = store.ensure_agent_threads("member", [canonical], default_names=("Pip",))
+    assert [row.thread_id for row in threads if row.kind == "project"] == [thread.thread_id]
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT project_id, title FROM chat_display WHERE chat_id=?", (thread.thread_id,)
+        ).fetchall()
+    assert [tuple(row) for row in rows] == [(canonical, title)]
 
 
 def test_transfer_redacts_private_text_but_keeps_patch_provenance(tmp_path: Path) -> None:
@@ -144,3 +241,37 @@ def test_transfer_redacts_private_text_but_keeps_patch_provenance(tmp_path: Path
     assert "private request" not in records[0].model_dump_json()
     assert "private answer" not in records[0].model_dump_json()
     assert "private trace" not in records[0].model_dump_json()
+
+
+def test_thread_watermark_moves_on_turn_status_not_progress(tmp_path: Path) -> None:
+    import json
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _, thread = store.ensure_agent_threads("member", ["project"], default_names=("Pip",))
+    now = store.now()
+
+    def generation() -> int:
+        with store.connection() as connection:
+            return connection.execute(
+                "SELECT generation FROM resource_versions WHERE resource='agent_threads' "
+                "AND entity='member:member'"
+            ).fetchone()[0]
+
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO graph_runs(operation_id,project_id,kind,status,request_json,created_at,updated_at,status_message) VALUES('op','project','project_chat','running',?,?,?,'Started')",
+            (json.dumps({"chat_id": thread.thread_id}), now, now),
+        )
+    started = generation()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status_message='Reading', updated_at=? WHERE operation_id='op'",
+            (store.now(),),
+        )
+    assert generation() == started
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='succeeded', finished_at=? WHERE operation_id='op'",
+            (store.now(),),
+        )
+    assert generation() > started
