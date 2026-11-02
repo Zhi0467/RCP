@@ -1,0 +1,12 @@
+{
+  "initial": 398000,
+  "chunks": {
+    "index": 306000,
+    "index css": 93000,
+    "PaperWorkspace": 287000,
+    "chatMarkdown": 140000,
+    "PaperPdf": 140000,
+    "Terminals": 90000,
+    "GraphViews": 51000
+  }
+}
