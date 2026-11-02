@@ -79,11 +79,20 @@ copied and nothing drifts:
    stamps a mode, so one of them always applies, and both outrank the base
    `:root[data-color-mode="dark"]` (0,2,0) whatever the import order. The
    derived tokens below are restated in both blocks.
-4. **Snowbound overrides.** A short list in `snowbound.css` replaces what Aqua
-   hard-codes: gradients become flat fills; the notched frame and hard shadow
-   replace bevels; the widened `:focus-visible` rule's 3px solid ring becomes
-   the 2px dashed one; and the composer's focus ring, which hard-codes Aqua
-   blue, uses the accent.
+4. **Snowbound overrides.** `snowbound.css` replaces what Aqua's widened
+   rules hard-code (line numbers are in today's `themes/aqua.css`):
+   - Blurred shadows written inline, not through a token (lines 109–112,
+     160–162, 208–209, 258, 299–301, 355), become the hard pixel shadow.
+   - Gradients (lines 102, 108, 286) become flat `--sheet` or `--px-raise`.
+   - The inbox count badge colors (lines 206–207) become `--px-select` on
+     `--walnut`.
+   - The `:focus-visible` ring (3px solid) becomes 2px dashed in the accent,
+     offset 4px. The chat composer, bulletin composer, and bulletin edit focus
+     rings (lines 345–351), which hard-code Aqua blue, use the accent.
+   - Hover rise: `.button`, `.icon-button`, `.dag-tool-button`, and
+     `.project-cover-shell` move by `translate(-1px, -1px)` on hover, using
+     `--aqua-hover`, and by `translate(3px, 3px)` with only the notch while
+     pressed.
 5. **Square corners everywhere.** One rule, with a plain selector list because
    pseudo-elements are not allowed inside `:is()`:
    `:root[data-theme="snowbound"] *, :root[data-theme="snowbound"] ::before,
@@ -195,8 +204,11 @@ is 5.45:1.
 ### The space page scene
 
 Under Snowbound only, `.landing-shell` gets `position: relative` (for the band)
-and `isolation: isolate`, so the scene layers sit between its paper and its
-content. Neither exists today.
+and a transparent background, since the body already paints `--paper`. The two
+scene layers sit at `z-index: -1`, behind the page content and above the body.
+The shell does not get `isolation: isolate`: that would trap the space page's
+dialogs (`.modal-backdrop`, layer 140) under App's floating voice window
+(layer 100).
 
 - **Woods band.** Checked-in art: `themes/snowbound-woods-light.svg` and
   `themes/snowbound-woods-dark.svg` (320×56 pixel grid, about 15 KB each,
@@ -205,8 +217,8 @@ content. Neither exists today.
   It is pure CSS on `.landing-shell::after`. There is no component and no theme
   branching in React.
   - Projects view (`.landing-shell:not(.agent-mode)`): the band is
-    `position: absolute; bottom: 0` and the shell gains 176px of bottom padding
-    (new, Snowbound only), so the band never covers cards or Runs.
+    `position: absolute; bottom: 0`, and the shell gains 176px of bottom
+    padding (new, Snowbound only), so the band never covers cards or Runs.
   - Pip's view (`.agent-mode`): the band is `position: fixed; bottom: 0`
     behind the chat window, with no padding. The chat window keeps its full
     height and overlays the band.
@@ -248,15 +260,17 @@ interface SettingsSection {
   content: ReactNode;
 }
 interface SettingsRailProps {
-  sections: SettingsSection[]; // only the sections that exist
-  selected: string | null;     // null, unknown, or absent: the first section
-  onSelect: (id: string) => void;
-  children?: ReactNode;        // page-level footer, below the pane (save bar)
+  sections: SettingsSection[];   // only the sections that exist
+  initialSection?: string;       // absent, unknown, or missing: the first section
+  children?: ReactNode;          // page-level footer, below the pane (save bar)
 }
 ```
 
-- Left: the rail, icon and label, no descriptions. Right: the panes, then
-  `children`.
+- The rail owns the selected section in its own `useState`, seeded from
+  `initialSection`. Nothing else reads it. Leaving a settings page unmounts it,
+  so the next visit starts fresh.
+- Left: the rail, each item an icon and a label (`.settings-rail-label`), no
+  descriptions. Right: the panes, then `children`.
 - **Panes stay mounted.** Every pane renders once, and non-selected panes get
   `hidden`. `SettingsRail.css` has `.settings-pane[hidden] { display: none }`,
   so no wrapper `display` overrides it. Drafts (new-machine form, Agent
@@ -272,11 +286,17 @@ interface SettingsRailProps {
 - At ≤560px the rail becomes a horizontal strip at the top of the page that
   scrolls within its own width, like the Artifacts Files | Paper switch. The pane
   sits below it. There is no list page and no extra Back.
-- Scroll: entering Settings and every section change scroll the page to the
-  top. Project Settings scrolls in App's project panel (`panelRef`), and App
-  skips the per-view scroll restore for `settings`, since the section it
-  restored into may no longer be shown. Space Settings scrolls in its own
-  shell.
+- **Icons.** Each pane header shows the same icon as its rail item. This Mac's
+  header changes from `HardDrive` to `Laptop` and Caches' to `Database`, so no
+  two items share an icon. Usage and Agent defaults keep their headers without
+  an icon; only their rail items get one.
+- **Scroll.** A section change scrolls the page to the top. Entering Project
+  Settings also starts at the top: `graph/useGraphSelection.ts` skips its
+  per-view scroll restore for `settings` (lines 573–578), and
+  `captureProjectSelection` (line 223) stops saving a scroll position for it.
+  Space Settings scrolls in its own shell, which mounts fresh each time. One
+  exception: the sign-ins entry point still scrolls its fold into view
+  (`ProviderLogins.tsx`), after the pane opens.
 
 ### Space Settings
 
@@ -286,24 +306,29 @@ Section list in `SpaceSettings.tsx`, in this order:
 | --- | --- | --- | --- |
 | `appearance` | Appearance | `Palette` | always |
 | `server` | Team server | its existing header icon | team space |
-| `this-mac` | This Mac | `Laptop` | its status is supported, or failed to load |
+| `this-mac` | This Mac | `Laptop` | personal space, unless its status loaded as unsupported |
 | `machines` | Machines | `Server` | always |
 | `voice` | Dictation and voice | its existing header icon | always |
 | `caches` | Caches | `Database` | personal space with a `cacheProjectId` |
 
-- **This Mac.** `useMachinePower` stays where it is: `SpaceSettings` calls it
-  and passes `{status, setStatus, error}` down to `ThisMac`, which already uses
-  all three. The rail item follows the same `showMachinePowerCard(spaceKind,
-  status)` check, plus a failed load (the pane then shows the existing
-  load-error alert). Polling lifetime is unchanged. Accepted risk: on a cold
-  open, This Mac can appear in the rail a moment after the rest, once the first
-  status arrives.
+- **This Mac.** `useMachinePower` moves up from `ThisMac` into `SpaceSettings`,
+  which passes `{status, setStatus, error}` down to `ThisMac`. Its polling
+  lifetime is unchanged: it runs while Space Settings is open. Status starts
+  empty on every open, so This Mac is in the rail from the start on a personal
+  space. Its pane is empty until the status arrives, then shows the card or the
+  existing load-error alert. Only a status that loads as unsupported removes
+  the item. A caller that opens This Mac therefore never sees another pane
+  first. The item can leave the rail a moment after opening on a personal space
+  that does not support lid-closed mode; that is the one accepted rail change.
 - The personal space's untitled update-status strip moves into the Space
   Settings header, beside the title.
-- `SpaceSettings` takes `section` and `onSectionChange(id)`.
-- **App state.** The `space` half of the settings reducer (below) replaces
-  `spaceSettingsOpen` and `signInsTarget`. `null` means closed. Navigation away
-  closes it, as today.
+- **App state.** One value replaces `spaceSettingsOpen` and `signInsTarget`:
+  `spaceSettings: { section: SpaceSettingsSectionId; signIns?: { provider; host }; opened: number } | null`.
+  `null` means closed. `App` renders `<SpaceSettings key={spaceSettings.opened}
+  initialSection={spaceSettings.section} … />`. Every open increments `opened`,
+  so an entry point fired while Space Settings is already open remounts it on
+  the requested section. The existing effect that closes it when `projectId` or
+  `setupOpen` changes stays, now setting `spaceSettings` to `null`.
 
 ### Project Settings
 
@@ -332,21 +357,16 @@ Presence follows each section's existing render condition.
   on every pane, the current one included, and replaces the bar's shared
   status (save and cache results) while it lasts. There is no jump button; the
   rail is one click away. Errors stay explicit under the no-commentary rule.
-- **State.** Both settings states live in one pure reducer,
-  `projects/settingsNavigation.ts`, which App runs with `useReducer`. It is not
-  in the URL.
-  - State: `{ space: { section; signIns? } | null; project: string | null }`.
-    `space` replaces `spaceSettingsOpen` and `signInsTarget`.
-  - Events: `openSpace(section, signIns?)`, `closeSpace`, `selectSpace(section)`,
-    `openProject(section)`, `selectProject(section)`, `viewChanged(view)`,
-    `projectChanged`.
-  - `openProject` sets the section; App then calls `changeView("settings")`.
-    Entry points go through App's `openProjectSettings(section?)`, which does
-    both.
-  - `viewChanged` away from `settings` and `projectChanged` reset `project` to
-    `null`. So the tab strip (`openTab` → `changeView("settings")`) and WebMCP
-    always open the first section, and nothing carries over between projects.
-    `projectChanged` also closes `space`, as navigation does today.
+- **State.** `ProjectSettings` takes `initialSection?: string` and passes it to
+  its rail. Inside `ProjectSettings`, the rail is rendered as
+  `<SettingsRail key={project.id} …>`, so switching projects starts the new
+  project on its first section. `ProjectSettings` itself stays mounted across a
+  switch, as today, so the race fixtures' A→B→A switches keep their meaning.
+- **App.** App holds `projectSettingsSection: string | null`.
+  `openProjectSettings(section)` sets it and calls `changeView("settings")`.
+  An effect clears it when the view leaves `settings`. So the tab strip
+  (`openTab` → `changeView("settings")`) and WebMCP open the first section.
+  Nothing is in the URL.
 
 ### Entry points
 
@@ -372,6 +392,9 @@ Presence follows each section's existing render condition.
 - **A link per section in the project hash.** Rejected by the human: it touches
   the shared routing code in three files for reload persistence nobody asked
   for.
+- **A reducer for both settings states.** Rejected: unmounting already resets
+  the rail, so seven events and a test file would guard state nothing else
+  reads.
 - **Copy Aqua's rules into `snowbound.css`.** Rejected: about 69 rule blocks in
   two copies would drift. Widening Aqua's selectors and swapping tokens keeps one
   structure.
@@ -388,8 +411,7 @@ Presence follows each section's existing render condition.
 - **Draw the woods as a React component.** Rejected: it puts theme branching in
   `ProjectLanding`. Two small SVG files keep the theme in CSS.
 - **Lift the machine-power status into App.** Rejected: `useMachinePower`
-  polls while mounted, so App would poll on every project page to save a
-  moment's delay on This Mac's rail item.
+  polls while mounted, so App would poll on every project page.
 - **No snowfall.** Rejected: the human chose the direction with it. It is cheap
   (transform on one layer) and stops under reduced motion.
 
@@ -401,30 +423,40 @@ Presence follows each section's existing render condition.
   themes match, never Aqua's declarations. The served-app journey runs Aqua too.
 - **The universal `!important` radius rule.** It also squares avatars and pills.
   That is intended in a pixel theme. The journey checks that nothing clips.
+- **Stacking.** The scene layers sit at `z-index: -1` without a new stacking
+  context, so dialogs keep covering the voice window. The journey opens a
+  space-page dialog with the voice window up.
 - **Animation cost in the desktop webview.** The snowfall is transform-only on
   its own layer. Check CPU on the served app with the space page left open.
-- **This Mac appearing late.** Accepted, as described above.
+- **This Mac leaving the rail.** Accepted, as described above.
 
 ## Build order
 
-Each phase leaves the app working.
+Each phase leaves the app working and its tests passing.
 
 1. **Snowbound.** `theme.ts`, `index.html`, `main.tsx` (font import), Aqua
    selector widening in the five CSS files, `themes/snowbound.css`, the two
    woods SVGs (already on this branch), `styles.css`, `SpaceRuns.tsx` palette,
-   `package.json` and the lockfile. The picker is still in the identity menu,
-   so the theme is usable.
+   `package.json` and the lockfile. Tests: `theme.test.mjs`,
+   `spaceRuns.test.mjs`, `breakpoints.test.mjs`. The picker is still in the
+   identity menu, so the theme is usable.
 2. **Rail and Space Settings.** `ui/SettingsRail.tsx` and `.css`,
-   `SpaceSettings.tsx` (section list, Appearance pane, header strip, `section`
-   props), `App.tsx` (reducer for Space Settings,
-   picker removal), `projects/settingsNavigation.ts` (space half),
-   `LandingIdentityMenu.tsx`, `ProjectLanding.tsx`
+   `SpaceSettings.tsx` (section list, Appearance pane, header strip,
+   `useMachinePower` move, `initialSection`), `App.tsx` (`spaceSettings` state,
+   picker removal), `LandingIdentityMenu.tsx`, `ProjectLanding.tsx`
    (`onOpenSpaceSettings(section?)`, `MachinePowerWarning`),
-   `AppearancePicker.tsx` and `.css`.
+   `AppearancePicker.tsx` and `.css`. Tests: `spaceSettings.test.mjs`,
+   `theme.browser.test.mjs` with its fixtures, `landingIdentity.test.mjs`,
+   `fixtures/agentThreads.tsx`, and the new `settingsRail.browser.test.mjs`
+   (Space Settings cases).
 3. **Project Settings.** `ProjectSettings.tsx` (section list, save bar as
-   children, invalid-ceiling line), `settingsNavigation.ts` (project half),
-   `App.tsx` (`openProjectSettings`, resets, scroll, entry points),
-   `projects/consolidation.ts`, `projects/ProjectConsolidation.tsx`.
+   children, invalid-ceiling line, `initialSection`), `App.tsx`
+   (`projectSettingsSection`, `openProjectSettings`, entry points),
+   `graph/useGraphSelection.ts` (no scroll restore for settings),
+   `projects/consolidation.ts`, `projects/ProjectConsolidation.tsx`. Tests:
+   `settingsRequestRaces.browser.test.mjs`, `externalJobs.browser.test.mjs`,
+   the project-Settings case in `theme.browser.test.mjs`, and the Project
+   Settings cases in `settingsRail.browser.test.mjs`.
 4. **Docs.** Move the rules into the two specs: the Snowbound grammar in prose,
    the title-font exception, the motion sentence, the rail, and Settings
    ownership (display preferences now live in Space Settings). Delete this file.
@@ -433,51 +465,60 @@ Each phase leaves the app working.
 
 Existing tests to update:
 
-- `theme.test.mjs`: `resolveToken` and the contrast test learn Snowbound; add
-  the pair list. The parity loop picks up the new choice.
+- `theme.test.mjs`: `resolveToken` learns Snowbound's mode-qualified blocks;
+  the contrast test adds the pair list. The parity loop picks up the new
+  choice.
 - `spaceRuns.test.mjs`: the palette-key assertion gains the two Snowbound keys.
-- `theme.browser.test.mjs` and `fixtures/appearance.tsx`:
-  - The fixture keeps `ProjectLanding` for the badge, card-menu, and narrow
-    identity-menu tests. The identity menu still exists, without the picker.
-  - The fixture also renders `SpaceSettings` on its Appearance pane beside the
-    landing, so the badge test still switches theme live through the picker
-    and checks that on-screen badges update. It expects six badge color sets.
+- `theme.browser.test.mjs`:
+  - `fixtures/appearance.tsx` and `.html` stay as they are, because
+    `campaigns.browser.test.mjs` also loads them and counts their requests. Its
+    identity menu simply has no picker now.
+  - The badge test switches theme through stored appearance and a reload. In
+    the app, the theme now changes inside Space Settings while the space page
+    is unmounted, so an on-screen live switch no longer happens. It expects six
+    badge color sets.
+  - The card-menu and narrow identity-menu tests keep their menu fit, focus,
+    and Escape checks, minus the picker.
+  - The legacy-migration test and the picker's narrow fit and focus checks move
+    to a new fixture, `fixtures/appearanceSettings.tsx` and `.html`, which
+    renders `SpaceSettings` on its Appearance pane with its own API mocks. The
+    `openDisplay` helper becomes `openAppearance`, which finds the region
+    labelled "Appearance".
   - The project-Settings test selects the Machines and Agent defaults panes
     before it uses Probe and the ceiling input.
 - `spaceSettings.test.mjs`: `sectionClasses` asserts panes instead of every
   section at once. "The identity menu holds Display" reverses.
 - `settingsRequestRaces.browser.test.mjs`, `externalJobs.browser.test.mjs`, and
-  their fixtures select the pane before they use the ceiling input, Repos,
-  Members, cache, or machine tiles.
+  their fixtures select the pane they need, again after each project switch,
+  before they use the ceiling input, Repos, Members, cache, or machine tiles.
 - `landingIdentity.test.mjs` and `fixtures/agentThreads.tsx` stop passing
   appearance props.
 - `breakpoints.test.mjs` scans `SettingsRail.css` and `snowbound.css`.
 
 New, behavior only, with no wording assertions. They go in
-`web/tests/settingsRail.browser.test.mjs` with `fixtures/settingsRail.tsx`, which
-renders `SpaceSettings` and `ProjectSettings` against the existing stub API:
+`web/tests/settingsRail.browser.test.mjs` with `fixtures/settingsRail.tsx` and
+`.html`, which render `SpaceSettings` and `ProjectSettings` against the existing
+stub API:
 
 - Choosing a rail item shows only that pane, and a draft in another pane
   survives the switch.
-- `selected` that is `null` or unknown shows the first section.
+- `initialSection` selects its pane; an unknown one shows the first section.
+- Remounting Space Settings with a new `opened` and section shows that section.
+- Switching `ProjectSettings` to another project starts on its first section.
+- This Mac is in the rail while the status loads, and its pane stays selected
+  when the status arrives.
 - An invalid ceiling on Agent defaults, seen from another pane, shows its line
   in the save bar and keeps Save disabled.
 
-`web/tests/settingsNavigation.test.mjs` (node, no browser) covers the reducer:
+Served-app journey. Every pane once, at 1280px in Snowbound light. Then the
+space page (projects view and Pip's view) and one Settings pane at 1280px and
+390px, light and dark, Aqua and Snowbound. Also:
 
-- each entry point's open event selects its section, and `signIns` survives on
-  `machines`;
-- `viewChanged` away from settings and `projectChanged` reset the project
-  section; `projectChanged` closes Space Settings;
-- `openProject` then `viewChanged("settings")` keeps the requested section.
-
-Served-app journey at 1280px and 390px, light and dark, Aqua and Snowbound:
-
-- the space page (projects view and Pip's view), Research, Paper with the
-  coach, every Space Settings pane, and every Project Settings pane;
+- Research, and Paper with the coach, in Snowbound;
 - each entry point lands on its pane; reopening from the gear shows Appearance;
   switching projects or tabs opens Project Settings on its first section;
 - the identity menu without the picker;
+- a space-page dialog stays above the voice window;
 - console and network clean;
 - the woods band never covers content in the projects view and sits behind the
   chat in Pip's view;
