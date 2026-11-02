@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from rcp.api.dependencies import get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.runs.agent_schedules import validate_schedule
+from rcp.runs.agent_schedules import ScheduleRefused, validate_schedule
 from rcp.storage import AppStore
 
 router = APIRouter()
@@ -35,21 +35,14 @@ def list_schedules(
 ) -> dict:
     human = identity_access.require_patch_capable_identity(request)
     require_schedule_owner(store, thread_id, human.user_id)
-    return {
-        "schedules": [
-            item.model_dump(
-                mode="json",
-                exclude={
-                    "thread_id",
-                    "created_operation_id",
-                    "idempotency_key",
-                    "pending_since",
-                    "created_at",
-                },
-            )
-            for item in store.agent_schedules(thread_id)
-        ]
-    }
+    return {"schedules": [_view(item) for item in store.agent_schedules(thread_id)]}
+
+
+def _view(schedule) -> dict:
+    """A waiting note keeps pending_since and why it has not started."""
+    return schedule.model_dump(
+        mode="json", exclude={"thread_id", "created_operation_id", "idempotency_key", "created_at"}
+    )
 
 
 @router.delete("/api/agent-threads/{thread_id}/schedules/{schedule_id}", status_code=204)
@@ -84,15 +77,9 @@ def enable_schedule(
             after=datetime.fromisoformat(store.now()),
         )
         enabled = store.enable_agent_schedule(thread_id, schedule_id, due.isoformat())
+    except ScheduleRefused as exc:
+        # A past one-time schedule cannot resume; Cancel removes it.
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return enabled.model_dump(
-        mode="json",
-        exclude={
-            "thread_id",
-            "created_operation_id",
-            "idempotency_key",
-            "pending_since",
-            "created_at",
-        },
-    )
+    return _view(enabled)

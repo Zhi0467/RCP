@@ -272,29 +272,42 @@ on every target, and deletes consolidation schedules until a member configures t
 
 ## Private agent schedules
 
-Private threads expose `schedule add`, `list`, and `cancel`. Add requires the
-persisted admitting member message from the composer, voice, or handoff, with a
-human trigger and no question-follow-up binding; wakes cannot create schedules.
-The agent creates one only when asked. Mutations carry an idempotency key, and
-`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread.
+Private threads expose `schedule add`, `list`, and `cancel` to every thread turn,
+wakes included. The agent adds one when the member asks for a reminder or a
+recurring check. Mutations carry an idempotency key keyed on the turn's
+Resume/Retry lineage root, so a re-run returns the same schedule.
+`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread; a bounded repeat
+such as every minute for ten minutes is a set of one-shots. A turn carrying the
+member's own message (composer, voice, or the member's Space handoff, with no
+question-follow-up binding) may schedule any cadence. A wake turn's cron fires must
+be at least `AGENT_SCHEDULE_MIN_GAP_MINUTES` apart.
 
 A schedule names an IANA timezone and either a local `YYYY-MM-DDTHH:MM` instant
-or five numeric cron fields with wildcards, lists, ranges, and steps. Sunday is
-0 or 7. When both day-of-month and weekday are restricted, either matches.
-Local times use consolidation's first-fold and next-valid-gap-minute rules.
-The admitting turn's timezone is the default; without it the agent must supply
-one. Invalid and past one-shot times are refused.
+or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
+`SUN`-`SAT` names, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+Sunday is 0 or 7. As in Vixie cron, when neither day field starts with `*`,
+either matches; otherwise both must. Local times use consolidation's first-fold
+and next-valid-gap-minute rules. The member's zone comes from the turn's composer
+or, failing that, the member's latest composer turn; `--timezone` overrides it
+only when the member named a zone. Every add and list result, and the schedule
+instructions, carry the zone and the member's local now. Refusals return a code
+and a plain reason saying what to do.
 
 The consolidation poller advances due schedules and preserves their first pending
 occurrence in one transaction before the automatic-launch cooldown check. Wake
-admission and launch wait until that cooldown has passed. One-shot schedules
-become done. Notes stay pending while the thread's turn is active or awaiting
-Resume. Once eligible,
-one atomic admission claims all observed notes for one Work wake, listing each
-note and its missed fire count. Admission retains the thread's latest provider,
-native session, scratch, and member binding through ordinary current-session
-resolution, including its receipt, and rechecks the ordinary project
-write fence and session constraints. Lost thread access disables pending schedules.
+dispatch then runs first in the tick, in its own error boundary, per thread.
+One-shot schedules become done. Notes stay pending while the thread's turn is
+active or awaiting Resume. A wake that provider sign-in, machine dependencies, or
+a thread refusal defers keeps its notes pending, records `deferred_reason`, and
+retries each tick. Once eligible, one atomic admission claims all observed notes
+for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
+its missed fire count. Admission retains the thread's latest provider, native
+session, scratch, and member binding through ordinary current-session resolution,
+including its receipt, also after a restore made that turn history-only, and
+rechecks the ordinary project write fence and session constraints. A claimed wake
+whose thread closed before launch settles failed. A succeeded schedule wake on a
+project thread pushes the owner's `agent_thread` notification. Lost thread access
+disables active schedules; done one-shots keep their pending note.
 A schedule whose next occurrence cannot be computed is disabled with reason
 `unschedulable`; it never blocks other schedules or consolidation.
 

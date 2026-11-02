@@ -819,6 +819,8 @@ AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
 # Member-requested standing schedules per private agent thread.
 AGENT_SCHEDULES_MAX_ACTIVE = 20
 AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+# Consecutive fires of one schedule, or one-shots on one thread, stay this far apart.
+AGENT_SCHEDULE_MIN_GAP_MINUTES = 15
 
 # Human approval cards expire on read or resolution, with no background sweeper.
 APPROVAL_CARD_TTL_HOURS = 72
