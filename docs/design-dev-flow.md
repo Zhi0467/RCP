@@ -23,7 +23,7 @@ Each piece extends an existing mechanism.
 | 2. Lint rules | `test_module_boundaries.py`, `test_route_inventory.py`, ruff | `lint`, `python-shard` |
 | 3. Comment ban + ratchet | basedpyright baseline, `test_project_types.py` ratchet, ESLint suppressions | `lint` |
 | 4. Member journey | `AcceptanceAgentLauncher`, `test_agent_slice_served.py` | `python-shard` |
-| 5. Budgets | `graphProjectionPerformance.test.mjs`, the `agentThreads.browser` harness | `web` |
+| 5. Budgets | the `agentThreads.browser` mocked-API harness | `web` |
 
 Real-data regressions are a working rule, not a check; the rule lives in
 AGENTS.md (piece 3's diff).
@@ -56,14 +56,14 @@ explorer checks what that does not settle:
   `transport_retry_owed` is true; and while a retry timer for the delivered
   turn is pending in the world, `_handoff_turn_settled` is false. (The
   converse does not hold by design: a queued or running turn, an undecided
-  retry, or a `provider_auth` failure with sign-in candidates is unsettled
-  with no timer.)
+  retry, or a `provider_auth` failure awaiting sign-in is unsettled with no
+  timer.)
 - **Safety** in every reachable state: at most one delivered turn and one
   Space wake per handoff; no wake while the Space thread is busy.
-- **Liveness**, within the bound (see Mechanism): environment actions alone
-  (settle, timer fire, dispatch, restart) reach a state where the handoff is
-  settled, or the delivered task offers `can_retry` or `can_resume` to the
-  member.
+- **Liveness**, within the bound (see Mechanism): some sequence of
+  environment actions (settle, timer fire, dispatch, restart) reaches a state
+  where the handoff is settled, or the delivered task offers `can_retry` to
+  the member.
 
 ### Mechanism
 
@@ -79,10 +79,12 @@ settled by direct store writes, delivery and wakes by explicit dispatch.
   once and copied per `World`, because delivery also writes transcripts,
   scratch and project state outside the database.
 - **Search.** Depth-first with replay: the live world is kept for the first
-  child and rebuilt by replaying the prefix only when backtracking. Depth
-  starts at 6. Before fixing it, the builder measures one `World` build and
-  one action, and picks the deepest bound that keeps the test under 60 s on a
-  CI runner; the test asserts that state-count ceiling so a growing model
+  child and rebuilt by replaying the prefix only when backtracking. The bound
+  is the smallest depth at which the #368 handoff defects are reachable with
+  their fixes reverted (a never-settled handoff while a retry is owed, the
+  retry race): the builder reverts each fix locally, finds the depth that
+  reports it, and records that as the reason for the bound. 60 s is a
+  ceiling, not a target; the test asserts its state count so a growing model
   fails visibly.
 - **View.** A hashable tuple with positional names (operation ids are fresh
   per replay): the handoff's derived state from `target_operation_id`,
@@ -91,15 +93,21 @@ settled by direct store writes, delivery and wakes by explicit dispatch.
   busy flag; and the pending timers. Equal views are one state.
 - **Actions**, each followed by `dispatch_thread_handoffs`, as the tests do:
   - the source Space turn, the delivered project turn, or a wake turn settles
-    by `store.complete_agent_task` or `store.fail_agent_task` with
-    `failure_kind` `transport_lost`, `provider_auth`, or `other`;
+    by `store.complete_agent_task`, or by `store.fail_agent_task` with
+    `failure_kind` `transport_lost` or `other`. A `transport_lost` settle then
+    calls `background._auto_retry_transport_loss(record)`, the engine's own
+    post-settle hook, which writes the `transport_auto_retry` receipt and
+    schedules the timer, so timers come from product code, never from the
+    test;
   - a pending retry timer fires;
-  - human Retry or Resume of the delivered turn;
-  - sign-in release: `provider_login_changed` for the one `LoginKey` the
-    `provider_auth` failure recorded as signed out;
+  - human Retry of the delivered turn;
   - restart: discard the engine and its timer list, build a new
-    `BackgroundAgentTasks` over the same files, and call
+    `BackgroundAgentTasks` over the same files with the same four seams
+    applied again, pass it to every later dispatch, and call
     `recover_at_startup()`, which re-arms owed retries.
+  `provider_auth` stays out of the explorer: its settlement depends on a
+  recorded login that admission, patched out here, would write, and its
+  existing tests cover it.
   Attachment expiry is left out: it reads the wall clock, and a handoff turn
   carries no attachments. The clock advances only on a timer firing, by that
   timer's delay.
@@ -149,11 +157,15 @@ About 50 files are shipped as source to hosts whose `python3` may be 3.9.
   - A reader call or wrapper call whose target is not literal fails the test
     with its location. Exempt by name: the wrapper bodies themselves and
     `_module_source` in `providers/__init__.py`.
+  - `inspect.getsource(X)` where `X` is an imported module counts as a
+    whole-file read of that module (`repository_preview.py` ships
+    `rcp/repository_window.py` this way); a non-module or non-literal
+    argument adds nothing.
   - `_paper_tree_remote_script` in `transport/state.py` reads all of
     `state.py` but ships two extracted functions. It switches to
-    `inspect.getsource` on those two functions, as `repository_preview.py`
-    already does, so the whole-file rule holds and `state.py` stays out of the
-    set.
+    `inspect.getsource` on those two functions, so the whole-file rule holds
+    and `state.py` stays out of the set. Those two functions are knowingly
+    unchecked by the py39 rules.
   - Self-tests cover each resolver on a small sample. The test also asserts
     that the ruff glob list equals the derived set.
 - Out of scope: the inline `script = """…"""` strings in `run_stage.py`,
@@ -176,8 +188,10 @@ The web polls about 14 routes (`RefreshScheduler`, `useAgentThreads`, the
   `subprocess`; outbound HTTP through a patched `urllib.request.urlopen`;
   and `refresh_if_stale` and `open_display` as remote reads.
 - A route passes when it has zero `BEGIN IMMEDIATE`, DML, subprocesses,
-  outbound HTTP and remote reads, and no more statements than its recorded
-  ceiling in the JSON.
+  outbound HTTP and remote reads. Statement counts are not budgeted here.
+- Coverage limit: the list is hand-kept, and its completeness is checked only
+  on the screens piece 5's fetch-budget test loads. A poll added elsewhere is
+  caught at review.
 - Today's violators go into a shrinking allowlist in the same JSON, each with a
   one-line reason: team device pairing GET (`BEGIN IMMEDIATE`),
   `GET /api/space/machines/{id}/browser` (SSH), `GET /api/space/runs`
@@ -188,25 +202,25 @@ The web polls about 14 routes (`RefreshScheduler`, `useAgentThreads`, the
 
 ### (c) Idempotency-Key admission
 
-- **Rule**, in `test_route_inventory.py`, derived from the server with no
-  fixture: every endpoint that declares the
-  `idempotency_key: Annotated[UUID4 | None, Header()]` parameter calls
-  `client_request_admission` directly or through a named helper
-  (`_space_control_admission`), checked by AST over the endpoint body.
+- **Scope.** Every server endpoint that accepts the key already admits it,
+  so no server rule is added. The drift that happened ran the other way: the
+  web sent the key where the server ignores it.
 - **Today**: project pause (`api/tasks.py`) and Space thread pause
   (`api/agent_threads.py`) do not declare the key, yet the web sends it.
   Pause stores no operation or episode, and pausing twice is already a no-op,
   so the fix is on the web: `controlThreadTask` in
   `web/src/agents/agentThreadsApi.ts` and `operateTask` in `web/src/App.tsx`
   stop sending the key for `pause`.
-- **Web side**: `web/tests/agentWindow.test.mjs` already asserts which
+- **Pinned in tests**: `web/tests/agentWindow.test.mjs` already asserts which
   headers `controlThreadTask` sends; its pause case changes to assert no key,
-  and it gains resume and retry cases asserting the key.
+  and it gains resume and retry cases asserting the key. `operateTask` gets
+  the same three cases in the test file that covers `App.tsx` task controls.
 
 Shared AST helpers move, unchanged, from `test_module_boundaries.py`
 (`_python_files`, `_call_name`, and what `_call_name` needs: `_import_aliases`,
-`_module_package`, `SOURCE`) into `tests/architecture.py`, and both old and new
-tests import them from there.
+`_module_package`, `SOURCE`) into `tests/architecture.py`; both
+`test_module_boundaries.py` and `test_shipped_sources.py` import them from
+there.
 
 ## 3. Comment ban with allowlist and ratchet
 
@@ -243,7 +257,7 @@ later sweep cannot delete it.
   suppressions file `web/eslint-suppressions.json` (`--suppress-all`),
   counted per file and rule; unpruned suppressions fail by default.
   - Add a config block for `tests/**/*.mjs` that enables the rule.
-  - `lint` runs `eslint src tests`.
+  - The `lint` script in `web/package.json` becomes `eslint src tests`.
   - The pre-commit ESLint hook filter widens to `^web/(src|tests)/` and the
     suppressions file; the prettier hook excludes the suppressions file.
 - **Order**: both baselines are generated in the last code step, after every
@@ -280,17 +294,21 @@ installed-upgrade data after build 2966's team rehearsal refused on it.
 
 - **Provider.** `AcceptanceAgentLauncher` (`agents/acceptance.py`) is already
   a provider mode with no CLI, wired through `create_app(acceptance_agent=True)`.
-  Add one fixed scenario, `space_handoff`, selected the existing way: the
-  `scenario` key of the state file `_scenario` already reads from the turn's
-  working folder. The test writes that file into the Space thread's scratch
-  before the first message.
-  - The Space turn runs the staged `handoff` command the way other scenarios
-    run staged commands, by the command prefix in the contract
-    (`_run_campaign_argv`); the wording rule covers scenario selection only.
-  - Every turn writes `outcome.json` as `generic_watchers` does, so the report
-    carries a `turn_outcome`.
-  - The delivered project turn and the Space wake turn run the existing
-    generic success path.
+  Add one fixed scenario, `space_handoff`, with three roles:
+  - **First Space turn**: selected the existing way, by the `scenario` key of
+    the state file `_scenario` reads from the turn's working folder; the test
+    writes it into the Space thread's scratch before the first message. The
+    turn runs the staged `handoff` command by the command prefix in the
+    contract (`_run_campaign_argv`), with the marker `space_handoff` in the
+    handoff message, and sets `handed_off` in its state file. (The wording
+    rule covers scenario selection only.)
+  - **Delivered project turn**: selected by that marker in its prompt, which
+    `_scenario` already checks; it answers and succeeds.
+  - **Space wake turn**: the same Space state file, now with `handed_off`
+    set; it answers and succeeds without a second handoff.
+  - Every role writes `outcome.json` as `generic_watchers` does, so the report
+    carries a `turn_outcome`. `space_handoff` joins `_scenario`'s persisted
+    set and the `AcceptanceLaunchRecord.scenario` literal.
   - Failures and retries stay with the piece 1 explorer: `transport_lost` is
     only classified for a remote host, and acceptance runs locally.
 - **Runner.** `tests/test_member_journeys_served.py`, cloned from
