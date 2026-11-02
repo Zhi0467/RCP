@@ -51,6 +51,7 @@ from rcp.limits import (
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
     PATCH_OUTPUT_RETENTION_DAYS,
     RUN_TRACE_RETENTION_DAYS,
+    SPACE_PROJECT_RESULTS_MAX_COUNT,
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
@@ -4894,6 +4895,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ).model_dump(mode="json")
         if artifacts:
             payload["artifacts"] = artifacts
+        raw_project_results = result.get("project_results")
+        if isinstance(raw_project_results, dict):
+            # A Space turn's per-project Apply status, keyed by project id.
+            payload["project_results"] = {
+                str(key)[:200]: value[:32]
+                for key, value in list(raw_project_results.items())[
+                    :SPACE_PROJECT_RESULTS_MAX_COUNT
+                ]
+                if isinstance(value, str)
+            }
 
         graph_update = cls._bounded_graph_update(result.get("graph_update"))
         raw_graph_updates = result.get("graph_updates")
