@@ -245,6 +245,10 @@ def test_login_homes_are_readable_only_to_their_provider(
         denials = _codex_read_denials(scope)
         assert len(homes) == 2
         assert all(json.dumps(item) + '="deny"' in denials for item in homes)
+        # A capped `**` scan keeps Codex's Linux glob warning out of turn errors.
+        import tomllib
+
+        assert tomllib.loads("f={" + denials + "}")["f"]["glob_scan_max_depth"] >= 1
     else:
         assert str(tmp_path / "data/provider-homes") in scope.hidden_directories
         assert str(tmp_path / "home/.rcp/provider-homes") in scope.hidden_directories

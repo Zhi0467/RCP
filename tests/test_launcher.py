@@ -1911,3 +1911,10 @@ async def test_machine_shell_timeout_reaches_provider_environment(
             shell_timeout_seconds=resolved_timeout if staged else ...,
         ):
             pass
+
+
+def test_provider_stderr_drops_terminal_colors():
+    from rcp.agents.launcher import _meaningful_stderr
+
+    colored = "\x1b[2m2026-11-01T00:00:00Z\x1b[0m \x1b[31mERROR\x1b[0m out of credits"
+    assert "\x1b" not in _meaningful_stderr(colored)

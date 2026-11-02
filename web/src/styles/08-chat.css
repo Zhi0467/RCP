@@ -1085,15 +1085,20 @@
   color: var(--red);
   padding: 10px 12px;
 }
+/* Retry sits beside the whole message; a trigger chip stays a one-line label above it. */
 .node-chat-line.error:has(.chat-error-retry) {
   align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
+  column-gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.node-chat-line.error:has(.chat-error-retry) > :not(.chat-error-retry) {
+  grid-column: 1;
 }
 .chat-error-retry {
   color: var(--red);
-  flex: none;
+  grid-column: 2;
+  grid-row: 1 / span 9;
 }
 .node-chat-line.meta {
   background: var(--amber-soft);

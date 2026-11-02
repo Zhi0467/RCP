@@ -666,6 +666,10 @@ BROWSER_MAX_SESSIONS_PER_HOST = 8
 # Per-launch secret-hiding policy and per-machine folder payload bounds.
 HIDDEN_READ_PATH_MAX_LENGTH = 4096
 HIDDEN_READ_PATH_MAX_COUNT = 256
+# How deep Codex expands a `**` deny glob on Linux. A login home's credential sits
+# one folder below the glob root; without a cap Codex logs a warning into stderr,
+# which the launcher then shows inside every failed turn.
+CODEX_DENY_GLOB_SCAN_MAX_DEPTH = 4
 # A machine's own folders join the defaults in one scope, so they get a smaller share.
 HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT = 64
 HIDDEN_READ_ENV_NAME_MAX_LENGTH = 256
