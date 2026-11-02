@@ -152,13 +152,24 @@ def schedule_clock(timezone: str | None, now: datetime) -> dict[str, str | None]
 
 
 def member_turn(store, task) -> bool:
-    """A turn carrying the member's own words, rather than a wake or follow-up."""
-    return (
+    """A turn carrying the member's own words, rather than a wake or follow-up.
+
+    A delivered handoff speaks for the member only when the Space turn that sent
+    it did; one sent from a scheduled wake stays a wake.
+    """
+    source = task.request.get("source")
+    if not (
         bool(str(task.request.get("message") or "").strip())
         and task.request.get("trigger", "human") == "human"
-        and task.request.get("source") in (None, "voice", "handoff")
+        and source in (None, "voice", "handoff")
         and store.question_for_followup(task.operation_id) is None
-    )
+    ):
+        return False
+    if source != "handoff":
+        return True
+    handoff = store.agent_handoff_delivered_as(task.operation_id)
+    sender = store.agent_task(handoff.source_operation_id) if handoff else None
+    return sender is not None and member_turn(store, sender)
 
 
 def schedule_instructions(store, operation_id: str, usages: tuple[str, ...] = ()) -> str:

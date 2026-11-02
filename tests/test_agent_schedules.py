@@ -163,6 +163,41 @@ def test_any_thread_turn_adds_but_only_member_turns_schedule_often(
     assert daily.result["timezone"] == "Europe/Berlin" and daily.result["now_local"]
 
 
+@pytest.mark.parametrize("sender_trigger,every_minute_ok", [("human", True), ("schedule", False)])
+def test_a_delivered_handoff_schedules_often_only_for_a_member_sender(
+    schedule_store, monkeypatch, sender_trigger, every_minute_ok
+):
+    import json
+    from types import SimpleNamespace
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    origin = schedule_store.agent_task("origin")
+    schedule_store.create_agent_task(
+        origin.model_copy(
+            update={
+                "operation_id": "sender",
+                "request": {**origin.request, "trigger": sender_trigger},
+            }
+        )
+    )
+    with schedule_store.connection() as connection:
+        request = {**origin.request, "trigger": "human", "source": "handoff", "timezone": "UTC"}
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'",
+            (json.dumps(request),),
+        )
+    monkeypatch.setattr(
+        schedule_store,
+        "agent_handoff_delivered_as",
+        lambda _: SimpleNamespace(source_operation_id="sender"),
+    )
+    often = handle_schedule(
+        schedule_store, "origin", command(key="often", action="add", cron="* * * * *", note="Play")
+    )
+    assert (often.status == "ok") is every_minute_ok, often.message
+
+
 def test_cron_names_aliases_and_vixie_stepped_day():
     after = datetime(2026, 11, 2, tzinfo=UTC)  # a Monday
     assert next_occurrence("0 9 * JAN-DEC MON-FRI", "UTC", after) == datetime(
