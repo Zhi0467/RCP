@@ -489,6 +489,18 @@ the provider contract. Discuss, Seed and Refresh receive their read context as
 write access to project files. The code-defined shared memory folder is separately
 admitted through `--add-dir` for ordinary Discuss chats.
 
+Every Claude launch names its tools with `--tools`, from one code-defined set
+per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
+`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Paper coach
+gets the file tools, `Bash`, `WebFetch` and `WebSearch`. Session summaries get
+none. `--tools` decides which tools exist; the permission rules above decide
+which run unprompted. The local process also drops a hosting Claude Code
+session's identity and channel variables, named in `ClaudeAuthentication`.
+**Why:** RCP runs Claude headless. The default set includes tools that schedule
+work outside the turn, message other local sessions, switch worktrees, or
+publish to outside services. A desktop session's environment would add its own
+system prompt and Artifact tools to a turn started from inside it.
+
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
 `Edit` rules confine all file-writing tools, including `Write`, to that folder.

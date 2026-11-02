@@ -272,6 +272,22 @@ _BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
 # them too: their allow rules cannot widen RCP's `--settings`, and hooks stay
 # off through `disableAllHooks` there. The skill probe loads the same sources.
 _SETTING_SOURCES = ("--setting-sources", "user")
+# The tools each capability's process has (`--tools`); permission rules then
+# decide which of them run unprompted. RCP runs Claude headless, so the default
+# set's scheduling, cross-session messaging, worktree, publishing and desktop
+# tools never exist. Claude ignores an unknown name rather than failing.
+_CLAUDE_AGENT_TOOLS = (
+    *("Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"),
+    *("Task", "Skill", "ToolSearch", "WebFetch", "WebSearch"),
+)
+_CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
+    "discuss": _CLAUDE_AGENT_TOOLS,
+    "work_auto": _CLAUDE_AGENT_TOOLS,
+    "orchestrate": _CLAUDE_AGENT_TOOLS,
+    "scratch_patch": _CLAUDE_AGENT_TOOLS,
+    "paper_suggest": ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"),
+    "session_summary": (),
+}
 
 
 class ClaudeProfile(ProviderProfile):
@@ -542,6 +558,8 @@ class ClaudeProfile(ProviderProfile):
             "--verbose",
             "--permission-mode",
             permission_mode,
+            "--tools",
+            ",".join(_CLAUDE_TOOLS[capability]),
         ]
         if scope is not None:
             command.extend(
@@ -560,8 +578,6 @@ class ClaudeProfile(ProviderProfile):
             settings["disableAllHooks"] = True
             command.extend(
                 [
-                    "--tools",
-                    "",
                     "--setting-sources",
                     "",
                     "--settings",
