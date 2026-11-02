@@ -203,3 +203,19 @@ def test_space_client_rewrite_replaces_an_agent_made_link(tmp_path: Path) -> Non
     assert not (stage / "rcp").is_symlink()
     assert "exec client" in (stage / "rcp").read_text(encoding="utf-8")
     assert (stage / "rcp").stat().st_mode & 0o777 == 0o700
+
+
+def test_space_stage_directories_refuse_an_agent_made_link(tmp_path: Path) -> None:
+    import pytest
+
+    from rcp.runs.space_projects import exact_stage_directory
+
+    stage, outside = tmp_path / "stage", tmp_path / "outside"
+    stage.mkdir()
+    outside.mkdir()
+    (stage / "projects").symlink_to(outside)
+    with pytest.raises(ValueError):
+        exact_stage_directory(stage, "projects", "p1")
+    assert list(outside.iterdir()) == []
+    (stage / "projects").unlink()
+    assert exact_stage_directory(stage, "projects", "p1").is_dir()

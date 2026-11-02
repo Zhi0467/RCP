@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import stat
@@ -224,8 +225,7 @@ def prepare_space_projects(
             owner.store.require_project_accepts_new_work(project_id)
             service = owner.catalog.open_execution(project_id)
             read_scope = GraphReadScope.resolve(project_id, service.history)
-            workspace = stage / "projects" / project_id
-            workspace.mkdir(parents=True, exist_ok=True)
+            workspace = exact_stage_directory(stage, "projects", project_id)
             machine = service.manifest.machine_map[service.manifest.base_machine]
             if machine.host:
                 found.readers.append(
@@ -342,6 +342,22 @@ def read_space_output(path: Path) -> str | None:
         if not stat.S_ISREG(info.st_mode) or info.st_size > PATCH_SELF_CHECK_MAX_REQUEST_BYTES:
             raise ValueError("Space output is not a bounded regular file")
         return handle.read()
+
+
+def exact_stage_directory(stage: Path, *parts: str) -> Path:
+    """Create a directory under the stage without following an agent-made link.
+
+    The stage persists across turns and its root is writable by the provider, so a
+    component may have been replaced by a link; that refuses instead of escaping.
+    """
+    path = stage
+    for part in parts:
+        path = path / part
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(path, 0o700)
+        if not stat.S_ISDIR(path.lstat().st_mode):
+            raise ValueError(f"Space stage entry {part!r} is not a directory")
+    return path
 
 
 def clear_space_output(path: Path) -> None:
