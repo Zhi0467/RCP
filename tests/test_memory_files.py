@@ -71,6 +71,17 @@ def test_migrate_old_writer_rows_once_in_order(tmp_path):
         assert connection.execute("SELECT count(*) FROM operational_lessons").fetchone()[0] == 3
 
 
+def test_migrated_index_title_is_bounded(tmp_path):
+    from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    old_lesson(store, "long", text="x" * 10_000)
+    shared, _ = prepare_project_memory(store, "project")
+    line = (Path(shared) / "MEMORY.md").read_text().splitlines()[0]
+    assert line.count("x") == MEMORY_MIGRATED_TITLE_MAX_CHARS
+    assert "x" * 10_000 in (Path(shared) / "notes/lesson-long.md").read_text()
+
+
 def test_partial_migration_preserves_existing_note(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     old_lesson(store, "existing")

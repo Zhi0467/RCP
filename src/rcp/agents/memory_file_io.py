@@ -54,7 +54,7 @@ def _write(path: Path, content: str, *, replace: bool) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def prepare_files(root: Path, lessons: list[dict] | None) -> int | None:
+def prepare_files(root: Path, lessons: list[dict] | None, title_max_chars: int) -> int | None:
     shared = root / "shared"
     notes = shared / "notes"
     index = shared / "MEMORY.md"
@@ -86,7 +86,7 @@ def prepare_files(root: Path, lessons: list[dict] | None) -> int | None:
             (line.strip().lstrip("#").strip() for line in text.splitlines() if line.strip()),
             f"Lesson {lesson_id}",
         )
-        title = title.replace("[", "").replace("]", "")
+        title = title.replace("[", "").replace("]", "")[:title_max_chars].rstrip()
         name = f"lesson-{lesson_id}.md"
         _write(notes / name, f"# {title}\norigin: lesson {lesson_id}\n\n{text}\n", replace=False)
         lines.append(f"- [{title}](notes/{name}) — Migrated operational note.\n")
@@ -169,7 +169,11 @@ def main() -> None:
         print(json.dumps(read_indexes(root, request["user_id"], request["max_bytes"])))
         return
     root = memory_root(data_dir, request["project_id"])
-    size = prepare_files(root, request["lessons"]) if "lessons" in request else 0
+    size = (
+        prepare_files(root, request["lessons"], request["title_max_chars"])
+        if "lessons" in request
+        else 0
+    )
     print(json.dumps({"root": str(root), "index_bytes": size}))
 
 

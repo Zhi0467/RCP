@@ -616,6 +616,8 @@ PROJECT_GROUP_NAME_MAX_CHARS = 120
 
 # The memory index is notes, independent of graph authority.
 MEMORY_INDEX_MAX_BYTES = 32 * 1024
+# A migrated lesson's index title is its first line, capped so one lesson cannot fill the index.
+MEMORY_MIGRATED_TITLE_MAX_CHARS = 120
 
 # In-memory dictation uploads and bounded service calls.
 TRANSCRIPTION_AUDIO_MAX_BYTES = 4 * 1024 * 1024
