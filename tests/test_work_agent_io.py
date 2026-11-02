@@ -1170,8 +1170,11 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
 
     correction_calls = []
 
-    async def disconnected_correction(*_args, **kwargs):
+    correction_prompts = []
+
+    async def disconnected_correction(*args, **kwargs):
         correction_calls.append(kwargs)
+        correction_prompts.append(args[2])
         kwargs["outcome"].remote_result_pending = True
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
@@ -1239,6 +1242,11 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         # This correction continues the pass it corrects, and a recovered
         # journal is held to that session, so the pin has to outlive the stream.
         assert correction_calls[0]["required_session_id"] == "recorded-thread"
+        # The resource's maintenance rules travel as a staged file the prompt names.
+        prompt = correction_prompts[0]
+        rules = next((primed.local_stage / "inputs").glob("experiment-watcher-rules-*.md"))
+        assert str(rules) in prompt
+        assert len(prompt) < 3000
         assert (
             execution.store.agent_task_contract(
                 execution.operation_id, runtime_module.WORK_CORRECTION_SESSION_ROLE
