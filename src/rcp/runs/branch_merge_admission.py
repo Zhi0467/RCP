@@ -182,6 +182,12 @@ def start_owned_branch_merge(
     )
 
 
+def member_merge_operation_id(project_id: str | None, user_id: str, request_id: str) -> str:
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:member-merge:{project_id}:{user_id}:{request_id}")
+    )
+
+
 def start_human_branch_merge(
     tasks: BackgroundAgentTasks,
     service: ProjectService,
@@ -192,17 +198,11 @@ def start_human_branch_merge(
 ) -> dict[str, object]:
     """Admit a member's fork merge without borrowing an episode or budget."""
     project_id = merge_history(service).project_id
-    operation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:member-merge:{project_id}:{authorized_by.user_id}:{request_id}",
-        )
-    )
     return _start_bound_branch_merge(
         tasks,
         service,
         branch_id=branch_id,
-        operation_id=operation_id,
+        operation_id=member_merge_operation_id(project_id, authorized_by.user_id, request_id),
         authorized_by=authorized_by,
         episode=None,
     )
