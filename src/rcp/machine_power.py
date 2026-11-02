@@ -23,7 +23,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
-from rcp.config import load_manifest
 from rcp.episode_health import load_episode_health
 from rcp.limits import (
     MACHINE_POWER_BATTERY_FLOOR,
@@ -32,7 +31,7 @@ from rcp.limits import (
     MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS,
 )
 from rcp.machine_power_macos import InstallError, MacOSProfile
-from rcp.runs.provider_login import provider_login_host
+from rcp.runs.provider_login import run_on_host
 
 logger = logging.getLogger(__name__)
 # Profiles own platform commands and optional lid-mode capabilities.
@@ -102,12 +101,7 @@ def demand_snapshot(store, background) -> list[str]:
                 provider = task.request.get("provider")
                 host = task.stage_host
                 if host is None:
-                    run_on = task.request.get("run_on")
-                    host = (
-                        provider_login_host(load_manifest(project.locator), run_on)
-                        if run_on not in {None, "local"}
-                        else ""
-                    )
+                    host = run_on_host(store, project.project_id, task.request.get("run_on"))
                 if not provider or not isinstance(
                     accounts.resolve_login(
                         provider,

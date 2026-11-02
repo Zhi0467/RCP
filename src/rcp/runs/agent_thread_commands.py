@@ -339,6 +339,7 @@ def thread_agent(store: AppStore, thread: AgentThreadRecord) -> dict[str, str | 
     from rcp.runs.space_chat import space_agent_profile
 
     profile = space_agent_profile(
+        store,
         provider=pick.get("provider"),
         model=pick.get("model"),
         reasoning=pick.get("reasoning"),
@@ -392,7 +393,7 @@ def store_thread_pick(
     if thread.project_id is None:
         from rcp.runs.space_chat import space_agent_profile
 
-        run_on = space_agent_profile(provider=provider, run_on=run_on).run_on
+        run_on = space_agent_profile(store, provider=provider, run_on=run_on).run_on
     else:
         from rcp.runs.auto_research_admission import (
             AutoResearchChildProfileInvalid,

@@ -3634,7 +3634,7 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     # to one by its request, and the link lost opening the stage is on it.
     assert kind(stage_unreachable=True, host=None) is None
     monkeypatch.setattr(
-        background_module, "provider_login_host", lambda manifest, run_on: "gpu.example.edu"
+        background_module, "run_on_host", lambda store, project_id, run_on: "gpu.example.edu"
     )
     assert kind(stage_unreachable=True, host=None) == "transport_lost"
 

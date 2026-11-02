@@ -43,7 +43,7 @@ from rcp.runs.experiment_admission import (
     start_fresh_experiment,
 )
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
-from rcp.runs.provider_login import provider_login_host
+from rcp.runs.provider_login import run_on_host
 from rcp.runs.work_experiment_commands import paused_experiment_refusal, unused_turns
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import (
@@ -524,7 +524,9 @@ def continue_experiment_episode(
     # The saved stage is frozen on one machine; the worker checks the alias
     # against it. A repointed alias must refuse here, before the source is chained.
     try:
-        current_host = provider_login_host(target_service.manifest, request.run_on)
+        current_host = run_on_host(
+            store, project_id, request.run_on, lambda: target_service.manifest
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if current_host != (experiment.stage_host or ""):

@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.launcher import work_like_launch_problem
 from rcp.agents.provider_accounts import ProviderAccounts
-from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES
@@ -41,7 +40,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.auto_research_questions import held_question_answer_mail
 from rcp.runs.experiment_admission import experiment_start_message
-from rcp.runs.provider_login import ProviderSignedOut, provider_login_host
+from rcp.runs.provider_login import ProviderSignedOut, run_on_host
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
 from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -184,10 +183,7 @@ def continue_auto_research(
     )
     # The saved stage is frozen on one machine. Launch checks the alias against
     # it; a repointed alias must refuse here, before the source is chained.
-    project = tasks.store.project(source.project_id)
-    if project is None:
-        raise KeyError(source.project_id)
-    current_host = provider_login_host(load_manifest(project.locator), previous_root.run_on)
+    current_host = run_on_host(tasks.store, source.project_id, previous_root.run_on)
     if current_host != (binding.stage_host or ""):
         raise ValueError(
             "The orchestrator's saved stage is not on the machine its execution alias names "

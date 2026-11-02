@@ -89,7 +89,7 @@ def test_signed_out_child_work_creates_no_task_or_budget(tmp_path):
             episode.episode_id,
             RunRequest(
                 provider="codex",
-                run_on="local",
+                run_on="laptop",
                 run_truth_scope=["repo-a"],
                 chat_scope="node",
                 node_id="blk/result",
@@ -260,7 +260,7 @@ def test_signed_out_ordinary_chat_creates_no_task(tmp_path, kind, mode):
     _signed_out(store)
     request = RunRequest(
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         chat_scope="node" if kind == "node_chat" else "project",
         node_id="blk/result" if kind == "node_chat" else None,
         message="Inspect the result.",
@@ -397,7 +397,7 @@ def test_missing_managed_credential_refuses_without_existing_login_state(tmp_pat
             "project_chat",
             RunRequest(
                 provider="claude",
-                run_on="local",
+                run_on="laptop",
                 chat_scope="project",
                 message="Inspect results",
                 mode="work",
@@ -406,3 +406,23 @@ def test_missing_managed_credential_refuses_without_existing_login_state(tmp_pat
         )
     assert _counts(store) == before
     assert store.provider_login_states() == []
+
+
+def test_run_on_resolves_through_the_owner_of_its_machine(tmp_path):
+    from rcp.runs.provider_login import run_on_host
+
+    store = _store(tmp_path)
+    with (tmp_path / "manifest.toml").open("a", encoding="utf-8") as manifest:
+        manifest.write('[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n')
+    # A project names a machine by its manifest alias; None is its base machine.
+    assert run_on_host(store, "project", "gpu") == "gpu.example"
+    assert run_on_host(store, "project", None) == run_on_host(store, "project", "laptop") == ""
+    # A Space task names a Space machine card by id; the backend's card has no host.
+    backend = store.backend_space_machine()
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
+    assert run_on_host(store, store.space_id, backend.machine_id) == ""
+    assert run_on_host(store, store.space_id, gpu.machine_id) == "gpu.example"
+    # Neither owner reads the spelling `local` as the backend.
+    for project_id in ("project", store.space_id):
+        with pytest.raises(ValueError, match="unknown execution machine: local"):
+            run_on_host(store, project_id, "local")

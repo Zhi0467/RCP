@@ -3668,16 +3668,6 @@
                 }
             }
         ],
-        "./src/rcp/runs/provider_login.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 39,
-                    "endColumn": 45,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/runs/questions.py": [
             {
                 "code": "reportArgumentType",

@@ -50,7 +50,12 @@ from rcp.storage import (
 )
 from rcp.storage.models import _required_timestamp
 
-from .helpers import async_wait_until, fabricated_authorizer, wait_for_task
+from .helpers import (
+    async_wait_until,
+    fabricated_authorizer,
+    wait_for_task,
+    write_local_test_manifest,
+)
 
 
 def _sse(event: AgentEvent) -> str:
@@ -62,7 +67,7 @@ def _store(tmp_path) -> AppStore:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -138,7 +143,7 @@ def _start_auto_research(
             browser_requested=browser_requested,
             invocation_ceiling=invocation_ceiling,
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -631,7 +636,7 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             instruction="Keep the actor occupied while delivery races.",
         ),
         parent_operation_id=root.operation_id,
@@ -820,7 +825,7 @@ def test_root_mail_wakes_the_exact_routed_ordinary_child_work_session(tmp_path) 
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -951,7 +956,7 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1045,7 +1050,7 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1369,7 +1374,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1473,7 +1478,7 @@ def test_busy_root_leaves_lifecycle_and_mail_unclaimed(tmp_path) -> None:
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             instruction="Keep the root actor busy.",
         ),
         parent_operation_id=root.operation_id,
@@ -1598,7 +1603,7 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
             role="worker",
             control_node_id="blk/check-result",
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             instruction="Check the result and report back.",
         ),
         parent_operation_id=root.operation_id,
@@ -1759,7 +1764,7 @@ def test_busy_auto_research_actor_leaves_pending_mail_unclaimed_and_unspent(tmp_
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             instruction="Keep the actor occupied while mail arrives.",
         ),
         parent_operation_id=root.operation_id,

@@ -70,7 +70,7 @@ def test_served_device_login_recovers_queued_work_without_polling(
             "project_chat",
             RunRequest(
                 provider="codex",
-                run_on="local",
+                run_on="laptop",
                 chat_scope="project",
                 chat_id="00000000-0000-4000-8000-000000000777",
                 message="Inspect results",

@@ -37,6 +37,8 @@ from rcp.storage.auto_research_children import (
     AutoResearchInboxNoticeUnacknowledgeable,
 )
 
+from .helpers import write_local_test_manifest
+
 
 def _worker_notice(store: AppStore, episode_id: str, **fields):
     return AutoResearchLifecycleNoticeRecord(
@@ -93,7 +95,7 @@ def _project(store: AppStore) -> None:
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(store.path.parent)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -208,7 +210,7 @@ def _work_pair(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "local",
+            "run_on": "laptop",
             "run_truth_scope": ["repo"],
             "chat_scope": "node",
             "mode": "work",
@@ -277,7 +279,7 @@ def _experiment_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "local",
+            "run_on": "laptop",
             "run_truth_scope": ["repo"],
             "chat_id": f"experiment-{episode_id}",
             "node_id": node_id,
