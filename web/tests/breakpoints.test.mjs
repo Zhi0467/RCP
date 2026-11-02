@@ -15,6 +15,7 @@ function stylesheets() {
     ...styles,
     "themes/snowbound.css",
     "ui/AppearancePicker.css",
+    "ui/SettingsRail.css",
     "chat/WorktreeControls.css",
   ].map((path) => readFileSync(new URL(path, root), "utf8"));
 }
