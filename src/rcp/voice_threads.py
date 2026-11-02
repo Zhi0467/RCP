@@ -136,14 +136,9 @@ def entry_records(thread: dict, entries: list[VoiceEntry]) -> list[dict]:
     return records
 
 
-def pending_records(path: Path, thread: dict, entries: list[VoiceEntry]) -> list[dict]:
-    seen = {row["uuid"] for row in read_records(path, thread)}
-    pending = []
-    for row in entry_records(thread, entries):
-        if row["uuid"] not in seen:
-            pending.append(row)
-            seen.add(row["uuid"])
-    return pending
+def unique_entry_records(thread: dict, entries: list[VoiceEntry]) -> list[dict]:
+    """One record per entry id; the locked appender skips ids already written."""
+    return list({row["uuid"]: row for row in entry_records(thread, entries)}.values())
 
 
 def append_space_entries(

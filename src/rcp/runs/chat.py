@@ -1939,8 +1939,11 @@ def _append_chat_records(
     records: list[dict[str, object]],
     *,
     reserve_prompt: bool = False,
-) -> None:
-    """Append under the chat lock; callers own the StateWorkspace transaction."""
+) -> int:
+    """Append under the chat lock and return how many records it wrote.
+
+    Callers own the StateWorkspace transaction.
+    """
     records = [
         {
             **record,
@@ -1992,10 +1995,11 @@ def _append_chat_records(
                 or (item.get("operationId"), item.get("role")) not in recorded
             ]
         if not records:
-            return
+            return 0
         with path.open("a", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
     service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+    return len(records)

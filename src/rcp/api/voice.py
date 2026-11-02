@@ -30,10 +30,10 @@ from rcp.voice_threads import (
     VoiceEntries,
     append_space_entries,
     owned_thread,
-    pending_records,
     read_records,
     space_records,
     transcript_path,
+    unique_entry_records,
 )
 
 
@@ -143,9 +143,9 @@ def voice_entries(request: Request, thread_id: str, body: VoiceEntries):
 
             with service.history.workspace.transaction():
                 path = transcript_path(service.history.workspace.root, thread)
-                records = pending_records(path, thread, body.entries)
-                _append_chat_records(service, path, records)
-                appended = len(records)
+                appended = _append_chat_records(
+                    service, path, unique_entry_records(thread, body.entries)
+                )
     else:
         appended = append_space_entries(
             private.store, private.store.path.parent, thread, body.entries
