@@ -347,6 +347,28 @@ def test_space_output_clear_removes_agent_directories_without_following_links(tm
     assert (outside / "kept").exists()
 
 
+def test_fresh_space_turn_skips_a_linked_project_folder(tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _SpaceTurn
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "patch.json").write_text("{}")
+    stage = (tmp_path / "stage").resolve()
+    (stage / "projects/kept").mkdir(parents=True)
+    (stage / "projects/kept/patch.json").write_text("{}")
+    (stage / "projects/linked").symlink_to(outside, target_is_directory=True)
+    turn = SimpleNamespace(
+        execution=SimpleNamespace(continuation="fresh"),
+        stage=stage,
+        found=SimpleNamespace(names={"kept": "Kept", "linked": "Linked"}),
+    )
+    _SpaceTurn.clear_fresh_outputs(turn)  # pyright: ignore[reportArgumentType]
+    assert not (stage / "projects/kept/patch.json").exists()
+    assert (outside / "patch.json").exists()
+
+
 def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
     from types import SimpleNamespace
 
