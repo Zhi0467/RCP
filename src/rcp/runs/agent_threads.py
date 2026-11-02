@@ -84,7 +84,13 @@ def thread_history_seed(service: ProjectService, request: RunRequest) -> str:
         return ""
     if service.paper.store.agent_thread(request.chat_id) is None:
         return ""
-    transcript = service.chat_transcript(request.chat_id)
+    import fcntl
+
+    from rcp.runs.chat import chat_lock
+
+    # Shared with the appenders' lock, so a half-written record never drops the seed.
+    with chat_lock(service, fcntl.LOCK_SH):
+        transcript = service.chat_transcript(request.chat_id)
     if transcript is None:
         return ""
     selected: list[str] = []

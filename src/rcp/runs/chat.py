@@ -7,7 +7,8 @@ import os
 import shutil
 import tempfile
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1909,6 +1910,17 @@ def _append_chat_graph_receipt(
     service.invalidate_source_index()
 
 
+@contextmanager
+def chat_lock(service: ProjectService, operation: int) -> Iterator[None]:
+    """The graph target's transcript lock: appenders hold it exclusive, readers shared."""
+    with (service.history.workspace.root / ".chat.lock").open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), operation)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _append_chat_records(
     service: ProjectService,
     path: Path,
@@ -1934,49 +1946,44 @@ def _append_chat_records(
         for record in records
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = service.history.workspace.root / ".chat.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            if path.exists():
-                existing_ids = {
-                    json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
-                }
-                # Steering appends receipt snapshots under the original message
-                # UUID; the transcript reader folds them and validates identity.
-                records = [
-                    item
-                    for item in records
-                    if item.get("steering") is not None or item.get("uuid") not in existing_ids
-                ]
-            if reserve_prompt and path.exists():
-                # A live steer may already have recorded this attempt's original
-                # human prompt, or finalization may be resuming after appending
-                # the answer. Inspect only identity, never use transcript as input:
-                # the transcript exists for display, and continuity comes from the
-                # provider's native session
-                # (tests/test_module_boundaries.py::test_task_runtime_never_reads_chat_transcripts).
-                existing = [json.loads(line) for line in path.read_text().split("\n") if line]
-                recorded = {
-                    (item.get("operationId"), item.get("role"))
-                    for item in existing
-                    if item.get("role") in {"user", "assistant"}
-                    and item.get("steering") is None
-                    and item.get("questionId") is None
-                }
-                records = [
-                    item
-                    for item in records
-                    if not item.get("operationId")
-                    or (item.get("operationId"), item.get("role")) not in recorded
-                ]
-            if not records:
-                return
-            with path.open("a", encoding="utf-8") as handle:
-                for record in records:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with chat_lock(service, fcntl.LOCK_EX):
+        if path.exists():
+            existing_ids = {
+                json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
+            }
+            # Steering appends receipt snapshots under the original message
+            # UUID; the transcript reader folds them and validates identity.
+            records = [
+                item
+                for item in records
+                if item.get("steering") is not None or item.get("uuid") not in existing_ids
+            ]
+        if reserve_prompt and path.exists():
+            # A live steer may already have recorded this attempt's original
+            # human prompt, or finalization may be resuming after appending
+            # the answer. Inspect only identity, never use transcript as input:
+            # the transcript exists for display, and continuity comes from the
+            # provider's native session
+            # (tests/test_module_boundaries.py::test_task_runtime_never_reads_chat_transcripts).
+            existing = [json.loads(line) for line in path.read_text().split("\n") if line]
+            recorded = {
+                (item.get("operationId"), item.get("role"))
+                for item in existing
+                if item.get("role") in {"user", "assistant"}
+                and item.get("steering") is None
+                and item.get("questionId") is None
+            }
+            records = [
+                item
+                for item in records
+                if not item.get("operationId")
+                or (item.get("operationId"), item.get("role")) not in recorded
+            ]
+        if not records:
+            return
+        with path.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
