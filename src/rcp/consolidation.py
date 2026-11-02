@@ -9,7 +9,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from rcp.agents.project_repositories import write_repositories
@@ -24,7 +24,7 @@ from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.consolidation import target_ref
+from rcp.storage.consolidation import consolidation_chat_id, target_ref
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
@@ -36,11 +36,6 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
-
-
-def consolidation_chat_id(project_id: str, target: str = "main") -> str:
-    suffix = "" if target == "main" else f":{target}"
-    return str(uuid5(NAMESPACE_URL, f"rcp:consolidation:{project_id}{suffix}"))
 
 
 def occurrence_at(local_date: date, local_time: str, timezone: str) -> datetime:

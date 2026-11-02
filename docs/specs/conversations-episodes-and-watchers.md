@@ -322,7 +322,9 @@ watcher. One store admission check refuses every new turn or wake into an
 archived conversation or closed private thread, including watcher and schedule
 wakes. Answering a question or approval card there is refused before the answer
 is stored. Closing a private thread stops its watchers; reopening does not re-arm
-them. Neither archive nor Restore changes the native session. The shared
+them. A project's [nightly consolidation](graph-consolidation-and-lessons.md) chat
+cannot be archived. The next nightly claim clears an archive flag an older release
+left on it. Neither archive nor Restore changes the native session. The shared
 [composer](interface-and-visual-design.md#conversation-composer) owns Restore.
 
 ## Native chat context

@@ -383,22 +383,18 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_store] = lambda: schedule_store
-    identity = SimpleNamespace(
-        require_patch_capable_identity=lambda _: SimpleNamespace(
-            user_id=schedule_store.local_owner.user_id
-        )
-    )
+    identity = SimpleNamespace(user_id=schedule_store.local_owner.user_id)
+    identity.acting_user = lambda _: SimpleNamespace(user_id=identity.user_id)
+    identity.require_patch_capable_identity = identity.acting_user
     app.dependency_overrides[get_identity_access] = lambda: identity
     client = TestClient(app)
     path = "/api/agent-threads/thread/schedules"
     assert client.get(path).json()["schedules"][0]["schedule_id"] == schedule.schedule_id
-    identity.require_patch_capable_identity = lambda _: SimpleNamespace(user_id=str(uuid.uuid4()))
+    identity.user_id = str(uuid.uuid4())
     assert client.get(path).status_code == 404
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 404
     assert client.post(path + "/" + schedule.schedule_id + "/pause").status_code == 404
-    identity.require_patch_capable_identity = lambda _: SimpleNamespace(
-        user_id=schedule_store.local_owner.user_id
-    )
+    identity.user_id = schedule_store.local_owner.user_id
     assert client.post(path + "/" + schedule.schedule_id + "/pause").json()["state"] == "paused"
     assert client.post(path + "/" + schedule.schedule_id + "/resume").json()["state"] == "active"
     assert client.post(path + "/" + schedule.schedule_id + "/resume").status_code == 409
@@ -424,6 +420,31 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     assert client.delete(path + "/" + past.schedule_id).status_code == 204
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 204
     assert client.get(path).json()["schedules"][0]["state"] == "cancelled"
+
+
+def test_nameless_owner_can_list_schedules(schedule_store):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+
+    from rcp.api.agent_schedules import router
+    from rcp.api.dependencies import get_identity_access, get_store
+
+    def unnamed(_):
+        raise HTTPException(status_code=428, detail={"code": "identity_name_required"})
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_store] = lambda: schedule_store
+    app.dependency_overrides[get_identity_access] = lambda: SimpleNamespace(
+        acting_user=lambda _: SimpleNamespace(user_id=schedule_store.local_owner.user_id),
+        require_patch_capable_identity=unnamed,
+    )
+    client = TestClient(app)
+    path = "/api/agent-threads/thread/schedules"
+    assert client.get(path).json() == {"schedules": []}
+    assert client.delete(path + "/missing").status_code == 428
 
 
 def test_schedule_wake_rechecks_transfer_fence(schedule_store, monkeypatch):

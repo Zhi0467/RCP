@@ -34,8 +34,8 @@ def require_schedule_owner(store: AppStore, thread_id: str, user_id: str) -> Non
 def list_schedules(
     thread_id: str, request: Request, *, store: Store, identity_access: Identity
 ) -> dict:
-    human = identity_access.require_patch_capable_identity(request)
-    require_schedule_owner(store, thread_id, human.user_id)
+    user = identity_access.acting_user(request)
+    require_schedule_owner(store, thread_id, user.user_id)
     return {"schedules": [_view(item) for item in store.agent_schedules(thread_id)]}
 
 
