@@ -36,9 +36,9 @@
   height: 100dvh;
   overflow: hidden;
 }
+/* Header and pane keep the Cards widths, so switching views never moves the header. */
 .agent-mode .landing-header {
   flex: none;
-  width: min(1180px, calc(100% - 72px));
 }
 .agent-mode .landing-main {
   display: flex;
@@ -46,7 +46,6 @@
   flex-direction: column;
   min-height: 0;
   padding: 4px 0 20px;
-  width: min(1180px, calc(100% - 72px));
 }
 .agent-rail-loading {
   color: var(--muted);
@@ -545,7 +544,6 @@
 }
 
 @media (max-width: 560px) {
-  .agent-mode .landing-header,
   .agent-mode .landing-main {
     width: 100%;
   }
