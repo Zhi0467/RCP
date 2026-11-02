@@ -27,6 +27,9 @@ def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkey
             yield connection
 
     async def drive() -> httpx.Response:
+        """A blocked loop never resumes this tick, so the bound is a hang guard; the still-pending
+        request is the proof.
+        """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
@@ -34,8 +37,6 @@ def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkey
             request = asyncio.create_task(client.get("/api/health/details"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
-                # A blocked loop never resumes this tick, so the bound is a
-                # hang guard; the still-pending request is what makes it proof.
                 await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
                 assert not request.done()
             finally:
@@ -64,14 +65,15 @@ def test_project_cache_hit_does_not_block_event_loop(manifest, tmp_path, monkeyp
     monkeypatch.setattr(display_cache, "cached_project_snapshot", blocked_cached_snapshot)
 
     async def drive() -> httpx.Response:
+        """A blocked loop never resumes this tick, so the bound is a hang guard; the still-pending
+        request is the proof.
+        """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
-                # A blocked loop never resumes this tick, so the bound is a
-                # hang guard; the still-pending request is what makes it proof.
                 await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
                 assert not request.done()
             finally:
@@ -148,14 +150,15 @@ def test_project_cache_miss_does_not_block_event_loop(
     monkeypatch.setattr(catalog, "commit_cached_snapshot", blocked_commit)
 
     async def drive() -> httpx.Response:
+        """A blocked loop never resumes this tick, so the bound is a hang guard; the still-pending
+        request is the proof.
+        """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
                 await asyncio.to_thread(wait_for_entry, entered)
-                # A blocked loop never resumes this tick, so the bound is a
-                # hang guard; the still-pending request is what makes it proof.
                 await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
                 assert not request.done()
             finally:

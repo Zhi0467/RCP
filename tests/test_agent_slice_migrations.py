@@ -14,6 +14,9 @@ from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
 
 
 def test_pre_thread_database_upgrades_without_rewriting_old_tables(tmp_path: Path, monkeypatch):
+    """The old shape is seeded directly, without invoking new migration owners, because current
+    question creation joins threads.
+    """
     path = tmp_path / "old.sqlite3"
     migrations = AppStoreBase._STORAGE_SCHEMA_MIGRATIONS
     run_migration = AppStoreBase._run_storage_schema_migration
@@ -38,7 +41,6 @@ def test_pre_thread_database_upgrades_without_rewriting_old_tables(tmp_path: Pat
             "_STORAGE_SCHEMA_MIGRATIONS",
             tuple(item for item in migrations if item[0] < 69),
         )
-        # The old writer's schema is generated without invoking new migration owners.
         old = AppStore(path)
         origin = QuestionOrigin(
             owner_kind="chat",
@@ -52,7 +54,6 @@ def test_pre_thread_database_upgrades_without_rewriting_old_tables(tmp_path: Pat
             graph_target=GraphTargetRef(kind="main"),
         )
         with old.connection() as connection:
-            # Seed the old shape directly: current question creation joins threads.
             connection.execute(
                 """INSERT INTO questions
                 (question_id,project_id,owner_kind,owner_id,key,origin_json,argument_hash,

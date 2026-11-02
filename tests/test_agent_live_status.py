@@ -58,7 +58,6 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
 
     before = task_generation()
     store.update_agent_task_status("turn", AgentStatus(context_tokens=1))
-    # A status-only write refreshes the chat that polls this task.
     assert task_generation() > before
 
     def frame(**delta: object) -> str:
@@ -70,11 +69,9 @@ def test_live_status_folds_into_the_task_and_ends_with_the_last_observation(
     async def frames():
         yield frame(context_tokens=1_000, context_window=200_000)
         yield frame(context_tokens=5_000)
-        # A held update is written once the throttle lapses, with no further frame.
         await asyncio.sleep(AGENT_STATUS_WRITE_SECONDS + 0.3)
         assert stored().context_tokens == 5_000
         yield frame(compaction=AgentCompaction(trigger="auto", after_tokens=800))
-        # A compaction is written at once.
         assert [item.before_tokens for item in stored().compactions] == [5_000]
         yield frame(subagent=AgentSubagent(id="sub", kind="explore"))
         yield frame(subagent=AgentSubagent(id="sub", state="completed", tokens=42))

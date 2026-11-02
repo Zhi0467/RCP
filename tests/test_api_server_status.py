@@ -96,6 +96,9 @@ def _report(**changes: object) -> ServerDoctorReport:
 
 
 def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) -> None:
+    """Machine operations are console work with their own CLI help, so the projection never carries
+    a command catalogue.
+    """
     store, _bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     member = store.preprovision_team_member("Alice")
     restored_at = NOW - timedelta(days=17, hours=3)
@@ -148,8 +151,6 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
     assert payload["execution"]["machine"] == {"tone": "good"}
     payload["execution"]["provider_checks"].pop("label")
     assert payload["execution"]["provider_checks"] == {"tone": "good"}
-    # Machine operations are console work with CLI help of their own; the
-    # projection reports health and never carries a command catalogue.
     assert "operator_commands" not in payload
     assert refused.status_code == 405
 

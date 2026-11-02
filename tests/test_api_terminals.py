@@ -201,6 +201,9 @@ def test_terminal_websocket_refuses_cross_origin_and_missing_origin(tmp_path, or
 
 
 def test_terminal_websocket_resolves_real_team_session_cookie(manifest, tmp_path):
+    """Authentication succeeded, so the terminal lookup, not the HTTP middleware, rejected this
+    request.
+    """
     data_dir = tmp_path / "authenticated-team"
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Terminal tests")
     member, token = store.enroll_team_member(bootstrap, "Terminal member")
@@ -218,8 +221,6 @@ def test_terminal_websocket_resolves_real_team_session_cookie(manifest, tmp_path
         ),
     ):
         pytest.fail("The unknown terminal session should be refused")
-    # Authentication succeeded: the terminal lookup, rather than the HTTP
-    # middleware, rejected this request.
     assert refused.value.code == 4404
 
 
@@ -488,7 +489,6 @@ def test_a_stale_alias_stops_listing_and_attaching_without_an_open_request(
         else:
             _change_registration(app, project_id, repository_id)
 
-        # No POST is issued: the UI could not offer one.
         assert client.get(path).json() == []
         with (
             pytest.raises(WebSocketDisconnect) as refused,
@@ -520,7 +520,6 @@ def test_a_repoint_during_an_open_is_settled_by_the_socket_itself(tmp_path, term
         session_id = _open_terminal(client, path)["session_id"]
         moved = _repoint(app, project_id, tmp_path)
 
-        # No listing intervenes: the socket is the first thing to look.
         with (
             pytest.raises(WebSocketDisconnect) as refused,
             client.websocket_connect(
@@ -543,6 +542,8 @@ def test_a_stale_alias_that_cannot_be_stopped_stops_listing_and_attaching(
     and the socket only log that. The decision to end it stands, so it must
     stop being one a member can list or attach to while the stop is retried;
     otherwise they keep a shell in a checkout the project no longer registers.
+
+    The runtime is kept, so the stop it could not finish is retried.
     """
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
@@ -565,7 +566,6 @@ def test_a_stale_alias_that_cannot_be_stopped_stops_listing_and_attaching(
         ):
             pytest.fail("A shell the project no longer registers was attached to")
         assert refused.value.code == 4404
-        # The runtime is kept, so the stop it could not finish is retried.
         assert session_id in app.state.services.terminals.sessions
         monkeypatch.setattr(launch, "stop_unit", lambda unit: None)
 
@@ -592,7 +592,6 @@ def test_a_viewer_is_let_go_when_retirement_fails(tmp_path, terminal_pty, monkey
                 raise RuntimeError("systemctl user manager unavailable")
 
             monkeypatch.setattr(launch, "stop_unit", unstoppable)
-            # The listing settles the registration, and the stop fails.
             assert client.get(path).json() == []
             assert _lifecycle_frame(socket)["type"] == "ended"
         assert session_id in app.state.services.terminals.sessions
@@ -619,6 +618,9 @@ def test_missing_systemd_is_reported_without_creating_a_shell(tmp_path, monkeypa
 
 
 def test_running_work_is_visible_and_does_not_block_open(tmp_path, terminal_pty, monkeypatch):
+    """A recorded launch overrides the requested aliases, so a Work turn in a separate checkout is
+    not labelled as touching this repository.
+    """
     from rcp.storage import AgentTaskReceiptRecord, AgentTaskRecord
 
     app, client, store, _people, _acting = _team_app(tmp_path)
@@ -660,8 +662,6 @@ def test_running_work_is_visible_and_does_not_block_open(tmp_path, terminal_pty,
         assert opened["running_work"] == expected
         assert client.get(path).json()[0]["running_work"] == expected
 
-        # A recorded launch overrides the requested aliases: a Work turn in a
-        # separate checkout must not be labelled as touching this repository.
         receipt = AgentTaskReceiptRecord(
             receipt_id=1,
             operation_id=running.operation_id,
@@ -776,8 +776,9 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
 
 
 def _register_remote(app, project_id, *, repositories=1):
-    # Persist fixture configuration before startup: background reconciliation
-    # may reload it at any time, just as it does in the served application.
+    """Fixture configuration is persisted before startup because background reconciliation may
+    reload it at any time.
+    """
     service = app.state.catalog.open(project_id)
     machine = MachineConfig(alias="remote", host="compute.example")
     manifest = write_added_machine(service.manifest, machine)
@@ -973,6 +974,8 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
     Matching a remote repository by declared path alone would silently drop the
     running-Work warning for a symlinked checkout, so the declared run scope
     stays a second chance.
+
+    Another member still sees the collision, without the private turn's id or status.
     """
     from rcp.api import terminal_projection
 
@@ -1011,7 +1014,6 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
 
     work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest(), "owner")
     assert [entry["operation_id"] for entry in work["code"]] == ["op-1"]
-    # Another member still sees the collision, without the private turn's id or status.
     other = terminal_projection.running_repository_work(_Store(), "p1", _Manifest(), "member")
     assert len(other["code"]) == 1
     assert other["code"][0]["operation_id"] == ""

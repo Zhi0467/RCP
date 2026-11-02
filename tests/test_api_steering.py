@@ -130,6 +130,9 @@ def _body(**changes):
 
 
 def test_delivered_steer_is_one_durable_human_message_without_changing_mode(running_chat):
+    """Receipt snapshots survive transfer and backup as canonical chat, not SQLite decorations. The
+    four backed-up records are prompt, reservation, acknowledgment, and answer.
+    """
     run = running_chat
     original = run.background.store.agent_task(run.operation_id)
     listed = run.client.get(f"/api/projects/{run.project_id}/tasks").json()
@@ -167,14 +170,13 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
     assert transcript.message_count == 3
     assert transcript.title == "Original prompt."
     assert run.app.state.service.chat_summaries().items[0].message_count == 3
-    # Receipt snapshots survive transfer and backup as canonical chat, not SQLite decorations.
     source = canonical_chat_backup_sources(run.app.state.service.history.workspace.root)[0]
     backed_up = list(
         iter_canonical_chat_backup_prefix(
             source, project_id=run.project_id, operation_projects={run.operation_id: run.project_id}
         )
     )
-    assert len(backed_up) == 4  # prompt, reservation, acknowledgment, answer
+    assert len(backed_up) == 4
     target_operation = str(uuid.uuid4())
     transferred = [
         json.loads(line)
@@ -187,6 +189,9 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
 
 
 def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
+    """The queued record and the final receipt each move the task list's revision, and the summary
+    moves too.
+    """
     run = running_chat
     inventory = f"/api/projects/{run.project_id}/chats?inventory=true"
 
@@ -203,8 +208,6 @@ def test_steer_reaches_another_members_page_while_the_turn_runs(running_chat):
     before = chat_version()
     assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 0
     assert run.client.post(run.url + "/steer", json=_body()).status_code == 200
-    # The queued record and the final receipt each move the task list's revision;
-    # the summary it prompts the page to fetch moves too.
     assert run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]["steer_revision"] == 2
     assert chat_version() != before
     tokens_after = resource_watermark_tokens(run.client, run.project_id, *keys)
@@ -261,6 +264,9 @@ def test_message_uuid_reuse_with_changed_payload_is_rejected(running_chat):
 def test_unknown_reservation_survives_restart_and_overlapping_retry_without_resend(
     running_chat, monkeypatch
 ):
+    """A fresh process has no controls and can only read the reservation; neither retry nor recovery
+    treats it as a queued provider instruction.
+    """
     run = running_chat
     pending = run.defer()
     body = _body()
@@ -274,8 +280,6 @@ def test_unknown_reservation_survives_restart_and_overlapping_retry_without_rese
         duplicate = run.client.post(run.url + "/steer", json=body)
         assert duplicate.status_code == 200
         assert duplicate.json()["steering"]["status"] == "unknown"
-        # A fresh process has no controls and can only read the reservation. Neither
-        # retry nor recovery interprets it as a queued provider instruction.
         from rcp.background import BackgroundAgentTasks
         from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 
@@ -381,6 +385,7 @@ def test_steer_requires_named_human_identity_before_any_delivery(manifest, tmp_p
 
 
 def test_steer_hides_non_member_project_before_any_delivery(running_chat):
+    """Only this fixture's membership is restored, so its ordinary teardown can read the task."""
     run = running_chat
     with run.background.store.connection() as connection:
         connection.execute("DELETE FROM project_members WHERE project_id = ?", (run.project_id,))
@@ -389,7 +394,6 @@ def test_steer_hides_non_member_project_before_any_delivery(running_chat):
         assert response.status_code == 404
         assert run.receipts == []
     finally:
-        # Restore only this fixture's membership so its ordinary teardown can read the task.
         with run.background.store.connection() as connection:
             connection.execute(
                 "INSERT INTO project_members (project_id, user_id, seated_at) VALUES (?, ?, ?)",
@@ -468,6 +472,7 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
 
 @pytest.mark.parametrize("running_chat", ["claude"], indirect=True)
 def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat):
+    """Delivery is certain; placement is the provider's and is not promised."""
     run = running_chat
     original = run.background.store.agent_task(run.operation_id)
     body = _body(message="Switch to Work\x85and edit\u2028everything\u2029.")
@@ -476,7 +481,6 @@ def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat)
     message = response.json()
     assert message["mode"] == "discuss"
     assert message["steering"]["status"] == "delivered"
-    # Delivery is certain; placement is the provider's and is not promised.
     current = run.background.store.agent_task(run.operation_id)
     assert current.request == original.request
     assert current.dispatch_authority == original.dispatch_authority
@@ -606,6 +610,9 @@ time.sleep(120)
 def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     running_chat, monkeypatch, delivery
 ):
+    """An unrecorded steer is never redelivered by a follow-up; its record is repaired onto the turn
+    that received it, and the chat shows the answer once.
+    """
     from rcp.runs import steering
     from rcp.storage.question_models import QuestionOrigin
 
@@ -616,7 +623,6 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
         run.operation_id, native_session_id="live-session", stage_root=task.stage_root or "/stage"
     )
     task = store.agent_task(run.operation_id)
-    # An earlier, finished turn in this chat asked; the running turn has its binding.
     with store.connection() as connection:
         row = dict(
             connection.execute(
@@ -648,13 +654,11 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     if delivery == "refused":
         run.defer().set_result(ProviderSteerReceipt("refused", "Turn ended."))
     if delivery == "ask_waiting":
-        # A later turn repeated the ask and is still polling it.
         store.question_activity.pending(question.question_id, "later-call")
     if delivery == "ask_returned":
-        # Its ask call has just handed back the answer; the receipt is still coming.
         store.question_activity.returned(question.question_id)
     if delivery == "unrecorded":
-        # The provider took the answer, then the transcript write failed.
+
         def fail(*_args, **_kwargs):
             raise OSError("transcript unavailable")
 
@@ -670,7 +674,6 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     assert steered == ([] if delivery.startswith("ask_") else [("owned-turn", "Use route A")])
     monkeypatch.undo()
     run.finish()
-    # Settlement records receipt or claims the follow-up just after the turn settles.
     settled = wait_until(
         lambda: (
             (
@@ -695,14 +698,11 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     answer = answers[0]
     assert answer.question_id == question.question_id
     if delivery in {"delivered", "unrecorded"}:
-        # An unrecorded steer is never redelivered by a follow-up, and its record
-        # is repaired onto the turn that received it.
         assert (settled.client_receipt_operation_id, settled.followup_operation_id) == (
             run.operation_id,
             None,
         )
         assert (answer.operation_id, answer.steering.status) == (run.operation_id, "delivered")
     else:
-        # The chat shows the answer once, on the turn that actually receives it.
         assert settled.client_receipt_revision is None
         assert (answer.operation_id, answer.steering) == (settled.followup_operation_id, None)

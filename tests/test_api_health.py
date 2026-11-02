@@ -176,8 +176,9 @@ def test_team_shell_protocol_seven_fixture_matches_server_range(tmp_path) -> Non
 
 
 def test_latest_native_transfer_protocol_carries_every_writable_record_version() -> None:
-    # The desktop relays only the record versions its negotiated protocol lists,
-    # so a new transfer record version also needs a new team-shell protocol.
+    """The desktop relays only the record versions its negotiated protocol lists, so a new transfer
+    record version also needs a new team-shell protocol.
+    """
     native = json.loads(
         (Path(__file__).parent / "fixtures" / "team_shell_protocol_v7.json").read_text()
     )["native_transfer"]

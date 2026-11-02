@@ -9,6 +9,7 @@ from rcp.runs.agent_schedules import validate_schedule
 
 
 def test_cron_grammar_and_dst():
+    """A stepped single start runs through the field maximum, as in cron."""
     assert next_occurrence(
         "30 2 * * *", "America/New_York", datetime(2026, 3, 8, tzinfo=UTC)
     ) == datetime(2026, 3, 8, 7, tzinfo=UTC)
@@ -18,7 +19,6 @@ def test_cron_grammar_and_dst():
     assert next_occurrence(
         "*/15 9-10 * * 1,3", "UTC", datetime(2026, 11, 2, 9, 1, tzinfo=UTC)
     ) == datetime(2026, 11, 2, 9, 15, tzinfo=UTC)
-    # A stepped single start runs through the field maximum, as in cron.
     assert next_occurrence(
         "5/2 * * * *", "UTC", datetime(2026, 11, 2, 9, 6, tzinfo=UTC)
     ) == datetime(2026, 11, 2, 9, 7, tzinfo=UTC)
@@ -108,7 +108,6 @@ def command(key="daily", **arguments):
 def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_store):
     from rcp.runs.agent_schedules import handle_schedule
 
-    # Replay old-writer admission JSON, without a display transcript.
     old_request = '{"chat_id":"thread","chat_scope":"project","mode":"work","message":"Check daily","trigger":"human"}'
     with schedule_store.connection() as connection:
         connection.execute(
@@ -200,12 +199,14 @@ def test_a_delivered_handoff_schedules_often_only_for_a_member_sender(
 
 
 def test_cron_names_aliases_and_vixie_stepped_day():
-    after = datetime(2026, 11, 2, tzinfo=UTC)  # a Monday
+    """2026-11-02 is a Monday. A stepped day-of-month starting with * is unrestricted, so both days
+    must match.
+    """
+    after = datetime(2026, 11, 2, tzinfo=UTC)
     assert next_occurrence("0 9 * JAN-DEC MON-FRI", "UTC", after) == datetime(
         2026, 11, 2, 9, tzinfo=UTC
     )
     assert next_occurrence("@weekly", "UTC", after) == datetime(2026, 11, 8, tzinfo=UTC)
-    # A stepped day-of-month starting with * is unrestricted: both days must match.
     assert next_occurrence("0 0 */2 * 1", "UTC", after) == datetime(2026, 11, 9, tzinfo=UTC)
 
 
@@ -491,6 +492,7 @@ def test_schedule_wake_rechecks_transfer_fence(schedule_store, monkeypatch):
 
 
 def test_every_minute_long_downtime_count_and_dst_coalescing():
+    """Missing 02:00..02:59 all resolve to 03:00, counted once."""
     from rcp.consolidation import cron_occurrence_count
 
     start = datetime(2020, 1, 1, tzinfo=UTC)
@@ -499,7 +501,6 @@ def test_every_minute_long_downtime_count_and_dst_coalescing():
         cron_occurrence_count("* * * * *", "UTC", start, end)
         == int((end - start).total_seconds() / 60) + 1
     )
-    # Missing 02:00..02:59 all resolve to 03:00, counted once.
     assert (
         cron_occurrence_count(
             "* * * * *",
@@ -753,7 +754,6 @@ def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
         note="n",
         next_fire_at="2026-01-01T09:00:00+00:00",
     )
-    # The member pressed Stop: the turn is paused and resumable.
     with schedule_store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status='paused', native_session_id='s1' WHERE operation_id='origin'"
@@ -766,7 +766,6 @@ def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
     dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert launched == [] and not caplog.records
     assert schedule_store.agent_schedules()[0].pending_since
-    # Resume settles the stop; the paused parent no longer holds the schedule.
     resumed = schedule_store.agent_task("origin").model_copy(
         update={"operation_id": "resumed", "parent_operation_id": "origin", "status": "queued"}
     )
@@ -842,7 +841,6 @@ def test_deferred_wake_keeps_notes_then_fires_after_restore_and_closing_settles(
             note=key,
             next_fire_at="2026-01-01T08:00:00+00:00",
         )
-    # A restore made the thread's latest turn history-only; re-enabled wakes still fire.
     with schedule_store.connection() as connection:
         connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='origin'")
     launched = []
@@ -869,7 +867,6 @@ def test_deferred_wake_keeps_notes_then_fires_after_restore_and_closing_settles(
     assert {note["due_at"] for note in notes} == {"2026-01-01T09:00+01:00"}
     assert {note["now"] for note in notes} == {"2026-01-01T10:30+01:00"}
     assert all(row.deferred_reason is None for row in schedule_store.agent_schedules())
-    # The claimed wake never started; closing the thread settles it instead of leaving it queued.
     schedule_store.close_agent_thread("thread", reason="access_lost")
     later = datetime(2026, 1, 2, 9, 30, tzinfo=UTC)
     dispatch_agent_schedules(poller, later, schedule_store.advance_agent_schedules(later))
@@ -914,9 +911,6 @@ def test_a_turn_with_a_non_iana_zone_still_renders_the_schedule_rule(schedule_st
     assert "Mars/Olympus" not in schedule_instructions(schedule_store, "odd-zone")
 
 
-# Bounded repeats, intervals, start times, and pause/resume.
-
-
 def _set_trigger(store, trigger):
     import json
 
@@ -953,7 +947,6 @@ def test_every_with_count_retires_after_its_fires(schedule_store):
         )
     )
     first = datetime.fromisoformat(added["next_fire_at"])
-    # No --from: one interval after now.
     assert (
         timedelta(0) < first - datetime.fromisoformat(added["created_at"]) <= timedelta(minutes=1)
     )
@@ -1001,6 +994,9 @@ def test_cron_until_retires_after_its_last_fire_and_from_delays_the_first(schedu
 
 
 def test_pause_skips_fires_and_resume_continues_after_now(schedule_store):
+    """Resume takes the next hour after now on the original phase and replays nothing missed; an
+    --until that passed while paused retires the schedule.
+    """
     from datetime import timedelta
 
     from rcp.runs.agent_schedules import handle_schedule
@@ -1033,12 +1029,10 @@ def test_pause_skips_fires_and_resume_continues_after_now(schedule_store):
     rows = {row.note: row for row in schedule_store.agent_schedules("thread")}
     now = datetime.fromisoformat(schedule_store.now())
     resumed = datetime.fromisoformat(rows["hourly"].next_fire_at)
-    # The next hour after now on the original phase; nothing missed is replayed.
     assert now < resumed <= now + timedelta(hours=1)
     assert (resumed - anchor) % timedelta(hours=1) == timedelta(0)
     assert (rows["hourly"].state, rows["hourly"].fires_left) == ("active", 5)
     assert rows["hourly"].pending_since is None
-    # Its --until passed while paused, so resume retires it.
     assert (rows["bounded"].state, rows["bounded"].next_fire_at) == ("done", None)
     again = command(key="resume-again", action="resume", schedule_id=ids["hourly"])
     assert "schedule_not_paused" in _refusal(handle_schedule(schedule_store, "origin", again))
