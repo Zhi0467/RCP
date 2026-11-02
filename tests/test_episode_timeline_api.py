@@ -220,7 +220,7 @@ def seed_episode_timeline(store: AppStore, project_id: str) -> EpisodeRecord:
 
 
 def _dump_without_session_touch(connection):
-    # Every authenticated request extends its session; the timeline itself must not write.
+    """Every authenticated request extends its session, but the timeline itself must not write."""
     return [
         line for line in connection.iterdump() if not line.startswith('INSERT INTO "team_sessions"')
     ]
@@ -251,6 +251,7 @@ def test_timeline_resolves_renames_and_missing_name_fallback(timeline):
 
 
 def test_actor_kinds_and_recorded_links(timeline):
+    """A pending route has not created its episode yet, so it has no actor."""
     store, episode, client = timeline
     prefix = episode.episode_id
     with store.connection() as connection:
@@ -267,7 +268,6 @@ def test_actor_kinds_and_recorded_links(timeline):
             "UPDATE graph_runs SET error=? WHERE operation_id=?",
             ("E" * (EPISODE_TIMELINE_ERROR_MAX_LENGTH + 1), f"{prefix}-root"),
         )
-        # A pending route has not created its episode yet: no actor.
         connection.execute(
             "INSERT INTO auto_research_child_experiments (child_episode_id, auto_research_episode_id, project_id, control_node_id, state, request_json, parent_operation_id, created_at, updated_at) VALUES (?, ?, ?, 'exp/pending', 'pending', '{}', ?, ?, ?)",
             (
@@ -314,6 +314,7 @@ def test_actor_kinds_and_recorded_links(timeline):
     "disposition", ["wake", "harvested", "cleared", "failed_attempt", "undelivered", "unknown"]
 )
 def test_message_disposition(timeline, disposition):
+    """A later harvest does not hide that the receiving attempt failed."""
     store, episode, _ = timeline
     prefix = episode.episode_id
     message_id = f"{prefix}-mail"
@@ -328,7 +329,6 @@ def test_message_disposition(timeline, disposition):
                 "UPDATE graph_runs SET status='failed' WHERE operation_id=?", (f"{prefix}-wake",)
             )
     if disposition in {"harvested", "cleared", "failed_attempt"}:
-        # A later harvest does not hide that the receiving attempt failed.
         store.process_auto_research_lifecycle_inbox(
             prefix,
             effect_id="consume",
@@ -355,6 +355,7 @@ def test_message_disposition(timeline, disposition):
 
 @pytest.mark.parametrize("landing", ["woke", "harvested", "acknowledged", None])
 def test_signal_landing(timeline, landing):
+    """The watcher id does not name a stored watcher."""
     store, episode, _ = timeline
     prefix = episode.episode_id
     notice_id = f"{prefix}-notice-0"
@@ -386,7 +387,7 @@ def test_signal_landing(timeline, landing):
     assert signal.landed_span_id == (
         f"span:{prefix}-wake" if landing == "woke" else f"span:{prefix}-retry" if landing else None
     )
-    assert signal.source_actor_id is None  # The watcher id does not name a stored watcher.
+    assert signal.source_actor_id is None
 
 
 def _handoff(store, episode, kind="assignment"):
@@ -447,8 +448,9 @@ def _handoff(store, episode, kind="assignment"):
 
 @pytest.mark.parametrize("kind", ["assignment", "goal"])
 def test_handoff_joins_planned_child_not_neighboring_task(timeline, kind):
+    """No handoff shows without a recorded goal or assignment, or before the child exists."""
     store, episode, _ = timeline
-    assert build_episode_timeline(store, episode).handoffs == []  # No recorded goal or assignment.
+    assert build_episode_timeline(store, episode).handoffs == []
     body = _handoff(store, episode, kind)
     response = build_episode_timeline(store, episode)
     assert len(response.handoffs) == 1
@@ -468,10 +470,13 @@ def test_handoff_joins_planned_child_not_neighboring_task(timeline, kind):
     assert len(handoff.preview) == EPISODE_TIMELINE_PREVIEW_MAX_LENGTH
     with store.connection() as connection:
         connection.execute("UPDATE auto_research_child_admissions SET state='accepted'")
-    assert build_episode_timeline(store, episode).handoffs == []  # No child exists yet.
+    assert build_episode_timeline(store, episode).handoffs == []
 
 
 def test_bound_counts_spans_and_items_newest_first(timeline, monkeypatch):
+    """The retained handoff keeps its worker and issuing orchestrator; older human and Experiment
+    items no longer contribute rows.
+    """
     import rcp.api.episode_timeline as projection
 
     store, episode, _ = timeline
@@ -489,8 +494,6 @@ def test_bound_counts_spans_and_items_newest_first(timeline, monkeypatch):
     bounded = build_episode_timeline(store, episode)
     assert bounded.truncated
     assert retained(bounded) == retained(full)[:5]
-    # The retained handoff keeps its worker and issuing orchestrator; older
-    # human and Experiment items no longer contribute rows.
     assert {actor.kind for actor in bounded.actors} == {"worker", "orchestrator"}
 
 

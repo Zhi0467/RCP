@@ -435,6 +435,7 @@ class _Loop:
         graph_target: GraphTargetRef | None = None,
         chat_id: str | None = None,
     ) -> WatcherRecord:
+        """Storage keeps group identity and label together."""
         return WatcherRecord(
             watcher_id=watcher_id,
             project_id=self.project_id,
@@ -444,7 +445,6 @@ class _Loop:
             node_id=EXPERIMENT_ID,
             execution_host=execution_host,
             group_id=group_id,
-            # Storage keeps group identity and label together.
             group_label=None if group_id is None else f"Array {group_id}",
             graph_target=graph_target or GraphTargetRef(),
             check_command="true",
@@ -558,6 +558,7 @@ def loop(manifest, tmp_path):
 def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     loop, tmp_path
 ) -> None:
+    """The authorized turn is untouched, and its observers stay live until it ends."""
     loop.start_episode(status="running")
     watcher = loop.arm_watcher("live-watcher")
 
@@ -580,7 +581,6 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
         "task_control": None,
     }
     assert {field: projected[field] for field in expected} == expected
-    # The authorized turn is untouched, and its observers stay live until it ends.
     task = loop.store.agent_task("loop-root")
     assert task is not None and task.status == "running"
     assert loop.store.watcher(watcher.watcher_id).status == "active"
@@ -601,6 +601,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
 
 
 def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop, tmp_path) -> None:
+    """Stopped watchers are retained as inspectable history, never deleted and never deliverable."""
     loop.start_episode()
     loop.arm_watcher("still-running")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -611,7 +612,6 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop
     assert control["operational"]["stop_settled"] is True
     for watcher_id in ("still-running", "finished-unclaimed"):
         record = loop.store.watcher(watcher_id)
-        # Retained as inspectable history, never deleted and never deliverable.
         assert record is not None
         assert record.status == "stopped"
         assert record.notified is True
@@ -781,7 +781,6 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
         stage_root=str(stage),
     )
     loop.record_context_candidate("loop-root")
-    # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "loop-root", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
     )
@@ -831,6 +830,9 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
 
 
 def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, tmp_path) -> None:
+    """A settled stop leaves no unnotified completion, so this is an ordinary fresh Run, not a
+    reauthorization.
+    """
     loop.start_episode()
     loop.arm_watcher("finished-unclaimed", status="completed")
     loop.stop()
@@ -846,13 +848,12 @@ def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, 
     assert request["trigger"] == "experiment_run"
     assert request["control_invocation"] == 1
     assert request["control_episode_id"] != loop.episode_id
-    # A settled stop leaves no unnotified completion, so this is an ordinary
-    # fresh Run rather than a human reauthorization of pending watcher state.
     assert request["watcher_ids"] == []
     assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
 
 
 def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, tmp_path) -> None:
+    """The session was usable; only the stop refused the wake, and no budget moved."""
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -868,18 +869,18 @@ def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, 
     runtime = loop.store.experiment_loop_runtime(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
-    # The session was usable; only the stop refused the wake, and no budget moved.
     assert runtime.session_bound is True
     assert runtime.invocations_used == 1
 
 
 def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(loop, tmp_path) -> None:
+    """The project snapshot is read-only and cannot reconcile the Stop; the Experiment owner does so
+    under the operation lock, as after restart.
+    """
     loop.start_episode(status="running")
     loop.arm_watcher("still-running")
     assert loop.stop()["operational"]["stop_settled"] is False
 
-    # The authorized turn finishes on its own. The ordinary project snapshot is
-    # read-only and cannot reconcile the Stop outside the operation lock.
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
 
     control = loop.control()
@@ -887,8 +888,6 @@ def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(loop, 
     assert control["operational"]["stop_settled"] is False
     assert loop.store.watcher("still-running").status == "active"
 
-    # The cross-project Experiment owner takes the operation lock and performs
-    # the same recovery reconciliation used after restart.
     response = loop.client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200, response.text
 
@@ -940,6 +939,9 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
 
 
 def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_path) -> None:
+    """`status` reads "stopped" once the origin episode ends, and this delivery spends the last
+    invocation, so the claimed notification id proves delivery race-free.
+    """
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.record_answers()
@@ -952,9 +954,6 @@ def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_p
     loop.deliver("other-provider")
 
     record = loop.store.watcher("other-provider")
-    # `status` reads "stopped" once the origin episode has an ending, and this
-    # delivery spends the last invocation, so it races its own wake. The claimed
-    # notification id proves delivery without depending on that ordering.
     assert record.notified is True
     assert record.notification_operation_id is not None
     woken = [
@@ -969,6 +968,7 @@ def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_p
 
 
 def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, tmp_path) -> None:
+    """A wake is a new task at the next invocation, never task Resume."""
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -989,7 +989,6 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, t
     assert task.request["watcher_ids"] == ["finished-unclaimed"]
     assert task.stage_root == str(tmp_path / "stage")
     assert task.stage_host is None
-    # A wake is a new task at the next invocation, never task Resume.
     assert task.parent_operation_id is None
     causes = [
         receipt.payload.get("continuation_cause")
@@ -1604,8 +1603,9 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
 
 @pytest.mark.parametrize("status", ["paused", "failed", "interrupted"])
 def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_path, status) -> None:
-    # The process died after Stop was written and before it settled; a turn that
-    # was already paused or failed then must settle, never relaunch provider work.
+    """The process died between writing and settling Stop; an already paused or failed turn must
+    settle, never relaunch. The 100-microsecond gap would round equal under julianday().
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode(status=status)
@@ -1617,7 +1617,6 @@ def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_pa
     loop.record_context_candidate("loop-root")
     loop.store.request_episode_stop(loop.episode_id)
     with loop.store.connection() as connection:
-        # Interrupted 100 microseconds before Stop: julianday() would round these equal.
         connection.execute(
             "UPDATE graph_runs SET finished_at = ? WHERE operation_id = 'loop-root'",
             ("2026-01-01T00:00:00.000100+00:00",),
@@ -1645,6 +1644,7 @@ def test_restart_settles_a_stop_whose_turn_was_already_terminal(manifest, tmp_pa
 def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     manifest, tmp_path, task_status
 ) -> None:
+    """Nobody resumes a turn they asked to stop, so Stop abandons its recovery and settles at once."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1660,8 +1660,6 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     )
     loop.record_context_candidate("failed-wake")
 
-    # The saved session could still be resumed, but nobody resumes a turn they
-    # asked to stop: Stop abandons its recovery and settles at once.
     stopping = loop.stop()
     assert stopping["operational"]["stop_settled"] is True
     with pytest.raises(ValueError):
@@ -1724,7 +1722,6 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         error="You've hit your session limit",
     )
     loop.record_context_candidate("limited-wake")
-    # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "limited-wake", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
     )
@@ -1799,6 +1796,7 @@ def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest
 
 
 def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tmp_path) -> None:
+    """The group stays completed, so the next poll offers it again."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1813,7 +1811,6 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     delivery.deliver_watcher_group(group)
 
     assert loop.loop_task_ids() == before
-    # The group stays completed, so the next poll offers it again.
     assert [
         [item.watcher_id for item in held] for held in loop.store.completed_watcher_groups()
     ] == [["finished-job"]]
@@ -2004,7 +2001,6 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
         error="Usage limit exceeded",
     )
     loop.record_context_candidate("failed-wake-before-switch")
-    # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "failed-wake-before-switch",
         "work",
@@ -2092,7 +2088,6 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
         native_session_id="legacy-session",
         stage_root=str(stage),
     )
-    # A legacy root launched: it composed a prompt, but no context candidate.
     prompt = "legacy task contract"
     loop.store.record_agent_task_contract(
         "loop-root", "work", prompt, hashlib.sha256(prompt.encode()).hexdigest()
@@ -2129,6 +2124,9 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
 def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     loop, tmp_path
 ) -> None:
+    """This row predates dispatch-authority admission, which current task creation refuses, so raw
+    SQL keeps restart compatibility covered.
+    """
     loop.start_episode(status="paused")
     stage = tmp_path / "legacy-stage"
     stage.mkdir()
@@ -2137,7 +2135,6 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
         native_session_id="legacy-session",
         stage_root=str(stage),
     )
-    # A legacy root launched: it composed a prompt, but no context candidate.
     prompt = "legacy task contract"
     loop.store.record_agent_task_contract(
         "loop-root", "work", prompt, hashlib.sha256(prompt.encode()).hexdigest()
@@ -2146,8 +2143,6 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     now = loop.store.now()
     loop.store.request_episode_stop(loop.episode_id)
     with loop.store.connection() as connection:
-        # This row predates dispatch-authority admission. Current task creation
-        # correctly refuses it; raw SQL keeps restart compatibility covered.
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -2344,6 +2339,7 @@ def test_initial_run_takes_the_humans_pick_on_the_profiles_machine(loop, tmp_pat
 
 
 def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, tmp_path) -> None:
+    """A new human authorization takes the project's current writable set."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=1)
     loop.start_episode()
@@ -2384,15 +2380,15 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
     assert request["run_on"] == "laptop"
-    # A new human authorization takes the project's current writable set.
     assert request["run_truth_scope"] == sorted(loop.service.history.state().project_truth_scope)
     assert request["chat_id"] == new_chat_id
     assert request["session_id"] is None
 
 
 def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest, tmp_path) -> None:
-    # A second reachable machine, so the refusal is about the pin rather than
-    # about a machine the project has never heard of.
+    """A second reachable machine makes the refusal about the pin; the loop stays where its
+    canonical state and episode live.
+    """
     manifest.path.write_text(
         manifest.path.read_text(encoding="utf-8").replace(
             "[[repositories]]", '[[machines]]\nalias = "gpu"\nhost = ""\n[[repositories]]', 1
@@ -2423,8 +2419,6 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
         f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
         json={"run_on": "gpu"},
     )
-    # The machine exists and is reachable; the loop still stays where its
-    # canonical state and episode live.
     assert pinned.status_code == 409
 
 
@@ -2444,6 +2438,9 @@ def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop,
 
 
 def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, tmp_path) -> None:
+    """Reconciling the already-stopped prior episode must never sweep a compatible watcher of the
+    replacement episode.
+    """
     loop.start_episode(operation_id="old-root")
     loop.arm_watcher("old-watcher", origin_operation_id="old-root")
     old_episode_id = loop.episode_id
@@ -2454,8 +2451,6 @@ def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, t
     loop.start_episode(operation_id="current-root")
     loop.arm_watcher("current-watcher", origin_operation_id="current-root")
 
-    # Reading or otherwise reconciling the already-stopped prior episode must
-    # never sweep a compatible watcher that belongs to the replacement episode.
     loop.store.settle_experiment_loop_stop(
         loop.project_id,
         EXPERIMENT_ID,
@@ -2534,13 +2529,15 @@ def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
     The turn dies before it binds a provider session, so nothing can resume it and
     nothing can report on it. The episode must terminalize with its own reason and
     leave the Experiment free to start again.
+
+    Write-scope resolution rejected the repository before any provider session existed, so no
+    wrap-up competes with the real reason. The old text blamed a pre-migration lineage, and a
+    terminal episode is restartable.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=5)
     loop.start_episode(status="queued")
-    # The real failure: write-scope resolution rejected the repository long before
-    # any provider session existed.
     loop.store.fail_agent_task(
         "loop-root",
         "repository 'vista' does not match its project execution host",
@@ -2563,18 +2560,14 @@ def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
     assert episode is not None
     assert episode.status == "failed"
     assert episode.ending == "failed"
-    # No wrap-up ran, so there is no report error competing with the real reason.
     assert episode.wrapup_state == "not_started"
     assert episode.wrapup_error is None
     assert loop.store.episode_wrapup(loop.episode_id) is None
     assert loop.store.episode_report(loop.episode_id) is None
     diagnostic = episode.ending_diagnostic or ""
     assert "repository 'vista' does not match its project execution host" in diagnostic
-    # The old text blamed a pre-migration lineage and sent the human to a control
-    # the ending fence had already retired.
     assert "pre-migration" not in diagnostic
 
-    # The Experiment is restartable: a terminal episode is not a live one.
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
         json={"chat_id": str(uuid.uuid4())},
@@ -2588,6 +2581,9 @@ def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path)
 
     Stop loop is refused once wrap-up owns the episode, so without this the only
     enabled control on a live observer is Cancel, which kills the observed job.
+
+    Retiring the observer is not cancelling the job, and the Experiment is startable once nothing
+    detached is observed.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2610,9 +2606,7 @@ def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path)
     stopped = loop.store.watcher("exhausted-watcher")
     assert stopped.status == "stopped"
     assert stopped.stopped_by == "human"
-    # Retiring the observer is not cancelling the job: no cancel was requested.
     assert stopped.cancel_requested_at is None
-    # The Experiment is startable again now that nothing detached is observed.
     control = loop.client.get(f"/api/projects/{loop.project_id}").json()["experiment_control"][
         EXPERIMENT_ID
     ]
@@ -2677,6 +2671,9 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     An exhausted episode that produced a report used to recommend Open report
     forever, so the moment the loop became startable again nothing published
     said so.
+
+    While the observer holds the loop shut the report is the next step; afterwards it stays
+    reachable but is no longer the recommendation.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2688,7 +2685,6 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     blocked = loop.control()
     assert blocked["health"] == "paused_at_limit"
     assert blocked["can_open_report"] is True
-    # While the observer holds the loop shut the report really is the next step.
     assert blocked["can_start"] is False
     assert blocked["recommendation"] == "open_report"
 
@@ -2701,7 +2697,6 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     assert resumable["health"] == "paused_at_limit"
     assert resumable["can_start"] is True
     assert resumable["recommendation"] == "start_episode"
-    # The report stays reachable; it just stops being the recommendation.
     assert resumable["can_open_report"] is True
 
 
@@ -2710,6 +2705,8 @@ def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
 
     Every episode read opens its own SQLite connection, and the browser polls
     this route, so the memo is what keeps that cost per episode.
+
+    Four observers in one episode need one read.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2736,7 +2733,6 @@ def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
     rows = {item["watcher_id"]: item for item in listed.json()}
     assert len(rows) == 4
     assert all(row["can_stop_watching"] is True for row in rows.values())
-    # Four observers, one episode between them, one read.
     assert reads == [loop.episode_id]
 
 
@@ -2746,6 +2742,8 @@ def test_a_retained_completion_is_not_offered_a_stop(manifest, tmp_path) -> None
     Retiring it marks it notified, so the next human Run could no longer claim it
     as invocation one. That loss must not sit behind a control whose label says
     the job keeps running.
+
+    The pickup the next episode depends on is still there.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2761,7 +2759,6 @@ def test_a_retained_completion_is_not_offered_a_stop(manifest, tmp_path) -> None
     )
     assert row["can_stop_watching"] is False
 
-    # The pickup the next episode depends on is still there.
     pending = loop.store.completed_experiment_watcher_group(
         loop.project_id,
         EXPERIMENT_ID,
@@ -2801,6 +2798,8 @@ def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tm
     An observation can finish between the list response that offered Stop
     watching and the POST that acts on it. Retiring it then would discard the
     retained completion the next human Run claims as invocation one.
+
+    The job lands while the human is still looking at that row.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2816,7 +2815,6 @@ def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tm
     )
     assert offered["can_stop_watching"] is True
 
-    # The job lands while the human is still looking at that row.
     loop.store.record_watcher_check("finishes-first", status="completed", exit_code=0, error=None)
 
     response = loop.client.post(
@@ -2843,6 +2841,8 @@ def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> Non
     refuses a group holding a human-stopped member. Retiring one observer would
     therefore strand every sibling's result behind a control that promises the
     opposite.
+
+    The projection is the offer, not the gate, so storage refuses the request too.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2858,7 +2858,6 @@ def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> Non
     assert rows["array-member-1"]["can_stop_watching"] is False
     assert rows["array-member-2"]["can_stop_watching"] is False
 
-    # The projection is the offer, not the gate: storage refuses the request too.
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/watchers/array-member-1/stop", json={}
     )
@@ -2875,14 +2874,15 @@ def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> 
     Main and its branches share Experiment node ids, so a branch observer renders
     inside the main card. Offering retirement there would fence a delivery the
     main view never owned.
+
+    A branch watcher inherits its origin task's graph binding, and a branch target exists only as an
+    auto-research episode's graph. The branch row still lists on main with its control withheld.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=1)
     loop.start_episode()
     loop.arm_watcher("main-observer")
-    # A branch watcher inherits its origin task's graph binding, and a branch
-    # target exists only as an auto-research episode's own graph.
     branch_id = str(uuid.uuid4())
     branch_target = GraphTargetRef(kind="branch", branch_id=branch_id)
     branch_chat = str(uuid.uuid4())
@@ -2941,7 +2941,6 @@ def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> 
         item["watcher_id"]: item
         for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
     }
-    # The branch row still lists on main; only its control is withheld.
     assert set(rows) == {"main-observer", "branch-observer"}
     assert rows["main-observer"]["can_stop_watching"] is True
     assert rows["branch-observer"]["can_stop_watching"] is False
@@ -2954,6 +2953,8 @@ def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
     continuation, so after the ending fence it would otherwise qualify. Retiring
     it runs no scheduler command and frees no machine; it only discards a future
     graph delivery.
+
+    It holds the episode shut, and this control is still not the answer.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -2984,7 +2985,6 @@ def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
         for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
         if item["watcher_id"] == "graph-condition"
     )
-    # It holds the episode shut, and this control is still not the answer.
     assert row["can_stop_watching"] is False
     assert row["can_cancel"] is False
 
@@ -3002,6 +3002,8 @@ def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) ->
 
     An ordinary conversation could always retire the condition it armed. That
     predates this control and is not this branch's to revoke.
+
+    The arming task is the loop root, so the row keeps its binding.
     """
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -3016,7 +3018,6 @@ def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) ->
                 origin_task_kind="node_chat",
                 chat_id=loop.chat_id,
                 node_id=EXPERIMENT_ID,
-                # The arming task is the loop root, so the row keeps its binding.
                 episode_id=loop.episode_id,
                 condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
                 armed_revision=0,
@@ -3230,13 +3231,13 @@ def test_stop_rejects_invalid_branch_before_persisting_intent(loop, branch_id) -
 def test_answered_question_waits_for_active_session_without_human_action(
     manifest, tmp_path, monkeypatch, same_session
 ):
+    """Old-writer-shaped history: three paid turns, with the latest settled."""
     from rcp.storage.question_models import QuestionOrigin
 
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"), invocation_ceiling=20)
     loop.start_episode()
     stage = tmp_path / "stage"
     loop.bind_session(stage)
-    # Old-writer-shaped history: three paid turns, with the latest settled.
     for invocation in (2, 3):
         request = loop.root_request(invocation=invocation).model_copy(
             update={"session_id": "native-session-abc", "trigger": "watcher"}

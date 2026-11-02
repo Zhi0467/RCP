@@ -1090,6 +1090,10 @@ def test_ref_parser_rejects_duplicate_records() -> None:
 def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     tmp_path: Path,
 ) -> None:
+    """Two values go into GitHub's form and the fingerprint is only compared. The desktop runs the
+    stop for the operator, so every command names its shell, and once github.com is trusted the stop
+    asks only for the grant.
+    """
     layout = _layout(tmp_path)
     manager = GitCredentialManager(layout, runner=QueueRunner())
     machine = _local_machine(layout)
@@ -1119,7 +1123,6 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
         "key": material.public_key,
         "public_key_fingerprint": material.public_key_fingerprint,
     }
-    # Two values go into GitHub's form; the fingerprint is only compared.
     roles = {field.name: field.role for field in grant.fields}
     assert roles == {
         "title": "input",
@@ -1127,8 +1130,6 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
         "public_key_fingerprint": "evidence",
     }
     assert grant.resume_argv == resume
-    # The operator never typed a shell when the desktop ran this for them, so
-    # every command in the stop has to say which one it belongs to.
     assert grant.resume_execution is not None
     assert grant.resume_execution.shell_account is None
     trust = next(action for action in grant.actions if action.kind == "command")
@@ -1136,7 +1137,6 @@ def test_operator_steps_publish_only_exact_public_actions_and_resume_contract(
     serialized = grant.model_dump_json()
     assert "OPENSSH PRIVATE KEY" not in serialized
     assert material.private_key_path in serialized
-    # Once github.com is trusted, the stop asks only for the grant.
     trusted = deploy_key_operator_step(
         manager,
         machine,

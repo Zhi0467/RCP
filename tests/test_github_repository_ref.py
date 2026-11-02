@@ -45,7 +45,6 @@ def test_repository_ref_normalizes_only_the_two_accepted_forms(
 @pytest.mark.parametrize(
     ("value", "message"),
     [
-        # Not one of the two accepted URL shapes.
         ("https://token@github.com/openai/rcp.git", _SHAPE),
         ("https://github.com:443/openai/rcp", _SHAPE),
         ("http://github.com/openai/rcp", _SHAPE),
@@ -53,17 +52,13 @@ def test_repository_ref_normalizes_only_the_two_accepted_forms(
         ("git@github.example:openai/rcp", _SHAPE),
         ("file:///srv/rcp", _SHAPE),
         ("/srv/rcp", _SHAPE),
-        # Right prefix, wrong number of path segments.
         ("https://github.com/openai/../rcp", _SEGMENTS),
         ("https://github.com/openai/rcp/extra", _SEGMENTS),
         ("git@github.com:openai", _SEGMENTS),
-        # Untrimmed or carrying a control character. Nothing else may report these.
         (" ../openai/rcp ", _TRIMMED),
         ("https://github.com/openai/rcp\n", _TRIMMED),
         ("https://github.com/openai/rcp\x7f", _TRIMMED),
         ("https://github.com/openai/rcp\x00", _TRIMMED),
-        # A space is not a control character, so it must fall through to the
-        # component patterns rather than be reported as untrimmed.
         ("https://github.com/open ai/rcp", _OWNER),
         ("https://github.com/openai/rc p", _NAME),
         ("git@github.com:open_ai/rcp", _OWNER),
@@ -84,7 +79,11 @@ def test_repository_ref_rejects_ambiguous_or_non_github_sources_before_io(
     message: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reject invalid references before network or filesystem access."""
+    """Reject invalid references before network or filesystem access.
+
+    Untrimmed or control-character input is reported only as untrimmed; a space is not a control
+    character and falls through to the component patterns.
+    """
 
     monkeypatch.setattr(
         socket,
@@ -114,13 +113,14 @@ def test_owner_and_repository_split_the_identity_in_that_order() -> None:
 
 
 def test_persisted_reference_cannot_be_widened_or_rewritten_after_validation() -> None:
+    """The model is frozen and strict: the validated identity lasts the object's life, with no quiet
+    coercion.
+    """
     reference = GitHubRepositoryRef(identity="openai/rcp")
 
-    # frozen: the validated identity is the identity for the object's whole life.
     with pytest.raises(ValidationError):
         reference.identity = "attacker/repo"  # type: ignore[misc]
 
-    # strict: no quiet coercion into the validated field.
     with pytest.raises(ValidationError):
         GitHubRepositoryRef(identity=b"openai/rcp")  # type: ignore[arg-type]
 

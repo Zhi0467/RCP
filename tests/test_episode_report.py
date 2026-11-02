@@ -218,6 +218,9 @@ def _setup_report(
     project_id: str = "project",
     allocation_operation_id: str = "report-allocation",
 ) -> tuple[SimpleNamespace, AppStore, EpisodeReportRunRequest, AgentTaskExecution, Path]:
+    """The generic episode parent is indifferent to the adapter's task kind, so a plain operational
+    task avoids building either mode adapter's authority contract.
+    """
     store = store or AppStore(tmp_path / "app.sqlite3")
     store.upsert_project(
         ProjectRecord(
@@ -247,9 +250,6 @@ def _setup_report(
         operation_id=f"{episode_id}-operation",
         project_id=project_id,
         episode_id=episode_id,
-        # The generic episode parent is intentionally indifferent to the adapter's visible task
-        # kind. This focused runner fixture uses a plain operational task so it does not have to
-        # construct either mode adapter's authority contract.
         kind="node_chat",
         status="queued",
         request={},
@@ -423,6 +423,7 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     manifest,
     tmp_path,
 ) -> None:
+    """A deleted report keeps its lineage row, so the allocation never runs again."""
     service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
     state = GraphState(
         nodes={
@@ -488,7 +489,6 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     assert ready["report_episode_id"] == "episode"
     assert ready["report_is_current"] is True
 
-    # A deleted report keeps its lineage row, so the allocation never runs again.
     report = store.episode_report("episode")
     assert report is not None
     store.delete_artifact("project", report.artifact_id)
@@ -611,6 +611,9 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     manifest,
     tmp_path,
 ) -> None:
+    """Each attempt points to its staged report contract, revokes the operational instructions
+    inline, and names no master; only corrections carry a diagnostic.
+    """
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)
     launcher = _ReportLauncher(["missing", "invalid", "valid"])
 
@@ -628,9 +631,6 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     assert episode.invocations_used == 1
     assert episode.report_attempts_used == 3
     assert episode.wrapup_state == "ready"
-    # Each attempt points to its staged report contract, revokes the operational
-    # instructions inline, and names no master contract; only the corrections carry a
-    # diagnostic.
     for number, prompt in enumerate(launcher.prompts, start=1):
         assert (
             store.agent_task_contract(execution.operation_id, f"episode_report_attempt_{number}")
@@ -1050,6 +1050,7 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
 
 
 def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
+    """A view that cached the hold refetches and offers Delete."""
     from .episode_report_helpers import stored_report
     from .helpers import create_named_app, signed_in_client
 
@@ -1086,7 +1087,6 @@ def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
 
     held = artifacts_generation()
     store.finish_episode_report_ready(attempt.attempt_id, report)
-    # A view that cached the hold refetches and offers Delete.
     assert artifacts_generation() > held
     assert client.delete(url).status_code == 204
 
@@ -1162,7 +1162,12 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
 async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     manifest, tmp_path
 ) -> None:
-    """A dropped link leaves the attempt running; the recorded pass then finishes it."""
+    """A dropped link leaves the attempt running; the recorded pass then finishes it.
+
+    Reconciliation settles only a pass whose start was recorded. A failed call publishes nothing and
+    its retry launches; host drops before the retry or during the report read are waited out, the
+    failure counts once, and late usage is still accounted.
+    """
 
     from rcp.runs.remote_finalization import recorded_finalizer
     from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
@@ -1189,11 +1194,9 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
     )
     recorded = _recorded_pass("", "Report written.", thread_id="native-session")
-    # Reconciliation only settles a pass whose start was recorded.
     store.begin_remote_provider_pass(
         execution.operation_id, "report-host", "/stage", recorded.pid_file, supervised=True
     )
-    # A call its host recorded as failed publishes nothing; its retry launches.
     failed = dataclasses.replace(
         recorded,
         events=recorded.events.replace(
@@ -1206,8 +1209,6 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     def unreachable(*_args, **_kwargs):
         raise StateUnavailable("ssh exited 255")
 
-    # A host that drops before the retry launches keeps the failed pass open,
-    # so reconciliation settles it again rather than waiting on nothing.
     with pytest.MonkeyPatch.context() as outage:
         outage.setattr(report_module, "_stage_and_verify_receipt", unreachable)
         with pytest.raises(StateUnavailable):
@@ -1225,11 +1226,8 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     )
     assert store.episode_report("episode") is None
     assert launcher.calls == 2
-    # The replayed failure counted once.
     assert store.current_episode_report_attempt("episode").attempt_number == 2
     assert store.unresolved_remote_provider_passes("report-host", "/stage") == []
-
-    # A host that drops while the retained report is read is waited out.
 
     with pytest.MonkeyPatch.context() as outage:
         outage.setattr(report_module, "_read_valid_report", unreachable)
@@ -1248,7 +1246,6 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     )
 
     assert [event.event for event in settled if event.event != "raw"] == ["message", "done"]
-    # Usage the host recorded after the link dropped is still accounted.
     assert any(event.usage for event in settled)
     assert store.episode_report("episode") is not None
     assert launcher.calls == 2

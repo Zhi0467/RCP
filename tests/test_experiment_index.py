@@ -427,6 +427,7 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
 def test_space_runs_aggregates_experiment_and_auto_research_parents(
     manifest, tmp_path: Path
 ) -> None:
+    """The orchestrator's child is listed on the orchestrator's run, not alone."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
     parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
@@ -449,7 +450,6 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
 
     assert response.status_code == 200, response.text
     entries = response.json()
-    # The orchestrator's child is listed on the orchestrator's run, not alone.
     assert {(entry["mode"], entry["episode_id"]) for entry in entries} == {
         ("experiment_loop", current_episode),
         ("auto_research", parent.episode_id),
@@ -560,6 +560,7 @@ def test_experiment_indexes_overlay_shared_archive_state_without_mutating_cached
 def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_ttl(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
+    """Archived history is kept even when older than both the clock and the seeded current run."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode_id = _seed_indexed_project(app)
     store = app.state.background_tasks.store
@@ -582,7 +583,6 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
         node_id="exp/never-run",
     )
     archived_ids = {older_task.episode_id, parent.episode_id, child.episode_id}
-    # Keep archived history older than both the clock and the seeded current run.
     history_before = min(
         datetime.fromisoformat(store.now()), datetime.fromisoformat(older_task.created_at)
     )
@@ -668,13 +668,15 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
 def test_space_runs_lists_only_the_newest_auto_research_chain_member(
     manifest, tmp_path: Path
 ) -> None:
+    """The source ends before its continuation goes live, as in one chain, and an archived source
+    stays folded into its chain.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
     parent, _child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
     store = app.state.background_tasks.store
     continuation_id = str(uuid.uuid4())
     with store.connection() as connection:
-        # The source ends before its continuation goes live, as one chain does.
         connection.execute(
             "UPDATE episodes SET status = 'completed', ended_at = ? WHERE episode_id = ?",
             (store.now(), parent.episode_id),
@@ -704,7 +706,6 @@ def test_space_runs_lists_only_the_newest_auto_research_chain_member(
     )
 
     assert [snapshot.episode.episode_id for snapshot in snapshots] == [continuation_id]
-    # An archived source stays folded into its chain rather than returning as history.
     authorizer = authorized_human(store)
     store.set_episode_archived(project_id, parent.episode_id, authorizer.user_id, archived=True)
     client = signed_in_client(app)
@@ -1378,8 +1379,9 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         refresh_bounds: list[float] = []
 
         def recorded_refresh(max_age_seconds: float) -> bool:
-            # The seeded Experiment-loop task runs on the background worker and
-            # reads this workspace too; count only the index route's reads.
+            """The seeded Experiment-loop task reads this workspace on the background worker too, so
+            only the index route's reads count.
+            """
             if any(frame.name == "experiment_episodes" for frame in traceback.extract_stack()):
                 refresh_bounds.append(max_age_seconds)
             return refresh_if_stale(max_age_seconds)
@@ -2197,12 +2199,12 @@ def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path
 def test_unusable_project_cache_degrades_its_live_loops_to_unavailable_rows(
     manifest, tmp_path: Path, cache: str, status: str
 ) -> None:
+    """An exhausted or human-paused loop still waits on a person."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)
     client = signed_in_client(app)
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     with app.state.background_tasks.store.connection() as connection:
-        # An exhausted or human-paused loop still waits on a person.
         connection.execute(
             "UPDATE episodes SET status = ? WHERE episode_id = ?", (status, current_episode)
         )

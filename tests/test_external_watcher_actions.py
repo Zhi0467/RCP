@@ -89,6 +89,7 @@ def _cancel_record(store, *, host="", command="true", cwd="/tmp"):
 
 
 def test_shell_action_survives_restart_and_runs_in_saved_working_directory(tmp_path):
+    """Command acceptance is not job completion."""
     store = AppStore(tmp_path / "app.sqlite")
     running = tmp_path / "running"
     running.touch()
@@ -103,7 +104,7 @@ def test_shell_action_survives_restart_and_runs_in_saved_working_directory(tmp_p
     poller = WatcherPoller(reopened, clock=lambda: "9999-01-01T00:00:00Z")
     requested = poller.cancel("project", record.watcher_id, "human-one")
     assert not running.exists()
-    assert requested.status == "active"  # command acceptance is not job completion
+    assert requested.status == "active"
     assert requested.cancel_requested_by == "human-one"
     assert requested.cancel_requested_at and requested.cancel_error is None
     assert not requested.can_cancel

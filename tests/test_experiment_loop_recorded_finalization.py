@@ -117,8 +117,10 @@ async def _finalize(service, request, execution, recorded) -> list[dict]:
 async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
     manifest, tmp_path: Path
 ) -> None:
+    """A stage rewritten after the host finished must not decide what is armed. The binding lands on
+    the pass's own operation and invocation, so the next wake resumes this session.
+    """
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    # A stage rewritten after the host finished must not decide what is armed.
     (workspace / "watch.json").write_text(
         json.dumps({"external": [], "graph": []}), encoding="utf-8"
     )
@@ -131,8 +133,6 @@ async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
     assert next(item["text"] for item in events if item["event"] == "answer") == _ANSWER
     episode = execution.store.experiment_episode(_EPISODE_ID)
     assert episode is not None
-    # The binding lands on the operation that opened the pass, at its own
-    # invocation, so the next wake resumes this session and not another.
     assert episode.last_turn_operation_id == execution.operation_id
     assert episode.last_turn_invocation == 1
     assert episode.native_session_id == "recorded-thread"
@@ -144,7 +144,11 @@ async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
 async def test_recorded_loop_finalization_can_resume_without_arming_twice(
     manifest, tmp_path: Path
 ) -> None:
-    """A crash after the episode handoff must not arm a second watcher."""
+    """A crash after the episode handoff must not arm a second watcher.
+
+    One invocation's handoff is reported once however often recovery replays it; a first invocation
+    is its own root.
+    """
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
     recorded = _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
@@ -166,9 +170,6 @@ async def test_recorded_loop_finalization_can_resume_without_arming_twice(
         if watcher.origin_operation_id == execution.operation_id
     ]
     assert len(armed) == 1
-    # Operational history is a product of this system, not a log. One
-    # invocation's handoff is reported once however often recovery replays it.
-    # A first invocation is its own root, so count each operation once.
     owners = {execution.operation_id, loop_module.root_experiment_loop_operation_id(execution)}
     categories = [
         receipt.category
@@ -260,8 +261,9 @@ async def test_a_loop_launch_retains_its_context_under_its_own_role(
     stage = loop_module._stage_work_turn
 
     async def remote_stage_work_turn(*args, **kwargs):
-        # The stage stays local so the turn can run here; only the host name
-        # that decides whether this turn can outlive its connection is set.
+        """The stage stays local so the turn runs here; only the host name deciding whether it can
+        outlive its connection is set.
+        """
         turn, staged = await stage(*args, **kwargs)
         turn.execution_host = "recorded-host"
         return turn, staged
@@ -335,11 +337,13 @@ async def test_a_local_loop_launch_retains_nothing_to_recover(manifest, tmp_path
 async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
     manifest, tmp_path: Path
 ) -> None:
-    """The provider that could answer a correction stopped when its link did."""
+    """The provider that could answer a correction stopped when its link did.
+
+    An observer the loop cannot validate is what a live turn would hand back for one correction
+    round.
+    """
 
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    # An observer the loop cannot validate is exactly what a live turn would
-    # hand back for one correction round.
     events = await _finalize(
         service,
         request,
@@ -367,6 +371,8 @@ async def test_a_stage_that_changed_after_the_host_finished_admits_the_recorded_
     Between the supervisor finishing and RCP reconnecting, nothing stops the
     stage file from being rewritten or swept. What the host proved is what may
     be admitted.
+
+    Something rewrote the stage after the host was done with it.
     """
 
     from .helpers import agent_patch_json
@@ -374,7 +380,6 @@ async def test_a_stage_that_changed_after_the_host_finished_admits_the_recorded_
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
     recorded_patch = agent_patch_json(_experiment_patch(invocation_ceiling=4))
     recorded = _recorded_pass(recorded_patch, _ANSWER, _watch_handoff(tmp_path))
-    # Something rewrote the stage after the host was done with it.
     (workspace / "patch.json").write_text('{"ops": []}', encoding="utf-8")
 
     events = await _finalize(service, request, execution, recorded)
@@ -396,6 +401,9 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
     handoff. That resettlement is still watcher work and keeps the watcher
     limit; handing it the Patch limit would buy a second full provider call the
     watcher policy does not allow.
+
+    The handoff looks rewritten after it first settled, the only way post-Patch resettlement runs;
+    both settlements count as watcher work.
     """
 
     from rcp.limits import (
@@ -429,8 +437,6 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
         offered.append(kwargs["maximum_corrections"])
         return settle(*args, **kwargs)
 
-    # Make the handoff look rewritten after it first settled, which is the only
-    # way the post-Patch resettlement runs at all.
     read = loop_module._read_watch_request
     reads: list[int] = []
 
@@ -453,7 +459,6 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
     ):
         pass
 
-    # The initial settlement and the resettlement both count as watcher work.
     assert len(offered) >= 2
     assert set(offered) == {EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS}
 
@@ -468,6 +473,8 @@ async def test_a_recovered_loop_correction_does_not_replace_the_reply(
     reconciliation that journal. Without the completed reply already retained,
     the correction's final-assistant text would be written into the chat as the
     Experiment's own answer.
+
+    The correction's own journal arrives later for the same task.
     """
 
     import rcp.runs.tasks.work as work_module
@@ -483,7 +490,6 @@ async def test_a_recovered_loop_correction_does_not_replace_the_reply(
         == _ANSWER
     )
 
-    # Now the correction's own journal arrives for the same task.
     events = await _finalize(
         service,
         request,
@@ -536,6 +542,8 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
 
     Its journal is owed to this same task, so settlement stops and waits for it
     rather than reading the missing result as a turn that failed.
+
+    The pass lands and only its correction loses the link, so no verdict is written yet.
     """
 
     from rcp.agents import AgentEvent
@@ -580,7 +588,6 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
             yield event
 
     launcher.stream = invalid_handoff  # type: ignore[assignment]
-    # The pass itself lands; only its correction loses the link.
     calls: list[int] = []
 
     async def live_then_pending(turn, agent_launcher, prompt, **kwargs):
@@ -603,7 +610,6 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
     events = [json.loads(frame.removeprefix("data: "))["event"] for frame in frames]
 
     assert len(calls) >= 2, "the invalid handoff should have asked for a correction"
-    # No verdict: the correction's own journal settles this task later.
     assert "error" not in events
     assert "remote_result_pending" in events
     assert store.experiment_episode(_EPISODE_ID).last_turn_operation_id is None
@@ -649,6 +655,8 @@ async def test_a_loop_stage_that_drops_mid_settlement_is_not_a_verdict(
     that failed said so. The loop reports an unreachable stage exactly as it
     reports a deliverable the agent botched, so an unmarked outage here would
     permanently fail a pass whose journal is intact.
+
+    Without this, Background records the failure as this turn's verdict.
     """
 
     from rcp.transport import StateUnavailable
@@ -668,7 +676,6 @@ async def test_a_loop_stage_that_drops_mid_settlement_is_not_a_verdict(
         loop_module._read_chat_patch = original
 
     assert [item["event"] for item in events if item["event"] == "error"]
-    # Without this, Background records the failure above as this turn's verdict.
     assert execution.stage_unreachable is True
 
 
@@ -683,12 +690,14 @@ async def test_a_supervised_loop_correction_pins_the_session_it_must_continue(
     correction recording its own pin, a recovered correction journal from a
     fresh provider session would be accepted and its handoff armed under this
     episode.
+
+    Mimics a supervised correction launch before it reaches the host; a journal from any other
+    session is refused before anything is admitted.
     """
 
     import rcp.runs.tasks.work_turn_runtime as runtime_module
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
-    # What a supervised correction launch does before it reaches the host.
     runtime_module.checkpoint_required_session(execution, "the-pass-session")
 
     reloaded = loop_module._load_work_finalization_context(
@@ -696,7 +705,6 @@ async def test_a_supervised_loop_correction_pins_the_session_it_must_continue(
     )
     assert reloaded.required_session_id == "the-pass-session"
 
-    # A journal from any other session is refused before anything is admitted.
     events = await _finalize(
         service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
     )
