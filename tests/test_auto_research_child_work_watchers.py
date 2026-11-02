@@ -208,6 +208,7 @@ def test_child_watcher_wake_reconciles_paid_dispatch_after_crash(tmp_path, monke
 
 
 def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_path):
+    """These are the values settlement stores after resolving a turn's defaults."""
     tasks, episode, _child, watchers, _seen = _waiting_child(tmp_path)
     resolved = watchers[0].continuation.model_copy(
         update={
@@ -217,7 +218,6 @@ def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_pa
             "invoked_workflow_ids": ["explicit-workflow"],
         }
     )
-    # These are the values settlement stores after resolving a turn's defaults.
     with tasks.store.connection() as connection:
         connection.execute(
             "UPDATE watchers SET continuation_json = ?", (resolved.model_dump_json(),)

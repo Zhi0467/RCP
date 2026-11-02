@@ -24,15 +24,17 @@ _ROLE = child_module.AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE
 
 
 async def _retained_child_turn(tmp_path: Path, *, required_session_id: str | None = None):
-    """One staged child turn whose launch snapshot is already written down."""
+    """One staged child turn whose launch snapshot is already written down.
+
+    Keeps filesystem I/O local while retaining what a supervised remote launch retains, under this
+    owner's own role.
+    """
 
     service, request, execution = _one_result_app(tmp_path)
     resolved = work_module._resolve_work_execution(service, request, execution)
     turn, staged = await work_module._stage_work_turn(
         service, resolved, tmp_path / "data", execution
     )
-    # Keep filesystem I/O local while retaining exactly what a supervised remote
-    # launch retains, under this owner's own role.
     work_module._record_work_finalization_context(
         turn, staged, role=_ROLE, required_session_id=required_session_id
     )
@@ -50,6 +52,9 @@ def _recorded_child_pass():
 
 @pytest.mark.asyncio
 async def test_a_recorded_child_pass_settles_on_its_own_task(tmp_path) -> None:
+    """The task's durable result is read off its frame, so a recovered turn that never emits one
+    completes with no answer; no provider is asked again.
+    """
     service, request, execution = await _retained_child_turn(tmp_path)
     launcher = ScriptedLauncher([{}], message="must not launch")
 
@@ -64,11 +69,8 @@ async def test_a_recorded_child_pass_settles_on_its_own_task(tmp_path) -> None:
     assert '"status":"applied"' in str(decided[0]["text"])
     assert decided[-1] == {"event": "done"}
     assert service.history.state().revision == 2
-    # The task's own durable result is read off this frame, so a recovered turn
-    # that never emits one completes with no answer of its own.
     events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
     assert [item["text"] for item in events if item["event"] == "answer"] == [_ANSWER]
-    # No provider is asked for anything: the turn already happened.
     assert launcher.calls == 0
 
 
@@ -120,7 +122,11 @@ async def test_recorded_child_finalization_can_resume_without_applying_twice(tmp
 
 @pytest.mark.asyncio
 async def test_a_child_task_never_routes_to_ordinary_work(tmp_path) -> None:
-    """Two owners stage alike and settle differently, so the role decides."""
+    """Two owners stage alike and settle differently, so the role decides.
+
+    The kind alone says project_chat, which ordinary Work, Discuss, the Experiment loop and this
+    owner all share.
+    """
 
     from rcp.runs.remote_finalization import recorded_finalizer
 
@@ -135,8 +141,6 @@ async def test_a_child_task_never_routes_to_ordinary_work(tmp_path) -> None:
         recorded_finalizer(store, execution.operation_id)
         is not work_module.finalize_recorded_work_result
     )
-    # The kind alone says project_chat, which ordinary Work, Discuss, the
-    # Experiment loop and this owner all share.
     assert store.agent_task(execution.operation_id).kind == "project_chat"
 
 
@@ -200,7 +204,6 @@ async def test_a_recorded_child_continuation_refuses_another_native_session(tmp_
     events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
     assert [item["event"] for item in events] == ["error"]
     assert "exact saved native session" in str(events[0]["text"])
-    # Nothing of the pass is accepted: no answer, no Patch, no session adopted.
     assert service.history.state().revision == 1
     assert [item["event"] for item in events if item["event"] == "answer"] == []
     assert any(

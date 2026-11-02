@@ -87,6 +87,7 @@ def test_discovery_mixed_types_spends_reads_after_size_checks(app, tmp_path, mon
 
 
 def test_discovery_latest_receipt_wins_and_is_retained(app):
+    """A long turn's later summary receipts cannot prune the omission notice."""
     execution = _execution(app)
     for ignored in ({"empty": 1}, {"count_limit": 2}, {"empty": 1}, {"empty": 1}):
         _record_artifact_discovery_receipt(execution, attached=0, candidates=2, ignored=ignored)
@@ -97,7 +98,6 @@ def test_discovery_latest_receipt_wins_and_is_retained(app):
     ]
     assert len(receipts) == 3
     assert all(r.tier == "summary" for r in receipts)
-    # A long turn's later summary receipts cannot prune the omission notice.
     for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
         execution.store.record_agent_task_receipt(
             execution.operation_id, "later_summary", {"index": index}, tier="summary"

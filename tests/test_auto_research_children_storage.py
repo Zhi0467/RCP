@@ -660,6 +660,7 @@ def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> Non
 def test_session_limit_notice_offers_resume_of_the_saved_checkpoint(
     tmp_path,
 ) -> None:
+    """A reached limit of any kind keeps the session, and resume rechecks it."""
     store, episode, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, episode, root, worker_id="worker-session-limit")
     store.create_auto_research_child_work(route, task)
@@ -677,7 +678,6 @@ def test_session_limit_notice_offers_resume_of_the_saved_checkpoint(
     store.fail_agent_task(task.operation_id, "You've hit your session limit.")
 
     notice = store.auto_research_lifecycle_notices(episode.episode_id)[0]
-    # A reached limit of any kind keeps the session; resume rechecks it.
     assert notice.payload["resume_available"] is True
     assert "replacement_command" not in notice.payload
 
@@ -1488,6 +1488,9 @@ def test_lifecycle_wake_spends_once_and_atomically_claims_notice_and_root_mail(
     ["missing", "delivered_notice", "delivered_mail", "foreign_notice", "foreign_mail"],
 )
 def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_input) -> None:
+    """A second project's live episode supplies real foreign records. A lost race is not a caller
+    bug: the wake is refused and a later pass re-reads.
+    """
     store, parent, root = _setup_parent(tmp_path)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     notice = store.record_auto_research_lifecycle_notice(
@@ -1536,7 +1539,6 @@ def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_inp
         )
         notice_ids = [notice.notice_id]
     else:
-        # A second project's live episode supplies real foreign records.
         other_project = store.project("project").model_copy(
             update={
                 "project_id": "other-project",
@@ -1610,7 +1612,6 @@ def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_inp
     wake = _orchestrator_wake(store, parent, root)
 
     if invalid_input in {"delivered_notice", "delivered_mail"}:
-        # A lost race is not a caller bug: the wake is refused and a later pass re-reads.
         assert (
             store.create_auto_research_lifecycle_wake_task(
                 wake,
@@ -2395,6 +2396,9 @@ def test_provider_auth_task_notice_is_suppressed(tmp_path, child_kind) -> None:
 
 
 def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
+    """The orchestrator caused the stop itself, so the notice is history it sees through the
+    harvest, never an obligation that refuses Finish.
+    """
     store, parent, root = _setup_parent(tmp_path, ceiling=2)
     for notice_id, suppressed in (("self-caused", "self_caused"), ("ordinary", None)):
         store.record_auto_research_lifecycle_notice(
@@ -2412,14 +2416,13 @@ def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
 
     blockers = store.auto_research_finish_blockers(parent.episode_id)
 
-    # The orchestrator caused the stop itself; the notice is history it still
-    # sees through the harvest, never an obligation that refuses its Finish.
     assert [(item.kind, item.blocker_id) for item in blockers] == [("lifecycle_notice", "ordinary")]
 
 
 @pytest.mark.parametrize("child_kind", ["work", "experiment"])
 @pytest.mark.parametrize("chat_kind", ["node_chat", "project_chat"])
 def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kind, chat_kind):
+    """A comment edit on the child's artifact is not a chat turn and is not refused here."""
     store, parent, root = _setup_parent(tmp_path)
     chat_id = str(uuid.uuid4())
     if child_kind == "work":
@@ -2448,7 +2451,6 @@ def test_human_cannot_admit_a_turn_on_an_auto_research_child(tmp_path, child_kin
         store.create_agent_task(human)
     assert str(error.value) == "auto_research_child_read_only"
     assert store.agent_task(human.operation_id) is None
-    # A comment edit on the child's artifact is not a chat turn and is not refused here.
     edit = human.model_copy(
         update={
             "operation_id": str(uuid.uuid4()),
@@ -2614,6 +2616,7 @@ def test_child_episode_recovery_cannot_become_a_human_turn(tmp_path, trigger):
 
 @pytest.mark.parametrize("child_kind", ["work", "experiment"])
 def test_generic_recovery_of_ended_episode_child_is_refused(tmp_path, child_kind):
+    """The child's own Stop recovery behind the parent's ending fence stays open."""
     from rcp.api.tasks import _agent_task_response
 
     store, parent, root = _setup_parent(tmp_path)
@@ -2649,7 +2652,6 @@ def test_generic_recovery_of_ended_episode_child_is_refused(tmp_path, child_kind
     background._auto_retry_transport_loss(failed)
     assert not store.agent_task_has_receipt(task.operation_id, "transport_auto_retry")
     if child_kind == "experiment":
-        # The child's own Stop recovery behind the parent's ending fence stays open.
         store.request_episode_stop(task.episode_id)
         assert store.episode_child_recovery_refusal(failed) is None
 
@@ -2716,6 +2718,9 @@ def test_ended_child_stays_locked_when_isolation_is_unavailable(
 
 
 def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
+    """While the continuation runs, the child chat is locked to humans, and the continuation's turns
+    keep generic recovery.
+    """
     store, parent, root = _setup_parent(tmp_path)
     chat_id = str(uuid.uuid4())
     task = _experiment_task(store, chat_id, parent.authorized_by, node_id="exp/child")
@@ -2759,10 +2764,8 @@ def test_a_child_experiment_continuation_owns_its_child_chat(tmp_path):
             store._require_child_turn_admission(
                 connection, first_turn.model_copy(update={"episode_id": str(uuid.uuid4())})
             )
-        # While the continuation runs, the child chat is locked to humans.
         refusal = store._child_human_turn_refusal(connection, task.project_id, chat_id)
     assert refusal is not None and refusal["code"] == "auto_research_child_read_only"
-    # While the orchestrator runs, the continuation's turns keep generic recovery.
     assert store.episode_child_recovery_refusal(first_turn) is None
 
 
@@ -2794,6 +2797,9 @@ def test_fork_child_target_is_owned_and_continuations_cannot_apply_to_parent(tmp
 
 
 def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tmp_path):
+    """A nested fork with a live worker, or a failed worker that can still resume, still merges back
+    into this one.
+    """
     store, parent, root = _setup_parent(tmp_path)
     target = _owned_fork(store, parent)
     assert target.branch_id is not None
@@ -2830,7 +2836,6 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     assert not store.archive_empty_auto_research_fork(
         parent.project_id, head.model_copy(update={"revision": 1})
     )
-    # A nested fork with a live worker still merges back into this one.
     nested = store.create_graph_branch(
         project_id=parent.project_id,
         branch_id=str(uuid.uuid4()),
@@ -2846,7 +2851,6 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
     store.create_auto_research_child_work(route, task)
     assert not store.archive_empty_auto_research_fork(parent.project_id, head)
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
-    # So does a failed worker that can still resume from its session and stage.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status='failed', native_session_id='s', stage_root='/stage' "
@@ -2923,11 +2927,11 @@ def test_refused_worker_human_retry_keeps_allocation_and_target(tmp_path, monkey
 
 
 def test_archived_orchestrator_refuses_paid_wake(tmp_path):
+    """The row mimics an archive written before archive waited for the running episode."""
     from rcp.storage import AgentTaskAdmissionConflict
 
     store, episode, root = _setup_parent(tmp_path)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    # An archive written before archive waited for the running episode.
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO chat_display(project_id,chat_id,archived_at) VALUES('project',?,?) "

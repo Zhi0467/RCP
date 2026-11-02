@@ -164,7 +164,6 @@ class _EditLauncher:
     async def stream(self, provider, prompt, **kwargs):
         self.calls.append((provider, kwargs))
         turns = Path(kwargs["cwd"]) / "turns"
-        # The commented artifact's tracked file, in its origin turn's folder.
         target = turns / "origin" / "artifacts" / "chart.html"
         self.before.append(target.read_bytes())
         if self.before_edit:
@@ -247,6 +246,7 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
 async def test_failed_edit_keeps_the_tracked_file_and_retry_continues_it(
     manifest, tmp_path, failure
 ):
+    """The pre-upgrade binding's staged scope does not hide the retry's own outputs."""
     app, request, execution, source, workspace = _setup(manifest, tmp_path)
     failed = _EditLauncher(
         fail=failure if failure != "session" else False,
@@ -278,7 +278,6 @@ async def test_failed_edit_keeps_the_tracked_file_and_retry_continues_it(
     assert retry.before == [b"<p>edited</p>"]
     assert events[-1].event == "done"
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
-    # The pre-upgrade binding's staged scope does not hide the retry's own outputs.
     from rcp.api.tasks import _read_agent_artifact_bytes
 
     artifacts = [event.artifact for event in events if event.event == "artifact"]
@@ -568,7 +567,6 @@ def test_turn_start_resyncs_only_an_untouched_tracked_file(manifest, tmp_path, c
     store = execution.store
     tracked = workspace / "turns" / "origin" / "artifacts" / source.name
     tracked.parent.mkdir(parents=True)
-    # The origin turn's file still holds its first version; the human now sees "base".
     tracked.write_bytes(b"<p>agent</p>" if changed else b"<p>original</p>")
     plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
     directory = workspace / "turns" / "next" / "artifacts"
@@ -612,7 +610,7 @@ def test_live_resolution_failure_does_not_record_publish_completion(
 
 
 def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp_path):
-    # Serving is pinned by test_revoking_edit_uses_recorded_workspace_and_publishes_cas.
+    """Serving is pinned by test_revoking_edit_uses_recorded_workspace_and_publishes_cas."""
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     _tracked_file(staged).write_bytes(b"<p>edited</p>")
     artifacts = _finalize(app, request, execution, directory)
@@ -621,8 +619,9 @@ def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp
 
 
 def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifest, tmp_path):
-    # The prompt item gives the reply the tracked path to embed; an episode report's is
-    # under its episode's folder, which the card must name for the embed to resolve.
+    """An episode report's tracked path is under its episode's folder, which the card must name for
+    the reply's embed to resolve, even after a member deletes the report.
+    """
     app, request, execution, _, workspace = _setup(manifest, tmp_path)
     store = execution.store
     report = _stored_artifact(
@@ -650,14 +649,13 @@ def test_an_edited_episode_report_card_names_the_folder_its_reply_embeds(manifes
     with signed_in_client(app) as client:
         [card] = client.get(detail).json()["result"]["artifacts"]
         assert card["turn_folder"] == embedded.parent.parent.name
-        # The reply still cites that folder after a member deletes the report.
         store.delete_artifact(app.state.default_project_id, report.artifact_id)
         [deleted] = client.get(detail).json()["result"]["artifacts"]
         assert (deleted["available"], deleted["turn_folder"]) == (False, card["turn_folder"])
 
 
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
-    # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
+    """Descriptor sizes are positive or unknown, so an emptied artifact must not fail the turn."""
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     _tracked_file(staged).write_bytes(b"")
     artifacts = _finalize(app, request, execution, directory)
@@ -703,6 +701,9 @@ def test_revoking_edit_without_provider_result_emits_error(manifest, tmp_path):
     ],
 )
 def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outcome, legacy):
+    """The outcome is recorded at settlement because the source artifact may expire before its fork.
+    Older failed retries wrote it on the attempt, not the admitted edit.
+    """
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     store = execution.store
     path = _tracked_file(staged)
@@ -715,7 +716,6 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
     artifacts = _finalize(app, request, execution, directory)
     [receipt] = store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert receipt.payload["status"] == outcome
-    # Recorded at settlement: the source artifact may expire before its fork does.
     cited = {"turn_folder": path.parent.parent.name, "name": path.name}
     assert receipt.payload.get("forked_from") == (cited if outcome == "forked" else None)
     expected = {
@@ -747,10 +747,8 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
         applied_revision=None,
         result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
     )
-    # Retry tasks project the durable outcome of the original admitted edit too.
     _edit_execution(execution, request, "retry", status="succeeded", result={"artifacts": []})
     if legacy and outcome == "failed":
-        # Older failed retries wrote the outcome on the attempt, not the admitted edit.
         with store.connection() as connection:
             connection.execute(
                 "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
@@ -766,7 +764,6 @@ def test_edit_outcome_projects_on_task_detail_and_list(manifest, tmp_path, outco
             assert detail.json()["result"]["artifact_edit_outcomes"] == [expected]
             listed = next(record for record in records if record["operation_id"] == operation_id)
             assert listed["result"]["artifact_edit_outcomes"] == [expected]
-        # The fork answers to the tracked file the edit's reply cites.
         cards = next(record for record in records if record["operation_id"] == "edit")
         assert [card.get("forked_from") for card in cards["result"].get("artifacts", [])] == [
             cited if outcome == "forked" else None for _ in artifacts
@@ -812,7 +809,6 @@ def test_an_unrelated_tracked_file_never_refuses_a_comment_turn(
             return read(artifact_id, *args, **kwargs)
 
         monkeypatch.setattr(store, "read_artifact_bytes", unreadable)
-    # A chat comment is a plain turn carrying the version it was drawn on.
     comment = request.model_copy(
         update={
             "artifact_edit": None,
@@ -829,10 +825,8 @@ def test_an_unrelated_tracked_file_never_refuses_a_comment_turn(
 def test_a_change_from_an_unretained_version_forks_into_its_own_tracked_file(manifest, tmp_path):
     app, request, execution, source, _, directory, staged = _staged_edit(manifest, tmp_path)
     store = execution.store
-    # The version the tracked file last held is no longer retained.
     store.record_artifact_sync(source.artifact_id, "0" * 64)
     _tracked_file(staged).write_bytes(b"<p>edited</p>")
-    # This turn also made its own file under the same name.
     (directory / source.name).write_bytes(b"<p>own</p>")
     forks = [
         item for item in _finalize(app, request, execution, directory) if item.name != source.name
@@ -883,8 +877,9 @@ def test_a_delete_during_settlement_is_never_read_as_a_conflict_fork(
     versions = store.artifact_versions
 
     def versions_after_a_delete(artifact_id):
+        """Settlement's lock keeps Delete waiting."""
         deletion.start()
-        deletion.join(timeout=0.2)  # Settlement's lock keeps Delete waiting.
+        deletion.join(timeout=0.2)
         return versions(artifact_id)
 
     def base_with_a_delete_between_its_reads(*args):
@@ -941,6 +936,7 @@ def test_a_turn_end_stopped_after_publishing_replays_as_published(manifest, tmp_
 
 
 def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_path):
+    """Nothing later tracks the fresh stage's file."""
     app, request, execution, source, _workspace = _setup(manifest, tmp_path)
     store = execution.store
     store.fail_agent_task("edit", "Fixture replaced with a fresh-session edit")
@@ -958,7 +954,6 @@ def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_pat
     tracked.write_bytes(b"<p>edited</p>")
     _finalize(app, fresh, execution, directory)
     assert store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
-    # Nothing later tracks the fresh stage's file.
     assert store.artifact(source.artifact_id).synced_sha256 is None
     tracked.write_bytes(b"<p>later</p>")
     plain = fresh.model_copy(update={"artifact_context": None, "artifact_edit": None})
@@ -969,6 +964,7 @@ def test_a_fresh_session_edit_writes_its_artifact_for_one_turn(manifest, tmp_pat
 def test_a_failed_fresh_session_turn_end_settles_by_what_was_published(
     manifest, tmp_path, monkeypatch, phase
 ):
+    """No later turn end tracks this file, so the comment cannot stay unsettled."""
     import rcp.runs.session_artifacts as module
 
     app, request, execution, _source, _workspace = _setup(manifest, tmp_path)
@@ -994,12 +990,10 @@ def test_a_failed_fresh_session_turn_end_settles_by_what_was_published(
     monkeypatch.setattr(owner, method, fail)
     if phase == "publish":
         _finalize(app, fresh, execution, directory)
-        # No later turn end tracks this file, so the comment cannot stay unsettled.
         [receipt] = store.agent_task_artifact_edit_outcomes(["fresh-edit"])["fresh-edit"]
         assert receipt.payload["status"] == "failed"
         return
     _finalize(app, fresh, execution, directory)
-    # Published before the failure: the replayed turn end records it as published.
     assert not store.agent_task_artifact_edit_outcomes(["fresh-edit"])
     monkeypatch.setattr(owner, method, original)
     _finalize(app, fresh, execution, directory)
@@ -1010,8 +1004,8 @@ def test_a_failed_fresh_session_turn_end_settles_by_what_was_published(
 def test_a_fresh_comment_whose_file_changes_while_restored_is_refused(
     manifest, tmp_path, monkeypatch
 ):
+    """The compare-and-swap loses because the file changed after its digest was read."""
     app, request, execution, _source, workspace = _setup(manifest, tmp_path)
-    # The compare-and-swap lost: the file changed after its digest was read.
     monkeypatch.setattr("rcp.runs.session_artifacts._write", lambda *_args: False)
     with pytest.raises(ValueError):
         _stage(app, request, execution, workspace)
@@ -1027,7 +1021,6 @@ def test_an_untouched_fresh_session_retry_after_the_artifact_moved_is_unchanged(
     retry = _edit_execution(
         execution, fresh, "fresh-retry", status="running", stage_root=str(workspace.parent)
     )
-    # The one-turn file is gone and the artifact moved off the comment's base.
     store.undo_artifact(source.artifact_id)
     directory, staged = _stage(app, fresh, retry, workspace)
     assert _tracked_file(staged).read_bytes() == b"<p>original</p>"

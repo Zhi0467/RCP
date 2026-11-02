@@ -125,6 +125,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
 @pytest.mark.parametrize("mode", ["experiment_loop", "auto_research"])
 @pytest.mark.parametrize("report", [False, True])
 def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report, monkeypatch):
+    """The row mimics an archive written before archive waited for live work."""
     app, store, task = edit_origin
     episode_id = str(uuid.uuid4())
     request = dict(task.request)
@@ -213,7 +214,6 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report,
     from rcp.runs.artifact_edit_admission import start_artifact_edit
 
     chat_id = episode_id if mode == "auto_research" else request["chat_id"]
-    # An archive written before archive waited for live work.
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO chat_display(project_id,chat_id,archived_at) VALUES(?,?,?) "
@@ -294,6 +294,7 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
 
 
 def test_viewer_session_collision_gates_only_edit_now(edit_origin):
+    """Send is a turn of the artifact's chat, which the other chat's launch does not hold."""
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
     client = signed_in_client(app)
@@ -310,7 +311,6 @@ def test_viewer_session_collision_gates_only_edit_now(edit_origin):
     response = client.get(url + "/state")
     assert response.status_code == 200
     state = response.json()
-    # Send is a turn of the artifact's chat, which the other chat's launch does not hold.
     assert state["can_comment"] and state["send_to_chat"]
     assert not state["can_edit_now"] and not state["fresh_session_required"]
     response = client.post(
@@ -392,6 +392,7 @@ def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
 
 
 def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
+    """A box with only its own comment is a complete request, sent at once."""
     from types import SimpleNamespace
 
     from rcp.agents.prompts import _attachment_items
@@ -414,7 +415,6 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
     }
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
     client = signed_in_client(app)
-    # A box with only its own comment is a complete request, sent at once.
     response = client.post(
         url,
         json={
@@ -497,7 +497,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         "high",
         "laptop",
     )
-    assert admitted.session_id is None  # Leave session resolution to the ordinary chat launcher.
+    assert admitted.session_id is None
     assert admitted.artifact_edit is None
     assert (
         admitted.artifact_context.base_version
@@ -536,6 +536,7 @@ def test_composer_refuses_another_chat_artifact(edit_origin):
 
 
 def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_origin, monkeypatch):
+    """Client skill fields never reach an origin-bound edit's prompt."""
     app, _store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
     monkeypatch.setattr(
@@ -559,7 +560,6 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
     body = {
         **_request(task, artifact).model_dump(mode="json"),
         "chat_id": task.request["chat_id"],
-        # Client skill fields never reach an origin-bound edit's prompt.
         "invoked_workflow_ids": ["stale-workflow"],
         "invoked_skill_ids": ["stale-skill"],
         "invoked_provider_skill_names": ["stale"],
@@ -664,7 +664,6 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     assert sent.dispatch_authority is not None
     assert sent.request.get("artifact_edit") is None
     store.complete_agent_task(sent.operation_id, applied_revision=None, result={})
-    # Edit now keeps the origin-bound edit on the recorded session.
     response = client.post(url, json={"comments": [{"text": "Fix the typo"}], "edit_now": True})
     assert response.status_code == 202, response.text
     edited = store.agent_task(response.json()["operation_id"])
@@ -673,6 +672,7 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
 
 
 def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, monkeypatch):
+    """While the chain runs, Send keeps the origin-bound orchestrator edit."""
     from rcp.runs.artifact_edit_admission import artifact_send_chat_turn
     from rcp.service import ArtifactContextRequest
 
@@ -687,7 +687,6 @@ def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, mo
     context = ArtifactContextRequest(
         operation_id=root.operation_id, artifact_id=artifact.artifact_id, selections=[]
     )
-    # While the chain runs, Send keeps the origin-bound orchestrator edit.
     assert artifact_send_chat_turn(store, artifact, context, "Rerun") is None
     _end_orchestrator(app, root, tmp_path / "stage")
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
@@ -717,7 +716,6 @@ def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, p
         native_session_id="latest-chat-session",
         stage_root=origin.stage_root,
     )
-    # Exercise real task admission/session binding without launching a provider.
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     client = signed_in_client(app)
     url = f"/api/projects/{origin.project_id}/tasks/project_chat"

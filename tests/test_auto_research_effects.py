@@ -703,13 +703,13 @@ def test_worker_stop_recovers_the_split_after_durable_route_stop(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The crash boundary: Stop intent committed, process signal not sent."""
     store, auto_research, root = _setup_auto_research(tmp_path)
     background = BackgroundAgentTasks(store, _successful_stream)
     worker = _create_routed_worker(store, auto_research, root, status="queued")
     signals: list[str] = []
     monkeypatch.setattr(background, "_signal_agent_task_pause", signals.append)
 
-    # This is the crash boundary: Stop intent committed, process signal not sent.
     store.request_auto_research_child_work_stop(worker.operation_id)
     recovered = stop_auto_research_child_work(
         background,
@@ -1529,6 +1529,7 @@ def test_finish_receipt_commit_before_command_exit_reconciles_without_refencing(
 def test_finish_returns_complete_large_blocker_snapshot_with_compact_durable_exit(
     tmp_path,
 ) -> None:
+    """The live inbox count is not part of the replayed snapshot."""
     store, auto_research, root = _setup_auto_research(tmp_path)
     background = BackgroundAgentTasks(store, _successful_stream)
     dispatcher = AutoResearchCommandDispatcher(store, _effects(store, background))
@@ -1579,7 +1580,6 @@ def test_finish_returns_complete_large_blocker_snapshot_with_compact_durable_exi
 
     assert first.status == replay.status == "invalid"
     assert len(first.result["blockers"]) == 500
-    # The live inbox count is not part of the replayed snapshot.
     assert {k: v for k, v in replay.result.items() if k != "inbox_pending"} == {
         k: v for k, v in original_result.items() if k != "inbox_pending"
     }
@@ -2321,6 +2321,9 @@ def test_inbox_receipt_failure_rolls_back_notices_and_mail(tmp_path) -> None:
 
 
 def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path) -> None:
+    """A reply served outside dispatch, such as a graph-history read, gets the same note; the inbox
+    reply itself stays within its own size bound.
+    """
     store, episode, root = _setup_auto_research(tmp_path)
     dispatcher = AutoResearchCommandDispatcher(
         store, _effects(store, BackgroundAgentTasks(store, _successful_stream))
@@ -2349,7 +2352,6 @@ def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path
         body="An answer arrived mid-turn.",
     )
     assert status("2").result["inbox_pending"] == {"notices": 0, "mail": 1}
-    # A reply served outside dispatch, such as a graph-history read, gets the same note.
     read = CommandResponse(request_id="5" * 32, status="ok", result={"entries": []})
     request = StatusCommandRequest(
         mailbox_id=MAILBOX_ID,
@@ -2371,7 +2373,6 @@ def test_every_orchestrator_reply_reports_pending_inbox_until_a_harvest(tmp_path
             arguments=InboxHarvestArguments(action="harvest"),
         ),
     )
-    # The inbox reply is the inbox itself and stays within its own size bound.
     assert "inbox_pending" not in harvested.result
     assert "inbox_pending" not in status("4").result
 

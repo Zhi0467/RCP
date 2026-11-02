@@ -48,7 +48,6 @@ def test_preview_matches_viewer_and_refuses_escaping_paths(tmp_path):
                     response.getheader("Content-Security-Policy") == f"sandbox allow-scripts; {csp}"
                 )
                 if path == "/":
-                    # The viewer's own markup for the page, after a report of what it removed.
                     served = content.decode().removeprefix("<!DOCTYPE html>")
                     report, markup = served.split("</script>", 1)
                     assert json.loads(report.removeprefix("<script>console.error(")[:-1]).endswith(
