@@ -218,12 +218,22 @@ test("project task adapters preserve encoded routes and control idempotency", as
     const endpoints = projectAgentWindowEndpoints("project/a", "chat/b");
     assert.equal((await endpoints.loadTask("op/a")).operation_id, "op/a");
     await endpoints.control("op/a", "pause", "request-1");
+    await endpoints.control("op/a", "resume", "request-2");
+    await endpoints.control("op/a", "retry", "request-3");
     assert.deepEqual(
       calls.map(({ url }) => url),
-      ["/api/projects/project%2Fa/tasks/op%2Fa", "/api/projects/project%2Fa/tasks/op%2Fa/pause"],
+      [
+        "/api/projects/project%2Fa/tasks/op%2Fa",
+        "/api/projects/project%2Fa/tasks/op%2Fa/pause",
+        "/api/projects/project%2Fa/tasks/op%2Fa/resume",
+        "/api/projects/project%2Fa/tasks/op%2Fa/retry",
+      ],
     );
     assert.equal(calls[1].init.method, "POST");
-    assert.equal(new Headers(calls[1].init.headers).get("Idempotency-Key"), "request-1");
+    assert.deepEqual(
+      calls.slice(1).map(({ init }) => new Headers(init.headers).get("Idempotency-Key")),
+      [null, "request-2", "request-3"],
+    );
   } finally {
     globalThis.fetch = original;
   }
