@@ -29,18 +29,19 @@ def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
 def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, object]:
     scope = thread_scope_id(store, thread)
     project = store.project(thread.project_id) if thread.project_id else None
+    # Without ANALYZE the planner prefers graph_runs_finished for MAX(finished_at),
+    # which scans the whole project history; both reads stay on the thread's turns.
+    turns = (
+        "FROM graph_runs INDEXED BY graph_runs_chat_turn "
+        "WHERE project_id=:scope AND json_extract(request_json, '$.chat_id')=:thread AND visible=1"
+    )
     with store.connection() as connection:
         task = connection.execute(
-            "SELECT operation_id, status, updated_at, finished_at FROM graph_runs "
-            "WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? "
-            "AND visible=1 ORDER BY created_at DESC, operation_id DESC LIMIT 1",
-            (scope, thread.thread_id),
+            f"SELECT operation_id, status, updated_at, (SELECT MAX(finished_at) {turns}) "
+            f"AS last_finished_at {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+            {"scope": scope, "thread": thread.thread_id},
         ).fetchone()
-        finished = connection.execute(
-            "SELECT MAX(finished_at) FROM graph_runs "
-            "WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? AND visible=1",
-            (scope, thread.thread_id),
-        ).fetchone()[0]
+    finished = task["last_finished_at"] if task else None
     markers = store.chat_read_markers(scope, thread.user_id)
     read_through = markers["reads"].get(thread.thread_id, markers["baseline"])
     state = "idle"
