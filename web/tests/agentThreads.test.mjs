@@ -7,6 +7,7 @@ import { createServer } from "vite";
 import {
   approvalCardExpired,
   chosenThread,
+  firingScheduleCount,
   handoffReport,
   latestTurnId,
   oneShotPassed,
@@ -139,6 +140,16 @@ test("Upcoming keeps schedules that can still run and reads common cron times", 
       schedule({ schedule_id: "f", state: "paused" }),
     ]).map((item) => item.schedule_id),
     ["a", "c", "e", "f"],
+  );
+  // Only what runs without the member counts: active ones and a waiting wake.
+  assert.equal(
+    firingScheduleCount([
+      schedule({ schedule_id: "a" }),
+      schedule({ schedule_id: "c", state: "disabled" }),
+      schedule({ schedule_id: "e", state: "done", pending_since: "2026-11-01T08:00:00Z" }),
+      schedule({ schedule_id: "f", state: "paused" }),
+    ]),
+    2,
   );
   // A one-shot's time is read in its own zone: 09:00 UTC is 18:00 in Tokyo.
   const at = new Date(Date.UTC(2026, 10, 1, 9, 0));

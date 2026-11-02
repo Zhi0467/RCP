@@ -221,6 +221,15 @@ export function upcomingSchedules(schedules: readonly AgentSchedule[]): AgentSch
   );
 }
 
+/** How many will run without the member: active ones and a done one-shot's waiting
+ *  wake. Paused and disabled ones wait for a Resume or an Enable. */
+export function firingScheduleCount(schedules: readonly AgentSchedule[]): number {
+  return schedules.filter(
+    (schedule) =>
+      schedule.state === "active" || (schedule.state === "done" && Boolean(schedule.pending_since)),
+  ).length;
+}
+
 /** The wall clock `YYYY-MM-DDTHH:MM` in `timezone`, or null for an unknown zone. */
 function zoneWall(timezone: string, now: Date): string | null {
   let parts: Intl.DateTimeFormatPart[];

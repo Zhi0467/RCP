@@ -228,7 +228,8 @@
   border-radius: 10px;
   box-shadow: var(--shadow);
   display: grid;
-  max-height: min(420px, calc(100dvh - 120px));
+  /* Grows to the viewport, clearing the header above and the frame below. */
+  max-height: calc(100dvh - 180px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 6px;

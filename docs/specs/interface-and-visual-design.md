@@ -449,8 +449,9 @@ Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
 board conversations stay in that list. The thread header holds an Upcoming
-count button, present only when schedules exist, that opens a scrolling popover
-of them, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
+button, present only when schedules exist, that counts the ones that will run
+without the member and opens a popover of them, sized to the viewport and
+scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
 sign-in from Settings appears without a reload. A pick is stored on the thread
@@ -466,7 +467,8 @@ capability lines the backend gives each verb the thread kind's turns are
 granted, above three starters. A starter fills the composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Retry.
 A member's Stop reads Stopped, with Resume and Retry, in the same column, on
-one rounded row shaped like the failed turn's. A
+one rounded row shaped like the failed turn's. Send stays off until the stopped
+turn is resumed or retried. A
 Resume or Retry continues its turn, so the member's message shows once. The
 thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
@@ -475,11 +477,12 @@ Switching threads shows each thread's last loaded view while it reloads. Each
 Upcoming row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
 cannot start shows in the row. Every row has Cancel; an active row has Pause and
-a member-paused row Resume. A row the system disabled says why on hover and has
+a member-paused row Resume, unless it is a one-shot whose time passed. A row the system disabled says why on hover and has
 Enable unless it is a one-shot whose time passed; a refused Enable shows the
 backend's reason. Row actions are icons. A wake shows its trigger: Handoff and
 Watcher as text chips, and a schedule as a calendar chip with its fire time,
-the note on hover, leading its message. A handoff result is one row with its Handoff
+the note on hover, leading its message. Until a wake has text, only the live row
+shows it. A handoff result is one row with its Handoff
 chip, the agent that ran it, and how it ended, with its answer below.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and

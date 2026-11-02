@@ -83,6 +83,7 @@ import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
 import {
   browserTimezone,
+  firingScheduleCount,
   handoffReport,
   latestTurnId,
   oneShotPassed,
@@ -341,6 +342,7 @@ function SchedulesPopover({
   useLayerDismiss(open, close, [trigger, panel], trigger);
   const upcoming = upcomingSchedules(schedules);
   if (!upcoming.length) return null;
+  const firing = firingScheduleCount(upcoming);
   const act = async (run: () => Promise<unknown>) => {
     setError(null);
     try {
@@ -357,12 +359,12 @@ function SchedulesPopover({
         className="upcoming-button"
         type="button"
         title="Upcoming"
-        aria-label={`${upcoming.length} upcoming`}
+        aria-label={firing ? `${firing} upcoming` : "Upcoming"}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
         <CalendarClock size={14} aria-hidden="true" />
-        {upcoming.length}
+        {firing > 0 && firing}
       </button>
       {open && (
         <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
@@ -371,6 +373,8 @@ function SchedulesPopover({
             const cancel = () =>
               void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
             const paused = schedule.state === "paused";
+            // A one-shot whose time passed while paused has no run left to resume.
+            const resumable = paused && !oneShotPassed(schedule);
             const next = schedule.state === "active" && !schedule.at_local && schedule.next_fire_at;
             return (
               <div
@@ -421,7 +425,7 @@ function SchedulesPopover({
                       <Play size={14} />
                     </button>
                   )}
-                  {(paused || schedule.state === "active") && (
+                  {(resumable || schedule.state === "active") && (
                     <button
                       className="icon-button"
                       type="button"
@@ -627,6 +631,12 @@ export function AgentThreadView({
     pendingTurn: composer.sending,
     parents: lineage,
   });
+  // The live row carries a running turn's progress, so a wake's placeholder, which has
+  // no text for its source chip to label, is not shown.
+  const shownLines = useMemo(
+    () => lines.transcript.filter((line) => !line.running),
+    [lines.transcript],
+  );
   const { shouldStickToBottomRef: followRef, handleChatScroll } = useAgentWindowScroll(
     endpoints.scopeKey,
     linesRef,
@@ -853,8 +863,11 @@ export function AgentThreadView({
   }, [thread.unread, thread.thread_id, freshThreadId, newest, onThreadChanged]);
 
   // The thread stores its pick and every turn runs it, retries and wakes included;
-  // until the member picks, the default shows and the next send stores it.
-  const config = thread.agent ?? picker?.value ?? null;
+  // until the member picks, the default shows and the next send stores it. A send
+  // stores no machine, so that pick runs on, and reads readiness from, the default's.
+  const config = thread.agent
+    ? { ...thread.agent, run_on: thread.agent.run_on || picker?.value.run_on || "" }
+    : (picker?.value ?? null);
   const pickAgent = (agent: AgentRunConfig) => {
     const target = thread;
     onThreadChanged({ ...target, agent });
@@ -906,17 +919,21 @@ export function AgentThreadView({
     latest?.active && latest.can_steer && latest.steer_visible && latest.steer_turn_id
       ? latest
       : null;
+  // A paused turn holds the conversation until it is resumed or retried.
+  const pausedTask = latest?.paused && latest.can_resume ? latest : null;
   const sendBlocked = Boolean(
-    latest?.active && (!steeringTask || attachments.staged || artifactContext),
+    pausedTask || (latest?.active && (!steeringTask || attachments.staged || artifactContext)),
   );
   // A disabled Send says why on hover.
   const sendReason =
     composer.sending && !composer.error
       ? "Sending"
       : sendBlocked
-        ? steeringTask
-          ? "Attachments and comments wait until this turn ends"
-          : "Wait until this turn ends"
+        ? pausedTask
+          ? "Resume or retry the last turn first"
+          : steeringTask
+            ? "Attachments and comments wait until this turn ends"
+            : "Wait until this turn ends"
         : attachments.unready
           ? "Attachments are still uploading"
           : !comments.complete
@@ -1028,7 +1045,7 @@ export function AgentThreadView({
     ...(messages ?? []).flatMap((message) => (message.operation_id ? [message.operation_id] : [])),
   ]);
   const firstLineOfTurn = new Map<string, string>();
-  for (const line of lines.transcript) {
+  for (const line of shownLines) {
     if (turnIds.has(line.taskId) && !firstLineOfTurn.has(line.taskId))
       firstLineOfTurn.set(line.taskId, line.lineId);
   }
@@ -1037,7 +1054,6 @@ export function AgentThreadView({
   const voiceHere = voice?.phase !== "idle" && voice?.thread?.thread_id === thread.thread_id;
   const voiceBusy = voice !== null && voice.phase !== "idle";
   const pending = composer.sending;
-  const pausedTask = latest?.paused && latest.can_resume ? latest : null;
   const failedTask =
     latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
   // A failed turn's error row carries its Retry; a stop with no error row shows it here.
@@ -1178,7 +1194,7 @@ export function AgentThreadView({
           />
         )}
         <AgentWindowTranscript
-          transcript={lines.transcript}
+          transcript={shownLines}
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
