@@ -114,8 +114,8 @@ and [release promotion](release.md) for those procedures.
 uv run pytest
 uv run ruff check src tests packaging web/src-tauri/scripts
 npm --prefix web exec playwright -- install chromium
-npm --prefix web test
 npm --prefix web run build
+npm --prefix web test
 uv run pre-commit run --all-files
 ```
 
@@ -126,9 +126,6 @@ after a merge brings in new files:
 uv run python scripts/comment_ratchet.py --write
 npm --prefix web run lint -- --suppress-all
 ```
-
-`npm --prefix web run build` comes before `npm --prefix web test`, because the
-bundle budget reads the build manifest.
 
 ### Opt-in test gates
 
