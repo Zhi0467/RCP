@@ -33,6 +33,7 @@ def chat_request():
 
 @pytest.mark.parametrize("route", ["tasks/project_chat", "experiments/run", "episodes"])
 def test_client_request_replay_admits_once_and_lookup_returns_id(request_app, tmp_path, route):
+    """The started episode comes back too, so Resume watches the whole loop."""
     app = request_app
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -70,7 +71,6 @@ def test_client_request_replay_admits_once_and_lookup_returns_id(request_app, tm
         assert found.status_code == 200
         expected = {"route": route, result_id: first.json()[result_id]}
         if route == "experiments/run":
-            # The started episode comes back too, so Resume watches the whole loop.
             expected["episode_id"] = store.agent_task(operation_id).episode_id
             assert expected["episode_id"]
         assert found.json() == expected
@@ -83,9 +83,9 @@ def test_client_request_replay_admits_once_and_lookup_returns_id(request_app, tm
 @pytest.mark.parametrize(
     "route", ["tasks/project_chat", "experiments/exp%2Fbounded-loop/run", "episodes"]
 )
-# A fixed version-1 UUID keeps test ids identical across xdist workers.
 @pytest.mark.parametrize("key", ["invalid", "c232ab00-9414-11ec-b3c8-9e6bdeced846"])
 def test_client_request_headers_require_uuid4(request_app, route, key):
+    """A fixed version-1 UUID keeps test ids identical across xdist workers."""
     project_id = request_app.state.default_project_id
     body = chat_request()
     if route.startswith("experiments/"):
@@ -171,6 +171,7 @@ def test_failed_admission_rolls_back_request_and_task(request_app, monkeypatch):
 
 
 def test_an_old_key_still_returns_its_original_admission(request_app):
+    """Far past any transcript window, a resumed receipt's re-ask still matches."""
     store = request_app.state.background_tasks.store
     project_id = request_app.state.default_project_id
     key = str(uuid.uuid4())
@@ -178,7 +179,6 @@ def test_an_old_key_still_returns_its_original_admission(request_app):
         url = f"/api/projects/{project_id}/tasks/project_chat"
         first = client.post(url, json=chat_request(), headers={"Idempotency-Key": key})
         assert first.status_code == 202
-        # Far past any transcript window, a resumed receipt's re-ask still matches.
         with store.connection() as connection:
             connection.execute(
                 "UPDATE client_requests SET created_at = '2000-01-01T00:00:00+00:00'"

@@ -18,6 +18,10 @@ from tests.test_chat_prompt_protocol import _RecordingLauncher
 @pytest.mark.parametrize("mode", ["discuss", "work"])
 @pytest.mark.parametrize("fail_fork", [False, True])
 def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, mode, fail_fork):
+    """A chat without its own native session refuses before any graph branch is made. The source
+    session may hold another grant, so the fork states its own, and the replacing master states the
+    new target so it survives a compaction.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     project_id = app.state.default_project_id
@@ -124,7 +128,6 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     assert branched["origin"]["run_on"] == source.request["run_on"]
     assert len(launcher.prompts) == 1
     child_id = branched["chat_id"]
-    # A chat without its own native session refuses before any graph branch is made.
     branchable = f"/api/projects/{project_id}/chats/{{}}/branch"
     assert client.get(branchable.format(chat_id)).status_code == 204
     assert client.get(branchable.format(child_id)).status_code == 422
@@ -177,7 +180,6 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     delta = changed_values(launcher.prompts[1])
     assert delta["conversation_fork.graph_target.kind"] == "branch"
     assert delta["conversation_fork.graph_target.branch_id"] == branch_id
-    # The source session may hold another grant, so the fork always states its own.
     assert "browser" in delta
     assert launcher.launch_kwargs[1]["fork_session_id"] == "source-session"
     assert launcher.sessions[1] is None
@@ -193,7 +195,6 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     send(child_id, branch_id)
     assert launcher.sessions[2] == "forked-session"
     assert launcher.launch_kwargs[2].get("fork_session_id") is None
-    # Only the fork turn moves the conversation; later turns carry no fork fact.
     assert not any(
         key.startswith("conversation_fork.") for key in changed_values(launcher.prompts[2])
     )
@@ -207,11 +208,9 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         assert back_to_main.json()["graph_target"]["kind"] == "main"
         assert back_to_main.json()["origin"]["source_graph_target"] == target
         assert len(launcher.prompts) == 3
-        # Leaving a branch, the fork turn names main and forks the branch chat's own session.
         launcher.native_session_id = "main-session"
         on_main = send(back_to_main.json()["chat_id"])
         assert launcher.launch_kwargs[3]["fork_session_id"] == "forked-session"
-        # The replacing master itself states the new target, so it survives a compaction.
         key = f"branch:{branch_id}"
         assert key in store.agent_task_contract(forked.operation_id, SESSION_MASTER_ROLE)
         assert key not in store.agent_task_contract(on_main.operation_id, SESSION_MASTER_ROLE)
@@ -349,6 +348,7 @@ def _settled_source_and_fork(app, tmp_path, profile):
 
 @pytest.mark.parametrize("change", ["source_moved", "source_gone"])
 def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, change):
+    """A new message refuses the same way and never starts a fresh session instead."""
     from rcp.service import RunRequest
     from tests.test_api import _chat_task_execution, _named_test_authorizer
 
@@ -387,7 +387,6 @@ def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, 
     assert refused.request["fork_session_id"] == "source-session"
     assert not store.agent_task(refused.operation_id).can_retry
     assert launched == []
-    # A new message refuses the same way; it never starts a fresh session instead.
     _chat_task_execution(
         app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "next-message"
     )
@@ -414,7 +413,7 @@ def test_a_fork_whose_source_moves_after_admission_fails_without_retry(manifest,
 
     class Launcher(_RecordingLauncher):
         async def stream(self, provider, prompt, **kwargs):
-            # After the launch check, before the provider names its fork.
+            """Fires after the launch check, before the provider names its fork."""
             if moment == "capture":
                 move_source()
             async for event in super().stream(provider, prompt, **kwargs):

@@ -89,6 +89,7 @@ def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, m
 def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(
     runtime, monkeypatch, history_available
 ):
+    """Restores the real launch the fixture faked."""
     with monkeypatch.context() as patch:
         patch.setattr(runtime.poller, "_launch", lambda _operation_id: None)
         runtime.poller.poll_once()
@@ -99,7 +100,6 @@ def test_a_run_that_fails_launch_validation_settles_as_a_visible_failure(
             "WHERE operation_id=?",
             (run.operation_id,),
         )
-    # Restore the real launch the fixture faked.
     monkeypatch.delattr(runtime.app.state.background_tasks, "launch_admitted")
 
     runtime.poller._launch(run.operation_id)
@@ -158,6 +158,10 @@ def test_launched_failure_preserves_history_despite_prelaunch_error_text(runtime
 
 
 def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runtime, monkeypatch):
+    """Every later poll retries, but a lost write is retried and the same error is recorded once,
+    not once a minute.
+    """
+
     def unavailable(_operation_id):
         raise OSError("dispatch unavailable")
 
@@ -175,8 +179,6 @@ def test_a_launch_that_fails_for_another_reason_stays_queued_with_its_error(runt
     monkeypatch.setattr(runtime.store, "record_agent_task_event", locked_once)
     runtime.poller.poll_once()
     (run,) = runtime.store.consolidation_runs()
-    # Every later poll retries; a lost write is retried, then the same error is
-    # recorded once, not once a minute.
     runtime.poller._launch(run.operation_id)
     runtime.poller._launch(run.operation_id)
 
@@ -355,6 +357,7 @@ def test_settlement_uses_terminal_task_graph_outcome_and_viewable_artifact(
 def test_next_night_skips_own_successful_commits_but_retries_failed_run(
     runtime, monkeypatch, succeeded
 ):
+    """An earlier night covered everything, so only this run's commit is new."""
     from rcp.agents import AgentProcessControl
     from rcp.background import AgentTaskExecution
     from rcp.runs.tasks.work import _apply_work_patch
@@ -364,7 +367,6 @@ def test_next_night_skips_own_successful_commits_but_retries_failed_run(
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
     with runtime.store.connection() as connection:
-        # An earlier night covered everything, so only this run's commit is new.
         connection.execute(
             "UPDATE consolidation_targets SET covered_head = ?",
             (runtime.service.history.state().revision,),
@@ -651,13 +653,14 @@ def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
 
 
 def test_legacy_archived_consolidation_chat_keeps_consolidating(runtime):
+    """The chat is RCP's even before its first night; releases before 0.4.38 let a member archive
+    it.
+    """
     project_id = runtime.schedule.project_id
     chat_id = consolidation_chat_id(project_id)
-    # The chat is RCP's even before its first night has run.
     assert runtime.store.consolidation_runs() == []
     with pytest.raises(AgentTaskAdmissionConflict):
         runtime.store.set_chat_archived(project_id, chat_id, "member", archived=True)
-    # Releases before 0.4.38 let a member archive the consolidation chat.
     with runtime.store.connection() as conn:
         conn.execute(
             "INSERT INTO chat_display(project_id,chat_id,archived_user_id,archived_at) "
@@ -836,6 +839,9 @@ def test_consolidation_query_baseline_is_coverage_not_session_observation():
 
 @pytest.mark.parametrize("unreadable", ["service", "patches"])
 def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch, unreadable):
+    """The launched turn committed its Patch and the process died before the hold. A long turn's
+    later receipts must not make it read as never launched.
+    """
     from rcp.core.models import Patch
     from rcp.transport import StateUnavailable
 
@@ -857,9 +863,7 @@ def test_failed_run_settlement_retries_lost_evidence_holds(runtime, monkeypatch,
         ops=[{"op": "create_nodes", "nodes": [evidence]}],
         source_operation_id=run.operation_id,
     )
-    # The launched turn committed its Patch; the process died before the hold.
     runtime.store.record_agent_task_receipt(run.operation_id, "agent_launch", {})
-    # A long turn's later receipts must not make it read as never launched.
     for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
         runtime.store.record_agent_task_receipt(run.operation_id, f"pressure-{index}", {})
     append_fixture_patch(runtime.service, patch)

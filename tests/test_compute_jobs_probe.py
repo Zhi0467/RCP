@@ -298,7 +298,7 @@ def test_cgroup_comparison_rejects_same_service_and_descendants():
 
 
 def test_cgroup_comparison_ignores_hierarchies_where_both_sit_at_the_root():
-    # Observed on a cgroup2 host with leftover v1 controllers (Ubuntu 22.04, 5.15).
+    """Observed on a cgroup2 host with leftover v1 controllers (Ubuntu 22.04, 5.15)."""
     own = "3:devices:/\n2:freezer:/\n0::/user.slice/user-1002.slice/session-8.scope\n"
     job = "3:devices:/\n2:freezer:/\n0::/user.slice/user-1014.slice/user@1014.service/app.slice/rcp-job-x.service\n"
     assert _cgroup_isolated(job, own)
@@ -347,12 +347,12 @@ def test_linux_helper_probe_refuses_without_linger(manifest, tmp_path, fake_linu
     result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
     assert not result.ready
     assert result.required_action
-    # Refused before any job is launched.
     assert not any("systemd-run" in command for command in runner.commands)
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
 def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_id):
+    """OS admission is probed independently of the implementation's generated plist."""
     executable = "systemd-run" if backend_id == "systemd_user" else "launchctl"
     if shutil.which(executable) is None:
         pytest.skip(f"{executable} facility is not installed")
@@ -382,7 +382,6 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
         if linger.stdout.strip() != "yes":
             pytest.skip("The helper requires linger, which this account does not have")
     if backend_id == "launchd":
-        # Probe OS admission independently of the implementation's generated plist.
         label = f"rcp-compute-facility-{uuid.uuid4().hex}"
         plist = tmp_path / "facility.plist"
         plist.write_bytes(

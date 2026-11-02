@@ -192,6 +192,7 @@ def _card(name: str, host: str, os_account: str = "", **fields: object) -> Space
 
 
 def test_reach_is_probed_from_every_other_agent_machine() -> None:
+    """A server-local machine has no route from anywhere else."""
     gpu = _card("gpu", "gpu.example", "alice")
     sources = [_card("laptop", ""), _card("remote-agent", "agent.example", "researcher"), gpu]
     commands: list[list[str]] = []
@@ -214,7 +215,6 @@ def test_reach_is_probed_from_every_other_agent_machine() -> None:
     remote_runs = [command for command in commands if "agent.example" in command]
     assert len(remote_runs) == 1
     assert "alice@gpu.example" in remote_runs[0][-1]
-    # A server-local machine has no route from anywhere else.
     assert probe_machine_reach(sources[0], sources, space_kind="personal", runner=runner) == []
 
 

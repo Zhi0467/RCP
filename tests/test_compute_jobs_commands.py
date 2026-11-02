@@ -202,6 +202,10 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
 
 @pytest.mark.asyncio
 async def test_slow_remote_launch_returns_pending_then_replays_one_launch(commands, monkeypatch):
+    """Runs the real sequential helper and staged-client path at 50x speed; only SSH latency and OS
+    responses are simulated. The client returns inside a provider shell's limit while RCP keeps
+    working.
+    """
     from rcp import limits
     from rcp.agents import command_mailbox
     from rcp.compute_jobs import backend_context
@@ -211,8 +215,6 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     from rcp.transport.remote_job_files import operate
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
-    # Exercise the real sequential helper and staged-client path at 50x speed.
-    # Only SSH latency/OS responses are simulated; job files and receipts are real.
     speed = 50
     elapsed = 0.0
     calls = []
@@ -281,10 +283,10 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     resolutions = 0
 
     def resolve_launch_context(manifest, alias, compute):
+        """Exercises the existing fresh-probe retry before any real launch."""
         nonlocal resolutions
         resolutions += 1
         context, backend = backend_context.resolve_context(manifest, alias, compute, runner)
-        # Exercise the existing fresh-probe retry before any real launch is attempted.
         return context, SimpleNamespace(id="changed-owner") if resolutions == 1 else backend
 
     monkeypatch.setattr(jobs, "resolve_context", resolve_launch_context)
@@ -323,7 +325,6 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     )
     assert staged.invocation_gate is not None
     assert staged.invocation_gate.response_timeout_seconds > staged.timeout_seconds
-    # Remote delivery includes a workspace listing and request/response transfers.
     for name in ("entry_names", "read_text", "write_text"):
         original = getattr(RunStageMailbox, name)
 
@@ -366,7 +367,6 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
                 )
                 output, _ = await process.communicate()
                 if process.returncode == 2:
-                    # The client returned inside a provider shell's limit; RCP kept working.
                     assert json.loads(output)["result"] == {"delivery": "unknown"}
                     pending += 1
                     continue

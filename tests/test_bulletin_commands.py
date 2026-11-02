@@ -253,6 +253,9 @@ def test_staged_roster_cannot_starve_posts():
 
 
 def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa: F811
+    """Only the agent's own reply in the mention's thread answers it, an edit after that reply asks
+    again, and a mention under a deleted root is not open.
+    """
     from rcp.bulletin import bulletin_actor_id
 
     with store.connection() as connection:
@@ -283,12 +286,10 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
     assert read["mentions"] == [{**post, "target_key": "main"}]
     assert read["open_mentions"] == 1
     assert store.local_owner.user_id in {member["user_id"] for member in read["members"]}
-    # Its own reply in the mention's thread answers it; nothing else does.
     handler(request("post", key="aside", text="unrelated"), identity())
     assert handler(request("read"), identity()).result["open_mentions"] == 1
     handler(request("post", key="reply", text="on it", reply_to=post["post_id"]), identity())
     assert handler(request("read"), identity()).result["mentions"] == []
-    # An edit after that reply asks again.
     store.mutate_bulletin_post(
         "project",
         "main",
@@ -299,7 +300,6 @@ def test_agent_mentions_are_first_in_snapshot_and_read(store, tmp_path):  # noqa
         user_id=store.local_owner.user_id,
     )
     assert handler(request("read"), identity()).result["open_mentions"] == 1
-    # A mention under a deleted root cannot be answered, so it is not open.
     root = store.mutate_bulletin_post(
         "project", "main", text="root", key="root", user_id=store.local_owner.user_id
     )

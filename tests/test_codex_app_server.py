@@ -236,7 +236,10 @@ def _work_scope(stage: Path) -> ProjectWriteScope:
 async def test_app_server_work_turn_carries_the_exact_project_permission_profile(
     tmp_path: Path,
 ) -> None:
-    """A Work-like app-server turn is contained by the profile, not by a sandbox."""
+    """A Work-like app-server turn is contained by the profile, not by a sandbox.
+
+    The profile is the whole containment; a sandbox would silently narrow it.
+    """
 
     executable, capture = _fake_app_server(tmp_path, permission_profile="rcp_project")
     launcher = AgentLauncher()
@@ -271,7 +274,6 @@ async def test_app_server_work_turn_carries_the_exact_project_permission_profile
         item for item in transcript["messages"] if item.get("method") == "thread/start"
     )
     assert thread_start["params"]["permissions"] == "rcp_project"
-    # The profile is the whole containment; a sandbox would silently narrow it.
     assert "sandbox" not in thread_start["params"]
     turn_start = next(item for item in transcript["messages"] if item.get("method") == "turn/start")
     assert "sandboxPolicy" not in turn_start["params"]
@@ -371,9 +373,10 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
     remote_commands: list[tuple[str, str]] = []
 
     def local_ssh(host: str, command: str, **_kwargs: object) -> list[str]:
+        """macOS has no `setsid`, so only that Linux process-group wrapper is removed while the
+        exact remote command is kept for assertions.
+        """
         remote_commands.append((host, command))
-        # macOS has no `setsid`; retain the exact remote command for assertions
-        # and remove only that Linux process-group wrapper in this local drive.
         return ["bash", "-c", command.replace("setsid --wait sh -c", "sh -c")]
 
     monkeypatch.setattr("rcp.agents.launcher.ssh_arguments", local_ssh)
@@ -535,6 +538,7 @@ def _usage_notification(total, *, thread_id="accounting-thread", turn_id="active
 @pytest.mark.parametrize("resumed", [False, True])
 @pytest.mark.parametrize("status", ["completed", "failed", "interrupted"])
 def test_app_server_counts_complete_turn_once(tmp_path: Path, resumed: bool, status: str):
+    """Neither unrelated usage nor an incomplete payload can overwrite the total."""
     turn = _accounting_turn(tmp_path, resumed=resumed)
     increment = {
         "inputTokens": 300,
@@ -556,7 +560,6 @@ def test_app_server_counts_complete_turn_once(tmp_path: Path, resumed: bool, sta
         {key: baseline.get(key, 0) + value for key, value in increment.items()},
     ):
         events.extend(turn.receive_line(_usage_notification(snapshot)).events)
-    # Neither unrelated usage nor an incomplete payload can overwrite the total.
     for notification in (
         _usage_notification(increment, thread_id="unrelated-thread"),
         _usage_notification(increment, turn_id="previous-turn"),
@@ -668,6 +671,9 @@ def test_native_subagent_events_cannot_answer_or_finish_parent(tmp_path: Path):
 
 
 def test_app_server_reports_live_status_for_display(tmp_path: Path):
+    """Codex 0.162 reports its own spawns this way (probed 2026-10-16), and compaction was seen live
+    reporting an update with no model call.
+    """
     from rcp.providers.live_status import fold_agent_status
 
     turn = _accounting_turn(tmp_path, resumed=False)
@@ -685,7 +691,6 @@ def test_app_server_reports_live_status_for_display(tmp_path: Path):
         "agentsStates": {"child-thread": {"status": "pendingInit"}},
         "status": "completed",
     }
-    # Codex 0.162 reports its own spawns this way (probed 2026-10-16).
     activity = {
         "type": "subAgentActivity",
         "id": "call-2",
@@ -698,7 +703,6 @@ def test_app_server_reports_live_status_for_display(tmp_path: Path):
     for method, extra in (
         ("thread/tokenUsage/updated", {"tokenUsage": {**usage, "modelContextWindow": 258400}}),
         ("item/started", {"item": {"type": "contextCompaction", "id": "c1"}}),
-        # Seen live: compaction reports an update with no model call in it.
         ("thread/tokenUsage/updated", {"tokenUsage": {**usage, "last": {"inputTokens": 0}}}),
         ("item/completed", {"item": {"type": "contextCompaction", "id": "c1"}}),
         ("thread/compacted", {}),

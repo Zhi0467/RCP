@@ -257,6 +257,7 @@ def test_runner_exit_255_is_transport_failure_only_over_ssh(check, remote):
     [subprocess.TimeoutExpired("launch", 10), ComputeTransportError("connection dropped")],
 )
 def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
+    """The manager may have already run the job, even when cleanup succeeds."""
     calls = []
 
     def runner(command, **kwargs):
@@ -267,7 +268,6 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
 
     root = tmp_path / "abc"
     root.mkdir()
-    # The manager may have already run the job, even when cleanup succeeds.
     with pytest.raises(ComputeLaunchUncertainError) as error:
         COMPUTE_BACKENDS[backend_id].start(
             str(root), str(root / "run.sh"), request(), context(runner)
@@ -282,10 +282,11 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
 
 @pytest.mark.parametrize("cancel_status", [0, 255])
 def test_systemd_transport_failure_attempts_cancel(cancel_status):
+    """Contact was lost after the manager may have accepted the unit, so the launch is uncertain
+    whether or not the stop reached the host.
+    """
     runner = Runner((255, "", "connection dropped"), (cancel_status, "", "connection dropped"))
     ctx = BackendContext("worker", "remote", None, runner=runner, uid="501")
-    # Contact was lost after the manager may have accepted and collected the unit, so the
-    # launch is uncertain whether or not the stop attempt reached the host.
     with pytest.raises(ComputeLaunchUncertainError):
         COMPUTE_BACKENDS["systemd_user"].start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
     assert len(runner.calls) == 2
@@ -314,8 +315,9 @@ def test_unconfirmed_launch_reports_uncertain_acceptance(backend_id, tmp_path):
 
 
 def test_systemd_job_writes_grants_and_keeps_covered_rcp_storage_read_only():
-    # systemd.exec(5): "Nest ReadWritePaths= inside of ReadOnlyPaths= in order
-    # to provide writable subdirectories within read-only directories."
+    """systemd.exec(5) nests ReadWritePaths= inside ReadOnlyPaths= to provide writable
+    subdirectories within read-only directories.
+    """
     from rcp.agents.write_scope import ProjectWriteScope
 
     data = "/home/rcp/data"

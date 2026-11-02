@@ -126,6 +126,7 @@ def test_bulletin_transfer_and_project_identity_lifecycle(store):
 
 
 def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
+    """Recreates the pre-migration column shape with a persisted old-writer row."""
     from rcp.storage import EpisodeRecord
     from rcp.storage.bulletin import migrate_graph_bulletin
 
@@ -145,7 +146,6 @@ def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
             "VALUES ('legacy','project','auto_research','running',2,?,?)",
             (store.now(), store.now()),
         )
-        # Recreate the pre-migration column shape with a persisted old-writer row.
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='trigger' "
             "AND (tbl_name='episodes' OR name LIKE '%_bulletin_%')"
@@ -176,6 +176,9 @@ def test_old_episode_writer_defaults_enabled_and_lineage_off_refuses(store):
 
 
 def test_pages_hold_whole_threads_and_retention_drops_replies_with_parent(store, monkeypatch):
+    """The newest page still names the channel's latest post for read tracking, and retention evicts
+    whole threads, least recently active first.
+    """
     monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_PAGE_SIZE", 1)
     parent = post(store, "parent")
     newer = post(store, "newer")
@@ -189,9 +192,7 @@ def test_pages_hold_whole_threads_and_retention_drops_replies_with_parent(store,
         key: parent[key] for key in ("post_id", "author", "text")
     }
     assert older["next_cursor"] is None
-    # The newest page still names the channel's latest post for read tracking.
     assert page["newest_post_id"] == reply["post_id"]
-    # Retention evicts whole threads, least recently active first.
     monkeypatch.setattr("rcp.storage.bulletin.BULLETIN_POSTS_PER_TARGET_MAX", 3)
     late = post(store, "late reply", reply_to=parent["post_id"])
 
@@ -369,6 +370,7 @@ def test_agent_receipts_are_per_turn_but_authorship_spans_turns(store):
 
 
 def test_agent_mention_resolves_across_channels_and_delete_skips_parsing(store, monkeypatch):
+    """A main post may mention the agent working on another branch; an unknown id drops."""
     from rcp.core.transition_models import GraphTargetRef
     from rcp.storage.bulletin import _parse
 
@@ -389,7 +391,6 @@ def test_agent_mention_resolves_across_channels_and_delete_skips_parsing(store, 
             }
         )
     )
-    # A main post may mention the agent working on another branch; an unknown id drops.
     with store.connection() as connection:
         _, mentions = _parse(connection, "project", "<@agent:chat:other-chat> <@agent:chat:nobody>")
     assert mentions == [{"kind": "agent", "id": "chat:other-chat"}]
@@ -459,6 +460,10 @@ def test_retention_prunes_only_observed_orphan_mentions(store, monkeypatch):
 
 
 def test_artifact_links_resolve_from_text_within_the_project(store):
+    """A repeated link counts once, and a foreign, expired, or unknown id stays prose. Linking saves
+    the artifact so it cannot expire under the post, and links resolve at read time so an artifact
+    change refreshes open Bulletins.
+    """
     for artifact_id, project_id in (
         ("figure", "project"),
         ("foreign", "other"),
@@ -477,8 +482,6 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
             ),
             data=b"<svg />",
         )
-    # A repeated link counts once; a foreign, expired, or unknown id is not refused and
-    # stays prose.
     first = post(
         store,
         "artifact",
@@ -490,14 +493,12 @@ def test_artifact_links_resolve_from_text_within_the_project(store):
     assert first["artifacts"] == expected
     assert first["refs"] == ["evidence/one"]
     assert store.list_bulletin("project", "main")["posts"][0]["artifacts"] == expected
-    # Linking saves the artifact, so the link cannot expire under the post.
     assert store.artifact("figure").kept_at is not None
     assert store.artifact("lapsed").kept_at is None
     edited = store.execute_bulletin_command(
         "project", "turn", "edit", post_id=first["post_id"], key="edit-artifact", text="No link"
     )
     assert edited["post"]["artifacts"] == []
-    # Links resolve at read time, so an artifact change refreshes open Bulletins.
     bulletin = (
         "SELECT generation FROM resource_versions WHERE scope='project' AND resource='bulletin'"
     )
@@ -528,7 +529,6 @@ def test_agent_posts_to_named_channel_or_own_default(store):
         assert store.list_bulletin("project", target_key)["posts"][0] == entry
     reply = post(store, "reply-main", reply_to=entry["post_id"])
     assert store.list_bulletin("project", "main")["posts"][0]["post_id"] == reply["post_id"]
-    # A branch agent reads another channel through the same resolution.
     read = store.execute_bulletin_command("project", "turn", "read", channel="main")
     assert read == store.list_bulletin("project", "main")
     with pytest.raises(BulletinError, check=lambda exc: exc.code == "bulletin_channel_invalid"):
@@ -536,8 +536,9 @@ def test_agent_posts_to_named_channel_or_own_default(store):
 
 
 def test_space_task_bulletin_requires_exact_project_binding(store):
-    # Upgrade a task produced by the old project-chat writer; project identity
-    # in the binding, rather than the bookkeeping row, authorizes this command.
+    """Upgrades a task from the old project-chat writer; project identity in the binding, not the
+    bookkeeping row, authorizes the command.
+    """
     with store.connection() as connection:
         task = connection.execute("SELECT * FROM graph_runs WHERE operation_id='turn'").fetchone()
         connection.execute(
