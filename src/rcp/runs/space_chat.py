@@ -985,9 +985,13 @@ def space_master_values(found: SpaceProjects, request: RunRequest) -> dict[str, 
 
 
 def _write_space_client(workspace: Path, command: str) -> None:
+    """Replace the client by rename, so an agent-made `rcp` link is replaced, never followed."""
     path = workspace / "rcp"
-    path.write_text("#!/bin/sh\nexec " + command + ' "$@"\n', encoding="utf-8")
-    path.chmod(0o700)
+    staging = workspace / f".rcp-{uuid.uuid4().hex}"
+    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write("#!/bin/sh\nexec " + command + ' "$@"\n')
+    os.replace(staging, path)
 
 
 def default_space_hidden_read_scope(

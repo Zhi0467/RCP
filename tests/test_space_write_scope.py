@@ -189,3 +189,17 @@ def test_composite_memory_roots_reach_claude_launch_permissions(tmp_path, projec
     assert "Edit(//memory/**)" not in permissions["deny"]
     for root in scope.repository_roots:
         assert f"Edit(/{root}/.research/**)" in permissions["deny"]
+
+
+def test_space_client_rewrite_replaces_an_agent_made_link(tmp_path: Path) -> None:
+    from rcp.runs.space_chat import _write_space_client
+
+    stage, outside = tmp_path / "stage", tmp_path / "outside.txt"
+    stage.mkdir()
+    outside.write_text("keep", encoding="utf-8")
+    (stage / "rcp").symlink_to(outside)
+    _write_space_client(stage, "client")
+    assert outside.read_text(encoding="utf-8") == "keep"
+    assert not (stage / "rcp").is_symlink()
+    assert "exec client" in (stage / "rcp").read_text(encoding="utf-8")
+    assert (stage / "rcp").stat().st_mode & 0o777 == 0o700
