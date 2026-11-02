@@ -44,7 +44,7 @@ from rcp.storage.models import AgentTaskRecord
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
-    from rcp.agents.write_scope import CompositeWriteScope
+    from rcp.agents.write_scope import CompositeWriteScope, RegisteredRepositoryRoot
     from rcp.runs.space_projects import SpaceProjects
 
 
@@ -456,7 +456,13 @@ class _SpaceTurn:
         async def prepare(old_request, source):
             old_stage = Path(source.stage_root)
             policies = [
-                default_space_hidden_read_scope(self.owner, old_request, old_stage, self.execution)
+                default_space_hidden_read_scope(
+                    self.owner,
+                    old_request,
+                    old_stage,
+                    self.execution,
+                    self.owner.catalog.repository_ownership_inventory(),
+                )
             ]
             for project in self.found.writers:
                 policies.append(
@@ -514,10 +520,12 @@ async def _open_space_turn(
         local_stage=stage,
         remote_stage=None,
     )
-    found = prepare_space_projects(owner, request, execution, stage)
+    # Catalog-wide: it loads every project's manifest, so the turn reads it once.
+    inventory = owner.catalog.repository_ownership_inventory()
+    found = prepare_space_projects(owner, request, execution, stage, inventory)
     accesses = _resolve_space_git(owner, found, project_git_access)
     policies = await _prepare_space_policies(
-        owner, request, data_dir, execution, stage, found, accesses
+        owner, request, data_dir, execution, stage, found, accesses, inventory
     )
     member_memory_root, _index_bytes = prepare_member_memory(owner.store, owner.thread.user_id)
     scope = replace(
@@ -527,7 +535,7 @@ async def _open_space_turn(
     execution.git_access = _union_git_access(found, accesses)
     hidden_read_scope = merge_space_hidden_read_scopes(
         [
-            default_space_hidden_read_scope(owner, request, stage, execution),
+            default_space_hidden_read_scope(owner, request, stage, execution, inventory),
             *(policies[project.project_id] for project in found.writers),
         ]
     )
@@ -586,6 +594,7 @@ async def _prepare_space_policies(
     stage: Path,
     found: SpaceProjects,
     accesses: dict[str, ProviderGitAccess],
+    inventory: list[RegisteredRepositoryRoot],
 ) -> dict[str, HiddenReadScope]:
     """Each writer's read-hiding policy; one project's failure leaves that project out.
 
@@ -597,7 +606,7 @@ async def _prepare_space_policies(
     from rcp.runs.shared import _prepare_hidden_read_scope
     from rcp.transport import StateUnavailable
 
-    base = default_space_hidden_read_scope(owner, request, stage, execution)
+    base = default_space_hidden_read_scope(owner, request, stage, execution, inventory)
     policies: dict[str, HiddenReadScope] = {}
     try:
         for project in list(found.writers):
@@ -612,6 +621,7 @@ async def _prepare_space_policies(
                     capability="work_auto",
                     data_dir=data_dir,
                     local_stage=stage,
+                    repository_inventory=inventory,
                 )
             except (HiddenFolderRejected, OSError, StateUnavailable) as exc:
                 found.exclude(project.project_id, "hidden_read_failed", exc)
@@ -1049,7 +1059,11 @@ def _write_space_client(workspace: Path, command: str) -> None:
 
 
 def default_space_hidden_read_scope(
-    owner: SpaceThreadOwner, request: RunRequest, stage: Path, execution: AgentTaskExecution
+    owner: SpaceThreadOwner,
+    request: RunRequest,
+    stage: Path,
+    execution: AgentTaskExecution,
+    inventory: list[RegisteredRepositoryRoot],
 ) -> HiddenReadScope:
     """Resolve ordinary local account policy independently of project write admission."""
     from rcp.agents.hidden_read import resolve_machine_hidden_read_scope
@@ -1067,7 +1081,7 @@ def default_space_hidden_read_scope(
         workspace_root=str(stage),
         app_data_dir=owner.catalog.data_dir,
         remote_stage=None,
-        repository_inventory=owner.catalog.repository_ownership_inventory(),
+        repository_inventory=inventory,
         machine_hidden_folders=list(card.hidden_folders) if card else [],
         machine_provider_paths=list(card.provider_paths.values()) if card else [],
         key_evidence=local_hidden_read_key_evidence(owner.catalog.data_dir, execution.git_access),

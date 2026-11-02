@@ -119,7 +119,9 @@ def _space_turn(manifest, tmp_path, operation_id="space-test", *, more=()):
 def _prepared(owner, request, execution, stage):
     from rcp.runs.space_projects import bind_space_projects, prepare_space_projects
 
-    found = prepare_space_projects(owner, request, execution, stage)
+    found = prepare_space_projects(
+        owner, request, execution, stage, owner.catalog.repository_ownership_inventory()
+    )
     bind_space_projects(owner, execution, stage, found)
     return found
 
@@ -218,7 +220,9 @@ def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, m
 
     with monkeypatch.context() as patch:
         patch.setattr(ProjectService, "manifest", property(remote_base))
-        found = prepare_space_projects(owner, request, execution, stage)
+        found = prepare_space_projects(
+            owner, request, execution, stage, owner.catalog.repository_ownership_inventory()
+        )
     # State readable here keeps a read client; writing goes through handoff.
     (reader,) = found.readers
     assert found.writers == [] and found.excluded[reader.project_id]["code"] == "base_remote"

@@ -27,7 +27,11 @@ from rcp.agents.context import CoachContext
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
-from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
+from rcp.agents.write_scope import (
+    ProjectWriteScope,
+    ProviderWriteScope,
+    RegisteredRepositoryRoot,
+)
 from rcp.config import AgentSurfaceConfig
 from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
@@ -797,8 +801,12 @@ async def _prepare_hidden_read_scope(
     data_dir: Path | None = None,
     local_stage: Path | None = None,
     execution_host: str = "",
+    repository_inventory: list[RegisteredRepositoryRoot] | None = None,
 ) -> HiddenReadScope:
-    """Resolve and stage the launch policy before its browser is acquired."""
+    """Resolve and stage the launch policy before its browser is acquired.
+
+    A Space turn passes the catalog inventory it already read for every project.
+    """
     from rcp.agents.hidden_read import HiddenFolderRejected
     from rcp.agents.provider_environment import (
         ProviderProcessEnvironment,
@@ -833,7 +841,11 @@ async def _prepare_hidden_read_scope(
             app_data_dir=data_dir
             or (execution.store.path.parent if execution is not None else None),
             remote_stage=remote_stage,
-            repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+            repository_inventory=(
+                repository_inventory
+                if repository_inventory is not None
+                else service.repository_ownership_inventory(project_id=project_id)
+            ),
             machine_hidden_folders=list(card.hidden_folders) if card is not None else [],
             machine_provider_paths=list(card.provider_paths.values()) if card is not None else [],
             git_access=execution.git_access if execution is not None else None,

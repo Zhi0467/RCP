@@ -122,7 +122,9 @@ def test_space_runtime_real_storage_and_partial_apply(
             # Shared preparation's unhidden fallback leaves that project out, never
             # widening the whole turn.
             return unhidden_read_scope(execution_machine="local", host="")
-        return default_space_hidden_read_scope(owner, request, kwargs["workspace"], execution)
+        return default_space_hidden_read_scope(
+            owner, request, kwargs["workspace"], execution, kwargs["repository_inventory"]
+        )
 
     monkeypatch.setattr("rcp.runs.shared._prepare_hidden_read_scope", prepare_policy)
 

@@ -203,7 +203,11 @@ def _exclusion_code(exc: Exception) -> str:
 
 
 def prepare_space_projects(
-    owner: SpaceThreadOwner, request: RunRequest, execution: AgentTaskExecution, stage: Path
+    owner: SpaceThreadOwner,
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    stage: Path,
+    inventory: list[RegisteredRepositoryRoot],
 ) -> SpaceProjects:
     """Resolve each member project as a writer, a reader, or excluded with a reason.
 
@@ -214,9 +218,6 @@ def prepare_space_projects(
     turn_id = compute_recovery_lineage(
         owner.store, execution.operation_id, continuation=execution.continuation
     )[-1]
-    # Catalog-wide: it loads every project's manifest, so the turn reads it once,
-    # and only when some project can write.
-    inventory: list[RegisteredRepositoryRoot] | None = None
     for project_id in sorted(owner.store.member_project_ids(owner.thread.user_id)):
         try:
             record = owner.store.project(project_id)
@@ -240,8 +241,6 @@ def prepare_space_projects(
                 )
                 found.exclude(project_id, "base_remote", readable=True)
                 continue
-            if inventory is None:
-                inventory = owner.catalog.repository_ownership_inventory()
             truth = write_repositories(service.history.state())
             context = service.assemble_chat(
                 request.model_copy(update={"run_on": machine.alias, "run_truth_scope": truth})
