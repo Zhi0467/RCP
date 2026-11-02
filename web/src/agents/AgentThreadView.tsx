@@ -27,7 +27,7 @@ import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
 import { graphProfile } from "../graph/graphResources";
 import { providerChange } from "../projects/providers";
-import { ChatComposer } from "../chat/ChatComposer";
+import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "../chat/composerDraft";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import {
@@ -1199,5 +1199,5 @@ function ThreadTextarea({
   ...props
 }: { draft: ComposerDraft } & Omit<React.ComponentProps<"textarea">, "value">) {
   const value = useComposerDraft(draft);
-  return <textarea {...props} value={value} />;
+  return <ComposerField {...props} value={value} />;
 }

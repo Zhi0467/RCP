@@ -106,11 +106,12 @@ class SpaceThreadOwner:
         run_on: str | None = None,
     ) -> AgentSurfaceConfig:
         return space_agent_profile(
-            provider=provider, model=model, reasoning=reasoning, run_on=run_on
+            self.store, provider=provider, model=model, reasoning=reasoning, run_on=run_on
         )
 
 
 def space_agent_profile(
+    store: AppStore,
     *,
     provider: ProviderId | None = None,
     model: str | None = None,
@@ -119,15 +120,15 @@ def space_agent_profile(
 ) -> AgentSurfaceConfig:
     """The Space thread's agent: the named pick, else the backend default.
 
-    A Space thread always runs on the backend machine, so `run_on` (the picker's
-    machine id for that machine) is not a choice and is normalised, not checked.
+    A Space thread always runs on the backend machine, so `run_on` is not a
+    choice: it becomes that machine's Space card id, the one the picker sends.
     """
     del run_on
     return AgentSurfaceConfig(
         provider=provider or "codex",
         model=model or "",
         reasoning=reasoning or "medium",
-        run_on="local",
+        run_on=store.backend_space_machine().machine_id,
     )
 
 
@@ -267,7 +268,7 @@ async def stream_space_chat_run(
             "provider": profile.provider,
             "model": profile.model,
             "reasoning": profile.reasoning,
-            "run_on": "local",
+            "run_on": profile.run_on,
         }
     )
     turn = await _open_space_turn(owner, request, data_dir, execution, project_git_access)
@@ -808,7 +809,7 @@ def _record_space_launch(turn: _SpaceTurn, prompt: str) -> None:
         "agent_launch",
         {
             "provider": turn.request.provider,
-            "run_on": "local",
+            "run_on": turn.request.run_on,
             "capability": "work_auto",
             "surface": "space_chat",
             "canonical_write_roots": turn.scope.writable_roots,

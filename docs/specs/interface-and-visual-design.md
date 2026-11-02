@@ -291,7 +291,11 @@ Use labels when a logo is unavailable.
 
 Human requests are quiet paper cards in one readable column.
 Assistant prose is unboxed. Progress folds behind Activity.
-Failures and recovery stay explicit. The composer is a contained writing surface.
+Failures and recovery stay explicit. The composer is a contained writing surface:
+one card in every theme, with Add, the message, and the send actions on one row.
+The message has no box of its own, starts one line tall, and eases taller with
+its text. A second row holds the caller's own tools, such as Discuss/Work and
+Options, only when it has any.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.
 Done contains read successes, unsent drafts, or unloaded turns.

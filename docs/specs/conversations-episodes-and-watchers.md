@@ -115,8 +115,11 @@ admission. Every turn on the thread runs the stored pick: member sends, Retry,
 schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
 replaces the failed request's agent with it. Without a pick, a project thread
 uses its project's Settings Work profile and the Space thread the backend
-default; `thread_agent` resolves both. A changed provider takes the provider
-switch path below.
+default; `thread_agent` resolves both. A project thread's machine is a manifest
+alias. The Space thread's is the backend machine's Space card id, the card with
+no host, made on first use. `run_on_host` maps a task's machine to its host
+through that owner; an unset machine is the owner's default, the project's base
+machine or the backend. A changed provider takes the provider switch path below.
 
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
 on each record. The reader verifies the filename against the record. Source

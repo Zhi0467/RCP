@@ -610,9 +610,6 @@
 .agent-thread .chat-composer {
   position: relative;
 }
-.agent-thread .chat-composer textarea {
-  height: 58px;
-}
 .chat-voice-button.icon-button {
   color: var(--ink);
 }

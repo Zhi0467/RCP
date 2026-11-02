@@ -35,7 +35,12 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from tests.helpers import seated_on_every_project, seed_patch, wait_until
+from tests.helpers import (
+    seated_on_every_project,
+    seed_patch,
+    wait_until,
+    write_local_test_manifest,
+)
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -50,12 +55,28 @@ def _authorizer(store: AppStore) -> AuthorizedHuman:
     )
 
 
+def _project_store(path: Path) -> AppStore:
+    """A store whose `project-one` names its `laptop` machine in a real manifest."""
+    store = AppStore(path)
+    store.upsert_project(
+        ProjectRecord(
+            project_id="project-one",
+            locator=str(write_local_test_manifest(path.parent)),
+            name="Project one",
+            state_location="/tmp/project-one/.research",
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    return store
+
+
 def _work_request(**updates: object) -> RunRequest:
     return RunRequest(
         provider="codex",
         model="",
         reasoning="high",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -262,7 +283,7 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
     store.upsert_project(
         ProjectRecord(
             project_id=project_id,
-            locator="/tmp/project-one/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="Project one",
             state_location="/tmp/project-one/.research",
             state_remote=False,
@@ -445,7 +466,7 @@ def test_incomplete_contract_scope_refuses_dispatch_and_apply(
 
 
 def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+    store = _project_store(tmp_path / "rcp.sqlite3")
     entered = threading.Event()
 
     async def stream(
@@ -504,7 +525,7 @@ def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path
 
 
 def test_task_binding_is_durable_before_provider_execution(tmp_path: Path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+    store = _project_store(tmp_path / "rcp.sqlite3")
     entered = threading.Event()
     observed: list[AgentDispatchAuthority | None] = []
 
@@ -612,7 +633,7 @@ def test_recovery_of_a_legacy_parent_binds_the_continuations_own_authority(
 
 
 def test_continuation_refuses_a_missing_parent_before_insert_or_spawn(tmp_path: Path) -> None:
-    store = AppStore(tmp_path / "missing-parent.sqlite3")
+    store = _project_store(tmp_path / "missing-parent.sqlite3")
     authorizer = _authorizer(store)
     request = _work_request()
     authority = _work_authority(request)
@@ -720,7 +741,7 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    store = AppStore(tmp_path / "watcher.sqlite3")
+    store = _project_store(tmp_path / "watcher.sqlite3")
     authorizer = _authorizer(store)
     request = _work_request(trigger="watcher", watcher_ids=["watcher-one"])
     now = store.now()

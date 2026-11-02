@@ -52,7 +52,7 @@ def test_episode_retry_waits_for_login_without_spending_allocation(
             tasks,
             "project",
             AutoResearchStartRequest(
-                invocation_ceiling=4, provider=provider, run_on="local", run_truth_scope=["repo"]
+                invocation_ceiling=4, provider=provider, run_on="laptop", run_truth_scope=["repo"]
             ),
             authorized_by=human,
             graph_base_head=GraphHeadRef(revision=0),
@@ -62,7 +62,7 @@ def test_episode_retry_waits_for_login_without_spending_allocation(
         root = tasks.start(
             "project",
             "node_chat",
-            _experiment_request().model_copy(update={"provider": provider, "run_on": "local"}),
+            _experiment_request().model_copy(update={"provider": provider, "run_on": "laptop"}),
             authorized_by=human,
         )
     failed = wait_for_task(store, root.operation_id, expect="failed")

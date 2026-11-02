@@ -28,7 +28,7 @@ import type {
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
-import { ChatComposer } from "../chat/ChatComposer";
+import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
@@ -436,7 +436,7 @@ export function PaperCoach({
         addDisabled={composer.full || composer.preparing || submitting}
         className={error ? "paper-failure" : undefined}
         field={
-          <textarea
+          <ComposerField
             ref={textarea}
             aria-label="Message"
             value={message}

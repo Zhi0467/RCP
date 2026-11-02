@@ -36,6 +36,14 @@ test("the composer accepts caller hints without project, attachments, or skills"
   assert.doesNotMatch(html, /type="file"/);
 });
 
+test("the field sits between the caller's actions and a tools row only callers with tools get", () => {
+  const html = renderToStaticMarkup(React.createElement(ChatComposer, props));
+  assert.ok(html.indexOf("<textarea") < html.indexOf(">Send<"));
+  assert.ok(html.indexOf(">Send<") < html.indexOf(">Voice<"));
+  const bare = renderToStaticMarkup(React.createElement(ChatComposer, { ...props, tools: null }));
+  assert.doesNotMatch(bare, /chat-composer-tools/);
+});
+
 for (const project of [{ id: "p" }, null]) {
   test(`attachment composer needs ${project ? "only a project id" : "only a Space collection"}`, () => {
     let state;

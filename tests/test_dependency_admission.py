@@ -44,7 +44,7 @@ def test_admission_asks_the_execution_machine_before_any_row(tmp_path, refused):
     tasks = BackgroundAgentTasks(store, _done, dependency_checker=checker)  # pyright: ignore[reportArgumentType]
     request = RunRequest(
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         chat_scope="project",
         chat_id=str(uuid4()),
         message="Inspect the result.",

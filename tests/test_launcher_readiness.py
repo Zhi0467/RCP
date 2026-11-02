@@ -352,7 +352,7 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
         tasks,
         "project",
         AutoResearchStartRequest(
-            invocation_ceiling=4, run_truth_scope=["repo"], provider="codex", run_on="local"
+            invocation_ceiling=4, run_truth_scope=["repo"], provider="codex", run_on="laptop"
         ),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
@@ -378,7 +378,8 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
 
     monkeypatch.setattr(launcher, "readiness", ready)
     service = SimpleNamespace(
-        launcher=launcher, manifest=SimpleNamespace(machine_map={"local": SimpleNamespace(host="")})
+        launcher=launcher,
+        manifest=SimpleNamespace(machine_map={"laptop": SimpleNamespace(host="")}),
     )
     before = store.episode_budget_meter(episode.episode_id).invocations_used
     retried = tasks.retry_auto_research(root.operation_id, service=service)

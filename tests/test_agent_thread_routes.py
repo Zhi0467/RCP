@@ -475,6 +475,8 @@ def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypa
         # Retry follows the pick the member made after the failure.
         retried = background.retry("failed", authorized_by=store.agent_task("failed").authorized_by)
         assert retried.request["provider"] == "claude"
+        # The turn records the backend machine's Space card id, as the picker names it.
+        assert retried.request["run_on"] == store.backend_space_machine().machine_id
 
 
 def test_member_pick_waits_for_sign_in_but_agent_pick_must_run(manifest, tmp_path, monkeypatch):

@@ -126,7 +126,9 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
             "chat_id": thread.thread_id,
             "provider": "claude",
             "browser_requested": False,
-            "run_on": "local" if kind == "space_chat" else "laptop",
+            "run_on": (
+                store.backend_space_machine().machine_id if kind == "space_chat" else "laptop"
+            ),
         }
     )
     asyncio.run(run(request))
