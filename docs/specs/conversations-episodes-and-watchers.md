@@ -111,8 +111,8 @@ under that lock before appending.
 Private chats, their tasks and their questions are visible and controllable only
 by their owner. Project question pushes target that owner. A failed or
 interrupted project thread turn that stays unread uses the owner-only
-`agent_thread` notification, linking to the thread; an ordinary reply only marks
-the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
+`agent_thread` notification, linking to the thread, as does a schedule wake's
+reply; any other reply, including watcher and handoff wakes, only marks the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
 the linked conversation remains private.
 An Experiment a thread starts is project work: its run conversation and goal are
 visible to project members like any Experiment, while the thread stays private.

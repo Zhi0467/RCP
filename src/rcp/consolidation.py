@@ -55,40 +55,96 @@ def occurrence_at(local_date: date, local_time: str, timezone: str) -> datetime:
         candidate += timedelta(minutes=1)
 
 
-def cron_fields(expression: str) -> tuple[set[int], ...]:
-    """Parse five numeric cron fields; Sunday is 0 or 7."""
-    fields = expression.split()
+CRON_FORMAT = (
+    "use five fields: minute hour day-of-month month day-of-week, each a number, "
+    "range, step, or list (names like MON or JAN work), or @hourly, @daily, @weekly, "
+    "@monthly, @yearly"
+)
+_CRON_ALIASES = {
+    "@hourly": "0 * * * *",
+    "@daily": "0 0 * * *",
+    "@midnight": "0 0 * * *",
+    "@weekly": "0 0 * * 0",
+    "@monthly": "0 0 1 * *",
+    "@yearly": "0 0 1 1 *",
+    "@annually": "0 0 1 1 *",
+}
+_CRON_FIELDS = (
+    ("minute", 0, 59, ()),
+    ("hour", 0, 23, ()),
+    ("day-of-month", 1, 31, ()),
+    (
+        "month",
+        1,
+        12,
+        ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"),
+    ),
+    ("day-of-week", 0, 7, ("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT")),
+)
+
+
+def cron_parts(expression: str) -> list[str]:
+    """Five raw fields after alias expansion; names become numbers."""
+    fields = _CRON_ALIASES.get(expression.strip().lower(), expression).split()
     if len(fields) != 5:
-        raise ValueError("cron requires five numeric fields")
-    parsed = []
-    for field, (low, high) in zip(
-        fields, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7)), strict=True
-    ):
-        values: set[int] = set()
-        for part in field.split(","):
-            match = re.fullmatch(r"(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?", part)
-            if match is None:
-                raise ValueError("invalid cron field")
-            base, stride = match.groups()
-            step = int(stride or 1)
-            bounds = base.split("-")
-            start, end = (low, high) if base == "*" else (int(bounds[0]), int(bounds[-1]))
-            if base != "*" and len(bounds) == 1 and stride is not None:
-                # A stepped single start runs through the field maximum, as in cron.
-                end = high
-            if step < 1 or not low <= start <= end <= high:
-                raise ValueError("cron field is out of range")
-            values.update(range(start, end + 1, step))
-        parsed.append(values)
+        raise ValueError(f"cron {expression!r} is not five fields; {CRON_FORMAT}")
+    return [
+        _numbered(field, names, low)
+        for field, (_, low, _, names) in zip(fields, _CRON_FIELDS, strict=True)
+    ]
+
+
+def _numbered(field: str, names: tuple[str, ...], low: int) -> str:
+    def number(match: re.Match[str]) -> str:
+        name = match.group(0).upper()
+        if name not in names:
+            return match.group(0)
+        return str(names.index(name) + (low if low == 1 else 0))
+
+    return re.sub(r"[A-Za-z]{3}", number, field)
+
+
+def _cron_span(base: str, stride: str | None, low: int, high: int) -> tuple[int, int]:
+    if base == "*":
+        return low, high
+    bounds = base.split("-")
+    # A stepped single start runs through the field maximum, as in cron.
+    end = high if len(bounds) == 1 and stride is not None else int(bounds[-1])
+    return int(bounds[0]), end
+
+
+def _cron_field(field: str, name: str, low: int, high: int) -> set[int]:
+    values: set[int] = set()
+    for part in field.split(","):
+        match = re.fullmatch(r"(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?", part)
+        if match is None:
+            raise ValueError(f"cron {name} field {field!r} is invalid; {CRON_FORMAT}")
+        base, stride = match.groups()
+        step = int(stride or 1)
+        start, end = _cron_span(base, stride, low, high)
+        if step < 1 or not low <= start <= end <= high:
+            raise ValueError(f"cron {name} field {field!r} must stay within {low}-{high}")
+        values.update(range(start, end + 1, step))
+    return values
+
+
+def cron_fields(expression: str) -> tuple[set[int], ...]:
+    """Parse five cron fields; Sunday is 0 or 7."""
+    parsed = [
+        _cron_field(field, name, low, high)
+        for field, (name, low, high, _) in zip(cron_parts(expression), _CRON_FIELDS, strict=True)
+    ]
     parsed[4] = {value % 7 for value in parsed[4]}
     return tuple(parsed)
 
 
 def cron_matches_date(expression: str, fields: tuple[set[int], ...], local_date: date) -> bool:
+    """Vixie cron: a day field starting with * is unrestricted, even when stepped."""
     dom = local_date.day in fields[2]
     dow = (local_date.weekday() + 1) % 7 in fields[4]
-    raw = expression.split()
-    day_matches = (dom or dow) if raw[2] != "*" and raw[4] != "*" else (dom and dow)
+    raw = cron_parts(expression)
+    restricted = not raw[2].startswith("*") and not raw[4].startswith("*")
+    day_matches = (dom or dow) if restricted else (dom and dow)
     return local_date.month in fields[3] and day_matches
 
 
@@ -98,7 +154,7 @@ def cron_occurrence_count(expression: str, timezone: str, start: datetime, end: 
     zone = ZoneInfo(timezone)
     day = start.astimezone(zone).date()
     last = end.astimezone(zone).date()
-    times = [f"{hour:02}:{minute:02}" for hour in sorted(fields[1]) for minute in sorted(fields[0])]
+    times = _civil_times(fields)
     count = 0
     while day <= last:
         if cron_matches_date(expression, fields, day):
@@ -119,31 +175,35 @@ def cron_occurrence_count(expression: str, timezone: str, start: datetime, end: 
     return count
 
 
+def _civil_times(fields: tuple[set[int], ...]) -> list[str]:
+    return [f"{hour:02}:{minute:02}" for hour in sorted(fields[1]) for minute in sorted(fields[0])]
+
+
+def _first_on(
+    local_date: date, times: list[str], timezone: str, after: datetime
+) -> datetime | None:
+    local_after = after.astimezone(ZoneInfo(timezone))
+    for civil_time in times:
+        if local_date == local_after.date() and civil_time <= local_after.strftime("%H:%M"):
+            continue
+        candidate = occurrence_at(local_date, civil_time, timezone)
+        if candidate > after:
+            return candidate
+    return None
+
+
 def next_occurrence(local_time: str, timezone: str, after: datetime) -> datetime:
     """First daily or cron civil occurrence strictly after an aware instant."""
     if after.tzinfo is None:
         raise ValueError("schedule handling time must be timezone-aware")
-    local_after = after.astimezone(ZoneInfo(timezone))
-    local_date = local_after.date()
-    fields = cron_fields(local_time) if len(local_time.split()) > 1 else None
-    times = (
-        [local_time]
-        if fields is None
-        else [
-            f"{hour:02}:{minute:02}" for hour in sorted(fields[1]) for minute in sorted(fields[0])
-        ]
-    )
+    local_date = after.astimezone(ZoneInfo(timezone)).date()
+    # A daily consolidation time is HH:MM; anything else is a cron expression.
+    fields = None if ":" in local_time else cron_fields(local_time)
+    times = [local_time] if fields is None else _civil_times(fields)
     for _ in range(AGENT_SCHEDULE_SEARCH_DAYS):
-        matches = True
-        if fields is not None:
-            matches = cron_matches_date(local_time, fields, local_date)
-        if matches:
-            for civil_time in times:
-                if local_date == local_after.date() and civil_time <= local_after.strftime("%H:%M"):
-                    continue
-                candidate = occurrence_at(local_date, civil_time, timezone)
-                if candidate > after:
-                    return candidate
+        matches = fields is None or cron_matches_date(local_time, fields, local_date)
+        if matches and (candidate := _first_on(local_date, times, timezone, after)):
+            return candidate
         local_date += timedelta(days=1)
     raise ValueError("schedule has no occurrence within eight years")
 
@@ -200,13 +260,16 @@ class ConsolidationPoller:
             self._poll_lock,
             self.admission.mutation("graph consolidation") if self.admission else nullcontext(),
         ):
-            self.reconcile_outcomes()
             now = datetime.fromisoformat(self.clock())
             pending = self._advance_agent_schedules(now)
-            if seconds_until_automatic_launch() > 0:
-                return
-            self.dispatch_due(now)
-            self.dispatch_agent_schedules(now, pending)
+            cooling = seconds_until_automatic_launch() > 0
+            # Wakes go first, each thread in its own error boundary, so SSH-bound
+            # consolidation never delays them.
+            if not cooling:
+                self.dispatch_agent_schedules(now, pending)
+            self.reconcile_outcomes()
+            if not cooling:
+                self.dispatch_due(now)
 
     def _advance_agent_schedules(self, now: datetime):
         """One unschedulable row is disabled; it never blocks consolidation."""

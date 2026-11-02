@@ -84,7 +84,7 @@ def test_thread_admission_refuses_discuss(manifest, tmp_path):
 
 
 def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path):
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     from rcp.storage import AgentTaskRecord
     from tests.helpers import authorized_human
@@ -154,6 +154,25 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         assert not store.guard_notification_delivery(
             device["device_id"], notices[0]["notification_id"]
         )
+        # A schedule wake's reply is the reminder itself, so it pushes.
+        later = (datetime.fromisoformat(now) + timedelta(seconds=1)).isoformat()
+        store.create_agent_task(
+            task.model_copy(
+                update={
+                    "operation_id": "schedule-reply",
+                    "created_at": later,
+                    "updated_at": later,
+                    "finished_at": later,
+                    "request": {**task.request, "trigger": "schedule"},
+                }
+            )
+        )
+        sender.run_pass()
+        assert later in {
+            notice["created_at"]
+            for notice in store.notification_outbox()
+            if notice["kind"] == "agent_thread"
+        }
 
 
 def test_fresh_thread_seed_reaches_provider_without_staging(manifest, tmp_path):

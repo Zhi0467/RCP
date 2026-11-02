@@ -1025,19 +1025,8 @@ class AppStoreBase:
         from rcp.storage.agent_schedules import migrate_agent_schedules
         from rcp.storage.approval_cards import migrate_approval_cards
 
-        def migrate_agent_schedules_with_queue_index(connection: sqlite3.Connection) -> None:
-            migrate_agent_schedules(connection)
-            # The schedule poller re-reads queued wakes each minute without a project.
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS graph_runs_queued_trigger "
-                "ON graph_runs(json_extract(request_json, '$.trigger')) WHERE status='queued'"
-            )
-
         self._run_storage_schema_migration(
-            connection,
-            version=72,
-            name="agent_schedules_v1",
-            migration=migrate_agent_schedules_with_queue_index,
+            connection, version=72, name="agent_schedules_v1", migration=migrate_agent_schedules
         )
         self._run_storage_schema_migration(
             connection, version=73, name="approval_cards_v1", migration=migrate_approval_cards

@@ -400,15 +400,17 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     assert verbs is not None
     instructions = []
-    if "schedule" in verbs:
+    if "schedule" in verbs and turn.execution is not None:
         from rcp.agents.staged_command_client import schedule_usages
+        from rcp.runs.agent_schedules import schedule_instructions
 
         command = client or turn.patch_inputs.validator_staged.client_command()
         instructions.append(
-            "Create a schedule only when the member asked for it. "
-            "Schedule add is available only on turns admitted from a member message, "
-            "not wakes or question follow-ups. Commands: "
-            + "; ".join(f"{command} {usage}" for usage in schedule_usages())
+            schedule_instructions(
+                turn.execution.store,
+                turn.execution.operation_id,
+                tuple(f"{command} {usage}" for usage in schedule_usages()),
+            )
         )
     if "flag" in verbs:
         instructions.append(

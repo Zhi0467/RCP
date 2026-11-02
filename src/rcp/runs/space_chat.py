@@ -219,6 +219,7 @@ async def stream_space_chat_run(
     from rcp.agents import AgentEvent, agent_output_schema
     from rcp.agents.artifact_contract import artifact_contract
     from rcp.runs.agent_names import stage_agent_name_pointer
+    from rcp.runs.agent_schedules import schedule_instructions
     from rcp.runs.agent_thread_commands import ThreadCommandHandler, space_command_usages
     from rcp.runs.browser_lifecycle import browser_turn
     from rcp.runs.chat import (
@@ -435,7 +436,7 @@ async def stream_space_chat_run(
                     + ". Each admitted project's projects/<id>/rcp supports only "
                     + ", ".join(sorted(SPACE_PROJECT_VERBS))
                     + ". A project Patch belongs only in projects/<id>/patch.json.",
-                    "Create a schedule only when the member asked for it. Schedule add requires a member message, never a wake or question follow-up.",
+                    schedule_instructions(owner.store, execution.operation_id),
                     "Resolved writable roots: "
                     + json.dumps(scope.writable_roots)
                     + "\nProtected paths: "
