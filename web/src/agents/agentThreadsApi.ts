@@ -176,9 +176,11 @@ export function setThreadAgent(
   agent: AgentRunConfig,
   request: Request = api,
 ): Promise<AgentThread> {
+  // An empty field means "the provider's default", which the route expresses by omission.
+  const pick = Object.fromEntries(Object.entries(agent).filter(([, value]) => value));
   return request(`${threadPath(threadId)}/agent`, {
     method: "POST",
-    body: JSON.stringify(agent),
+    body: JSON.stringify(pick),
   });
 }
 

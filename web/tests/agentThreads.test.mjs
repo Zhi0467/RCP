@@ -23,6 +23,7 @@ import {
   loadThreadQuestions,
   loadThreadTranscript,
   sendThreadTurn,
+  setThreadAgent,
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
 
@@ -236,4 +237,17 @@ test("fresh session marker requires an earlier turn and keeps its reason on hove
   assert.equal(render("forking", true), "");
   assert.equal(render("refused", true), "");
   assert.equal(render(undefined, true), "");
+});
+
+test("a thread pick leaves the provider's default fields out", async () => {
+  let sent;
+  await setThreadAgent(
+    "t",
+    { provider: "claude", model: "", reasoning: "", run_on: "" },
+    async (_path, init) => {
+      sent = JSON.parse(init.body);
+      return thread();
+    },
+  );
+  assert.deepEqual(sent, { provider: "claude" });
 });
