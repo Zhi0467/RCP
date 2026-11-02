@@ -921,7 +921,7 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
 
     An unwritten outcome is not stated, as in project Work, never a failure.
     """
-    from rcp.runs.space_projects import read_space_output
+    from rcp.runs.space_projects import clear_space_output, read_space_output
     from rcp.turn_outcomes import WorkTurnOutcome
 
     try:
@@ -945,6 +945,8 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
         return outcome
     reason = " ".join(("Project graph updates not applied: " + "; ".join(failed)).split())
     partial = WorkTurnOutcome(status="partial", reason=reason[:TURN_OUTCOME_REASON_MAX_CHARS])
+    # The agent may have left a link here; replace it rather than write through it.
+    clear_space_output(stage / "outcome.json")
     (stage / "outcome.json").write_text(partial.model_dump_json() + "\n", encoding="utf-8")
     return TurnOutcome.model_validate(partial.model_dump())
 

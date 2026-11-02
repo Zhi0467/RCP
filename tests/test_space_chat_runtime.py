@@ -471,6 +471,10 @@ def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written, s
     assert settle_space_turn_outcome(tmp_path, {}).status == status
     failed = {"p": {"name": "P", "status": "rejected"}}
     assert settle_space_turn_outcome(tmp_path, failed).status == "partial"
+    if written == "link":
+        # The partial rewrite replaces the agent's link, never writes through it.
+        assert (tmp_path / "elsewhere.json").read_text() == '{"status": "done"}'
+        assert not (tmp_path / "outcome.json").is_symlink()
 
 
 def test_a_retried_space_turn_records_the_members_message_once(manifest, tmp_path):
