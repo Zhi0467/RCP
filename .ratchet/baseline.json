@@ -387,7 +387,6 @@
   "supervisor/src/rcp_supervisor/restore.py": {"comment": 1},
   "supervisor/src/rcp_supervisor/retention.py": {"comment": 20},
   "supervisor/src/rcp_supervisor/runtime.py": {"comment": 3},
-  "tests/architecture.py": {"comment": 2},
   "tests/conftest.py": {"comment": 2},
   "tests/helpers.py": {"comment": 66},
   "tests/real_use_corpus.py": {"comment": 2},

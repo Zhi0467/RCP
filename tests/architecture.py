@@ -51,13 +51,16 @@ def _import_aliases(tree: ast.AST, module: Path | None = None) -> dict[str, str]
 
 def _call_name(call: ast.Call, aliases: dict[str, str]) -> tuple[str, ast.expr | None]:
     """The callee's canonical dotted name, and its receiver when it is a method
-    call on something other than an imported module (None otherwise)."""
+    call on something other than an imported module (None otherwise).
+
+    An attribute chain `a.b.c(...)` is walked to its root: a root that is an
+    imported name makes the whole chain module-qualified, anything else is a
+    method call.
+    """
     function = call.func
     if isinstance(function, ast.Name):
         return aliases.get(function.id, function.id), None
     if isinstance(function, ast.Attribute):
-        # Walk `a.b.c(...)` down to its root; a root that is an imported name
-        # makes the whole chain module-qualified, anything else is a method call.
         chain = [function.attr]
         owner = function.value
         while isinstance(owner, ast.Attribute):
