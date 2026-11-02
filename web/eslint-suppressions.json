@@ -1,0 +1,1527 @@
+{
+  "src/App.tsx": {
+    "rcp/no-comments": {
+      "count": 165
+    }
+  },
+  "src/agentWindow/AgentWindowTranscript.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/agentWindow/ReferenceEmbed.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/agentWindow/useAgentWindowArtifacts.tsx": {
+    "rcp/no-comments": {
+      "count": 33
+    }
+  },
+  "src/agentWindow/useAgentWindowScroll.ts": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "src/agents/AgentHome.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/agents/AgentTaskInspector.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/agents/AgentThreadView.tsx": {
+    "rcp/no-comments": {
+      "count": 37
+    }
+  },
+  "src/agents/ApprovalCard.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/agents/agentTasks.ts": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "src/agents/agentThreadModel.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/agents/agentThreadsApi.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/agents/chatSendMutation.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/agents/taskActions.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/agents/taskResources.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/agents/useAgentTasks.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/agents/useAgentThreads.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/artifacts/ArtifactViewer.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/artifacts/Artifacts.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/artifacts/BranchGroups.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/artifacts/DeleteArtifactButton.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/artifacts/InlineArtifact.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/artifacts/artifactViewerLayout.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/artifacts/artifactViewerModel.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/artifacts/artifactViewerRequests.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/artifacts/inlineArtifacts.ts": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "src/artifacts/useInlineShell.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/chat/AgentBoard.tsx": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "src/chat/AgentRename.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/AgentStatusStrip.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/ArtifactCommentQuotes.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/chat/BulletinPanel.tsx": {
+    "rcp/no-comments": {
+      "count": 31
+    }
+  },
+  "src/chat/ChatBranchPicker.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/chat/ChatComposer.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/chat/ChatsWorkspace.tsx": {
+    "rcp/no-comments": {
+      "count": 41
+    }
+  },
+  "src/chat/NodeChat.tsx": {
+    "rcp/no-comments": {
+      "count": 72
+    }
+  },
+  "src/chat/OrchestratorComposer.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/ProjectReferencePicker.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/QuestionCard.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/agentBoardModel.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/chat/agentStatusModel.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/chat/answerComments.tsx": {
+    "rcp/no-comments": {
+      "count": 25
+    }
+  },
+  "src/chat/bulletinModel.ts": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/chat/chatInput.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/chat/chatWorkspace.ts": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/chat/composerAttachments.tsx": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/chat/useChatState.ts": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "src/core/AgentConfigControls.tsx": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "src/core/BrowserControls.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/core/api.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/core/chatMarkdown.ts": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "src/core/clientEvents.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/core/desktopRuntime.ts": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "src/core/graphTarget.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/core/notificationLinks.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/core/prefStorage.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/core/projectReferences.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/core/refreshScheduler.ts": {
+    "rcp/no-comments": {
+      "count": 17
+    }
+  },
+  "src/core/repositoryFileLinks.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/core/resourceStore.ts": {
+    "rcp/no-comments": {
+      "count": 24
+    }
+  },
+  "src/core/types.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/core/useResource.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/core/viewTabs.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/desktop/NotificationDevices.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/desktop/UpdateNotice.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/desktop/notificationDevicesModel.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/desktop/pairingLink.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/desktop/updateNoticeModel.ts": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/desktop/useActorIdentity.ts": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/desktop/useDesktopShell.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/desktop/useUpdateNotice.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/experiments/AutoResearchDialog.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/experiments/CampaignRuns.tsx": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/experiments/ComputeRouteNotice.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/experiments/EpisodeMergePanel.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/experiments/EpisodeQuestions.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/experiments/EpisodeTimeline.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/experiments/ExperimentRunDetail.tsx": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "src/experiments/ExternalJobRow.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/experiments/RunArtifacts.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/experiments/RunDialog.tsx": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "src/experiments/SpaceRuns.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/experiments/campaigns.ts": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "src/experiments/episodeResources.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/experiments/experimentBoardModel.ts": {
+    "rcp/no-comments": {
+      "count": 14
+    }
+  },
+  "src/experiments/runProjection.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/experiments/timeline.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/experiments/useEpisodeDialogs.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/AttentionRail.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/graph/BranchChangeDetail.tsx": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/graph/BranchNameField.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/DagCanvasEditor.tsx": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "src/graph/DetailDrawer.tsx": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "src/graph/GraphPicker.tsx": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "src/graph/GraphViews.tsx": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "src/graph/ResearchDrilldown.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/ViewPicker.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/graph/canvasEditing.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/graph/dagLens.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/graphAuthority.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/graph/graphResources.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/humanDraft.ts": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/graph/nodeEditing.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/graph/projectSession.ts": {
+    "rcp/no-comments": {
+      "count": 17
+    }
+  },
+  "src/graph/researchProjection.ts": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "src/graph/researchType.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/graph/useForceDag.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/graph/useGraphSelection.ts": {
+    "rcp/no-comments": {
+      "count": 11
+    }
+  },
+  "src/graph/useProjectSession.ts": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/paper/PaperBoxSelect.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/paper/PaperChanges.tsx": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/paper/PaperCoach.tsx": {
+    "rcp/no-comments": {
+      "count": 11
+    }
+  },
+  "src/paper/PaperDialog.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/paper/PaperEditor.tsx": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/paper/PaperFiles.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/paper/PaperPdf.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/paper/PaperPreview.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/paper/PaperWorkspace.tsx": {
+    "rcp/no-comments": {
+      "count": 28
+    }
+  },
+  "src/paper/paperDocuments.ts": {
+    "rcp/no-comments": {
+      "count": 19
+    }
+  },
+  "src/paper/previewComments.ts": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/paper/typst.worker.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/paper/typstPreview.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/paper/usePaperSplit.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/AddProjectMachine.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/ConsolidationInbox.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/EvidenceFlagInbox.tsx": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/projects/LandingIdentityMenu.tsx": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "src/projects/MachineBrowserRow.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/projects/MachineCard.tsx": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "src/projects/MachineProviderSettingRow.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/OperatorActionPanel.tsx": {
+    "rcp/no-comments": {
+      "count": 16
+    }
+  },
+  "src/projects/PathPicker.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/PhoneProjectChrome.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/ProjectConsolidation.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/ProjectGroupControls.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/ProjectLanding.tsx": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/projects/ProjectMembers.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/projects/ProjectOverview.tsx": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/ProjectSettings.tsx": {
+    "rcp/no-comments": {
+      "count": 27
+    }
+  },
+  "src/projects/ProjectSetup.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/projects/ProviderLogins.tsx": {
+    "rcp/no-comments": {
+      "count": 22
+    }
+  },
+  "src/projects/ProviderMark.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/RepositoryRequests.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/SpaceSettings.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/projects/TeamProjectSetup.tsx": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/projects/TeamSpaceGroups.tsx": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/projects/TransferProjectSetup.tsx": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "src/projects/consolidation.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/projects/evidenceFlags.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/projects/projectDigest.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/projectResources.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/projectSetupModel.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/projects/projectTabResources.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/projects/projectTabs.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/providerLoginsModel.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/projects/providers.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/projects/settingsDraft.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/projects/useProjectTabs.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/terminals/TerminalPane.tsx": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "src/transitionRouting.ts": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "src/ui/DraggableWindow.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/ui/OverflowMenu.tsx": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/ui/SettingsRail.tsx": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/ui/bannerDismissal.ts": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/ui/floatingWindow.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/ui/theme.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/ui/useStoredSplit.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/ui/useTheme.ts": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "src/voice/TranscriptionSettings.tsx": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "src/voice/VoicePanel.tsx": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/voice/microphone.ts": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "src/voice/networkDictation.ts": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "src/voice/toolCatalog.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/voice/useVoiceAgent.ts": {
+    "rcp/no-comments": {
+      "count": 20
+    }
+  },
+  "src/voice/voiceExecutor.ts": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "src/voice/voiceSession.ts": {
+    "rcp/no-comments": {
+      "count": 17
+    }
+  },
+  "src/voice/voiceTerminal.ts": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "src/voice/voiceThread.ts": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "src/webmcp/artifacts.ts": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "src/webmcp/conversations.ts": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "src/webmcp/overview.ts": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "src/webmcp/playbook.ts": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "src/webmcp/reads.ts": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "src/webmcp/view.ts": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/agentStatus.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/agentTaskDegradation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/agentTasks.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/agentThreads.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 56
+    }
+  },
+  "tests/agentThreads.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/agentsList.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/api.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/artifactCommentPanel.test.mjs": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "tests/artifactSelection.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/artifactViewer.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/artifacts.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 31
+    }
+  },
+  "tests/attentionRunsOntology.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/autoResearchWorktree.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/branchChangeDetail.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/branchGraph.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/breakpoints.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/browserStatus.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/bulletin.test.mjs": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "tests/bulletinRetry.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/campaigns.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/campaigns.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/chatAnnotations.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/chatBranch.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/chatInput.test.mjs": {
+    "rcp/no-comments": {
+      "count": 8
+    }
+  },
+  "tests/chatMarkdown.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/chatSend.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/chatWorkspace.test.mjs": {
+    "rcp/no-comments": {
+      "count": 16
+    }
+  },
+  "tests/clientEvents.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/computeRouteNotice.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/consolidation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/dagZoom.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/decisionChoice.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/desktopRuntime.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/dictation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/episodeArchive.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/episodeReportLink.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/evidenceFlags.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/experimentBoard.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/experimentBoard.test.mjs": {
+    "rcp/no-comments": {
+      "count": 16
+    }
+  },
+  "tests/experimentChatTranscript.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/experimentControlRefresh.test.mjs": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "tests/experimentRecovery.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "tests/experimentRunDetail.test.mjs": {
+    "rcp/no-comments": {
+      "count": 24
+    }
+  },
+  "tests/experimentStart.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/externalJobs.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/fixtures/signInRows.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/fixtures/spaceSettingsApi.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/floatingWindow.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/graphEditing.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 11
+    }
+  },
+  "tests/graphPickerCreate.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/humanDraft.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/inlineArtifactShell.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/inlineArtifacts.test.mjs": {
+    "rcp/no-comments": {
+      "count": 11
+    }
+  },
+  "tests/inlineGlossary.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/landingIdentity.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/liveArtifactTransport.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/liveSteering.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/machinePower.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/mergePanel.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/mobileWorkspace.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 17
+    }
+  },
+  "tests/networkDictation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/nodeDetailWindow.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/notificationLinks.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/operatorAction.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 23
+    }
+  },
+  "tests/orchestratorCard.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "tests/paperCoach.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 20
+    }
+  },
+  "tests/paperDialogs.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/paperLifecycle.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 7
+    }
+  },
+  "tests/paperPdf.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/paperPreview.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/paperPreviewComments.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 20
+    }
+  },
+  "tests/paperResource.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 11
+    }
+  },
+  "tests/paperRestart.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/paperTestServer.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/phoneChrome.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/pinnedViews.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/projectDigest.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/projectHistory.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/projectMembers.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/projectReconnect.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 38
+    }
+  },
+  "tests/projectSession.test.mjs": {
+    "rcp/no-comments": {
+      "count": 15
+    }
+  },
+  "tests/projectSetup.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/projectTabStrip.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/projectTransfer.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/projectType.test.mjs": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "tests/proposalJudgment.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/providerLogins.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/providerLogins.test.mjs": {
+    "rcp/no-comments": {
+      "count": 13
+    }
+  },
+  "tests/providerReadiness.test.mjs": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "tests/providers.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/questions.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 5
+    }
+  },
+  "tests/relationMap.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/releaseUpgrade.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/repositoryFileLinks.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/researchProjection.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/resourceStore.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/resultViews.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/runDialog.test.mjs": {
+    "rcp/no-comments": {
+      "count": 12
+    }
+  },
+  "tests/runProjection.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/serverSettings.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/settingsDraft.test.mjs": {
+    "rcp/no-comments": {
+      "count": 6
+    }
+  },
+  "tests/settingsRail.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/settingsRequestRaces.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/skillPicker.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/spaceAttachments.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/spaceRuns.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/spaceSettings.test.mjs": {
+    "rcp/no-comments": {
+      "count": 18
+    }
+  },
+  "tests/taskAnswers.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/taskPresentation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/teamEnrollment.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/teamSpaceGroupsFirstFrame.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/terminals.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/theme.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/theme.test.mjs": {
+    "rcp/no-comments": {
+      "count": 4
+    }
+  },
+  "tests/threadWelcome.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/transitionPresentation.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  },
+  "tests/updateNotice.test.mjs": {
+    "rcp/no-comments": {
+      "count": 10
+    }
+  },
+  "tests/voice.test.mjs": {
+    "rcp/no-comments": {
+      "count": 3
+    }
+  },
+  "tests/webmcp.test.mjs": {
+    "rcp/no-comments": {
+      "count": 9
+    }
+  },
+  "tests/webmcpReads.test.mjs": {
+    "rcp/no-comments": {
+      "count": 2
+    }
+  },
+  "tests/worktreeChat.browser.test.mjs": {
+    "rcp/no-comments": {
+      "count": 1
+    }
+  }
+}

@@ -2967,7 +2967,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ),
             )
             if status not in {"rejected", "unavailable"}:
-                # Retained Patch text is dropped only once it applied; a failed or
+                # Invariant 9: retained Patch text is dropped only once it applied; a failed or
                 # unavailable run keeps it for repair and Apply again
                 # (tests/test_agent_task_lifecycle.py::test_agent_task_lifecycle_matrix).
                 connection.execute(
@@ -5907,7 +5907,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 )
         graph_status = graph_update.get("status") if isinstance(graph_update, dict) else None
         graph_unavailable = graph_status == "unavailable"
-        # Both keep the retained Patch text: a rejection for repair, and an
+        # Invariant 9: both keep the retained Patch text, a rejection for repair and an
         # unavailable Apply for Apply again.
         graph_rejected = graph_status == "rejected" or graph_unavailable
         status_message = _completed_graph_status_message(graph_update)
