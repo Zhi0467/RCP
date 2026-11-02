@@ -794,3 +794,19 @@ def test_a_turn_without_a_zone_uses_the_members_latest_composer_zone(schedule_st
         schedule_store, "origin", command(action="add", cron="0 9 * * *", note="Check")
     )
     assert added.result["schedule"]["timezone"] == added.result["timezone"] == "Asia/Tokyo"
+
+
+def test_a_turn_with_a_non_iana_zone_still_renders_the_schedule_rule(schedule_store):
+    from rcp.runs.agent_schedules import member_timezone, schedule_instructions
+
+    origin = schedule_store.agent_task("origin")
+    schedule_store.create_agent_task(
+        origin.model_copy(
+            update={
+                "operation_id": "odd-zone",
+                "request": {**origin.request, "timezone": "Mars/Olympus"},
+            }
+        )
+    )
+    assert member_timezone(schedule_store, schedule_store.agent_task("odd-zone")) is None
+    assert "Mars/Olympus" not in schedule_instructions(schedule_store, "odd-zone")

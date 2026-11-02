@@ -116,8 +116,12 @@ def _one_shot(at: str, timezone: str, after: datetime) -> datetime:
 
 
 def member_timezone(store, task) -> str | None:
-    """The turn's composer zone, else the member's latest composer zone."""
-    zone = task.request.get("timezone")
+    """The turn's composer zone, else the member's latest composer zone.
+
+    Requests carry the zone as the browser reported it, so a value that is not an
+    IANA zone counts as unknown rather than failing the launch.
+    """
+    zone = _iana_zone(task.request.get("timezone"))
     if zone or task.authorized_by is None:
         return zone
     with store.connection() as connection:
@@ -127,7 +131,17 @@ def member_timezone(store, task) -> str | None:
             "ORDER BY created_at DESC LIMIT 1",
             (task.authorized_by.user_id,),
         ).fetchone()
-    return row[0] if row else None
+    return _iana_zone(row[0]) if row else None
+
+
+def _iana_zone(zone: object) -> str | None:
+    if not isinstance(zone, str) or not zone:
+        return None
+    try:
+        ZoneInfo(zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return zone
 
 
 def schedule_clock(timezone: str | None, now: datetime) -> dict[str, str | None]:
