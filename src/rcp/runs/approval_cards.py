@@ -127,9 +127,10 @@ def committed_receipt(
 def _graph_receipt(service: ProjectService, action: dict[str, Any]) -> dict[str, Any] | None:
     state = service.history.state()
     if action["kind"] == "proposal":
-        proposal = state.proposals.get(action["proposal_id"])
-        decided = proposal is not None and proposal.status == action["decision"]
-        return {"proposal_id": action["proposal_id"]} if decided else None
+        decision = ProposalAction.model_validate(action)
+        proposal = state.proposals.get(decision.proposal_id)
+        decided = proposal is not None and proposal.status == decision.decision
+        return {"proposal_id": decision.proposal_id} if decided else None
     return {} if (action["alias"] in state.project_truth_scope) == action["writable"] else None
 
 
