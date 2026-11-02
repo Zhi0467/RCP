@@ -105,7 +105,6 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     assert restored["command_handler"].allowed_verbs == {"validate", "bulletin", "name"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
-    # A mailbox retained before reads were stamped resumes without a read scope.
     expected = {
         "run_truth_scope": ["rq-launch"],
         "read_scope": None,

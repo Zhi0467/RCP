@@ -12,7 +12,6 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
-# Extensions an extensionless TypeScript or JavaScript import may resolve to.
 MODULE_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs"}
 
 

@@ -399,7 +399,6 @@ def test_only_the_creator_may_revoke_and_a_used_invitation_is_not_revocable(tmp_
     _invitation, _code, bob, _bob_token = _enroll_invited_member(store, alice.user_id, "Bob")
     bob_invitation, _bob_code = store.create_team_invitation(bob.user_id)
 
-    # Equal members: Alice cannot reach an invitation she cannot see.
     with pytest.raises(KeyError):
         store.revoke_team_invitation(bob_invitation.invitation_id, alice.user_id)
 
@@ -463,7 +462,6 @@ def test_member_tokens_are_prefixed_sha256_indexed_and_compared_in_constant_time
         comparisons.append((left, right))
         return real_compare(left, right)
 
-    # Token comparison lives in the space/team half of the store.
     monkeypatch.setattr("rcp.storage.spaces.hmac.compare_digest", observed_compare)
     _session, resolved = store.create_team_session(token)
     assert resolved == member
@@ -769,7 +767,6 @@ def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_memb
         store.pair_team_device(code[:-1] + ("2" if code[-1] != "2" else "3"), "Ada's phone")
     assert invalid.value.code == "device_pairing_code_invalid"
 
-    # A person types the code as they see it: case and separators are forgiven.
     session, member = store.pair_team_device(f" {code.lower().replace('-', ' ')} ", "Ada's phone")
     assert member == alice
     assert store.resolve_team_session(session) == alice
@@ -781,14 +778,12 @@ def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_memb
         store.pair_team_device(code, "Second phone")
     assert consumed.value.code == "device_pairing_code_consumed"
 
-    # Issuing a new code withdraws the previous unused one, so a member holds one.
     _, first = store.create_team_device_pairing(alice.user_id)
     _, second = store.create_team_device_pairing(alice.user_id)
     with pytest.raises(TeamAuthenticationError) as withdrawn:
         store.pair_team_device(first, "Tablet")
     assert withdrawn.value.code == "device_pairing_code_invalid"
 
-    # Wrong secrets lock only the targeted code.
     wrong = second[:-1] + ("2" if second[-1] != "2" else "3")
     for _ in range(TEAM_CODE_FAILED_ATTEMPT_LIMIT - 1):
         with pytest.raises(TeamAuthenticationError) as attempt:
@@ -812,8 +807,6 @@ def test_device_pairing_codes_are_short_lived_single_use_and_bound_to_their_memb
     assert expired.value.code == "device_pairing_code_expired"
     assert {item.label for item in store.team_sessions(alice.user_id)} == {"Ada's phone"}
 
-    # A code lives only as long as the session that issued it: revoking that
-    # device, or rotating the credential, kills the code with it.
     desktop_session, _ = store.create_team_session(alice_token, label="Desktop")
     pairing, bound = store.create_team_device_pairing(
         alice.user_id, issuing_session=desktop_session
@@ -884,7 +877,6 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     assert replay.json()["detail"]["code"] == "device_pairing_code_consumed"
     assert desktop.get(f"/api/team/devices/pairings/{pairing_id}").json()["status"] == "consumed"
 
-    # A code issued by the phone dies with the phone's session.
     phone_issued = phone.post("/api/team/devices/pairings", json={}).json()
 
     listed = desktop.get("/api/team/sessions")
@@ -1009,6 +1001,9 @@ def test_authenticated_team_attachment_upload_keeps_its_bounded_multipart_contra
 
 
 def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_path) -> None:
+    """The __Host- prefix is honoured only without a Domain, which keeps a team session
+    off sibling hosts.
+    """
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     app = create_app(data_dir=tmp_path)
     client = TestClient(app, base_url="https://testserver")
@@ -1035,8 +1030,6 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
         "max-age=1209600",
     ):
         assert attribute in cookie
-    # The __Host- prefix is only honoured when the cookie carries no Domain,
-    # which is what keeps a team session from being scoped to a sibling host.
     assert "domain=" not in cookie
 
     identity = client.get("/api/identity")
@@ -1356,7 +1349,6 @@ def test_the_access_address_is_operator_set_read_only_and_links_codes(
     monkeypatch.setattr("rcp.team_access.INSTALLED_TEAM_CONFIG_PATH", tmp_path / "team.toml")
     assert desktop.get("/api/team/space").json() == {"space_name": "Team Lab", "access_url": None}
     assert desktop.post("/api/team/devices/pairings", json={}).json()["connect_url"] is None
-    # Members cannot set it; the operator does, in the server configuration.
     refused = desktop.patch("/api/team/space", json={"access_url": "https://lab.ts.net"})
     assert refused.status_code == 422
 
@@ -1377,7 +1369,6 @@ def test_the_access_address_is_operator_set_read_only_and_links_codes(
     assert desktop.get("/api/team/space").json()["access_url"] is None
     assert store.space_name == "Renamed Lab"
 
-    # An installed server reads the operator's team.toml; a broken file is no address.
     monkeypatch.delenv("RCP_TEAM_ACCESS_URL")
     monkeypatch.setattr(
         "rcp.server_ops.config._expected_config_ownership", lambda: (os.getuid(), os.getgid())

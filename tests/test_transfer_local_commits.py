@@ -202,7 +202,6 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
     published = tmp_path / "published.git"
     _git(tmp_path, "clone", "--bare", str(repository), str(published))
     head = _commit(repository, "unpublished")
-    # Uncommitted work is neither discarded on the source nor copied to the target.
     (repository / "code.txt").write_text("dirty source")
     (repository / "untracked.txt").write_text("not a committed file")
     if server_only:
@@ -314,7 +313,6 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
     assert (destination / ".research" / "patches" / "000002.json").read_bytes() == (
         repository / ".research" / "patches" / "000002.json"
     ).read_bytes()
-    # Git restoration does not itself make the target project active.
     assert target.project(project) is None
 
 
@@ -394,7 +392,6 @@ def test_mixed_sources_require_only_server_only_bundle(tmp_path):
             response = client.post("/api/project-transfers/source-requests", json=body)
             assert response.status_code == 201, response.text
             assert response.json()["source_configuration"]["repositories"][0]["repository"] is None
-        # Startup migrates Paper; compare against the boundary the human reviewed.
         local = ProjectTransferSourceConfiguration.model_validate_json(
             json.dumps(response.json()["source_configuration"])
         )

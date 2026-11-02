@@ -81,8 +81,9 @@ def test_pending_attempts_count_calls_not_rounds(tmp_path, resolution):
 
 
 def test_update_drain_parks_a_waiting_ask_instead_of_waiting_on_it(tmp_path):
-    # Maintenance closes the human's HTTP access before it drains turns, so a
-    # turn still waiting on an answer would hold the drain until its ask expired.
+    """Maintenance closes HTTP access before draining, so a turn waiting on an answer
+    would hold the drain until its ask expired.
+    """
     execution, _human = work_execution(tmp_path)
     admission = RuntimeAdmissionGate()
     execution.admission = admission
@@ -90,7 +91,6 @@ def test_update_drain_parks_a_waiting_ask_instead_of_waiting_on_it(tmp_path):
     states = []
 
     def asking_turn():
-        # The client's ask loop: repeat rounds while pending, as `--ask-wait` does.
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             state = handler(ask_request(call_id="call"), identity()).result["state"]
@@ -238,7 +238,6 @@ def test_discuss_resolves_ask_and_name(tmp_path):
     origin = question.origin
     assert origin.capability == "discuss" and origin.write_scope_fingerprint is None
     for verb in ("lesson", "launch", "validate", "apply"):
-        # Dispatch checks the resolved verb set before invoking any other owner.
         request = ask_request().model_copy(update={"verb": verb})
         assert handler(request, identity()).status == "invalid"
     assert _work_execution_instructions(

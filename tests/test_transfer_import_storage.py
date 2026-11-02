@@ -449,6 +449,9 @@ def test_storage_import_rejects_record_schema_not_negotiated_before_release(
 def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
     manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
 ) -> None:
+    """Old artifact-backed archives omit the new rule without changing their canonical
+    encoding; the report import owner establishes it.
+    """
     from rcp.storage import Artifact, ArtifactFile, ArtifactVersion
     from rcp.transfer.archive import TransferArchiveEntry
     from rcp.transfer.project_files import TransferProjectFileCapture
@@ -503,8 +506,6 @@ def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
         }
     )
     TransferProjectFileCapture.model_validate(capture)
-    # Old artifact-backed archives omit the new rule without changing their
-    # canonical encoding; the report import owner establishes it at destination.
     assert "live_data_allowed" not in artifact.model_dump()
     payload = transfer_project_file_payload(capture)
     assert transfer_project_file_payload(parse_transfer_project_file_payload(payload)) == payload
@@ -524,8 +525,6 @@ def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
             kept_result_view_html={},
         )
         assert target.artifact(artifact_id).live_data_allowed is False
-        # Reconstruct version 31 metadata, then exercise the real migration
-        # registry rather than calling its SQL helper directly.
         with target.connection() as connection:
             connection.execute(
                 "UPDATE artifacts SET metadata = json_remove(metadata, '$.live_data_allowed') WHERE artifact_id = ?",

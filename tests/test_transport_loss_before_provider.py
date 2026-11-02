@@ -127,8 +127,6 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
         with pytest.raises(StateUnreachable):
             require_remote_provider_quiescence(store, HOST, "/stage")
     else:
-        # Any other answer is the host speaking: a live process is not a lost
-        # link, and reattempting would not change it.
         with pytest.raises(ValueError, match="still running"):
             require_remote_provider_quiescence(store, HOST, "/stage")
     assert store.unresolved_remote_provider_passes(HOST, "/stage") == [("first", "/stage/one.pid")]
@@ -147,6 +145,8 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
 async def test_a_failed_input_transfer_marks_only_a_lost_link(
     tmp_path: Path, failure: Exception
 ) -> None:
+    """A host that answers has not lost its link; only silence has."""
+
     def finalize_inputs() -> None:
         raise failure
 
@@ -158,7 +158,6 @@ async def test_a_failed_input_transfer_marks_only_a_lost_link(
     remote_stage = SimpleNamespace(
         root=Path("/stage"),
         finalize_inputs=finalize_inputs,
-        # Every remote launch is supervised; its supervisor is already staged here.
         read_input_text=lambda _label: _remote_turn_supervisor_script(),
     )
     outcome = _ProviderOutcome()
@@ -187,7 +186,6 @@ async def test_a_failed_input_transfer_marks_only_a_lost_link(
     ]
 
     assert outcome.failed and len(frames) == 1 and str(failure) in frames[0]
-    # A host that answers, "gone" or "refused", has not lost its link; only silence has.
     assert execution.stage_unreachable is (type(failure) is StateUnreachable)
 
 

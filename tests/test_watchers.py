@@ -561,8 +561,6 @@ def test_a_retirement_another_turn_already_won_is_refused_per_item(store) -> Non
     resource = store.experiment_watcher_resources("project")[0]
     binding = _maintenance_binding(resource)
 
-    # Another turn retires the same observer first. Retirement keeps the row, so
-    # membership is unchanged and the fingerprint still matches.
     store.stop_watchers("project", ["old"])
 
     with pytest.raises(ValueError, match="already resolved"):
@@ -964,8 +962,9 @@ def test_fifth_group_observation_error_is_ready_but_remains_degraded(store) -> N
 
 
 def test_lone_observer_unobservable_as_long_as_a_group_member_wakes(store) -> None:
-    # A check that loses sight of its job (squeue forgets a finished job) must
-    # not hold its episode shut forever; it wakes once, still degraded.
+    """A check that loses sight of its job (squeue forgets finished jobs) must not hold
+    its episode shut forever.
+    """
     for watcher_id, errors in (("lone-early", 4), ("lone-unknown", 5)):
         store.create_watchers(
             [
@@ -1120,9 +1119,11 @@ def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:
 
 @pytest.mark.parametrize("remote", [False, True])
 def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, monkeypatch, remote):
+    """Runs the exact shipped SSH payload locally; the remote watchdog must clean up
+    after the transport client times out.
+    """
     if remote:
-        # Execute the exact shipped SSH payload on this machine. The remote
-        # watchdog must clean up even after the transport client times out.
+
         def ssh_bridge(_host, command):
             return [
                 sys.executable,
@@ -1157,8 +1158,9 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
             child_pid = int(child_pid_path.read_text())
 
             def child_stopped():
-                # Process exit releases the lease even if the OS has not reaped
-                # its zombie yet; no process-list permission is needed.
+                """Process exit releases the lease before the zombie is reaped; no
+                process-list permission is needed.
+                """
                 with child_lock_path.open("a") as lease:
                     try:
                         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1179,6 +1181,9 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
 
 
 def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(store) -> None:
+    """Jitter keeps a repeated pair out of a shared delivery pass, so each would buy its
+    own wake.
+    """
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
@@ -1186,22 +1191,17 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
     first = _record("first", origin="loop-root", continuation=continuation)
     store.persist_experiment_watchers_idempotently([first], binding=binding)
 
-    # A later turn repeating that check observes one job twice, and jitter keeps
-    # the pair out of a shared delivery pass, so each would buy its own wake.
     repeat = first.model_copy(update={"watcher_id": "repeat"})
     with pytest.raises(ValueError, match="already covers this work: first"):
         store.persist_experiment_watchers_idempotently([repeat], binding=binding)
     assert store.watcher("repeat") is None
 
-    # A completion still waiting for delivery is a wake this episode has not
-    # spent, so repeating it beside the pending one still costs two invocations.
     store.record_watcher_check("first", status="completed", exit_code=0, error=None)
     assert store.watcher("first").notified is False
     with pytest.raises(ValueError, match="already covers this work: first"):
         store.persist_experiment_watchers_idempotently([repeat], binding=binding)
     assert store.watcher("repeat") is None
 
-    # One handoff arming the same check twice is refused whole, stops included.
     with pytest.raises(ValueError, match="arms one check twice"):
         store.persist_experiment_watchers_idempotently(
             [repeat, first.model_copy(update={"watcher_id": "twin"})],
@@ -1210,7 +1210,6 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
         )
     assert store.watcher("first").status == "completed"
 
-    # Retiring the observer in the same handoff lets its replacement arm.
     stored = store.persist_experiment_watchers_idempotently(
         [repeat],
         stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
@@ -1221,6 +1220,10 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
 
 
 def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(store) -> None:
+    """Watcher ids derive from the list index, so a re-declared observer reaches
+    persistence under a fresh id; the refusal must land where the turn can still
+    answer it.
+    """
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
@@ -1233,28 +1236,19 @@ def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(sto
         cwd=live.cwd,
     )
 
-    # Watcher ids derive from the declaration's list index, so re-declaring a
-    # live observer elsewhere in the list reaches persistence under a fresh id.
-    # The refusal has to land here, where the turn can still answer it.
     with pytest.raises(ValueError, match="already covers this work: live"):
         store.validate_experiment_observer_duplicates(binding, [spec])
 
-    # Retiring it in the same handoff is what the refusal asks for, so the dry
-    # run has to read the stops the handoff has not applied yet.
     store.validate_experiment_observer_duplicates(
         binding,
         [spec],
         stops=[WatcherStopRequest(stop_watcher_id="live", reason="Replaced observer")],
     )
 
-    # A pending completion is still an unspent wake.
     store.record_watcher_check("live", status="completed", exit_code=0, error=None)
     with pytest.raises(ValueError, match="already covers this work: live"):
         store.validate_experiment_observer_duplicates(binding, [spec])
 
-    # Grouping exempts neither side. Two groups are two delivery units that
-    # coalesce only when they become ready in one poll, which jittered member
-    # checks are exactly what prevent.
     with pytest.raises(ValueError, match="already covers this work: live"):
         store.validate_experiment_observer_duplicates(
             binding,
@@ -1645,9 +1639,8 @@ def test_chat_wake_defers_behind_unresolved_turn_without_claiming_watchers(store
     assert store.agent_task("wake") is None
     assert store.watcher("done").notified is False
     assert store.watcher("done").notification_operation_id is None
-    # The deferral is visible on the watcher, and the later claim clears it.
     assert store.watcher("done").last_error
-    if status == "interrupted":  # only a terminal turn can be set aside as history
+    if status == "interrupted":
         store.mark_agent_tasks_history_only([task.operation_id])
         assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
         assert store.watcher("done").last_error is None
@@ -1697,7 +1690,6 @@ def test_chat_wake_admits_the_current_agents_provider(store) -> None:
         authorized_by=_identity(store),
     )
 
-    # The armed provider may be signed out; the wake needs only the chat's current one.
     assert admitted == ["claude"]
 
 
@@ -1718,7 +1710,6 @@ def test_chat_wake_refuses_a_machine_change_with_durable_reason(store) -> None:
     assert resolution["reason_code"] == "machine_mismatch"
     assert store.watcher("done").notification_operation_id == wake.operation_id
     assert store.watcher("done").notified is True
-    # Retry would replay the refused policy: no offer, and the engine refuses it.
     assert store.agent_task(wake.operation_id).can_retry is False
     with pytest.raises(ValueError):
         BackgroundAgentTasks(store, None).retry(wake.operation_id)
@@ -1781,7 +1772,6 @@ def test_chat_wake_never_searches_past_unusable_latest_session(store, reason_cod
 @pytest.mark.parametrize(
     ("category", "payload", "reason_code"),
     [
-        # A quota limit leaves the session itself resumable.
         ("provider_terminal_error", {"classification": "session_limit"}, None),
         ("provider_terminal_error", {"classification": "stale_session"}, "session_stale"),
         (
@@ -1855,7 +1845,6 @@ def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:
 
     assert [record.status for record in stopped] == ["stopped"]
     assert [record.watcher_id for record in store.pollable_watchers()] == ["watch-live"]
-    # A stopped watcher is already accounted for, so it can never wake a turn.
     assert store.watcher("watch-degraded").notified is True
     assert store.completed_watcher_groups() == []
 
@@ -2225,24 +2214,22 @@ def test_quiet_chat_keeps_no_armed_watchers_and_refuses_wake(store, closed):
             )
         store.close_agent_thread("chat", reason="access_lost")
     else:
-        # Archive would strand the armed watcher's wake, so it is refused.
         with pytest.raises(AgentTaskAdmissionConflict, match="chat_has_live_work"):
             store.set_chat_archived("project", "chat", "member", archived=True)
         assert not store.chat_archived("project", "chat")
         store.stop_watchers("project", ["done"])
         store.set_chat_archived("project", "chat", "member", archived=True)
     assert store.watcher("done").status == "stopped"
-    # A late completion cannot bypass the same admission rule.
     store.create_watchers([_record("late", origin=previous.operation_id, status="completed")])
     assert store.create_watcher_notification_task(_task(store, "wake", ["late"]), ["late"]) is None
     assert store.agent_task("wake") is None
 
 
 def test_orchestrator_archive_waits_for_only_its_chain_watchers(store):
+    """Old records can share main; graph target equality is not chat identity."""
     from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
 
     for episode_id, parent in [("root", None), ("continuation", "root"), ("unrelated", None)]:
-        # Old records can share main; graph target equality is not chat identity.
         with store.connection() as connection:
             store._insert_episode(
                 connection,

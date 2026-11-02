@@ -148,11 +148,13 @@ def test_a_live_request_still_cannot_smuggle_an_unknown_field() -> None:
 
 @pytest.mark.parametrize("kind", get_args(AgentTaskKind))
 def test_only_run_request_kinds_drop_the_frozen_compute_selection(kind: str) -> None:
-    """Through 0.4.29 every RunRequest froze its compute; the other models never had it."""
+    """Through 0.4.29 every RunRequest froze its compute; the other models never had it.
+
+    Space threads were introduced after frozen compute selections were retired.
+    """
 
     stored = {"active_compute_ids": ["gpu"], "resolved_compute_context": {"active": []}}
     migrated = migrate_stored_task_request(kind, stored, warn=False)
-    # Space threads were introduced after frozen compute selections were retired.
     used_frozen_compute = kind in {
         "seed",
         "refresh",
