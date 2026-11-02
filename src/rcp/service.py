@@ -477,61 +477,76 @@ def canonical_space_chat_path(data_dir: Path, user_id: str, chat_id: str) -> Pat
 def read_space_chat_transcript(
     data_dir: Path, user_id: str, chat_id: str, *, title: str = "Agent"
 ) -> ChatTranscript | None:
-    """Read only an owner-bound Space file, never a project or relocated transcript."""
+    """Read only an owner-bound Space file, never a project or relocated transcript.
+
+    A missing file is an empty thread. An unreadable or mislabeled one raises
+    the voice reader's typed errors rather than reading as empty history.
+    """
+    from rcp.service_connections import ConnectionError
+
     try:
-        path = canonical_space_chat_path(data_dir, user_id, chat_id)
-        for directory in (path.parent.parent, path.parent):
-            if not stat.S_ISDIR(directory.lstat().st_mode):
-                return None
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                return None
-            with os.fdopen(descriptor, encoding="utf-8") as handle:
-                descriptor = -1
-                records = [
-                    _StoredChatRecord.model_validate_json(line)
-                    for line in handle.read().split("\n")
-                    if line.strip()
-                ]
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        if not records:
-            return None
-        for record in records:
-            if (
-                record.chat_scope != "space"
-                or record.session_id != chat_id
-                or record.private_owner != user_id
-                or record.node_id is not None
-                or record.graph_target is not None
-                or record.type != record.role
-                or str(uuid.UUID(record.uuid)) != record.uuid
-                or datetime.fromisoformat(record.timestamp).tzinfo is None
-                or (
-                    record.steering is not None
-                    and (record.role != "user" or record.trigger != "human")
-                )
-            ):
-                return None
-        records = _fold_chat_receipts(records)
-        messages = [_chat_message_from_record(record) for record in records]
-        preview = next((message.text for message in reversed(messages) if message.text.strip()), "")
-        return ChatTranscript(
-            chat_id=chat_id,
-            kind="space_chat",
-            node_id=None,
-            title=title,
-            updated_at=max(
-                records, key=lambda record: datetime.fromisoformat(record.timestamp)
-            ).timestamp,
-            message_count=len(messages),
-            last_message_preview=" ".join(preview.split())[:CHAT_PREVIEW_MAX_CHARS],
-            messages=messages,
-        )
-    except (OSError, TypeError, ValueError):
+        return _read_space_chat_transcript(data_dir, user_id, chat_id, title=title)
+    except FileNotFoundError:
         return None
+    except (TypeError, ValueError):
+        raise ConnectionError("thread_transcript_invalid", 409) from None
+    except OSError:
+        raise ConnectionError("thread_transcript_unavailable", 503) from None
+
+
+def _read_space_chat_transcript(
+    data_dir: Path, user_id: str, chat_id: str, *, title: str
+) -> ChatTranscript | None:
+    path = canonical_space_chat_path(data_dir, user_id, chat_id)
+    for directory in (path.parent.parent, path.parent):
+        if not stat.S_ISDIR(directory.lstat().st_mode):
+            raise ValueError("Space transcript directory is unsafe")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Space transcript is not a regular file")
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            descriptor = -1
+            records = [
+                _StoredChatRecord.model_validate_json(line)
+                for line in handle.read().split("\n")
+                if line.strip()
+            ]
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not records:
+        return None
+    for record in records:
+        if (
+            record.chat_scope != "space"
+            or record.session_id != chat_id
+            or record.private_owner != user_id
+            or record.node_id is not None
+            or record.graph_target is not None
+            or record.type != record.role
+            or str(uuid.UUID(record.uuid)) != record.uuid
+            or datetime.fromisoformat(record.timestamp).tzinfo is None
+            or (
+                record.steering is not None and (record.role != "user" or record.trigger != "human")
+            )
+        ):
+            raise ValueError("Space transcript record does not belong to its thread")
+    records = _fold_chat_receipts(records)
+    messages = [_chat_message_from_record(record) for record in records]
+    preview = next((message.text for message in reversed(messages) if message.text.strip()), "")
+    return ChatTranscript(
+        chat_id=chat_id,
+        kind="space_chat",
+        node_id=None,
+        title=title,
+        updated_at=max(
+            records, key=lambda record: datetime.fromisoformat(record.timestamp)
+        ).timestamp,
+        message_count=len(messages),
+        last_message_preview=" ".join(preview.split())[:CHAT_PREVIEW_MAX_CHARS],
+        messages=messages,
+    )
 
 
 def _fold_chat_receipts(records: list[_StoredChatRecord]) -> list[_StoredChatRecord]:

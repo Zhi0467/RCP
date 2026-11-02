@@ -94,11 +94,14 @@ indexing excludes `private-*.jsonl` before reading, using the hidden-read select
 private transcripts never enter ingestion or consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
 use `chatScope: "space"` without node or graph target fields. A separate reader
-accepts only that scope. Optional message `source` distinguishes voice and
+accepts only that scope. A missing file is an empty thread; an unreadable or
+mislabeled one refuses with the voice reader's `thread_transcript_unavailable`
+(503) or `thread_transcript_invalid` (409), so a Space turn fails rather than
+running without its history. Optional message `source` distinguishes voice and
 handoff input (and the reserved Slack source); absent source means the composer
 and is omitted from serialization, preserving old records. Space turns, steering,
-and voice entries share one transcript lock; voice entries deduplicate under that
-lock before appending.
+and voice entries share one transcript lock; both deduplicate by record `uuid`
+under that lock before appending.
 
 Private chats, their tasks and their questions are visible and controllable only
 by their owner. Project question pushes target that owner. A failed or
