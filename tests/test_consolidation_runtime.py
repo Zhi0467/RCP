@@ -653,6 +653,10 @@ def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
 def test_legacy_archived_consolidation_chat_keeps_consolidating(runtime):
     project_id = runtime.schedule.project_id
     chat_id = consolidation_chat_id(project_id)
+    # The chat is RCP's even before its first night has run.
+    assert runtime.store.consolidation_runs() == []
+    with pytest.raises(AgentTaskAdmissionConflict):
+        runtime.store.set_chat_archived(project_id, chat_id, "member", archived=True)
     # Releases before 0.4.38 let a member archive the consolidation chat.
     with runtime.store.connection() as conn:
         conn.execute(

@@ -530,13 +530,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             if archived and self._chat_owns_live_work(connection, project_id, chat_id):
                 raise AgentTaskAdmissionConflict("chat_has_live_work")
             # Nightly consolidation owns its chat and must keep admitting turns.
-            if (
-                archived
-                and connection.execute(
-                    "SELECT 1 FROM consolidation_runs WHERE project_id=? AND chat_id=?",
-                    (project_id, chat_id),
-                ).fetchone()
-            ):
+            if archived and chat_id in _consolidation_chat_ids(connection, project_id):
                 raise AgentTaskAdmissionConflict("consolidation_chat_cannot_be_archived")
             connection.execute(
                 "INSERT INTO chat_display(project_id,chat_id,archived_user_id,archived_at) "
@@ -751,3 +745,16 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 "AND title IS NULL AND archived_at IS NULL",
                 (project_id, chat_id),
             )
+
+
+def _consolidation_chat_ids(connection: sqlite3.Connection, project_id: str) -> set[str]:
+    """Main's and every branch's consolidation chat, whether or not a night has run."""
+    from rcp.storage.consolidation import consolidation_chat_id
+
+    branches = connection.execute(
+        "SELECT branch_id FROM graph_branches WHERE project_id=?", (project_id,)
+    ).fetchall()
+    return {
+        consolidation_chat_id(project_id, target)
+        for target in ("main", *(row["branch_id"] for row in branches))
+    }

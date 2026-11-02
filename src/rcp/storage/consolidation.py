@@ -26,6 +26,12 @@ from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 
 
+def consolidation_chat_id(project_id: str, target: str = "main") -> str:
+    """The one chat each project target's nightly consolidation runs in."""
+    suffix = "" if target == "main" else f":{target}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:consolidation:{project_id}{suffix}"))
+
+
 class ConsolidationSchedule(BaseModel):
     project_id: str
     authorization_id: str
