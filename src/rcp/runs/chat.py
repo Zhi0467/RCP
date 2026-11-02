@@ -321,8 +321,14 @@ def _prepare_chat_prompt_state(
     master_context: str,
     contract_key: str,
     values: dict[str, object],
+    required_master_value: str | None = None,
 ) -> tuple[PromptNode, MasterRef, dict[str, object] | None]:
-    """Persist a candidate baseline and return the turn's node, master, and compact delta."""
+    """Persist a candidate baseline and return the turn's node, master, and compact delta.
+
+    A session whose committed values lack ``required_master_value`` holds a master rendered
+    without it, so ``master_context`` replaces that master and the first turn that needs the
+    value reopens a master holding it instead of carrying it inline.
+    """
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
     latest, revoked = _chat_master_status(execution, request.session_id)
@@ -337,7 +343,12 @@ def _prepare_chat_prompt_state(
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_source = "rendered"
-    if previous is not None and previous.contract_key == contract_key:
+    lacking = (
+        previous is not None
+        and required_master_value is not None
+        and required_master_value not in previous.values
+    )
+    if previous is not None and previous.contract_key == contract_key and not lacking:
         if previous.master_operation_id is not None and previous.master_sha256 is not None:
             master_operation_id = previous.master_operation_id
             master_sha256 = previous.master_sha256

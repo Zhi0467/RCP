@@ -303,7 +303,6 @@ def _prepare_work_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
-    launch_instructions: str,
     ontology_extensions: bool,
     question_part: str = "",
     read_context: str = "",
@@ -325,9 +324,10 @@ def _prepare_work_chat_prompt(
         values=stable_values
         if browser_grant is None
         else {**stable_values, "browser": browser_prompt_line(browser_grant)},
+        # A master rendered before this session's first Work turn lacks the launch
+        # instructions, so that turn reopens the Work master that holds them.
+        required_master_value="work",
     )
-    # A master rendered before this session's first Work turn lacks the launch instructions.
-    first_work_turn = not master.bootstrap and "work" not in (master.values or {})
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
@@ -347,7 +347,6 @@ def _prepare_work_chat_prompt(
         ),
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
-        launch_instructions=launch_instructions if first_work_turn else None,
         message_author=(
             "orchestrator"
             if execution is not None
@@ -1253,7 +1252,6 @@ def _compose_fresh_prompt(
     prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        launch_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),

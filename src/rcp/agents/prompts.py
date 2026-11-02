@@ -150,7 +150,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 27
+CHAT_MASTER_CONTEXT_VERSION = 28
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -1014,7 +1014,6 @@ class PromptFactory:
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
-        launch_instructions: str | None = None,
         message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
         return PromptFactory._chat_turn_prompt(
@@ -1030,7 +1029,6 @@ class PromptFactory:
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
             attachments=attachments,
-            launch_instructions=launch_instructions,
         )
 
     @staticmethod
@@ -1047,27 +1045,18 @@ class PromptFactory:
         master: MasterRef | None = None,
         memory_pointer: str = "",
         read_context: str = "",
-        launch_instructions: str | None = None,
         message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the message's bytes.
 
-        The write boundary and launch instructions live in the master. A master rendered
-        before the session's first Work turn lacks the launch instructions, so that turn
-        carries them once.
+        The write boundary and launch instructions live in the master.
         """
 
-        if launch_instructions is not None and marker != "Work":
-            raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
         if read_context:
             parts.append(read_context)
         if memory_pointer:
             parts.append(memory_pointer)
-        if launch_instructions:
-            parts.append(
-                f"Launch instructions for this session's Work turns:\n{launch_instructions}"
-            )
         invocation = _invoked_package_section(invoked_skill_pointers).strip()
         if invocation:
             parts.append(invocation)
