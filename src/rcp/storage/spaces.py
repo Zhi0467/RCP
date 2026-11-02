@@ -1012,7 +1012,8 @@ class SpaceStoreMixin(StoreMixinBase):
                 return None
             if row["expires_at"] <= now:
                 connection.execute(
-                    "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
+                    "DELETE FROM team_sessions WHERE session_hash = ? AND expires_at <= ?",
+                    (session_hash, now),
                 )
                 return None
             member = self._space_user_from_connection(connection, row["user_id"])
