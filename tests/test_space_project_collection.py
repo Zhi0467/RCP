@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from rcp.agents.launcher import AgentProcessControl
@@ -175,7 +178,6 @@ def test_space_binding_change_is_a_visible_rejection(manifest, tmp_path, monkeyp
 
 
 def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, monkeypatch):
-    from rcp.agents.command_protocol import GraphLogCommandRequest, ValidateCommandRequest
     from rcp.runs.space_projects import prepare_space_projects
     from rcp.service import ProjectService
 
@@ -196,29 +198,66 @@ def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, m
     (reader,) = found.readers
     assert found.writers == [] and found.excluded[reader.project_id]["code"] == "base_remote"
     assert reader.verbs == reader.read_scope.verbs | {"bulletin"}
-    identity = {"mailbox_id": "a" * 32, "request_id": "b" * 32, "credential": "c" * 64}
-    validate = ValidateCommandRequest(verb="validate", arguments={"patch": "{}"}, **identity)
-    log = GraphLogCommandRequest(verb="graph_log", arguments={"id": "missing"}, **identity)
-    assert reader.command(validate, None).status == "invalid"
-    assert reader.command(log, None).status == "ok"
+    assert reader.project_id not in found.unreachable
+    statuses = asyncio.run(_drive_reader_mailbox(reader, stage / "reader"))
+    assert statuses == {"validate": "invalid", "graph_log": "ok"}
+    assert "--post" in writer.usage("rcp") and "--post" not in reader.usage("rcp")
 
 
-def test_space_git_failure_leaves_out_only_that_project(manifest, tmp_path):
-    from rcp.agents.git_access import ProviderGitAccess
-    from rcp.runs.space_chat import _prepare_space_git
+async def _drive_reader_mailbox(reader, directory):
+    """Send the reader's commands through its real staged client and mailbox."""
+    from rcp.runs.patch_validator import stage_patch_validation_mailbox
+    from rcp.runs.tasks.work_turn_runtime import start_work_validator_mailbox
+    from tests.test_staged_command_client import _run_client
 
-    owner, request, execution, stage, found = _space_turn(manifest, tmp_path)
+    directory.mkdir(parents=True)
+    patch = directory / "patch.json"
+    patch.write_text("{}")
+    staged = stage_patch_validation_mailbox(
+        local_stage=directory,
+        remote_stage=None,
+        task_id="reader",
+        turn_id="reader",
+        timeout_seconds=10,
+    )
+    lifecycle = start_work_validator_mailbox(
+        staged,
+        execution=None,
+        budget=None,
+        validate=None,
+        command_handler=reader.command,
+        allowed_verbs=reader.verbs,
+    )
+    try:
+        commands = {
+            "validate": ("validate", str(patch)),
+            "graph_log": ("graph_log", "missing"),
+        }
+        statuses = {}
+        for name, arguments in commands.items():
+            _, output = await _run_client(staged, *arguments)
+            statuses[name] = json.loads(output)["status"]
+        return statuses
+    finally:
+        await lifecycle.close()
+
+
+def test_space_git_failure_leaves_out_only_that_project_with_its_cause(manifest, tmp_path):
+    from rcp.runs.space_chat import _resolve_space_git, _union_git_access
+
+    owner, _, execution, _, found = _space_turn(manifest, tmp_path)
     (project,) = found.writers
-    access = ProviderGitAccess(None, tmp_path, "", (("repo", "/checkout"),))
-    _prepare_space_git(owner, execution, found, lambda *_: access)
-    assert found.writers and execution.git_access == access
 
     def unreachable(*_):
         raise OSError("transport down")
 
-    _prepare_space_git(owner, execution, found, unreachable)
-    assert found.writers == []
-    assert found.excluded[project.project_id]["code"] == "git_unavailable"
+    accesses = _resolve_space_git(owner, found, unreachable)
+    assert found.writers == [] and _union_git_access(found, accesses) is None
+    assert found.unreachable[project.project_id]["code"] == "git_unavailable"
+    (receipt,) = owner.store.agent_task_receipts_by_category(
+        execution.operation_id, "space_project_not_admitted"
+    )
+    assert receipt.payload["reason"] == "transport down"
 
 
 def test_space_limits_derive_lacking_commands_from_grants(manifest, tmp_path):

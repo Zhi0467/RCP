@@ -236,7 +236,7 @@ async def stream_space_chat_run(
 ) -> AsyncGenerator[str, None]:
     """Run one local provider with one exact, independently authorized stage per project."""
     from rcp.agents import AgentEvent
-    from rcp.runs.agent_threads import provider_switch_seed
+    from rcp.runs.agent_threads import staged_history_seed
     from rcp.runs.chat import _discover_chat_artifacts
     from rcp.runs.shared import _ProviderOutcome, _sse, _stream_agent_events
     from rcp.service import read_space_chat_transcript
@@ -257,12 +257,14 @@ async def stream_space_chat_run(
     # A corrupt transcript raises, so the turn fails visibly instead of running unseeded.
     with space_transcript_lock(owner.store, owner.thread_id):
         prior = read_space_chat_transcript(data_dir, owner.thread.user_id, owner.thread_id)
-    seed = await provider_switch_seed(
+    seed = await staged_history_seed(
         launcher,
         request,
         execution,
         _space_seed(request, prior),
         prepare_scope=turn.summary_scope_preparer(data_dir),
+        local_stage=turn.stage,
+        remote_stage=None,
     )
     append_space_message(
         owner, request, execution.operation_id, role="user", text=request.message or ""
@@ -376,8 +378,8 @@ class _SpaceTurn:
         for path in [
             self.stage / "outcome.json",
             *(
-                self.stage / "projects" / item.project_id / "patch.json"
-                for item in self.found.clients
+                self.stage / "projects" / project_id / "patch.json"
+                for project_id in self.found.names
             ),
         ]:
             clear_space_output(path)
@@ -446,10 +448,19 @@ async def _open_space_turn(
         remote_stage=None,
     )
     found = prepare_space_projects(owner, request, execution, stage)
-    _prepare_space_git(owner, execution, found, project_git_access)
-    policies = await _prepare_space_policies(owner, request, data_dir, execution, stage, found)
+    accesses = _resolve_space_git(owner, found, project_git_access)
+    policies = await _prepare_space_policies(
+        owner, request, data_dir, execution, stage, found, accesses
+    )
     scope = bind_space_projects(owner, execution, stage, found)
-    hidden_read_scope = merge_space_hidden_read_scopes(policies)
+    # Only the bound writers' transports reach the provider, once every exclusion is final.
+    execution.git_access = _union_git_access(found, accesses)
+    hidden_read_scope = merge_space_hidden_read_scopes(
+        [
+            default_space_hidden_read_scope(owner, request, stage, execution),
+            *(policies[project.project_id] for project in found.writers),
+        ]
+    )
     install_space_hidden_read_scope(hidden_read_scope)
     return _SpaceTurn(
         owner,
@@ -466,32 +477,35 @@ async def _open_space_turn(
     )
 
 
-def _prepare_space_git(
+def _resolve_space_git(
     owner: SpaceThreadOwner,
-    execution: AgentTaskExecution,
     found: SpaceProjects,
     project_git_access: Callable[[str, ProjectService], ProviderGitAccess] | None,
-) -> None:
-    """One project's Git failure leaves that project out, not the turn."""
+) -> dict[str, ProviderGitAccess]:
+    """Each writer's Git transport; one project's failure leaves that project out."""
     from rcp.transport import StateUnavailable
 
     if project_git_access is None:
         if owner.store.space_kind == "team" and found.writers:
             raise ValueError("Space team turn requires project Git transports")
-        return
-    accesses = []
+        return {}
+    accesses = {}
     for project in list(found.writers):
         try:
-            accesses.append(project_git_access(project.project_id, project.service))
-        except (KeyError, OSError, ValueError, StateUnavailable):
-            found.exclude(project.project_id, "git_unavailable")
-    if accesses:
-        execution.git_access = replace(
-            accesses[0],
-            checkouts=tuple(
-                sorted({checkout for access in accesses for checkout in access.checkouts})
-            ),
-        )
+            accesses[project.project_id] = project_git_access(project.project_id, project.service)
+        except (KeyError, OSError, ValueError, StateUnavailable) as exc:
+            found.exclude(project.project_id, "git_unavailable", exc)
+    return accesses
+
+
+def _union_git_access(
+    found: SpaceProjects, accesses: dict[str, ProviderGitAccess]
+) -> ProviderGitAccess | None:
+    kept = [accesses[item.project_id] for item in found.writers if item.project_id in accesses]
+    if not kept:
+        return None
+    checkouts = sorted({checkout for access in kept for checkout in access.checkouts})
+    return replace(kept[0], checkouts=tuple(checkouts))
 
 
 async def _prepare_space_policies(
@@ -501,35 +515,55 @@ async def _prepare_space_policies(
     execution: AgentTaskExecution,
     stage: Path,
     found: SpaceProjects,
-) -> list[HiddenReadScope]:
-    """One project's read-hiding failure or conflict leaves that project out, not the turn."""
+    accesses: dict[str, ProviderGitAccess],
+) -> dict[str, HiddenReadScope]:
+    """Each writer's read-hiding policy; one project's failure leaves that project out.
+
+    A project's policy is prepared with only its own Git transport. Shared
+    preparation answers most failures with the unhidden fallback; that, or a policy
+    that cannot join the others, excludes the project instead of widening the turn.
+    """
     from rcp.agents.hidden_read import HiddenFolderRejected
     from rcp.runs.shared import _prepare_hidden_read_scope
     from rcp.transport import StateUnavailable
 
-    policies = [default_space_hidden_read_scope(owner, request, stage, execution)]
-    for project in list(found.writers):
-        try:
-            policy = await _prepare_hidden_read_scope(
-                project.service,
-                request.model_copy(update={"run_on": project.scope.execution_machine}),
-                workspace=stage,
-                remote_stage=None,
-                execution=execution,
-                capability="work_auto",
-                data_dir=data_dir,
-                local_stage=stage,
-            )
-        except (HiddenFolderRejected, OSError, StateUnavailable):
-            found.exclude(project.project_id, "hidden_read_failed")
-            continue
-        try:
-            merge_space_hidden_read_scopes([*policies, policy])
-        except ValueError:
-            found.exclude(project.project_id, "policy_conflict")
-            continue
-        policies.append(policy)
+    base = default_space_hidden_read_scope(owner, request, stage, execution)
+    policies: dict[str, HiddenReadScope] = {}
+    try:
+        for project in list(found.writers):
+            execution.git_access = accesses.get(project.project_id)
+            try:
+                policy = await _prepare_hidden_read_scope(
+                    project.service,
+                    request.model_copy(update={"run_on": project.scope.execution_machine}),
+                    workspace=stage,
+                    remote_stage=None,
+                    execution=execution,
+                    capability="work_auto",
+                    data_dir=data_dir,
+                    local_stage=stage,
+                )
+            except (HiddenFolderRejected, OSError, StateUnavailable) as exc:
+                found.exclude(project.project_id, "hidden_read_failed", exc)
+                continue
+            if _fell_back_unhidden(policy, base):
+                found.exclude(project.project_id, "hidden_read_failed", "wrapper_unavailable")
+                continue
+            try:
+                merge_space_hidden_read_scopes([base, *policies.values(), policy])
+            except ValueError as exc:
+                found.exclude(project.project_id, "policy_conflict", exc)
+                continue
+            policies[project.project_id] = policy
+    finally:
+        execution.git_access = None
     return policies
+
+
+def _fell_back_unhidden(policy: HiddenReadScope, base: HiddenReadScope) -> bool:
+    """Whether preparation returned the unhidden fallback the account policy did not."""
+    fallback = "wrapper_unavailable"
+    return fallback in policy.enforcement.reasons and fallback not in base.enforcement.reasons
 
 
 def _space_seed(request: RunRequest, prior: ChatTranscript | None) -> str:
@@ -684,6 +718,7 @@ def _with_master_values(fixed: str, values: dict[str, object]) -> str:
 def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
     """The Space contract that holds for a whole native session, without its values."""
     from rcp.agents.artifact_contract import artifact_contract
+    from rcp.agents.prompts import write_scope_section
     from rcp.runs.agent_thread_commands import space_command_usages
     from rcp.turn_outcomes import work_turn_outcome_contract
 
@@ -697,7 +732,7 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
         render_agent_graph_authority_contract(),
         f"Top-level command client: `{stage / 'rcp'}`. Available commands:\n{usages}",
         space_limits_section(allowed_verbs, turn.scope, turn.found),
-        f"Space stage, writable: `{stage}`.",
+        write_scope_section(turn.scope),
         space_clients_section(turn.found, stage),
         f"Patch JSON schema: `{_stage_space_patch_schema(stage)}`.",
         work_turn_outcome_contract(str(stage / "outcome.json")),
@@ -749,7 +784,8 @@ def _stage_space_patch_schema(stage: Path) -> str:
 
 def _record_space_launch(turn: _SpaceTurn, prompt: str) -> None:
     store, operation_id = turn.owner.store, turn.execution.operation_id
-    # Seeded private history is persisted only in the task record, never a stage file.
+    # The prompt is the task record. Its history seed is only a pointer to a file in
+    # this thread's own private stage, which only the owner's turns read.
     if store.agent_task_contract(operation_id, "chat_turn") is None:
         store.record_agent_task_contract(
             operation_id, "chat_turn", prompt, hashlib.sha256(prompt.encode()).hexdigest()
@@ -861,7 +897,6 @@ def _previous_space_results(
     return results if isinstance(results, dict) and results else None
 
 
-# Verbs that start project lifecycles; a Space turn that lacks them routes that work.
 def space_limits_section(
     allowed_verbs: frozenset[str], scope: CompositeWriteScope, found: SpaceProjects
 ) -> str:
@@ -880,46 +915,38 @@ def space_limits_section(
     ]
     if not scope.memory_roots:
         lines.append("No memory folder is writable here; memory is per project.")
-    if "handoff" in allowed_verbs:
-        lines.append(
-            "Work that needs a command this turn lacks, a project memory note, or a change "
-            "the graph authority contract withholds from agents belongs to that project's own "
-            "thread. Do not tell the member it is theirs to do. Hand it off with `handoff`, "
-            "naming the project, the node ids and exactly what to run or change. The project "
-            "thread runs what its commands allow and raises an approval card for what needs "
-            "the member. Its answer comes back here when the handoff settles; relay it. Only "
-            "the member's own tap on an approval card is theirs."
-        )
-    else:
-        lines.append(
-            "Work that needs a command this turn lacks belongs to that project's own thread; "
-            "ask the member to open it there."
-        )
+    lines.append(
+        "Work that needs a command this turn lacks, a project memory note, or a change "
+        "the graph authority contract withholds from agents belongs to that project's own "
+        "thread. Do not tell the member it is theirs to do. Hand it off with `handoff`, "
+        "naming the project, the node ids and exactly what to run or change. The project "
+        "thread runs what its commands allow and raises an approval card for what needs "
+        "the member. Its answer comes back here when the handoff settles; relay it. Only "
+        "the member's own tap on an approval card is theirs."
+    )
     return "What this turn routes elsewhere:\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def space_clients_section(found: SpaceProjects, stage: Path) -> str:
     """Each member project's client and grant, rendered from the objects that enforce them."""
-    from rcp.agents.prompts import write_scope_section
-    from rcp.runs.space_projects import SpaceProjectTurn
 
-    parts = []
-    for client in found.clients:
-        path = str(stage / "projects" / client.project_id / "rcp")
-        if isinstance(client, SpaceProjectTurn):
-            parts.append(
-                f"### {client.name} (`{client.project_id}`): writable\n"
-                f"Patch: `{client.patch_path}`. Its context is under "
-                f"`projects.{client.project_id}` in the current values. Client commands:\n"
-                f"{client.usage(path)}\n" + write_scope_section(client.scope).strip()
-            )
-        else:
-            exclusion = found.excluded[client.project_id]
-            parts.append(
-                f"### {client.name} (`{client.project_id}`): {exclusion['text']}\n"
-                f"Read-only client commands:\n{client.usage(path)}"
-            )
-    if found.excluded.keys() - {client.project_id for client in found.readers}:
+    def client(project_id: str) -> str:
+        return str(stage / "projects" / project_id / "rcp")
+
+    parts = [
+        f"### {project.name} (`{project.project_id}`): writable\n"
+        f"Patch: `{project.patch_path}`. Its context is under "
+        f"`projects.{project.project_id}` in the current values. Client commands:\n"
+        + project.usage(client(project.project_id))
+        for project in found.writers
+    ]
+    parts += [
+        f"### {reader.name} (`{reader.project_id}`): "
+        f"{found.excluded[reader.project_id]['text']}\n"
+        f"Read-only client commands:\n{reader.usage(client(reader.project_id))}"
+        for reader in found.readers
+    ]
+    if found.unreachable:
         parts.append("Projects under `unreachable` in the current values need `handoff`.")
     return "## Member projects\n\n" + "\n\n".join(parts) if parts else ""
 
@@ -928,7 +955,6 @@ def space_master_values(found: SpaceProjects, request: RunRequest) -> dict[str, 
     """The per-project values a turn may change; a continuation sends only the change."""
     from rcp.runs.chat import chat_prompt_values
 
-    readers = {client.project_id for client in found.readers}
     return {
         "projects": {
             project.project_id: chat_prompt_values(
@@ -944,11 +970,7 @@ def space_master_values(found: SpaceProjects, request: RunRequest) -> dict[str, 
             )
             for project in found.writers
         },
-        "unreachable": {
-            project_id: {"name": found.names.get(project_id, project_id), **exclusion}
-            for project_id, exclusion in found.excluded.items()
-            if project_id not in readers
-        },
+        "unreachable": found.unreachable,
     }
 
 

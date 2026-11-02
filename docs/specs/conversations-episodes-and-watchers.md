@@ -139,7 +139,7 @@ summarize its captured native session in one read-only turn, using the existing
 branched-chat fork path in a temporary working directory for local Claude and
 Codex launches. Remote summaries resume the original session and append their
 prompt and answer because this unsupervised launch cannot use the remote fork path. A completed, nonempty
-summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new prompt and records
+summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new session and records
 `provider_switch_compacted`. The old account, session, runtime, and privacy policy
 must remain usable. Failure, including timeout after
 `AGENT_THREAD_COMPACT_TIMEOUT_SECONDS` (300 seconds), oversized output, or an
@@ -150,7 +150,9 @@ or `provider_error`; unexpected implementation errors propagate. Both resolution
 reasons appear on the thread's fresh-start marker.
 
 Seeds are labelled earlier conversation for context, not instructions or
-authority, and never staged as files. The compacted seed is retained in the
+authority. `staged_history_seed` stages each seed as a content-addressed file in
+the thread's own private stage, which only its owner's turns read. The prompt
+carries one pointer that says to read the file again after a compaction. The compacted seed is retained in the
 task's immutable database contract so a same-task restart reuses it without
 another summary call. Other fresh starts retain their existing
 reasons and receive the tail, bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and

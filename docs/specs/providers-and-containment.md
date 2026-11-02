@@ -1808,10 +1808,19 @@ project whose state is remote without contacting it. A project whose state is
 local but whose base machine is remote gets a read-only client. Each project left
 out carries a code and a short line from `SPACE_EXCLUSIONS` in
 [space_projects.py](../../src/rcp/runs/space_projects.py). Raw errors stay in the
-`space_project_not_admitted` receipt. A project whose Git transport or read-hiding
-policy cannot be prepared, or cannot join the merged policy, is left out the same
-way. It does not fail the turn. Admission binds the remaining writers only after
-that preparation. The prompt lists every member project with its client, or with
+`space_project_not_admitted` receipt, which every exclusion writes. A project is
+left out the same way, without failing the turn, in three cases:
+- its Git transport cannot be prepared;
+- its read-hiding policy is rejected, or preparation returns the
+  `wrapper_unavailable` fallback that the account policy lacks;
+- its policy cannot join the merged policy.
+
+Shared preparation turns most errors into that fallback. Space treats it as that
+project's failure, so it never widens the whole turn. Each
+project's policy is prepared with only its own Git transport. Admission binds the
+remaining writers only after that preparation. The turn's Git access is then the
+union of the bound writers' transports, so an excluded project's checkouts never
+reach the provider. The prompt lists every member project with its client, or with
 its reason and `handoff` as the next step. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
@@ -1823,7 +1832,8 @@ change the thread's native-session identity.
 
 The top-level client grants `projects`, `handoff` and `schedule`; it has no
 `ask`. Each project client has its own authenticated mailbox. It grants its
-`GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. The
+`GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. Only
+a writer posts to the Bulletin; a read-only client reads it. The
 mailbox allowlist, the handler guard and the rendered usage all read that one set.
 A Space turn has no project memory root. Native subagents remain permitted; MCP
 servers remain off. The prompt lists the protocol's mutating verbs that no client
@@ -1835,8 +1845,8 @@ grants allow and raises an approval card for what needs the member. The Space
 agent relays the answer when the handoff settles. Only the member's tap on a card
 is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
 from the same resolved verbs the handler enforces.
-The provider receives the union of project Git transports and read-hiding
-policies; the combined policy is installed before launch. Even a turn without
+The prompt renders one write boundary from the composite scope. The provider
+receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without
 local write projects retains the local account's default secret and private
 transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 `too_many_hidden_folders`.

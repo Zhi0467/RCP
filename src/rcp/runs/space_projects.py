@@ -7,7 +7,7 @@ import shutil
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandRequest, CommandResponse
@@ -15,7 +15,7 @@ from rcp.agents.context import ChatContext
 from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
 from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import render_graph_history
-from rcp.agents.staged_command_client import bulletin_usages
+from rcp.agents.staged_command_client import BULLETIN_ARTIFACT, BULLETIN_READ, bulletin_usages
 from rcp.agents.write_scope import (
     CompositeWriteScope,
     ProjectWriteScope,
@@ -31,6 +31,7 @@ from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import PatchValidationResult
 from rcp.runs.tasks.compute_commands import compute_recovery_lineage
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.storage import AppStore
 from rcp.transport import RunLockCancelled, StateUnavailable
 
 if TYPE_CHECKING:
@@ -66,9 +67,15 @@ class SpaceProjectClient:
     service: ProjectService
     operation_id: str
     read_scope: GraphReadScope
+    # Only a writer posts; a reader reads the Bulletin, as `handle_bulletin` enforces.
+    posts: ClassVar[bool] = False
 
     def _forms(self) -> dict[str, tuple[str, ...]]:
-        return {"bulletin": bulletin_usages(turn_artifacts=False)}
+        forms = bulletin_usages(turn_artifacts=False)
+        if not self.posts:
+            reads = (BULLETIN_READ[1], BULLETIN_ARTIFACT[1])
+            forms = tuple(form for form in forms if form.split()[1] in reads)
+        return {"bulletin": forms}
 
     @property
     def verbs(self) -> frozenset[str]:
@@ -96,7 +103,7 @@ class SpaceProjectClient:
                 self.service.paper.store,
                 self.operation_id,
                 request,
-                post_allowed=True,
+                post_allowed=self.posts,
                 turn_artifacts=False,
                 project_id=self.project_id,
             )
@@ -108,6 +115,7 @@ class SpaceProjectTurn(SpaceProjectClient):
     context: ChatContext
     scope: ProjectWriteScope
     turn_id: str
+    posts: ClassVar[bool] = True
 
     def _forms(self) -> dict[str, tuple[str, ...]]:
         return {**super()._forms(), "validate": (f"validate {self.patch_path}",)}
@@ -147,18 +155,38 @@ class SpaceProjectTurn(SpaceProjectClient):
 class SpaceProjects:
     """One turn's member projects: writers, read-only clients, and the rest with a reason."""
 
+    store: AppStore
+    operation_id: str
     writers: list[SpaceProjectTurn] = field(default_factory=list)
     readers: list[SpaceProjectClient] = field(default_factory=list)
+    # Every member project this turn cannot write, readers included, by id.
     excluded: dict[str, dict[str, str]] = field(default_factory=dict)
+    # The excluded projects with no client at all; the prompt names them for handoff.
+    unreachable: dict[str, dict[str, str]] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)
 
     @property
     def clients(self) -> list[SpaceProjectClient]:
         return sorted([*self.writers, *self.readers], key=lambda item: item.project_id)
 
-    def exclude(self, project_id: str, code: str) -> None:
+    def exclude(
+        self, project_id: str, code: str, cause: object = None, *, readable: bool = False
+    ) -> None:
+        """Leave a project out of writing, with its code for the agent and cause on record."""
         self.writers = [item for item in self.writers if item.project_id != project_id]
-        self.excluded[project_id] = space_exclusion(code)
+        exclusion = space_exclusion(code)
+        self.excluded[project_id] = exclusion
+        if not readable:
+            self.unreachable[project_id] = {
+                "name": self.names.get(project_id, project_id),
+                **exclusion,
+            }
+        receipt: dict[str, object] = {"project_id": project_id, **exclusion}
+        if cause is not None:
+            receipt["reason"] = str(cause) or type(cause).__name__
+        self.store.record_agent_task_receipt(
+            self.operation_id, "space_project_not_admitted", receipt
+        )
 
 
 def _exclusion_code(exc: Exception) -> str:
@@ -179,7 +207,7 @@ def prepare_space_projects(
     Nothing is bound here, so the launch can still drop a project whose read-hiding
     or Git preparation fails before ``bind_space_projects`` records the set.
     """
-    found = SpaceProjects()
+    found = SpaceProjects(owner.store, execution.operation_id)
     turn_id = compute_recovery_lineage(
         owner.store, execution.operation_id, continuation=execution.continuation
     )[-1]
@@ -191,7 +219,7 @@ def prepare_space_projects(
             found.names[project_id] = record.name
             if record.state_remote:
                 # Skipped without contacting its state host.
-                found.excluded[project_id] = space_exclusion("state_elsewhere")
+                found.exclude(project_id, "state_elsewhere")
                 continue
             owner.store.require_project_accepts_new_work(project_id)
             service = owner.catalog.open_execution(project_id)
@@ -205,7 +233,7 @@ def prepare_space_projects(
                         project_id, record.name, service, execution.operation_id, read_scope
                     )
                 )
-                found.excluded[project_id] = space_exclusion("base_remote")
+                found.exclude(project_id, "base_remote", readable=True)
                 continue
             truth = write_repositories(service.history.state())
             context = service.assemble_chat(
@@ -238,12 +266,7 @@ def prepare_space_projects(
                 )
             )
         except (KeyError, OSError, ValueError, StateUnavailable, ReplayHalted) as exc:
-            found.excluded[project_id] = space_exclusion(_exclusion_code(exc))
-            owner.store.record_agent_task_receipt(
-                execution.operation_id,
-                "space_project_not_admitted",
-                {"project_id": project_id, "reason": str(exc), **found.excluded[project_id]},
-            )
+            found.exclude(project_id, _exclusion_code(exc), exc)
     return found
 
 
@@ -275,7 +298,9 @@ def bind_space_projects(
                 values[:2],
             ).fetchone()
             if existing is not None and tuple(existing) != values:
-                found.exclude(project.project_id, "binding_changed")
+                found.exclude(
+                    project.project_id, "binding_changed", "Stored binding differs from this turn's"
+                )
                 continue
             connection.execute(
                 "INSERT OR IGNORE INTO space_turn_project_bindings VALUES(?,?,?,?,?)", values
@@ -422,14 +447,16 @@ def _sweep_space_stage(
     """Settle every output outside an admitted writer's Patch path."""
     results: dict[str, GraphUpdateResult] = {}
     admitted = {project.patch_path for project in found.writers}
-    known = {*found.excluded, *(project.project_id for project in found.writers)}
+    writer_ids = {project.project_id for project in found.writers}
     members = owner.store.member_project_ids(owner.thread.user_id)
     for path in _space_stage_outputs(stage):
         if path in admitted:
             continue
         project_id = path.parent.name if path.parent.parent == stage / "projects" else None
-        if project_id in members and project_id not in known:
-            found.excluded[project_id] = space_exclusion("added_after_start")
+        if project_id in members and project_id not in {*found.excluded, *writer_ids}:
+            record = owner.store.project(project_id)
+            found.names[project_id] = record.name if record is not None else project_id
+            found.exclude(project_id, "added_after_start")
         if path.name == "patch.json" and project_id in found.excluded:
             # A project left out of this turn, including a changed binding or one
             # added mid-turn, is a rejection the member and next turn can see.
