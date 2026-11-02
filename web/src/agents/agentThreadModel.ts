@@ -261,11 +261,6 @@ export function scheduleInstant(iso: string): string {
       });
 }
 
-/** The newest message time, which Mark read sends as `read_through`. */
-export function readThrough(messages: readonly ChatMessage[]): string | null {
-  return messages.at(-1)?.timestamp ?? null;
-}
-
 /** The operation the newest member message started, which is the thread's latest turn. */
 export function latestTurnId(messages: readonly ChatMessage[]): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {

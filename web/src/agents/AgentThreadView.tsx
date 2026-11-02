@@ -78,7 +78,6 @@ import {
   handoffReport,
   latestTurnId,
   oneShotPassed,
-  readThrough,
   scheduleInstant,
   scheduleLimits,
   scheduleWhen,
@@ -443,6 +442,8 @@ type LoadedThread = {
   messages: ChatMessage[];
   questions: AgentQuestion[];
   latest: AgentTask | null;
+  /** The finish of the thread's newest turn when this transcript was read. */
+  finishedAt: string | null;
 };
 
 type PendingThreadTurn = PendingAgentWindowTurn & {
@@ -657,6 +658,7 @@ export function AgentThreadView({
           messages: transcript.messages,
           questions: asked,
           latest: latestTask,
+          finishedAt: current.last_finished_at,
         }),
       );
       setFreshThreadId(current.thread_id);
@@ -724,8 +726,8 @@ export function AgentThreadView({
     };
   }, [messages, turnTasks, latestId]);
 
-  // Reading marks the open thread read through its own newest message, once it reloaded.
-  const newest = messages ? readThrough(messages) : null;
+  // Reading marks the thread read through the turn its reloaded transcript shows.
+  const newest = view?.finishedAt ?? null;
   useEffect(() => {
     if (!thread.unread || !newest || freshThreadId !== thread.thread_id) return;
     markThreadRead(thread.thread_id, newest).then(onThreadChanged, () => undefined);

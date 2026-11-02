@@ -36,6 +36,7 @@ const thread = (overrides) => ({
   project_name: "Project",
   agent_name: "Moss",
   unread: false,
+  last_finished_at: null,
   last_activity_at: null,
   live_state: "idle",
   browser_requested: true,

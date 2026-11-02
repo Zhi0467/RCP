@@ -218,14 +218,15 @@ class ApprovalCardStoreMixin(StoreMixinBase):
                 (question_id,),
             )
 
-    def interrupted_approval_cards(self) -> list[dict[str, Any]]:
-        """Claimed cards without a result: the process stopped during the action."""
+    def interrupted_approval_cards(self, claimed_before: str) -> list[dict[str, Any]]:
+        """Cards claimed before `claimed_before` without a result: their process stopped."""
         with self.connection() as connection:
             rows = connection.execute(
                 """SELECT c.question_id, c.action_json, c.request_id, t.user_id
                 FROM approval_cards c JOIN questions q ON q.question_id=c.question_id
                 LEFT JOIN agent_threads t ON t.thread_id=q.owner_id
-                WHERE c.running_since IS NOT NULL AND c.result_json IS NULL"""
+                WHERE c.running_since < ? AND c.result_json IS NULL""",
+                (claimed_before,),
             ).fetchall()
         return [
             {

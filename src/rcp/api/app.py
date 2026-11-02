@@ -393,6 +393,8 @@ def create_app(
             f"server maintenance {maintenance_identity.maintenance_id}"
         )
     store = AppStore(app_data / "rcp.sqlite3")
+    # Approval cards claimed before this instant belong to an earlier process.
+    process_started_at = store.now()
     space_id = store.space_id
     space_kind = store.space_kind
     control_server: ServerControlServer | None = None
@@ -2217,7 +2219,10 @@ def create_app(
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
                 await asyncio.to_thread(
-                    settle_interrupted_approval_cards, store, service_for=catalog.open
+                    settle_interrupted_approval_cards,
+                    store,
+                    service_for=catalog.open,
+                    claimed_before=process_started_at,
                 )
                 await asyncio.to_thread(store.expire_approval_cards)
                 await asyncio.to_thread(reconcile_question_answers)

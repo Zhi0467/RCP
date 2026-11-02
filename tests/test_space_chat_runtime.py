@@ -398,6 +398,29 @@ def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
     assert _space_seed(fresh, None) == ""
 
 
+def test_space_seed_cuts_an_oversized_newest_message_to_the_budget():
+    import json
+    from types import SimpleNamespace
+
+    from rcp.limits import AGENT_THREAD_TAIL_MAX_BYTES
+    from rcp.runs.space_chat import _space_seed
+    from rcp.service import RunRequest
+
+    # Quotes double under JSON escaping, so the cut must account for it.
+    newest = '"é' * AGENT_THREAD_TAIL_MAX_BYTES
+    prior = SimpleNamespace(
+        messages=[
+            SimpleNamespace(role="user", text="older"),
+            SimpleNamespace(role="assistant", text=newest),
+        ]
+    )
+    seed = _space_seed(RunRequest(message="m", mode="work"), prior)
+    (line,) = seed.splitlines()[1:]
+    kept = json.loads(line)
+    assert kept["truncated"] and newest.startswith(kept["text"]) and kept["text"]
+    assert len(line.encode()) + 1 <= AGENT_THREAD_TAIL_MAX_BYTES
+
+
 def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
     from types import SimpleNamespace
 
@@ -479,3 +502,79 @@ def test_a_retried_space_turn_records_the_members_message_once(manifest, tmp_pat
         ("user", "attempt-1"),
         ("assistant", "attempt-3"),
     ]
+
+
+def _space_owner_and_turn(app, store):
+    human = _authorizer(store)
+    thread = next(
+        item
+        for item in store.ensure_agent_threads(human.user_id, [], default_names=("Pip",))
+        if item.kind == "space"
+    )
+    request = _work_request().model_copy(update={"chat_id": thread.thread_id})
+    task = store.create_agent_task(
+        _task_record(
+            store.now(),
+            kind="space_chat",
+            status="running",
+            operation_id="steered",
+            project_id=store.space_id,
+            request=request.model_dump(mode="json"),
+            authorized_by=human,
+            dispatch_authority=_work_authority(request),
+        )
+    )
+    return SpaceThreadOwner(store, app.state.catalog, thread.thread_id), request, task
+
+
+def test_a_delivered_space_steer_keeps_its_final_receipt(manifest, tmp_path):
+    import uuid
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from rcp.providers import ProviderSteerReceipt
+    from rcp.runs.steering import _receipt, _record_steer, finish_chat_steer
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, request, task = _space_owner_and_turn(app, store)
+    stored = _record_steer(
+        owner,
+        request,
+        task,
+        message_id=str(uuid.uuid4()),
+        text="Change course",
+        receipt=_receipt(1, "turn", "unknown", "Waiting for the provider."),
+    )
+    delivered: Future[ProviderSteerReceipt] = Future()
+    delivered.set_result(ProviderSteerReceipt("delivered"))
+    background = cast(Any, SimpleNamespace(bump_steer_revision=lambda _operation_id: None))
+    for _ in range(2):  # A repeated final receipt is written once.
+        finish_chat_steer(owner, background, task, (stored, delivered))
+    transcript = read_space_chat_transcript(
+        tmp_path / "data", owner.thread.user_id, owner.thread_id
+    )
+    assert transcript is not None
+    (steer,) = [item for item in transcript.messages if item.steering is not None]
+    assert steer.steering is not None and steer.steering.status == "delivered"
+
+
+def test_a_crash_cut_last_line_never_locks_the_space_thread(manifest, tmp_path):
+    from rcp.runs.space_chat import append_space_message
+    from rcp.service import canonical_space_chat_path
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, request, task = _space_owner_and_turn(app, store)
+    thread = owner.thread
+    append_space_message(owner, request, task.operation_id, role="user", text="Hello")
+    path = canonical_space_chat_path(tmp_path / "data", thread.user_id, thread.thread_id)
+    with path.open("ab") as handle:
+        handle.write(b'{"sessionId": "\xc3')  # A write cut mid-record and mid-character.
+    transcript = read_space_chat_transcript(tmp_path / "data", thread.user_id, thread.thread_id)
+    assert transcript is not None and [item.text for item in transcript.messages] == ["Hello"]
+    append_space_message(owner, request, task.operation_id, role="assistant", text="Hi")
+    transcript = read_space_chat_transcript(tmp_path / "data", thread.user_id, thread.thread_id)
+    assert transcript is not None
+    assert [item.text for item in transcript.messages] == ["Hello", "Hi"]

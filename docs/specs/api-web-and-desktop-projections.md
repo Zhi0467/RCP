@@ -2257,12 +2257,15 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 
 `GET /api/agent-threads` returns the acting member's lazily created Space and
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
-`agent_name`, `unread`, `last_activity_at`, `live_state`,
+`agent_name`, `unread`, `last_finished_at`, `last_activity_at`, `live_state`,
 `latest_operation_id`, `browser_requested` and `capabilities`. The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused or `needs_you` (an open question or card). `latest_operation_id` names
 the newest visible turn, so a view can follow a project turn whose member
-message reaches the transcript only when it settles. Threads of projects the
+message reaches the transcript only when it settles. `unread` compares the
+newest turn's finish, `last_finished_at`, with the member's read marker. Messages
+carry earlier times than their turn's finish, so the view marks read through the
+`last_finished_at` of the listing its transcript was loaded with. Threads of projects the
 member left are closed and omitted; listing reopens every other thread.
 `capabilities` lists one member-facing line per capability of the thread kind,
 from the record of each verb its turns can be granted: the Space handler's verb
@@ -2293,7 +2296,9 @@ refuses, such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.
 Its task reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
-and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Project chat routes enforce the same ownership, including
+and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Resume and
+Retry honor the `Idempotency-Key` the same way and return the task the first
+request started. Project chat routes enforce the same ownership, including
 empty threads before their first turn. Task and question detail/control routes
 return 404 for another member's private thread; lists filter before pagination.
 Chat display and read projections also exclude other members' private ids.

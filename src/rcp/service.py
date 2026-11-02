@@ -498,49 +498,53 @@ def canonical_space_chat_path(data_dir: Path, user_id: str, chat_id: str) -> Pat
     return data_dir / "agent-threads" / user_id / f"{chat_id}.jsonl"
 
 
-def read_space_chat_transcript(
-    data_dir: Path, user_id: str, chat_id: str, *, title: str = "Agent"
-) -> ChatTranscript | None:
-    """Read only an owner-bound Space file, never a project or relocated transcript.
+def read_space_chat_records(data_dir: Path, user_id: str, chat_id: str) -> list[_StoredChatRecord]:
+    """The one Space transcript reader, with steering receipts folded.
 
     A missing file is an empty thread. An unreadable or mislabeled one raises
-    the voice reader's typed errors rather than reading as empty history.
+    typed errors rather than reading as empty history.
     """
     from rcp.service_connections import ConnectionError
 
     try:
-        return _read_space_chat_transcript(data_dir, user_id, chat_id, title=title)
+        path = canonical_space_chat_path(data_dir, user_id, chat_id)
+        with os.fdopen(open_space_transcript(path, os.O_RDONLY), "rb") as handle:
+            records, _complete = parse_space_records(handle.read(), user_id, chat_id)
+        return _fold_chat_receipts(records)
     except FileNotFoundError:
-        return None
+        return []
     except (TypeError, ValueError):
         raise ConnectionError("thread_transcript_invalid", 409) from None
     except OSError:
         raise ConnectionError("thread_transcript_unavailable", 503) from None
 
 
-def _read_space_chat_transcript(
-    data_dir: Path, user_id: str, chat_id: str, *, title: str
-) -> ChatTranscript | None:
-    path = canonical_space_chat_path(data_dir, user_id, chat_id)
+def open_space_transcript(path: Path, flags: int) -> int:
+    """Open the canonical file only, never through a link or a non-regular file."""
     for directory in (path.parent.parent, path.parent):
         if not stat.S_ISDIR(directory.lstat().st_mode):
             raise ValueError("Space transcript directory is unsafe")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise ValueError("Space transcript is not a regular file")
-        with os.fdopen(descriptor, encoding="utf-8") as handle:
-            descriptor = -1
-            records = [
-                _StoredChatRecord.model_validate_json(line)
-                for line in handle.read().split("\n")
-                if line.strip()
-            ]
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if not records:
-        return None
+    descriptor = os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError("Space transcript is not a regular file")
+    return descriptor
+
+
+def parse_space_records(
+    data: bytes, user_id: str, chat_id: str
+) -> tuple[list[_StoredChatRecord], int]:
+    """The unfolded records of the complete lines, and those lines' byte length.
+
+    Every record ends with a newline, so bytes after the last one are a write a
+    crash cut short. They are no record, and the next append replaces them.
+    """
+    complete = data[: data.rfind(b"\n") + 1]
+    records = [
+        _StoredChatRecord.model_validate_json(line)
+        for line in complete.decode("utf-8").split("\n")
+        if line.strip()
+    ]
     for record in records:
         if (
             record.chat_scope != "space"
@@ -556,7 +560,16 @@ def _read_space_chat_transcript(
             )
         ):
             raise ValueError("Space transcript record does not belong to its thread")
-    records = _fold_chat_receipts(records)
+    return records, len(complete)
+
+
+def read_space_chat_transcript(
+    data_dir: Path, user_id: str, chat_id: str, *, title: str = "Agent"
+) -> ChatTranscript | None:
+    """Read only an owner-bound Space file, never a project or relocated transcript."""
+    records = read_space_chat_records(data_dir, user_id, chat_id)
+    if not records:
+        return None
     messages = [_chat_message_from_record(record) for record in records]
     preview = next((message.text for message in reversed(messages) if message.text.strip()), "")
     return ChatTranscript(

@@ -32,6 +32,7 @@ from rcp.service import (
     _fold_chat_receipts,
     _StoredChatRecord,
     canonical_space_chat_path,
+    read_space_chat_records,
 )
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_models import QuestionRecord
@@ -112,7 +113,12 @@ def _message(record: _StoredChatRecord) -> ChatMessage:
     )
 
 
-def _chat_records(path: Path) -> list[_StoredChatRecord]:
+def _chat_records(
+    service: ProjectService | SpaceThreadOwner, path: Path
+) -> list[_StoredChatRecord]:
+    if isinstance(service, SpaceThreadOwner):
+        thread = service.thread
+        return read_space_chat_records(service.catalog.data_dir, thread.user_id, thread.thread_id)
     if not path.exists():
         return []
     return _fold_chat_receipts(
@@ -152,7 +158,13 @@ def _append_steering_records(
             {key: value for key, value in record.items() if key not in {"nodeId", "graphTarget"}}
             for record in records
         ]
-        append_space_records(service, records, reserve_prompt=reserve_prompt)
+        append_space_records(
+            service.store,
+            service.catalog.data_dir,
+            service.thread,
+            records,
+            reserve_prompt=reserve_prompt,
+        )
     else:
         _append_chat_records(service, path, records, reserve_prompt=reserve_prompt)
 
@@ -173,7 +185,7 @@ def _record_steer(
     prompt is recorded.
     """
     path = _steering_path(service, request)
-    records = _chat_records(path)
+    records = _chat_records(service, path)
     existing = next((item for item in records if item.uuid == message_id), None)
     if existing is not None:
         return existing
@@ -255,7 +267,7 @@ def begin_chat_steer(
     request = load_stored_request(RunRequest, record.request, operation_id=record.operation_id)
     path = _steering_path(service, request)
     with _steering_transaction(service):
-        records = _chat_records(path)
+        records = _chat_records(service, path)
         existing = next((item for item in records if item.uuid == message_id), None)
         if existing is not None:
             if (

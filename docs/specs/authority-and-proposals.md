@@ -329,8 +329,9 @@ Episode start, branch merge and episode merge pass it to their native request-id
 admission. Episode merge compares the pinned source head again under its admission lock,
 before reconciliation or merge writes.
 Sync and repository membership have no request-id argument; the durable card
-claim supplies their single-use execution identity. At startup a claimed card
-without a result is never rerun. It settles as approved when its effect exists:
+claim supplies their single-use execution identity. At startup a card claimed
+before this process started and still without a result is never rerun. Claims
+made after the start belong to live taps, which settle their own cards. It settles as approved when its effect exists:
 the request id's episode-start, branch-merge task or accepted episode-merge
 receipt, the Proposal's decided status, or the repository's requested truth
 membership. Otherwise it fails as interrupted. When the graph cannot be read,

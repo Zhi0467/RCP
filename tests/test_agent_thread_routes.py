@@ -178,6 +178,44 @@ def test_private_reply_notification_is_unread_and_owner_bound(manifest, tmp_path
         }
 
 
+def test_mark_read_through_the_reported_finish_clears_unread(manifest, tmp_path):
+    from datetime import datetime, timedelta
+
+    from rcp.storage import AgentTaskRecord
+    from tests.helpers import authorized_human
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        row = client.get("/api/agent-threads").json()["threads"][0]
+        started = datetime.fromisoformat(store.now())
+        # The turn's messages carry its creation time; it finishes later.
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id="space-reply",
+                project_id=store.space_id,
+                kind="space_chat",
+                status="succeeded",
+                status_message="Done",
+                created_at=started.isoformat(),
+                updated_at=started.isoformat(),
+                finished_at=(started + timedelta(seconds=30)).isoformat(),
+                request={"chat_id": row["thread_id"], "chat_scope": "project", "mode": "work"},
+                authorized_by=authorized_human(store),
+            )
+        )
+        base = "/api/agent-threads/" + row["thread_id"]
+        (unread,) = [
+            item
+            for item in client.get("/api/agent-threads").json()["threads"]
+            if item["thread_id"] == row["thread_id"]
+        ]
+        assert unread["unread"]
+        read = client.post(base + "/read", json={"read_through": unread["last_finished_at"]})
+        assert read.status_code == 200, read.text
+        assert not read.json()["unread"]
+
+
 def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
     from typing import cast
 
@@ -287,6 +325,32 @@ def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
         # The row names the turn before its member message reaches the transcript.
         rows = client.get("/api/agent-threads").json()["threads"]
         assert rows[0]["latest_operation_id"] == task.operation_id
+
+
+@pytest.mark.parametrize("action", ["retry", "resume"])
+def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monkeypatch, action):
+    import uuid
+
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    # Resume's own checkpoint rules are not under test; both share one admission.
+    monkeypatch.setattr(tasks, "resume", tasks.retry)
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][0]
+        base = "/api/agent-threads/" + thread["thread_id"]
+        sent = client.post(base + "/turns", json={"message": "hello", "timezone": "UTC"})
+        operation_id = sent.json()["operation_id"]
+        tasks.store.fail_agent_task(operation_id, "try again")
+        headers = {"Idempotency-Key": str(uuid.uuid4())}
+        url = f"{base}/tasks/{operation_id}/{action}"
+        first = client.post(url, headers=headers, json={})
+        assert first.status_code == 202, first.text
+        again = client.post(url, headers=headers, json={})
+        assert again.status_code == 202, again.text
+        assert again.json()["operation_id"] == first.json()["operation_id"]
 
 
 def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monkeypatch):
