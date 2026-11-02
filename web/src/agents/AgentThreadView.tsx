@@ -647,7 +647,6 @@ export function AgentThreadView({
     onRefreshTask: refreshTask,
     setSubmitError,
     repositories: snapshot?.repositories ?? [],
-    inlineArtifactRefreshToken: lines.inlineArtifactRefreshToken,
   });
   const artifactContext = thread.project_id ? stagedArtifactContext(comments.annotations) : null;
   const draftSendable = useComposerDraft(draft, (text) =>

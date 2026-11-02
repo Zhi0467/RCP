@@ -508,7 +508,10 @@ def remove_project_machine(
     *,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    """Drop a machine no repository or agent profile uses; its space card stays."""
+    """Drop a machine no repository lives on; agent profiles on it move to the base machine.
+
+    Its space card stays.
+    """
 
     with MACHINE_ATTACHMENT_LOCK:
         return detach_project_machine(project_display_cache, project_id, machine_alias)

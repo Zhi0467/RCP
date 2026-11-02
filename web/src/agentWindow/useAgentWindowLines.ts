@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import {
   chatTasksMissingFromHistory,
-  isActiveTask,
   orderTranscriptLines,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
@@ -97,20 +96,11 @@ export function useAgentWindowLines({
       if (line.role === "agent" && line.graphUpdate) latest.set(line.taskId, line.lineId);
     return new Set(latest.values());
   }, [transcript]);
-  const inlineArtifactRefreshToken = useMemo(
-    () =>
-      tasks
-        .filter((task) => !isActiveTask(task))
-        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
-        .join("|"),
-    [tasks],
-  );
   return {
     transcript,
     statusTasks,
     compactionByLine,
     continuedTaskIds,
     latestGraphReceiptLineIds,
-    inlineArtifactRefreshToken,
   };
 }
