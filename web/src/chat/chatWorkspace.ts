@@ -585,6 +585,33 @@ export function latestConversation(
   );
 }
 
+/** All conversation entry points exclude archived chats before considering reuse. */
+export function pickOrCreateConversation(
+  conversations: ChatConversation[],
+  archivedIds: readonly string[],
+  kind: ChatKind,
+  nodeId: string | null,
+  create: () => string,
+  {
+    reuse = "latest",
+    graphTarget = MAIN_GRAPH,
+  }: {
+    reuse?: "latest" | "draft";
+    graphTarget?: GraphTargetRef;
+  } = {},
+): string {
+  const archived = new Set(archivedIds);
+  const available = conversations.filter(
+    (conversation) =>
+      !archived.has(conversation.chatId) && sameGraphTarget(conversation.graphTarget, graphTarget),
+  );
+  const selected =
+    reuse === "draft"
+      ? unsentConversation(available, kind, nodeId)
+      : latestConversation(available, kind, nodeId, graphTarget);
+  return selected?.chatId ?? create();
+}
+
 export function listedAgentConversations(
   conversations: ChatConversation[],
   graphTarget: GraphTargetRef,

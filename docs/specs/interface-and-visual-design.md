@@ -278,7 +278,12 @@ Cards have fixed size, one-line title, and secondary metadata. Their menus remov
 unsent drafts or rename, pin, or archive chats. Rename is inline.
 A blank name keeps the current name.
 Archived counts include unloaded chats and offer Restore.
-An archived composer shows only Restore. Revisits retain loaded rows until refresh.
+The shared chat shows only Restore in place of an archived composer's controls,
+including floating node chats, Auto-research orchestrators, and Experiment run
+conversations. It cannot send until restored. Conversation selection for node
+Ask and New session skips archived conversations, including archived drafts;
+when no eligible chat remains, it creates a fresh one. Revisits retain
+loaded rows until refresh.
 Display ownership and admission follow
 [Agents](api-web-and-desktop-projections.md#agents).
 Use the shipped provider logos, with Claude in orange and others in monochrome.
@@ -317,6 +322,7 @@ Clicking a card opens chat with the list folded and the composer focused.
 Mouse dragging, Alt+Up, or Alt+Down reorders cards within columns, with pins first.
 The order is stored per project in the browser.
 Cross-column moves only archive or restore eligible chats.
+Dragging an unsent draft to Archived removes it, matching its Remove action.
 Working chats cannot be archived.
 Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.

@@ -138,7 +138,7 @@ import {
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
-  unsentConversation,
+  pickOrCreateConversation,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chat/chatWorkspace";
@@ -158,6 +158,7 @@ import {
   refreshEdge,
   refreshProposal,
   sendEpisodeMessage,
+  setChatArchived,
   startEpisode,
   startExperimentRun,
   stopEpisode,
@@ -3060,6 +3061,14 @@ function MemberApp({
     }),
     [loadWebMcpEpisode, loadWebMcpTask, loadWebMcpSavedArtifacts],
   );
+  const restoreConversation = async (chatId: string) => {
+    try {
+      await setChatArchived(apiBase, chatId, false);
+      await refreshChatReads();
+    } catch (error) {
+      reportErrorNotice(errorMessage(error));
+    }
+  };
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
       if (!project) throw new Error("No RCP project is open.");
@@ -4654,6 +4663,8 @@ function MemberApp({
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
           agentSetup={chatTranscripts.get(selectedExperimentChatId)?.agent_setup}
           chatId={selectedExperimentChatId}
+          archived={chatReads?.archived.includes(selectedExperimentChatId)}
+          onRestore={() => void restoreConversation(selectedExperimentChatId)}
           presentation="workspace"
           fixedConversation
           readOnly={selectedExperimentUsesIndex}
@@ -5733,8 +5744,14 @@ function MemberApp({
                       ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                       : null;
                     selectChat(
-                      unsentConversation(conversations, conversation.kind, conversation.nodeId)
-                        ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                      pickOrCreateConversation(
+                        conversations,
+                        chatReads?.archived ?? [],
+                        conversation.kind,
+                        conversation.nodeId,
+                        () => startConversation(conversation.kind, node, project.name),
+                        { reuse: "draft", graphTarget },
+                      ),
                     );
                   }}
                 />
@@ -5922,6 +5939,8 @@ function MemberApp({
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
               agentSetup={chatTranscripts.get(floatingChat.chatId)?.agent_setup}
               chatId={floatingChat.chatId}
+              archived={chatReads?.archived.includes(floatingChat.chatId)}
+              onRestore={() => void restoreConversation(floatingChat.chatId)}
               presentation="floating"
               graphChangesDisabled={mutationsDisabled}
               onStartTask={startAgentTask}
@@ -5938,9 +5957,14 @@ function MemberApp({
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId =
-                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
-                  startConversation("node_chat", node, project.name);
+                const chatId = pickOrCreateConversation(
+                  conversations,
+                  chatReads?.archived ?? [],
+                  "node_chat",
+                  floatingChat.nodeId,
+                  () => startConversation("node_chat", node, project.name),
+                  { reuse: "draft", graphTarget },
+                );
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}
