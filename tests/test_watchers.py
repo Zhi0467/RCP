@@ -2208,3 +2208,64 @@ def test_poller_isolates_completion_callback_failures_between_groups(store) -> N
     WatcherPoller(store, on_completed=callback).poll_once()
 
     assert called == ["first", "second"]
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_quiet_chat_keeps_no_armed_watchers_and_refuses_wake(store, closed):
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    previous = _completed_chat_turn(store, "before", "session")
+    store.create_watchers([_record("done", origin=previous.operation_id, status="completed")])
+    if closed:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+                "VALUES('chat','member','project','project',?)",
+                (store.now(),),
+            )
+        store.close_agent_thread("chat", reason="access_lost")
+    else:
+        # Archive would strand the armed watcher's wake, so it is refused.
+        with pytest.raises(AgentTaskAdmissionConflict, match="chat_has_live_work"):
+            store.set_chat_archived("project", "chat", "member", archived=True)
+        assert not store.chat_archived("project", "chat")
+        store.stop_watchers("project", ["done"])
+        store.set_chat_archived("project", "chat", "member", archived=True)
+    assert store.watcher("done").status == "stopped"
+    # A late completion cannot bypass the same admission rule.
+    store.create_watchers([_record("late", origin=previous.operation_id, status="completed")])
+    assert store.create_watcher_notification_task(_task(store, "wake", ["late"]), ["late"]) is None
+    assert store.agent_task("wake") is None
+
+
+def test_orchestrator_archive_waits_for_only_its_chain_watchers(store):
+    from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
+
+    for episode_id, parent in [("root", None), ("continuation", "root"), ("unrelated", None)]:
+        # Old records can share main; graph target equality is not chat identity.
+        with store.connection() as connection:
+            store._insert_episode(
+                connection,
+                EpisodeRecord(
+                    episode_id=episode_id,
+                    project_id="project",
+                    mode="auto_research",
+                    root_operation_id=episode_id + "-actor",
+                    continues_episode_id=parent,
+                    status="completed",
+                    invocation_ceiling=3,
+                    created_at=store.now(),
+                    updated_at=store.now(),
+                ),
+            )
+        store.create_watchers(
+            [_record(episode_id).model_copy(update={"chat_id": episode_id + "-actor"})]
+        )
+    with pytest.raises(AgentTaskAdmissionConflict):
+        store.set_chat_archived("project", "root", "member", archived=True)
+    store.stop_watchers("project", ["continuation"])
+    with pytest.raises(AgentTaskAdmissionConflict):
+        store.set_chat_archived("project", "root", "member", archived=True)
+    store.stop_watchers("project", ["root"])
+    store.set_chat_archived("project", "root", "member", archived=True)
+    assert store.watcher("unrelated").status == "active"

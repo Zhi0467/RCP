@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
@@ -16,6 +16,9 @@ from rcp.storage.resource_versions import (
     install_agent_thread_version,
     install_agent_thread_versions,
 )
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 
 def private_artifact_owner(connection: sqlite3.Connection, artifact: Artifact) -> str | None:
@@ -171,6 +174,11 @@ class AgentThreadStoreMixin(StoreMixinBase):
                         "UPDATE agent_threads SET closed_at=NULL, closed_reason=NULL WHERE thread_id=?",
                         (row[0],),
                     )
+                    connection.execute(
+                        "UPDATE chat_display SET archived_at=NULL, archived_user_id=NULL "
+                        "WHERE project_id=? AND chat_id=?",
+                        (project_id or space_id, row[0]),
+                    )
                     continue
                 suffix = 1
                 while True:
@@ -207,6 +215,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
 
     def close_agent_thread(self, thread_id: str, *, reason: str) -> None:
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT project_id FROM agent_threads WHERE thread_id=?", (thread_id,)
+            ).fetchone()
+            if row is not None:
+                store = cast("AppStore", self)
+                store._stop_chat_watchers(connection, row[0] or store.space_id, thread_id)
             connection.execute(
                 "UPDATE agent_threads SET closed_at=coalesce(closed_at,?),closed_reason=? WHERE thread_id=?",
                 (self.now(), reason, thread_id),
@@ -274,15 +289,24 @@ class AgentThreadStoreMixin(StoreMixinBase):
     ) -> list[AgentHandoffRecord]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM agent_handoffs WHERE target_operation_id IS NULL AND (? IS NULL OR target_thread_id=?) ORDER BY created_at,handoff_id",
+                "SELECT * FROM agent_handoffs WHERE target_operation_id IS NULL AND settled_at IS NULL AND (? IS NULL OR target_thread_id=?) ORDER BY created_at,handoff_id",
                 (target_thread_id, target_thread_id),
             ).fetchall()
         return [AgentHandoffRecord.model_validate(dict(row)) for row in rows]
 
+    def refuse_agent_handoff(self, handoff_id: str) -> None:
+        """A settled handoff without a target turn is a final delivery refusal."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_handoffs SET settled_at=COALESCE(settled_at,?) "
+                "WHERE handoff_id=? AND target_operation_id IS NULL",
+                (self.now(), handoff_id),
+            )
+
     def mark_agent_handoff_delivered(self, handoff_id: str, operation_id: str) -> None:
         with self.connection() as connection:
             updated = connection.execute(
-                "UPDATE agent_handoffs SET target_operation_id=? WHERE handoff_id=? AND (target_operation_id IS NULL OR target_operation_id=?)",
+                "UPDATE agent_handoffs SET target_operation_id=? WHERE handoff_id=? AND ((target_operation_id IS NULL AND settled_at IS NULL) OR target_operation_id=?)",
                 (operation_id, handoff_id, operation_id),
             )
             if updated.rowcount != 1:
@@ -355,6 +379,8 @@ def claim_handoff_turn(
         raise ValueError("Handoff turn changed its request")
     if wake and row["settled_at"] is None:
         raise ValueError("Handoff has not settled")
+    if not wake and row["settled_at"] is not None and row["target_operation_id"] is None:
+        raise ValueError("Handoff was refused")
     column = "notified_operation_id" if wake else "target_operation_id"
     previous = row[column]
     if previous is not None:

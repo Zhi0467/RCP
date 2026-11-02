@@ -304,3 +304,22 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
         operation_id=root.operation_id,
     )
     assert held.answer in snapshot
+
+
+def test_archived_chain_refuses_a_new_continuation_actor(manifest, tmp_path, monkeypatch):
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
+    store.set_chat_archived(
+        original.project_id, original.episode_id, original.authorized_by.user_id, archived=True
+    )
+    with pytest.raises(AgentTaskAdmissionConflict, match="chat_archived"):
+        continue_auto_research(
+            app.state.background_tasks,
+            original,
+            invocation_ceiling=1,
+            request_id=str(uuid.uuid4()),
+            authorized_by=original.authorized_by,
+        )
+    assert store.episode_continuation(original.episode_id) is None
+    assert store.episode(original.episode_id).invocations_used == original.invocations_used

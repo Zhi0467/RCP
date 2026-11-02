@@ -1708,6 +1708,9 @@ def reconcile_chat_question_answers(
         origin_task = store.agent_task(question.origin.operation_id)
         if origin_task is not None and origin_task.kind not in {"node_chat", "project_chat"}:
             continue
+        if refusal := store.chat_turn_refusal(question.origin.project_id, question.origin.owner_id):
+            statuses[question.question_id] = refusal
+            continue
         try:
             from rcp.runs.questions import reconcile_question_receipt
 

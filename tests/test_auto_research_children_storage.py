@@ -2918,3 +2918,22 @@ def refused_worker_human_retry_case(tmp_path, monkeypatch):
 
 def test_refused_worker_human_retry_keeps_allocation_and_target(tmp_path, monkeypatch):
     refused_worker_human_retry_case(tmp_path, monkeypatch)
+
+
+def test_archived_orchestrator_refuses_paid_wake(tmp_path):
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    store, episode, root = _setup_parent(tmp_path)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    # An archive written before archive waited for the running episode.
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO chat_display(project_id,chat_id,archived_at) VALUES('project',?,?) "
+            "ON CONFLICT DO UPDATE SET archived_at=excluded.archived_at",
+            (episode.episode_id, store.now()),
+        )
+    wake = _orchestrator_wake(store, episode, root)
+    with pytest.raises(AgentTaskAdmissionConflict, match="chat_archived"):
+        store.create_auto_research_agent_task(wake, role="orchestrator")
+    assert store.agent_task(wake.operation_id) is None
+    assert store.episode(episode.episode_id).invocations_used == episode.invocations_used

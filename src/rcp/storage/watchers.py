@@ -178,6 +178,18 @@ class WatcherStoreMixin(StoreMixinBase):
             if cursor.rowcount != 1:
                 raise WatcherClaimConflict("A watcher update changed during its retirement claim.")
 
+    def _stop_chat_watchers(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> None:
+        """Thread closure retires its observations; reopening does not rearm them."""
+        connection.execute(
+            "UPDATE watchers SET status='stopped', notified=1, next_check_at=NULL, "
+            "stopped_by=COALESCE(stopped_by,'human'), stopped_at=COALESCE(stopped_at,?) "
+            "WHERE project_id=? AND chat_id=? "
+            "AND status IN ('active','degraded','completed') AND notification_operation_id IS NULL",
+            (self.now(), project_id, chat_id),
+        )
+
     def _stop_watcher_for_loop(self, connection: sqlite3.Connection, watcher_id: str) -> None:
         timestamp = self.now()
         connection.execute(

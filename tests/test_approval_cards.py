@@ -659,3 +659,18 @@ def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler
     assert response.json()["outcome"] == "approved", response.text
     assert seen == [UUID(card["request_id"])]
     assert seen[0].version == 4
+
+
+def test_closed_thread_card_tap_is_refused_before_acting(questions_api, monkeypatch):
+    from rcp.api import approval_cards
+
+    app, client, store, project_id = questions_api
+    question, card = api_card(questions_api)
+    monkeypatch.setattr(approval_cards, "_execute", lambda *args: pytest.fail("acted"))
+    store.close_agent_thread("private", reason="access_lost")
+    response = client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
+    )
+    assert response.status_code == 409
+    assert store.get_question(question.question_id).answer is None

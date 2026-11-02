@@ -147,6 +147,8 @@ def resolve_approval_card(
     ):
         raise HTTPException(status_code=404, detail="Question not found")
     require_project_membership(question.origin.project_id, request)
+    if refusal := store.chat_turn_refusal(question.origin.project_id, question.origin.owner_id):
+        raise HTTPException(status_code=409, detail={"code": refusal})
     card = store.approval_card(question_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Approval card not found")

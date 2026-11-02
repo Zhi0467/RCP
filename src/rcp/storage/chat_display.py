@@ -7,15 +7,18 @@ Pins and read markers are per user; a marker records the newest turn end seen.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
+from rcp.storage.branch_names import _chain_root
 from rcp.storage.chat_forks import ChatForkRecord
 from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
+from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -433,15 +436,115 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             ).fetchone()
         return row is not None
 
+    @staticmethod
+    def _chat_turn_refusal(
+        connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> str | None:
+        """One quiet-conversation rule, including admission's write transaction."""
+        # Auto-research watcher bindings name the actor, while its visible chat
+        # is the root episode owning the chain's graph branch.
+        actor = connection.execute(
+            "SELECT episode_id FROM graph_runs WHERE project_id=? AND operation_id=? "
+            "AND kind='auto_research' AND json_extract(request_json,'$.role')='orchestrator'",
+            (project_id, chat_id),
+        ).fetchone()
+        if actor is not None:
+            chat_id = _chain_root(connection, project_id, actor[0])
+        row = connection.execute(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM agent_threads WHERE thread_id=? "
+            "AND closed_at IS NOT NULL) THEN 'thread_closed' "
+            "WHEN EXISTS (SELECT 1 FROM chat_display WHERE project_id=? AND chat_id=? "
+            "AND archived_at IS NOT NULL) THEN 'chat_archived' END",
+            (chat_id, project_id, chat_id),
+        ).fetchone()
+        return row[0]
+
+    def chat_turn_refusal(self, project_id: str, chat_id: str) -> str | None:
+        with self.connection() as connection:
+            return self._chat_turn_refusal(connection, project_id, chat_id)
+
+    def _agent_task_turn_refusal(
+        self, connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> str | None:
+        chat_id = record.request.get("chat_id")
+        edit = record.request.get("artifact_edit")
+        if not chat_id and isinstance(edit, dict) and edit.get("reply_episode_id"):
+            chat_id = _chain_root(connection, record.project_id, edit["reply_episode_id"])
+        if record.kind == "auto_research":
+            chat_id = (
+                _chain_root(connection, record.project_id, record.episode_id)
+                if record.request.get("role") == "orchestrator" and record.episode_id
+                else record.request.get("actor_operation_id") or record.operation_id
+            )
+        return (
+            self._chat_turn_refusal(connection, record.project_id, chat_id)
+            if isinstance(chat_id, str) and chat_id
+            else None
+        )
+
+    def agent_task_turn_refusal(self, record: AgentTaskRecord) -> str | None:
+        with self.connection() as connection:
+            return self._agent_task_turn_refusal(connection, record)
+
+    def _chat_owns_live_work(
+        self, connection: sqlite3.Connection, project_id: str, chat_id: str
+    ) -> bool:
+        """An active or resumable turn, a running episode, or an armed watcher."""
+        if any(
+            cast("AppStore", self)._has_resumable_paused_chat_task(
+                connection, project_id, kind, chat_id
+            )
+            for kind in ("node_chat", "project_chat", "space_chat")
+        ):
+            return True
+        # An Auto-research conversation is its chain's root episode.
+        row = connection.execute(
+            "WITH RECURSIVE chain(episode_id, root_operation_id) AS ("
+            "SELECT episode_id, root_operation_id FROM episodes "
+            "WHERE project_id=? AND episode_id=? AND mode='auto_research' UNION "
+            "SELECT child.episode_id, child.root_operation_id FROM episodes child "
+            "JOIN chain ON child.continues_episode_id=chain.episode_id "
+            "WHERE child.project_id=? AND child.mode='auto_research'), "
+            "runs AS (SELECT status, episode_id FROM graph_runs WHERE project_id=? "
+            "AND (json_extract(request_json,'$.chat_id')=? "
+            "OR episode_id IN (SELECT episode_id FROM chain))) "
+            "SELECT EXISTS (SELECT 1 FROM runs WHERE status IN ('queued','running','pausing')) "
+            "OR EXISTS (SELECT 1 FROM episodes WHERE project_id=? "
+            "AND status IN ('queued','running','stopping','wrapping_up') "
+            "AND (episode_id IN (SELECT episode_id FROM chain) "
+            "OR episode_id IN (SELECT episode_id FROM runs))) "
+            "OR EXISTS (SELECT 1 FROM watchers WHERE project_id=? "
+            "AND (chat_id=? OR chat_id IN (SELECT root_operation_id FROM chain)) "
+            "AND status IN ('active','degraded','completed') AND notified=0 "
+            "AND notification_operation_id IS NULL)",
+            (project_id, chat_id, project_id, project_id, chat_id, project_id, project_id, chat_id),
+        ).fetchone()
+        return bool(row[0])
+
     def set_chat_archived(
         self, project_id: str, chat_id: str, user_id: str, *, archived: bool
     ) -> None:
-        self._set_chat_display(
-            project_id,
-            chat_id,
-            "archived_user_id = ?, archived_at = ?",
-            (user_id, self.now()) if archived else (None, None),
-        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # Archive never strands work: the conversation must be quiet first.
+            if archived and self._chat_owns_live_work(connection, project_id, chat_id):
+                raise AgentTaskAdmissionConflict("chat_has_live_work")
+            connection.execute(
+                "INSERT INTO chat_display(project_id,chat_id,archived_user_id,archived_at) "
+                "VALUES(?,?,?,?) ON CONFLICT(project_id,chat_id) DO UPDATE SET "
+                "archived_user_id=excluded.archived_user_id, archived_at=excluded.archived_at",
+                (
+                    project_id,
+                    chat_id,
+                    user_id if archived else None,
+                    self.now() if archived else None,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM chat_display WHERE project_id=? AND chat_id=? "
+                "AND title IS NULL AND archived_at IS NULL",
+                (project_id, chat_id),
+            )
 
     def set_chat_pinned(self, project_id: str, chat_id: str, user_id: str, *, pinned: bool) -> None:
         with self.connection() as connection:

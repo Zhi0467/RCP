@@ -214,6 +214,20 @@ def _thread_busy(store: AppStore, thread: AgentThreadRecord) -> bool:
     ) or store.has_resumable_paused_chat_task(scope, kind, thread.thread_id)
 
 
+def _newest_continuation(connection, operation_id: str):
+    """The handed-off turn, or the newest Resume or Retry that continues it."""
+    while child := connection.execute(
+        "SELECT operation_id FROM graph_runs WHERE parent_operation_id=? "
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (operation_id,),
+    ).fetchone():
+        operation_id = child[0]
+    return connection.execute(
+        "SELECT operation_id,status,finished_at,history_only FROM graph_runs WHERE operation_id=?",
+        (operation_id,),
+    ).fetchone()
+
+
 def _thread_request(store: AppStore, thread: AgentThreadRecord, message: str, *, wake: bool):
     from rcp.service import RunRequest
 
@@ -263,7 +277,10 @@ def dispatch_thread_handoffs(
     admitted: list[str] = []
     for handoff in store.pending_agent_handoffs():
         target = store.agent_thread(handoff.target_thread_id)
-        if target is None or target.closed_at or not target.project_id:
+        if target is None or not target.project_id:
+            continue
+        if store.chat_turn_refusal(target.project_id, target.thread_id):
+            store.refuse_agent_handoff(handoff.handoff_id)
             continue
         if not store.is_project_member(target.project_id, target.user_id) or _thread_busy(
             store, target
@@ -298,6 +315,9 @@ def dispatch_thread_handoffs(
                     )
                 admitted.append(record.operation_id)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            if store.chat_turn_refusal(target.project_id, target.thread_id):
+                store.refuse_agent_handoff(handoff.handoff_id)
+                continue
             # Keep the durable request for a later eligible turn without blocking others.
             logger.warning("Handoff %s delivery deferred: %s", handoff.handoff_id, exc)
             store.record_agent_task_event(
@@ -308,11 +328,22 @@ def dispatch_thread_handoffs(
             continue
     _project_delivered_handoff_messages(store, catalog)
     with store.connection() as connection:
-        connection.execute(
-            "UPDATE agent_handoffs SET settled_at=(SELECT finished_at FROM graph_runs "
-            "WHERE operation_id=target_operation_id) WHERE settled_at IS NULL AND target_operation_id IN "
-            "(SELECT operation_id FROM graph_runs WHERE status IN ('succeeded','failed','interrupted') AND finished_at IS NOT NULL AND history_only=0)"
-        )
+        delivered = connection.execute(
+            "SELECT handoff_id,target_operation_id FROM agent_handoffs "
+            "WHERE settled_at IS NULL AND target_operation_id IS NOT NULL"
+        ).fetchall()
+        for handoff_id, operation_id in delivered:
+            newest = _newest_continuation(connection, operation_id)
+            if (
+                newest is not None
+                and newest["status"] in {"succeeded", "failed", "interrupted"}
+                and newest["finished_at"]
+                and not newest["history_only"]
+            ):
+                connection.execute(
+                    "UPDATE agent_handoffs SET settled_at=? WHERE handoff_id=?",
+                    (newest["finished_at"], handoff_id),
+                )
         rows = connection.execute(
             "SELECT * FROM agent_handoffs WHERE settled_at IS NOT NULL AND notified_operation_id IS NULL ORDER BY settled_at,handoff_id"
         ).fetchall()
@@ -322,17 +353,25 @@ def dispatch_thread_handoffs(
         target = store.agent_thread(handoff.target_thread_id)
         if (
             thread is None
-            or thread.closed_at
+            or store.chat_turn_refusal(store.space_id, thread.thread_id)
             or target is None
             or not target.project_id
             or _thread_busy(store, thread)
         ):
             continue
-        if not store.is_project_member(target.project_id, thread.user_id):
+        if handoff.target_operation_id is not None and not store.is_project_member(
+            target.project_id, thread.user_id
+        ):
             continue
         member = store.space_user(thread.user_id)
-        result_task = store.agent_task(handoff.target_operation_id or "")
-        if member is None or member.removed_at or member.removal_started_at or result_task is None:
+        result_task = None
+        if handoff.target_operation_id is not None:
+            with store.connection() as connection:
+                newest = _newest_continuation(connection, handoff.target_operation_id)
+            result_task = store.agent_task(newest["operation_id"]) if newest else None
+        if member is None or member.removed_at or member.removal_started_at:
+            continue
+        if result_task is None and handoff.target_operation_id is not None:
             continue
         # This is an observation of the owner's own task, never an instruction from another agent.
         message = json.dumps(
@@ -340,9 +379,9 @@ def dispatch_thread_handoffs(
                 "handoff_id": handoff.handoff_id,
                 "project_id": target.project_id,
                 "thread_id": target.thread_id,
-                "operation_id": result_task.operation_id,
-                "status": result_task.status,
-                "answer": (result_task.result or {}).get("answer"),
+                "operation_id": result_task.operation_id if result_task else None,
+                "status": result_task.status if result_task else "refused",
+                "answer": (result_task.result or {}).get("answer") if result_task else None,
             },
             ensure_ascii=False,
         )

@@ -605,9 +605,16 @@ class BackgroundAgentTasks:
                 and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
             ):
                 question_followups.append(task.operation_id)
+        from rcp.runs.agent_schedules import queued_schedule_wakes
         from rcp.runs.agent_thread_commands import restart_handoff_turns, unstarted_handoff_turns
 
         handoff_dispatches = unstarted_handoff_turns(self.store)
+        # The schedule poller relaunches these; its claim already consumed their notes.
+        schedule_wakes = [
+            operation_id
+            for operation_id in queued_schedule_wakes(self.store)
+            if self.store.agent_task_dispatch_was_proven_not_started(operation_id)
+        ]
         consolidation_dispatches = {
             operation_id
             for operation_id in self.store.pending_consolidation_operation_ids()
@@ -623,6 +630,7 @@ class BackgroundAgentTasks:
                 *[task.operation_id for _episode, task in reserved_experiments],
                 *question_followups,
                 *[task.operation_id for task in handoff_dispatches],
+                *schedule_wakes,
             }
         )
         self._discard_orphan_mailbox_checkpoints()
@@ -1895,6 +1903,8 @@ class BackgroundAgentTasks:
             if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
         if record.status != "queued":
+            return record
+        if self.store.agent_task_turn_refusal(record):
             return record
 
         request = self._launchable_request(record)

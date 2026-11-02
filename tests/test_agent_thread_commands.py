@@ -158,9 +158,11 @@ def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_pat
     assert handler(unsafe, identity).status == "invalid"
 
 
+@pytest.mark.parametrize("refusal", [None, "archived", "closed", "resumed"])
 def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
-    manifest, tmp_path: Path, monkeypatch
+    manifest, tmp_path: Path, monkeypatch, refusal
 ) -> None:
+    import json
     from contextlib import nullcontext
 
     from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
@@ -224,6 +226,31 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
             store, catalog, background, project_admission=lambda _: nullcontext()
         )
 
+    if refusal in {"archived", "closed"}:
+        if refusal == "archived":
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET status='succeeded' WHERE operation_id='busy'"
+                )
+            store.set_chat_archived(project_id, target.thread_id, actor.user_id, archived=True)
+        else:
+            store.close_agent_thread(target.thread_id, reason="access_lost")
+            with store.connection() as connection:
+                connection.execute(
+                    "DELETE FROM project_members WHERE project_id=? AND user_id=?",
+                    (project_id, actor.user_id),
+                )
+        wakes = drain()
+        assert len(wakes) == 1
+        wake = store.agent_task(wakes[0])
+        assert wake.kind == "space_chat"
+        assert json.loads(wake.request["message"].split("\n", 1)[1])["status"] == "refused"
+        assert store.pending_agent_handoffs() == []
+        store.set_chat_archived(project_id, target.thread_id, actor.user_id, archived=False)
+        store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
+        assert drain() == []
+        assert store.agent_task_events("source") == []
+        return
     assert drain() == []
     with store.connection() as connection:
         connection.execute(
@@ -246,10 +273,25 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     recovered = store.agent_task(turn.operation_id)
     assert recovered is not None and recovered.status == "queued"
     assert drain() == []
+    settled = turn.operation_id
+    if refusal == "resumed":
+        # Stop then Resume: the handoff settles on the newest turn of the chain.
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='paused' WHERE operation_id=?", (settled,)
+            )
+        assert drain() == []
+        settled = "resumed"
+        store.create_agent_task(
+            turn.model_copy(
+                update={"operation_id": settled, "parent_operation_id": turn.operation_id}
+            ),
+            continuation_cause="resume",
+        )
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status='succeeded',finished_at=?,result_json=? WHERE operation_id=?",
-            (store.now(), '{"answer":"Checked"}', turn.operation_id),
+            (store.now(), '{"answer":"Checked"}', settled),
         )
     wakes = drain()
     assert len(wakes) == 1

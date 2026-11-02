@@ -496,9 +496,11 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
     assert client.put(f"{url}/browser", json={"browser_requested": False}).status_code == 200
     assert store.browser_owners(project_id)[0]["delete_profile"] == 1
     if archived:
+        # Archive waits for the chat's live turn.
+        store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
         assert client.post(f"{url}/archive", json={"archived": True}).status_code == 200
     assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
-    assert closed == []
+    assert len(closed) == int(archived)
     retry_browser_cleanup(store, finished_operation_id=execution.operation_id)
     assert len(closed) == int(archived)
     if not archived:
@@ -725,3 +727,53 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         "context_tokens"
     ] == 120
     assert client.get(f"{url}/{root.episode_id}").status_code == 404
+
+
+def test_private_thread_cannot_be_archived(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    rows = store.ensure_agent_threads(
+        store.local_owner.user_id, [project_id], default_names=("Pip",)
+    )
+    thread = next(row for row in rows if row.kind == "project")
+    response = client.post(
+        f"/api/projects/{project_id}/chats/{thread.thread_id}/archive", json={"archived": True}
+    )
+    assert response.status_code == 409
+    assert not store.chat_archived(project_id, thread.thread_id)
+
+
+@pytest.mark.parametrize("status", ["queued", "paused"])
+def test_archive_waits_for_the_chats_live_turn(manifest, tmp_path, status):
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    chat_id = str(uuid.uuid4())
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="turn",
+            project_id=project_id,
+            kind="project_chat",
+            status=status,
+            request=RunRequest(chat_id=chat_id, chat_scope="project").model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="",
+            native_session_id="session" if status == "paused" else None,
+            authorized_by=_identity(store),
+        )
+    )
+    url = f"/api/projects/{project_id}/chats/{chat_id}/archive"
+    response = client.post(url, json={"archived": True})
+    assert (response.status_code, response.json()["detail"]) == (409, "chat_has_live_work")
+    assert not store.chat_archived(project_id, chat_id)
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='turn'")
+    assert client.post(url, json={"archived": True}).status_code == 200
+    assert store.chat_archived(project_id, chat_id)

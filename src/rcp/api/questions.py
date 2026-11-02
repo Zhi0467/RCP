@@ -224,6 +224,11 @@ def answer_question(
     with project_write_admission(project_id, request):
         current = _question_for_http(store, project_id, question_id, human.user_id)
         _refuse_private_or_card(store, current, human.user_id)
+        # A stored answer would later wake the quiet conversation.
+        if current.origin.owner_kind == "chat" and (
+            refusal := store.chat_turn_refusal(project_id, current.origin.owner_id)
+        ):
+            raise HTTPException(status_code=409, detail=refusal)
         newest = _newest_episode(store, current)
         continues = _answer_continues(store, current, newest)
         if current.resolved_at is not None and not (

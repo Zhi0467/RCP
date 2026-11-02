@@ -184,7 +184,10 @@ def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store)
     )
 
 
-def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store, monkeypatch):
+@pytest.mark.parametrize("archived", [False, True])
+def test_busy_thread_keeps_pending_then_claims_one_combined_wake(
+    schedule_store, monkeypatch, archived
+):
     from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import dispatch_agent_schedules
@@ -227,10 +230,42 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(schedule_store,
     )
     with schedule_store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='origin'")
+    stage = schedule_store.path.parent / "stage"
+    stage.mkdir()
+    schedule_store.checkpoint_agent_task(
+        "origin", native_session_id="current-session", stage_root=str(stage)
+    )
+    previous = schedule_store.agent_task("origin")
+    schedule_store.create_agent_task(
+        previous.model_copy(
+            update={
+                "operation_id": "failed",
+                "status": "failed",
+                "native_session_id": None,
+                "created_at": schedule_store.now(),
+                "request": {**previous.request, "session_id": None},
+            }
+        )
+    )
+    if archived:
+        schedule_store.set_chat_archived("project", "thread", "member", archived=True)
+        dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
+        assert launched == []
+        with schedule_store.connection() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 2
+        assert all(row.pending_since for row in schedule_store.agent_schedules())
+        schedule_store.set_chat_archived("project", "thread", "member", archived=False)
     dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
     assert len(launched) == 1
     task = schedule_store.agent_task(launched[0])
     assert task.request["trigger"] == "schedule"
+    assert task.native_session_id == task.request["session_id"] == "current-session"
+    receipts = [
+        r.payload
+        for r in schedule_store.agent_task_receipts(task.operation_id)
+        if r.category == "chat_session_resolution"
+    ]
+    assert len(receipts) == 1 and receipts[0]["outcome"] == "continued"
     assert task.authorized_by == schedule_store.agent_task("origin").authorized_by
     assert task.request["message"].count('"missed_fires": 0') == 2
     assert all(row.pending_since is None for row in schedule_store.agent_schedules())
@@ -526,3 +561,51 @@ def test_space_thread_commands_create_and_wake_its_own_schedule(manifest, tmp_pa
     assert wake.request["chat_id"] == thread.thread_id
     assert wake.request["trigger"] == "schedule"
     assert wake.authorized_by == actor
+
+
+def test_schedule_waits_quietly_for_a_stopped_turn_then_survives_restart(
+    schedule_store, monkeypatch, caplog
+):
+    from types import SimpleNamespace
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.agent_schedules import dispatch_agent_schedules
+    from rcp.storage import AppStore
+    from tests.helpers import fake_launch_admitted
+
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="daily",
+        cron=None,
+        at="2026-01-01T09:00",
+        timezone="UTC",
+        note="n",
+        next_fire_at="2026-01-01T09:00:00+00:00",
+    )
+    # The member pressed Stop: the turn is paused and resumable.
+    with schedule_store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='paused', native_session_id='s1' WHERE operation_id='origin'"
+        )
+    launched = []
+    tasks = BackgroundAgentTasks(schedule_store, lambda *_args: None)
+    fake_launch_admitted(monkeypatch, tasks, launched.append)
+    poller = SimpleNamespace(store=schedule_store, tasks=tasks)
+    now = datetime.fromisoformat(schedule_store.now())
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
+    assert launched == [] and not caplog.records
+    assert schedule_store.agent_schedules()[0].pending_since
+    # Resume settles the stop; the paused parent no longer holds the schedule.
+    resumed = schedule_store.agent_task("origin").model_copy(
+        update={"operation_id": "resumed", "parent_operation_id": "origin", "status": "queued"}
+    )
+    schedule_store.create_agent_task(resumed, continuation_cause="resume")
+    with schedule_store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='resumed'")
+    dispatch_agent_schedules(poller, now, schedule_store.advance_agent_schedules(now))
+    assert len(launched) == 1
+    restarted = BackgroundAgentTasks(AppStore(schedule_store.path), lambda *_args: None)
+    monkeypatch.setattr(restarted, "_schedule_remote_reconciliation", lambda **kwargs: None)
+    restarted.recover_at_startup()
+    assert restarted.store.agent_task(launched[0]).status == "queued"

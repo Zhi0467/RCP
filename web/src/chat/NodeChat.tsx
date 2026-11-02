@@ -148,6 +148,8 @@ interface Props {
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
   readOnly?: boolean;
+  archived?: boolean;
+  onRestore?: () => void;
   readOnlyNotice?: ReactNode;
   /** Questions belong to this episode rather than the chat, as an orchestrator's do. */
   questionEpisodeId?: string;
@@ -227,8 +229,10 @@ export function NodeChat({
   chatId,
   presentation = "floating",
   fixedConversation = false,
-  readOnly = false,
-  allowArtifactComments = false,
+  readOnly: requestedReadOnly = false,
+  archived = false,
+  onRestore,
+  allowArtifactComments: requestedArtifactComments = false,
   readOnlyNotice,
   questionEpisodeId,
   reviewPending = false,
@@ -245,6 +249,8 @@ export function NodeChat({
   onRetryTask,
   onRefreshTask,
 }: Props) {
+  const readOnly = archived || requestedReadOnly;
+  const allowArtifactComments = !archived && requestedArtifactComments;
   const surface = node ? "node_chat" : "project_chat";
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
@@ -1136,6 +1142,7 @@ export function NodeChat({
 
   /** Start a turn, or start it again after a failed send under the same key. */
   const submitTurn = async (turn: PendingChatTurn) => {
+    if (!canCompose) return;
     const pending = { ...turn, error: undefined };
     shouldStickToBottomRef.current = true;
     restoreTopRef.current = null;
@@ -1428,12 +1435,22 @@ export function NodeChat({
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueChat={!questionEpisodeId && question.state === "parked" && !relatedActive}
+              continueChat={
+                !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive
+              }
             />
           ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
       </div>
-      {!canCompose && readOnlyNotice}
+      {archived ? (
+        <div className="chat-composer" role="status">
+          <button className="button compact" type="button" onClick={onRestore}>
+            Restore
+          </button>
+        </div>
+      ) : (
+        !canCompose && readOnlyNotice
+      )}
       {canCompose && (
         <ChatComposer
           hint={

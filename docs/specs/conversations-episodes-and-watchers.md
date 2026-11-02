@@ -52,6 +52,8 @@ captured Work turn on main, authorized by the owning member. Threads have no
 Discuss mode. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view or a project's Agents view is shown.
+Private threads cannot be archived. Ensuring the thread list clears legacy
+archive flags along with reopening eligible threads.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base
@@ -76,7 +78,10 @@ member's authority. It is not mail. Delivery appends a member message with
 `source: "handoff"` and admits its turn at once when the target is idle, or
 after the target's turn settles or at startup. Pending handoffs deliver oldest
 first, one turn each, and the idempotency key prevents duplicates. When the
-handed-off turn settles, RCP admits one Space wake that reports it.
+handed-off turn, or its newest Resume or Retry, settles, RCP admits one Space
+wake that reports it.
+A handoff to an archived chat or closed thread settles as refused and uses that
+same report path once; it is not deferred for another delivery attempt.
 
 A thread wakes on a member message from the composer, voice or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
@@ -248,6 +253,17 @@ project-memory deletions after the project deletion commits and at turn boundari
 (see [memory lifecycle](graph-consolidation-and-lessons.md)). The owner key names the stable stage,
 space, project, and resolved execution host and account; a repointed SSH alias
 cannot clean up the old host through its new target.
+
+## Conversation archive
+
+Archived means quiet. Archive is refused while the conversation owns live work:
+a queued, running, or resumable turn, a live Experiment or episode, or an armed
+watcher. One store admission check refuses every new turn or wake into an
+archived conversation or closed private thread, including watcher and schedule
+wakes. Answering a question or approval card there is refused before the answer
+is stored. Closing a private thread stops its watchers; reopening does not re-arm
+them. Neither archive nor Restore changes the native session. The shared
+[composer](interface-and-visual-design.md#conversation-composer) owns Restore.
 
 ## Native chat context
 

@@ -284,13 +284,15 @@ one. Invalid and past one-shot times are refused.
 The consolidation poller advances due schedules and preserves their first pending
 occurrence in one transaction before the automatic-launch cooldown check. Wake
 admission and launch wait until that cooldown has passed. One-shot schedules
-become done. Busy, queued, and paused threads retain pending notes. Once eligible,
+become done. Notes stay pending while the thread's turn is active or awaiting
+Resume. Once eligible,
 one atomic admission claims all observed notes for one Work wake, listing each
 note and its missed fire count. Admission retains the thread's latest provider,
-native session, scratch, and member binding and rechecks the ordinary project
+native session, scratch, and member binding through ordinary current-session
+resolution, including its receipt, and rechecks the ordinary project
 write fence and session constraints. Lost thread access disables pending schedules.
 
-Schedule controls are owner-only. Restore keeps schedules disabled with reason
+Schedule controls are owner-only. Backup restore keeps schedules disabled with reason
 `restore`, clears their pending wakes, and requires explicit re-enabling. A past
 one-shot cannot be re-enabled. Consolidation's separate restore behavior remains
 delete-on-restore.

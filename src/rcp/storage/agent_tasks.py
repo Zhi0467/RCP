@@ -1257,6 +1257,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("An agent task admission has an invalid continuation cause.")
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
+        if refusal := cast("AppStore", self)._agent_task_turn_refusal(connection, record):
+            raise AgentTaskAdmissionConflict(refusal)
         self._require_child_turn_admission(connection, record)
         self._validate_dispatch_authority_insert(connection, record)
         record, session_resolution = self._bind_chat_stage(connection, record, continuation_cause)
@@ -2015,8 +2017,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
             and record.parent_operation_id is None
             and record.request.get("patch_kind", "work") == "work"
             and record.request.get("control_episode_id") is None
-            and record.request.get("trigger", "human") in {"human", "watcher"}
-            and continuation_cause in {"fresh", "watcher_wake"}
+            and (
+                (
+                    record.request.get("trigger", "human") in {"human", "watcher"}
+                    and continuation_cause in {"fresh", "watcher_wake"}
+                )
+                or (
+                    record.request.get("trigger") == "schedule"
+                    and continuation_cause == "message_wake"
+                )
+            )
         ):
             if self._has_resumable_paused_chat_task(
                 connection, record.project_id, record.kind, chat_id

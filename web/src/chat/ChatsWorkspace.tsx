@@ -585,6 +585,7 @@ export function ChatsWorkspace({
           title: row.conversation.title,
           column,
           working: row.status.state === "working",
+          draft: !row.conversation.updatedAt && row.conversation.tasks.length === 0,
           conversation: row.conversation,
           status: row.status,
         });
@@ -630,6 +631,7 @@ export function ChatsWorkspace({
     const ordered = saveAgentBoardColumn(boardOrder, columnIds);
     setBoardOrder(ordered);
     writeAgentBoardOrder(project.id, ordered);
+    if (drop === "remove") removeDraft(card.id);
     if (drop === "archive") void archive(card.id, true);
     if (drop === "restore") void archive(card.id, false);
   };
@@ -1233,6 +1235,8 @@ export function ChatsWorkspace({
             watchers={orchestratorWatchers}
             agentSetup={selected.agentSetup}
             chatId={selected.chatId}
+            archived={selectedArchived}
+            onRestore={() => void archive(selected.chatId, false)}
             presentation="workspace"
             // While the chain runs its turns are the orchestrator's; once it ends,
             // the card takes ordinary chat turns on the chain's branch.
@@ -1282,21 +1286,13 @@ export function ChatsWorkspace({
             origin={selected.origin}
             agentSetup={selected.agentSetup}
             chatId={selected.chatId}
+            archived={selectedArchived}
+            onRestore={() => void archive(selected.chatId, false)}
             presentation="workspace"
-            readOnly={Boolean(selected.humanTurnRefusal) || selectedArchived}
+            readOnly={Boolean(selected.humanTurnRefusal)}
             allowArtifactComments={selected.conversationKind === "auto_research_child"}
             readOnlyNotice={
-              selectedArchived ? (
-                <div className="chat-composer" role="status">
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => void archive(selected.chatId, false)}
-                  >
-                    Restore
-                  </button>
-                </div>
-              ) : selected.humanTurnRefusal ? (
+              selected.humanTurnRefusal ? (
                 <div className="chat-composer" role="status">
                   <p>{selected.humanTurnRefusal.detail}</p>
                   {orchestratorCanUnlock(selected.humanTurnRefusal) && (
