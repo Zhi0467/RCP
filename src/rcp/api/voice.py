@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -16,6 +17,8 @@ from rcp.api.dependencies import (
     project_write_admission,
 )
 from rcp.api.service_connections import ServiceConnectionRoute, connections
+from rcp.runs.chat import chat_lock
+from rcp.runs.space_chat import space_transcript_lock
 from rcp.service_connections import (
     ConnectionError,
     IdleMinutes,
@@ -87,12 +90,17 @@ async def session(request: Request, body: SessionRequest):
     thread = owned_thread(store.store, body.thread_id, store.member_id)
     connection, key = store.voice_credentials()
     settings = store.voice_settings()
+    # Read under the appenders' lock, so a half-written record never fails the start.
     if thread["project_id"]:
         service = get_project_writer(get_catalog(request), thread["project_id"])
-        with service.history.workspace.read_snapshot() as root:
+        with (
+            service.history.workspace.read_snapshot() as root,
+            chat_lock(service, fcntl.LOCK_SH),
+        ):
             records = read_records(transcript_path(root, thread), thread)
     else:
-        records = read_records(transcript_path(store.store.path.parent, thread), thread)
+        with space_transcript_lock(store.store, thread["thread_id"]):
+            records = read_records(transcript_path(store.store.path.parent, thread), thread)
     session_input, truncated = voice_resume_input(
         [
             {
