@@ -150,6 +150,34 @@ def test_memory_refuses_redirected_shared_folder(tmp_path):
     assert not (outside / "MEMORY.md").exists()
 
 
+@pytest.mark.parametrize("redirected", ["members", "members/bob", "members/bob/notes"])
+def test_member_memory_is_created_on_demand_and_never_granted_redirected(tmp_path, redirected):
+    import shutil
+
+    from rcp.agents.memory_files import prepare_member_memory, remove_member_memory
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    alice = tmp_path.resolve() / "memory/members/alice"
+    assert prepare_member_memory(store, "alice") == (str(alice), 0)
+    assert (alice / "notes").is_dir()
+    if redirected == "members":
+        shutil.rmtree(alice.parent)
+    outside = tmp_path / "outside"
+    (outside / "notes").mkdir(parents=True)
+    link = tmp_path / "memory" / redirected
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+    assert prepare_member_memory(store, "bob") == (None, None)
+    assert not (outside / "MEMORY.md").exists()
+    if redirected == "members":
+        with pytest.raises(ValueError):
+            remove_member_memory(tmp_path, "bob")
+    else:
+        remove_member_memory(tmp_path, "bob")
+        assert not (tmp_path / "memory/members/bob").exists()
+    assert (outside / "notes").is_dir()
+
+
 def test_failure_before_index_commit_retries_without_overwriting_notes(tmp_path, monkeypatch):
     from rcp.agents import memory_file_io
 

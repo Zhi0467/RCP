@@ -9,7 +9,7 @@ from rcp.agents.hidden_read import HiddenFolderRejected
 
 
 @pytest.mark.parametrize("owner", [None, "alice", "bob"])
-def test_thread_stages_are_hidden_except_from_their_owner(owner):
+def test_thread_stages_and_member_notes_are_hidden_except_from_their_owner(owner):
     from rcp.agents.hidden_read import hidden_read_defaults
 
     directories, _, globs = hidden_read_defaults(
@@ -30,6 +30,9 @@ def test_thread_stages_are_hidden_except_from_their_owner(owner):
             assert any(transcript.is_relative_to(path) for path in directories) or any(
                 fnmatch.fnmatch(str(transcript), pattern) for pattern in globs
             )
+    for member in ("alice", "bob"):
+        notes = Path("/data/memory/members") / member / "MEMORY.md"
+        assert any(notes.is_relative_to(path) for path in directories) == (member != owner)
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import BinaryIO, Protocol
 
+from rcp.agents.memory_files import remove_member_memory
 from rcp.background import BackgroundAgentTasks
 from rcp.runs.membership_fence import fence_episodes_for_removed_member
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -436,6 +437,7 @@ def _remove_member_agent_data(store: AppStore, member_id: str) -> None:
         raise ValueError("Agent thread data must not be a symlink")
     if folder.exists():
         shutil.rmtree(folder)
+    remove_member_memory(store.path.parent, member_id)
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(

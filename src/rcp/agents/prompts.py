@@ -290,7 +290,13 @@ def write_scope_section(scope: ProviderWriteScope) -> str:
         f"- writable, repository `{item.alias}`: `{item.path}`" for item in scope.repositories
     ]
     lines += [f"- writable, repository Git metadata: `{path}`" for path in scope.git_metadata_roots]
-    lines += [f"- writable, project memory notes: `{path}`" for path in scope.memory_roots]
+    member = scope.member_memory_root
+    lines += [
+        f"- writable, project memory notes: `{path}`"
+        for path in scope.memory_roots
+        if path != member
+    ]
+    lines += [f"- writable, your member's private notes: `{member}`"] if member else []
     lines += [f"- writable, machine grant: `{path}`" for path in scope.granted_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
@@ -958,7 +964,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v13"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v21"
+WORK_POLICY_VERSION = "work-v22"
 
 
 class PromptFactory:

@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.runs.space_chat import (
+    SPACE_MASTER_POLICY,
     SpaceThreadOwner,
     default_space_hidden_read_scope,
     stream_space_chat_run,
@@ -138,6 +139,13 @@ def test_space_runtime_real_storage_and_partial_apply(
         }
         scope = kwargs["write_scope"]
         assert len(scope.projects) == project_count
+        # Only the owner's private notes are writable, readable and pointed to.
+        notes = (tmp_path / "data").resolve() / "memory" / "members" / human.user_id
+        assert scope.memory_roots == [str(notes)] and str(notes) in scope.writable_roots
+        assert str(notes / "MEMORY.md") in prompt
+        assert not any(
+            notes.is_relative_to(root) for root in kwargs["hidden_read_scope"].hidden_directories
+        )
         launched.append((scope, execution.git_access))
         assert stage.parent == tmp_path / "data" / "agent-threads" / human.user_id / "stages"
         assert not any(
@@ -307,7 +315,7 @@ def test_space_runtime_real_storage_and_partial_apply(
         asyncio.run(continue_run())
         assert calls == [None, "space-native"]
         inputs = Path(execution.stage_root) / "inputs"
-        first_master = next(inputs.glob("space-master-v1-*.md"))
+        first_master = next(inputs.glob(f"{SPACE_MASTER_POLICY}-*.md"))
         # The first turn opens the staged master; the resumed turn only points to it.
         assert str(first_master) in prompts[0] and len(prompts[1]) < 4000
         if project_count == 0:

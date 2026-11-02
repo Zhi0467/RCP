@@ -319,6 +319,10 @@ Both local and remote memory bases are inside `rcp_owned_paths`, so a machine
 grant cannot admit them. The provider receives the same resolved root that the
 prompt names. Discuss gains no repository-write or graph authority.
 Seed, Refresh, branch merge, Paper coach and artifact edit have no memory root.
+A member's Space thread and backend-run private project threads also get that
+member's private memory folder as a memory root. The prompt labels it apart from
+project memory. Hidden-read hides every other member's folder, and the whole
+member memory root from runs that are not a member's thread.
 The [memory owner](graph-consolidation-and-lessons.md#memory) defines layout,
 index bounds, migration, and the add-only prompt rule for autonomous runs.
 
@@ -1851,7 +1855,8 @@ The top-level client grants `projects`, `handoff` and `schedule`; it has no
 `GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. Only
 a writer posts to the Bulletin; a read-only client reads it. The
 mailbox allowlist, the handler guard and the rendered usage all read that one set.
-A Space turn has no project memory root. Native subagents remain permitted; MCP
+A Space turn has no project memory root; its only memory root is the member's
+private folder. Native subagents remain permitted; MCP
 servers remain off. The prompt lists the protocol's mutating verbs that no client
 of the turn grants, so the list follows enforcement. Work that needs one of
 them, a project memory note, or a change the graph authority contract withholds

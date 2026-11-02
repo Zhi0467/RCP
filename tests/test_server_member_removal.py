@@ -125,7 +125,12 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
 
 
 def test_confirmed_cli_removes_member_and_preserves_history(tmp_path) -> None:
-    store, _alice, bob, _metadata, _background, coordinator = _team(tmp_path)
+    from rcp.agents.memory_files import prepare_member_memory
+
+    store, alice, bob, _metadata, _background, coordinator = _team(tmp_path)
+    notes = {
+        member.user_id: prepare_member_memory(store, member.user_id)[0] for member in (alice, bob)
+    }
     control = _CoordinatorControl(coordinator)
     boundary = coordinator.plan(bob.user_id).snapshot.boundary_sha256
     prepared = prepare_member_remove_command(
@@ -147,6 +152,9 @@ def test_confirmed_cli_removes_member_and_preserves_history(tmp_path) -> None:
     assert tombstone.display_name == "Bob"
     assert tombstone.removal_started_at is not None
     assert tombstone.removed_at is not None
+    # Removal deletes only the removed member's private notes.
+    assert not Path(str(notes[bob.user_id])).exists()
+    assert Path(str(notes[alice.user_id])).is_dir()
 
 
 def test_preview_reports_the_state_the_member_is_actually_in(tmp_path) -> None:

@@ -158,6 +158,8 @@ def hidden_read_defaults(
                 glob.escape(app_data_dir) + "/run-stage/backup-*",
             )
         )
+    from rcp.agents.memory_files import member_memory_root
+
     thread_roots = [home + "/.rcp/agent-threads"]
     if app_data_dir:
         thread_roots.append(app_data_dir + "/agent-threads")
@@ -165,8 +167,6 @@ def hidden_read_defaults(
         if thread_owner is None:
             directories.append(root)
         else:
-            from rcp.agents.memory_files import member_memory_root
-
             # Reuse the member-id validator; identity comes from the thread row.
             member_memory_root(PurePosixPath(root), thread_owner)
             # The owner keeps its stages. Every member's transcripts, including those of
@@ -175,6 +175,16 @@ def hidden_read_defaults(
             for member in sorted(set(member_ids) - {thread_owner}):
                 member_memory_root(PurePosixPath(root), member)
                 directories.append(root + "/" + member)
+    if app_data_dir:
+        # Member memory is private: only the owner's own thread turns read it.
+        memory = PurePosixPath(app_data_dir) / "memory"
+        if thread_owner is None:
+            directories.append(str(memory / "members"))
+        else:
+            directories.extend(
+                str(member_memory_root(memory, member))
+                for member in sorted(set(member_ids) - {thread_owner})
+            )
     return tuple(sorted(set(directories))), tuple(sorted(set(files))), tuple(sorted(set(globs)))
 
 

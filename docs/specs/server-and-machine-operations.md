@@ -177,10 +177,11 @@ Member removal previews the affected work and credentials. It refuses removal of
 the last enrolled member or a sole project member. Otherwise, it atomically
 fences access and revokes tokens, sessions and unconsumed invitations. The user
 remains a tombstone. The owners of graceful shutdown settle work. Apply rechecks membership.
-After the member's workers stop, removal deletes their local folder under
-`<data_dir>/agent-threads`, their agent schedules and their undelivered
-handoffs, and closes their threads. Private project transcripts, member memory
-notes and remote thread stages stay until the project or host is cleaned.
+After the member's workers stop, removal deletes their local folders under
+`<data_dir>/agent-threads` and `<data_dir>/memory/members`, their agent
+schedules and their undelivered handoffs, and closes their threads. Private
+project transcripts and remote thread stages stay until the project or host is
+cleaned.
 Service connections are removed under their lock. Startup and re-entry resume
 unfinished removal. Self-revocation has the same anti-stranding rule. Rotation
 returns a replacement first. Operators cannot assign memberships to bypass a
@@ -673,7 +674,9 @@ outputs are excluded. Space transcripts at
 `<data_dir>/agent-threads/<user_id>/<thread_id>.jsonl` are captured through their
 last complete line; sibling thread stages stay excluded. Local memory notes
 under `<data_dir>/memory/<project_id>` are captured with their SQLite migration
-receipts; pending memory deletions are discarded on restore. Remote-base memory
+receipts; pending memory deletions are discarded on restore. Member memory under
+`<data_dir>/memory/members/<user_id>` is captured the same way. Restoring with a
+stale member's removal omits that member's transcripts and memory. Remote-base memory
 stays out of scope. Project transfer still excludes both roots. Archives predating
 these captures restore without Space transcripts or local memory. Private project
 transcripts are typed chats and are captured.
