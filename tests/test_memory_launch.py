@@ -235,9 +235,11 @@ def test_only_a_backend_private_thread_turn_adds_its_owner_notes(
         project_id="project",
         episode_id=episode_id,
         request={"chat_id": chat_id},
+        authorized_by=SimpleNamespace(user_id="alice"),
     )
     store = SimpleNamespace(
         path=tmp_path / "rcp.sqlite3",
+        space_id="space",
         agent_task=lambda _: task,
         agent_thread=lambda thread_id: thread if thread_id == "puck" else None,
     )
