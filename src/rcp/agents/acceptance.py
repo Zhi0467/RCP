@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
+ACCEPTANCE_SPACE_HANDOFF_MARKER = "[RCP acceptance: space handoff]"
 ACCEPTANCE_CAMPAIGN_FINISH_MARKER = "[RCP acceptance: campaign finish]"
 ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER = "[RCP acceptance: campaign spawn then finish]"
 ACCEPTANCE_CAMPAIGN_SPAWN_THEN_INTERRUPT_MARKER = "[RCP acceptance: campaign spawn then interrupt]"
@@ -78,6 +80,7 @@ class AcceptanceLaunchRecord:
     scenario: Literal[
         "experiment_loop",
         "generic_watchers",
+        "space_handoff",
         "campaign",
         "unsupported",
     ]
@@ -226,7 +229,6 @@ class AcceptanceAgentLauncher(AgentLauncher):
             binary,
             supervise_remote,
             supervisor_path,
-            operation_id,
             hidden_read_scope,
             shell_timeout_seconds,
         )
@@ -284,6 +286,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 if campaign_contract == ("report", "report")
                 else "turn"
             )
+        elif scenario == "space_handoff":
+            action = _space_handoff_action(state)
         else:
             action = _action(contract, state)
         watcher_count = 0
@@ -342,6 +346,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
             except _AcceptancePauseRequested:
                 yield AgentEvent(event="paused", text="Paused during acceptance fixture work.")
                 return
+        elif scenario == "space_handoff":
+            answer = await _accept_space_handoff_turn(resolved_cwd, state, contract, operation_id)
         elif action == "initial":
             focused_experiment_id = _focused_experiment_id(contract)
             _start_fixture_jobs(resolved_cwd)
@@ -406,7 +412,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 answer = "Inspected both completed fixture jobs; no graph Patch was needed."
             state["completed"] = True
             _write_state(resolved_cwd, state)
-        if scenario == "generic_watchers":
+        if scenario in {"generic_watchers", "space_handoff"}:
             _write_json(resolved_cwd / "outcome.json", {"status": "done"})
 
         self._record(
@@ -503,19 +509,109 @@ def _scenario(
 ) -> Literal[
     "experiment_loop",
     "generic_watchers",
+    "space_handoff",
     "campaign",
     "unsupported",
 ]:
     if _campaign_contract(contract) is not None:
         return "campaign"
     persisted = state.get("scenario")
-    if persisted in {"experiment_loop", "generic_watchers"}:
+    if persisted in {"experiment_loop", "generic_watchers", "space_handoff"}:
         return persisted
     if "# RCP Experiment-loop task contract" in contract:
         return "experiment_loop"
     if ACCEPTANCE_GENERIC_WATCHER_MARKER in prompt or ACCEPTANCE_GENERIC_WATCHER_MARKER in contract:
         return "generic_watchers"
+    if ACCEPTANCE_SPACE_HANDOFF_MARKER in prompt or ACCEPTANCE_SPACE_HANDOFF_MARKER in contract:
+        return "space_handoff"
     return "unsupported"
+
+
+def _space_handoff_action(state: dict[str, object]) -> Literal["initial", "turn", "wake"]:
+    """The Space state file names the Space roles; the delivered project turn has none."""
+
+    if state.get("scenario") != "space_handoff":
+        return "turn"
+    return "wake" if state.get("handed_off") else "initial"
+
+
+async def _accept_space_handoff_turn(
+    cwd: Path,
+    state: dict[str, object],
+    contract: str,
+    operation_id: str | None,
+) -> str:
+    """Hand work to the state file's project once, through the staged `handoff` command."""
+
+    action = _space_handoff_action(state)
+    if action == "turn":
+        return "Checked the project as the Space thread asked."
+    if action == "wake":
+        return "Read the project's handoff report."
+    project_id = state.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError("Acceptance Space handoff state names no project.")
+    if operation_id is None:
+        raise ValueError("Acceptance Space handoff turn has no operation id.")
+    message_file = "handoff-message.md"
+    _write_text_atomically(
+        cwd / message_file,
+        f"Check the latest run. {ACCEPTANCE_SPACE_HANDOFF_MARKER}\n",
+    )
+    response = await _run_campaign_argv(
+        _space_handoff_argv(
+            contract,
+            key=f"acceptance-handoff-{operation_id}",
+            project_id=project_id,
+            message_file=message_file,
+        )
+    )
+    result = response.get("result")
+    if (
+        response.get("status") != "ok"
+        or not isinstance(result, dict)
+        or result.get("state") not in {"pending", "delivered"}
+    ):
+        raise ValueError(f"Acceptance Space handoff was not accepted: {response}")
+    _write_state(cwd, {**state, "handed_off": True})
+    return "Handed the request to the project's agent."
+
+
+def _space_handoff_argv(
+    contract: str, *, key: str, project_id: str, message_file: str
+) -> list[str]:
+    """The contract's `handoff` usage, run by its command client without optional picks.
+
+    A usage line may close with a parenthesized note, which is no argument.
+    """
+
+    client = _space_command_client(contract)
+    usage = next(
+        (
+            line.split("`")[1].partition(" (")[0]
+            for line in contract.splitlines()
+            if line.startswith("- `handoff ")
+        ),
+        None,
+    )
+    if usage is None:
+        raise ValueError("Acceptance Space contract stages no handoff command.")
+    values = {"<key>": key, "<project-id>": project_id, "<message-file>": message_file}
+    argv = [client, *(values.get(word, word) for word in re.sub(r"\[[^]]*\]", "", usage).split())]
+    if any(word.startswith("<") for word in argv):
+        raise ValueError(f"Acceptance Space handoff usage has an unknown placeholder: {usage}")
+    return argv
+
+
+def _space_command_client(contract: str) -> str:
+    prefix = "Top-level command client: `"
+    lines = [line for line in contract.splitlines() if line.startswith(prefix)]
+    if len(lines) != 1:
+        raise ValueError("Acceptance Space contract names no single command client.")
+    client = lines[0][len(prefix) :].partition("`")[0]
+    if not client:
+        raise ValueError("Acceptance Space contract has an empty command client.")
+    return client
 
 
 def _campaign_contract(
