@@ -153,18 +153,32 @@
    card's frame marks where to type and shows focus. ComposerField sets the height
    from the text; the transition eases it. */
 .chat-composer-row {
-  align-items: flex-end;
-  display: flex;
+  align-items: end;
+  display: grid;
   flex-basis: 100%;
   gap: 4px;
+  grid-template-areas: "add field send";
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
 }
+/* Wrapped text takes the whole width; Add and the send actions sit beneath it. */
+.chat-composer-row:has(> textarea[data-stacked]) {
+  grid-template-areas:
+    "field field field"
+    "add . send";
+}
+.chat-composer-row > .chat-add-picker {
+  grid-area: add;
+}
+.chat-composer-row > .chat-send-actions {
+  grid-area: send;
+}
 .chat-composer-row > textarea {
+  grid-area: field;
   background: transparent;
   border: 0;
   border-radius: 0;
   box-shadow: none;
-  flex: 1 1 0;
   font-size: var(--type-base);
   line-height: 20px;
   max-height: 40vh;
