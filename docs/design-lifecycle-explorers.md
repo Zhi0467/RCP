@@ -18,6 +18,9 @@ Decided with the human on 2026-11-02:
 - A defect an explorer confirms is fixed in this PR at its root, with its trace
   as a regression case.
 - Deeper search comes from cheaper states; everything runs in PR CI. No new job.
+- A scan of the source keeps each machine's writer list complete. The human
+  asked how CI can guarantee every action is listed; the scan is that
+  guarantee, with its blind spots stated in §2.
 
 Extend `tests/lifecycle_explorer.py` (the handoff explorer) into a shared engine
 plus one module per machine.
@@ -28,9 +31,8 @@ plus one module per machine.
   logic, which drifts from the code, and need Java in CI. Rejected on
   2026-11-02 (D1 of the dev-flow PR).
 - **Hypothesis `RuleBasedStateMachine`.** Random sequences with shrinking; not
-  exhaustive, so a short bad order can be missed for many runs, and failures
-  are not reproducible from a seed in another environment. Kept in mind as a
-  later deep-walk tier.
+  exhaustive, so a short bad order can be missed for many runs. Kept in mind
+  as a later deep-walk tier.
 - **A pure-Python model per machine.** Fast, but it is the TLA+ drift problem
   in Python.
 - **Random long walks past the bound.** Cheap depth without guarantees.
@@ -53,22 +55,32 @@ class Machine(Protocol):
     bound: int                       # PR bound
     states: int                      # exact state count at that bound
     horizon: int                     # liveness look-ahead, default 3
-    covers: Mapping[object, str]     # Literal type -> view field it appears in
+    covers: Mapping[object, str]     # Literal type -> View field holding its values
+    tables: frozenset[str]           # tables whose rows are this machine's state
     writers: tuple[Callable, ...]    # product functions that change this machine's state
-    unreached: Mapping[object, str]  # status value or writer -> reason it is not reached
+    unreached_values: Mapping[str, str]       # status value -> why no state reaches it
+    unreached_writers: Mapping[Callable, str] # writer -> why no action calls it
     rules: tuple[Rule, ...]
+    reboot_per_step: bool            # True for machines that write graph history
 
     def seams(self) -> ContextManager[None]: ...   # patches for every engine it builds
     def start(self, root: Path) -> World: ...      # seeded start state in a fresh tree
     def actions(self, view: View) -> list[Action]: ...
     def apply(self, world: World, action: Action) -> None: ...
     def view(self, world: World) -> View: ...
-    def save_memory(self, world: World) -> object: ...      # timers, workers, decided, …
+    def files(self, world: World) -> list[Path]: ...        # files the state lives in
+    def save_memory(self, world: World) -> object: ...      # clock, timers, workers, decided, …
     def restore_memory(self, world: World, saved: object) -> None: ...
 ```
 
+`start(root)` receives a fresh tree; step 1 pulls a plain manifest builder out
+of the `manifest` fixture in `tests/conftest.py` so `start` can build one.
+
 - `World` holds the live store, engine and clock for one machine run.
 - An `Action` is a frozen dataclass: `name`, `args`, `environment: bool`.
+- A `View` is a `NamedTuple` per machine. A field holding many rows is a sorted
+  tuple of per-row tuples; coverage reads a `Literal`'s values from the field
+  `covers` names, across every row in it.
 - **Restart** is an ordinary action whose `apply` builds a new engine over the
   same store, drops in-memory state, and runs the machine's startup recovery.
 - **Clock:** every machine's view includes clock-relative fields (seconds to
@@ -80,23 +92,35 @@ and a `source` (spec heading, invariant number, or "code guard at
 <function>"):
 - `Safety(holds(world), applies(world))`
 - `Step(holds(before, world), applies(before, world))`
-- `Goal(reached(view), allowed: frozenset[str])`: from every state at depth
-  ≤ bound − horizon, some run of at most `horizon` actions from `allowed`
-  reaches it. `allowed` excludes restart where a stuck state must not need one
-  (for example "a `pausing` row settles": restart is not allowed).
+- `Goal(reached(view), allowed: frozenset[str] | None = None)`: from every
+  state at depth ≤ bound − horizon, some run of at most `horizon` actions
+  from `allowed` reaches it. The default is every environment action except
+  restart, so neither a restart nor a member action can hide a stuck state.
+  Each module lists any widened `allowed` set with its reason.
 
-**State save and restore.** The engine keeps one live `World` per machine run.
-A state's save is `sqlite3.Connection.backup` into an in-memory database, the
-bytes of the files the machine declares, and `save_memory`. A step restores by
-backing up the saved database into the live store's file (after closing the
-store's cached connections), rewriting the declared files, and calling
-`restore_memory`. No app boot per step.
+**State save and restore.** A state's save is `sqlite3.Connection.backup`
+into an in-memory database, the bytes of `files(world)`, and `save_memory`
+(which always holds the clock and the `store.now` binding).
+- Database-only machines (agent task, schedules) keep one live `World`. A step
+  backs the saved database up into the live store's file after closing its
+  cached connections, rewrites the declared files, and calls
+  `restore_memory`.
+- Machines that write graph history (handoff, episode, consolidation,
+  Proposals) set `reboot_per_step`: a step restores the same bytes, then
+  builds a fresh backend over them, as the handoff explorer does today. A live
+  app would keep stale history caches (`HistoryManager` revisions and
+  engines).
+- **Restore check:** for a fixed sample of edges per machine, the test also
+  replays the edge's trace from `start` on a fresh tree and asserts the view
+  equals the restored view. A missing file or memory field then fails CI.
 
-Step 1 measures this on the handoff machine, per edge. Target: ≤ 0.02 s per
-edge. Each machine's bound is the deepest that keeps its test ≤ 10 s locally
-(CI runners are about 2× slower, so ≤ 20 s there). If step 1 misses the
-target, bounds simply come out lower; the design does not depend on the
-number.
+Step 1 measures the cost per edge on handoff (reboot) and on the agent task
+(live), with a target of ≤ 0.02 s live. **Minimum bound:** each machine's bound
+must be at least horizon + 1 and at least the length of its longest suspected
+trace below. Its budget is ≤ 10 s locally (CI runners are about 2× slower).
+When the minimum does not fit, the machine first drops member actions that no
+rule or suspected trace needs, then lowers its horizon to 2, and only then
+exceeds the budget, with the reason in its docstring.
 
 ## 2. Checking the checks
 
@@ -105,25 +129,35 @@ that one `Exploration`:
 
 1. **No rule breaks** within the bound.
 2. **Every status value is reached.** For each `Literal` in `covers`, every
-   value appears in some explored view, or is in `unreached` with a reason.
-3. **Every declared writer runs.** During exploration the engine wraps each
-   function in `writers` with a call counter (a monkeypatch of that function
-   only). Each must run at least once, or be in `unreached` with a reason.
+   value appears in some explored view, or is in `unreached_values` with a
+   reason.
+3. **Every declared writer runs.** During exploration the engine counts calls
+   to each function in `writers` with `sys.monitoring` `PY_START` events on
+   that function's code object, so every call counts however it was imported
+   or bound. Each must run at least once, or be in `unreached_writers` with a
+   reason.
 4. **No rule is vacuous.** Each `Safety` and `Step` rule's `applies` was true
    in at least one explored state or edge; each `Goal` was checked from at
    least one state where it was not already reached.
 
 A fifth test, `tests/lifecycles/test_writers.py`, keeps the `writers` lists
-complete. It scans `src/rcp` with a regular expression for `UPDATE <table>`,
-`INSERT [OR …] INTO <table>` and `DELETE FROM <table>` in string literals and
-f-strings, plus calls to declared gates (`_transition_agent_task`), for the
-tables the six machines and the catalog name. Each enclosing function (by AST
-line range) must appear in some machine's `writers`, in the catalog, or in a
-short allowlist with a reason (migrations, backup-API restores). A table may be
-named by several machines; listing a writer once anywhere satisfies it. Its
-self-test runs the scan on a small source sample with an f-string `SET`, an
-`INSERT OR REPLACE`, a gate call and a `WHERE`-only mention, and asserts the
-exact set found.
+complete. It scans `src/rcp` string literals and f-strings with a regular
+expression for `UPDATE <t>`, `INSERT [OR …] INTO <t>` and `DELETE FROM <t>`,
+plus calls to declared gates (`_transition_agent_task`).
+- A literal `<t>` that is in some machine's or catalog entry's `tables` makes
+  the enclosing function (by AST line range) a writer of that table.
+- An interpolated `<t>` (`{table}`) is an unknown table: its function must be
+  declared somewhere or allowlisted, because the scan cannot tell which
+  machine it touches (project deletion and transfer loop over tables this
+  way).
+- Every such function must appear in some machine's `writers`, in a catalog
+  entry's writers, or in a short allowlist with a reason (migrations,
+  backup-API restores). Listing a writer once anywhere satisfies it.
+- Blind spots, stated in the test's docstring: a helper that receives the
+  table name as an argument, and SQL assembled outside one literal.
+- Its self-test runs the scan on a small sample with an f-string `SET`, an
+  `INSERT OR REPLACE`, an interpolated `{table}`, a gate call and a
+  `WHERE`-only mention, and asserts the exact set found.
 
 **Witnesses.** A rule gets a witness only where one is free: a real fix that a
 seam can revert, or a trace this PR confirms. The witness is a seam patch (the
@@ -131,9 +165,17 @@ same seams existing tests patch) or a seeded bad state, never a copied old
 function body. For `Safety` and `Step` rules the witness replays its trace
 with the patch and asserts the rule reports. For `Goal` rules it runs a
 bounded exploration (bound ≤ 3) under the patch and asserts the goal reports.
-Starting witnesses: the handoff's `3cb576199` startup re-arm and
-`retry_undecided`; consolidation's `b12897489` and `09f7519f6`; episode's
-`e87b06f58`.
+Starting witnesses, each with its seam:
+- handoff: stub `BackgroundAgentTasks._rearm_owed_transport_retries` to a
+  no-op (reverts `3cb576199`); stub `retry_undecided` to return False
+  (reverts the #368 race fix);
+- consolidation: seed the 0.4.35 queued request with `graph_target`
+  (`b12897489`) and a legacy archived consolidation chat row (`09f7519f6`);
+  both are seeded bad states, not code patches;
+- episode: stub `settle_ready_experiment_loop_stops` to skip failed and
+  paused leaves (reverts `e87b06f58`).
+Each builder confirms its seam reverts the fix before keeping the witness;
+one that cannot be reverted by a seam is dropped.
 
 ## 3. The six machines
 
@@ -207,8 +249,10 @@ stood-down-retry defect of `3ef7773ec` reachable.
 
 ### Proposals with approval cards (`tests/lifecycles/proposals.py`)
 - **Start:** the `filed` fixture of `tests/test_proposal_refresh.py`, moved to
-  a plain builder, plus one approve card built as `real_card(api, …,
-  action="approve")` does.
+  a plain builder, plus one card built as `real_card(api, action)` in
+  `tests/test_approval_cards.py` does, with `api` from `questions_api` over the
+  same app and `action = {"kind": "proposal", "project_id": …,
+  "proposal_id": PROPOSAL, "decision": "approved"}`.
 - **Actions:** agent files, agent withdraws, a dependency moves, member
   approves or rejects through Sync, refresh, ask card, tap (approve | decline
   | old hash), outage tap, claim then restart, expire, close thread.
@@ -251,7 +295,7 @@ file belongs to the machine's step.
 | Step | Owner files | Check |
 |---|---|---|
 | 1 | `tests/lifecycles/{__init__,engine,handoff,test_handoff}.py`, delete the two old files; measured cost per edge | `uv run pytest -n0 tests/lifecycles/test_handoff.py` |
-| 2 | completeness assertions and `test_writers.py`, against handoff | the two files |
+| 2 | completeness assertions and `test_writers.py`, against handoff; writers of other machines' tables sit in a temporary allowlist section | the two files |
 | 3a | `agent_task.py`, its test, `tests/test_background.py` builder move, fixes | its test, `tests/test_background.py`, tests for touched product modules |
 | 3b | `episode.py`, its test, `tests/test_experiment_stop.py` builder move, fixes | likewise |
 | 3c | `schedules.py`, its test, `tests/test_agent_schedules.py` builder move, fixes | likewise |
@@ -260,7 +304,9 @@ file belongs to the machine's step.
 | 4 | `catalog.py` | `test_writers.py` and basedpyright |
 | 5 | `docs/install.md` command, spec links, delete this file | `test_agent_instructions.py` |
 
-Steps 1 and 2 are serial. Steps 3a–3e run in parallel, each in its own
+Steps 1 and 2 are serial. Each step 3 and step 4 moves its machine's writers
+out of the temporary allowlist section; the last integration step asserts that
+section is empty and deletes it. Steps 3a–3e run in parallel, each in its own
 worktree, after step 2; step 4 runs alongside them. The integrator serializes
 defect fixes that touch the same product module.
 
@@ -270,7 +316,9 @@ defect fixes that touch the same product module.
   has its own test file, so `--dist loadfile` spreads them across workers.
 - **Exact state counts** break on view changes; that is deliberate, and the
   failure names the new count.
-- **Timing on loaded runners.** Bounds use half the CI budget locally.
+- **Timing on loaded runners.** Bounds are set against the local budget,
+  which is half the CI one; each machine's test also sets the faulthandler
+  hang guard the handoff test uses.
 - **Coupling.** Explorers patch private engine seams; an engine refactor must
   keep them green.
 - **Fix scope.** Eight suspected defects may grow the PR; each fix is its own
