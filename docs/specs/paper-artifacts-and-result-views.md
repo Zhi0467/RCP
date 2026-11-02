@@ -426,7 +426,9 @@ stays on one row until an action, avoiding chat motion. Frames mount near the
 reader in the chat scroll box. They refresh when turns settle, the version or
 visibility changes, and on a slow live interval. Live relay is one-way.
 
-Comment mode defaults off to preserve interaction. Readers can select with a
+An inline artifact opens in comment mode, whose dashed outline is also its
+visible edge. Done hands the page back for clicks and drags until the reader
+turns comment mode on again. Readers can select with a
 mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
 one artifact and version in the composer. Admission refuses moved versions.
 Cancel or Escape in the window discards its text. A cancel in the frame, a new

@@ -860,11 +860,6 @@
   color: var(--red);
   display: inline-flex;
 }
-.chat-inline-artifact-hint {
-  color: var(--cobalt-dark);
-  flex-basis: 100%;
-  order: 1;
-}
 .chat-inline-artifact-bar {
   align-items: center;
   color: var(--ink-soft);
