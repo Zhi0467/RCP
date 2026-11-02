@@ -650,7 +650,6 @@ def test_project_voice_entries_publish_and_memory_is_owner_bound(manifest, tmp_p
         assert client.post(path + "/voice-entries", json=body).json() == {"appended": 0}
         assert client.get(path + "/memory").json() == {
             "shared_index": "shared",
-            "private_index": "mine",
             "truncated": False,
         }
         service = app.state.catalog.open(project_id)

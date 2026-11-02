@@ -214,9 +214,8 @@ Project memory is Markdown on the project's base, outside Git, owned by
 `~/.rcp/memory/<project_id>/`. Launch creates it on demand using the existing
 remote transport where needed. Shared notes live in `shared/notes/`; the index
 is `shared/MEMORY.md`. Each index line links a note and gives a one-line hook.
-Notes begin with `# Title`. A member's private index is
-`members/<user_id>/MEMORY.md`. Voice reads it for its owner; no agent run
-receives a member folder as a write root.
+Notes begin with `# Title`. Memory is shared within the project; there is no
+member-private index.
 
 Ordinary project Work and Discuss chats, including private project threads,
 read and write `shared/`. Space-thread turns receive no memory root. Experiment,

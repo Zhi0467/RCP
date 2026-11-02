@@ -416,35 +416,31 @@ def test_rename_retries_on_next_launch_after_remote_failure(tmp_path, monkeypatc
     assert not Path(shared).exists()
 
 
-def test_voice_reads_only_bounded_shared_and_owner_indexes(tmp_path, monkeypatch):
+def test_voice_reads_only_the_bounded_shared_index(tmp_path, monkeypatch):
     from rcp import limits
     from rcp.agents.memory_files import read_project_memory_indexes
 
     store = AppStore(tmp_path / "rcp.sqlite3")
     root = project_memory_root(tmp_path, "project")
-    for folder, text in [
-        ("shared", "shared"),
-        ("members/member", "漢" * 20),
-        ("members/other", "secret"),
-    ]:
-        path = root / folder
-        path.mkdir(parents=True)
-        (path / "MEMORY.md").write_text(text)
+    (root / "shared").mkdir(parents=True)
+    (root / "shared/MEMORY.md").write_text("漢" * 20)
+    (root / "outside.md").write_text("outside")
     monkeypatch.setattr(limits, "MEMORY_INDEX_MAX_BYTES", 10)
-    result = read_project_memory_indexes(store, "project", "member")
-    assert result == {"shared_index": "shared", "private_index": "漢" * 3, "truncated": True}
-    (root / "members/member/MEMORY.md").unlink()
-    (root / "members/member/MEMORY.md").symlink_to(root / "members/other/MEMORY.md")
+    assert read_project_memory_indexes(store, "project") == {
+        "shared_index": "漢" * 3,
+        "truncated": True,
+    }
+    (root / "shared/MEMORY.md").unlink()
+    (root / "shared/MEMORY.md").symlink_to(root / "outside.md")
     with pytest.raises(OSError):
-        read_project_memory_indexes(store, "project", "member")
-    (root / "members/member/MEMORY.md").unlink()
+        read_project_memory_indexes(store, "project")
     (root / "shared/MEMORY.md").unlink()
     os.mkfifo(root / "shared/MEMORY.md")
     outcome: list[BaseException] = []
 
     def read() -> None:
         try:
-            read_project_memory_indexes(store, "project", "member")
+            read_project_memory_indexes(store, "project")
         except (OSError, ValueError) as exc:
             outcome.append(exc)
 
@@ -474,7 +470,7 @@ def test_voice_memory_remote_reads_the_base_using_shipped_owner(tmp_path, monkey
         )
 
     monkeypatch.setattr(stage, "_ssh_bytes", remote)
-    assert read_project_memory_indexes(store, "project", "member", stage) == {
+    assert read_project_memory_indexes(store, "project", stage) == {
         "shared_index": "remote shared",
         "truncated": False,
     }

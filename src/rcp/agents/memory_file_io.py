@@ -123,14 +123,11 @@ def change_project_files(data_dir: Path, project_id: str, destination: str | Non
         shutil.rmtree(root)
 
 
-def read_indexes(root: Path, user_id: str, max_bytes: int) -> dict:
-    """Read just the two authorized indexes, without following directory or file links."""
+def read_indexes(root: Path, max_bytes: int) -> dict:
+    """Read the shared index without following directory or file links."""
     import stat
 
-    paths = {
-        "shared_index": root / "shared" / "MEMORY.md",
-        "private_index": root / "members" / safe_component(user_id) / "MEMORY.md",
-    }
+    paths = {"shared_index": root / "shared" / "MEMORY.md"}
     result: dict = {"truncated": False}
     for key, path in paths.items():
         try:
@@ -166,7 +163,7 @@ def main() -> None:
         return
     if "read_indexes" in request:
         root = Path.home() / ".rcp" / "memory" / safe_component(request["project_id"])
-        print(json.dumps(read_indexes(root, request["user_id"], request["max_bytes"])))
+        print(json.dumps(read_indexes(root, request["max_bytes"])))
         return
     root = memory_root(data_dir, request["project_id"])
     size = prepare_files(root, request["lessons"]) if "lessons" in request else 0

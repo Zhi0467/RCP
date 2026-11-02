@@ -4149,7 +4149,6 @@ export interface AgentThreadVoiceEntry {
 
 export interface AgentThreadMemory {
   shared_index?: string | null;
-  private_index?: string | null;
   truncated: boolean;
 }
 

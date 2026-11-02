@@ -1114,9 +1114,9 @@ voice gets `thread_busy` and nothing is sent. `rcp_thread_memory()` reads the
 memory route below.
 
 `GET /api/agent-threads/{thread_id}/memory` returns the bound project's
-`shared_index?`, `private_index?` and `truncated`. Each index is bounded by
-`MEMORY_INDEX_MAX_BYTES`, read on the project base, and refuses symlinks. Only
-that member's private index is readable. A Space thread has no bound project
+`shared_index?` and `truncated`. The index is bounded by
+`MEMORY_INDEX_MAX_BYTES`, read on the project base, and refuses symlinks. A
+Space thread has no bound project
 and returns only `truncated: false`. Voice asks the backend agent to write memory.
 
 Each voice write (a conversation Send, an Experiment Start, an Auto-research

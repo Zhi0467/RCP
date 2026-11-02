@@ -159,9 +159,7 @@ def voice_memory(request: Request, thread_id: str):
     host = service.manifest.machine_map[service.manifest.base_machine].host
     remote = RemoteRunStage(host) if host else None
     try:
-        result = read_project_memory_indexes(
-            get_store(request), thread["project_id"], private.member_id, remote
-        )
+        result = read_project_memory_indexes(get_store(request), thread["project_id"], remote)
     except (OSError, ValueError):
         raise ConnectionError("thread_memory_unavailable", 503) from None
     owned_thread(private.store, thread_id, private.member_id)
