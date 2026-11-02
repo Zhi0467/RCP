@@ -137,7 +137,7 @@ def test_signed_out_experiment_retry_queues_child_without_spending_budget(tmp_pa
     root = tasks.start(
         "project",
         "node_chat",
-        _experiment_request().model_copy(update={"run_on": "local"}),
+        _experiment_request().model_copy(update={"run_on": "laptop"}),
         authorized_by=fabricated_authorizer(),
     )
     root = wait_for_task(store, root.operation_id, expect="failed")

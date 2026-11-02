@@ -1359,7 +1359,7 @@ def agent_login_accounts(
             if task is None or not task.request.get("provider"):
                 continue
             provider = str(task.request["provider"])
-            host = task_login_host(task, lambda: manifest)
+            host = task_login_host(store, task, lambda: manifest)
             pairs.add((provider, host))
     for provider, host in pairs:
         selected, _ = resolver.resolve_login(provider, host, viewer_id)

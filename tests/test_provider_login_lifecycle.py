@@ -18,7 +18,7 @@ from rcp.runs.provider_login import (
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.models import EpisodeMode, EpisodeRecord, LoginKey
 
-from .helpers import fabricated_authorizer, fake_launch_admitted
+from .helpers import fabricated_authorizer, fake_launch_admitted, write_local_test_manifest
 from .test_provider_login_resolver import _login, _task
 from .test_provider_login_resolver import accounts as accounts
 
@@ -27,7 +27,7 @@ def _project(store):
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="unused",
+            locator=str(write_local_test_manifest(store.path.parent)),
             name="project",
             state_location="unused",
             state_remote=False,

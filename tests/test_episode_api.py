@@ -220,7 +220,7 @@ def create_terminal_auto_episode(
         provider="codex",
         model="test-model",
         reasoning="medium",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=["repo-a"],
         instruction=starting_instruction,
     )

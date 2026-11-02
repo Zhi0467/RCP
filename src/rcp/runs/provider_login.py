@@ -39,20 +39,52 @@ class MachineDependenciesMissing(AdmissionRefused):
     """The execution machine lacks a required program or is unsupported."""
 
 
-def provider_login_host(manifest: Manifest, run_on: str | None) -> str:
-    if run_on in {None, "local"}:
-        return ""
+def provider_login_host(manifest: Manifest, run_on: str) -> str:
+    """The host a project machine alias names in `manifest`."""
     machine = manifest.machine_map.get(run_on)
     if machine is None:
         raise ValueError(f"unknown execution machine: {run_on}")
     return machine.host or ""
 
 
-def task_login_host(task: AgentTaskRecord, manifest: Callable[[], Manifest]) -> str:
+def run_on_host(
+    store: AppStore,
+    project_id: str,
+    run_on: str | None,
+    manifest: Callable[[], Manifest] | None = None,
+) -> str:
+    """The host a task's `run_on` names.
+
+    A Space task names a Space machine card by id. A project task names a machine
+    alias in its manifest, read from the project unless `manifest` is given.
+    None names the owner's default machine: the backend for the Space, and for a
+    project the base machine every agent profile runs on.
+    """
+    if project_id == store.space_id:
+        if run_on is None:
+            return ""
+        try:
+            return store.space_machine(run_on).host
+        except KeyError:
+            raise ValueError(f"unknown execution machine: {run_on}") from None
+    if manifest is None:
+        project = store.project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        loaded = load_manifest(project.locator)
+    else:
+        loaded = manifest()
+    return provider_login_host(loaded, run_on or loaded.base_machine)
+
+
+def task_login_host(
+    store: AppStore, task: AgentTaskRecord, manifest: Callable[[], Manifest]
+) -> str:
     """Prefer a captured stage host; resolve queued tasks from their execution target."""
     if task.stage_host is not None or task.stage_root is not None:
         return task.stage_host or ""
-    return provider_login_host(manifest(), str(task.request.get("run_on") or "local"))
+    run_on = task.request.get("run_on")
+    return run_on_host(store, task.project_id, str(run_on) if run_on else None, manifest)
 
 
 @dataclass
@@ -80,7 +112,7 @@ def parked_provider_work(
         if task is None or not task.request.get("provider"):
             continue
         try:
-            host = task_login_host(task, manifest)
+            host = task_login_host(store, task, manifest)
         except (OSError, ValueError):
             logging.getLogger(__name__).warning(
                 "Provider login skipped an unavailable queued execution target."

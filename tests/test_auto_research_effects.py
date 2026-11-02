@@ -75,7 +75,12 @@ from rcp.storage import (
 )
 from rcp.storage.auto_research_children import auto_research_inbox_projection
 
-from .helpers import CommandFileMailbox, fabricated_authorizer, wait_for_task
+from .helpers import (
+    CommandFileMailbox,
+    fabricated_authorizer,
+    wait_for_task,
+    write_local_test_manifest,
+)
 
 MAILBOX_ID = "a" * 32
 CREDENTIAL = "b" * 64
@@ -137,7 +142,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
     store.upsert_project(
         ProjectRecord(
             project_id="project",
-            locator="/tmp/project/research.yaml",
+            locator=str(write_local_test_manifest(tmp_path)),
             name="project",
             state_location="/tmp/project/.research",
             state_remote=False,
@@ -152,7 +157,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
         role="orchestrator",
         actor_operation_id="root",
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=_RUN_TRUTH_SCOPE,
     )
     episode, root = store.create_auto_research_episode_with_root_task(
@@ -221,7 +226,7 @@ def _worker_request(
 ) -> RunRequest:
     return RunRequest(
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         chat_id=worker_id,
         chat_scope="node",
@@ -248,7 +253,7 @@ def _create_worker(
         role="worker",
         actor_operation_id=operation_id,
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         control_node_id="blk/check",
         instruction="Resolve the blocker.",
@@ -289,7 +294,7 @@ def _create_routed_worker(
     instruction = "Resolve the blocker."
     request = RunRequest(
         provider="codex",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         chat_id=operation_id,
         chat_scope="node",
@@ -1262,7 +1267,7 @@ def test_spawn_uses_the_planned_id_and_ordinary_work_route(tmp_path) -> None:
     assert worker.request["mode"] == "work"
     assert worker.request["trigger"] == "orchestrator"
     assert worker.request["provider"] == "codex"
-    assert worker.request["run_on"] == "local"
+    assert worker.request["run_on"] == "laptop"
     route = store.auto_research_child_work(planned_worker_id)
     assert route is not None
     assert route.admitted_by_operation_id == root.operation_id

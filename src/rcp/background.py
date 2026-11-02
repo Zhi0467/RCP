@@ -18,7 +18,6 @@ from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -71,7 +70,7 @@ from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
     ProviderSignedOut,
-    provider_login_host,
+    run_on_host,
 )
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.provider_usage import record_provider_usage
@@ -508,13 +507,7 @@ class BackgroundAgentTasks:
             )
         host = execution_host
         if host is None:
-            if request.run_on in {None, "local"}:
-                host = ""
-            else:
-                project = self.store.project(project_id)
-                if project is None:
-                    raise KeyError(project_id)
-                host = provider_login_host(load_manifest(project.locator), request.run_on)
+            host = run_on_host(self.store, project_id, request.run_on)
         accounts = ProviderAccounts.for_store(self.store)
         resolved, _ = accounts.resolve_launch_login(
             request.provider,
@@ -892,7 +885,9 @@ class BackgroundAgentTasks:
         thread = self.store.agent_thread(str(previous.request.get("chat_id") or ""))
         if thread is not None and thread.agent and provider is model is reasoning is run_on is None:
             # A thread's stored pick replaces the failed turn's agent, as the member chose.
-            pick = thread.agent
+            from rcp.runs.agent_thread_commands import thread_agent
+
+            pick = thread_agent(self.store, thread)
             provider, run_on = pick["provider"], pick["run_on"]
             model, reasoning = pick["model"] or "", pick["reasoning"] or ""
         if (
@@ -2511,17 +2506,13 @@ class BackgroundAgentTasks:
             )
 
     def _bound_execution_host(self, operation_id: str, request: AgentTaskRequest) -> str:
-        """The host a request runs on, or "" when it is local or cannot be resolved."""
+        """The host a request runs on, or "" when it is the backend or cannot be resolved."""
 
-        run_on = getattr(request, "run_on", None)
-        if run_on in {None, "local"}:
-            return ""
         record = self.store.agent_task(operation_id)
-        project = self.store.project(record.project_id) if record is not None else None
-        if project is None:
+        if record is None:
             return ""
         try:
-            return provider_login_host(load_manifest(project.locator), run_on)
+            return run_on_host(self.store, record.project_id, getattr(request, "run_on", None))
         except (OSError, ValueError, KeyError):
             return ""
 
