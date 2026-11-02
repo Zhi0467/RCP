@@ -451,12 +451,20 @@ def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
 
 @pytest.mark.parametrize(
     "written, status",
-    [(None, "not_stated"), ("{not json", "could_not"), ('{"status": "nope"}', "could_not")],
+    [
+        (None, "not_stated"),
+        ("{not json", "could_not"),
+        ('{"status": "nope"}', "could_not"),
+        ("link", "could_not"),
+    ],
 )
 def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written, status):
     from rcp.runs.space_chat import settle_space_turn_outcome
 
-    if written is not None:
+    if written == "link":
+        (tmp_path / "elsewhere.json").write_text('{"status": "done"}')
+        (tmp_path / "outcome.json").symlink_to(tmp_path / "elsewhere.json")
+    elif written is not None:
         (tmp_path / "outcome.json").write_text(written)
     # Project updates may already have applied; the turn still settles. An answer
     # with no outcome file is unstated, as in project Work, not a failure.
