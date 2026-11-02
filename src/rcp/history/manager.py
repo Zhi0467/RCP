@@ -1942,7 +1942,7 @@ class HistoryManager:
 
     @staticmethod
     def _atomic_text(path: Path, content: str) -> None:
-        """Publish one canonical file whole or not at all.
+        """Publish one canonical file whole or not at all (invariant 7).
 
         Every Patch, manifest, and materialized output under the state
         repository is written here: same-directory temporary file, fsync,

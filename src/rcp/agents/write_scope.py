@@ -1,4 +1,4 @@
-"""Exact filesystem write roots for Work-like launches.
+"""Exact filesystem write roots for Work-like launches (invariant 5).
 
 Context, graph target, and write scope are distinct: a repository pointer or
 graph context in the prompt grants no filesystem authority, and the scope is

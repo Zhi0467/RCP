@@ -144,7 +144,7 @@ class AgentStatusDelta(BaseModel):
 
 @dataclass(frozen=True)
 class ProviderStreamEvent:
-    """One decoded provider event.
+    """One decoded provider event (invariant 11).
 
     `answer` is the provider's labelled final assistant message, the human's
     reply; every other assistant item, in-flight partial, reasoning, command or
