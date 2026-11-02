@@ -116,10 +116,11 @@ def test_space_runtime_real_storage_and_partial_apply(
 
     async def prepare_policy(service, *args, **kwargs):
         if broken == "hidden" and service.history.project_id == unavailable_id:
-            from rcp.agents.hidden_read import HiddenFolderRejected
+            from rcp.agents.provider_environment import unhidden_read_scope
 
-            # One project's read-hiding failure leaves it out, not the whole turn.
-            raise HiddenFolderRejected(code="invalid_hidden_folder")
+            # Shared preparation's unhidden fallback leaves that project out, never
+            # widening the whole turn.
+            return unhidden_read_scope(execution_machine="local", host="")
         return default_space_hidden_read_scope(owner, request, kwargs["workspace"], execution)
 
     monkeypatch.setattr("rcp.runs.shared._prepare_hidden_read_scope", prepare_policy)
@@ -137,6 +138,7 @@ def test_space_runtime_real_storage_and_partial_apply(
         }
         scope = kwargs["write_scope"]
         assert len(scope.projects) == project_count
+        launched.append((scope, execution.git_access))
         assert stage.parent == tmp_path / "data" / "agent-threads" / human.user_id / "stages"
         assert not any(
             stage.is_relative_to(root) for root in kwargs["hidden_read_scope"].hidden_directories
@@ -176,11 +178,26 @@ def test_space_runtime_real_storage_and_partial_apply(
 
     monkeypatch.setattr(app.state.launcher, "stream", provider)
 
+    from rcp.agents.git_access import ProviderGitAccess
+
+    async def no_checkout_access(checkouts, *, host=""):
+        return []
+
+    monkeypatch.setattr("rcp.agents.git_access.ensure_team_checkout_access", no_checkout_access)
+    launched = []
+
     async def run():
         return [
             frame
             async for frame in stream_space_chat_run(
-                owner, app.state.launcher, request, tmp_path / "data", execution
+                owner,
+                app.state.launcher,
+                request,
+                tmp_path / "data",
+                execution,
+                project_git_access=lambda project_id, _service: ProviderGitAccess(
+                    None, tmp_path, "", ((project_id, "key"),)
+                ),
             )
         ]
 
@@ -222,6 +239,11 @@ def test_space_runtime_real_storage_and_partial_apply(
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
     if broken in {"unavailable", "missing", "remote", "hidden"}:
+        # An excluded project reaches neither the write scope, Git, nor a mailbox.
+        scope, git_access = launched[0]
+        assert unavailable_id not in {item.project_id for item in scope.projects}
+        assert unavailable_id not in {repository for repository, _ in git_access.checkouts}
+        assert not (Path(execution.stage_root) / "projects" / unavailable_id / "rcp").exists()
         # A project the turn cannot write is named to the agent, for handoff.
         (master,) = (Path(execution.stage_root) / "inputs").glob("space-master-*.md")
         assert str(master) in prompts[0] and f'"{unavailable_id}"' in master.read_text()
@@ -344,3 +366,29 @@ def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
     assert seed.index("older") < seed.index("newer") and "x" * 100 not in seed
     assert _space_seed(fresh.model_copy(update={"session_id": "s"}), prior) == ""
     assert _space_seed(fresh, None) == ""
+
+
+def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.runs.agent_threads import staged_history_seed
+    from rcp.runs.space_chat import _space_seed
+    from rcp.service import RunRequest
+
+    prior = SimpleNamespace(
+        messages=[
+            SimpleNamespace(role="user", text=f"turn {index} " + "y" * 1500) for index in range(40)
+        ]
+    )
+    fresh = RunRequest(message="m", mode="work")
+    tail = _space_seed(fresh, prior)
+    assert len(tail) > 30_000
+    pointer = asyncio.run(
+        staged_history_seed(
+            None, fresh, None, tail, prepare_scope=None, local_stage=tmp_path, remote_stage=None
+        )
+    )
+    # The prompt carries one short pointer; the staged file holds the newest tail.
+    assert len(pointer) < 1000
+    (staged,) = (tmp_path / "inputs").glob("thread-history-*.md")
+    assert str(staged) in pointer and "turn 39 " in staged.read_text()

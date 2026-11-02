@@ -293,6 +293,28 @@ class CompositeWriteScope:
     def protected_write_paths(self) -> list[str]:
         return sorted({root for scope in self.projects for root in scope.protected_write_paths})
 
+    # The union a write-boundary prompt renders, read from the scopes it enforces.
+    @property
+    def repositories(self) -> list[WritableRepositoryRoot]:
+        roots = {
+            (item.alias, item.machine, item.path): item
+            for scope in self.projects
+            for item in scope.repositories
+        }
+        return [roots[key] for key in sorted(roots)]
+
+    @property
+    def git_metadata_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.git_metadata_roots})
+
+    @property
+    def granted_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.granted_roots})
+
+    @property
+    def episode_worktree(self) -> None:
+        return None
+
     @property
     def absent_protected_paths(self) -> list[str]:
         return sorted({root for scope in self.projects for root in scope.absent_protected_paths})
