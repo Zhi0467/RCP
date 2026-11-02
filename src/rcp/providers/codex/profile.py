@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.limits import CODEX_DENY_GLOB_SCAN_MAX_DEPTH
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -508,11 +509,11 @@ def _codex_read_denials(hidden_read_scope: HiddenReadScope | None = None) -> str
     )
     # A missing path has nothing to hide, and naming one would make Codex
     # create a stand-in for it (see `_codex_permission_profile`).
-    return ",".join(
-        f'{json.dumps(path)}="deny"'
-        for path in paths
-        if path not in hidden_read_scope.absent_entries
-    )
+    present = [path for path in paths if path not in hidden_read_scope.absent_entries]
+    denials = [f'{json.dumps(path)}="deny"' for path in present]
+    if any("**" in path for path in present):
+        denials.append(f"glob_scan_max_depth={CODEX_DENY_GLOB_SCAN_MAX_DEPTH}")
+    return ",".join(denials)
 
 
 def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, object]:

@@ -2265,12 +2265,14 @@ _BASH_TTY_NOISE = (
     "cannot set terminal process group",
     "no job control in this shell",
 )
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
 def _meaningful_stderr(stderr: str) -> str:
+    # Providers color their logs for a terminal; a human reads this in a card.
     kept = [
         line
-        for line in stderr.strip().splitlines()
+        for line in _ANSI_ESCAPE.sub("", stderr).strip().splitlines()
         if not any(noise in line for noise in _BASH_TTY_NOISE)
     ]
     return "\n".join(kept).strip()
