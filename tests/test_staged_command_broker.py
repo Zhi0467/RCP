@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from rcp import limits
 from rcp.agents import staged_command_broker as broker
+from rcp.agents.command_mailbox import stage_command_mailbox
 
 
 def test_standalone_wait_reads_only_ready_input_until_eof(monkeypatch) -> None:
@@ -78,3 +79,36 @@ raise AssertionError('stdin must remain open until the signal exits the broker')
         for pipe in (process.stdin, process.stdout, process.stderr):
             if pipe is not None:
                 pipe.close()
+
+
+def test_broker_exits_cleanly_while_the_backend_keeps_stdin_open(tmp_path: Path) -> None:
+    # The stdin relay still holds stdin's buffer when the provider exits.
+    # Interpreter finalization used to abort there, once per agent turn.
+    staged = stage_command_mailbox(
+        local_stage=tmp_path, remote_stage=None, episode_id="e", task_id="t", turn_id="turn"
+    )
+    gate = staged.invocation_gate
+    assert gate is not None
+    process = subprocess.Popen(
+        gate.wrap_command([sys.executable, "-c", "print('answer')"]),
+        cwd=gate.workspace,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(gate.bootstrap(b""))
+        process.stdin.flush()
+        assert process.stdout.read().splitlines() == [gate.ready_line.encode(), b"answer"]
+        assert process.wait(timeout=10) == 0
+        assert process.stderr is not None
+        assert process.stderr.read() == b""
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        staged.cleanup()

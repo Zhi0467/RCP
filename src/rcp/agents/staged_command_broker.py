@@ -742,4 +742,14 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        exit_code = main()
+    except SystemExit as stopped:
+        exit_code = stopped.code
+    # The stdin relay thread can still hold stdin's buffer while the backend
+    # keeps the pipe open, and interpreter finalization then aborts. `main`
+    # has already cleaned up, so flush and leave without finalizing.
+    for stream in (sys.stdout, sys.stderr):
+        with suppress(OSError, ValueError):
+            stream.flush()
+    os._exit(exit_code if isinstance(exit_code, int) else 1)
