@@ -921,3 +921,261 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await server.close();
   }
 });
+
+/** One served fixture per test; `run` gets the browser and the fixture's base URL. */
+async function withFixture(run) {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    await run(
+      browser,
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html`,
+    );
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+}
+
+const codexReadiness = {
+  ...readiness,
+  provider: "codex",
+  label: "Codex",
+  binary_path: "/bin/codex",
+  models: [{ id: "gpt-6.1-sol", label: "gpt-6.1-sol", reasoning: ["low", "medium"] }],
+};
+
+test("Space and project threads pick their agent from one row in the thread menu", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      await page.route("**/api/space/machines", (route) =>
+        route.fulfill({
+          json: {
+            machines: [
+              {
+                machine_id: "local",
+                host: "",
+                provider_readiness: { claude: readiness, codex: codexReadiness },
+              },
+            ],
+          },
+        }),
+      );
+      for (const [hash, name] of [
+        ["space", "Pip"],
+        ["moss", "Moss"],
+      ]) {
+        await page.goto(`${base}#/agent/${hash}`);
+        const thread = page.getByRole("region", { name });
+        await thread.getByRole("textbox", { name: "Message" }).waitFor();
+        // The composer carries no picker of its own, and no picker panel sits outside the menu.
+        assert.equal(await thread.locator(".chat-composer .agent-config-chip").count(), 0);
+        assert.equal(await thread.locator(".agent-config").count(), 0);
+        await thread.getByRole("button", { name: "Thread menu" }).click();
+        const menu = page.getByRole("menu", { name: "Thread menu" });
+        const row = menu.getByRole("button", { name: new RegExp(`^${name} agent:`) });
+        await row.waitFor();
+        assert.equal(await row.getAttribute("aria-expanded"), "false");
+        await row.click();
+        assert.equal(await row.getAttribute("aria-expanded"), "true");
+        assert.equal((await menu.locator(".agent-config select").count()) >= 2, true);
+        await page.waitForTimeout(200);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+        if (shots) await page.screenshot({ path: `${shots}/menu-picker-${hash}-${width}.png` });
+        if (hash === "space") {
+          // A provider chosen here goes with the next turn.
+          await menu.locator(".agent-config select").first().selectOption("codex");
+          assert.match(await row.textContent(), /Codex/);
+          await page.keyboard.press("Escape");
+          await thread.getByRole("textbox", { name: "Message" }).fill("Plan the sweep");
+          await thread.getByRole("button", { name: "Send", exact: true }).click();
+          await page.waitForFunction(
+            () => document.querySelector('textarea[aria-label="Message"]').value === "",
+          );
+          const turn = writes.find((write) => write.path === "/api/agent-threads/space/turns");
+          assert.equal(turn.body.provider, "codex");
+        } else {
+          // Unpicked, the next turn names exactly what the row shows: the last turn's agent.
+          assert.match(await row.textContent(), /Claude · opus · high/);
+          await page.keyboard.press("Escape");
+          await thread.getByRole("textbox", { name: "Message" }).fill("Next");
+          await thread.getByRole("button", { name: "Send", exact: true }).click();
+          await page.waitForFunction(() =>
+            document.querySelector(".chat-send-button:not(:has(.spin))"),
+          );
+          const turn = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
+          assert.deepEqual(
+            [turn.body.provider, turn.body.model, turn.body.reasoning],
+            ["claude", "opus", "high"],
+          );
+        }
+        assert.equal(await menu.count(), 0);
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("a failed turn shows its error once, in the transcript column, with Retry", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      await page.route("**/api/projects/p1/chats/moss", (route) =>
+        route.fulfill({
+          json: transcript("moss", [message("f1", "user", "Run the 64k sweep", "op-fail")]),
+        }),
+      );
+      await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+        route.fulfill({ json: [] }),
+      );
+      await page.route("**/api/projects/p1/tasks/op-fail", (route) =>
+        route.fulfill({
+          json: {
+            ...settled("op-fail"),
+            created_at: ago(29),
+            failed: true,
+            can_retry: true,
+            error: "The provider exited before answering.",
+            status_message: "The provider exited before answering.",
+          },
+        }),
+      );
+      await page.goto(`${base}#/agent/moss`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      const failure = thread.locator(".node-chat-line.error");
+      await failure.waitFor();
+      assert.equal(await thread.getByText("The provider exited before answering.").count(), 1);
+      assert.equal(await thread.locator(".chat-task-inline.paused").count(), 0);
+      const retry = failure.getByRole("button", { name: "Retry" });
+      assert.equal(await thread.getByRole("button", { name: "Retry" }).count(), 1);
+      const column = async () => {
+        const human = await thread.locator(".node-chat-line.human").boundingBox();
+        const error = await failure.boundingBox();
+        return { human, error };
+      };
+      const sameColumn = ({ human, error }) =>
+        Math.abs(human.x - error.x) < 1 && Math.abs(human.width - error.width) < 1;
+      assert.ok(sameColumn(await column()), "the error sits in the message column");
+      await page.waitForTimeout(150);
+      if (shots) await page.screenshot({ path: `${shots}/failed-turn-${width}.png` });
+      if (width > 560) {
+        await page.getByRole("button", { name: "Collapse agent list" }).click();
+        await page.waitForTimeout(250);
+        assert.ok(sameColumn(await column()), "folding keeps the error in the column");
+        if (shots) await page.screenshot({ path: `${shots}/failed-turn-folded-${width}.png` });
+        await page.getByRole("button", { name: "Expand agent list" }).click();
+      }
+      const retried = page.waitForRequest(
+        (request) =>
+          request.method() === "POST" &&
+          new URL(request.url()).pathname === "/api/projects/p1/tasks/op-fail/retry",
+      );
+      await retry.click();
+      await retried;
+      await page.close();
+    }
+  });
+});
+
+test("thread switches keep the last view, a failed load retries, and notices clear", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const writes = [];
+    await mockApi(page, writes);
+    // The Space transcript's first read fails; the next is held until released.
+    let spaceReads = 0;
+    let releaseSpace = () => {};
+    await page.route("**/api/agent-threads/space/transcript", async (route) => {
+      spaceReads += 1;
+      if (spaceReads === 1)
+        return route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+      if (spaceReads === 3) await new Promise((resolve) => (releaseSpace = resolve));
+      return route.fallback();
+    });
+    await page.goto(`${base}#/agent/space`);
+    const space = page.getByRole("region", { name: "Pip" });
+    const loadError = space.locator(".node-chat-line.error");
+    await loadError.waitFor();
+    await loadError.getByRole("button", { name: "Retry" }).click();
+    await space.locator(".chat-progress").waitFor();
+    assert.equal(await loadError.count(), 0);
+
+    // Back from Moss, Pip's transcript shows at once while its reload is held.
+    const rail = page.getByRole("listbox", { name: "Threads" });
+    await rail.getByRole("option").nth(1).click();
+    await page
+      .getByRole("region", { name: "Moss" })
+      .getByRole("button", { name: "Approve" })
+      .waitFor();
+    await rail.getByRole("option").first().click();
+    await space.locator(".chat-progress").waitFor({ timeout: 300 });
+    assert.equal(await space.locator(".node-chat-lines > [role=status] .spin").count(), 0);
+    assert.equal(spaceReads, 3, "the reload is still held");
+    releaseSpace();
+
+    // A failed browser toggle leaves a notice; the next successful one clears it.
+    let browserCalls = 0;
+    await page.route("**/api/agent-threads/space/browser", (route) => {
+      browserCalls += 1;
+      return browserCalls === 1
+        ? route.fulfill({ status: 500, contentType: "application/json", body: "{}" })
+        : route.fulfill({ json: { browser_requested: false } });
+    });
+    const menu = space.getByRole("button", { name: "Thread menu" });
+    const browserItem = page.getByRole("menuitem", { name: /browser/i });
+    await menu.click();
+    await browserItem.click();
+    const notice = space.locator(".node-chat-lines > .node-chat-line.error[role=alert]");
+    await notice.waitFor();
+    await menu.click();
+    await browserItem.click();
+    await notice.waitFor({ state: "detached" });
+
+    // Escape keeps the name; Enter renames once.
+    const name = space.getByRole("textbox", { name: "Agent name" });
+    for (const key of ["Escape", "Enter"]) {
+      await menu.click();
+      await page.getByRole("menuitem", { name: "Rename" }).click();
+      await name.fill("Pippa");
+      await name.press(key);
+      await page.waitForTimeout(200);
+    }
+    assert.equal(writes.filter((write) => write.path.endsWith("/title")).length, 1);
+
+    // A disabled Send says why on hover.
+    await space.getByRole("textbox", { name: "Message" }).fill("");
+    const send = space.getByRole("button", { name: "Send", exact: true });
+    assert.equal(await send.isDisabled(), true);
+    assert.ok(await send.getAttribute("title"));
+    assert.deepEqual(errors, []);
+    await page.close();
+
+    // Phone: Upcoming and See details reach the touch target.
+    const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+    await mockApi(phone, []);
+    await phone.goto(`${base}#/agent/moss`);
+    const moss = phone.getByRole("region", { name: "Moss" });
+    await moss.getByRole("button", { name: "Approve" }).waitFor();
+    for (const control of [
+      moss.getByRole("button", { name: /upcoming$/ }),
+      moss.getByRole("button", { name: "See details" }),
+    ])
+      assert.ok((await control.boundingBox()).height >= 44);
+    await phone.close();
+  });
+});

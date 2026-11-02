@@ -2,6 +2,7 @@
 // progress line, approval card titles and the Upcoming list.
 
 import type {
+  AgentRunConfig,
   AgentSchedule,
   AgentTask,
   AgentThread,
@@ -192,6 +193,25 @@ export function latestTurnId(messages: readonly ChatMessage[]): string | null {
     if (id) return id;
   }
   return null;
+}
+
+/**
+ * The agent the next turn uses before the member picks one: the thread's newest
+ * turn's provider, model and effort, else the default. A switch is a pick.
+ */
+export function nextTurnConfig(
+  messages: readonly ChatMessage[] | null,
+  fallback: AgentRunConfig,
+): AgentRunConfig {
+  const last = [...(messages ?? [])].reverse().find((message) => message.provider);
+  return last
+    ? {
+        ...fallback,
+        provider: last.provider!,
+        model: last.model ?? "",
+        reasoning: last.reasoning ?? "",
+      }
+    : fallback;
 }
 
 /** The browser's IANA zone, sent with each message so schedules default to it. */
