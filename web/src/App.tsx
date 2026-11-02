@@ -234,7 +234,6 @@ import { AgentTaskInspector } from "./agents/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./graph/AttentionRail";
 import { ConsolidationInbox } from "./projects/ConsolidationInbox";
 import {
-  CONSOLIDATION_SETTINGS_ANCHOR,
   consolidationAttentionCount,
   consolidationNeedsRenewal,
   openConsolidationItems,
@@ -1131,6 +1130,23 @@ function MemberApp({
     loading,
     getActiveProjectId,
   });
+  // The pane an entry point asked Project settings to open on. It names its
+  // project, so switching projects starts the next one on its first section.
+  const [projectSettingsSection, setProjectSettingsSection] = useState<{
+    projectId: string;
+    section: string;
+  } | null>(null);
+  const openProjectSettings = (section: string) => {
+    if (projectId) setProjectSettingsSection({ projectId, section });
+    changeView("settings");
+  };
+  useEffect(
+    () =>
+      setProjectSettingsSection((current) =>
+        view === "settings" && current?.projectId === projectId ? current : null,
+      ),
+    [view, projectId],
+  );
   const panelKey = JSON.stringify([backendKey, projectId, graphTarget, view, panelReadAttempt]);
   // Pins are fetched only where their tabs are shown.
   const pinsProfile =
@@ -5435,14 +5451,7 @@ function MemberApp({
                         await resolveConsolidationRun(apiBase, runId, action);
                         refreshConsolidation();
                       }}
-                      onOpenSettings={() => {
-                        changeView("settings");
-                        window.requestAnimationFrame(() =>
-                          document
-                            .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
-                            ?.scrollIntoView({ block: "center" }),
-                        );
-                      }}
+                      onOpenSettings={() => openProjectSettings("consolidation")}
                     />
                   </div>
                   <AttentionRail
@@ -5538,7 +5547,7 @@ function MemberApp({
                     onOpenSignIns={openSignIns}
                     machines={project.machines}
                     computeApiBase={apiBase}
-                    onOpenSettings={() => changeView("settings")}
+                    onOpenSettings={() => openProjectSettings("machines")}
                     graph={presentedGraph}
                     episodes={episodes}
                     episodeAction={episodeAction}
@@ -5640,6 +5649,11 @@ function MemberApp({
                 <ProjectSettings
                   apiBase={apiBase}
                   project={project}
+                  initialSection={
+                    projectSettingsSection?.projectId === project.id
+                      ? projectSettingsSection.section
+                      : undefined
+                  }
                   identity={actorIdentity}
                   onLeftProject={() => {
                     closeProjectRoute(project.id);
