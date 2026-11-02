@@ -12,6 +12,7 @@ from rcp.approval_actions import ApprovalAction
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.history.queries import parse_head
 from rcp.limits import (
+    AGENT_SCHEDULE_MAX_COUNT,
     AGENT_SCHEDULE_NOTE_MAX_CHARS,
     ASK_ANSWER_MAX_LENGTH,
     ASK_CHOICE_MAX_COUNT,
@@ -730,27 +731,35 @@ class AskCommandRequest(_CommandRequest):
 
 class ScheduleArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    action: Literal["add", "list", "cancel"]
+    action: Literal["add", "list", "cancel", "pause", "resume"]
     cron: str | None = None
+    every: str | None = Field(default=None, min_length=1, max_length=40)
     at: str | None = None
+    start: str | None = None
+    until: str | None = None
+    count: int | None = Field(default=None, ge=1, le=AGENT_SCHEDULE_MAX_COUNT)
     timezone: str | None = None
     note: str | None = Field(default=None, min_length=1, max_length=AGENT_SCHEDULE_NOTE_MAX_CHARS)
     schedule_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def fields_match_action(self) -> ScheduleArguments:
+        times = (self.cron, self.every, self.at)
+        bounds = (self.start, self.until, self.count)
         if self.action == "add":
             if (
-                (self.cron is None) == (self.at is None)
+                sum(value is not None for value in times) != 1
                 or not self.note
                 or not self.note.strip()
                 or self.schedule_id is not None
             ):
                 raise ValueError("schedule add requires one time and a note")
-        elif any(value is not None for value in (self.cron, self.at, self.timezone, self.note)):
+            if self.at is not None and any(value is not None for value in bounds):
+                raise ValueError("start, until and count bound only a repeating schedule")
+        elif any(value is not None for value in (*times, *bounds, self.timezone, self.note)):
             raise ValueError("time and note are only valid for schedule add")
-        elif (self.action == "cancel") != (self.schedule_id is not None):
-            raise ValueError("schedule cancel requires a schedule id")
+        elif (self.action == "list") == (self.schedule_id is not None):
+            raise ValueError("schedule cancel, pause and resume require a schedule id")
         return self
 
 

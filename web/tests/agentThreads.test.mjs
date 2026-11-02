@@ -13,6 +13,7 @@ import {
   parseAgentHash,
   agentThreadHash,
   railThreads,
+  scheduleLimits,
   scheduleWhen,
   threadTimeLabel,
   turnCommands,
@@ -24,6 +25,7 @@ import {
   loadThreadTranscript,
   sendThreadTurn,
   setThreadAgent,
+  setThreadSchedulePaused,
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
 
@@ -133,8 +135,9 @@ test("Upcoming keeps schedules that can still run and reads common cron times", 
       schedule({ schedule_id: "c", state: "disabled" }),
       schedule({ schedule_id: "d", state: "done" }),
       schedule({ schedule_id: "e", state: "done", pending_since: "2026-11-01T08:00:00Z" }),
+      schedule({ schedule_id: "f", state: "paused" }),
     ]).map((item) => item.schedule_id),
-    ["a", "c", "e"],
+    ["a", "c", "e", "f"],
   );
   // A one-shot's time is read in its own zone: 09:00 UTC is 18:00 in Tokyo.
   const at = new Date(Date.UTC(2026, 10, 1, 9, 0));
@@ -153,6 +156,33 @@ test("Upcoming keeps schedules that can still run and reads common cron times", 
   assert.equal(scheduleWhen(schedule({ cron: "0 9 * * 1-5" }), now), "Weekdays 09:00");
   assert.equal(scheduleWhen(schedule({ cron: "30 7 * * *" }), now), "Daily 07:30");
   assert.equal(scheduleWhen(schedule({ cron: "*/15 * * * *" }), now), "*/15 * * * *");
+  assert.equal(scheduleWhen(schedule({ every_minutes: 1 }), now), "Every minute");
+  assert.equal(scheduleWhen(schedule({ every_minutes: 120 }), now), "Every 2 hours");
+  // A start still to come shows; one that has passed does not.
+  const bounded = schedule({
+    every_minutes: 1,
+    fires_left: 7,
+    until_local: "2026-11-01T23:56",
+    start_local: "2026-11-01T23:47",
+    timezone: "UTC",
+  });
+  assert.equal(scheduleLimits(bounded, new Date(Date.UTC(2026, 10, 1, 23, 50))).length, 2);
+  assert.equal(scheduleLimits(bounded, new Date(Date.UTC(2026, 10, 1, 23, 40))).length, 3);
+  assert.deepEqual(scheduleLimits(schedule({ cron: "0 9 * * *" }), now), []);
+});
+
+test("pause and resume post to the schedule's own route", async () => {
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push(`${init?.method} ${path}`);
+    return {};
+  };
+  await setThreadSchedulePaused("t 1", "s/1", true, request);
+  await setThreadSchedulePaused("t 1", "s/1", false, request);
+  assert.deepEqual(calls, [
+    "POST /api/agent-threads/t%201/schedules/s%2F1/pause",
+    "POST /api/agent-threads/t%201/schedules/s%2F1/resume",
+  ]);
 });
 
 test("a card is expired by its state or its time", () => {

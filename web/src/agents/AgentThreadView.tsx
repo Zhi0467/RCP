@@ -6,6 +6,7 @@ import {
   LoaderCircle,
   Mic,
   MicOff,
+  Pause,
   Play,
   RotateCcw,
   Send,
@@ -75,6 +76,7 @@ import {
   oneShotPassed,
   readThrough,
   scheduleInstant,
+  scheduleLimits,
   scheduleWhen,
   turnCommands,
   turnCommandsSummary,
@@ -91,6 +93,7 @@ import {
   sendThreadTurn,
   setThreadAgent,
   setThreadBrowser,
+  setThreadSchedulePaused,
 } from "./agentThreadsApi";
 
 /** A live turn is checked this often; a quiet thread follows its rail row instead. */
@@ -335,7 +338,8 @@ function SchedulesPopover({
           {upcoming.map((schedule) => {
             const cancel = () =>
               void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
-            const next = schedule.state === "active" && schedule.cron && schedule.next_fire_at;
+            const paused = schedule.state === "paused";
+            const next = schedule.state === "active" && !schedule.at_local && schedule.next_fire_at;
             return (
               <div
                 className="upcoming-row"
@@ -347,8 +351,9 @@ function SchedulesPopover({
               >
                 <strong title={schedule.note}>{schedule.note}</strong>
                 <span className="upcoming-when">
-                  <time>{scheduleWhen(schedule)}</time>
+                  <time>{[scheduleWhen(schedule), ...scheduleLimits(schedule)].join(" · ")}</time>
                   <span className="upcoming-zone">{schedule.timezone}</span>
+                  {paused && <span>Paused</span>}
                   {next && (
                     <time className="upcoming-next" dateTime={next} title="Next run">
                       → {scheduleInstant(next)}
@@ -381,6 +386,21 @@ function SchedulesPopover({
                       }
                     >
                       Enable
+                    </button>
+                  )}
+                  {(paused || schedule.state === "active") && (
+                    <button
+                      className="icon-button"
+                      type="button"
+                      aria-label={`${paused ? "Resume" : "Pause"} ${schedule.note}`}
+                      title={paused ? "Resume" : "Pause"}
+                      onClick={() =>
+                        void act(() =>
+                          setThreadSchedulePaused(thread.thread_id, schedule.schedule_id, !paused),
+                        )
+                      }
+                    >
+                      {paused ? <Play size={14} /> : <Pause size={14} />}
                     </button>
                   )}
                   <button

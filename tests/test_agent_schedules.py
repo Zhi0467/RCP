@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -359,9 +360,13 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     identity.require_patch_capable_identity = lambda _: SimpleNamespace(user_id=str(uuid.uuid4()))
     assert client.get(path).status_code == 404
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 404
+    assert client.post(path + "/" + schedule.schedule_id + "/pause").status_code == 404
     identity.require_patch_capable_identity = lambda _: SimpleNamespace(
         user_id=schedule_store.local_owner.user_id
     )
+    assert client.post(path + "/" + schedule.schedule_id + "/pause").json()["state"] == "paused"
+    assert client.post(path + "/" + schedule.schedule_id + "/resume").json()["state"] == "active"
+    assert client.post(path + "/" + schedule.schedule_id + "/resume").status_code == 409
     with schedule_store.connection() as connection:
         connection.execute("UPDATE agent_schedules SET state='disabled', disabled_reason='restore'")
     assert client.post(path + "/" + schedule.schedule_id + "/enable").json()["state"] == "active"
@@ -522,6 +527,47 @@ def test_schedule_cli_roundtrips_strict_protocol():
         ]
     )
     assert _request_arguments(namespace, None) == ("schedule", None, {"action": "list"})
+    namespace = _parser().parse_args(
+        [
+            "--credential",
+            "credential.json",
+            "--timeout",
+            "1",
+            "--workspace",
+            ".",
+            "schedule",
+            "add",
+            "--key",
+            "ping",
+            "--every",
+            "1m",
+            "--from",
+            "2026-11-01T23:47",
+            "--until",
+            "2026-11-01T23:56",
+            "--count",
+            "10",
+            "--note",
+            "Ping",
+        ]
+    )
+    verb, key, args = _request_arguments(namespace, None)
+    parsed = ScheduleCommandRequest.model_validate(
+        dict(
+            mailbox_id="b" * 32,
+            credential="c" * 64,
+            request_id="a" * 32,
+            verb=verb,
+            idempotency_key=key,
+            arguments=args,
+        )
+    ).arguments
+    assert (parsed.every, parsed.start, parsed.until, parsed.count) == (
+        "1m",
+        "2026-11-01T23:47",
+        "2026-11-01T23:56",
+        10,
+    )
 
 
 def test_tabs_are_cron_whitespace():
@@ -810,3 +856,200 @@ def test_a_turn_with_a_non_iana_zone_still_renders_the_schedule_rule(schedule_st
     )
     assert member_timezone(schedule_store, schedule_store.agent_task("odd-zone")) is None
     assert "Mars/Olympus" not in schedule_instructions(schedule_store, "odd-zone")
+
+
+# Bounded repeats, intervals, start times, and pause/resume.
+
+
+def _set_trigger(store, trigger):
+    import json
+
+    request = {**store.agent_task("origin").request, "trigger": trigger}
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'",
+            (json.dumps(request),),
+        )
+
+
+def _added(response) -> dict:
+    assert response.status == "ok", response.message
+    schedule = response.result["schedule"]
+    assert isinstance(schedule, dict)
+    return schedule
+
+
+def _refusal(response) -> str:
+    assert response.status == "invalid"
+    return response.message or ""
+
+
+def test_every_with_count_retires_after_its_fires(schedule_store):
+    from datetime import timedelta
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    added = _added(
+        handle_schedule(
+            schedule_store,
+            "origin",
+            command(action="add", every="1m", count=3, timezone="UTC", note="Ping"),
+        )
+    )
+    first = datetime.fromisoformat(added["next_fire_at"])
+    # No --from: one interval after now.
+    assert (
+        timedelta(0) < first - datetime.fromisoformat(added["created_at"]) <= timedelta(minutes=1)
+    )
+    for minute, left in ((0, 2), (1, 1)):
+        schedule_store.advance_agent_schedules(first + timedelta(minutes=minute, seconds=1))
+        row = schedule_store.agent_schedules("thread")[0]
+        assert (row.state, row.fires_left) == ("active", left)
+        assert row.next_fire_at == (first + timedelta(minutes=minute + 1)).isoformat()
+    schedule_store.advance_agent_schedules(first + timedelta(minutes=2, seconds=1))
+    row = schedule_store.agent_schedules("thread")[0]
+    assert (row.state, row.fires_left, row.next_fire_at) == ("done", 0, None)
+    assert row.pending_since == first.isoformat()
+
+
+def test_cron_until_retires_after_its_last_fire_and_from_delays_the_first(schedule_store):
+    after = datetime(2026, 1, 1, tzinfo=UTC)
+    assert validate_schedule(
+        cron="0 9 * * *", at=None, timezone="UTC", after=after, start="2026-01-05T09:00"
+    ) == datetime(2026, 1, 5, 9, tzinfo=UTC)
+    assert validate_schedule(
+        cron=None, at=None, every_minutes=60, timezone="UTC", after=after, start="2026-01-05T10:30"
+    ) == datetime(2026, 1, 5, 10, 30, tzinfo=UTC)
+    assert validate_schedule(
+        cron=None, at=None, every_minutes=60, timezone="UTC", after=after
+    ) == datetime(2026, 1, 1, 1, tzinfo=UTC)
+    first = validate_schedule(
+        cron="0 9 * * *", at=None, timezone="UTC", after=after, until="2026-01-02T09:00"
+    )
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="until",
+        cron="0 9 * * *",
+        at=None,
+        timezone="UTC",
+        note="Daily",
+        next_fire_at=first.isoformat(),
+        until="2026-01-02T09:00",
+    )
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 9, 1, tzinfo=UTC))
+    row = schedule_store.agent_schedules("thread")[0]
+    assert (row.state, row.next_fire_at) == ("active", "2026-01-02T09:00:00+00:00")
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 2, 9, 1, tzinfo=UTC))
+    assert schedule_store.agent_schedules("thread")[0].state == "done"
+
+
+def test_pause_skips_fires_and_resume_continues_after_now(schedule_store):
+    from datetime import timedelta
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    anchor = datetime(2026, 1, 1, 9, tzinfo=UTC)
+    for key, until in (("hourly", None), ("bounded", "2026-01-02T09:00")):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron=None,
+            at=None,
+            every_minutes=60,
+            timezone="UTC",
+            note=key,
+            next_fire_at=anchor.isoformat(),
+            until=until,
+            count=5,
+        )
+    ids = {row.note: row.schedule_id for row in schedule_store.agent_schedules("thread")}
+    for key in ids:
+        pause = command(key=f"pause-{key}", action="pause", schedule_id=ids[key])
+        assert handle_schedule(schedule_store, "origin", pause).status == "ok"
+        assert handle_schedule(schedule_store, "origin", pause).status == "ok"
+    assert schedule_store.advance_agent_schedules(anchor + timedelta(days=1)) == []
+    assert {row.state for row in schedule_store.agent_schedules("thread")} == {"paused"}
+    for key in ids:
+        resume = command(key=f"resume-{key}", action="resume", schedule_id=ids[key])
+        assert handle_schedule(schedule_store, "origin", resume).status == "ok"
+    rows = {row.note: row for row in schedule_store.agent_schedules("thread")}
+    now = datetime.fromisoformat(schedule_store.now())
+    resumed = datetime.fromisoformat(rows["hourly"].next_fire_at)
+    # The next hour after now on the original phase; nothing missed is replayed.
+    assert now < resumed <= now + timedelta(hours=1)
+    assert (resumed - anchor) % timedelta(hours=1) == timedelta(0)
+    assert (rows["hourly"].state, rows["hourly"].fires_left) == ("active", 5)
+    assert rows["hourly"].pending_since is None
+    # Its --until passed while paused, so resume retires it.
+    assert (rows["bounded"].state, rows["bounded"].next_fire_at) == ("done", None)
+    again = command(key="resume-again", action="resume", schedule_id=ids["hourly"])
+    assert "schedule_not_paused" in _refusal(handle_schedule(schedule_store, "origin", again))
+
+
+def test_old_row_without_bounds_loads_and_fires(schedule_store):
+    with schedule_store.connection() as connection:
+        connection.execute(
+            "INSERT INTO agent_schedules (schedule_id,thread_id,created_operation_id,"
+            "idempotency_key,cron,at_local,timezone,note,state,next_fire_at,created_at) "
+            "VALUES ('old','thread','origin','old','0 9 * * *',NULL,'UTC','Old','active',"
+            "'2026-01-01T09:00:00+00:00','2025-12-31T00:00:00+00:00')"
+        )
+    pending = schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 9, 1, tzinfo=UTC))
+    assert [(row.schedule_id, row.state, row.fires_left) for row in pending] == [
+        ("old", "active", None)
+    ]
+    assert pending[0].next_fire_at == "2026-01-02T09:00:00+00:00"
+
+
+def test_wake_interval_gap_and_invalid_combinations_are_refused(schedule_store):
+    from pydantic import ValidationError
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    _set_trigger(schedule_store, "schedule")
+    often = handle_schedule(
+        schedule_store,
+        "origin",
+        command(key="often", action="add", every="5m", timezone="UTC", note="Ping"),
+    )
+    assert "schedule_too_frequent" in _refusal(often)
+    _added(
+        handle_schedule(
+            schedule_store,
+            "origin",
+            command(key="ok", action="add", every="15m", timezone="UTC", note="Ping"),
+        )
+    )
+    for bad in ("5x", "0m", "1.5h"):
+        refused = handle_schedule(
+            schedule_store,
+            "origin",
+            command(key=bad, action="add", every=bad, timezone="UTC", note="Ping"),
+        )
+        assert "schedule_every_invalid" in _refusal(refused)
+    early = handle_schedule(
+        schedule_store,
+        "origin",
+        command(
+            key="early",
+            action="add",
+            cron="0 9 * * *",
+            timezone="UTC",
+            note="Ping",
+            until="2020-01-01T09:00",
+        ),
+    )
+    assert "schedule_until_before_first" in _refusal(early)
+    combinations: list[dict[str, Any]] = [
+        dict(at="2099-01-01T09:00", until="2099-01-02T09:00"),
+        dict(at="2099-01-01T09:00", count=2),
+        dict(cron="0 9 * * *", every="1h"),
+        dict(cron="0 9 * * *", at="2099-01-01T09:00"),
+    ]
+    for arguments in combinations:
+        with pytest.raises(ValidationError):
+            command(action="add", note="Ping", **arguments)
+    with pytest.raises(ValidationError):
+        command(action="pause")

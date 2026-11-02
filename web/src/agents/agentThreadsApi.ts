@@ -222,6 +222,19 @@ export function enableThreadSchedule(
   });
 }
 
+/** Pause keeps the schedule's limits; resume skips the fires it missed. */
+export function setThreadSchedulePaused(
+  threadId: string,
+  scheduleId: string,
+  paused: boolean,
+  request: Request = api,
+): Promise<AgentSchedule> {
+  const action = paused ? "pause" : "resume";
+  return request(`${threadPath(threadId)}/schedules/${encodeURIComponent(scheduleId)}/${action}`, {
+    method: "POST",
+  });
+}
+
 /** Display-only voice lines; each `entry_id` is appended once. */
 export function appendVoiceEntries(
   threadId: string,

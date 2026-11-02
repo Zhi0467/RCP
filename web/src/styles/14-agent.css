@@ -260,7 +260,8 @@
 .upcoming-row:hover {
   background: color-mix(in srgb, var(--ink) 5%, transparent);
 }
-.upcoming-row[data-state="disabled"] strong {
+.upcoming-row[data-state="disabled"] strong,
+.upcoming-row[data-state="paused"] strong {
   color: var(--muted);
 }
 .upcoming-row strong {

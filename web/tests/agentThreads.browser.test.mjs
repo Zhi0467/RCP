@@ -381,7 +381,11 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     const popover = page.getByRole("dialog", { name: "Upcoming" });
     assert.equal(await popover.locator(".upcoming-row").count(), 2);
     if (shots) await page.screenshot({ path: `${shots}/agent-upcoming-1440.png` });
-    await popover.locator(".upcoming-row").first().getByRole("button").click();
+    await popover
+      .locator(".upcoming-row")
+      .first()
+      .getByRole("button", { name: /^Cancel/ })
+      .click();
     await page.keyboard.press("Escape");
     assert.ok(writes.some((write) => write.method === "DELETE" && write.path.endsWith("/s-a")));
 
@@ -1509,7 +1513,25 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
         state: "disabled",
         disabled_reason: "unschedulable",
       },
-      ...Array.from({ length: 6 }, (_, index) => ({
+      {
+        schedule_id: "minutely",
+        every_minutes: 1,
+        fires_left: 7,
+        until_local: "2099-01-01T09:00",
+        timezone: "UTC",
+        note: "Ping me",
+        state: "active",
+        next_fire_at: new Date(now + 60_000).toISOString(),
+      },
+      {
+        schedule_id: "paused",
+        cron: "0 9 * * *",
+        timezone: "UTC",
+        note: "Paused digest",
+        state: "paused",
+        next_fire_at: new Date(now + 3_600_000).toISOString(),
+      },
+      ...Array.from({ length: 4 }, (_, index) => ({
         schedule_id: `extra-${index}`,
         cron: `0 ${10 + index} * * *`,
         timezone: "UTC",
@@ -1529,6 +1551,9 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
           status: 409,
           json: { detail: "This schedule's time cannot be computed." },
         }),
+      );
+      await page.route("**/api/agent-threads/space/schedules/paused/resume", (route) =>
+        route.fulfill({ json: { ...rows[5], state: "active" } }),
       );
       await page.goto(`${base}#/agent/space`);
       const thread = page.getByRole("region", { name: "Pip" });
@@ -1550,6 +1575,27 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
         await row("blocked").locator(".upcoming-pending[data-deferred] span").count(),
         1,
       );
+      // A repeat pauses and a paused one resumes; a paused row shows no next run.
+      assert.equal(
+        await row("minutely")
+          .getByRole("button", { name: /^Pause / })
+          .count(),
+        1,
+      );
+      assert.equal(await row("paused").locator(".upcoming-next").count(), 0);
+      assert.equal(
+        await row("past")
+          .getByRole("button", { name: /^(Pause|Resume) / })
+          .count(),
+        0,
+      );
+      const [resume] = await Promise.all([
+        page.waitForRequest(/\/schedules\/paused\/resume$/),
+        row("paused")
+          .getByRole("button", { name: /^Resume / })
+          .click(),
+      ]);
+      assert.equal(resume.method(), "POST");
       const box = await popover.evaluate((element) => ({
         scroll: element.scrollHeight > element.clientHeight,
         right: element.getBoundingClientRect().right,

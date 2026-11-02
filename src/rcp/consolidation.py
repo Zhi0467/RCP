@@ -277,16 +277,16 @@ class ConsolidationPoller:
             return self.store.advance_agent_schedules(now)
         except Exception:
             logger.exception("Agent schedule advance failed; checking each due schedule")
+        from rcp.storage.agent_schedules import AgentSchedule, after_fire
+
         with self.store.connection() as connection:
             due = connection.execute(
-                "SELECT schedule_id, cron, timezone FROM agent_schedules "
-                "WHERE state='active' AND next_fire_at<=?",
+                "SELECT * FROM agent_schedules WHERE state='active' AND next_fire_at<=?",
                 (now.isoformat(),),
             ).fetchall()
         for row in due:
             try:
-                if row["cron"]:
-                    next_occurrence(row["cron"], row["timezone"], now)
+                after_fire(AgentSchedule.model_validate(dict(row)), now)
             except Exception:
                 logger.exception("Disabling unschedulable agent schedule %s", row["schedule_id"])
                 with self.store.connection() as connection:

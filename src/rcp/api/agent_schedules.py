@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from rcp.api.dependencies import get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.runs.agent_schedules import ScheduleRefused, validate_schedule
+from rcp.runs.agent_schedules import resume_schedule, thread_schedule
 from rcp.storage import AppStore
+from rcp.storage.agent_schedules import resume_fire
 
 router = APIRouter()
 Store = Annotated[AppStore, Depends(get_store)]
@@ -64,22 +65,47 @@ def enable_schedule(
 ) -> dict:
     human = identity_access.require_patch_capable_identity(request)
     require_schedule_owner(store, thread_id, human.user_id)
-    schedule = next(
-        (item for item in store.agent_schedules(thread_id) if item.schedule_id == schedule_id), None
-    )
-    if schedule is None:
-        raise HTTPException(status_code=404, detail="Schedule not found")
     try:
-        due = validate_schedule(
-            cron=schedule.cron,
-            at=schedule.at_local,
-            timezone=schedule.timezone,
-            after=datetime.fromisoformat(store.now()),
-        )
-        enabled = store.enable_agent_schedule(thread_id, schedule_id, due.isoformat())
-    except ScheduleRefused as exc:
+        schedule = thread_schedule(store, thread_id, schedule_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    due = resume_fire(schedule, datetime.fromisoformat(store.now()))
+    if due is None:
         # A past one-time schedule cannot resume; Cancel removes it.
-        raise HTTPException(status_code=409, detail=exc.reason) from exc
+        raise HTTPException(status_code=409, detail="Its last run time has passed")
+    try:
+        enabled = store.reactivate_agent_schedule(
+            thread_id, schedule_id, due.isoformat(), was="disabled"
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _view(enabled)
+
+
+@router.post("/api/agent-threads/{thread_id}/schedules/{schedule_id}/pause")
+def pause_schedule(
+    thread_id: str, schedule_id: str, request: Request, *, store: Store, identity_access: Identity
+) -> dict:
+    human = identity_access.require_patch_capable_identity(request)
+    require_schedule_owner(store, thread_id, human.user_id)
+    try:
+        return _view(store.pause_agent_schedule(thread_id, schedule_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/api/agent-threads/{thread_id}/schedules/{schedule_id}/resume")
+def resume_schedule_route(
+    thread_id: str, schedule_id: str, request: Request, *, store: Store, identity_access: Identity
+) -> dict:
+    """Resume at the next fire after now; one whose limits have passed is done."""
+    human = identity_access.require_patch_capable_identity(request)
+    require_schedule_owner(store, thread_id, human.user_id)
+    try:
+        return _view(resume_schedule(store, thread_id, schedule_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

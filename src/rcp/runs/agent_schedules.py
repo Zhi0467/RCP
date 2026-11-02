@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIVE
+from rcp.storage.agent_schedules import AgentSchedule, local_instant, repeat_fire, resume_fire
 
 if TYPE_CHECKING:
     from rcp.storage.agent_threads import AgentThreadRecord
@@ -24,6 +25,8 @@ _STORE_REASONS = {
     "schedule_limit": f"this thread already has {AGENT_SCHEDULES_MAX_ACTIVE} active "
     "schedules; cancel one first",
     "schedule_key_conflict": "this --key already names a different schedule; use a new key",
+    "schedule_not_active": "only an active schedule pauses; run schedule list",
+    "schedule_not_paused": "only a paused schedule resumes; run schedule list",
 }
 
 
@@ -58,56 +61,106 @@ def validate_schedule(
     timezone: str,
     after: datetime,
     min_gap: timedelta | None = None,
+    every_minutes: int | None = None,
+    start: str | None = None,
+    until: str | None = None,
+    count: int | None = None,
 ) -> datetime:
-    """The first fire, refusing a cron whose consecutive fires are closer than `min_gap`."""
+    """The first fire, refusing repeats whose consecutive fires are closer than `min_gap`."""
     _require_zone(timezone)
-    if (cron is None) == (at is None):
-        raise ScheduleRefused("schedule_time_required", "give exactly one of --cron or --at")
-    if cron is None:
-        assert at is not None
+    if sum(value is not None for value in (cron, every_minutes, at)) != 1:
+        raise ScheduleRefused(
+            "schedule_time_required", "give exactly one of --cron, --every or --at"
+        )
+    if at is not None:
+        if (start, until, count) != (None, None, None):
+            raise ScheduleRefused(
+                "schedule_repeat_only", "--from, --until and --count need --cron or --every"
+            )
         return _one_shot(at, timezone, after)
+    anchor = local_instant(_local(start, "--from"), timezone) if start else None
+    if every_minutes is not None:
+        if min_gap is not None and timedelta(minutes=every_minutes) < min_gap:
+            raise _too_close()
+        first = repeat_fire(
+            cron=None, every_minutes=every_minutes, timezone=timezone, after=after, anchor=anchor
+        )
+    else:
+        assert cron is not None
+        try:
+            first = _cron_first_fire(cron, timezone, after, min_gap, anchor)
+        except ScheduleRefused:
+            raise
+        except ValueError as exc:
+            raise ScheduleRefused("schedule_cron_invalid", str(exc)) from exc
+    if until and first > local_instant(_local(until, "--until"), timezone):
+        raise ScheduleRefused(
+            "schedule_until_before_first",
+            "--until is before the first fire; pick a later --until or an earlier --from",
+        )
+    return first
+
+
+def every_minutes(every: str) -> int:
+    """`--every` such as 1m, 90m, 2h or 1d, in whole minutes."""
+    match = re.fullmatch(r"([1-9][0-9]{0,5})([mhd])", every.strip())
+    if match is None:
+        raise ScheduleRefused(
+            "schedule_every_invalid", "--every is a count and unit, such as 1m, 90m, 2h or 1d"
+        )
+    return int(match.group(1)) * {"m": 1, "h": 60, "d": _MINUTES_PER_DAY}[match.group(2)]
+
+
+def _local(value: str, flag: str) -> str:
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", value) is None:
+        raise ScheduleRefused("schedule_time_invalid", f"{flag} must be local YYYY-MM-DDTHH:MM")
     try:
-        return _cron_first_fire(cron, timezone, after, min_gap)
-    except ScheduleRefused:
-        raise
+        datetime.fromisoformat(value)
     except ValueError as exc:
-        raise ScheduleRefused("schedule_cron_invalid", str(exc)) from exc
+        raise ScheduleRefused(
+            "schedule_time_invalid", f"{flag} {value!r} is not a calendar time"
+        ) from exc
+    return value
 
 
-def _cron_first_fire(
-    cron: str, timezone: str, after: datetime, min_gap: timedelta | None
-) -> datetime:
-    from rcp.consolidation import cron_fields, next_occurrence
-
-    fields = cron_fields(cron)
-    first = next_occurrence(cron, timezone, after)
-    if min_gap is None:
-        return first
-    daily = len(fields[0]) * len(fields[1])
-    too_close = ScheduleRefused(
+def _too_close() -> ScheduleRefused:
+    return ScheduleRefused(
         "schedule_too_frequent",
         f"a wake may only schedule fires at least {AGENT_SCHEDULE_MIN_GAP_MINUTES} minutes "
         "apart; ask the member, whose own message may schedule more often",
     )
+
+
+def _cron_first_fire(
+    cron: str,
+    timezone: str,
+    after: datetime,
+    min_gap: timedelta | None,
+    anchor: datetime | None,
+) -> datetime:
+    from rcp.consolidation import cron_fields, next_occurrence
+
+    fields = cron_fields(cron)
+    first = repeat_fire(
+        cron=cron, every_minutes=None, timezone=timezone, after=after, anchor=anchor
+    )
+    if min_gap is None:
+        return first
+    daily = len(fields[0]) * len(fields[1])
     if daily > _MINUTES_PER_DAY // AGENT_SCHEDULE_MIN_GAP_MINUTES:
-        raise too_close
+        raise _too_close()
     fire = first
     # Two days of fires cover every gap, including the one across midnight.
     for _ in range(2 * daily + 1):
         following = next_occurrence(cron, timezone, fire)
         if following - fire < min_gap:
-            raise too_close
+            raise _too_close()
         fire = following
     return first
 
 
 def _one_shot(at: str, timezone: str, after: datetime) -> datetime:
-    from rcp.consolidation import occurrence_at
-
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", at) is None:
-        raise ScheduleRefused("schedule_at_invalid", "--at must be local YYYY-MM-DDTHH:MM")
-    local = datetime.fromisoformat(at)
-    due = occurrence_at(local.date(), local.strftime("%H:%M"), timezone)
+    due = local_instant(_local(at, "--at"), timezone)
     if due <= after:
         raise ScheduleRefused(
             "schedule_in_past", "that local time has passed; pick a later --at in the member's zone"
@@ -169,11 +222,12 @@ def schedule_instructions(store, operation_id: str, usages: tuple[str, ...] = ()
     timezone = member_timezone(store, task) if task else None
     clock = schedule_clock(timezone, datetime.fromisoformat(store.now()))
     text = (
-        "Add or cancel a schedule when the member asks for a reminder or a recurring check; "
-        "any turn, including a wake, may do so. "
-        f"A wake turn's cron fires must be at least {AGENT_SCHEDULE_MIN_GAP_MINUTES} minutes "
-        f"apart. Cron: {CRON_FORMAT}. For a bounded repeat such as every minute for ten "
-        f"minutes, add one-time --at schedules ({AGENT_SCHEDULES_MAX_ACTIVE} active at most). "
+        "Add, pause, resume or cancel a schedule when the member asks for a reminder or a "
+        "recurring check; any turn, including a wake, may do so. "
+        f"A wake turn's cron or --every fires must be at least {AGENT_SCHEDULE_MIN_GAP_MINUTES} "
+        f"minutes apart. Cron: {CRON_FORMAT}. Bound one repeating schedule with --until or "
+        f"--count rather than adding one-time schedules ({AGENT_SCHEDULES_MAX_ACTIVE} active "
+        "at most); local times are in the schedule's zone. "
         "Pass --timezone only when the member named a zone; otherwise their zone applies"
         + ("" if timezone else "; it is unknown, so ask the member first")
         + f". Member clock: {json.dumps(clock)}."
@@ -220,12 +274,17 @@ def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
             "the member's time zone is unknown; ask the member, then pass --timezone",
         )
     now = datetime.fromisoformat(store.now())
+    interval = every_minutes(args.every) if args.every is not None else None
     due = validate_schedule(
         cron=args.cron,
         at=args.at,
         timezone=timezone,
         after=now,
         min_gap=None if member_turn(store, task) else _MIN_GAP,
+        every_minutes=interval,
+        start=args.start,
+        until=args.until,
+        count=args.count,
     )
     schedule = store.add_agent_schedule(
         thread_id=thread["thread_id"],
@@ -236,6 +295,10 @@ def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
         timezone=timezone,
         note=args.note,
         next_fire_at=due.isoformat(),
+        every_minutes=interval,
+        start=args.start,
+        until=args.until,
+        count=args.count,
     )
     return {"schedule": schedule.model_dump(mode="json"), **schedule_clock(timezone, now)}
 
@@ -247,12 +310,37 @@ def _schedule_result(store, task, thread: dict, command) -> dict[str, object]:
     if args.action == "cancel":
         store.cancel_agent_schedule(thread["thread_id"], args.schedule_id)
         return {"cancelled": args.schedule_id}
+    if args.action == "pause":
+        store.pause_agent_schedule(thread["thread_id"], args.schedule_id)
+        return {"paused": args.schedule_id}
+    if args.action == "resume":
+        schedule = resume_schedule(store, thread["thread_id"], args.schedule_id)
+        return {"schedule": schedule.model_dump(mode="json")}
     return {
         "schedules": [
             item.model_dump(mode="json") for item in store.agent_schedules(thread["thread_id"])
         ],
         **schedule_clock(member_timezone(store, task), datetime.fromisoformat(store.now())),
     }
+
+
+def resume_schedule(store, thread_id: str, schedule_id: str) -> AgentSchedule:
+    """Resume at the next fire after now; missed fires are skipped, and none left retires it."""
+    schedule = thread_schedule(store, thread_id, schedule_id)
+    due = resume_fire(schedule, datetime.fromisoformat(store.now()))
+    return store.reactivate_agent_schedule(
+        thread_id, schedule_id, due.isoformat() if due else None, was="paused"
+    )
+
+
+def thread_schedule(store, thread_id: str, schedule_id: str) -> AgentSchedule:
+    schedule = next(
+        (item for item in store.agent_schedules(thread_id) if item.schedule_id == schedule_id),
+        None,
+    )
+    if schedule is None:
+        raise KeyError(schedule_id)
+    return schedule
 
 
 def handle_schedule(store, operation_id: str, command):
@@ -286,11 +374,12 @@ def schedule_wake_message(schedules, now: datetime) -> str:
     notes = []
     for schedule in schedules:
         due = datetime.fromisoformat(schedule.pending_since)
-        count = (
-            cron_occurrence_count(schedule.cron, schedule.timezone, due, now)
-            if schedule.cron
-            else 1
-        )
+        if schedule.cron:
+            count = cron_occurrence_count(schedule.cron, schedule.timezone, due, now)
+        elif schedule.every_minutes:
+            count = (now - due) // timedelta(minutes=schedule.every_minutes) + 1
+        else:
+            count = 1
         zone = ZoneInfo(schedule.timezone)
         notes.append(
             {

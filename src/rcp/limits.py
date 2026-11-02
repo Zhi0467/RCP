@@ -823,6 +823,8 @@ AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
 # Member-requested standing schedules per private agent thread.
 AGENT_SCHEDULES_MAX_ACTIVE = 20
 AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+# The largest --count one repeating schedule may take.
+AGENT_SCHEDULE_MAX_COUNT = 10_000
 # Consecutive fires of one schedule, or one-shots on one thread, stay this far apart.
 AGENT_SCHEDULE_MIN_GAP_MINUTES = 15
 
