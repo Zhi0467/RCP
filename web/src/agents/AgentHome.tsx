@@ -155,6 +155,7 @@ export function AgentHome({
         <div className="conversation-surface">
           <AgentThreadView
             thread={open}
+            threads={threads ?? undefined}
             actorId={actorId}
             revision={revision}
             voice={voice}

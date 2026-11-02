@@ -229,3 +229,55 @@ def test_saved_private_artifacts_are_owner_only(manifest, tmp_path):
                 resolve_project_artifact(store, project_id, stored, viewer_id=own)
         else:
             assert resolve_project_artifact(store, project_id, stored, viewer_id=own).content
+
+
+def test_space_references_resolve_only_the_members_projects(manifest, tmp_path):
+    import uuid
+
+    from rcp.storage import Artifact
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    own = store.local_owner.user_id
+    threads = store.ensure_agent_threads(own, [project_id], default_names=("Pip", "Moss"))
+    space = next(t.thread_id for t in threads if t.kind == "space")
+    other_thread = next(
+        t.thread_id
+        for t in store.ensure_agent_threads("another-member", [project_id], default_names=("Pip",))
+        if t.project_id
+    )
+
+    def saved(project: str, chat_id: str | None) -> str:
+        now = store.now()
+        artifact = Artifact(
+            artifact_id=uuid.uuid4().hex,
+            project_id=project,
+            supplier="turn",
+            supplier_id=uuid.uuid4().hex,
+            chat_id=chat_id,
+            source_name="saved.html",
+            media_type="text/html",
+            created_at=now,
+            kept_at=now,
+        )
+        store.create_artifact(artifact, data=b"<p>saved</p>")
+        return artifact.artifact_id
+
+    url = f"/api/agent-threads/{space}/references"
+    repository = manifest.repositories[0].path
+    assert client.get(url, params={"path": f"{repository}/train.py"}).json() == {
+        "project_id": project_id
+    }
+    assert client.get(url, params={"artifact_id": saved(project_id, None)}).json() == {
+        "project_id": project_id
+    }
+    # Outside every member project, and another member's private output, read as missing.
+    for params in (
+        {"path": str(tmp_path / "elsewhere" / "file.py")},
+        {"artifact_id": saved("not-a-member-project", None)},
+        {"artifact_id": saved(project_id, other_thread)},
+        {"artifact_id": "unknown"},
+    ):
+        assert client.get(url, params=params).status_code == 404, params

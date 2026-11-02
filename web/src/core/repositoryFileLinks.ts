@@ -11,8 +11,26 @@ export type RepositoryFileResolution =
   | { kind: "resolved"; target: RepositoryFileTarget }
   | { kind: "error"; reason: RepositoryFileErrorReason; message: string };
 
+// Mirror ARTIFACT_REFERENCE_SCHEME in src/rcp/agents/artifact_contract.py.
+const ARTIFACT_REFERENCE = /^artifact:([A-Za-z0-9_-]+)$/;
+
+/** The saved artifact an `artifact:ID` link or embed names, or null for any other href. */
+export function artifactReferenceId(href: string | undefined): string | null {
+  return ARTIFACT_REFERENCE.exec(href ?? "")?.[1] ?? null;
+}
+
 export function isRepositoryFileHrefCandidate(href: string | undefined): boolean {
   return Boolean(href && parseAbsoluteFileHref(href));
+}
+
+/** An original a reply references in place: a repository file path or a saved artifact id. */
+export function isReferenceHrefCandidate(href: string | undefined): boolean {
+  return isRepositoryFileHrefCandidate(href) || artifactReferenceId(href) !== null;
+}
+
+/** A repository file link's absolute path and line, before any repository claims it. */
+export function repositoryFileHrefTarget(href: string): RepositoryFileTarget | null {
+  return parseAbsoluteFileHref(href);
 }
 
 export function resolveRepositoryFileHref(

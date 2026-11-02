@@ -401,6 +401,18 @@ navigate. Older turns fetch the exact task before declaring an artifact absent.
 They retain it across list refreshes. HTML, images, video, Markdown, and text embed
 with Expand, Keep, and Download actions; HTML and images also offer Comment. Surrounding links are dropped.
 Unembedded video uses the same player. PDF and unknown embeds point to cards.
+A reply also references originals where they live, never copied into the turn's
+artifact folder, which holds only new files. A repository file is its absolute
+path, `artifact:ID` is a saved artifact, and each links or, as an image, embeds.
+An embedded file is the project's repository preview; an embedded saved artifact
+is its project viewer, read-only in place. Both read through the project's own
+routes, so membership and private-thread ownership apply. A project chat or
+thread resolves against its own project. The Space thread's
+`/api/agent-threads/{thread_id}/references` names the member project holding a
+path or id, and resolves nothing outside the member's projects or another
+member's private artifact. An unresolved reference stays a plain link with its
+reason on hover. `artifact_contract` renders the syntax and the scope for each
+thread kind.
 `/viewer` is the explicit shell. `/preview` is its compatibility alias, including
 old image byte requests. `/content` renders raw sandboxed content and is not
 another entrance.

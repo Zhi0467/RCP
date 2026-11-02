@@ -392,10 +392,11 @@ Long reasons wrap without failure coloring.
 
 ## Agent view
 
-The space home switches between Cards and Agent. A personal space remembers the
-last tab per member on that browser, defaulting to Agent on the first visit.
-Explicit Cards, Agent thread, project, and project-group links take precedence.
-The Cards tab opens `#/cards` in every space, so it stays an explicit link.
+The space home switches between Projects (the project cards) and Agent. A
+personal space remembers the last tab per member on that browser, defaulting to
+Agent on the first visit. Explicit Projects, Agent thread, project, and
+project-group links take precedence. The Projects tab opens `#/cards` in every
+space, so it stays an explicit link that never collides with `#/projects/<id>`.
 Agent has a left rail with the member's Space thread first, then each project
 thread. Rows show the agent name,
 the project or Space, and an unread dot or a needs-you mark. The rail folds like
@@ -404,14 +405,20 @@ the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list. The team's board conversations stay in that list. The thread
-header holds a schedules list with Cancel and re-enable, and a ⋯ menu with
-Rename, the browser switch, and the agent pick. Space and project threads share
-that pick: one `provider · model · effort` row that opens the shared fields in
-the menu. It shows exactly what the next turn sends, defaulting to the thread's
-last turn, then the project's Settings profile, or for the Space thread the
-backend machine's first signed-in provider. The composer holds the voice
+header holds a schedules list with Cancel and re-enable, the context ring, and a
+⋯ menu with Rename, the browser switch, and the agent pick. Space and project
+threads share that pick: one `provider · model · effort` row that opens the
+shared fields in the menu. Opening the menu reads provider readiness again, so a
+sign-in from Settings appears without a reload. A pick is stored on the thread
+at once and every later turn runs it, retries and wakes included. Until the
+member picks, the row shows the project's Settings profile, or for the Space
+thread the backend machine's first signed-in provider. When the browser was
+unavailable on the latest turn, the browser item carries a warning icon and the
+fix on hover; turns carry no browser notice. The composer holds the voice
 button. A failed turn shows its error once, in the message column, with Retry.
-Switching threads shows each thread's last loaded view while it reloads.
+Switching threads shows each thread's last loaded view while it reloads. A
+wake shows its trigger: Handoff, Schedule, or Watcher. A handoff result is one
+row naming the agent that ran it and how it ended, with its answer below.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and

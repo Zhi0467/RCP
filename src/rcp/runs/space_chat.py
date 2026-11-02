@@ -708,7 +708,8 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
         f"Patch JSON schema: `{_stage_space_patch_schema(stage)}`.",
         work_turn_outcome_contract(str(stage / "outcome.json")),
         artifact_contract(
-            f"{stage}/turns/<this turn's directory, named in the envelope>/artifacts"
+            f"{stage}/turns/<this turn's directory, named in the envelope>/artifacts",
+            references="space",
         ),
     ]
     return "\n\n".join(section.strip() for section in sections if section.strip())

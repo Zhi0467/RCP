@@ -50,6 +50,12 @@ interface Props {
   lineClassName?: (line: TaskTranscriptLine) => string;
   humanLead?: (line: TaskTranscriptLine) => ReactNode;
   humanBody?: (line: TaskTranscriptLine) => ReactNode | undefined;
+  /** An agent-side line its owner renders itself, such as a structured wake report. */
+  agentBody?: (line: TaskTranscriptLine) => ReactNode | undefined;
+  /** What started a wake; a board chat names only watchers. */
+  triggerChip?: (line: TaskTranscriptLine) => ReactNode;
+  /** A window that shows browser loss once elsewhere keeps it off each turn. */
+  browserNotices?: boolean;
   agentProgress?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
   footer?: ReactNode;
   showModes?: boolean;
@@ -89,6 +95,9 @@ export function AgentWindowTranscript({
   lineClassName,
   humanLead,
   humanBody,
+  agentBody,
+  triggerChip = watcherChip,
+  browserNotices = true,
   agentProgress,
   footer,
   showModes = true,
@@ -162,6 +171,7 @@ export function AgentWindowTranscript({
           ? artifactCommentLead(line.text, artifactComments)
           : null;
         const compaction = compactionByLine.get(line.lineId);
+        const ownBody = line.role === "agent" ? agentBody?.(line) : undefined;
         return (
           <Fragment key={line.lineId}>
             {compaction?.placement === "before" && (
@@ -172,7 +182,9 @@ export function AgentWindowTranscript({
               data-source={line.source ?? undefined}
             >
               {lineLead?.(line, task)}
-              <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
+              {browserNotices && (
+                <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
+              )}
               {showModes && line.role === "human" && line.mode && (
                 <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
               )}
@@ -183,10 +195,10 @@ export function AgentWindowTranscript({
                   onResend={() => onResend?.()}
                 />
               )}
-              {line.trigger === "watcher" && (
-                <span className="chat-turn-trigger watcher">Watcher</span>
-              )}
-              {line.role === "agent" ? (
+              {triggerChip(line)}
+              {ownBody !== undefined ? (
+                ownBody
+              ) : line.role === "agent" ? (
                 line.running ? (
                   agentProgress ? (
                     agentProgress(line, activeLineTask ?? undefined)
@@ -398,6 +410,12 @@ export function AgentWindowTranscript({
       {footer}
     </>
   );
+}
+
+function watcherChip(line: TaskTranscriptLine): ReactNode {
+  return line.trigger === "watcher" ? (
+    <span className="chat-turn-trigger watcher">Watcher</span>
+  ) : null;
 }
 
 /** Cards remain inside their owning turn, even when settlement stamps both messages together. */

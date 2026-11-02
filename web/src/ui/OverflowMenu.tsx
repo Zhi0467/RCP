@@ -8,6 +8,8 @@ export interface OverflowMenuItem {
   label: string;
   icon?: LucideIcon;
   disabled?: boolean;
+  /** A note on hover, such as why the item's feature is unavailable. */
+  title?: string;
   onSelect: () => void;
 }
 
@@ -100,12 +102,13 @@ export function OverflowMenu({
         next.focus();
       }}
     >
-      {items.map(({ label: name, icon: Icon, disabled, onSelect }) => (
+      {items.map(({ label: name, icon: Icon, disabled, title, onSelect }) => (
         <button
           key={name}
           type="button"
           role="menuitem"
           disabled={disabled}
+          title={title}
           onClick={() => {
             setOpen(false);
             onSelect();

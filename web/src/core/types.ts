@@ -4101,6 +4101,8 @@ export interface AgentThread {
   /** The thread's newest visible task, running or settled. */
   latest_operation_id: string | null;
   browser_requested: boolean;
+  /** The member's agent pick, which every turn of the thread runs; null until one is made. */
+  agent: AgentRunConfig | null;
 }
 
 export interface AgentThreadList {

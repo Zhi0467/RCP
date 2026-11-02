@@ -1,6 +1,6 @@
 import type { ResourceProfile } from "../core/resourceStore";
 import type { ArtifactViewerState } from "../core/types";
-import { steerChatTurn } from "../core/api";
+import { api, steerChatTurn } from "../core/api";
 import { artifactUrl } from "../agents/agentTasks";
 import { controlThreadTask, loadThreadTask, steerThreadTurn } from "../agents/agentThreadsApi";
 import { artifactStateProfile } from "../artifacts/artifactResources";
@@ -41,6 +41,9 @@ export interface AgentWindowEndpoints {
   ) => Promise<AgentTask>;
   steer: (operationId: string, request: SteerRequest) => Promise<ChatMessage>;
   questionsApiBase: string | null;
+  /** The member project a Space reply's path or saved artifact id belongs to; a
+   *  project window resolves its own references, so it has none. */
+  referenceProject: ((query: { path: string } | { artifact_id: string }) => Promise<string>) | null;
 }
 
 export function projectAgentWindowEndpoints(
@@ -78,6 +81,7 @@ export function projectAgentWindowEndpoints(
       controlThreadTask(owner, operationId, action, requestId),
     steer: (operationId, request) => steerChatTurn(projectId, operationId, request),
     questionsApiBase: base,
+    referenceProject: null,
   };
 }
 
@@ -106,5 +110,9 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
       controlThreadTask(thread, operation, action, requestId),
     steer: (operation, request) => steerThreadTurn(thread, operation, request),
     questionsApiBase: null,
+    referenceProject: (query) =>
+      api<{ project_id: string }>(`${base}/references?${new URLSearchParams(query)}`).then(
+        (found) => found.project_id,
+      ),
   };
 }

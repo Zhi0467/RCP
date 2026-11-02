@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Send,
   Square,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -18,6 +19,8 @@ import {
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
 import { loadProjectReadiness, loadSpaceMachines } from "../core/api";
+import { browserReason } from "../core/browserStatus";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
@@ -66,8 +69,8 @@ import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { ApprovalCardView } from "./ApprovalCard";
 import {
   browserTimezone,
+  handoffReport,
   latestTurnId,
-  nextTurnConfig,
   readThrough,
   scheduleWhen,
   turnCommands,
@@ -83,6 +86,7 @@ import {
   markThreadRead,
   renameThread,
   sendThreadTurn,
+  setThreadAgent,
   setThreadBrowser,
 } from "./agentThreadsApi";
 
@@ -102,11 +106,17 @@ type Picker = { source: AgentConfigSource; value: AgentRunConfig } | null;
  * and its default: the project's Settings profile, or the Space machine's first
  * signed-in provider with that provider's first model.
  */
-function useThreadPicker(thread: AgentThread): Picker {
+function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => void } {
   const [picker, setPicker] = useState<Picker>(null);
+  // A sign-in from Settings changes readiness after mount; opening the menu reads it again.
+  const [reads, setReads] = useState(0);
+  const reload = useCallback(() => setReads((count) => count + 1), []);
+  const shownFor = useRef<string | null>(null);
   useEffect(() => {
     let current = true;
-    setPicker(null);
+    const key = `${thread.kind}:${thread.project_id}`;
+    if (shownFor.current !== key) setPicker(null);
+    shownFor.current = key;
     const load = async (): Promise<Picker> => {
       if (thread.kind === "project" && thread.project_id) {
         const readiness = await loadProjectReadiness(
@@ -147,8 +157,8 @@ function useThreadPicker(thread: AgentThread): Picker {
     return () => {
       current = false;
     };
-  }, [thread.kind, thread.project_id]);
-  return picker;
+  }, [thread.kind, thread.project_id, reads]);
+  return { picker, reload };
 }
 
 /**
@@ -160,13 +170,18 @@ function ThreadAgentPicker({
   value,
   label,
   onChange,
+  onShown,
 }: {
   source: AgentConfigSource;
   value: AgentRunConfig;
   label: string;
   onChange: (value: AgentRunConfig) => void;
+  /** The menu opened, so readiness is read again. */
+  onShown: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const shown = useRef(onShown);
+  useEffect(() => shown.current(), []);
   return (
     <div className="thread-agent-picker">
       <AgentConfigChip
@@ -178,6 +193,38 @@ function ThreadAgentPicker({
         onToggle={() => setOpen(!open)}
       />
       {open && <AgentConfigControls project={source} value={value} onChange={onChange} compact />}
+    </div>
+  );
+}
+
+const HANDOFF_STATUS: Record<string, string> = {
+  succeeded: "Done",
+  failed: "Failed",
+  refused: "Not started",
+  interrupted: "Stopped",
+  canceled: "Stopped",
+};
+
+/** A handed-off turn's settlement: the agent that ran it, how it ended, its answer. */
+function HandoffResult({
+  report,
+  agentName,
+}: {
+  report: NonNullable<ReturnType<typeof handoffReport>>;
+  agentName: string;
+}) {
+  return (
+    <div className="handoff-result" data-status={report.status}>
+      <div className="handoff-result-row">
+        <GitPullRequestArrow size={12} aria-hidden="true" />
+        <strong>{agentName}</strong>
+        <span>{HANDOFF_STATUS[report.status] ?? report.status.replaceAll("_", " ")}</span>
+      </div>
+      {report.answer && (
+        <div className="chat-markdown">
+          <MarkdownAnswer text={report.answer} />
+        </div>
+      )}
     </div>
   );
 }
@@ -353,6 +400,7 @@ type ThreadNote = { threadId: string; text: string };
 
 export function AgentThreadView({
   thread,
+  threads,
   actorId = null,
   project,
   revision = null,
@@ -361,6 +409,8 @@ export function AgentThreadView({
   onThreadChanged,
 }: {
   thread: AgentThread;
+  /** The member's threads, which name the agent a handoff report came from. */
+  threads?: readonly AgentThread[];
   actorId?: string | null;
   project?: ProjectSnapshot;
   /** The member's agent-thread watermark; a change reloads this thread. */
@@ -381,12 +431,11 @@ export function AgentThreadView({
   const [turnTasks, setTurnTasks] = useState<ReadonlyMap<string, AgentTask>>(() => new Map());
   const composers = useRef(new Map<string, Composer>());
   const [, refreshComposer] = useState(0);
-  const [chosen, setChosen] = useState<AgentRunConfig | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
   const linesRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const picker = useThreadPicker(thread);
+  const { picker, reload: reloadPicker } = useThreadPicker(thread);
   const threadRef = useRef(thread);
   threadRef.current = thread;
   const isCurrent = (threadId: string) => threadRef.current.thread_id === threadId;
@@ -546,9 +595,8 @@ export function AgentThreadView({
     }
   }, []);
 
-  // Another thread starts with its own picks; the watermark reloads the open one.
+  // The watermark reloads the open thread; another thread opens without a rename.
   useEffect(() => {
-    setChosen(null);
     setRenaming(false);
   }, [thread.thread_id]);
   useEffect(() => {
@@ -601,8 +649,19 @@ export function AgentThreadView({
     markThreadRead(thread.thread_id, newest).then(onThreadChanged, () => undefined);
   }, [thread.unread, thread.thread_id, freshThreadId, newest, onThreadChanged]);
 
-  // What the pick shows is exactly what the next send names.
-  const config = chosen ?? (picker ? nextTurnConfig(messages, picker.value) : null);
+  // The thread stores its pick and every turn runs it, retries and wakes included;
+  // until the member picks, the default shows and the next send stores it.
+  const config = thread.agent ?? picker?.value ?? null;
+  const pickAgent = (agent: AgentRunConfig) => {
+    const target = thread;
+    onThreadChanged({ ...target, agent });
+    act(target.thread_id, () =>
+      setThreadAgent(target.thread_id, agent).then(onThreadChanged, (failure: unknown) => {
+        onThreadChanged(target);
+        throw failure;
+      }),
+    );
+  };
 
   // A resend repeats the captured request, including its attachment set and provider.
   const send = async (pending: PendingThreadTurn) => {
@@ -787,10 +846,25 @@ export function AgentThreadView({
       ? failedTask
       : null;
 
+  // Browser loss shows once, on the browser item, rather than on every turn.
+  const browserStatus = [...lines.transcript]
+    .reverse()
+    .find((line) => line.browserStatus)?.browserStatus;
+  const browserLoss =
+    thread.browser_requested &&
+    (browserStatus?.status === "unavailable" || browserStatus?.status === "lost")
+      ? browserReason(browserStatus.reason_code)
+      : null;
   const menuItems = [
     { label: "Rename", onSelect: () => setRenaming(true) },
     {
       label: thread.browser_requested ? "Turn browser off" : "Turn browser on",
+      ...(browserLoss
+        ? {
+            icon: TriangleAlert,
+            title: [browserLoss.reason, browserLoss.fix].filter(Boolean).join(" "),
+          }
+        : {}),
       onSelect: () =>
         act(thread.thread_id, () =>
           setThreadBrowser(thread.thread_id, !thread.browser_requested).then((result) =>
@@ -826,12 +900,13 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
-          <AgentStatusStrip tasks={lines.statusTasks} />
           <SchedulesPopover
             thread={thread}
             schedules={schedules}
             onChanged={() => void refreshSchedules()}
           />
+          {/* The context ring sits just left of the menu, as in a project chat. */}
+          <AgentStatusStrip tasks={lines.statusTasks} />
           <OverflowMenu
             label="Thread menu"
             items={menuItems}
@@ -843,7 +918,8 @@ export function AgentThreadView({
                 source={picker.source}
                 value={config}
                 label={`${thread.agent_name} agent`}
-                onChange={setChosen}
+                onChange={pickAgent}
+                onShown={reloadPicker}
               />
             )}
           </OverflowMenu>
@@ -890,6 +966,25 @@ export function AgentThreadView({
             line.trigger === "schedule" && line.role === "human" ? "agent" : line.role
           }
           humanBody={(line) => (line.trigger === "schedule" ? <></> : undefined)}
+          browserNotices={false}
+          agentBody={(line) => {
+            const report = handoffReport(line);
+            if (!report) return undefined;
+            const target = threads?.find((item) => item.thread_id === report.threadId);
+            return (
+              <HandoffResult
+                report={report}
+                agentName={target?.agent_name ?? target?.project_name ?? "Project agent"}
+              />
+            );
+          }}
+          triggerChip={(line) =>
+            line.trigger !== "watcher" ? null : handoffReport(line) ? (
+              <span className="chat-turn-trigger handoff">Handoff</span>
+            ) : (
+              <span className="chat-turn-trigger watcher">Watcher</span>
+            )
+          }
           pendingTurn={pending}
           onRetryTask={(task) => void control("retry", task)}
           submitting={Boolean(pending && !composer.error)}
