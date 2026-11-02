@@ -180,7 +180,8 @@ test("Agents can write applies at once and leaves the Save form clean", async (t
     },
   ]);
   assert.equal(await data.isChecked(), true);
-  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).isDisabled(), true);
+  // Nothing is left to save, so the pane shows no save bar.
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
 });
 
 test("project member responses and invite selections stay with their project", async (t) => {

@@ -136,7 +136,7 @@ def test_remote_uses_shipped_code_and_defers_marker_on_failure(tmp_path, monkeyp
     index = Path(shared) / "MEMORY.md"
     index.unlink()
     index.symlink_to("missing-index")
-    assert prepare_project_memory(store, "project", stage) == (shared, None)
+    assert prepare_project_memory(store, "project", stage) == (None, None)
 
 
 def test_memory_refuses_redirected_shared_folder(tmp_path):
@@ -280,8 +280,12 @@ def test_ordinary_launch_reports_unusable_memory(tmp_path, entry, shape):
     )
     pointer = project_memory_pointer(execution, None)
     assert "unusable" in pointer and "repair" in pointer
-    # A redirected folder is never named, so no launch grants it as a write root.
-    assert (shared in pointer) if entry.endswith("MEMORY.md") else shared is None
+    # A redirected folder or index is never named, so no launch grants a write root
+    # a file editor could follow out of memory. A non-file index cannot be followed.
+    if entry.endswith("MEMORY.md") and shape == "nonregular":
+        assert shared in pointer
+    else:
+        assert shared is None
     assert list(outside.iterdir()) == []
 
 

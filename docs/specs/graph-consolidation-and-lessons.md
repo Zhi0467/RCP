@@ -241,11 +241,12 @@ Launch prompts point to each live index and label it as notes, never instruction
 or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
 note storage. Launch uses `lstat` for the index; an oversized index prompts the
 agent to read its start and prune it; add-only runs request consolidation pruning. There
-is no staged lesson snapshot or lesson command. After migration, a symlink or
-non-regular index does not stop a launch: the prompt reports an unusable index
-and asks the agent to repair it. An unusable shared or notes directory is not
-granted; the prompt says memory is not writable this turn and asks the agent to
-have the member repair it.
+is no staged lesson snapshot or lesson command. After migration, an unusable
+index does not stop a launch. A non-regular index is reported as unusable and the
+agent is asked to repair it. A symlinked index, or an unusable shared or notes
+directory, withholds the shared grant, because a file editor could follow the link
+out of memory; the prompt says memory is not writable this turn and asks the agent
+to have the member repair it.
 Migration still refuses these paths before recording completion.
 
 On the first launch build per project, the backend migrates all legacy

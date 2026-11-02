@@ -55,10 +55,15 @@ def _write(path: Path, content: str, *, replace: bool) -> None:
 
 
 def shared_folder_usable(root: Path) -> bool:
-    """`shared` and its notes are real folders, so a grant of `shared` stays in memory."""
+    """`shared` and its notes are real folders and the index is no link, so a grant of
+    `shared` stays in memory even for a file editor that follows links."""
     try:
-        return all(
-            stat.S_ISDIR(path.lstat().st_mode) for path in (root / "shared", root / "shared/notes")
+        return (
+            all(
+                stat.S_ISDIR(path.lstat().st_mode)
+                for path in (root / "shared", root / "shared/notes")
+            )
+            and not (root / "shared/MEMORY.md").is_symlink()
         )
     except OSError:
         return False
