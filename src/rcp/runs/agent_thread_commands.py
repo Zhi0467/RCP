@@ -349,11 +349,8 @@ def _handoff_turn_settled(store: AppStore, background: BackgroundAgentTasks, row
     if row["failure_kind"] == "provider_auth":
         # A sign-in release retries it, until its chat moves past it.
         return not auth_retry_candidates(store, operation_id=row["operation_id"])
-    return not (
-        row["failure_kind"] == "transport_lost"
-        and store.agent_task_has_receipt(row["operation_id"], "transport_auto_retry")
-        and not store.agent_task_has_receipt(row["operation_id"], "transport_auto_retry_exhausted")
-    )
+    record = store.agent_task(row["operation_id"])
+    return record is None or not background.transport_retry_owed(record)
 
 
 _HANDOFF_SETTLED = frozenset({"succeeded", "failed", "interrupted", "paused"})

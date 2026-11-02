@@ -3072,16 +3072,35 @@ class BackgroundAgentTasks:
 
         for operation_id in self.store.owed_transport_retry_operation_ids():
             record = self.store.agent_task(operation_id)
-            if (
-                record is None
-                or not record.can_retry
-                or self.store.episode_child_recovery_refusal(record) is not None
-            ):
-                continue
-            attempt = self._transport_retry_attempt(record)
-            if attempt >= AGENT_TRANSPORT_RETRY_LIMIT:
-                continue
-            self._schedule_transport_retry(operation_id, attempt=attempt)
+            if record is not None and self.transport_retry_owed(record):
+                self._schedule_transport_retry(
+                    operation_id, attempt=self._transport_retry_attempt(record)
+                )
+
+    def transport_retry_owed(self, record: AgentTaskRecord) -> bool:
+        """Whether a lost-link turn still has an automatic reattempt coming.
+
+        Re-arming after a restart and anything waiting on the turn's final result
+        share this answer. A reattempt that stood down, ran out, or can no longer
+        run owes nothing, so the failure is final.
+        """
+
+        operation_id = record.operation_id
+        return (
+            record.status == "failed"
+            and record.failure_kind == "transport_lost"
+            and self.store.agent_task_has_receipt(operation_id, "transport_auto_retry")
+            and not self.store.agent_task_has_receipt(
+                operation_id, "transport_auto_retry_exhausted"
+            )
+            and not self.store.agent_task_has_receipt(
+                operation_id, "transport_auto_retry_superseded"
+            )
+            and not self.store.agent_task_has_continuation(operation_id)
+            and record.can_retry
+            and self.store.episode_child_recovery_refusal(record) is None
+            and self._transport_retry_attempt(record) < AGENT_TRANSPORT_RETRY_LIMIT
+        )
 
     def _transport_retry_superseded(self, operation_id: str) -> bool:
         """Whether this turn was already taken over while the wait ran.

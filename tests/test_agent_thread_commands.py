@@ -256,6 +256,7 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
         "paused",
         "retried",
         "signed_out",
+        "stood_down",
         "unprojected",
     ],
 )
@@ -480,6 +481,17 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         )
         report = store.agent_task(drain()[0]).request["handoff_report"]
         assert (report["status"], report["failure_kind"]) == ("failed", "provider_auth")
+        return
+    if refusal == "stood_down":
+        # A promised reattempt that stood down without a child leaves the failure final.
+        store.fail_agent_task(settled, "link lost", failure_kind="transport_lost")
+        store.record_agent_task_receipt(settled, "transport_auto_retry", {"attempt": 1})
+        assert drain() == []
+        store.record_agent_task_receipt(
+            settled, "transport_auto_retry_superseded", {"reason": "not retryable"}
+        )
+        report = store.agent_task(drain()[0]).request["handoff_report"]
+        assert (report["status"], report["failure_kind"]) == ("failed", "transport_lost")
         return
     if refusal == "retried":
         # A lost link RCP retries itself is not a settlement; the retry's result is.
