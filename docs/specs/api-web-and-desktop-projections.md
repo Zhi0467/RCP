@@ -2273,8 +2273,11 @@ thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused or `needs_you` (an open question or card). `latest_operation_id` names
 the newest visible turn, so a view can follow a project turn whose member
-message reaches the transcript only when it settles. `unread` compares the
-newest turn's finish, `last_finished_at`, with the member's read marker. Messages
+message reaches the transcript only when it settles. A thread's turns are the
+tasks of its own kind (`space_chat` or `project_chat`); an Experiment it started
+is not one. `unread` compares the newest finished turn's finish (succeeded,
+failed or interrupted, not paused), `last_finished_at`, with the member's read
+marker. Messages
 carry earlier times than their turn's finish, so the view marks read through the
 `last_finished_at` of the listing its transcript was loaded with. Threads of projects the
 member left are closed and omitted; listing reopens every other thread.

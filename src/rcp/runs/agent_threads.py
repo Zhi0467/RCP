@@ -40,8 +40,14 @@ def thread_projections(
         return []
     space_id = store.space_id
     scopes = [(thread.project_id or space_id, thread.thread_id) for thread in threads]
-    pairs = ",".join("(?,?)" for _ in scopes)
-    keys = [value for pair in scopes for value in pair]
+    pairs = ",".join("(?,?,?)" for _ in scopes)
+    # A thread's turns are its own kind, as `thread_binds_task` defines them; an
+    # Experiment it started carries its chat id too and is no turn of it.
+    keys = [
+        value
+        for thread, pair in zip(threads, scopes, strict=True)
+        for value in (*pair, "space_chat" if thread.kind == "space" else "project_chat")
+    ]
     ids = ",".join("?" for _ in threads)
     thread_ids = [thread.thread_id for thread in threads]
     project_ids = sorted({thread.project_id for thread in threads if thread.project_id})
@@ -49,15 +55,17 @@ def thread_projections(
     # which scans the whole project history; both reads stay on each thread's turns.
     turns = (
         "FROM graph_runs INDEXED BY graph_runs_chat_turn WHERE project_id=th.scope "
-        "AND json_extract(request_json, '$.chat_id')=th.thread AND visible=1"
+        "AND json_extract(request_json, '$.chat_id')=th.thread AND kind=th.kind AND visible=1"
     )
     with store.connection() as connection:
         latest = {
             row["thread"]: row
             for row in connection.execute(
-                f"WITH th(scope, thread) AS (VALUES {pairs}) "
+                f"WITH th(scope, thread, kind) AS (VALUES {pairs}) "
                 "SELECT th.scope, th.thread, r.operation_id, r.status, r.updated_at, "
-                f"(SELECT MAX(finished_at) {turns}) AS last_finished_at "
+                # Finished as `AgentTaskRecord.finished` defines it: a paused turn has not.
+                f"(SELECT MAX(finished_at) {turns} "
+                "AND status IN ('succeeded', 'failed', 'interrupted')) AS last_finished_at "
                 "FROM th LEFT JOIN graph_runs r ON r.operation_id = "
                 f"(SELECT operation_id {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1)",
                 keys,

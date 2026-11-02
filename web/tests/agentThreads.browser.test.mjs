@@ -1195,9 +1195,59 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
           "the stop and the composer share the message column",
         );
       assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
+      // The paused turn holds the thread, so Enter sends nothing and Send stays off.
+      let posted = 0;
+      page.on("request", (request) => {
+        if (request.method() === "POST" && request.url().endsWith("/turns")) posted += 1;
+      });
+      const field = thread.getByRole("textbox", { name: "Message" });
+      await field.fill("Another one");
+      await field.press("Enter");
+      assert.ok(await thread.getByRole("button", { name: "Send" }).isDisabled());
+      await page.waitForTimeout(200);
+      assert.equal(posted, 0);
+      assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
       if (shots) await page.screenshot({ path: `${shots}/stopped-retry-${width}.png` });
       await page.close();
     }
+  });
+});
+
+test("a waking watcher turn shows only its live row until it has text", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mockApi(page, []);
+    const latest = { thread_id: "space", latest_operation_id: "op-wake" };
+    await page.route("**/api/agent-threads", (route) =>
+      route.fulfill({
+        json: {
+          threads: threads.map((item) =>
+            item.thread_id === "space" ? { ...item, ...latest, agent: null } : item,
+          ),
+        },
+      }),
+    );
+    await page.route("**/api/agent-threads/space/transcript", (route) =>
+      route.fulfill({ json: transcript("space", []) }),
+    );
+    await page.route("**/api/agent-threads/space/tasks/op-wake", (route) =>
+      route.fulfill({
+        json: {
+          ...settled("op-wake"),
+          active: true,
+          settled: false,
+          finished: false,
+          status_message: "Preparing agent task.",
+          request: { message: "Watcher fired", trigger: "watcher" },
+        },
+      }),
+    );
+    await page.goto(`${base}#/agent/space`);
+    const thread = page.getByRole("region", { name: "Pip" });
+    await thread.locator(".agent-turn-live").waitFor();
+    assert.equal(await thread.locator(".chat-turn-trigger.watcher").count(), 0);
+    assert.equal(await thread.locator(".node-chat-line.agent").count(), 1);
+    await page.close();
   });
 });
 
@@ -1426,6 +1476,43 @@ test("a provider signed in after mount is offered when the thread menu opens", a
     );
     await provider.selectOption("codex");
     assert.match(await menu.getByRole("button", { name: /^Pip agent:/ }).textContent(), /Codex/);
+  });
+});
+
+test("a pick stored by a send reads its default machine's readiness", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
+    await mockApi(page, []);
+    // A send stores provider, model and effort, and no machine.
+    const sent = { provider: "claude", model: "opus", reasoning: "high", run_on: null };
+    await page.route("**/api/agent-threads", (route) =>
+      route.fulfill({
+        json: {
+          threads: threads.map((item) => ({
+            ...item,
+            agent: sent,
+            capabilities: capabilities[item.kind],
+          })),
+        },
+      }),
+    );
+    for (const [hash, name] of [
+      ["space", "Pip"],
+      ["moss", "Moss"],
+    ]) {
+      await page.goto(`${base}#/agent/${hash}`);
+      const thread = page.getByRole("region", { name });
+      await thread.getByRole("button", { name: "Thread menu" }).click();
+      const row = page
+        .getByRole("menu", { name: "Thread menu" })
+        .getByRole("button", { name: new RegExp(`^${name} agent:`) });
+      await row.waitFor();
+      await page.waitForFunction(
+        () => document.querySelector(".agent-config-chip")?.getAttribute("aria-busy") === "false",
+      );
+      assert.equal(await row.textContent(), "Claude · opus · high");
+      await page.keyboard.press("Escape");
+    }
   });
 });
 
@@ -1703,7 +1790,15 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
         state: "paused",
         next_fire_at: new Date(now + 3_600_000).toISOString(),
       },
-      ...Array.from({ length: 4 }, (_, index) => ({
+      {
+        schedule_id: "stale",
+        at_local: "2020-01-01T09:00",
+        timezone: "UTC",
+        note: "Paused past reminder",
+        state: "paused",
+        next_fire_at: "2020-01-01T09:00:00Z",
+      },
+      ...Array.from({ length: 8 }, (_, index) => ({
         schedule_id: `extra-${index}`,
         cron: `0 ${10 + index} * * *`,
         timezone: "UTC",
@@ -1729,7 +1824,9 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
       );
       await page.goto(`${base}#/agent/space`);
       const thread = page.getByRole("region", { name: "Pip" });
-      await thread.getByRole("button", { name: `${rows.length} upcoming` }).click();
+      // The count is what will run; paused and disabled rows wait for the member.
+      const firing = rows.filter((item) => item.state === "active").length;
+      await thread.getByRole("button", { name: `${firing} upcoming` }).click();
       const popover = page.getByRole("dialog", { name: "Upcoming" });
       const row = (id) =>
         popover.locator(".upcoming-row").nth(rows.findIndex((item) => item.schedule_id === id));
@@ -1755,6 +1852,13 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
         1,
       );
       assert.equal(await row("paused").locator(".upcoming-next").count(), 0);
+      // A one-shot whose time passed while paused has nothing left to resume.
+      assert.equal(
+        await row("stale")
+          .getByRole("button", { name: /^(Pause|Resume) / })
+          .count(),
+        0,
+      );
       assert.equal(
         await row("past")
           .getByRole("button", { name: /^(Pause|Resume) / })
@@ -1771,9 +1875,12 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
       const box = await popover.evaluate((element) => ({
         scroll: element.scrollHeight > element.clientHeight,
         right: element.getBoundingClientRect().right,
+        bottom: element.getBoundingClientRect().bottom,
+        frame: element.closest(".space-agent").getBoundingClientRect().bottom,
       }));
       assert.ok(box.scroll, "a long list scrolls inside the popover");
       assert.ok(box.right <= width);
+      assert.ok(box.bottom <= box.frame, "the popover ends inside the thread's frame");
       await page.waitForTimeout(200);
       if (shots) await page.screenshot({ path: `${shots}/upcoming-${width}.png` });
       // An Enable the backend refuses says why.

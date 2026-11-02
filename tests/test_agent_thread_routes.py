@@ -221,6 +221,59 @@ def test_mark_read_through_the_reported_finish_clears_unread(manifest, tmp_path)
         assert not read.json()["unread"]
 
 
+def test_unread_counts_only_the_threads_own_finished_turns(manifest, tmp_path):
+    from datetime import datetime, timedelta
+
+    from rcp.storage import AgentTaskRecord
+    from tests.helpers import authorized_human
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        row = next(
+            row
+            for row in client.get("/api/agent-threads").json()["threads"]
+            if row["kind"] == "project"
+        )
+        start = datetime.fromisoformat(store.now())
+
+        def task(operation_id, kind, status, minute):
+            at = (start + timedelta(minutes=minute)).isoformat()
+            store.create_agent_task(
+                AgentTaskRecord(
+                    operation_id=operation_id,
+                    project_id=row["project_id"],
+                    kind=kind,
+                    status=status,
+                    status_message=status,
+                    created_at=at,
+                    updated_at=at,
+                    finished_at=at,
+                    request={"chat_id": row["thread_id"], "chat_scope": "project", "mode": "work"},
+                    authorized_by=authorized_human(store),
+                )
+            )
+
+        def listed():
+            return next(
+                item
+                for item in client.get("/api/agent-threads").json()["threads"]
+                if item["thread_id"] == row["thread_id"]
+            )
+
+        task("reply", "project_chat", "succeeded", 1)
+        base = "/api/agent-threads/" + row["thread_id"]
+        read = client.post(base + "/read", json={"read_through": listed()["last_finished_at"]})
+        assert read.status_code == 200, read.text
+        # A stopped turn has not finished, and an Experiment the thread started is no turn of it.
+        task("stopped", "project_chat", "paused", 2)
+        task("experiment", "node_chat", "succeeded", 3)
+        thread = listed()
+        assert not thread["unread"]
+        assert thread["latest_operation_id"] == "stopped"
+        assert thread["live_state"] == "paused"
+
+
 def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
     from typing import cast
 
