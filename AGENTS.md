@@ -61,8 +61,9 @@ shared-contract changes, or integration uncertainty.
   never regrow one or use `--writebaseline`.
 - Write no comments: name it, test it, or put the why in the owning spec.
   Invariant citations, lint pragmas, and docstrings stay allowed.
-- A bug that a live drive or team rehearsal finds also adds its data shape to
-  the installed-upgrade or release-upgrade seed in the same PR.
+- A bug that a live drive or team rehearsal finds also gets a CI check in the
+  same PR: its data shape in the upgrade seed, or its path in a fake-agent
+  journey or the lifecycle explorer.
 - Before a push, read `uv run python scripts/quality_delta.py origin/main`. It never gates.
 - Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view
