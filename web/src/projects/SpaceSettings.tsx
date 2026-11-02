@@ -1,10 +1,14 @@
 import {
   ArrowLeft,
+  AudioLines,
   Check,
-  HardDrive,
+  Database,
+  Laptop,
   LoaderCircle,
+  Palette,
   Plus,
   Server,
+  ServerCog,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -26,10 +30,25 @@ import { ReleaseCheckRow } from "../desktop/UpdateNotice";
 import { errorMessage } from "../core/errors";
 import { useSpaceMachines } from "./useSpaceMachines";
 import { machineHostLabel } from "./spaceMachines";
+import {
+  AppearancePicker,
+  type AppearancePickerProps,
+  type TextScaleControl,
+} from "../ui/AppearancePicker";
+import { SettingsRail, type SettingsSection } from "../ui/SettingsRail";
 import type { MachinePowerStatus, ProjectCacheMetrics, UpdateNotice } from "../core/types";
+
+export type SpaceSettingsSectionId =
+  "appearance" | "server" | "this-mac" | "machines" | "voice" | "caches";
+
+type MachinePower = ReturnType<typeof useMachinePower>;
 
 interface Props {
   spaceKind: "personal" | "team";
+  /** The pane to open on; absent or missing opens the first. */
+  initialSection?: SpaceSettingsSectionId;
+  appearance: AppearancePickerProps;
+  textScale?: TextScaleControl;
   updateNotice?: UpdateNotice | null;
   onReleaseCheck?: (notice: UpdateNotice) => void;
   writesDisabled?: boolean;
@@ -53,6 +72,9 @@ export function showClearAllCachesWarning(clearStatus: () => void, openWarning: 
 /** Settings that belong to the whole space rather than to one project. */
 export function SpaceSettings({
   spaceKind,
+  initialSection,
+  appearance,
+  textScale,
   updateNotice = null,
   onReleaseCheck,
   writesDisabled = false,
@@ -64,23 +86,53 @@ export function SpaceSettings({
   focusSignIns = null,
   onClose,
 }: Props) {
-  return (
-    <div className="space-settings-shell">
-      <header className="space-settings-header">
-        <button className="project-back" type="button" onClick={onClose} aria-label="Back">
-          <ArrowLeft size={16} />
-        </button>
-        <h1>Space settings</h1>
-      </header>
-      <section className="settings-page" data-settings-level="space">
-        {spaceKind === "team" ? (
-          <ServerSettings onReleaseCheck={onReleaseCheck} />
-        ) : (
-          <section className="settings-section">
-            <ReleaseCheckRow notice={updateNotice} />
-          </section>
-        )}
-        <ThisMac spaceKind={spaceKind} writesDisabled={writesDisabled} />
+  // Polls while Space Settings is open. A personal space keeps This Mac in the
+  // rail while the status loads, so a caller that opens it never sees another pane.
+  const machinePower = useMachinePower(spaceKind);
+  const sections: SettingsSection[] = [
+    {
+      id: "appearance",
+      label: "Appearance",
+      icon: <Palette size={16} />,
+      content: (
+        <section className="settings-section appearance-settings">
+          <header>
+            <span>
+              <Palette size={16} />
+            </span>
+            <h2>Appearance</h2>
+          </header>
+          <AppearancePicker {...appearance} textScale={textScale} />
+        </section>
+      ),
+    },
+    ...(spaceKind === "team"
+      ? [
+          {
+            id: "server",
+            label: "Team server",
+            icon: <ServerCog size={16} />,
+            content: <ServerSettings onReleaseCheck={onReleaseCheck} />,
+          },
+        ]
+      : []),
+    ...(spaceKind === "personal" && machinePower.status?.supported !== false
+      ? [
+          {
+            id: "this-mac",
+            label: "This Mac",
+            icon: <Laptop size={16} />,
+            content: (
+              <ThisMac spaceKind={spaceKind} power={machinePower} writesDisabled={writesDisabled} />
+            ),
+          },
+        ]
+      : []),
+    {
+      id: "machines",
+      label: "Machines",
+      icon: <Server size={16} />,
+      content: (
         <SpaceMachineList
           spaceKind={spaceKind}
           writesDisabled={writesDisabled}
@@ -88,14 +140,42 @@ export function SpaceSettings({
           focusSignIns={focusSignIns}
           onLoginChanged={onLoginChanged}
         />
-        <TranscriptionSettings writesDisabled={writesDisabled} />
-        {spaceKind === "personal" && cacheProjectId && (
-          <ClearAllCaches
-            projectId={cacheProjectId}
-            disabled={cacheClearDisabled}
-            onCleared={onAllCachesCleared}
-          />
-        )}
+      ),
+    },
+    {
+      id: "voice",
+      label: "Dictation and voice",
+      icon: <AudioLines size={16} />,
+      content: <TranscriptionSettings writesDisabled={writesDisabled} />,
+    },
+    ...(spaceKind === "personal" && cacheProjectId
+      ? [
+          {
+            id: "caches",
+            label: "Caches",
+            icon: <Database size={16} />,
+            content: (
+              <ClearAllCaches
+                projectId={cacheProjectId}
+                disabled={cacheClearDisabled}
+                onCleared={onAllCachesCleared}
+              />
+            ),
+          },
+        ]
+      : []),
+  ];
+  return (
+    <div className="space-settings-shell">
+      <header className="space-settings-header">
+        <button className="project-back" type="button" onClick={onClose} aria-label="Back">
+          <ArrowLeft size={16} />
+        </button>
+        <h1>Space settings</h1>
+        {spaceKind === "personal" && <ReleaseCheckRow notice={updateNotice} />}
+      </header>
+      <section className="settings-page" data-settings-level="space">
+        <SettingsRail sections={sections} initialSection={initialSection} />
       </section>
     </div>
   );
@@ -232,7 +312,7 @@ function ClearAllCaches({
     <section className="settings-section cache-settings space-cache-settings">
       <header>
         <span>
-          <HardDrive size={16} />
+          <Database size={16} />
         </span>
         <h2>Caches</h2>
       </header>
@@ -315,12 +395,14 @@ function ClearAllCaches({
 
 function ThisMac({
   spaceKind,
+  power,
   writesDisabled,
 }: {
   spaceKind: "personal" | "team";
+  power: MachinePower;
   writesDisabled: boolean;
 }) {
-  const { status, setStatus, error: loadError } = useMachinePower(spaceKind);
+  const { status, setStatus, error: loadError } = power;
   const [installOpen, setInstallOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -370,7 +452,7 @@ function ThisMac({
     <section className="settings-section provider-path-settings machine-power-settings">
       <header>
         <span>
-          <HardDrive size={16} />
+          <Laptop size={16} />
         </span>
         <h2>This Mac</h2>
       </header>

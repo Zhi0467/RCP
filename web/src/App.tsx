@@ -315,7 +315,7 @@ import type {
 } from "./core/types";
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
 import { ProjectLanding } from "./projects/ProjectLanding";
-import { SpaceSettings } from "./projects/SpaceSettings";
+import { SpaceSettings, type SpaceSettingsSectionId } from "./projects/SpaceSettings";
 import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
 import { ProjectOverview } from "./projects/ProjectOverview";
 import { isControlNode, primaryField } from "./graph/researchType";
@@ -995,26 +995,34 @@ function MemberApp({
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
   const [textScale, setTextScale] = useState(readTextScale);
-  const [spaceSettingsOpen, setSpaceSettingsOpen] = useState(false);
-  // A login notice opens Space settings at that login's machine card "Sign-ins" fold.
-  const [signInsTarget, setSignInsTarget] = useState<{ provider: string; host: string } | null>(
-    null,
+  // Null while closed. Every open counts up, so an entry point fired while
+  // Space settings is already open remounts it on the requested section.
+  const [spaceSettings, setSpaceSettings] = useState<{
+    section: SpaceSettingsSectionId;
+    signIns?: { provider: string; host: string };
+    opened: number;
+  } | null>(null);
+  const openSpaceSettings = useCallback(
+    (
+      section: SpaceSettingsSectionId = "appearance",
+      signIns?: { provider: string; host: string },
+    ) => setSpaceSettings((current) => ({ section, signIns, opened: (current?.opened ?? 0) + 1 })),
+    [],
   );
-  const openSignIns = useCallback((state: { provider: string; host: string }) => {
-    setSignInsTarget({ provider: state.provider, host: state.host });
-    setSpaceSettingsOpen(true);
-  }, []);
+  // A login notice opens Space settings at that login's machine card "Sign-ins" fold.
+  const openSignIns = useCallback(
+    (state: { provider: string; host: string }) =>
+      openSpaceSettings("machines", { provider: state.provider, host: state.host }),
+    [openSpaceSettings],
+  );
   // Space settings is a page over the current route; any navigation leaves it.
-  useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
-  useEffect(() => {
-    if (!spaceSettingsOpen) setSignInsTarget(null);
-  }, [spaceSettingsOpen]);
+  useEffect(() => setSpaceSettings(null), [projectId, setupOpen]);
   useEffect(() => closeArtifactViewer(), [projectId]);
   const dockedArtifact = useDockedArtifact();
   // The viewer belongs to the project; a space-level page covers both.
   useEffect(
-    () => setArtifactViewerHidden(spaceSettingsOpen || setupOpen),
-    [spaceSettingsOpen, setupOpen],
+    () => setArtifactViewerHidden(spaceSettings !== null || setupOpen),
+    [spaceSettings, setupOpen],
   );
   const appearance = useTheme();
   const phone = useNarrowViewport();
@@ -4363,7 +4371,7 @@ function MemberApp({
     <VoicePanel
       voice={voice}
       graphRefs={graphRefs}
-      onOpenSettings={() => setSpaceSettingsOpen(true)}
+      onOpenSettings={() => openSpaceSettings("voice")}
     />
   );
   const setupRoute: ProjectSetupRoute = setupOpen
@@ -4486,11 +4494,20 @@ function MemberApp({
         {voiceSurface}
       </>
     );
-  if (spaceSettingsOpen)
+  if (spaceSettings)
     return (
       <>
         <SpaceSettings
+          key={spaceSettings.opened}
+          initialSection={spaceSettings.section}
           spaceKind={verifiedHealth?.space_kind ?? "personal"}
+          appearance={{
+            themeChoice: appearance.theme,
+            colorModeChoice: appearance.mode,
+            onThemeChoiceChange: appearance.setTheme,
+            onColorModeChoiceChange: appearance.setMode,
+          }}
+          textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
           updateNotice={releaseUpdate}
           onReleaseCheck={setReleaseUpdate}
           cacheProjectId={projectId ?? projects[0]?.id ?? null}
@@ -4506,8 +4523,8 @@ function MemberApp({
             void refreshProviderLogins();
           }}
           viewerUserId={actorIdentity?.user.user_id ?? null}
-          focusSignIns={signInsTarget}
-          onClose={() => setSpaceSettingsOpen(false)}
+          focusSignIns={spaceSettings.signIns}
+          onClose={() => setSpaceSettings(null)}
         />
         {updateSurface}
         {desktopAccessSurface}
@@ -4521,10 +4538,6 @@ function MemberApp({
     return (
       <>
         <ProjectLanding
-          themeChoice={appearance.theme}
-          colorModeChoice={appearance.mode}
-          onThemeChoiceChange={appearance.setTheme}
-          onColorModeChoiceChange={appearance.setMode}
           palette={appearance.palette}
           projects={projects}
           groups={projectGroups}
@@ -4548,10 +4561,9 @@ function MemberApp({
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
-          onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          onOpenSpaceSettings={openSpaceSettings}
           onOpenSignIns={openSignIns}
           voice={voice}
-          textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
@@ -4846,7 +4858,7 @@ function MemberApp({
         className="icon-button space-settings-control"
         aria-label="Space settings"
         title="Space settings"
-        onClick={() => setSpaceSettingsOpen(true)}
+        onClick={() => openSpaceSettings()}
       >
         <Settings size={16} />
       </button>
@@ -4855,13 +4867,6 @@ function MemberApp({
         identity={actorIdentity}
         identityError={actorIdentityError}
         onRequestName={requestActorName}
-        appearance={{
-          themeChoice: appearance.theme,
-          colorModeChoice: appearance.mode,
-          onThemeChoiceChange: appearance.setTheme,
-          onColorModeChoiceChange: appearance.setMode,
-        }}
-        textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
       />
     </>
   );

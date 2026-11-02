@@ -23,7 +23,7 @@ export interface TextScaleControl {
   onChange: (action: TextScaleAction) => void;
 }
 
-/** Display preferences, shown inside the identity menu. */
+/** Display preferences: the Appearance pane of Space Settings. */
 export function AppearancePicker({
   themeChoice,
   colorModeChoice,
@@ -32,7 +32,7 @@ export function AppearancePicker({
   textScale,
 }: AppearancePickerProps & { textScale?: TextScaleControl }) {
   return (
-    <section className="appearance-picker" aria-label="Display">
+    <section className="appearance-picker" aria-label="Appearance">
       <div className="appearance-picker-row">
         <span>Mode</span>
         <div className="appearance-picker-options" role="group" aria-label="Color mode">
