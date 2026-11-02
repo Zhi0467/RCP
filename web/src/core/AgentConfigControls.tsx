@@ -15,7 +15,13 @@ import {
   reasoningOptions,
   runtimeOptions,
 } from "../projects/providers";
-import type { AgentProfile, AgentRunConfig, ProjectSnapshot, ProviderReadiness } from "./types";
+import type {
+  AgentProfile,
+  AgentRunConfig,
+  ModelChoice,
+  ProjectSnapshot,
+  ProviderReadiness,
+} from "./types";
 
 /** What a picker reads: each machine's provider readiness, and the machines' hosts. */
 /**
@@ -23,8 +29,19 @@ import type { AgentProfile, AgentRunConfig, ProjectSnapshot, ProviderReadiness }
  * carries it: every supported provider is offered, and readiness only annotates it.
  */
 export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness" | "machines"> & {
-  registry?: Pick<ProviderReadiness, "provider" | "label">[];
+  registry?: (Pick<ProviderReadiness, "provider" | "label"> & { models?: ModelChoice[] })[];
 };
+
+/** A provider's models: the probe's, else the registry's declared ones before any probe. */
+export function providerModels(
+  source: AgentConfigSource,
+  runOn: string,
+  provider: string,
+): ModelChoice[] {
+  const probed = source.provider_readiness[runOn]?.[provider]?.models ?? [];
+  if (probed.length) return probed;
+  return source.registry?.find((item) => item.provider === provider)?.models ?? [];
+}
 
 interface Props {
   project: AgentConfigSource;
@@ -106,7 +123,10 @@ export function AgentConfigChip({
   ref?: Ref<HTMLButtonElement>;
 }) {
   const readiness = project.provider_readiness[value.run_on]?.[value.provider];
-  const providerName = readiness?.label || value.provider;
+  const providerName =
+    readiness?.label ||
+    project.registry?.find((item) => item.provider === value.provider)?.label ||
+    value.provider;
   return (
     <button
       ref={ref}
@@ -215,7 +235,7 @@ export function AgentConfigControls({
   // Everything offered below comes from the backend registry's probe of this
   // machine: which providers exist, what they are called, which models they
   // accept, and which reasoning efforts each of those models accepts.
-  const models = readiness?.models ?? [];
+  const models = providerModels(project, value.run_on, value.provider);
   const providers = providerOptions(project.registry ?? Object.values(onMachine), value.provider);
   // What the select shows is what runs: the chosen model, else the backend's
   // exported effective model. An empty value with no known head shows blank.
@@ -234,7 +254,13 @@ export function AgentConfigControls({
             disabled={locked}
             onChange={(event) => {
               const next = onMachine[event.target.value];
-              update(providerChange(next?.models ?? [], event.target.value, value.reasoning));
+              update(
+                providerChange(
+                  providerModels(project, value.run_on, event.target.value),
+                  event.target.value,
+                  value.reasoning,
+                ),
+              );
               // The runtime belongs to the provider, so it moves with it. Only
               // this machine's readiness can name the new provider's default,
               // and the list above cannot offer a provider without it.

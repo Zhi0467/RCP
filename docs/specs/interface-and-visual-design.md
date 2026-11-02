@@ -420,7 +420,8 @@ Hide in the browser or project affects completed rows only.
 Show hidden watchers restores them. Renewed activity overrides hiding.
 
 Work replies show a neutral Done, Partial · reason, Couldn't do it · reason, or
-No outcome stated chip beside the graph receipt, even without graph updates.
+No outcome stated chip above the graph receipt, even without graph updates. The
+receipt is a card as wide as the answer.
 Other modes without outcome metadata show no chip.
 Long reasons wrap without failure coloring.
 
@@ -450,6 +451,11 @@ thread the backend machine's first signed-in provider. When the browser was
 unavailable on the latest turn, the browser item carries a warning icon and the
 fix on hover; turns carry no browser notice. The composer holds the voice
 button. A failed turn shows its error once, in the message column, with Retry.
+A member's Stop reads Stopped, with Resume and Retry, in the same column. A
+Resume or Retry continues its turn, so the member's message shows once. The
+thread's reading column is a step wider than a board chat's, and the composer
+matches it. A provider pick moves to that provider's first model; a provider
+that declares its models lists them before any probe.
 Switching threads shows each thread's last loaded view while it reloads. Each
 schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake

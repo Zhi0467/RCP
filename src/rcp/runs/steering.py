@@ -17,7 +17,12 @@ from rcp.runs.chat import (
     question_answer_message_id,
     question_answer_text,
 )
-from rcp.runs.space_chat import SpaceThreadOwner, append_space_records, space_transcript_lock
+from rcp.runs.space_chat import (
+    SpaceThreadOwner,
+    append_space_message,
+    append_space_records,
+    space_transcript_lock,
+)
 from rcp.runs.task_policy import load_stored_request
 from rcp.service import (
     ChatMessage,
@@ -207,7 +212,12 @@ def _record_steer(
     )
     # The normal exchange arrives only on completion. Reserve its prompt first
     # so a steer cannot become the conversation title or precede its own turn.
-    if not any(
+    if isinstance(service, SpaceThreadOwner):
+        # Once for the whole turn, as at launch, so a Retry adds no second copy.
+        append_space_message(
+            service, request, record.operation_id, role="user", text=request.message or ""
+        )
+    elif not any(
         item.operation_id == record.operation_id and item.role == "user" and item.steering is None
         for item in records
     ):

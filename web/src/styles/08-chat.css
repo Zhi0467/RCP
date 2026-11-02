@@ -567,6 +567,9 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
+.chat-emoji {
+  margin-inline-end: 0.2em;
+}
 .chat-markdown > :first-child {
   margin-top: 0;
 }
@@ -967,14 +970,16 @@
   font-weight: 650;
   padding: 2px 0;
 }
+/* The outcome chip, then the graph receipt as a card across the answer column. */
 .chat-turn-receipts {
   align-items: flex-start;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
   margin-top: 8px;
 }
 .chat-turn-receipts .chat-graph-receipt {
+  align-self: stretch;
   margin-top: 0;
   min-width: 0;
 }
@@ -996,7 +1001,7 @@
   border-radius: 4px;
   color: var(--walnut);
   margin-top: 8px;
-  padding: 7px 8px;
+  padding: 9px 12px;
   white-space: normal;
 }
 .chat-graph-receipt.rejected {
@@ -1011,7 +1016,8 @@
   gap: 5px 9px;
 }
 .chat-graph-receipt-actions button,
-.chat-graph-receipt-actions strong {
+.chat-graph-receipt-actions strong,
+.chat-graph-receipt-actions > span {
   align-items: center;
   display: inline-flex;
   font-size: var(--type-2xs);

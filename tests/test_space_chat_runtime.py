@@ -416,11 +416,58 @@ def test_fresh_session_history_is_a_staged_file_behind_one_pointer(tmp_path):
     assert str(staged) in pointer and "turn 39 " in staged.read_text()
 
 
-@pytest.mark.parametrize("written", [None, "{not json", '{"status": "nope"}'])
-def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written):
+@pytest.mark.parametrize(
+    "written, status",
+    [(None, "not_stated"), ("{not json", "could_not"), ('{"status": "nope"}', "could_not")],
+)
+def test_space_outcome_settles_even_when_missing_or_invalid(tmp_path, written, status):
     from rcp.runs.space_chat import settle_space_turn_outcome
 
     if written is not None:
         (tmp_path / "outcome.json").write_text(written)
-    # Project updates may already have applied; the turn still settles.
-    assert settle_space_turn_outcome(tmp_path, {}).status == "could_not"
+    # Project updates may already have applied; the turn still settles. An answer
+    # with no outcome file is unstated, as in project Work, not a failure.
+    assert settle_space_turn_outcome(tmp_path, {}).status == status
+    failed = {"p": {"name": "P", "status": "rejected"}}
+    assert settle_space_turn_outcome(tmp_path, failed).status == "partial"
+
+
+def test_a_retried_space_turn_records_the_members_message_once(manifest, tmp_path):
+    from rcp.runs.space_chat import append_space_message
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    human = _authorizer(store)
+    thread = next(
+        item
+        for item in store.ensure_agent_threads(human.user_id, [], default_names=("Pip",))
+        if item.kind == "space"
+    )
+    request = _work_request().model_copy(update={"chat_id": thread.thread_id})
+    owner = SpaceThreadOwner(store, app.state.catalog, thread.thread_id)
+    parent = None
+    for attempt in (1, 2, 3):
+        task = store.create_agent_task(
+            _task_record(
+                store.now(),
+                kind="space_chat",
+                status="failed" if attempt < 3 else "succeeded",
+                operation_id=f"attempt-{attempt}",
+                project_id=store.space_id,
+                request=request.model_dump(mode="json"),
+                authorized_by=human,
+                dispatch_authority=_work_authority(request),
+                attempt=attempt,
+                parent_operation_id=parent,
+            ),
+            continuation_cause="fresh" if parent is None else "retry",
+        )
+        append_space_message(owner, request, task.operation_id, role="user", text="Say hi")
+        parent = task.operation_id
+    append_space_message(owner, request, "attempt-3", role="assistant", text="Hi")
+    transcript = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
+    assert transcript is not None
+    assert [(item.role, item.operation_id) for item in transcript.messages] == [
+        ("user", "attempt-1"),
+        ("assistant", "attempt-3"),
+    ]

@@ -1109,6 +1109,71 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
   });
 });
 
+test("a retried turn shows its message once, and a stopped one sits in the column", async () => {
+  await withFixture(async (browser, base) => {
+    for (const [width, fold] of [
+      [1280, true],
+      [390, false],
+    ]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      const stopped = { ...settled("op-retry-2"), settled: false, paused: true, can_resume: true };
+      const latest = { thread_id: "space", latest_operation_id: "op-retry-2" };
+      await page.route("**/api/agent-threads", (route) =>
+        route.fulfill({
+          json: {
+            threads: threads.map((item) =>
+              item.thread_id === "space" ? { ...item, ...latest, agent: null } : item,
+            ),
+          },
+        }),
+      );
+      await page.route("**/api/agent-threads/space/transcript", (route) =>
+        route.fulfill({
+          json: transcript("space", [message("r1", "user", "Say hi in one line", "op-first")]),
+        }),
+      );
+      const tasks = {
+        "op-first": { ...settled("op-first"), failed: true },
+        "op-retry-1": { ...settled("op-retry-1"), failed: true, parent_operation_id: "op-first" },
+        "op-retry-2": {
+          ...stopped,
+          parent_operation_id: "op-retry-1",
+          request: { message: "Say hi in one line", trigger: "human" },
+        },
+      };
+      await page.route("**/api/agent-threads/space/tasks/*", (route) =>
+        route.fulfill({ json: tasks[new URL(route.request().url()).pathname.split("/").at(-1)] }),
+      );
+      await page.goto(`${base}#/agent/space`);
+      const thread = page.getByRole("region", { name: "Pip" });
+      const banner = thread.locator(".node-chat-lines > .chat-task-inline.paused");
+      await banner.waitFor();
+      // The retry's own copy of the message goes once its lineage reaches the first attempt.
+      await page.waitForFunction(
+        () => document.querySelectorAll(".agent-thread .node-chat-line.human").length === 1,
+        undefined,
+        { timeout: 5_000 },
+      );
+      if (fold) {
+        await page.getByRole("button", { name: "Collapse agent list" }).click();
+        await page.waitForTimeout(300);
+      }
+      const human = await thread.locator(".node-chat-line.human").boundingBox();
+      const box = await banner.boundingBox();
+      const composer = await thread.locator(".chat-composer").boundingBox();
+      for (const other of [box, composer])
+        assert.ok(
+          Math.abs(other.x - human.x) < 1 && Math.abs(other.width - human.width) < 1,
+          "the stop and the composer share the message column",
+        );
+      assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
+      if (shots) await page.screenshot({ path: `${shots}/stopped-retry-${width}.png` });
+      await page.close();
+    }
+  });
+});
+
 test("thread switches keep the last view, a failed load retries, and notices clear", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
@@ -1334,6 +1399,52 @@ test("a provider signed in after mount is offered when the thread menu opens", a
     );
     await provider.selectOption("codex");
     assert.match(await menu.getByRole("button", { name: /^Pip agent:/ }).textContent(), /Codex/);
+  });
+});
+
+test("a provider switch picks that provider's first model, listed before any probe", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
+    await mockApi(page, []);
+    await page.route("**/api/space/machines", (route) =>
+      route.fulfill({
+        json: {
+          machines: [
+            {
+              machine_id: "local",
+              host: "",
+              // Claude has no probe yet; the registry still names its declared models.
+              provider_readiness: { codex: codexReadiness },
+              providers: [
+                {
+                  provider: "claude",
+                  label: "Claude",
+                  models: ["opus", "sonnet"].map((id) => ({ id, label: id, reasoning: ["high"] })),
+                },
+                { provider: "codex", label: "Codex", models: [] },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await page.goto(`${base}#/agent/space`);
+    const thread = page.getByRole("region", { name: "Pip" });
+    await thread.getByRole("button", { name: "Thread menu" }).click();
+    const menu = page.getByRole("menu", { name: "Thread menu" });
+    const row = menu.getByRole("button", { name: /^Pip agent:/ });
+    await row.click();
+    const [provider, model] = [0, 1].map((index) =>
+      menu.locator(".agent-config select").nth(index),
+    );
+    const models = () => model.locator("option").evaluateAll((items) => items.map((i) => i.value));
+    assert.match(await row.textContent(), /Codex · gpt-6\.1-sol/);
+    await provider.selectOption("claude");
+    assert.match(await row.textContent(), /Claude · opus · high/);
+    assert.deepEqual(await models(), ["opus", "sonnet"]);
+    await provider.selectOption("codex");
+    assert.match(await row.textContent(), /Codex · gpt-6\.1-sol/);
+    assert.deepEqual(await models(), ["gpt-6.1-sol"]);
   });
 });
 

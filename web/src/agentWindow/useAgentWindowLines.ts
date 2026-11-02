@@ -5,6 +5,7 @@ import {
   orderTranscriptLines,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
+  withoutRepeatedTurnPrompts,
 } from "../agents/agentTasks";
 import { chatStatusTasks, compactionAnchors } from "../chat/agentStatusModel";
 import type {
@@ -31,21 +32,34 @@ export function pendingTurnShownByHistory(
   return messages.some((message) => message.operation_id === clientId);
 }
 
+const NO_PARENTS: ReadonlyMap<string, string | null> = new Map();
+
 export function useAgentWindowLines({
   messages,
   tasks,
   pendingTurn = null,
+  parents = NO_PARENTS,
 }: {
   messages: ChatMessage[];
   tasks: AgentTask[];
   pendingTurn?: PendingAgentWindowTurn | null;
+  /** Retry and Resume links of attempts not among `tasks`. */
+  parents?: ReadonlyMap<string, string | null>;
 }) {
   const transcript = useMemo(
     () => [
-      ...orderTranscriptLines([
-        ...reconcileChatHistoryArtifacts(messages, tasks),
-        ...reconstructTaskTranscript(chatTasksMissingFromHistory(tasks, messages)),
-      ]),
+      ...orderTranscriptLines(
+        withoutRepeatedTurnPrompts(
+          [
+            ...reconcileChatHistoryArtifacts(messages, tasks),
+            ...reconstructTaskTranscript(chatTasksMissingFromHistory(tasks, messages)),
+          ],
+          new Map([
+            ...parents,
+            ...tasks.map((task) => [task.operation_id, task.parent_operation_id ?? null] as const),
+          ]),
+        ),
+      ),
       ...(pendingTurn &&
       !pendingTurnShownByHistory(pendingTurn.clientId, messages) &&
       !tasks.some((task) => task.operation_id === pendingTurn.clientId)
@@ -63,7 +77,7 @@ export function useAgentWindowLines({
           ]
         : []),
     ],
-    [messages, pendingTurn, tasks],
+    [messages, parents, pendingTurn, tasks],
   );
   const statusTasks = useMemo(() => chatStatusTasks(tasks, messages), [tasks, messages]);
   const compactionByLine = useMemo(

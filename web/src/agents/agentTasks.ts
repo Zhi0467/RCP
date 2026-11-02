@@ -428,6 +428,38 @@ function taskAttachments(value: unknown): ChatAttachmentDescriptor[] {
   );
 }
 
+/** The provider's notice for a pause RCP asked for: a person pressed Stop. */
+const REQUESTED_PAUSE_NOTICE = "Provider process paused.";
+
+/** A paused turn's line, in a person's words when they stopped it. */
+export function pausedTaskText(task: AgentTask): string {
+  return task.status_message === REQUESTED_PAUSE_NOTICE ? "Stopped." : task.status_message;
+}
+
+/**
+ * A Resume or Retry continues its turn: when an earlier attempt already shows the
+ * member's message, the continuation's own copy of it is left out.
+ */
+export function withoutRepeatedTurnPrompts(
+  lines: TaskTranscriptLine[],
+  parentOf: ReadonlyMap<string, string | null>,
+): TaskTranscriptLine[] {
+  const prompted = new Set(
+    lines.flatMap((line) =>
+      line.role === "human" && !line.steering && !line.questionId ? [line.taskId] : [],
+    ),
+  );
+  return lines.filter((line) => {
+    if (line.role !== "human" || !line.lineId.startsWith("task:")) return true;
+    const seen = new Set<string>();
+    for (let id = parentOf.get(line.taskId); id && !seen.has(id); id = parentOf.get(id)) {
+      if (prompted.has(id)) return false;
+      seen.add(id);
+    }
+    return true;
+  });
+}
+
 export function orderTranscriptLines(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {
   return [...lines].sort(
     (left, right) => comparableTime(left.timestamp) - comparableTime(right.timestamp),
