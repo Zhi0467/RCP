@@ -8,9 +8,11 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from rcp.approval_actions import ApprovalAction
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.history.queries import parse_head
 from rcp.limits import (
+    AGENT_SCHEDULE_NOTE_MAX_CHARS,
     ASK_ANSWER_MAX_LENGTH,
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
@@ -24,7 +26,6 @@ from rcp.limits import (
     EVIDENCE_FLAG_SOURCE_MAX_CHARS,
     GRAPH_HISTORY_COMMAND_CURSOR_MAX_LENGTH,
     GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT,
-    LESSON_TEXT_MAX_CHARS,
 )
 from rcp.providers import ProviderId
 from rcp.storage import GraphCondition
@@ -35,6 +36,9 @@ COMMAND_INVALID = 1
 COMMAND_UNAVAILABLE = 2
 
 CommandVerb = Literal[
+    "projects",
+    "handoff",
+    "schedule",
     "validate",
     "merge_answers",
     "graph_diff",
@@ -54,13 +58,14 @@ CommandVerb = Literal[
     "finish",
     "launch",
     "ask",
-    "lesson",
     "bulletin",
     "name",
     "flag",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
+    "handoff",
+    "schedule",
     "apply",
     "spawn",
     "merge",
@@ -75,7 +80,6 @@ MutatingCommandVerb = Literal[
     "finish",
     "launch",
     "ask",
-    "lesson",
     "bulletin",
     "name",
     "flag",
@@ -83,6 +87,8 @@ MutatingCommandVerb = Literal[
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
     {
+        "handoff",
+        "schedule",
         "apply",
         "spawn",
         "merge",
@@ -97,7 +103,6 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "finish",
         "launch",
         "ask",
-        "lesson",
         "bulletin",
         "name",
         "flag",
@@ -117,6 +122,42 @@ class CommandCredential(BaseModel):
     version: Literal[1] = COMMAND_PROTOCOL_VERSION
     mailbox_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     token: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ProjectsArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["list", "show"]
+    project_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def project_matches_action(self) -> ProjectsArguments:
+        if (self.project_id is not None) != (self.action == "show"):
+            raise ValueError("Only projects show requires project_id")
+        if self.project_id is not None and not self.project_id.strip():
+            raise ValueError("project_id must not be blank")
+        return self
+
+
+class HandoffArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_id: str = Field(min_length=1, max_length=200)
+    message_file: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$")
+    # An optional agent pick for the target thread; it becomes that thread's stored pick.
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    reasoning: str | None = Field(
+        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def valid_target(self) -> HandoffArguments:
+        if not self.project_id.strip() or self.message_file in {".", ".."}:
+            raise ValueError("handoff requires a project and a safe workspace filename")
+        return self
 
 
 class ValidateArguments(BaseModel):
@@ -431,9 +472,12 @@ class AskArguments(BaseModel):
         default_factory=list, max_length=ASK_CHOICE_MAX_COUNT
     )
     multiple: bool = False
+    action: ApprovalAction | None = None
 
     @model_validator(mode="after")
     def valid_choices(self) -> AskArguments:
+        if self.action is not None and (self.choices or self.multiple):
+            raise ValueError("approval actions cannot supply choices or multiple")
         if not self.question.strip() or any(not choice.strip() for choice in self.choices):
             raise ValueError("question and choices must not be blank")
         if len(set(self.choices)) != len(self.choices):
@@ -524,27 +568,6 @@ class BulletinArguments(BaseModel):
         return self
 
 
-class LessonArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["add", "list", "update", "delete"]
-    lesson_id: str | None = Field(default=None, min_length=1, max_length=200)
-    text: str | None = Field(default=None, min_length=1, max_length=LESSON_TEXT_MAX_CHARS)
-    cursor: str | None = Field(default=None, min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def valid_action(self) -> LessonArguments:
-        if (self.text is not None) != (self.action in {"add", "update"}):
-            raise ValueError("lesson text is required only for add and update")
-        if self.text is not None and not self.text.strip():
-            raise ValueError("lesson text must not be blank")
-        if (self.lesson_id is not None) != (self.action in {"update", "delete"}):
-            raise ValueError("lesson id is required only for update and delete")
-        if self.cursor is not None and self.action != "list":
-            raise ValueError("only lesson list accepts a cursor")
-        return self
-
-
 class AskResult(BaseModel):
     """Question state is independent of the command envelope and transport delivery."""
 
@@ -588,6 +611,22 @@ class _CommandRequest(BaseModel):
         if not stripped:
             raise ValueError("idempotency key must not be blank")
         return stripped
+
+
+class ProjectsCommandRequest(_CommandRequest):
+    verb: Literal["projects"]
+    arguments: ProjectsArguments
+
+
+class HandoffCommandRequest(_CommandRequest):
+    verb: Literal["handoff"]
+    arguments: HandoffArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> HandoffCommandRequest:
+        if self.idempotency_key is None:
+            raise ValueError("handoff requires an idempotency key")
+        return self
 
 
 class ValidateCommandRequest(_CommandRequest):
@@ -689,6 +728,43 @@ class AskCommandRequest(_CommandRequest):
     arguments: AskArguments
 
 
+class ScheduleArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    action: Literal["add", "list", "cancel"]
+    cron: str | None = None
+    at: str | None = None
+    timezone: str | None = None
+    note: str | None = Field(default=None, min_length=1, max_length=AGENT_SCHEDULE_NOTE_MAX_CHARS)
+    schedule_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def fields_match_action(self) -> ScheduleArguments:
+        if self.action == "add":
+            if (
+                (self.cron is None) == (self.at is None)
+                or not self.note
+                or not self.note.strip()
+                or self.schedule_id is not None
+            ):
+                raise ValueError("schedule add requires one time and a note")
+        elif any(value is not None for value in (self.cron, self.at, self.timezone, self.note)):
+            raise ValueError("time and note are only valid for schedule add")
+        elif (self.action == "cancel") != (self.schedule_id is not None):
+            raise ValueError("schedule cancel requires a schedule id")
+        return self
+
+
+class ScheduleCommandRequest(_CommandRequest):
+    verb: Literal["schedule"]
+    arguments: ScheduleArguments
+
+    @model_validator(mode="after")
+    def mutation_is_keyed(self) -> ScheduleCommandRequest:
+        if self.arguments.action != "list" and self.idempotency_key is None:
+            raise ValueError("schedule mutations require an idempotency key")
+        return self
+
+
 class FlagCommandRequest(_CommandRequest):
     verb: Literal["flag"]
     arguments: FlagArguments
@@ -723,19 +799,10 @@ class BulletinCommandRequest(_CommandRequest):
         return self
 
 
-class LessonCommandRequest(_CommandRequest):
-    verb: Literal["lesson"]
-    arguments: LessonArguments
-
-    @model_validator(mode="after")
-    def mutation_is_keyed(self) -> LessonCommandRequest:
-        if self.arguments.action != "list" and self.idempotency_key is None:
-            raise ValueError("lesson mutations require an idempotency key")
-        return self
-
-
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
+    | ProjectsCommandRequest
+    | HandoffCommandRequest
     | MergeAnswersCommandRequest
     | ApplyCommandRequest
     | StatusCommandRequest
@@ -754,9 +821,9 @@ CommandRequest: TypeAlias = Annotated[
     | FinishCommandRequest
     | LaunchCommandRequest
     | AskCommandRequest
+    | ScheduleCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
-    | LessonCommandRequest
     | FlagCommandRequest,
     Field(discriminator="verb"),
 ]

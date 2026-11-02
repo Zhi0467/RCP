@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
 
 import pytest
 
-from rcp.limits import LESSONS_RENDER_MAX_BYTES
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
@@ -16,11 +14,11 @@ from .test_api import ScriptedLauncher, _chat_task_execution
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["discuss", "work"])
-async def test_launch_stages_bounded_lessons_in_priority_order(manifest, tmp_path, mode):
+@pytest.mark.parametrize("unusable", [False, True])
+async def test_launch_admits_shared_memory_and_points_to_live_index(
+    manifest, tmp_path, mode, unusable
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    project = app.state.default_project_id
-    owner = store.local_owner
     request = RunRequest(
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -28,30 +26,16 @@ async def test_launch_stages_bounded_lessons_in_priority_order(manifest, tmp_pat
         run_truth_scope=["repo-a"],
         mode=mode,
     )
-    execution = _chat_task_execution(app, request, "lessons-launch")
-    lessons = [
-        store.add_lesson(
-            project,
-            f"{index}:" + "界" * 590,
-            user_id=owner.user_id,
-            display_name=owner.display_name,
-        )
-        for index in range(80)
-    ]
-    now = datetime.fromisoformat(store.now())
-    with store.connection() as connection:
-        for index, lesson in enumerate(lessons):
-            connection.execute(
-                "UPDATE operational_lessons SET updated_at=? WHERE lesson_id=?",
-                ((now + timedelta(seconds=index)).isoformat(), lesson["lesson_id"]),
-            )
-            if index % 10:
-                connection.execute(
-                    "UPDATE operational_lessons SET author_kind='agent', operation_id=?, "
-                    "user_id=NULL, display_name=NULL, human_owned=0 WHERE lesson_id=?",
-                    (execution.operation_id, lesson["lesson_id"]),
-                )
-    lessons = store.list_lessons(project)
+    execution = _chat_task_execution(app, request, "memory-launch")
+    if unusable:
+        from pathlib import Path
+
+        from rcp.agents.memory_files import prepare_project_memory
+
+        shared, _ = prepare_project_memory(execution.store, app.state.default_project_id)
+        index = Path(shared) / "MEMORY.md"
+        index.unlink()
+        index.mkdir()
     launcher = ScriptedLauncher([{}], message="Context read.")
     stream = stream_discuss_run if mode == "discuss" else stream_work_run
     frames = [
@@ -60,26 +44,85 @@ async def test_launch_stages_bounded_lessons_in_priority_order(manifest, tmp_pat
             app.state.service, launcher, request, tmp_path / "data", execution=execution
         )
     ]
-    assert not any('"event":"error"' in frame for frame in frames)
+    assert not any('"event":"error"' in frame for frame in frames), frames
     assert launcher.calls == 1
-    path = launcher.workspaces[0] / "lessons.md"
-    content = path.read_text()
-    assert str(path) in launcher.prompts[0]
-    assert path.stat().st_size <= LESSONS_RENDER_MAX_BYTES
-    included = [lesson for lesson in lessons if lesson["lesson_id"] in content]
-    assert 0 < len(included) < len(lessons)
-    assert str(len(lessons) - len(included)) in content.splitlines()[-1]
-    groups = [
-        [lesson for lesson in included if lesson["human_owned"] is human_owned]
-        for human_owned in (True, False)
-    ]
-    for group in groups:
-        assert len(group) > 1
-        newest_first = sorted(group, key=lambda lesson: lesson["updated_at"], reverse=True)
-        positions = [content.index(lesson["lesson_id"]) for lesson in newest_first]
-        assert positions == sorted(positions)
-    assert max(content.index(lesson["lesson_id"]) for lesson in groups[0]) < min(
-        content.index(lesson["lesson_id"]) for lesson in groups[1]
+    shared = tmp_path / "data" / "memory" / app.state.default_project_id / "shared"
+    assert shared.is_dir()
+    assert str(shared / "MEMORY.md") in launcher.prompts[0]
+    if unusable:
+        assert "unusable" in launcher.prompts[0] and "repair" in launcher.prompts[0]
+    assert not (launcher.workspaces[0] / "lessons.md").exists()
+    if mode == "work":
+        assert str(shared) in launcher.launch_kwargs[0]["write_scope"].writable_roots
+    else:
+        assert shared in launcher.launch_kwargs[0]["write_dirs"]
+
+
+@pytest.mark.asyncio
+async def test_discuss_memory_failure_is_reported_to_chat(manifest, tmp_path, monkeypatch):
+    from rcp.runs.tasks import discuss
+    from rcp.transport.state import StateUnavailable
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Inspect context.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
     )
-    for lesson in included:
-        assert lesson["text"] in content
+    execution = _chat_task_execution(app, request, "memory-failure")
+    launcher = ScriptedLauncher([{}], message="Must not launch.")
+
+    def fail(*args):
+        raise StateUnavailable("memory base unavailable")
+
+    # Fail the write-root preparation, after prompt preparation has succeeded.
+    monkeypatch.setattr(discuss, "prepare_project_memory", fail)
+    frames = [
+        frame
+        async for frame in discuss.stream_discuss_run(
+            app.state.service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+    assert any(
+        '"event":"error"' in frame and "memory base unavailable" in frame for frame in frames
+    )
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_discuss_excluded_task_has_no_memory_write_root(manifest, tmp_path, monkeypatch):
+    from rcp.runs.tasks import discuss
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Inspect context.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+    )
+    execution = _chat_task_execution(app, request, "excluded-memory")
+    with execution.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET kind='artifact_edit' WHERE operation_id=?",
+            (execution.operation_id,),
+        )
+    launcher = ScriptedLauncher([{}], message="Context read.")
+
+    def refuse(*args):
+        raise AssertionError("Excluded task must not prepare memory")
+
+    # Isolate memory admission from the ordinary chat-only stage binding.
+    monkeypatch.setattr(discuss, "_prepare_local_chat_workspace", lambda stage, **_: stage)
+    monkeypatch.setattr(discuss, "prepare_project_memory", refuse)
+    frames = [
+        frame
+        async for frame in discuss.stream_discuss_run(
+            app.state.service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+    assert not any('"event":"error"' in frame for frame in frames), frames
+    assert launcher.calls == 1
+    assert launcher.launch_kwargs[0]["write_dirs"] == []

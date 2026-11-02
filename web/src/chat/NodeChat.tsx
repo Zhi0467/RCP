@@ -1,61 +1,47 @@
+import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
+import {
+  useAgentWindowLines,
+  type PendingAgentWindowTurn,
+} from "../agentWindow/useAgentWindowLines";
+import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
+import { useAgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
+import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
+import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
-import { turnOutcomeChip } from "./turnOutcome";
 import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
-import { ReferenceChip } from "../core/ReferenceChip";
-import { formatBytes, useComposerAttachments } from "./composerAttachments";
-import { ArtifactCommentQuotes, artifactCommentLead } from "./ArtifactCommentQuotes";
-import { referenceDraftKey, sourceReference } from "../core/projectReferences";
+import { useComposerAttachments } from "./composerAttachments";
+import { referenceDraftKey } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
-import { questionIsOpen, questionTranscript } from "./questions";
+import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
-  TriangleAlert,
   ChevronUp,
-  Download,
-  ExternalLink,
-  File,
-  History,
-  Inbox,
   LoaderCircle,
   MessageCircle,
   Mic,
   MicOff,
-  Play,
   RadioTower,
-  RotateCcw,
   Send,
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  api,
   ApiError,
   loadServiceConnections,
-  steerChatTurn,
   loadConnectionModels,
   transcribeAudio,
 } from "../core/api";
 import {
-  artifactUrl,
-  chatTasksMissingFromHistory,
   isActiveTask,
   resolvedChatSessionId,
-  orderTranscriptLines,
-  isNewestOfTurnClass,
-  reconcileChatHistoryArtifacts,
-  reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
-  taskArtifacts,
-  taskKindLabel,
-  type TaskTranscriptLine,
-  versionedArtifactContentUrl,
 } from "../agents/agentTasks";
 import {
   chatDraftStorageKey,
@@ -70,26 +56,9 @@ import {
   type ConversationTurnSubmission,
   type StartConversationTask,
 } from "./chatWorkspace";
-import { chatFollowsBottom, chatReaderMovedUp } from "./chatLayout";
-import {
-  openArtifact as openArtifactPanel,
-  openRepositoryFile as openRepositoryFilePanel,
-} from "../artifacts/artifactViewerModel";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { returnSends } from "../ui/composerKeys";
-import {
-  InlineArtifact,
-  InlineArtifactMissing,
-  type InlineArtifactSelectionEvent,
-} from "../artifacts/InlineArtifact";
-import { turnArtifactFor, inlineArtifactIds, isInlineViewable } from "../artifacts/inlineArtifacts";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import {
-  AnswerCommentButton,
-  AnswerCommentLayers,
-  transcriptSource,
-  useAnswerComments,
-} from "./answerComments";
+import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -120,38 +89,26 @@ import {
   watcherLastObservedAt,
 } from "../experiments/runProjection";
 import {
-  downloadDesktopArtifact,
   type DictationResultEvent,
   type DictationStateEvent,
   isDesktopRuntime,
   listenDesktopEvent,
-  openDesktopArtifactPdf,
   startDesktopDictation,
   stopDesktopDictation,
 } from "../core/desktopRuntime";
-import { resolveRepositoryFileHref, turnArtifactLocation } from "../core/repositoryFileLinks";
 import type {
-  AgentArtifactDescriptor,
-  ArtifactEditOutcome,
   AgentRunConfig,
   AgentTask,
   ChatMessage,
-  TurnOutcome,
-  ChatAttachmentDescriptor,
   ConversationMode,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
-  GraphUpdateResult,
   ProjectSnapshot,
   ServiceConnection,
   WatcherRecord,
   WorktreeIntegrationOption,
 } from "../core/types";
-import {
-  CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
-  CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
-} from "../core/uiConstants";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -160,9 +117,8 @@ import {
 } from "../core/AgentConfigControls";
 import { useSkillPicker } from "../core/SkillPicker";
 import { useLayerDismiss } from "../core/useLayerDismiss";
-import { AgentStatusStrip, CompactionDivider } from "./AgentStatusStrip";
-import { chatStatusTasks, compactionAnchors } from "./agentStatusModel";
-import { BrowserTurnNotice, ChatBrowserControl } from "../core/BrowserControls";
+import { AgentStatusStrip } from "./AgentStatusStrip";
+import { ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 import { worktreeRepositoryChoices } from "./worktreeRepositories";
 
@@ -192,6 +148,8 @@ interface Props {
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
   readOnly?: boolean;
+  archived?: boolean;
+  onRestore?: () => void;
   readOnlyNotice?: ReactNode;
   /** Questions belong to this episode rather than the chat, as an orchestrator's do. */
   questionEpisodeId?: string;
@@ -211,28 +169,15 @@ interface Props {
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
 }
 
-/** Whether the transcript already carries the in-flight turn as a store overlay. */
-export function pendingTurnShownByHistory(
-  clientId: string,
-  messages: readonly { operation_id?: string | null }[],
-): boolean {
-  return messages.some((message) => message.operation_id === clientId);
-}
+export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
 
-interface PendingChatTurn {
-  clientId: string;
+interface PendingChatTurn extends PendingAgentWindowTurn {
   /** The start's Idempotency-Key, kept across a Resend. */
   requestId: string;
-  text: string;
   /** The composer text it was sent from, which a failed send puts back. */
   draft: string;
-  timestamp: string;
-  mode: ConversationMode;
-  attachments: ChatAttachmentDescriptor[];
   submission: ConversationTurnSubmission;
   submittedOverride: { chatId: string; config: AgentRunConfig } | null;
-  /** Set when the start got no admission; the turn stays here to be resent. */
-  error?: string;
 }
 
 /** What a Send addresses: the exact running attempt it steers, a new turn with
@@ -250,22 +195,10 @@ interface NetworkDictation {
   resume?: { draft: string; at: number } | null;
 }
 
-// Where the reader left each chat in this session, kept only while they had
-// scrolled up; a chat without an entry opens at its bottom.
-const chatScrollPositions = new Map<string, number>();
-
 const EMPTY_WATCHERS: WatcherRecord[] = [];
 const EMPTY_HISTORY: ChatMessage[] = [];
 const NO_HEADER_ACTIONS: readonly ChatHeaderAction[] = [];
 
-function chatScrollObservation(element: HTMLElement, previousTop: number) {
-  return {
-    previousTop,
-    top: element.scrollTop,
-    scrollHeight: element.scrollHeight,
-    clientHeight: element.clientHeight,
-  };
-}
 // macOS dictation stops at 55 s, counting down the last 10; network dictation
 // has no limit (see networkDictation.ts).
 const DICTATION_SEGMENT_MS = 55_000;
@@ -273,7 +206,6 @@ const DICTATION_COUNTDOWN_MS = 10_000;
 const SYSTEM_DICTATION_ELSEWHERE =
   "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Dictation and voice.";
 
-const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 // One empty map, so a chat without graph nodes keeps its answers' parse memoized.
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 
@@ -297,8 +229,10 @@ export function NodeChat({
   chatId,
   presentation = "floating",
   fixedConversation = false,
-  readOnly = false,
-  allowArtifactComments = false,
+  readOnly: requestedReadOnly = false,
+  archived = false,
+  onRestore,
+  allowArtifactComments: requestedArtifactComments = false,
   readOnlyNotice,
   questionEpisodeId,
   reviewPending = false,
@@ -315,6 +249,8 @@ export function NodeChat({
   onRetryTask,
   onRefreshTask,
 }: Props) {
+  const readOnly = archived || requestedReadOnly;
+  const allowArtifactComments = !archived && requestedArtifactComments;
   const surface = node ? "node_chat" : "project_chat";
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
@@ -343,35 +279,17 @@ export function NodeChat({
     return [...messages.values()];
   }, [chatId, historyMessages, steeringMessages]);
   const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
-  const transcript = useMemo(
-    () => [
-      ...orderTranscriptLines([
-        ...reconcileChatHistoryArtifacts(displayedMessages, relatedTasks),
-        ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
-      ]),
-      // The shared store already shows the sent message while its start is in
-      // flight, in the transcript or as a task under the same id; this local line
-      // covers only a chat the store does not show it in.
-      // Not yet admitted, it stays last: a turn another tab started first may
-      // carry a later server time than this browser's send time.
-      ...(pendingTurn &&
-      !pendingTurnShownByHistory(pendingTurn.clientId, displayedMessages) &&
-      !relatedTasks.some((task) => task.operation_id === pendingTurn.clientId)
-        ? [
-            {
-              lineId: `pending:${pendingTurn.clientId}`,
-              role: "human" as const,
-              text: pendingTurn.text,
-              taskId: pendingTurn.clientId,
-              timestamp: pendingTurn.timestamp,
-              mode: pendingTurn.mode,
-              attachments: pendingTurn.attachments,
-              trigger: "human" as const,
-            },
-          ]
-        : []),
-    ],
-    [displayedMessages, pendingTurn, relatedTasks],
+  const {
+    transcript,
+    statusTasks,
+    compactionByLine,
+    continuedTaskIds,
+    latestGraphReceiptLineIds,
+    inlineArtifactRefreshToken,
+  } = useAgentWindowLines({ messages: displayedMessages, tasks: relatedTasks, pendingTurn });
+  const endpoints = useMemo(
+    () => projectAgentWindowEndpoints(project.id, chatId),
+    [project.id, chatId],
   );
   const derivedConfig = useMemo(
     () =>
@@ -526,40 +444,18 @@ export function NodeChat({
   const [sendAfterDictation, setSendAfterDictation] = useState<{
     target: string;
   } | null>(null);
-  const [expiryClock, setExpiryClock] = useState(() => Date.now());
-  const [expandedHumanMessageIds, setExpandedHumanMessageIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  // Embedded turns that aged out of the recent task list, fetched once on demand.
-  // Kept here because a later bounded task-list refresh drops such tasks again.
-  const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
-    ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
-  >(() => new Map());
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
-  const scrollKey = `${project.id}:${chatId}`;
-  // A saved position is applied as the transcript renders, until the view
-  // reaches it or the reader scrolls.
-  const restoreTopRef = useRef(chatScrollPositions.get(scrollKey) ?? null);
-  const shouldStickToBottomRef = useRef(restoreTopRef.current === null);
-  // The last scroll position this view observed; a smaller one means the reader
-  // moved up, and only the reader's own return to the bottom re-sticks.
-  const lastScrollTopRef = useRef(0);
-  const lastChatIdRef = useRef(scrollKey);
+  const { shouldStickToBottomRef, restoreTopRef, handleChatScroll } = useAgentWindowScroll(
+    endpoints.scopeKey,
+    chatLinesRef,
+    transcript,
+    questionState.questions,
+  );
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
-  const [failedArtifactPreviews, setFailedArtifactPreviews] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
-  const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
-  const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
   const [watchersOpen, setWatchersOpen] = useState(false);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
@@ -581,23 +477,6 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
-  const statusTasks = useMemo(
-    () => chatStatusTasks(relatedTasks, displayedMessages),
-    [relatedTasks, displayedMessages],
-  );
-  const compactionByLine = useMemo(
-    () => compactionAnchors(transcript, statusTasks),
-    [statusTasks, transcript],
-  );
-  // A settled turn may have published a new version of an artifact shown in place.
-  const inlineArtifactRefreshToken = useMemo(
-    () =>
-      relatedTasks
-        .filter((task) => !isActiveTask(task))
-        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
-        .join("|"),
-    [relatedTasks],
-  );
   // While the watched turn can take live input, the ordinary composer addresses
   // that exact attempt instead of starting a new turn. There is no separate
   // steering control; a runtime without an input channel leaves the composer
@@ -611,23 +490,6 @@ export function NodeChat({
     () => visibleChatWatchers(watchers, chatId, node, graphTarget),
     [chatId, node, watchers, graphTarget],
   );
-  const continuedTaskIds = useMemo(
-    () =>
-      new Set(
-        relatedTasks.flatMap((task) =>
-          task.parent_operation_id ? [task.parent_operation_id] : [],
-        ),
-      ),
-    [relatedTasks],
-  );
-  // Earlier receipts of one task stay as history; only its latest offers recovery.
-  const latestGraphReceiptLineIds = useMemo(() => {
-    const latest = new Map<string, string>();
-    for (const line of transcript) {
-      if (line.role === "agent" && line.graphUpdate) latest.set(line.taskId, line.lineId);
-    }
-    return new Set(latest.values());
-  }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const sessionId = resolvedChatSessionId(relatedTasks);
   // A follow-up joins the running turn, so the composer shows that turn's mode.
@@ -696,37 +558,6 @@ export function NodeChat({
     persist();
     return draft.subscribe(persist);
   }, [draft, draftKey]);
-
-  useEffect(() => {
-    if (lastChatIdRef.current !== scrollKey) {
-      lastChatIdRef.current = scrollKey;
-      restoreTopRef.current = chatScrollPositions.get(scrollKey) ?? null;
-      shouldStickToBottomRef.current = restoreTopRef.current === null;
-      setRepositoryFileErrors(new Map());
-    }
-    const element = chatLinesRef.current;
-    if (!element) return;
-    if (restoreTopRef.current !== null) {
-      element.scrollTop = restoreTopRef.current;
-      lastScrollTopRef.current = element.scrollTop;
-      if (Math.abs(element.scrollTop - restoreTopRef.current) < 1) restoreTopRef.current = null;
-      return;
-    }
-    // A refresh can render between the reader's scroll and its scroll event; their
-    // position wins over a follow decided before they moved.
-    if (chatReaderMovedUp(chatScrollObservation(element, lastScrollTopRef.current)))
-      shouldStickToBottomRef.current = false;
-    if (!shouldStickToBottomRef.current) return;
-    element.scrollTop = element.scrollHeight;
-    lastScrollTopRef.current = element.scrollTop;
-    // Question cards load after the transcript and end it, so they move the bottom too.
-  }, [scrollKey, transcript, questionState.questions]);
-
-  useEffect(() => {
-    if (!transcript.some((line) => line.attachments?.length)) return;
-    const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, [transcript]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -1187,96 +1018,6 @@ export function NodeChat({
     }
   };
 
-  const toggleHumanMessage = (messageId: string) => {
-    setExpandedHumanMessageIds((current) => {
-      const next = new Set(current);
-      if (next.has(messageId)) next.delete(messageId);
-      else next.add(messageId);
-      return next;
-    });
-  };
-
-  const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    // A restore the transcript was still too short to reach is not the reader's move.
-    if (restoreTopRef.current !== null) {
-      if (element.scrollTop === lastScrollTopRef.current) return;
-      restoreTopRef.current = null;
-    }
-    shouldStickToBottomRef.current = chatFollowsBottom(
-      chatScrollObservation(element, lastScrollTopRef.current),
-      CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
-    );
-    lastScrollTopRef.current = element.scrollTop;
-    if (shouldStickToBottomRef.current) chatScrollPositions.delete(scrollKey);
-    else chatScrollPositions.set(scrollKey, element.scrollTop);
-  };
-
-  // A part of an artifact shown inside a reply, selected in its comment mode, is
-  // staged like answer text; the turn carries it as that artifact's selection.
-  const openInlineArtifactComment = (
-    taskId: string,
-    artifact: AgentArtifactDescriptor,
-    event: InlineArtifactSelectionEvent,
-  ) => {
-    if (
-      annotations.some(
-        (annotation) =>
-          annotation.artifact && annotation.artifact.context.artifact_id !== artifact.artifact_id,
-      )
-    ) {
-      setSubmitError(
-        "One message carries comments on one artifact. Send or remove the staged ones first.",
-      );
-      event.clear();
-      return;
-    }
-    // A prefill joins an unsent draft on this artifact below its text, keeping
-    // the draft's own selection, rather than replacing it.
-    const open = comments.composer?.step === "comment" ? comments.composer : null;
-    const draft = open ? comments.comment.trim() : "";
-    const prefill = event.initialText ?? "";
-    if (draft && prefill && open?.artifact?.context.artifact_id === artifact.artifact_id) {
-      if (!draft.includes(prefill)) comments.setComment(`${draft}\n\n${prefill}`);
-      comments.focusComment();
-      return;
-    }
-    comments.openExternal(
-      {
-        selectedText: event.description || artifact.name,
-        anchor: event.anchor,
-        artifact: {
-          context: {
-            source: "task",
-            operation_id: taskId,
-            artifact_id: artifact.artifact_id,
-            ...(event.freshSession ? { fresh_session: true } : {}),
-            ...(event.version ? { base_version: event.version } : {}),
-          },
-          name: artifact.name,
-          selection: event.selection ? { ...event.selection, comment: "" } : null,
-        },
-      },
-      { clear: event.clear, ...(prefill ? { draft: prefill } : {}) },
-    );
-  };
-
-  // A new version moves the parts a selection named, so comments on the old one,
-  // open or staged, would be sent against bytes the reader never saw.
-  const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
-    const open =
-      comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (open?.artifact_id === artifact.artifact_id) comments.closeComment({ keepText: true });
-    const stale = annotations.filter(
-      (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
-    );
-    if (!stale.length) return;
-    comments.discard(stale);
-    setSubmitError(
-      `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
-    );
-  };
-
   const steer = async (task: AgentTask) => {
     const draftMessage = draft.get();
     const draftAnnotations = annotations;
@@ -1296,7 +1037,7 @@ export function NodeChat({
     setSubmitError(null);
     setSubmitting(true);
     try {
-      const receipt = await steerChatTurn(project.id, task.operation_id, request);
+      const receipt = await endpoints.steer(task.operation_id, request);
       setSteeringMessages((current) =>
         current.chatId !== chatId
           ? current
@@ -1401,6 +1142,7 @@ export function NodeChat({
 
   /** Start a turn, or start it again after a failed send under the same key. */
   const submitTurn = async (turn: PendingChatTurn) => {
+    if (!canCompose) return;
     const pending = { ...turn, error: undefined };
     shouldStickToBottomRef.current = true;
     restoreTopRef.current = null;
@@ -1499,270 +1241,19 @@ export function NodeChat({
     }
   };
 
-  const markArtifactPreviewFailed = (taskId: string, artifactId: string) => {
-    setFailedArtifactPreviews((current) => {
-      const next = new Set(current);
-      next.add(`${taskId}:${artifactId}`);
-      return next;
-    });
-  };
-
-  const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
-    const systemPdf = desktop && artifact.view === "pdf" && artifact.can_download;
-    if (!artifact.can_open && !systemPdf) return;
-    if (artifact.view !== "pdf") {
-      openArtifactPanel({ projectId: project.id, artifactId: artifact.artifact_id });
-      return;
-    }
-    const key = `${taskId}:${artifact.artifact_id}`;
-    setArtifactShellErrors((current) => withoutMapKey(current, key));
-    try {
-      if (desktop) {
-        await openDesktopArtifactPdf({
-          projectId: project.id,
-          taskId,
-          artifactId: artifact.artifact_id,
-        });
-      }
-    } catch (error) {
-      setArtifactShellErrors((current) =>
-        withMapValue(
-          current,
-          key,
-          `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-    }
-  };
-
-  const downloadArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
-    if (!artifact.can_download) return;
-    const key = `${taskId}:${artifact.artifact_id}`;
-    setArtifactShellErrors((current) => withoutMapKey(current, key));
-    try {
-      await downloadDesktopArtifact({
-        projectId: project.id,
-        taskId,
-        artifactId: artifact.artifact_id,
-        suggestedName: artifact.name,
-      });
-    } catch (error) {
-      setArtifactShellErrors((current) =>
-        withMapValue(
-          current,
-          key,
-          `Download failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-    }
-  };
-
-  const keepArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
-    const key = `${taskId}:${artifact.artifact_id}`;
-    if (!artifact.can_keep || keepingArtifacts.has(key)) return;
-    setKeepingArtifacts((current) => new Set(current).add(key));
-    setArtifactShellErrors((current) => withoutMapKey(current, key));
-    try {
-      await api(artifactUrl(project.id, taskId, artifact.artifact_id, "keep"), {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      const task = await onRefreshTask(taskId);
-      // An aged-out turn's embed reads its cached descriptors, which still offer Keep.
-      setAgedInlineArtifacts((current) =>
-        Array.isArray(current.get(taskId))
-          ? new Map(current).set(taskId, taskArtifacts(task))
-          : current,
-      );
-    } catch (error) {
-      setArtifactShellErrors((current) =>
-        withMapValue(current, key, error instanceof Error ? error.message : String(error)),
-      );
-    } finally {
-      setKeepingArtifacts((current) => {
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
-    }
-  };
-
-  const openRepositoryFile = async (messageId: string, taskId: string, href: string) => {
-    const resolution = resolveRepositoryFileHref(href, project.repositories);
-    if (resolution.kind === "error") {
-      // An answer may cite a file the turn itself wrote. That path is outside every
-      // repository, so the artifact the task already registered owns the preview.
-      // Only when no root claims the path. Several matching roots stay a visible
-      // error, because the reader must not be handed a guess about which one won.
-      const location = resolution.reason === "no-match" ? turnArtifactLocation(href) : null;
-      if (location) {
-        // An older answer's task, or the turn it cites, has aged out of the recent
-        // list, so fetch the exact task rather than refusing a citation the
-        // transcript still displays.
-        const loaded = new Map<string, AgentArtifactDescriptor[]>();
-        const load = async (id: string) => {
-          loaded.set(id, knownTaskArtifacts(id) ?? (await loadTaskArtifacts(id)));
-        };
-        await load(taskId);
-        let found = turnArtifactFor(href, taskId, (id) => loaded.get(id));
-        if (found?.loading) {
-          await load(found.taskId);
-          found = turnArtifactFor(href, taskId, (id) => loaded.get(id));
-        }
-        const artifact = found?.artifact;
-        if (found && artifact) {
-          const owner = found.taskId;
-          setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-          if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
-            await openArtifact(owner, artifact);
-          } else {
-            if (!relatedTasks.some((candidate) => candidate.operation_id === owner))
-              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-            const card = document.getElementById(`artifact-${owner}-${artifact.artifact_id}`);
-            card?.scrollIntoView({ block: "nearest" });
-            card?.focus();
-          }
-          return;
-        }
-      }
-      // A path no repository or turn folder owns, such as an API route, is an inert link.
-      if (resolution.reason !== "no-match")
-        setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
-      return;
-    }
-
-    setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-    openRepositoryFilePanel({
-      projectId: project.id,
-      path: resolution.target.path,
-      line: resolution.target.line ?? undefined,
-    });
-  };
-
-  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) => {
-    if (!artifact.can_download) return null;
-    const label = <span className="chat-inline-artifact-label">Download</span>;
-    return desktop ? (
-      <button
-        type="button"
-        aria-label="Download"
-        onClick={() => void downloadArtifact(taskId, artifact)}
-      >
-        <Download size={12} />
-        {label}
-      </button>
-    ) : (
-      <a
-        href={artifactUrl(project.id, taskId, artifact.artifact_id, "download")}
-        download={artifact.name}
-        aria-label="Download"
-      >
-        <Download size={12} />
-        {label}
-      </a>
-    );
-  };
-
-  // A turn's own descriptors, or the ones an embed fetched after the turn aged out,
-  // so a PDF the reply says is attached below keeps its card.
-  const lineArtifacts = (line: TaskTranscriptLine) => {
-    if (line.artifacts !== undefined || line.role !== "agent") return line.artifacts;
-    const aged = agedInlineArtifacts.get(line.taskId);
-    return Array.isArray(aged) ? aged : undefined;
-  };
-
-  // A task's descriptors from the recent list or the on-demand cache; undefined until loaded.
-  const knownTaskArtifacts = (taskId: string) => {
-    const task = relatedTasks.find((candidate) => candidate.operation_id === taskId);
-    if (task) return taskArtifacts(task);
-    const aged = agedInlineArtifacts.get(taskId);
-    return Array.isArray(aged) ? aged : undefined;
-  };
-
-  // The chat this transcript shows; an artifact is only ever shown in its origin chat.
-  const transcriptChatId = chatId ?? relatedTasks.at(-1)?.request.chat_id ?? null;
-
-  // A turn outside the recent list, fetched once and kept, since a later bounded
-  // task-list refresh drops it again. A cited turn of another chat contributes nothing.
-  const loadTaskArtifacts = (taskId: string): Promise<AgentArtifactDescriptor[]> => {
-    setAgedInlineArtifacts((current) =>
-      current.has(taskId) ? current : new Map(current).set(taskId, "loading"),
-    );
-    return onRefreshTask(taskId)
-      .then((task) =>
-        transcript.some((line) => line.taskId === taskId) ||
-        task.request.chat_id === transcriptChatId
-          ? taskArtifacts(task)
-          : [],
-      )
-      .catch((): AgentArtifactDescriptor[] => [])
-      .then((loaded) => {
-        setAgedInlineArtifacts((current) => new Map(current).set(taskId, loaded));
-        return loaded;
-      });
-  };
-
-  const renderInlineArtifact = (
-    taskId: string,
-    artifacts: AgentArtifactDescriptor[] | undefined,
-    src: string,
-    alt: string,
-  ) => {
-    const found = turnArtifactFor(src, taskId, (id) =>
-      id === taskId && artifacts !== undefined ? artifacts : knownTaskArtifacts(id),
-    );
-    if (!found) return null;
-    const { artifact } = found;
-    // An older reply's task, or the earlier turn it cites, has aged out of the recent
-    // list, so fetch the exact task before deciding the artifact is missing.
-    // Loading moves from the citing turn to the cited one; each loads on mount.
-    if (found.loading)
-      return renderArtifactPlayer(found.taskId, found.name, null, found.name, () => {
-        if (!agedInlineArtifacts.has(found.taskId)) void loadTaskArtifacts(found.taskId);
-      });
-    // A PDF or download-only file keeps its card below the reply.
-    if (artifact && !isInlineViewable(artifact))
-      return (
-        <InlineArtifactMissing
-          name={found.name}
-          attached={found.taskId === taskId ? "below" : "earlier"}
-        />
-      );
-    if (!artifact || !artifact.available || !artifact.can_open)
-      return <InlineArtifactMissing name={found.name} />;
-    return renderArtifactPlayer(found.taskId, found.name, artifact, alt.trim() || artifact.name);
-  };
-
-  // Keyed by the cited name, so a loading embed becomes its artifact in the same
-  // element: replacing the element let WebKit move the reader's scroll.
-  const renderArtifactPlayer = (
-    taskId: string,
-    slot: string,
-    artifact: AgentArtifactDescriptor | null,
-    title: string,
-    onLoadTask?: () => void,
-  ) => {
-    const key = `${taskId}:${artifact?.artifact_id}`;
-    return (
-      <InlineArtifact
-        key={`${taskId}:${slot}`}
-        projectId={project.id}
-        artifact={artifact}
-        title={title}
-        refreshToken={inlineArtifactRefreshToken}
-        canComment={!readOnly || allowArtifactComments}
-        keeping={keepingArtifacts.has(key)}
-        actionError={artifactShellErrors.get(key)}
-        onLoadTask={onLoadTask}
-        onExpand={() => artifact && void openArtifact(taskId, artifact)}
-        onKeep={artifact?.can_keep ? () => void keepArtifact(taskId, artifact) : null}
-        download={artifact && artifactDownloadControl(taskId, artifact)}
-        onSelection={(event) => artifact && openInlineArtifactComment(taskId, artifact, event)}
-        onSelectionCancel={comments.cancelExternal}
-        onVersionChange={() => artifact && dropStaleArtifactComments(artifact)}
-      />
-    );
-  };
+  const artifacts = useAgentWindowArtifacts({
+    endpoints,
+    chatId,
+    relatedTasks,
+    transcript,
+    comments,
+    onRefreshTask,
+    setSubmitError,
+    inlineArtifactRefreshToken,
+    readOnly,
+    allowArtifactComments,
+    repositories: project.repositories,
+  });
 
   const watcherToggle = watcherRows.length > 0 && (
     <button
@@ -1892,389 +1383,40 @@ export function NodeChat({
         ref={chatLinesRef}
       >
         {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
-        {questionTranscript(transcript, questionState.questions).map((entry) => {
-          if (entry.kind === "question")
-            return (
-              <QuestionCard
-                key={entry.question.question_id}
-                question={entry.question}
-                apiBase={questionApiBase}
-                onResolved={questionState.refresh}
-              />
-            );
-          const line = entry.line;
-          const messageId = line.lineId;
-          const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
-          const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
-          const pausedLineTask =
-            !line.steering &&
-            task?.paused &&
-            task.can_resume &&
-            !continuedTaskIds.has(task.operation_id)
-              ? task
-              : null;
-          // Only the newest turn's error row carries Retry; the header shows no second one.
-          const retryLineTask =
-            line.role === "error" &&
-            task?.can_retry &&
-            !task.can_resume &&
-            isNewestOfTurnClass(task, relatedTasks)
-              ? task
-              : null;
-          const pendingLine = pendingTurn?.clientId === line.taskId;
-          const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
-          const collapsible =
-            line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
-          const expanded = expandedHumanMessageIds.has(messageId);
-          const artifactComments = line.artifactComments;
-          const commentLead = artifactComments
-            ? artifactCommentLead(line.text, artifactComments)
-            : null;
-          const compaction = compactionByLine.get(line.lineId);
-          return (
-            <Fragment key={line.lineId}>
-              {compaction?.placement === "before" && (
-                <CompactionDivider compactions={compaction.compactions} />
-              )}
-              <div className={`node-chat-line ${line.role}${failedTurn ? " unsent" : ""}`}>
-                <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
-                {line.role === "human" && line.mode && (
-                  <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
-                )}
-                {failedTurn && (
-                  <button
-                    type="button"
-                    className="icon-button chat-turn-resend"
-                    aria-label="Resend"
-                    title={failedTurn.error}
-                    disabled={submitting}
-                    onClick={() => void submitTurn(failedTurn)}
-                  >
-                    <RotateCcw size={14} />
-                  </button>
-                )}
-                {line.trigger === "watcher" && (
-                  <span className="chat-turn-trigger watcher">Watcher</span>
-                )}
-                {line.role === "agent" ? (
-                  line.running ? (
-                    activeLineTask && <InlineTaskProgress task={activeLineTask} />
-                  ) : (
-                    line.text && (
-                      <>
-                        <div className="chat-markdown chat-annotatable-answer">
-                          <MarkdownAnswer
-                            text={line.text}
-                            nodes={nodes}
-                            glossaryIndex={glossaryIndex}
-                            onOpenNode={onOpenNode}
-                            onOpenRepositoryFileLink={(href) =>
-                              void openRepositoryFile(messageId, line.taskId, href)
-                            }
-                            renderEmbed={(src, alt) =>
-                              renderInlineArtifact(line.taskId, line.artifacts, src, alt)
-                            }
-                          />
-                        </div>
-                        {/* Outside the annotatable wrapper: a selection clamp or the
-                        keyboard flow must never stage this diagnostic as answer text. */}
-                        {repositoryFileErrors.get(messageId) && (
-                          <strong className="chat-repository-file-error" role="alert">
-                            {repositoryFileErrors.get(messageId)}
-                          </strong>
-                        )}
-                        {!readOnly && <AnswerCommentButton comments={comments} />}
-                      </>
-                    )
-                  )
-                ) : line.role === "human" ? (
-                  <>
-                    <div
-                      className={`chat-human-message${collapsible && !expanded ? " collapsed" : ""}`}
-                    >
-                      {artifactComments && commentLead !== null ? (
-                        <ArtifactCommentQuotes
-                          lead={commentLead}
-                          comments={artifactComments}
-                          onOpen={() =>
-                            openArtifactPanel({
-                              projectId: project.id,
-                              artifactId: artifactComments.artifact_id,
-                            })
-                          }
-                        />
-                      ) : (
-                        <span className="node-chat-text">{line.text}</span>
-                      )}
-                    </div>
-                    {collapsible && (
-                      <button
-                        type="button"
-                        className="chat-message-toggle"
-                        aria-expanded={expanded}
-                        onClick={() => toggleHumanMessage(messageId)}
-                      >
-                        {expanded ? "See less" : "See more"}
-                      </button>
-                    )}
-                    {line.steering && (
-                      <div className="chat-steering-receipt" role="status">
-                        <strong>{line.steering.label}</strong>
-                        {line.steering.reason && <span>{line.steering.reason}</span>}
-                      </div>
-                    )}
-                    {line.attachments?.some((attachment) => attachment.reference) && (
-                      <div className="chat-input-references">
-                        {line.attachments.map((attachment) =>
-                          attachment.reference ? (
-                            <ReferenceChip
-                              key={attachment.attachment_id}
-                              projectId={project.id}
-                              reference={{
-                                ...sourceReference(attachment.reference),
-                                label: attachment.name,
-                              }}
-                              version={
-                                attachment.reference.graph_head
-                                  ? `r${attachment.reference.graph_head.revision}`
-                                  : attachment.reference.version?.slice(0, 7)
-                              }
-                            />
-                          ) : null,
-                        )}
-                      </div>
-                    )}
-                    {line.attachments?.map((attachment) => {
-                      if (attachment.reference) return null;
-                      const expired = Date.parse(attachment.expires_at) <= expiryClock;
-                      return (
-                        <div
-                          className={`chat-input-attachment${expired ? " expired" : ""}`}
-                          key={attachment.attachment_id}
-                        >
-                          <File size={14} />
-                          <span>
-                            <strong>{attachment.name}</strong>
-                            <small>
-                              {attachment.media_type} · {formatBytes(attachment.size)}
-                            </small>
-                          </span>
-                          {expired && <em>Expired</em>}
-                        </div>
-                      );
-                    })}
-                    {pausedLineTask ? (
-                      <InlinePausedTask
-                        task={pausedLineTask}
-                        disabled={readOnly}
-                        onResume={() => onResumeTask(pausedLineTask)}
-                        onRetry={() => onRetryTask(pausedLineTask)}
-                      />
-                    ) : activeLineTask ? (
-                      <InlineTaskProgress task={activeLineTask} />
-                    ) : failedTurn ? null : pendingLine ? (
-                      <InlineTaskProgress task={null} />
-                    ) : null}
-                  </>
-                ) : pausedLineTask ? null : (
-                  <span className="node-chat-text">{line.text}</span>
-                )}
-                {retryLineTask && (
-                  <button
-                    type="button"
-                    className="icon-button chat-error-retry"
-                    aria-label="Retry"
-                    title="Retry"
-                    disabled={readOnly}
-                    onClick={() => onRetryTask(retryLineTask)}
-                  >
-                    <RotateCcw size={14} />
-                  </button>
-                )}
-                {lineArtifacts(line)?.map((artifact) => {
-                  // A reply that embeds an artifact shows it in place, with its actions.
-                  if (
-                    line.role === "agent" &&
-                    line.text &&
-                    isInlineViewable(artifact) &&
-                    artifact.available &&
-                    artifact.can_open &&
-                    inlineArtifactIds(line.text, line.taskId, lineArtifacts(line) ?? []).has(
-                      artifact.artifact_id,
-                    )
-                  )
-                    return null;
-                  if (artifact.view === "video" && artifact.available && artifact.can_open)
-                    return renderArtifactPlayer(
-                      line.taskId,
-                      artifact.name,
-                      artifact,
-                      artifact.name,
-                    );
-                  const taskUpdatedAt =
-                    relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ??
-                    "";
-                  const previewFailed = failedArtifactPreviews.has(
-                    `${line.taskId}:${artifact.artifact_id}`,
-                  );
-                  const unavailable = !artifact.available;
-                  const unavailableReason =
-                    (!artifact.available && artifact.unavailable_reason) ||
-                    (previewFailed ? "Preview unavailable" : null);
-                  const shellError = artifactShellErrors.get(
-                    `${line.taskId}:${artifact.artifact_id}`,
-                  );
-                  return (
-                    <div
-                      className={`chat-artifact${unavailable ? " unavailable" : ""}`}
-                      key={artifact.artifact_id}
-                      id={`artifact-${line.taskId}-${artifact.artifact_id}`}
-                      tabIndex={-1}
-                    >
-                      {artifact.view === "image" &&
-                        artifact.size_bytes != null &&
-                        artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
-                        artifact.can_open &&
-                        !unavailable &&
-                        !previewFailed && (
-                          <button
-                            className="chat-artifact-inline"
-                            type="button"
-                            aria-label={`Open ${artifact.name}`}
-                            onClick={() => void openArtifact(line.taskId, artifact)}
-                          >
-                            <img
-                              src={versionedArtifactContentUrl(
-                                project.id,
-                                line.taskId,
-                                artifact.artifact_id,
-                                taskUpdatedAt,
-                              )}
-                              alt={artifact.name}
-                              onError={() =>
-                                markArtifactPreviewFailed(line.taskId, artifact.artifact_id)
-                              }
-                            />
-                          </button>
-                        )}
-                      <File size={14} />
-                      <span>
-                        {artifact.name}
-                        {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
-                        {(artifact.kept_at || artifact.kept_filename) && <em>Saved</em>}
-                      </span>
-                      {unavailableReason && <strong>{unavailableReason}</strong>}
-                      <div className="chat-artifact-actions">
-                        {(artifact.can_open ||
-                          (desktop && artifact.view === "pdf" && artifact.can_download)) && (
-                          <button
-                            type="button"
-                            onClick={() => void openArtifact(line.taskId, artifact)}
-                          >
-                            <ExternalLink size={12} /> Open
-                          </button>
-                        )}
-                        {artifact.can_download &&
-                          (desktop ? (
-                            <button
-                              type="button"
-                              onClick={() => void downloadArtifact(line.taskId, artifact)}
-                            >
-                              <Download size={12} /> Download
-                            </button>
-                          ) : (
-                            <a
-                              href={artifactUrl(
-                                project.id,
-                                line.taskId,
-                                artifact.artifact_id,
-                                "download",
-                              )}
-                              download={artifact.name}
-                            >
-                              <Download size={12} /> Download
-                            </a>
-                          ))}
-                        {artifact.can_keep && (
-                          <button
-                            type="button"
-                            data-artifact-action="keep"
-                            disabled={keepingArtifacts.has(
-                              `${line.taskId}:${artifact.artifact_id}`,
-                            )}
-                            onClick={() => void keepArtifact(line.taskId, artifact)}
-                          >
-                            Save to Artifacts
-                          </button>
-                        )}
-                      </div>
-                      {shellError && (
-                        <strong className="chat-artifact-shell-error" role="alert">
-                          {shellError}
-                        </strong>
-                      )}
-                    </div>
-                  );
-                })}
-                {line.artifactOmissions && (
-                  <p className="chat-artifact-omissions" role="status">
-                    {line.artifactOmissions.discovery_failed
-                      ? "Artifact discovery failed"
-                      : `Artifacts omitted: ${Object.entries(line.artifactOmissions)
-                          .filter(([, count]) => typeof count === "number" && count > 0)
-                          .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
-                          .join("; ")}`}
-                  </p>
-                )}
-                {/* A published version shows itself; every outcome still tells new from updated. */}
-                {line.artifactEditOutcomes
-                  ?.filter((outcome) => outcome.status !== "published")
-                  .map((outcome) => (
-                    <p key={outcome.artifact_id} className="chat-artifact-omissions" role="status">
-                      {artifactEditOutcomeText(
-                        outcome,
-                        line.artifactEditOutcomes ?? [],
-                        line.artifacts ?? [],
-                      )}
-                    </p>
-                  ))}
-                {line.role === "agent" && (line.graphUpdate || line.turnOutcome) && (
-                  <div className="chat-turn-receipts">
-                    {line.turnOutcome && <TurnOutcomeChip outcome={line.turnOutcome} />}
-                    {line.graphUpdate && (
-                      <GraphUpdateReceipt
-                        update={line.graphUpdate}
-                        taskId={line.taskId}
-                        repairBusy={repairingTaskId === line.taskId}
-                        repairDisabled={
-                          readOnly ||
-                          graphChangesDisabled ||
-                          relatedActive ||
-                          submitting ||
-                          reviewPending
-                        }
-                        repairContinued={continuedTaskIds.has(line.taskId)}
-                        latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
-                        canApplyAgain={
-                          relatedTasks.find((task) => task.operation_id === line.taskId)
-                            ?.can_apply_again === true
-                        }
-                        repairError={repairErrors.get(line.taskId) ?? null}
-                        onInspectTask={onInspectTask}
-                        onOpenInbox={onOpenInbox}
-                        onRepair={() => void repairGraphUpdate(line.taskId)}
-                        onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-              {compaction?.placement === "after" && (
-                <CompactionDivider compactions={compaction.compactions} />
-              )}
-            </Fragment>
-          );
-        })}
+        <AgentWindowTranscript
+          transcript={transcript}
+          tasks={relatedTasks}
+          questions={questionState.questions}
+          endpoints={endpoints}
+          artifacts={artifacts}
+          comments={comments}
+          compactionByLine={compactionByLine}
+          continuedTaskIds={continuedTaskIds}
+          latestGraphReceiptLineIds={latestGraphReceiptLineIds}
+          renderQuestion={(question) => (
+            <QuestionCard
+              question={question}
+              apiBase={questionApiBase}
+              onResolved={questionState.refresh}
+            />
+          )}
+          nodes={nodes}
+          glossaryIndex={glossaryIndex}
+          onOpenNode={onOpenNode}
+          pendingTurn={pendingTurn}
+          onResend={() => pendingTurn && void submitTurn(pendingTurn)}
+          submitting={submitting}
+          readOnly={readOnly}
+          graphChangesDisabled={graphChangesDisabled}
+          reviewPending={reviewPending}
+          repairingTaskId={repairingTaskId}
+          repairErrors={repairErrors}
+          onResumeTask={onResumeTask}
+          onRetryTask={onRetryTask}
+          onInspectTask={onInspectTask}
+          onOpenInbox={onOpenInbox}
+          onRepairGraphUpdate={repairGraphUpdate}
+        />
         {/* Open cards end the transcript and scroll with it, so they never
             squeeze the conversation above the composer. */}
         {questionState.error && (
@@ -2283,25 +1425,42 @@ export function NodeChat({
           </div>
         )}
         {questionState.questions
-          .filter((question) => questionIsOpen(question) && !question.withdrawn_readonly)
+          .filter(
+            (question) =>
+              questionIsOpen(question) && !question.card && !question.withdrawn_readonly,
+          )
           .map((question) => (
             <QuestionCard
               key={question.question_id}
               question={question}
               apiBase={questionApiBase}
               onResolved={questionState.refresh}
-              continueChat={!questionEpisodeId && question.state === "parked" && !relatedActive}
+              continueChat={
+                !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive
+              }
             />
           ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
       </div>
-      {!canCompose && readOnlyNotice}
+      {archived ? (
+        <div className="chat-composer" role="status">
+          <button className="button compact" type="button" onClick={onRestore}>
+            Restore
+          </button>
+        </div>
+      ) : (
+        !canCompose && readOnlyNotice
+      )}
       {canCompose && (
         <ChatComposer
-          project={project}
-          config={config}
-          tasks={relatedTasks}
-          sessionId={sessionId}
+          hint={
+            <ProviderSwitchHint
+              project={project}
+              config={config}
+              tasks={relatedTasks}
+              sessionId={sessionId}
+            />
+          }
           mode={mode}
           composer={composer}
           comments={comments}
@@ -2559,196 +1718,6 @@ function ComposerTextarea({
 }: { draft: ComposerDraft } & Omit<React.ComponentProps<"textarea">, "value">) {
   const value = useComposerDraft(draft);
   return <textarea {...props} value={value} />;
-}
-
-function InlineTaskProgress({ task }: { task: AgentTask | null }) {
-  const label = task
-    ? task.status_message || `${taskKindLabel(task.kind)} is running`
-    : "Starting task";
-  return (
-    <>
-      <span className="chat-task-live" role="status" aria-live="polite" aria-atomic="true">
-        {label}
-      </span>
-      <details className="chat-task-activity">
-        <summary>
-          <LoaderCircle className="spin" size={12} />
-          <span>Activity</span>
-        </summary>
-        <div className="chat-task-inline running">
-          <span>{label}</span>
-        </div>
-      </details>
-    </>
-  );
-}
-
-function InlinePausedTask({
-  task,
-  disabled,
-  onResume,
-  onRetry,
-}: {
-  task: AgentTask;
-  disabled: boolean;
-  onResume: () => void;
-  onRetry: () => void;
-}) {
-  return (
-    <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
-      <span>{task.status_message}</span>
-      <button
-        type="button"
-        className="button compact primary"
-        disabled={disabled}
-        onClick={onResume}
-      >
-        <Play size={12} /> Resume
-      </button>
-      <button
-        type="button"
-        className="button compact secondary"
-        disabled={disabled}
-        onClick={onRetry}
-      >
-        <RotateCcw size={12} /> Retry
-      </button>
-    </div>
-  );
-}
-
-function TurnOutcomeChip({ outcome }: { outcome: TurnOutcome }) {
-  const chip = turnOutcomeChip(outcome);
-  return (
-    <span className="chat-turn-outcome" data-outcome={chip.status}>
-      {chip.label}
-      {chip.reason ? ` · ${chip.reason}` : ""}
-    </span>
-  );
-}
-
-function GraphUpdateReceipt({
-  update,
-  taskId,
-  repairBusy,
-  repairDisabled,
-  repairContinued,
-  latestReceipt,
-  canApplyAgain,
-  repairError,
-  onInspectTask,
-  onOpenInbox,
-  onRepair,
-  onApplyAgain,
-}: {
-  update: GraphUpdateResult;
-  taskId: string;
-  repairBusy: boolean;
-  repairDisabled: boolean;
-  repairContinued: boolean;
-  latestReceipt: boolean;
-  canApplyAgain: boolean;
-  repairError: string | null;
-  onInspectTask: (taskId: string) => void;
-  onOpenInbox: () => void;
-  onRepair: () => void;
-  onApplyAgain: () => void;
-}) {
-  if (update.status === "none") return null;
-  const proposalCount = update.proposal_ids.length;
-  return (
-    <div className={`chat-graph-receipt ${update.status}`}>
-      <div className="chat-graph-receipt-actions">
-        {update.status === "applied" && (
-          <button type="button" onClick={() => onInspectTask(taskId)}>
-            <History size={12} />
-            {update.applied_revision === null
-              ? "Graph updated"
-              : `Graph updated · r${update.applied_revision}`}
-          </button>
-        )}
-        {update.status === "rejected" && (
-          <strong>
-            <TriangleAlert size={12} /> Graph update rejected
-          </strong>
-        )}
-        {update.status === "unavailable" && (
-          <strong>
-            <TriangleAlert size={12} />{" "}
-            {update.commit_status === "present"
-              ? "Graph update committed, but canonical state became unreachable"
-              : update.commit_status === "unknown"
-                ? "Graph update may have been committed: canonical state unreachable"
-                : "Graph update not applied: canonical state unreachable"}
-          </strong>
-        )}
-        {update.status === "applied" && proposalCount > 0 && (
-          <button type="button" onClick={onOpenInbox}>
-            <Inbox size={12} />
-            {proposalCount} proposal{proposalCount === 1 ? "" : "s"} sent to Inbox
-          </button>
-        )}
-        {latestReceipt && update.status === "rejected" && update.repairable && !repairContinued && (
-          <button type="button" disabled={repairBusy || repairDisabled} onClick={onRepair}>
-            <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
-            Repair graph update
-          </button>
-        )}
-        {latestReceipt && update.status === "unavailable" && canApplyAgain && (
-          <button type="button" disabled={repairBusy || repairDisabled} onClick={onApplyAgain}>
-            <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
-            Apply again
-          </button>
-        )}
-      </div>
-      {update.change_summary.length > 0 && (
-        <ul className="chat-graph-change-summary">
-          {update.change_summary.map((item, index) => (
-            <li key={`${index}:${item}`}>{item}</li>
-          ))}
-        </ul>
-      )}
-      {(update.status === "rejected" || update.status === "unavailable") &&
-        update.validation_messages.length > 0 && (
-          <ul className="chat-graph-validation">
-            {update.validation_messages.map((item, index) => (
-              <li key={`${index}:${item}`}>{item}</li>
-            ))}
-          </ul>
-        )}
-      {repairError && (
-        <strong className="chat-graph-repair-error" role="alert">
-          {repairError}
-        </strong>
-      )}
-    </div>
-  );
-}
-
-const ARTIFACT_EDIT_FAILURES: Record<NonNullable<ArtifactEditOutcome["reason"]>, string> = {
-  missing: "the file was removed",
-  type_changed: "the file type changed",
-  too_large: "the file is too large",
-  unverified: "the edited file could not be verified",
-};
-
-/** Say why an artifact of this session has no new version under this reply. */
-function artifactEditOutcomeText(
-  outcome: ArtifactEditOutcome,
-  outcomes: ArtifactEditOutcome[],
-  artifacts: AgentArtifactDescriptor[],
-): string {
-  if (outcome.status === "forked")
-    return "The artifact changed during this turn, so the edit was saved as a separate artifact.";
-  if (outcome.status === "failed")
-    return `Edit not published: ${outcome.reason ? ARTIFACT_EDIT_FAILURES[outcome.reason] : "it could not be read"}. The current version is kept.`;
-  // Only artifacts this turn created; one it updated in place has its own outcome.
-  const separate = artifacts.filter(
-    (item) => !outcomes.some((other) => other.artifact_id === item.artifact_id),
-  );
-  return separate.length
-    ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
-    : "Not edited in place; the current version is kept.";
 }
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {

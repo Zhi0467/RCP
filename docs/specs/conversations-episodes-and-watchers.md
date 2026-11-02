@@ -7,9 +7,16 @@ Auto-research orchestration and episode graph branches are in
 
 ## Agent names
 
-One agent is one Agents-board conversation (`chat_id`). Its name is the stored
-`chat_display.title` for that project and conversation, shared by the board,
-transcript responses, and Bulletin. Creation uses the first Markdown heading
+One agent has one canonical `chat_display.title`, keyed by its project (or Space
+for a Space thread) and conversation id: the thread id, board chat id,
+Auto-research chain's root episode id, or worker id. Readers resolve that row
+at read time, including agent context, Bulletin authors, digest groups, run
+labels, provenance, and the voice header. Stored author/source labels remain
+fallbacks when the name row is absent. Post bodies, handoff text, Patch history,
+fork `source_title` fallbacks, human display-name attestations, and voice
+confirmation cards retain their deliberate history.
+
+Creation uses the first Markdown heading
 in the first message when present, otherwise the whole message, with whitespace
 collapsed, cut after the last whole word within `AGENT_NAME_MAX_CHARS` (35); a
 single longer word is cut at 35. An empty name becomes "Chat". An
@@ -32,6 +39,154 @@ same cap. Archiving or unarchiving keeps the name.
 
 **Why:** a researcher should find the same agent by the same name in every view,
 and separate Experiment episodes must not create separate agent identities.
+
+## Private agent threads
+
+Each member has one Space thread and one project thread per project membership.
+Both are private to the member and continue indefinitely. Listing
+`/api/agent-threads`, and the `projects` and `handoff` verbs, create missing
+threads atomically. `agent_threads` is the
+privacy authority; filename prefixes are only read-hiding selectors. Existing
+board chats remain public. Every thread turn, wake and schedule fire is a
+captured Work turn on main, authorized by the owning member. Threads have no
+Discuss mode. Loss of membership closes that project thread; after rejoining,
+the next list or command reopens it. The browser loads and polls the thread list only while the Space
+Agent view or a project's Agents view is shown.
+Private threads cannot be archived. Ensuring the thread list clears legacy
+archive flags along with reopening eligible threads.
+
+**The Space thread owns no project lifecycle.** It reads across the member's
+projects. It writes files and Patches only for projects whose state and base
+are both on the backend's machine (`same_machine`). Experiments, compute `launch`, watch files, questions and
+approval cards belong to the member's own project thread, reached through
+`handoff`. The verbs each client receives enforce this; the
+[Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
+owns them. **Why:** questions, watchers, episodes and notifications are keyed
+by project, so they always carry a real project id.
+
+A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
+from `space_identity`, which never names a project. That id appears only in
+task, usage, chat display, read, pin, browser, session-context, artifact and
+client-request rows. Questions, watchers, episodes and notifications never
+carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
+resolves a task row to its project service or Space owner for recovery, Stop,
+Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
+branch and starts no episodes.
+
+`handoff` passes a Space request to the same member's project thread, with that
+member's authority. It is not mail. The verb records the request and returns at
+once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
+that turn's own Patch lands first. A Stopped or failed Space turn cancels its
+pending handoffs without a wake. Delivery appends a member message with
+`source: "handoff"` and admits its turn when the target is idle; it runs after
+each settlement, after a provider sign-in release, and at startup. Pending
+handoffs deliver oldest first, one turn each, and the idempotency key prevents
+duplicates. A transient admission refusal keeps the request pending and is noted
+once on the Space turn; any other refusal is final.
+
+A handoff settles when its delivered turn, or that turn's newest Resume or Retry,
+succeeds, fails, is interrupted, or is paused by Stop. A failure RCP still retries
+itself (a lost link before its retries are exhausted, or a provider sign-in
+failure) does not settle it. A handoff refused because the target is archived,
+closed, no longer the member's project, or holding a Stopped turn settles at once
+with that stored reason; leaving a project closes its thread. Each settled
+handoff admits one Space wake with source `handoff_report`. Its message is
+`render_handoff_report` of a `HandoffReport`: status, refusal reason, failure kind,
+the provider's failure text, the project agent's stated turn outcome, and its
+last message, each bounded to the handoff limit. The same report is stored on the
+message as `handoff_report` for display. Content is omitted once the member has
+left the project.
+
+A thread wakes on a member message from the composer, voice or a handoff, and on
+a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
+project thread also wakes on its own watch file through conversation watchers
+and on a resolved approval card through question answer delivery. The Space
+thread also wakes on a settled handoff. There is no wake limit.
+
+The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
+unused name and then numbered suffixes. These seeded names cannot be changed by
+the agent; member renaming uses the ordinary name rules. Browser starts on.
+
+Each thread stores its agent pick (provider, model, reasoning, machine), set by
+`POST /api/agent-threads/{thread_id}/agent`, by a member send that carries a
+pick, or by `handoff --provider/--model/--effort`. The route and handoff check
+the pick against the thread machine's readiness; a send is checked by its own
+admission. Every turn on the thread runs the stored pick: member sends, Retry,
+schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
+replaces the failed request's agent with it. Without a pick, a project thread
+uses its project's Settings Work profile and the Space thread the backend
+default; `thread_agent` resolves both. A changed provider takes the provider
+switch path below.
+
+Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
+on each record. The reader verifies the filename against the record. Source
+indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
+private transcripts never enter ingestion or consolidation sources. Space
+transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
+use `chatScope: "space"` without node or graph target fields. A separate reader
+accepts only that scope. A missing file is an empty thread; an unreadable or
+mislabeled one refuses with the voice reader's `thread_transcript_unavailable`
+(503) or `thread_transcript_invalid` (409), so a Space turn fails rather than
+running without its history. Optional message `source` distinguishes voice and
+handoff input, RCP's `handoff_report` (and the reserved Slack source); absent
+source means the composer
+and is omitted from serialization, preserving old records. Space turns, steering,
+and voice entries share one transcript lock; both deduplicate by record `uuid`
+under that lock before appending.
+
+Private chats, their tasks and their questions are visible and controllable only
+by their owner. Project question pushes target that owner. A failed or
+interrupted project thread turn that stays unread uses the owner-only
+`agent_thread` notification, linking to the thread, as does a schedule wake's
+reply; any other reply, including watcher and handoff wakes, only marks the thread unread. Space replies do not push. Public graph provenance may name the thread through `via_agent`, while
+the linked conversation remains private.
+An Experiment a thread starts is project work: its run conversation and goal are
+visible to project members like any Experiment, while the thread stays private.
+
+Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
+locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
+Local recovery inventories and local/remote retention sweeps include these exact
+stages, retaining live stages and leaving transcripts alone. The owning thread
+can access its stage but not its member folder's transcripts; every agent launch
+hides other members' thread folders. A transcript pattern covers every member
+folder, so a member who joins after launch still has hidden transcripts; their
+stages are enumerated at launch.
+Non-thread launches hide all thread folders. Exceeding the hidden-path budget
+refuses launch rather than dropping the privacy policy.
+
+Schedule creation checks the admitted task's member message, trigger, source and
+question-follow-up binding; display transcripts never establish that authority.
+Composer, voice and handoff messages count as member messages; question
+follow-ups and wakes do not.
+
+Each thread keeps one native session, which the provider compacts. Before a
+provider switch's first turn, project and Space threads ask the old provider to
+summarize its captured native session in one read-only turn, using the existing
+branched-chat fork path in a temporary working directory for local Claude and
+Codex launches. Remote summaries resume the original session and append their
+prompt and answer because this unsupervised launch cannot use the remote fork path. A completed, nonempty
+summary within `AGENT_THREAD_COMPACT_MAX_BYTES` seeds the new session and records
+`provider_switch_compacted`. The old account, session, runtime, and privacy policy
+must remain usable. Failure, including timeout after
+`AGENT_THREAD_COMPACT_TIMEOUT_SECONDS` (300 seconds), oversized output, or an
+unsupported summary capability, keeps `provider_switch_tail` and the bounded
+transcript tail. Each expected failure records one `provider_switch_summary_failed`
+diagnostic receipt with cause `timeout`, `sign_in`, `oversized`, `session_missing`,
+or `provider_error`; unexpected implementation errors propagate. Both resolution
+reasons appear on the thread's fresh-start marker.
+
+Seeds are labelled earlier conversation for context, not instructions or
+authority. `staged_history_seed` stages each seed as a content-addressed file in
+the thread's own private stage, which only its owner's turns read. The prompt
+carries one pointer that says to read the file again after a compaction. The compacted seed is retained in the
+task's immutable database contract so a same-task restart reuses it without
+another summary call. Other fresh starts retain their existing
+reasons and receive the tail, bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and
+`AGENT_THREAD_TAIL_MAX_BYTES`, newest kept. Summary calls use the fixed
+[summary capability](providers-and-containment.md#session-summaries), preserve
+the thread's hidden-read policy, and charge usage to the same task under the old
+provider and model. Stop shares the turn's process fence and prevents the new
+provider from starting; an unconfirmed remote exit fences further execution.
 
 ## Human notification observations
 
@@ -108,7 +263,7 @@ The answer and graph outcome remain independently visible. A stray Patch left by
 Discuss is retained as a receipt and discarded; a file cannot grant its author a
 different mode.
 
-Browser consent is an app-local per-chat preference, off by default. The browser
+Browser consent is an app-local per-chat preference, off by default except for agent threads. The browser
 preference API reads and sets it without rewriting transcripts. Admission of every
 chat turn, including a watcher wake and a question answer, snapshots it into
 `browser_requested`; changing the toggle affects the next turn.
@@ -123,9 +278,22 @@ force. Pending project-deletion cleanup retains its origin even if the same
 project is registered again. A session hears its browser state when it starts
 with a browser and whenever the state changes, compared with its last committed turn.
 Project removal requests deletion for every retained owner. Failed cleanup stays
-pending and retries at later turn boundaries. The owner key names the stable stage,
+pending and retries at later turn boundaries. The same cleanup owner drains durable
+project-memory deletions after the project deletion commits and at turn boundaries
+(see [memory lifecycle](graph-consolidation-and-lessons.md)). The owner key names the stable stage,
 space, project, and resolved execution host and account; a repointed SSH alias
 cannot clean up the old host through its new target.
+
+## Conversation archive
+
+Archived means quiet. Archive is refused while the conversation owns live work:
+a queued, running, or resumable turn, a live Experiment or episode, or an armed
+watcher. One store admission check refuses every new turn or wake into an
+archived conversation or closed private thread, including watcher and schedule
+wakes. Answering a question or approval card there is refused before the answer
+is stored. Closing a private thread stops its watchers; reopening does not re-arm
+them. Neither archive nor Restore changes the native session. The shared
+[composer](interface-and-visual-design.md#conversation-composer) owns Restore.
 
 ## Native chat context
 
@@ -166,7 +334,12 @@ Every resolution records `chat_session_resolution`. Fresh-session reasons are
 `no_session_yet`, `session_history_only`, `session_recovery_abandoned`,
 `session_stage_unavailable`, `session_stale`, `session_context_unavailable`,
 `orchestrator_session_unavailable`, `provider_mismatch`, `machine_mismatch`, `login_switch`, or
-`consolidation` (every nightly turn starts fresh).
+`consolidation` (every nightly turn starts fresh). Private provider switches use
+`provider_switch_compacted` or `provider_switch_tail` as described under
+[Private agent threads](#private-agent-threads).
+Task views project the latest receipt's outcome and reason code for both project
+and Space turns; absent receipts project as null. The
+[Agent view](interface-and-visual-design.md#agent-view) shows unexpected fresh starts.
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
 **New session** creates a new chat id. Provider, host, stage, target and scope
@@ -314,6 +487,14 @@ card receives answers while the composer remains steering. Viewer edits,
 consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
+
+Private-thread questions belong only to the thread's member. Their Needs you
+push targets that member; list, answer and dismiss refuse other members. Creation
+and settlement emit no project-wide digest event for a private-thread question. An
+`ask` action creates a single-use approval card in its project thread. The
+[authority spec](authority-and-proposals.md) owns the pinned action and tap
+admission. Ordinary answer and dismiss refuse card questions; card settlement
+uses the existing answer-delivery path below.
 
 Each bounded ask call retains a random `call_id` across transport rounds.
 Pending replies carry `attempt` and `max_attempts` (3); parked replies count no

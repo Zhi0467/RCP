@@ -49,7 +49,7 @@ ResourceName = Literal[
 RESOURCE_NAMES = frozenset(get_args(ResourceName))
 _PROCESS_EPOCH = uuid.uuid4().hex
 # Change when the projection/token contract changes, independently of DB migrations.
-_PROJECTION_VERSION = 1
+_PROJECTION_VERSION = 2
 router = APIRouter()
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
@@ -133,6 +133,7 @@ class WatermarkRequest(BaseModel):
     open: list[OpenProject]
     due: list[str]
     activated: str | None = None
+    agent_threads: bool = False
 
     @model_validator(mode="after")
     def unique_projects(self) -> Self:
@@ -159,11 +160,16 @@ class ProjectWatermarks(BaseModel):
     sync: SyncHealth
 
 
+class AgentThreadsVersion(BaseModel):
+    version: str
+
+
 class WatermarkResponse(BaseModel):
     epoch: str
     as_of: str
     projects: list[ProjectWatermarks]
     unavailable: list[str]
+    agent_threads: AgentThreadsVersion | None = None
 
 
 @router.post("/api/resource-watermarks")
@@ -206,6 +212,20 @@ def resource_watermarks(
             row["requested_id"]: row["project_id"] for row in authorized if row["project_id"]
         }
         epoch = watermark_epoch(authorized[0]["epoch"])
+        agent_threads = None
+        if body.agent_threads:
+            counter = connection.execute(
+                "SELECT generation FROM resource_versions "
+                "WHERE scope='' AND resource='agent_threads' AND entity=?",
+                (f"member:{member.user_id}",),
+            ).fetchone()
+            agent_threads = AgentThreadsVersion(
+                version=hashlib.sha256(
+                    json.dumps(
+                        [epoch, member.user_id, "agent_threads", counter[0] if counter else 0]
+                    ).encode()
+                ).hexdigest()
+            )
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -231,6 +251,9 @@ def resource_watermarks(
               UNION SELECT id, scope, resource, '' FROM requested
               UNION SELECT id, '', resource, '' FROM requested
               UNION SELECT id, scope, resource, ? FROM requested WHERE resource='chats'
+              UNION SELECT id, (SELECT space_id FROM space_identity WHERE singleton=1),
+                           'chats', '' FROM requested
+                     WHERE resource IN ('bulletin', 'digest', 'tasks.status', 'task')
             )
             SELECT scopes.id, COALESCE(SUM(version.generation), 0) AS generation
             FROM scopes LEFT JOIN resource_versions AS version
@@ -344,6 +367,7 @@ def resource_watermarks(
         )
     return WatermarkResponse(
         epoch=epoch,
+        agent_threads=agent_threads,
         as_of=as_of.isoformat(),
         projects=[
             ProjectWatermarks(

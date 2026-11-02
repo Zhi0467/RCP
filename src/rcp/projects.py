@@ -24,6 +24,7 @@ import tomlkit
 from pydantic import BaseModel, Field, TypeAdapter
 
 from rcp.agents import AgentLauncher
+from rcp.agents.memory_files import finish_project_memory_rename
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import (
@@ -954,6 +955,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )
@@ -1192,6 +1194,12 @@ class ProjectCatalog:
                         identity.project_id,
                         self.store.space_id,
                     )
+                    try:
+                        finish_project_memory_rename(self.store, stored)
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Project memory rename remains pending"
+                        )
                     self._refresh_project_aliases()
                     self._apply_app_file_migration(migration)
                     attachment_store.apply_project_identity_migration(attachment_migration)
@@ -1274,6 +1282,7 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
                 project_service_resolver=self.open,
+                project_catalog=self,
                 paper_live=self.paper_live,
                 paper_admission=lambda project_id: self.paper_admission(project_id),
             )
@@ -1651,6 +1660,20 @@ class ProjectCatalog:
         repository = manifest.repository_map[manifest.state.repository]
         return manifest.machine_map[repository.machine].host
 
+    def same_machine(self, project_id: str) -> bool:
+        """Whether state and base both live on the backend's machine, without opening."""
+
+        project_id = self._canonical_project_id(project_id)
+        record = self.store.project(project_id)
+        if record is None:
+            raise KeyError(project_id)
+        manifest = load_manifest(record.locator)
+        repository = manifest.repository_map[manifest.state.repository]
+        return not (
+            manifest.machine_map[repository.machine].host
+            or manifest.machine_map[manifest.base_machine].host
+        )
+
     def open(self, project_id: str) -> ProjectService:
         service, _ = self._service_or_open(project_id)
         return service
@@ -1731,6 +1754,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )
@@ -2009,10 +2033,28 @@ class ProjectCatalog:
                         imported_inventory,
                     ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
-                    from rcp.runs.browser_lifecycle import close_chat_browser_owners
+                    from rcp.runs.browser_lifecycle import (
+                        browser_host_key,
+                        close_chat_browser_owners,
+                        retry_browser_cleanup,
+                    )
 
                     close_chat_browser_owners(self.store, project_id, delete_profile=True)
-                    database_records = self.store.delete_project_records(project_id)
+                    record = self.store.project(project_id)
+                    memory_host_key = None
+                    if record is not None and record.state_remote:
+                        try:
+                            memory_host_key = browser_host_key(
+                                record.state_location.partition(":/")[0]
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "Project memory cleanup origin could not be resolved"
+                            )
+                    database_records = self.store.delete_project_records(
+                        project_id, memory_host_key=memory_host_key
+                    )
+                    retry_browser_cleanup(self.store)
                 except BaseException:
                     if stopped:
                         # The project is kept, so its paper must publish again.
@@ -2124,21 +2166,25 @@ class ProjectCatalog:
                 )
             return
 
-        boundary = (self.data_dir / "run-stage").resolve()
-        target = Path(stage.root)
-        if not target.is_absolute() or target.parent.resolve() != boundary:
-            raise ValueError("Saved local run stage is outside the RCP staging boundary")
-        _remove_local_stage(target)
+        self._validate_stage_target(stage)
+        _remove_local_stage(Path(stage.root))
 
     def _validate_stage_target(self, stage: ProjectStageRecord) -> None:
         if stage.host:
             RemoteRunStage(stage.host).attach_artifact_source(stage.root)
             return
 
+        target = Path(stage.root)
         boundary = self.data_dir / "run-stage"
+        if (
+            target.parent.name == "stages"
+            and target.parent.parent.parent == self.data_dir / "agent-threads"
+        ):
+            boundary = target.parent
+            if boundary.resolve() != boundary:
+                raise ValueError("RCP's thread staging boundary is unsafe")
         if os.path.lexists(boundary) and not stat.S_ISDIR(boundary.lstat().st_mode):
             raise ValueError("RCP's local staging boundary is unsafe")
-        target = Path(stage.root)
         if not target.is_absolute() or target.parent.resolve() != boundary.resolve():
             raise ValueError("Saved local run stage is outside the RCP staging boundary")
 
@@ -2578,6 +2624,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
             project_service_resolver=self.open,
+            project_catalog=self,
             paper_live=self.paper_live,
             paper_admission=lambda project_id: self.paper_admission(project_id),
         )

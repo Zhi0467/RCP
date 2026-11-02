@@ -27,6 +27,7 @@ from rcp.server_runtime import ServerMetadata
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import AppStore, SpaceKind
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
 from rcp.transport import StateUnavailable
@@ -241,6 +242,28 @@ def require_project_membership(project_id: str, request: Request) -> str:
         # confirm the project exists, which is the one thing a non-member must
         # not learn.
         raise HTTPException(status_code=404, detail="Project not found")
+    store = get_store(request)
+    artifact_id = request.path_params.get("artifact_id")
+    if artifact_id and (artifact := store.artifact(str(artifact_id))) is not None:
+        with store.connection() as connection:
+            owner = private_artifact_owner(connection, artifact)
+        if owner is not None and owner != member.user_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+    chat_id = request.path_params.get("chat_id")
+    operation_id = request.path_params.get("operation_id")
+    question_id = request.path_params.get("question_id")
+    if operation_id and (task := store.agent_task(str(operation_id))) is not None:
+        chat_id = task.request.get("chat_id")
+    if (
+        question_id
+        and (question := store.get_question(str(question_id))) is not None
+        and question.origin.owner_kind == "chat"
+    ):
+        chat_id = question.origin.owner_id
+    if isinstance(chat_id, str):
+        owner = store.private_chat_owner(chat_id)
+        if owner is not None and owner != member.user_id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
     return canonical
 
 

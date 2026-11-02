@@ -357,6 +357,13 @@ class ProjectStoreMixin(StoreMixinBase):
                         f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                         (canonical_project_id, old_project_id),
                     )
+                # A moved agent thread keeps its name and browser choice.
+                for table in ("chat_display", "chat_browser_preferences"):
+                    connection.execute(
+                        f"UPDATE {table} SET project_id = ? WHERE project_id = ? AND chat_id IN "
+                        "(SELECT thread_id FROM agent_threads WHERE project_id = ?)",
+                        (canonical_project_id, old_project_id, canonical_project_id),
+                    )
                 connection.execute(
                     "UPDATE chat_forks SET record_json = json_set(record_json, '$.project_id', ?) "
                     "WHERE project_id = ?",
@@ -440,7 +447,9 @@ class ProjectStoreMixin(StoreMixinBase):
             ).fetchall()
         return [ProjectStageRecord.model_validate(dict(row)) for row in rows]
 
-    def delete_project_records(self, project_id: str) -> dict[str, int]:
+    def delete_project_records(
+        self, project_id: str, *, memory_host_key: str | None = None
+    ) -> dict[str, int]:
         """Atomically delete every database row owned by one registration.
 
         The active-task check is repeated under a write lock so a task cannot be
@@ -457,6 +466,37 @@ class ProjectStoreMixin(StoreMixinBase):
                 ):
                     raise KeyError(project_id)
                 self._require_project_deletion_safe(connection, project_id)
+                project_row = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone()
+                assert project_row is not None
+                memory_ids = [
+                    project_id,
+                    *(
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?",
+                            (project_id,),
+                        )
+                    ),
+                ]
+                for memory_id in memory_ids:
+                    record = self._project_record(project_row).model_copy(
+                        update={"project_id": memory_id}
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO memory_deletions VALUES (?, ?, ?, ?)",
+                        (
+                            memory_id,
+                            record.state_location,
+                            record.model_dump_json(),
+                            memory_host_key,
+                        ),
+                    )
+                    if memory_id != project_id:
+                        connection.execute(
+                            "DELETE FROM memory_migrations WHERE project_id = ?", (memory_id,)
+                        )
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -737,6 +777,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     (project_id,),
                 ).rowcount
                 for table in (
+                    "memory_migrations",
                     "operational_lessons",
                     "lesson_command_receipts",
                     "bulletin_posts",
@@ -776,8 +817,30 @@ class ProjectStoreMixin(StoreMixinBase):
                     counts[table] = connection.execute(
                         f"DELETE FROM {table} WHERE project_id = ?", (project_id,)
                     ).rowcount
+                counts["approval_cards"] = connection.execute(
+                    "DELETE FROM approval_cards WHERE question_id IN "
+                    "(SELECT question_id FROM questions WHERE project_id = ?)",
+                    (project_id,),
+                ).rowcount
                 counts["questions"] = connection.execute(
                     "DELETE FROM questions WHERE project_id = ?", (project_id,)
+                ).rowcount
+                # Handoffs and schedules resolve their member through the thread row.
+                project_threads = "(SELECT thread_id FROM agent_threads WHERE project_id = ?)"
+                counts["agent_handoffs"] = connection.execute(
+                    f"DELETE FROM agent_handoffs WHERE target_thread_id IN {project_threads} "
+                    f"OR source_thread_id IN {project_threads}",
+                    (project_id, project_id),
+                ).rowcount
+                counts["agent_schedules"] = connection.execute(
+                    f"DELETE FROM agent_schedules WHERE thread_id IN {project_threads}",
+                    (project_id,),
+                ).rowcount
+                counts["space_turn_project_bindings"] = connection.execute(
+                    "DELETE FROM space_turn_project_bindings WHERE project_id = ?", (project_id,)
+                ).rowcount
+                counts["agent_threads"] = connection.execute(
+                    "DELETE FROM agent_threads WHERE project_id = ?", (project_id,)
                 ).rowcount
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)

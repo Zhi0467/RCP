@@ -23,7 +23,7 @@ from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.group_context import GroupContext
 from rcp.agents.project_repositories import sibling_repository_paths
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
 
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
@@ -150,7 +150,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 27
+CHAT_MASTER_CONTEXT_VERSION = 28
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -266,7 +266,7 @@ _GRANT_REQUEST_RULE = """- If the work needs a folder outside the roots, such as
   this machine's card -> Writable paths. It applies from your next launch."""
 
 
-def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
+def _episode_worktree_rule(scope: ProviderWriteScope) -> str:
     worktree = scope.episode_worktree
     if worktree is None:
         return ""
@@ -277,7 +277,7 @@ def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
 """
 
 
-def write_scope_section(scope: ProjectWriteScope) -> str:
+def write_scope_section(scope: ProviderWriteScope) -> str:
     """Render the exact filesystem boundary the provider is launched with.
 
     The contract has to name the same roots the provider enforces. A prompt that
@@ -290,6 +290,7 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
         f"- writable, repository `{item.alias}`: `{item.path}`" for item in scope.repositories
     ]
     lines += [f"- writable, repository Git metadata: `{path}`" for path in scope.git_metadata_roots]
+    lines += [f"- writable, project memory notes: `{path}`" for path in scope.memory_roots]
     lines += [f"- writable, machine grant: `{path}`" for path in scope.granted_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
@@ -955,9 +956,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v12"
+DISCUSS_POLICY_VERSION = "discuss-v13"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v19"
+WORK_POLICY_VERSION = "work-v21"
 
 
 class PromptFactory:
@@ -979,7 +980,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -992,7 +993,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
-            lessons_pointer=lessons_pointer,
+            memory_pointer=memory_pointer,
             read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
@@ -1007,13 +1008,12 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
-        launch_instructions: str | None = None,
         message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
         return PromptFactory._chat_turn_prompt(
@@ -1023,13 +1023,12 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
-            lessons_pointer=lessons_pointer,
+            memory_pointer=memory_pointer,
             read_context=read_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
             attachments=attachments,
-            launch_instructions=launch_instructions,
         )
 
     @staticmethod
@@ -1044,29 +1043,20 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        lessons_pointer: str = "",
+        memory_pointer: str = "",
         read_context: str = "",
-        launch_instructions: str | None = None,
         message_author: Literal["human", "orchestrator"] = "human",
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the message's bytes.
 
-        The write boundary and launch instructions live in the master. A master rendered
-        before the session's first Work turn lacks the launch instructions, so that turn
-        carries them once.
+        The write boundary and launch instructions live in the master.
         """
 
-        if launch_instructions is not None and marker != "Work":
-            raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
         if read_context:
             parts.append(read_context)
-        if lessons_pointer:
-            parts.append(lessons_pointer)
-        if launch_instructions:
-            parts.append(
-                f"Launch instructions for this session's Work turns:\n{launch_instructions}"
-            )
+        if memory_pointer:
+            parts.append(memory_pointer)
         invocation = _invoked_package_section(invoked_skill_pointers).strip()
         if invocation:
             parts.append(invocation)
@@ -1409,8 +1399,9 @@ Outputs:
 Boundary:
 - Read only what the question needs, inside the repository pointers above. A non-empty host means
   read that path over SSH; an empty host means this machine.
-- Only the conversation scratch folder, including the artifact directory, is writable. Repositories,
-  remote machines, canonical RCP state, and `.research` stay read-only, and this turn has no graph
+- The conversation scratch folder, including the artifact directory, and the shared memory folder
+  named for this turn are writable. Repositories, remote machines, canonical RCP state, and
+  `.research` stay read-only, and this turn has no graph
   output. If the graph looks wrong, explain the correction in the reply so the human can switch to
   Work.
 

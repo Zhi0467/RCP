@@ -776,7 +776,9 @@ def test_graph_head_gates_only_graph_and_validates_binding(live, monkeypatch):
         connection.execute("UPDATE resource_watermark_epoch SET epoch='restore'")
     assert cached().snapshots[0].head != head
     head = read(live, artifact).snapshots[0].head
-    monkeypatch.setattr(resource_watermarks, "_PROJECTION_VERSION", 2)
+    monkeypatch.setattr(
+        resource_watermarks, "_PROJECTION_VERSION", resource_watermarks._PROJECTION_VERSION + 1
+    )
     assert cached().snapshots[0].head != head
     # Sampling precedes graph reads, even if publication happens during the read.
     head = read(live, artifact).snapshots[0].head

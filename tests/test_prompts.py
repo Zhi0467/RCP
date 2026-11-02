@@ -706,20 +706,6 @@ def test_work_launch_contract_preserves_resolved_scope_paths() -> None:
         assert path in contract
 
 
-def test_discuss_turn_rejects_work_launch_instructions() -> None:
-    with pytest.raises(ValueError, match="only to a Work turn"):
-        PromptFactory._chat_turn_prompt(
-            marker="Discuss",
-            artifact_path="/stage/turns/t1/artifacts",
-            human_message="What do we know?",
-            context_delta=None,
-            invoked_skill_pointers=None,
-            invoked_provider_skills=None,
-            attachments=None,
-            launch_instructions="Use the launch helper.",
-        )
-
-
 def test_project_machines_section_states_each_route_and_hint() -> None:
     master = PromptFactory.chat_master_context(
         project_name="Example",
@@ -987,12 +973,7 @@ def test_auto_research_ask_rendering_follows_resolved_verbs():
             "client", auto_research_allowed_verbs(role), role
         )
     for role in ("orchestrator", "worker"):
-        for actions in ((), ("add",), ("list",)):
-            verbs = auto_research_allowed_verbs(role, lesson_actions=actions)
-            assert ("lesson" in verbs) == bool(actions)
-            usage = auto._command_invocations("client", verbs, role, actions)
-            for action in ("add", "list", "update", "delete"):
-                assert (f"lesson {action}" in usage) == (action in actions)
+        assert "lesson" not in auto_research_allowed_verbs(role)
     assert "validate patch.json" in auto._command_invocations("test-command-client", ("validate",))
     assert "ask --key" not in auto._command_invocations("test-command-client", ("validate",))
     assert auto._orchestrator_ask_contract(("validate",)) == ""

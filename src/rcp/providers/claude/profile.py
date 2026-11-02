@@ -49,7 +49,7 @@ from rcp.providers.claude.remote import (
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
@@ -272,6 +272,22 @@ _BASH_MAX_TIMEOUT_DEFAULT_SECONDS = 600
 # them too: their allow rules cannot widen RCP's `--settings`, and hooks stay
 # off through `disableAllHooks` there. The skill probe loads the same sources.
 _SETTING_SOURCES = ("--setting-sources", "user")
+# The tools each capability's process has (`--tools`); permission rules then
+# decide which of them run unprompted. RCP runs Claude headless, so the default
+# set's scheduling, cross-session messaging, worktree, publishing and desktop
+# tools never exist. Claude ignores an unknown name rather than failing.
+_CLAUDE_AGENT_TOOLS = (
+    *("Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"),
+    *("Task", "Skill", "ToolSearch", "WebFetch", "WebSearch"),
+)
+_CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
+    "discuss": _CLAUDE_AGENT_TOOLS,
+    "work_auto": _CLAUDE_AGENT_TOOLS,
+    "orchestrate": _CLAUDE_AGENT_TOOLS,
+    "scratch_patch": _CLAUDE_AGENT_TOOLS,
+    "paper_suggest": ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"),
+    "session_summary": (),
+}
 
 
 class ClaudeProfile(ProviderProfile):
@@ -501,7 +517,7 @@ class ClaudeProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -532,6 +548,7 @@ class ClaudeProfile(ProviderProfile):
             "orchestrate": "dontAsk",
             "scratch_patch": "acceptEdits",
             "paper_suggest": "dontAsk",
+            "session_summary": "dontAsk",
         }[capability]
         command = [
             binary,
@@ -541,6 +558,8 @@ class ClaudeProfile(ProviderProfile):
             "--verbose",
             "--permission-mode",
             permission_mode,
+            "--tools",
+            ",".join(_CLAUDE_TOOLS[capability]),
         ]
         if scope is not None:
             command.extend(
@@ -550,6 +569,19 @@ class ClaudeProfile(ProviderProfile):
                     json.dumps(
                         _claude_write_settings(scope, hidden_read_scope, cwd), separators=(",", ":")
                     ),
+                ]
+            )
+        elif capability == "session_summary":
+            if write_dirs:
+                raise ValueError("Session summaries cannot carry write grants")
+            settings = _claude_hidden_read_settings(hidden_read_scope) if hidden_read_scope else {}
+            settings["disableAllHooks"] = True
+            command.extend(
+                [
+                    "--setting-sources",
+                    "",
+                    "--settings",
+                    json.dumps(settings, separators=(",", ":")),
                 ]
             )
         elif capability == "paper_suggest":
@@ -603,7 +635,10 @@ class ClaudeProfile(ProviderProfile):
         # session directory previously blew past the argv size limit.
         additional_dirs = [*write_dirs]
         if scope is not None:
-            additional_dirs = [*read_dirs, *(Path(item) for item in scope.repository_roots)]
+            additional_dirs = [
+                *read_dirs,
+                *(Path(item) for item in [*scope.repository_roots, *scope.memory_roots]),
+            ]
         for directory in dict.fromkeys(str(item) for item in additional_dirs):
             command.extend(["--add-dir", directory])
         if model:
@@ -802,7 +837,7 @@ def _claude_paper_settings(
 
 
 def _claude_write_settings(
-    scope: ProjectWriteScope | None = None,
+    scope: ProviderWriteScope | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
     cwd: Path | None = None,
 ) -> dict[str, object]:
@@ -817,7 +852,11 @@ def _claude_write_settings(
     if scope is not None:
         # Claude's deny beats its allow, so a protected folder holding this
         # launch's own stage (RCP storage inside a grant) stays undenied.
-        own = [PurePosixPath(scope.stage_root), PurePosixPath(scope.workspace_root)]
+        own = [
+            PurePosixPath(scope.stage_root),
+            PurePosixPath(scope.workspace_root),
+            *(PurePosixPath(path) for path in scope.memory_roots),
+        ]
         protected_write_paths = [
             path
             for path in protected_write_paths

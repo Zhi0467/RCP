@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Annotated, Literal
@@ -21,7 +22,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episode_timeline import worker_label
-from rcp.api.episodes import child_experiment_on_owned_branch
+from rcp.api.episodes import child_experiment_on_owned_branch, episode_chain_records
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
 from rcp.artifact_comments import (
@@ -60,7 +61,9 @@ from rcp.storage import (
     EpisodeMode,
     EpisodeRecord,
 )
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifacts import ArtifactDeleteRefused
+from rcp.storage.chat_names import chat_titles
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -264,16 +267,24 @@ def _temporary(store: AppStore, artifact: Artifact) -> bool:
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
 def saved_artifacts(
     project_id: str,
+    request: Request,
     *,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ) -> list[SavedArtifactResponse]:
     """Project saved output inventory, independent of recent task/episode windows."""
     # require_current_instance canonicalizes legacy project URLs before routing.
     require_registered_project(catalog, project_id)
     base = f"/api/projects/{quote(project_id, safe='')}"
     entries: list[SavedArtifactResponse] = []
-    artifact_tasks = store.project_tasks_with_kept_artifacts(project_id)
+    user_id = identity_access.acting_user(request).user_id
+    excluded_chats = store.private_chat_ids_except(user_id)
+    artifact_tasks = [
+        task
+        for task in store.project_tasks_with_kept_artifacts(project_id)
+        if task.request.get("chat_id") not in excluded_chats
+    ]
     reports = store.project_episode_report_summaries(project_id)
     report_origins: dict[str, AgentTaskRecord] = {}
     for report in reports:
@@ -282,7 +293,12 @@ def saved_artifacts(
             origin = store.agent_task(wrapup.concluding_operation_id)
             if origin is not None:
                 report_origins[report.episode_id] = origin
-    stored_artifacts = store.artifacts(project_id)
+    with store.connection() as connection:
+        stored_artifacts = [
+            artifact
+            for artifact in store.artifacts(project_id)
+            if private_artifact_owner(connection, artifact) in {None, user_id}
+        ]
     stored_by_id = {artifact.artifact_id: artifact for artifact in stored_artifacts}
     holds = store.artifact_deletion_holds()
     chat_origins = _artifact_source_hrefs(
@@ -336,6 +352,8 @@ def saved_artifacts(
     # satisfy _episode_report_viewer_response's availability prerequisites.
     for report in reports:
         origin = report_origins.get(report.episode_id)
+        if origin is not None and origin.request.get("chat_id") in excluded_chats:
+            continue
         stored_report = store.episode_report(report.episode_id)
         if stored_report is None:
             continue
@@ -595,8 +613,35 @@ def run_artifacts(
         )
     )
     entries = []
+    orchestrator_id = (
+        episode_chain_records(store, episode)[0].episode_id
+        if episode.mode == "auto_research"
+        else None
+    )
+    with store.connection() as connection:
+        works = {
+            row["operation_id"]: row
+            for row in connection.execute(
+                "SELECT attempt.operation_id, route.worker_id, route.instruction "
+                "FROM json_each(?) AS requested "
+                "JOIN auto_research_child_work_attempts AS attempt ON attempt.operation_id=requested.value "
+                "JOIN auto_research_child_work AS route ON route.worker_id=attempt.worker_id",
+                (json.dumps([artifact.origin_operation_id for artifact in artifacts]),),
+            )
+        }
+        actor_ids = [work["worker_id"] for work in works.values()]
+        if orchestrator_id is not None:
+            actor_ids.append(orchestrator_id)
+        titles = chat_titles(connection, project_id, actor_ids)
     for artifact in artifacts:
-        work = store.auto_research_child_work_for_operation(artifact.origin_operation_id or "")
+        work = works.get(artifact.origin_operation_id)
+        label = worker_label(work["instruction"]) if work else None
+        actor_id = work["worker_id"] if work else None
+        if actor_id is None and orchestrator_id and artifact.episode_id == episode_id:
+            actor_id = orchestrator_id
+            label = "Orchestrator"
+        if actor_id is not None:
+            label = titles.get(actor_id, label)
         entries.append(
             RunArtifactEntry(
                 artifact_id=artifact.artifact_id,
@@ -605,7 +650,7 @@ def run_artifacts(
                 view=artifact_view(artifact.media_type),
                 supplier=artifact.supplier,
                 origin_operation_id=artifact.origin_operation_id,
-                worker_label=worker_label(work.instruction) if work else None,
+                worker_label=label,
                 created_at=artifact.created_at,
             )
         )

@@ -1,4 +1,4 @@
-// Nightly graph consolidation and operational lessons: the project routes and
+// Nightly graph consolidation: the project routes and
 // the small rules the Inbox and Project settings share.
 
 import { api } from "../core/api";
@@ -7,7 +7,6 @@ import type {
   ConsolidationNight,
   ConsolidationSchedule,
   ConsolidationView,
-  Lesson,
 } from "../core/types";
 
 export const DEFAULT_CONSOLIDATION_TIME = "03:00";
@@ -15,7 +14,6 @@ export const CONSOLIDATION_RENEWAL_WINDOW_DAYS = 3;
 /** Mirrors `CONSOLIDATION_AUTHORIZATION_DAYS` and `CONSOLIDATION_RECENT_NIGHTS` in limits.py. */
 export const CONSOLIDATION_AUTHORIZATION_DAYS = 30;
 export const CONSOLIDATION_RECENT_NIGHTS = 7;
-export const LESSON_TEXT_MAX_CHARS = 600;
 export const CONSOLIDATION_SETTINGS_ANCHOR = "project-consolidation";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -45,25 +43,6 @@ export function resolveConsolidationRun(
     method: "POST",
     body: JSON.stringify({}),
   });
-}
-
-export function addLesson(apiBase: string, text: string): Promise<{ lesson: Lesson }> {
-  return api(`${apiBase}/lessons`, { method: "POST", body: JSON.stringify({ text }) });
-}
-
-export function editLesson(
-  apiBase: string,
-  lessonId: string,
-  text: string,
-): Promise<{ lesson: Lesson }> {
-  return api(`${apiBase}/lessons/${encodeURIComponent(lessonId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ text }),
-  });
-}
-
-export function deleteLesson(apiBase: string, lessonId: string): Promise<unknown> {
-  return api(`${apiBase}/lessons/${encodeURIComponent(lessonId)}`, { method: "DELETE" });
 }
 
 /** An expired schedule, or one expiring within the renewal window, asks for renewal. */
@@ -122,12 +101,6 @@ export function consolidationNightSlots(
 ): Array<ConsolidationNight | null> {
   const recent = nights.slice(-CONSOLIDATION_RECENT_NIGHTS);
   return [...Array<null>(CONSOLIDATION_RECENT_NIGHTS - recent.length).fill(null), ...recent];
-}
-
-/** The server counts characters as code points; so does this limit. */
-export function lessonTextIsValid(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.length > 0 && [...trimmed].length <= LESSON_TEXT_MAX_CHARS;
 }
 
 export function browserTimeZone(): string {

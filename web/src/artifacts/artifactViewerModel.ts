@@ -5,6 +5,7 @@ import type { RunArtifactEntry } from "../core/types";
 
 export type ArtifactViewerTarget =
   | { kind: "artifact"; projectId: string; artifactId: string }
+  | { kind: "space-artifact"; viewerUrl: string; name: string }
   | { kind: "repository"; projectId: string; path: string; line?: number | null };
 let target: ArtifactViewerTarget | null = null;
 let requestGeneration = 0;
@@ -16,6 +17,9 @@ function publish(next: ArtifactViewerTarget | null) {
 }
 export function openArtifact(input: { projectId: string; artifactId: string }): void {
   publish({ kind: "artifact", ...input });
+}
+export function openSpaceArtifact(input: { viewerUrl: string; name: string }): void {
+  publish({ kind: "space-artifact", ...input });
 }
 export function openRepositoryFile(input: {
   projectId: string;

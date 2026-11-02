@@ -74,6 +74,7 @@ from rcp.runs.provider_login import (
     provider_login_host,
 )
 from rcp.runs.provider_process import require_remote_provider_quiescence
+from rcp.runs.provider_usage import record_provider_usage
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.task_policy import (
     AgentTaskContinuation,
@@ -270,6 +271,7 @@ class AgentTaskExecution:
     #: Set only by the ordinary Work owner from its validated stage file; provider
     #: event text can never supply it.
     turn_outcome: TurnOutcome | None = None
+    project_results: dict[str, str] | None = None
     #: Set when a stage read or host probe during this run failed because the
     #: host could not be reached, rather than because a deliverable was bad or a
     #: setting refused. Only the read that failed knows which happened, and by
@@ -603,6 +605,16 @@ class BackgroundAgentTasks:
                 and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
             ):
                 question_followups.append(task.operation_id)
+        from rcp.runs.agent_schedules import queued_schedule_wakes
+        from rcp.runs.agent_thread_commands import restart_handoff_turns, unstarted_handoff_turns
+
+        handoff_dispatches = unstarted_handoff_turns(self.store)
+        # The schedule poller relaunches these; its claim already consumed their notes.
+        schedule_wakes = [
+            operation_id
+            for operation_id in queued_schedule_wakes(self.store)
+            if self.store.agent_task_dispatch_was_proven_not_started(operation_id)
+        ]
         consolidation_dispatches = {
             operation_id
             for operation_id in self.store.pending_consolidation_operation_ids()
@@ -617,9 +629,12 @@ class BackgroundAgentTasks:
                 *[task.operation_id for _episode, task, _request in reserved_roots],
                 *[task.operation_id for _episode, task in reserved_experiments],
                 *question_followups,
+                *[task.operation_id for task in handoff_dispatches],
+                *schedule_wakes,
             }
         )
         self._discard_orphan_mailbox_checkpoints()
+        restart_handoff_turns(self, handoff_dispatches)
         restart_stopping_experiment_recoveries(self)
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
@@ -717,6 +732,8 @@ class BackgroundAgentTasks:
         request: AgentTaskRequest,
         *,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
@@ -769,13 +786,15 @@ class BackgroundAgentTasks:
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
-        return self._create_and_spawn(
+        record = self._create_and_spawn(
             project_id,
             kind,
             request,
             estimate_seconds=estimate,
             estimate_samples=samples,
             operation_id=operation_id,
+            handoff_id=handoff_id,
+            handoff_wake_id=handoff_wake_id,
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
@@ -783,6 +802,8 @@ class BackgroundAgentTasks:
             graph_base_head=graph_base_head,
             ensure_graph_target=ensure_graph_target,
         )
+        assert record is not None
+        return record
 
     def resume(
         self,
@@ -868,6 +889,12 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        thread = self.store.agent_thread(str(previous.request.get("chat_id") or ""))
+        if thread is not None and thread.agent and provider is model is reasoning is run_on is None:
+            # A thread's stored pick replaces the failed turn's agent, as the member chose.
+            pick = thread.agent
+            provider, run_on = pick["provider"], pick["run_on"]
+            model, reasoning = pick["model"] or "", pick["reasoning"] or ""
         if (
             isinstance(original, RunRequest)
             and original.artifact_edit is not None
@@ -1519,6 +1546,8 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         operation_id: str | None = None,
+        handoff_id: str | None = None,
+        handoff_wake_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
@@ -1778,6 +1807,8 @@ class BackgroundAgentTasks:
                 record = self.store.create_agent_task(
                     task_record,
                     continuation_cause=continuation,
+                    handoff_id=handoff_id,
+                    handoff_wake_id=handoff_wake_id,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -1878,6 +1909,8 @@ class BackgroundAgentTasks:
             if self._shutdown_requested or operation_id in self._workers:
                 return self._require_operation(operation_id)
         if record.status != "queued":
+            return record
+        if self.store.agent_task_turn_refusal(record):
             return record
 
         request = self._launchable_request(record)
@@ -2451,6 +2484,8 @@ class BackgroundAgentTasks:
                 )
             return
         result: dict[str, object] = {"messages": outcome.messages}
+        if execution.project_results is not None:
+            result["project_results"] = execution.project_results
         if outcome.artifacts:
             result["artifacts"] = [item.model_dump(mode="json") for item in outcome.artifacts]
         if outcome.turn_outcome is not None:
@@ -3196,30 +3231,9 @@ class BackgroundAgentTasks:
                 if event.status is not None:
                     live_status.observe(event.status)
                 if event.usage is not None:
-                    usage_record = self.store.record_agent_usage(
-                        execution.operation_id,
-                        event.usage,
-                        idempotent=recorded,
+                    record_provider_usage(
+                        self.store, execution.operation_id, event.usage, recorded=recorded
                     )
-                    usage_receipt_exists = recorded and any(
-                        receipt.category == "provider_usage"
-                        and receipt.payload.get("usage_id") == usage_record.usage_id
-                        for receipt in self.store.agent_task_receipts(execution.operation_id)
-                    )
-                    if not usage_receipt_exists:
-                        self.store.record_agent_task_receipt(
-                            execution.operation_id,
-                            "provider_usage",
-                            {
-                                "usage_id": usage_record.usage_id,
-                                "counted": usage_record.counted,
-                                "count_reason": usage_record.count_reason,
-                                "provider_profile": usage_record.provider_profile,
-                                "processed_input_tokens": usage_record.processed_input_tokens,
-                                "generated_tokens": usage_record.generated_tokens,
-                            },
-                            tier="diagnostic",
-                        )
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text

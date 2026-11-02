@@ -186,6 +186,7 @@ class NotificationSender:
             try:
                 self._recheck_bulletin_mentions(project)
                 self._recheck_questions(project)
+                self._recheck_agent_threads(project)
                 self._recheck_episodes(project)
                 self._recheck_consolidation(project)
             except Exception:
@@ -401,6 +402,43 @@ class NotificationSender:
                 notification["project_name"] = f"{project.name} · {name}"
             notification["observed_blocked_reason"] = event
             self.store.observe_consolidation_notification(event, notification)
+
+    def _recheck_agent_threads(self, project: ProjectRecord) -> None:
+        """Push unread failed turns and schedule-wake replies to the thread's member.
+
+        Other finished replies, including watcher and handoff wakes, only mark the
+        thread unread; questions and cards push on their own.
+        """
+        since = (
+            datetime.fromisoformat(self.store.now()) - timedelta(seconds=NOTIFICATION_TTL_SECONDS)
+        ).isoformat()
+        with self.store.connection() as connection:
+            rows = connection.execute(
+                "SELECT t.thread_id,t.user_id,r.operation_id,r.finished_at FROM agent_threads t "
+                "JOIN graph_runs r ON r.project_id=t.project_id "
+                "AND json_extract(r.request_json, '$.chat_id')=t.thread_id "
+                "LEFT JOIN chat_reads seen ON seen.project_id=t.project_id "
+                "AND seen.chat_id=t.thread_id AND seen.user_id=t.user_id "
+                "WHERE t.project_id=? AND t.closed_at IS NULL AND r.visible=1 "
+                "AND (r.status IN ('failed','interrupted') OR (r.status='succeeded' "
+                "AND json_extract(r.request_json, '$.trigger')='schedule')) AND r.finished_at>? "
+                "AND (seen.read_through IS NULL OR seen.read_through<r.finished_at)",
+                (project.project_id, since),
+            ).fetchall()
+            for row in rows:
+                notice: dict[str, Any] = _notification(
+                    project,
+                    target="main",
+                    kind="agent_thread",
+                    item_id=row["thread_id"],
+                    occurrence=row["operation_id"],
+                    reason="agent_thread",
+                    created_at=row["finished_at"],
+                )
+                notice["deep_link"] = f"#/agent/{quote(row['thread_id'], safe='')}"
+                self.store.enqueue_notification(
+                    connection, recipient_user_id=row["user_id"], **notice
+                )
 
     def _recheck_questions(self, project: ProjectRecord) -> None:
         for question_id in self.store.unobserved_notification_questions(project.project_id):
@@ -644,7 +682,8 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
-            elif row["kind"] == "bulletin_mention":
+            elif row["kind"] in {"bulletin_mention", "agent_thread"}:
+                # Private replies are qualified by the owner/read fence above.
                 unresolved = True
             elif row["kind"] == "consolidation":
                 unresolved = self.store.consolidation_notification_pending(

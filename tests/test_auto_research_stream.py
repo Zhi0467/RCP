@@ -614,6 +614,17 @@ def _orchestrator_state_patch(*nodes: dict[str, object]) -> Patch:
 class _LocalBackedRemoteStage:
     base: Path
 
+    def project_memory(self, request: dict) -> dict:
+        from rcp.agents.memory_file_io import memory_root, prepare_files
+
+        root = memory_root(self.base, request["project_id"])
+        size = (
+            prepare_files(root, request["lessons"], request["title_max_chars"])
+            if "lessons" in request
+            else 0
+        )
+        return {"root": str(root), "index_bytes": size}
+
     def __init__(self, host: str) -> None:
         self.host = host
         self.root: Path | None = None

@@ -739,3 +739,28 @@ def test_human_branch_inventory_projects_its_changes_and_archive(tmp_path):
     store.set_branch_archived("p", branch_id, archived=True)
     with store.connection() as conn:
         assert _archived_branches(conn, "p") == {f"branch:{branch_id}"}
+
+
+def test_old_digest_chat_group_uses_live_name_then_stored_fallback(tmp_path):
+    from rcp.digest import _assemble_current
+
+    store = _project_store(tmp_path)
+    event = _event(1, "graph_change", "1", edits=1, source_kind="chat")
+    event.update(source_key="chat:c1", source_label="Old writer")
+    with store.connection() as connection:
+        connection.execute("BEGIN")
+        append_digest_event(
+            connection, project_id="p", **{k: v for k, v in event.items() if k != "seq"}
+        )
+
+    def label():
+        return _assemble_current(store, "p", "viewer", _events(store), None, 1)["changed"][0][
+            "label"
+        ]
+
+    assert label() == "Old writer"
+    store.set_chat_title("p", "c1", store.local_owner.user_id, "Renamed")
+    assert label() == "Renamed"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM chat_display WHERE project_id='p' AND chat_id='c1'")
+    assert label() == "Old writer"

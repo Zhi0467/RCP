@@ -65,8 +65,6 @@ import type {
   TeamDevicePairingStatus,
   TeamSession,
   VoiceSessionResponse,
-  VoiceSavedSession,
-  VoiceSessionPage,
   VoiceSettings,
   GraphTargetRef,
 } from "./types";
@@ -400,6 +398,8 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "The source conversation's session is no longer available. Branch it again or start a new conversation.",
   graph_branch_archived: "This graph branch is archived. Unarchive it to continue here.",
   chat_archived: "This chat is archived. Restore it to continue.",
+  chat_has_live_work:
+    "This chat still has a running or paused turn, Experiment, or watcher. Stop it before archiving.",
 };
 
 function apiError(status: number, body: unknown): ApiError {
@@ -557,11 +557,26 @@ export function uploadChatAttachment(
   clientId: string,
   attachmentSetId?: string | null,
 ): Promise<ChatAttachmentUpload> {
+  return uploadComposerAttachment(
+    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    file,
+    clientId,
+    attachmentSetId,
+  );
+}
+
+/** Upload to the owner's attachment collection with the shared multipart contract. */
+export function uploadComposerAttachment(
+  attachmentsUrl: string,
+  file: File,
+  clientId: string,
+  attachmentSetId?: string | null,
+): Promise<ChatAttachmentUpload> {
   const body = new FormData();
   body.append("file", file, file.name);
   body.append("client_id", clientId);
   if (attachmentSetId) body.append("attachment_set_id", attachmentSetId);
-  return api<ChatAttachmentUpload>(`${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`, {
+  return api<ChatAttachmentUpload>(attachmentsUrl, {
     method: "POST",
     body,
   });
@@ -574,12 +589,26 @@ export function removeChatAttachment(
   attachmentId: string,
   clientId: string,
 ): Promise<{ removed: boolean }> {
+  return removeComposerAttachment(
+    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    attachmentSetId,
+    attachmentId,
+    clientId,
+  );
+}
+
+export function removeComposerAttachment(
+  attachmentsUrl: string,
+  attachmentSetId: string,
+  attachmentId: string,
+  clientId: string,
+): Promise<{ removed: boolean }> {
   const query = new URLSearchParams({
     attachment_set_id: attachmentSetId,
     client_id: clientId,
   });
   return api<{ removed: boolean }>(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
+    `${attachmentsUrl}/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
   );
 }
@@ -1060,39 +1089,12 @@ export function saveVoiceSettings(
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 
-/** Exchange the offer and allocate or claim a member-private transcript generation. */
+/** Exchange the offer for a session bound to one agent thread. */
 export function createVoiceSession(
-  body: { sdp_offer: string; tools: unknown[]; playbook: string; resume_id?: string },
+  body: { sdp_offer: string; tools: unknown[]; playbook: string; thread_id: string },
   signal?: AbortSignal,
 ): Promise<VoiceSessionResponse> {
   return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
-}
-
-export function loadVoiceSessions(offset = 0): Promise<VoiceSessionPage> {
-  return api(`/api/voice/sessions?offset=${offset}&limit=5`);
-}
-
-export function loadVoiceGeneration(id: string): Promise<{ generation: string }> {
-  return api(`/api/voice/sessions/${encodeURIComponent(id)}/generation`);
-}
-
-export function saveVoiceSession(
-  record: VoiceSavedSession,
-): Promise<Pick<VoiceSavedSession, "id" | "generation" | "revision">> {
-  const { member_id, generation, revision, entries, receipts, ended } = record;
-  const projects = record.projects ?? [];
-  return api(
-    `/api/voice/sessions/${encodeURIComponent(record.id)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({ member_id, generation, revision, entries, receipts, projects, ended }),
-    },
-    { retryIdentity: false },
-  );
-}
-
-export function deleteVoiceSession(id: string): Promise<void> {
-  return api(`/api/voice/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */

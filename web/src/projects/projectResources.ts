@@ -17,7 +17,6 @@ import type {
   AgentQuestion,
   ConsolidationView,
   GraphTargetRef,
-  Lesson,
   ProjectDigest,
   ProjectMember,
   ProjectSnapshot,
@@ -98,6 +97,7 @@ export function digestProfile(
   target: GraphTargetRef,
 ): ResourceProfile<ProjectDigest> {
   return {
+    watch: [{ name: "chats" }],
     key: projectResourceKey(projectId, "digest", {
       query: target.kind === "main" ? "main" : `branch:${target.branch_id}`,
     }),
@@ -105,13 +105,6 @@ export function digestProfile(
       api(graphTargetUrl(`/api/projects/${encodeURIComponent(projectId)}/digest`, target), {
         signal,
       }),
-  };
-}
-
-export function lessonsProfile(projectId: string): ResourceProfile<{ lessons: Lesson[] }> {
-  return {
-    key: projectResourceKey(projectId, "lessons"),
-    fetch: (signal) => api(`/api/projects/${encodeURIComponent(projectId)}/lessons`, { signal }),
   };
 }
 

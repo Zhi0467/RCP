@@ -325,6 +325,12 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "per_member_provider_logins_v1",
         "evidence_flag_origins_v1",
         "episode_merge_requests_v1",
+        "memory_files_v1",
+        "agent_threads_v1",
+        "agent_handoffs_v1",
+        "space_turn_project_bindings_v1",
+        "agent_schedules_v1",
+        "approval_cards_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

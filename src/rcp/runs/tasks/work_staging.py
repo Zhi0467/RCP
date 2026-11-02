@@ -145,6 +145,9 @@ async def stage_work_turn(
         _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
         saved_stage = execution is not None and execution.stage_root is not None
+        thread_owner = (
+            service.paper.store.private_chat_owner(request.chat_id) if request.chat_id else None
+        )
         if resolved.execution_host:
             if saved_stage:
                 stage_root = _validated_remote_chat_resume_stage(
@@ -157,6 +160,7 @@ async def stage_work_turn(
                 remote_stage = RemoteRunStage(resolved.execution_host).open(
                     stage_name,
                     reuse=True,
+                    thread_owner=thread_owner,
                     protected_roots=_protected_run_stage_roots(
                         execution.store if execution is not None else None,
                         resolved.execution_host,
@@ -180,6 +184,7 @@ async def stage_work_turn(
             stage_root = _swept_stage_root(
                 data_dir,
                 store=execution.store if execution is not None else None,
+                thread_owner=thread_owner,
             )
             expected_stage = stage_root / stage_name
             if saved_stage:

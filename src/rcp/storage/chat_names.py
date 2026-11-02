@@ -16,6 +16,30 @@ class ChatNameError(ValueError):
         super().__init__(code)
 
 
+def chat_titles(
+    connection: sqlite3.Connection, project_id: str, chat_ids: list[str]
+) -> dict[str, str]:
+    """Resolve a batch of canonical titles, including each private thread's scope."""
+    if not chat_ids:
+        return {}
+    return {
+        row["chat_id"]: row["title"]
+        for row in connection.execute(
+            "SELECT display.chat_id, display.title FROM json_each(?) AS requested "
+            "LEFT JOIN agent_threads AS thread ON thread.thread_id=requested.value "
+            "JOIN chat_display AS display ON display.chat_id=requested.value "
+            "AND display.project_id=CASE WHEN thread.thread_id IS NULL THEN ? "
+            "ELSE coalesce(thread.project_id, "
+            "(SELECT space_id FROM space_identity WHERE singleton=1)) END",
+            (json.dumps(list(dict.fromkeys(chat_ids))), project_id),
+        )
+    }
+
+
+def chat_title(connection: sqlite3.Connection, project_id: str, chat_id: str) -> str | None:
+    return chat_titles(connection, project_id, [chat_id]).get(chat_id)
+
+
 def normalize_chat_name(name: str | None) -> str:
     name = " ".join((name or "").split())
     if not name:

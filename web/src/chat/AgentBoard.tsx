@@ -12,6 +12,7 @@ export interface AgentBoardCard {
   title: string;
   column: AgentBoardColumn;
   working: boolean;
+  draft?: boolean;
 }
 
 interface Props<C extends AgentBoardCard> {
@@ -57,7 +58,7 @@ export function AgentBoard<C extends AgentBoardCard>({
 
   const dropFor = (state: DragState, at: DropTarget | null) => {
     const card = cardById(state.id);
-    return card && at ? agentBoardDrop(state.from, at.column, card.working) : null;
+    return card && at ? agentBoardDrop(state.from, at.column, card.working, card.draft) : null;
   };
 
   const targetAt = (x: number, y: number, dragged: string): DropTarget | null => {
@@ -196,7 +197,12 @@ export function AgentBoard<C extends AgentBoardCard>({
         const here = target?.column === column && offset !== null;
         const allowed =
           offset && drag.current
-            ? agentBoardDrop(drag.current.from, column, cardById(offset.id)?.working ?? false)
+            ? agentBoardDrop(
+                drag.current.from,
+                column,
+                cardById(offset.id)?.working ?? false,
+                cardById(offset.id)?.draft,
+              )
             : null;
         const line = <div className="agent-board-drop-line" aria-hidden="true" />;
         return (

@@ -13,7 +13,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Run | Operational contract |
 | --- | --- |
 | Seed/Refresh | Read provider logs and repositories; write scratch Patch only. |
-| Discuss | Writable conversation scratch, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
+| Discuss | Writable conversation scratch and shared project memory, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
 | Work | Noninteractive tools, public web, exact repository roots, optional Patch. [Consolidation](graph-consolidation-and-lessons.md) may commit keyed Patches during its turn. |
 | Experiment-loop | Work-like access with focused Experiment and watcher authority. |
 | Auto-research orchestrate | Work-like access, staged command client, orchestrator graph profile. |
@@ -310,6 +310,18 @@ environment, scheduler, network and sockets. A provider sandbox cannot supply
 that contract. This cooperative boundary permits side effects beyond the turn's
 roots and lifetime; hostile-agent containment would require a different owner.
 
+### Project memory roots
+
+The launch owner adds the shared memory directory as a code-defined writable
+root for project Work and Discuss, Experiment, Auto-research roots and workers,
+and consolidation. It is distinct from repository and machine-grant roots.
+Both local and remote memory bases are inside `rcp_owned_paths`, so a machine
+grant cannot admit them. The provider receives the same resolved root that the
+prompt names. Discuss gains no repository-write or graph authority.
+Seed, Refresh, branch merge, Paper coach and artifact edit have no memory root.
+The [memory owner](graph-consolidation-and-lessons.md#memory) defines layout,
+index bounds, migration, and the add-only prompt rule for autonomous runs.
+
 ### Machine writable paths
 
 Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
@@ -474,7 +486,20 @@ settings. A browser grant separately adds
 the provider contract. Discuss, Seed and Refresh receive their read context as
 `Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
 `acceptEdits` an added directory is also editable, which would hand Discuss
-write access to project files.
+write access to project files. The code-defined shared memory folder is separately
+admitted through `--add-dir` for ordinary Discuss chats.
+
+Every Claude launch names its tools with `--tools`, from one code-defined set
+per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
+`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Paper coach
+gets the file tools, `Bash`, `WebFetch` and `WebSearch`. Session summaries get
+none. `--tools` decides which tools exist; the permission rules above decide
+which run unprompted. The local process also drops a hosting Claude Code
+session's identity and channel variables, named in `ClaudeAuthentication`.
+**Why:** RCP runs Claude headless. The default set includes tools that schedule
+work outside the turn, message other local sessions, switch worktrees, or
+publish to outside services. A desktop session's environment would add its own
+system prompt and Artifact tools to a turn started from inside it.
 
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
@@ -498,6 +523,16 @@ emits only the `Edit` form. These rules govern file-editing tools, subject to th
 on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
+
+### Session summaries
+
+The internal `session_summary` capability forks or resumes a native session for one
+summary answer. It accepts no write roots, command gate, browser grant, or graph
+output collection. Codex uses a read-only permission profile with hidden-read
+denies and disables shell, subagents, and web search. Claude disables tools,
+hooks, external settings sources, and MCP servers. OpenCode refuses this
+capability. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
+owner records the tail fallback when the old provider cannot summarize safely.
 
 ### OpenCode
 
@@ -639,8 +674,9 @@ A continuation sends its reason, new human input/skills/trigger/diagnostics,
 current restrictions, and stable values that differ from the master. Paths,
 command clients, write roots, repositories, skills and execution facts use this
 delta. Current values override the master; omitted values retain it. Graph head
-uses the owner's seen head instead. Attachments are plain listings. Watcher
-maintenance corrections restate their resource's current rules.
+uses the owner's seen head instead. Attachments are plain listings. A watcher
+maintenance correction stages its resource's current rules as a content-addressed
+file and names it, since the session master may predate the resource.
 
 One final pointer identifies the original contract and asks for a read only
 after compaction or lost understanding. RCP restores the exact master bytes to
@@ -648,8 +684,10 @@ the stage before each pointer, selected by native session id even for owners
 with per-turn stages. A missing stage fails closed. Only a succeeded operation's
 master counts; absent records or changed master keys bootstrap a replacement.
 The key includes shared master version, graph-rules digest, owner policy version
-and ontology-extension mode. Branch-merge continuation also resends graph rules
-when main's extensions differ.
+and ontology-extension mode. A Work turn in a session whose committed values lack
+Work's launch values, as after Discuss, replaces its master with the Work master
+rather than carrying the launch instructions inline. A branch-merge rebase sends only its reason and
+changed values; its master holds no graph rules.
 
 **Why:** A stable pointer recovers compacted context without repeating a full
 contract each wake. Durable bytes prevent dangling pointers; successful delivery
@@ -662,9 +700,10 @@ a commented writable file is edited in place. The `live-pages` package supplies
 examples; only episodes offer episode needs. Existing sessions keep their master
 until its version key changes.
 
-A report is a separate prompt node: it revokes operational instructions and
-carries no master pointer. The next operational launch explicitly reopens its
-master until an operational attempt succeeds. Each owner builds its parts;
+A report is a separate prompt node: it points to its staged report contract,
+revokes operational instructions inline, and carries no master pointer. The
+next operational launch explicitly reopens its master until an operational
+attempt succeeds. Each owner builds its parts;
 `agents/continuation_prompt.py` composes them and `runs/session_master.py` owns
 the durable record.
 
@@ -826,8 +865,7 @@ input, never authority to change scope, budget or protected beliefs.
 Work and Experiment, including correction, bind their broker to the live provider
 process tree on the execution host. Prior turns cannot gain new authority;
 validate-only credentials refuse keyed commands. The helper's `launch` verb and
-scheduler route are owned by [machines and compute](machines-and-compute.md); `lesson` is owned by
-[graph consolidation](graph-consolidation-and-lessons.md).
+scheduler route are owned by [machines and compute](machines-and-compute.md).
 
 The standalone broker bounds its stdin wait so Stop signals are handled even
 when a serving thread receives the signal and its parent keeps input open.
@@ -838,7 +876,7 @@ Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
 reservations and results before liveness checks. Restoration requires both a
 saved `ask` offer and current authorization; old checkpoints cannot add it.
-Work retains server-owned `lesson` authority. Credential-store protections and
+Credential-store protections and
 backup exclusion apply to checkpoints.
 
 Listing, reading, handling and publishing retry separately on typed temporary
@@ -1716,7 +1754,11 @@ usage. Eligible agents are asked to choose a short 2–4 word task name within
 commands cannot name another agent. Storage refuses a second self-name or any
 self-name after a human rename, collapses whitespace, and rejects empty or
 over-limit names with structured refusal codes. The name is operational
-metadata and grants no graph authority.
+metadata and grants no graph authority. The resolved name is staged afresh each
+turn in `agent-name.json`, including private Space and project threads and
+already named conversations with `can_self_name: false`. The `projects list/show`
+projections resolve each member-owned project thread's current `agent_name`
+alongside its `thread_id`.
 
 Editing and deleting require the stored roster actor identity, allowing later
 turns of the same actor to manage their own posts. Receipts make all three
@@ -1766,3 +1808,119 @@ turn's. The link resolves at read time once the turn publishes the artifact; dis
 post already links, under the artifact's lock that posts also hold, so such a link
 saves its artifact like any other. The Auto-research orchestrator and workers write
 no turn artifacts and neither see nor may run `--link`.
+
+## Space-thread scopes and commands
+
+A project thread is ordinary project Work on the project's base and main
+target, with the Work verbs from [questions.py](../../src/rcp/runs/questions.py)
+plus `projects` and `schedule`. Its seeded name withholds `name`. Threads never
+receive `apply`, `status`, `spawn` or `message`, which belong to consolidation
+and Auto-research. No agent has a `lesson` verb; memory files replace it.
+
+A Space turn runs locally in its persistent
+[member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
+Admission checks the registered state host before opening execution and skips a
+project whose state is remote without contacting it. A project whose state is
+local but whose base machine is remote gets a read-only client. Each project left
+out carries a code and a short line from `SPACE_EXCLUSIONS` in
+[space_projects.py](../../src/rcp/runs/space_projects.py). Raw errors stay in the
+`space_project_not_admitted` receipt, which every exclusion writes. A project is
+left out the same way, without failing the turn, in three cases:
+- its Git transport cannot be prepared;
+- its read-hiding policy is rejected, or preparation returns the
+  `wrapper_unavailable` fallback that the account policy lacks;
+- its policy cannot join the merged policy.
+
+Shared preparation turns most errors into that fallback. Space treats it as that
+project's failure, so it never widens the whole turn. Each
+project's policy is prepared with only its own Git transport. Admission binds the
+remaining writers only after that preparation. The turn's Git access is then the
+union of the bound writers' transports, so an excluded project's checkouts never
+reach the provider. The prompt lists every member project with its client, or with
+its reason and `handoff` as the next step. Its
+`CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
+and the Space stage. Each project keeps its ordinary repository overlap checks,
+exact `projects/<project_id>` stage, main graph target and dispatch binding.
+The stored fingerprint hashes the sorted project fingerprints. With no admitted
+projects the provider can write its own stage but the graph-write fingerprint
+is NULL. A changed admitted project set is recorded on the turn and does not
+change the thread's native-session identity.
+
+The top-level client grants `projects`, `handoff` and `schedule`; it has no
+`ask`. Each project client has its own authenticated mailbox. It grants its
+`GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. Only
+a writer posts to the Bulletin; a read-only client reads it. The
+mailbox allowlist, the handler guard and the rendered usage all read that one set.
+A Space turn has no project memory root. Native subagents remain permitted; MCP
+servers remain off. The prompt lists the protocol's mutating verbs that no client
+of the turn grants, so the list follows enforcement. Work that needs one of
+them, a project memory note, or a change the graph authority contract withholds
+from agents goes to that project's own thread through `handoff`, with the
+project, node ids and exact request. The project thread runs what its own
+grants allow and raises an approval card for what needs the member. The Space
+agent relays the answer when the handoff settles. Only the member's tap on a card
+is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
+from the same resolved verbs the handler enforces.
+The prompt renders one write boundary from the composite scope. The provider
+receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without
+local write projects retains the local account's default secret and private
+transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
+`too_many_hidden_folders`.
+
+Collection reads only `patch.json` and `watch.json` at the stage top level and
+in each `projects/<id>` folder. It applies each admitted project's Patch through
+Work Apply, in project-id order, under that project's lock and live membership
+check. Each project's Work graph-update status (`applied`, `none`, `rejected` or
+`unavailable`) goes to `project_results`, and its first reason to the
+`space_project_results` receipt. Missing
+authority bindings refuse Apply. An empty Patch appends nothing. Each project's
+effect key uses the original operation in the recovery lineage, so a replayed file
+cannot append a second transition after a post-collection failure. Settled project
+Patch files are removed; an `unavailable` Patch, whose commit Apply could not
+settle, stays for the retry. Project-local failures do not stop collection of
+others, and cleanup failures are receipted per project. A Patch in the folder of a
+project left out of admission, including one whose binding changed mid-turn, is
+reported `rejected` with its reason. So is a Patch for a member project added
+after the turn started. Other Patch files and all watch files are
+receipted and discarded. A `rejected` or `unavailable` project makes the turn
+outcome partial, naming each project by display name with its reason, without
+undoing another project's accepted transition. The assistant transcript record
+carries that outcome. The next turn's prompt carries the last turn's
+per-project results. Watcher
+storage also refuses a Space-task origin.
+
+A Space turn's fixed contract is a session master, staged with the
+`session_master` mechanism project chat uses. The master holds the role, the
+authority contract, the top-level usage, what the turn routes elsewhere, each
+project client's grant and write boundary, a pointer to the staged Patch schema,
+and the outcome and artifact contracts, including live pages. It also states the
+per-project context values and unreachable projects. Its key is the digest of
+the fixed part, so a changed contract restages the master. A new native session,
+after a provider switch for example, opens it again. A continuation of the
+same session sends a pointer, a context delta of changed values, the last turn's
+results and the turn envelope. That envelope holds this turn's artifact
+directory, attachments and message. Every Space turn kind takes this path.
+
+Space attachments reuse the ordinary chat attachment owner and stage immutable
+copies into the Space stage. Their paths enter the provider's read directories
+and prompt, and the user transcript record retains their descriptors. Every run
+hides the host's `<data_dir>/chat-attachments` store; only staged copies are inputs.
+
+Every agent run hides every `private-*.jsonl` transcript under the state chat
+roots on its host. Runs on the backend's machine hide other members'
+`<data_dir>/agent-threads/<user_id>` folders; a thread run keeps access to its
+own stages but not its own transcripts, and a non-thread run hides the whole
+root. RCP hands thread history to a fresh session only as prompt text.
+
+`projects` returns the member's Cards projection with thread ids and
+`same_machine`, true when both state and base are on the backend's machine, the
+projects a Space turn may write; `show` adds bounded graph and episode context, at most
+`AGENT_PROJECT_DETAILS_MAX_ITEMS` per list. `handoff` names one of the member's
+projects and reads a workspace message file of at most
+`AGENT_HANDOFF_MAX_CHARS`. It persists an idempotent pending delivery that the
+[conversations spec](conversations-episodes-and-watchers.md#private-agent-threads)
+delivers.
+Task insertion and the handoff claim commit together. The task record supplies
+an idempotent `source: "handoff"` transcript append, so interruption between SQL
+and JSONL is recoverable. Busy threads defer delivery. Startup and turn settlement
+retry pending delivery and admit a claimed Space wake when handed-off work settles.

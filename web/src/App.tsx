@@ -138,7 +138,7 @@ import {
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
-  unsentConversation,
+  pickOrCreateConversation,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chat/chatWorkspace";
@@ -158,6 +158,7 @@ import {
   refreshEdge,
   refreshProposal,
   sendEpisodeMessage,
+  setChatArchived,
   startEpisode,
   startExperimentRun,
   stopEpisode,
@@ -250,7 +251,7 @@ import { forgetBanners } from "./ui/bannerDismissal";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { ProjectDock } from "./projects/ProjectDock";
-import { PhoneAskButton, PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
 import { useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
@@ -358,7 +359,8 @@ import { publishToolSurface, webMcpHostDefinitions } from "./voice/toolCatalog";
 import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
 import { openTerminalSocket } from "./terminals/terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
-import { VoiceButton, VoicePanel } from "./voice/VoicePanel";
+import { useAgentThreads } from "./agents/useAgentThreads";
+import { VoicePanel } from "./voice/VoicePanel";
 
 import {
   initialProjectHash,
@@ -594,7 +596,9 @@ function RefreshMemberApp(props: {
   const mergeDispatch = useRef<BranchMergeRequest | null>(null);
   const artifactTarget = useArtifactViewerTarget();
   const artifactProject = useRef<string | null>(null);
-  artifactProject.current = artifactTarget?.projectId ?? null;
+  // A Space artifact belongs to no project.
+  artifactProject.current =
+    artifactTarget && artifactTarget.kind !== "space-artifact" ? artifactTarget.projectId : null;
   const runtime = useMemo(() => {
     const store = new ResourceStore();
     // The epoch changes with the backend process, so a restart is seen on the
@@ -2545,11 +2549,40 @@ function MemberApp({
     changeView("chats");
   };
 
-  /** Returning to Agents reopens the chat left open there; inside Agents the tab is the board. */
+  // The member's own thread for this project: Agents opens it, full width.
+  const agentThreads = useAgentThreads(Boolean(projectId) && view === "chats");
+  const pendingOwnThreadProject = useRef<string | null>(null);
+  const ownThread =
+    agentThreads.threads?.find(
+      (thread) =>
+        thread.kind === "project" &&
+        thread.project_id === projectId &&
+        thread.live_state !== "closed",
+    ) ?? null;
+
+  /** Returning to Agents reopens the chat left open there; otherwise the member's own thread. */
   const reopenAgents = () => {
     const chatId = view !== "chats" && project ? rememberedChat(project.id) : null;
-    openChats(chatId && conversations.some((item) => item.chatId === chatId) ? chatId : null);
+    const nextChatId =
+      chatId &&
+      (conversations.some((item) => item.chatId === chatId) || chatId === ownThread?.thread_id)
+        ? chatId
+        : (ownThread?.thread_id ?? null);
+    pendingOwnThreadProject.current = nextChatId ? null : projectId;
+    openChats(nextChatId);
   };
+
+  // First entry loads threads lazily, then opens the member's thread.
+  useEffect(() => {
+    if (view !== "chats" || pendingOwnThreadProject.current !== projectId) {
+      pendingOwnThreadProject.current = null;
+      return;
+    }
+    if (!ownThread) return;
+    pendingOwnThreadProject.current = null;
+    selectChat(ownThread.thread_id);
+    setAgentsBoard(false);
+  }, [view, projectId, ownThread, selectChat]);
 
   // Leaving Agents resets it to the board; the tab and a link that names a chat skip it.
   useEffect(() => {
@@ -2696,12 +2729,14 @@ function MemberApp({
       agentsBoard,
     );
     // Project-wide, as unread is: an orchestrator opened from main has its turns on its branch.
-    markVisibleChatRead(projectTasks, visibleChatId);
+    // The private thread owns its transcript read marker, including voice lines.
+    if (visibleChatId !== ownThread?.thread_id) markVisibleChatRead(projectTasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
   }, [
     agentsBoard,
     chatReads,
     markVisibleChatRead,
+    ownThread?.thread_id,
     projectTasks,
     selectedChatId,
     selectedExperimentChatId,
@@ -3026,6 +3061,14 @@ function MemberApp({
     }),
     [loadWebMcpEpisode, loadWebMcpTask, loadWebMcpSavedArtifacts],
   );
+  const restoreConversation = async (chatId: string) => {
+    try {
+      await setChatArchived(apiBase, chatId, false);
+      await refreshChatReads();
+    } catch (error) {
+      reportErrorNotice(errorMessage(error));
+    }
+  };
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
       if (!project) throw new Error("No RCP project is open.");
@@ -4507,7 +4550,7 @@ function MemberApp({
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
           onOpenSignIns={openSignIns}
-          voiceControl={<VoiceButton voice={voice} className="landing-space-settings" />}
+          voice={voice}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
@@ -4620,6 +4663,8 @@ function MemberApp({
           historyMessages={chatTranscripts.get(selectedExperimentChatId)?.messages}
           agentSetup={chatTranscripts.get(selectedExperimentChatId)?.agent_setup}
           chatId={selectedExperimentChatId}
+          archived={chatReads?.archived.includes(selectedExperimentChatId)}
+          onRestore={() => void restoreConversation(selectedExperimentChatId)}
           presentation="workspace"
           fixedConversation
           readOnly={selectedExperimentUsesIndex}
@@ -4696,12 +4741,6 @@ function MemberApp({
     canRedo,
   };
 
-  const askAboutProject = () => {
-    const chatId =
-      unsentConversation(conversations, "project_chat")?.chatId ??
-      startConversation("project_chat", null, project.name);
-    openChats(chatId);
-  };
   const syncControls = (
     <div className="header-sync-side">
       {draftChangeCount > 0 && (
@@ -4803,7 +4842,6 @@ function MemberApp({
       >
         <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
       </button>
-      <VoiceButton voice={voice} className="icon-button" />
       <button
         className="icon-button space-settings-control"
         aria-label="Space settings"
@@ -5059,13 +5097,6 @@ function MemberApp({
               aria-label="Project actions"
             >
               {syncControls}
-              <button
-                className="button secondary"
-                disabled={projectReconciliation !== "authoritative"}
-                onClick={askAboutProject}
-              >
-                <MessageCircle size={14} /> Ask
-              </button>
               {autoResearchButton}
             </div>
             <div
@@ -5649,7 +5680,10 @@ function MemberApp({
                   conversations={inventoryConversations}
                   selectedChatId={selectedChatId}
                   board={agentsBoard}
-                  onBoardChange={setAgentsBoard}
+                  onBoardChange={(board) => {
+                    pendingOwnThreadProject.current = null;
+                    setAgentsBoard(board);
+                  }}
                   nodes={presentedGraph.nodes}
                   graphTarget={graphTarget}
                   glossaryIndex={glossaryIndex}
@@ -5659,6 +5693,7 @@ function MemberApp({
                   unreadChatIds={unreadChatIds}
                   chatTranscripts={chatTranscripts}
                   onSelect={(chatId) => {
+                    pendingOwnThreadProject.current = null;
                     const conversation = inventoryConversations.find(
                       (item) => item.chatId === chatId,
                     );
@@ -5685,6 +5720,16 @@ function MemberApp({
                   onRemoveDraft={discardDraft}
                   orchestratorEpisodes={orchestratorEpisodes}
                   episodeAction={episodeAction}
+                  ownThread={
+                    ownThread
+                      ? {
+                          thread: ownThread,
+                          revision: agentThreads.revision,
+                          voice,
+                          onThreadChanged: agentThreads.patch,
+                        }
+                      : null
+                  }
                   onSendOrchestratorMessage={messageEpisodeOrchestrator}
                   archivedRevision={chatReads?.archived.join("\n")}
                   onArchiveChange={() =>
@@ -5699,8 +5744,14 @@ function MemberApp({
                       ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                       : null;
                     selectChat(
-                      unsentConversation(conversations, conversation.kind, conversation.nodeId)
-                        ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                      pickOrCreateConversation(
+                        conversations,
+                        chatReads?.archived ?? [],
+                        conversation.kind,
+                        conversation.nodeId,
+                        () => startConversation(conversation.kind, node, project.name),
+                        { reuse: "draft", graphTarget },
+                      ),
                     );
                   }}
                 />
@@ -5710,12 +5761,6 @@ function MemberApp({
         )}
       </main>
 
-      {phone && view !== "chats" && view !== "paper" && (
-        <PhoneAskButton
-          disabled={!panelReady || projectReconciliation !== "authoritative"}
-          onAsk={askAboutProject}
-        />
-      )}
       {phone && (
         <PhoneTabBar
           primary={navItems.filter((item) => phonePrimaryViews.has(item.view)).map(renderNavItem)}
@@ -5894,6 +5939,8 @@ function MemberApp({
               historyMessages={chatTranscripts.get(floatingChat.chatId)?.messages}
               agentSetup={chatTranscripts.get(floatingChat.chatId)?.agent_setup}
               chatId={floatingChat.chatId}
+              archived={chatReads?.archived.includes(floatingChat.chatId)}
+              onRestore={() => void restoreConversation(floatingChat.chatId)}
               presentation="floating"
               graphChangesDisabled={mutationsDisabled}
               onStartTask={startAgentTask}
@@ -5910,9 +5957,14 @@ function MemberApp({
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId =
-                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
-                  startConversation("node_chat", node, project.name);
+                const chatId = pickOrCreateConversation(
+                  conversations,
+                  chatReads?.archived ?? [],
+                  "node_chat",
+                  floatingChat.nodeId,
+                  () => startConversation("node_chat", node, project.name),
+                  { reuse: "draft", graphTarget },
+                );
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}

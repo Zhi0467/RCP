@@ -234,6 +234,22 @@ def timeline(manifest, tmp_path):
     return store, episode, signed_in_client(app)
 
 
+def test_timeline_resolves_renames_and_missing_name_fallback(timeline):
+    store, episode, client = timeline
+    root, worker = episode.episode_id, f"{episode.episode_id}-worker"
+    url = f"/api/projects/{episode.project_id}/episodes/{root}/timeline"
+    for actor_id, name in ((root, "New orchestrator"), (worker, "New worker")):
+        store.set_chat_title(episode.project_id, actor_id, "human", name)
+    labels = {actor["kind"]: actor["label"] for actor in client.get(url).json()["actors"]}
+    assert labels["orchestrator"] == "New orchestrator"
+    assert labels["worker"] == "New worker"
+    with store.connection() as connection:
+        connection.execute("DELETE FROM chat_display WHERE chat_id IN (?, ?)", (root, worker))
+    labels = {actor["kind"]: actor["label"] for actor in client.get(url).json()["actors"]}
+    assert labels["orchestrator"] == "Orchestrator"
+    assert labels["worker"] == "Worker"
+
+
 def test_actor_kinds_and_recorded_links(timeline):
     store, episode, client = timeline
     prefix = episode.episode_id

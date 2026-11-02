@@ -27,6 +27,7 @@ from rcp.service import (
     canonical_chat_backup_sources,
     iter_canonical_chat_transfer,
 )
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
@@ -321,13 +322,25 @@ def _capture_project_files_locked(
                 "SELECT metadata FROM artifacts WHERE project_id = ? ORDER BY artifact_id",
                 (records.project_id,),
             ).fetchall()
-            artifacts = tuple(Artifact.model_validate_json(row[0]) for row in artifact_rows)
+            artifacts = tuple(
+                artifact
+                for row in artifact_rows
+                if private_artifact_owner(
+                    connection, artifact := Artifact.model_validate_json(row[0])
+                )
+                is None
+            )
             version_rows = connection.execute(
                 "SELECT v.metadata FROM artifact_versions v JOIN artifacts a USING(artifact_id) "
                 "WHERE a.project_id = ? ORDER BY v.artifact_id, v.sequence",
                 (records.project_id,),
             ).fetchall()
-        versions = tuple(ArtifactVersion.model_validate_json(row[0]) for row in version_rows)
+        artifact_ids = {artifact.artifact_id for artifact in artifacts}
+        versions = tuple(
+            version
+            for row in version_rows
+            if (version := ArtifactVersion.model_validate_json(row[0])).artifact_id in artifact_ids
+        )
         inventory = tuple(artifact_version_files(versions))
         for item in inventory:
             entry = _capture_regular_file(
@@ -348,6 +361,8 @@ def _capture_project_files_locked(
             export_root.chmod(0o700)
             source_root = workspace.backup_source_root(export_root)
             for source in canonical_chat_backup_sources(source_root):
+                if source.path.name.startswith("private-"):
+                    continue
                 captured.append(
                     _capture_chunks(
                         capture_root,

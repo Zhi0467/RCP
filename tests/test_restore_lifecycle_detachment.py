@@ -567,3 +567,22 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
         )
         is None
     )
+
+
+def test_restore_drops_pending_memory_cleanup_for_live_paths(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    live_state = str(tmp_path / "live" / ".research")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO memory_deletions VALUES (?, ?, ?, ?)",
+            ("deleted-project", live_state, "{}", None),
+        )
+
+    store.detach_restored_lifecycle(
+        diagnostic=RESTORE_DIAGNOSTIC,
+        confirmed_by=RESTORE_CONFIRMER,
+        detached_at=store.now(),
+    )
+
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM memory_deletions").fetchone()[0] == 0

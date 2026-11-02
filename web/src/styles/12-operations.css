@@ -1374,9 +1374,6 @@
     transition: none;
   }
 }
-.project-lessons .project-member-error {
-  padding: 0 20px 18px;
-}
 .consolidation-inbox {
   margin-top: 30px;
 }
@@ -1472,58 +1469,6 @@
   font-size: 0.8rem;
   margin: 0 0 8px;
   overflow-wrap: anywhere;
-}
-
-/* Operational lessons: one row per lesson, editable in place. */
-.project-lesson-list {
-  list-style: none;
-  margin: 0;
-  padding: 18px 20px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-.project-lesson-list.is-expanded {
-  max-height: 28rem;
-  overflow-y: auto;
-}
-.project-lesson-list li {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: grid;
-  gap: 0.3rem 0.75rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding-bottom: 0.6rem;
-}
-.project-lesson-list li > p,
-.project-lesson-list li > textarea {
-  grid-column: 1 / -1;
-}
-.project-lesson-list p {
-  overflow-wrap: anywhere;
-  margin: 0;
-  font-size: 0.9rem;
-  white-space: pre-wrap;
-}
-.project-lesson-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.75rem;
-}
-.project-lesson-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-.project-lesson-toggle {
-  margin: 0.6rem 20px 0;
-}
-.project-lessons textarea {
-  font: inherit;
-  font-size: 0.85rem;
-  min-height: 3.2rem;
-  flex: 1 1 260px;
-  width: 100%;
 }
 
 .branch-switch-progress {

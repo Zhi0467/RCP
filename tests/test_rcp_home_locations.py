@@ -49,8 +49,9 @@ def _local_stage(monkeypatch: pytest.MonkeyPatch, home: Path) -> RemoteRunStage:
     return stage
 
 
+@pytest.mark.parametrize("owner", [None, "member"])
 def test_new_remote_stages_land_under_the_remote_rcp_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner
 ) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -59,10 +60,11 @@ def test_new_remote_stages_land_under_the_remote_rcp_home(
 
     # Operation labels may carry dots; the stage opens under the same name.
     for label in ("op-one", "op.two", None):
-        stage.open(label)
+        stage.open(label, thread_owner=owner)
         assert stage.root is not None
         root = Path(str(stage.root))
-        assert root.parent == home / ".rcp" / "stages"
+        assert root.parent == home / ".rcp" / ("agent-threads/member/stages" if owner else "stages")
+        stage.attach(str(root))
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
         assert stage.close()
 
@@ -77,7 +79,7 @@ def test_a_stage_parent_another_user_owns_is_refused(
 
     with pytest.raises(ValueError, match="unsafe"):
         remote_stage_root.create_stage("op-one", False)
-    assert not list((home / ".rcp" / "stages").iterdir())
+    assert not (home / ".rcp" / "stages").exists()
 
 
 def test_a_reused_stage_keeps_its_saved_legacy_tmp_folder(
@@ -108,14 +110,16 @@ def test_attach_refuses_a_stage_outside_this_accounts_rcp_home(
         stage.attach(str(other))
 
 
+@pytest.mark.parametrize("thread", [False, True])
 def test_the_sweep_also_ages_out_legacy_stages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thread
 ) -> None:
     # Stands in for /tmp, so the test never sweeps real stages on this machine.
     legacy_parent = tmp_path / "legacy-tmp"
     monkeypatch.setattr(remote_stage_root, "LEGACY_PARENT", str(legacy_parent))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    stale, kept = legacy_parent / "rcp-run.stale", legacy_parent / "rcp-run.kept"
+    parent = tmp_path / "home/.rcp/agent-threads/member/stages" if thread else legacy_parent
+    stale, kept = parent / "rcp-run.stale", parent / "rcp-run.kept"
     old = time.time() - 30 * 86400
     for root in (stale, kept):
         root.mkdir(parents=True)

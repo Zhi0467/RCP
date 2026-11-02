@@ -137,7 +137,6 @@ def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     execution, human = work_execution(tmp_path)
     handler = work_command_handler(execution, None)
     assert handler.allowed_verbs == {"validate", "ask", "bulletin", "name"}
-    assert handler.lesson_actions == ()  # This question-only fixture has no project membership.
     request = ask_request()
     pending = handler(request, identity())
     assert pending.result["state"] == "pending"
@@ -493,7 +492,10 @@ def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
     execution, _ = work_execution(tmp_path, mode=mode)
     execution.stage_root = str(tmp_path)
     scope = GraphReadScope(project_id="project", target=GraphTargetRef())
-    service = cast(ProjectService, SimpleNamespace(resolve_project_service=lambda _: None))
+    service = cast(
+        ProjectService,
+        SimpleNamespace(resolve_project_service=lambda _: None, project_catalog=None),
+    )
     calls = []
 
     def history(actual_service, actual_scope, request, *, resolve_project):

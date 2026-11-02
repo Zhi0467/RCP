@@ -24,6 +24,22 @@ whether sync health reports an error, because the graph payload carries
 canonical reachability. While a task runs, `tasks.progress` and task details
 take a clock tick, because elapsed time and progress are computed from the clock.
 Entity counters are project-scoped; chat read/pin counters are member-scoped.
+Only Bulletin, digest, task inventory and task detail tokens include the Space's
+`chats` counter: these reads render Space-thread names. Project `chats` tokens
+remain project-scoped.
+
+A request with `agent_threads: true` also gets `agent_threads: {version}`, the
+caller's own counter, read without any project id; otherwise the field is null.
+Triggers bump only the owning member on that member's thread rows, thread turns,
+reads, names, browser choice, thread questions, approval cards, schedules,
+project membership and handoff creation, delivery and settlement. A turn's file-backed transcript
+append publishes through its task row; a voice append bumps the owner's counter
+directly. A changed version reloads the thread list and the open thread.
+Task, episode timeline, run-artifact, Bulletin and digest profiles also watch
+project `chats`; the client combines that token with the resource's own version.
+Graph snapshots, history, refs and episode inventories do not watch `chats`, so
+chat activity does not refetch those heavier reads. These dependencies use existing
+counters without changing graph history or adding storage triggers.
 
 `tasks.status` and chat, episode, and terminal inventories exclude progress;
 `tasks.progress` and entity details include it. Terminal input renews idle expiry
@@ -264,7 +280,7 @@ unchanged. Removed nodes and changed edge endpoints participate. Main lists only
 main changes; unmerged work appears on its branch. `changed_node_ids` includes
 only surviving main nodes and is empty on branches. Reports opens the target's
 episode/consolidation artifacts; a report whose artifact was deleted leaves the
-list and the count. Jobs, failed tasks, ended episodes, lessons,
+list and the count. Jobs, failed tasks, ended episodes, memory notes,
 and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
@@ -272,6 +288,8 @@ Runs entry, Inbox item, or consolidation report. Attribution precedence is merge
 consolidation, identified human, ingestion, captured Work, other agent, system,
 then unattributed human. Stable source keys do not depend on display titles or
 optional task enrichment.
+Conversation-source group labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
+Episode merge groups retain branch labels.
 
 SQLite owns the append-only commit-ordered events and marks. Operational events
 commit with their source writes. A background projector follows accepted history,
@@ -448,7 +466,8 @@ and fences new Discuss turns on the reserved binding through cleanup.
 
 ## Human question API and cards
 
-Project members read questions through
+Project members read shared questions; private-thread questions are visible only
+to their owner. Reads use
 `GET /api/projects/{project_id}/chats/{chat_id}/questions` and
 `GET /api/projects/{project_id}/episodes/{episode_id}/questions`. Episode lists
 include predecessor questions without changing their origin. Each question
@@ -482,6 +501,16 @@ Answer input cannot change the original capability, scope, graph target, or mode
 The strict request rejects additional fields.
 `POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
 card only, and never wakes an owner.
+
+Approval questions add `card: {kind, action, pinned, pinned_sha256, expires_at,
+state}`, where state is pending, running or expired. Ordinary answer and dismiss
+return `409 approval_card` for these questions. The owner resolves through
+`POST /api/approval-cards/{question_id}` with
+`{decision: "approve" | "decline", pinned_sha256}`. The response is
+`{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`;
+a second tap returns `409 card_taken`. The
+[authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
+pinning, admission and delivery.
 
 Node and project chats show resolved cards read-only in transcript order and
 open question cards at the end of the transcript, scrolling with it. The
@@ -1001,6 +1030,10 @@ includes loaded ids and total; inspection/Send fetch the latest exact task outsi
 the list window to retain graph-target/session ownership. Branch chats resume only
 on their target.
 
+Project memory is agent-managed file data, with no lesson read in WebMCP and no
+lesson CRUD API. Its ownership and migration live in the
+[memory spec](graph-consolidation-and-lessons.md#memory).
+
 Artifact listing combines task/episode windows (reporting their sizes) with the
 Artifacts inventory. Duplicates gain `in_artifacts_panel`; panel-only records use
 `saved:` ids. Filters use source identity; exact old task/episode ids are fetched
@@ -1046,60 +1079,45 @@ it could press its own Confirm and send the screen to OpenAI.
 
 ## Voice agent
 
-The voice button opens one GPT-Live session for the member's page; a second
-click ends it. It works in the desktop app, the team browser app, and the team
-phone web app. Audio goes between the page and OpenAI over WebRTC; RCP never
-receives it. RCP keeps the session's text and action receipts as a
-member-private record. It survives sign-out and provider disconnection, but
-member removal deletes it. Privacy is enforced between members through RCP;
-the service account can read the files. Records stay outside application backups.
+The voice button in a private agent thread opens one GPT-Live session bound to
+that thread; a second click ends it. Audio goes between the page and OpenAI
+over WebRTC; RCP never receives it. Closed threads return 404 on voice access.
+The backend checks thread ownership and current project membership before
+reading its transcript or private memory.
 
-**Why:** Text seeding resumes a dropped conversation without OpenAI-side storage;
-receipts prevent repeating work after a lost response. Resume creates a new
-session with `store: false`, preserving text but losing audio tone/timing.
-Seeded history is context, never write authority or proof of current status;
-`store: false` is not a zero-retention promise.
+`POST /api/voice/sessions` takes `{sdp_offer, tools, playbook, thread_id}`.
+The member's OpenAI connection supplies the live and delegation models. The
+backend sends the bound thread's newest historical text as `session.input`,
+within `VOICE_RESUME_MAX_MESSAGES` and the byte budget that guarantees the
+8,192-token limit. Historical text is labelled as context, never fresh authority.
+The session uses `store: false`, Responses delegation, serial tool calls and
+non-strict function tools, with fixed instructions before the bounded playbook.
+`store: false` is not a zero-retention promise. Private thread text and memory
+reach the member's own OpenAI connection.
 
-`POST /api/voice/sessions` takes `{sdp_offer, tools, playbook, resume_id?}`,
-where `tools` is `catalogAsFunctionTools()` with a size cap and `playbook` is
-the page's RCP playbook, bounded by `VOICE_PLAYBOOK_MAX_CHARS`. The backend
-reads the member's OpenAI preset connection that holds the `voice` purpose, and
-creates a Live session with Responses delegation, `parallel_tool_calls: false`,
-non-strict function tools (strict mode would make every optional field
-required), the member's delegation model, and RCP's fixed instructions followed
-by the playbook, for both the live and the delegated model. Only after OpenAI
-answers does it create the session record, or for `resume_id` claim a new
-generation of that record; an upstream failure changes no record. The claim
-lands when OpenAI answers, before the page applies that answer, so a Resume
-whose page then fails to connect has still taken the record and the older page
-ends as superseded; Resume again recovers it. It returns
-`{sdp_answer, session, input_truncated, limits}`. With no such connection it
-returns `voice_not_connected` (409); an OpenAI failure returns
-`voice_upstream_failed` (502) with a bounded message. `limits` carries
-`idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`,
-`commentary_max_chars`, and the transcript bounds from `limits.py`, and the
-page enforces them.
+The response is `{sdp_answer, input_truncated, limits}`. No voice session record
+is created. The record list, generation, save, delete and Resume routes are gone;
+`resume_id` is refused. Existing records retain the 30-day expiration rule and
+are pruned when voice starts. Missing voice credentials return
+`voice_not_connected` (409); upstream failures return `voice_upstream_failed`
+(502), without upstream diagnostics or credentials.
 
-The session record lives with the member's service connections on the current
-space's backend and keeps the newest 20 sessions, each until 30 days after its
-last update; member removal deletes it. `GET /api/voice/sessions` lists record
-metadata with paging, `PUT /api/voice/sessions/{id}` saves entries and receipts
-under the record's generation and a rising revision, `GET
-/api/voice/sessions/{id}/generation` lets a page learn it was superseded, and
-`DELETE` removes one. A stale revision, a superseded generation, a deleted
-record, or another member's save is refused. Entries hold speaker (`member` or
-`agent`), text, provider order, and the source a quoted read came from;
-receipts hold the tool, its target, the accepted task or episode id, and the
-outcome. Resume passes the record's text as `session.input` (user and assistant
-messages only, at most 128 messages and a byte budget that guarantees OpenAI's
-8,192-token limit, newest kept), keeps the unknown-outcome fence of every
-unresolved receipt, reloads accepted task and episode ids into the watch loop,
-and speaks one fixed summary of what finished and what still runs. The newest
-Resume of a record wins; the older page ends with a notice. The voice panel
-lists recent sessions with Resume and Delete, each tagged with the projects
-its tools ran in (the page saves them with the record, at most 20). It is a floating window that opens
-in the bottom-right corner; the member drags it anywhere and resizes it from
-its corners, and the size is remembered.
+`POST /api/agent-threads/{thread_id}/voice-entries` accepts
+`{entries: [{entry_id, speaker, text, at}]}` and returns `{appended}`. Speaker is
+`member` or `agent`. Entries are bounded display-only transcript records with
+`source: "voice"`, no task operation and the thread's private owner. Repeating
+an entry id in the same thread never appends it twice. A member voice utterance
+runs backend work only through a separate thread Send, under its normal admission.
+The page tool `rcp_thread_send({text})` makes that Send under the existing tap
+confirmation. A running turn that takes input is steered instead; otherwise
+voice gets `thread_busy` and nothing is sent. `rcp_thread_memory()` reads the
+memory route below.
+
+`GET /api/agent-threads/{thread_id}/memory` returns the bound project's
+`shared_index?` and `truncated`. The index is bounded by
+`MEMORY_INDEX_MAX_BYTES`, read on the project base, and refuses symlinks. A
+Space thread has no bound project
+and returns only `truncated: false`. Voice asks the backend agent to write memory.
 
 Each voice write (a conversation Send, an Experiment Start, an Auto-research
 authorization) carries a page-minted UUID4 request id. The page saves it in the
@@ -1107,13 +1125,11 @@ receipt before dispatch and sends it as the `Idempotency-Key` header. The
 admission route records (project, member, key) with the admitted task or
 episode in the same transaction as the admission; a repeat by the same member
 returns the original result, and the key from another member or route is a
-409. Rows are never pruned, because Resume renews a transcript's retention and
-its receipts can resend a key at any later time; they go with their task or
-episode.
+409. Rows are never pruned; a retried client request can reuse its key at any
+later time. They go with their task or episode.
 `GET /api/projects/{id}/client-requests/{key}` returns the admitted ids (an
-Experiment start also names its episode, so Resume watches the loop), or 404
-when nothing was admitted or the row is not the caller's. Resume turns a found
-key into an accepted receipt with a watch; a 404, which may be an admission
+Experiment start also names its episode), or 404
+when nothing was admitted or the row is not the caller's. A recovered key becomes an accepted receipt with a watch; a 404, which may be an admission
 still in flight, or an unanswered lookup leaves the receipt unknown. A
 re-ask reuses the receipt's key, so a send still in flight is never admitted
 twice.
@@ -1182,6 +1198,21 @@ routes; the spoken text is a fixed template with no authored content. A finish
 offers its result; `rcp_open_finished_result` opens it only on the member's
 next reply, under the current project and graph guards, and the offer expires
 after that reply or the next agent response. Nothing opens on its own.
+
+## Private thread schedule API
+
+The thread owner lists schedules with
+`GET /api/agent-threads/{thread_id}/schedules`, returning `{schedules: [...]}`.
+Each schedule exposes its id, cron or local one-shot time, timezone, note, state,
+disabled reason, next fire, last fire, pending-since and deferred reason. Cancel
+works on any row. Cancel uses
+`DELETE /api/agent-threads/{thread_id}/schedules/{schedule_id}` and returns 204.
+`POST /api/agent-threads/{thread_id}/schedules/{schedule_id}/enable` re-enables a
+disabled schedule and returns it; invalid state, an elapsed one-shot time or the
+active-schedule cap returns 409 with a plain reason. Other members receive 404.
+Creation is through the thread's `schedule add` command; the
+[scheduling spec](graph-consolidation-and-lessons.md#private-agent-schedules)
+owns the grammar and wake lifecycle.
 
 ## Consolidation API
 
@@ -1605,6 +1636,8 @@ repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Display
 preferences live in the identity menu.
+
+Project memory has no Settings screen; members manage notes through project chat.
 
 Settings' Repos rows show each repository's **Agents can write** box, checked
 for members of `project_truth_scope` and fixed on for the state repository.
@@ -2116,8 +2149,9 @@ have no viewer URL. Download and retention information are independent offers.
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
 child Experiment episodes. It includes unexpired or kept artifacts and undeleted
-reports, with the queried episode's report first, then creation order. Worker
-labels use the child Work route's instruction heading, or Worker. Both routes enforce project
+reports, with the queried episode's report first, then creation order. Worker and
+orchestrator labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
+Missing worker names use the instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
 
 ## Bulletin channels
@@ -2127,7 +2161,11 @@ Each graph target has one Bulletin channel. Member-authenticated reads use
 project-wide roster of every non-archived Agents-board conversation and live project
 members. Each roster row carries `id`, `chat_id`, `target_key`, `name`, `kind`,
 `seat_node_id`, `started_at`, `state`, and `last_post_at`. The stored conversation
-name matches its Agents card; `started_at` is its first turn time. Agent snapshots
+name matches its Agents card; private project-thread names remain visible to
+project members in this roster. Post author names follow the
+[canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names)
+on the server, including authors absent from the current roster.
+`started_at` is its first turn time. Agent snapshots
 and command reads keep their own channel's roster. Text is limited to 8000 characters; the server
 extracts ordered, deduplicated `#node-id` references and valid
 `<@member:USER_ID>` / `<@agent:ACTOR_ID>` mentions. Requests carry text, never a
@@ -2183,3 +2221,60 @@ observations across restarts. Deleting a post before reconciliation suppresses
 its notification; editing away a mention preserves the accepted event. Links open
 the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `branch_id` for a branch channel. Agent mentions never wake or launch work.
+
+## Agent thread API
+
+`GET /api/agent-threads` returns the acting member's lazily created Space and
+project threads: `thread_id`, `kind`, `project_id`, `project_name`,
+`agent_name`, `unread`, `last_activity_at`, `live_state`,
+`latest_operation_id` and `browser_requested`. The Space thread comes first,
+then project threads by latest activity. `live_state` is idle, queued, running,
+paused or `needs_you` (an open question or card). `latest_operation_id` names
+the newest visible turn, so a view can follow a project turn whose member
+message reaches the transcript only when it settles. Threads of projects the
+member left are closed and omitted; listing reopens every other thread.
+
+Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
+require ownership; another member gets 404. A project thread otherwise uses the
+ordinary project chat, task and question routes. Its Send must be
+`project_chat` Work on main; anything else returns 422.
+
+Space threads upload and remove attachments at
+`POST /api/agent-threads/{thread_id}/attachments` and
+`DELETE /api/agent-threads/{thread_id}/attachments/{attachment_id}`, using the
+ordinary chat attachment request and response shapes. Both require an open Space
+thread owned by the acting member; closed threads, project threads, and other
+members receive 404.
+The attachment owner binds each set to the Space id, the thread id from the path,
+and the client id. Turn admission claims that set under its idempotency lock and
+releases it if no task was recorded. Retry retains the claimed batch.
+
+A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
+`{message, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?}`.
+The attachment fields must be supplied together; the message remains nonempty.
+It returns 202 with
+`{operation_id}`, 404 for a project or unowned thread, or 409 when admission
+refuses, such as a busy thread. It needs a patch-capable identity. Admission
+honors a UUID4 `Idempotency-Key` through the same durable receipt as
+project chat: a replay by the same member and route returns the original operation.
+Its task reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
+and `POST` to that path's `steer`, `pause`, `resume` and `retry`. Project chat routes enforce the same ownership, including
+empty threads before their first turn. Task and question detail/control routes
+return 404 for another member's private thread; lists filter before pagination.
+Chat display and read projections also exclude other members' private ids.
+Task references and Bulletin artifact reads refuse another member's private
+artifact.
+
+Task rows, Patch history summaries, episode responses and Bulletin posts expose
+`via_agent: {thread_id, name} | null`, derived from operational thread ownership.
+This is a projection only; canonical Patch records and replay are unchanged.
+
+Space turn artifacts use owner-checked
+`/api/agent-threads/{thread_id}/tasks/{operation_id}/artifacts/{artifact_id}/{action}`
+reads for `content`, `download`, and `viewer`. They share the ordinary bounded
+artifact reader and sandboxed viewer. Space artifacts do not expose project
+Keep or discussion controls.
+
+Project saved-artifact lists and artifact reads enforce private-thread ownership
+from the artifact's chat or producing task. Another member's private artifacts
+are omitted from lists and return 404 on reads.

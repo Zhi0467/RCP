@@ -177,6 +177,10 @@ Member removal previews the affected work and credentials. It refuses removal of
 the last enrolled member or a sole project member. Otherwise, it atomically
 fences access and revokes tokens, sessions and unconsumed invitations. The user
 remains a tombstone. The owners of graceful shutdown settle work. Apply rechecks membership.
+After the member's workers stop, removal deletes their local folder under
+`<data_dir>/agent-threads`, their agent schedules and their undelivered
+handoffs, and closes their threads. Private project transcripts, member memory
+notes and remote thread stages stay until the project or host is cleaned.
 Service connections are removed under their lock. Startup and re-entry resume
 unfinished removal. Self-revocation has the same anti-stranding rule. Rotation
 returns a replacement first. Operators cannot assign memberships to bypass a
@@ -585,7 +589,12 @@ typed chats, saved Paper and facts, finished operational history, referenced
 artifacts and matched native transcripts. Membership, credentials, caches,
 resumable sessions and stages and executable bindings never travel. Imported
 tasks remain history-only. Chat ids, answers and receipts stay readable. Future
-work uses the target configuration. Artifacts follow
+work uses the target configuration. Private-thread transcripts, Space-thread data
+and thread rows stay behind. A private thread's tasks keep their operation id,
+kind, authorizer and Patch output, so Patch provenance resolves, but lose private
+request text, answers, traces, diagnostics and artifact references. Private-thread
+artifact metadata and bytes stay behind too. Question records are excluded; private
+steering text stays behind with transcripts and task receipts. Public artifacts follow
 [availability rules](paper-artifacts-and-result-views.md).
 
 Source release settles paused standalone attempts as interrupted with receipts.
@@ -660,8 +669,16 @@ canonical main and branch history, typed chats, saved and published Paper,
 facts, artifacts and sealed imported histories. Saved unpublished Paper comes
 from that snapshot. Artifact capture holds its pruning lock. Live credentials
 and provider homes, source Git, caches, temporary stages and materialized
-outputs are excluded. Unknown roots, unsafe or missing references or unreachable
-projects are visibly uncaptured.
+outputs are excluded. Space transcripts at
+`<data_dir>/agent-threads/<user_id>/<thread_id>.jsonl` are captured through their
+last complete line; sibling thread stages stay excluded. Local memory notes
+under `<data_dir>/memory/<project_id>` are captured with their SQLite migration
+receipts; pending memory deletions are discarded on restore. Remote-base memory
+stays out of scope. Project transfer still excludes both roots. Archives predating
+these captures restore without Space transcripts or local memory. Private project
+transcripts are typed chats and are captured.
+Unknown roots, unsafe or missing references or unreachable projects are visibly
+uncaptured.
 
 File reads use complete typed chat boundaries and bounded stable reads without
 canonical publication or remote refresh locks. Healthy projects remain usable

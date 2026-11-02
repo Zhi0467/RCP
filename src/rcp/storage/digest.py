@@ -225,6 +225,13 @@ def append_episode_ended(connection, episode_id, created_at):
 
 
 def append_question_attention(connection, row, created_at):
+    if (
+        row["owner_kind"] == "chat"
+        and connection.execute(
+            "SELECT 1 FROM agent_threads WHERE thread_id=?", (row["owner_id"],)
+        ).fetchone()
+    ):
+        return
     origin = json.loads(row["origin_json"])
     target_ref = origin["graph_target"]
     target = "main" if target_ref["kind"] == "main" else "branch:" + target_ref["branch_id"]

@@ -101,7 +101,7 @@ from rcp.runs.experiment_loop import (
     stage_experiment_loop_context,
     validate_experiment_completion,
 )
-from rcp.runs.lessons import stage_operational_context_pointer
+from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,

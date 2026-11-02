@@ -369,7 +369,10 @@ function episodeStateLabel(episode: NonNullable<RevisionSummary["episode"]>): st
 
 function revisionAttribution(summary: RevisionSummary): string {
   if (summary.producer === "system") return "RCP";
-  if (summary.authorized_by) return summary.authorized_by.display_name;
+  if (summary.authorized_by) {
+    const member = summary.authorized_by.display_name;
+    return summary.via_agent ? `${member}, via ${summary.via_agent.name}` : member;
+  }
   const role = summary.author ? capitalize(summary.author) : capitalize(summary.producer);
   return `${role} · Unattributed`;
 }

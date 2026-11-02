@@ -108,10 +108,13 @@ spec, and executable test, not this registry.
    bounds the shell only where a provider can do so without disabling compute
    ([why](docs/specs/providers-and-containment.md#claude)). Ingestion writes only
    scratch. The paper coach writes only its own changes folder. RCP turns those
-   changes into paper change cards. The per-chat browser grant is human consent to a code-defined
-   tool ([why](docs/specs/providers-and-containment.md#browser-grants)).
+   changes into paper change cards. The per-chat browser grant is human
+   consent to a code-defined tool; a member's agent threads start with it on.
+   Each project's memory folder is a code-defined write root, never a grant.
 4b. **The task stage is the only graph-change channel.** RCP collects the agent's Patch
    from its exact RCP-owned stage and nowhere else.
+   A stage holds one Patch file per graph target; a Space-thread turn has one
+   exact project folder per project it may write.
    `docs/specs/providers-and-containment.md` names the files each run kind collects.
    Never parse graph authority from answers, traces, artifacts, or repository edits.
 6. **One canonical state repository.** Routes never write canonical files directly.
@@ -122,11 +125,14 @@ spec, and executable test, not this registry.
 8. **One RCP process owns one data directory.** OS advisory locks, not path existence,
    establish local and remote ownership.
 10b. **Only a captured Work turn has conversation graph authority.** Message wording or
-   a stray file cannot upgrade Discuss.
+   a stray file cannot upgrade Discuss. Every agent-thread
+   turn, wake and schedule fire is a captured Work turn authorized by the
+   thread's member.
 10e. **Agent HTML previews cannot act on RCP.** Keep the opaque sandbox, bounded
    artifact discovery, no popups, forms, or downloads, and no implied zero-network claim.
 10g. **One episode, one graph target, one validated session and stage, one graceful
    Stop fence.** Never silently fall back to a fresh session or main graph.
+   A thread's fresh start is recorded and shown.
 
 Retired numbers stay with their owners. Invariant 2 is folded into 1.
 Invariant 5 belongs to the module docstring of `agents/write_scope.py`.

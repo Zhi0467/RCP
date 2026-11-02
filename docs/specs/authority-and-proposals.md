@@ -121,6 +121,16 @@ well-formedness instead of adding a second runtime invariant gate.
 Refusal cannot undo provider cost, repository writes, calls, or compute.
 Answers remain independent of the Patch verdict.
 
+### Space-thread project bindings
+
+A Space task's bookkeeping project id is the space id, never a graph target.
+`space_turn_project_bindings` stores each admitted project's dispatch authority,
+write-scope fingerprint and main target. `AppStore.agent_task_authority` requires
+that exact `(operation_id, project_id)` binding; absence or a non-main binding
+refuses authority. Ordinary tasks retain their exact project equality check.
+Per-project Apply still checks current membership under the project's lock.
+No cross-project atomicity or lifecycle authority follows from a Space task.
+
 ### Replay
 
 Replay checks the persisted producer, author, kind, and graph validity.
@@ -269,3 +279,68 @@ closed command vocabulary and its audit path. Ordinary workers have narrower
 contracts. Humans own root dispatch, merges outside the orchestrator's owned
 forks, reauthorization, and protected controls. Commands do not grant graph authority. Changes still require typed
 Patches through the transition manager and Apply gate.
+
+## Private-thread approval cards
+
+A member's private agent threads act for that member. Ordinary acts run without
+a tap: Patches, Experiment starts, compute, Bulletin posts, schedules and
+handoffs. Each records its turn's operation and authorizer as any Work turn
+does. Projections derive
+[`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
+origin operation's thread; nothing new enters a Patch, so replay is unchanged.
+Protected acts wait for the member through a card.
+
+A private project thread may attach a strict action to `ask`. The action names
+that thread's project and supplies no choices or multiple selection; RCP offers
+Approve and Decline. The action models live in
+[`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
+repository truth membership, Auto-research authorization, graph-branch merge,
+and episode merge. Plain question answers never authorize these actions.
+
+The question and its slim `approval_cards` row are committed together. The row
+pins the action and live facts under one SHA-256: pending non-stale Proposal
+content, repository identity and current membership, the resolved Auto-research
+profile, or the merge source head and preview. The preview already pins main's
+value of every field the source changed, and the merge plans against live main,
+so an unrelated main commit leaves a merge card current. Ask refuses an
+Auto-research card whose provider is not ready, and an action whose target does
+not exist (`branch_not_found`, `approval_target_not_found`). Reusing an ask key
+requires the same action and question; it does not refresh the presented pins.
+The agent's usage renders each action kind and its fields from the action models,
+and the meaning of each outcome. The question snapshot shows each card's action
+and its result.
+
+Only the thread's member can resolve a card. The tap checks membership, claims
+once, compares the presented hash and live pins, and invokes the existing human
+handler with its normal write admission. Direct Python calls enter the transfer
+fence and Experiment lock only when the handler does not acquire them itself.
+A tap settles `stale` only when the live pins no longer match or their target
+is gone; it executes nothing and uses the card up. A closed admission, an
+unavailable writer or base, or a handler `503` releases the claim and returns
+`409` or `503`, so the member can tap again. A refusal settles `failed` with the
+handler's own reason, including Patch rejection and halted replay. An approved
+result names the `episode_id` or `operation_id` the action created. A card
+expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes; a tap on it
+returns `expired`. Ordinary answer and dismiss endpoints reject card questions
+with `409 approval_card`; a second tap returns `409 card_taken`.
+
+Card creation stores a random UUID4 request id; every result retains it.
+Episode start, branch merge and episode merge pass it to their native request-id
+admission. Episode merge compares the pinned source head again under its admission lock,
+before reconciliation or merge writes.
+Sync and repository membership have no request-id argument; the durable card
+claim supplies their single-use execution identity. At startup a claimed card
+without a result is never rerun. It settles as approved when its effect exists:
+the request id's episode-start, branch-merge task or accepted episode-merge
+receipt, the Proposal's decided status, or the repository's requested truth
+membership. Otherwise it fails as interrupted. When the graph cannot be read,
+the claim is released and a later tap rechecks the pins.
+
+Cards expire after `APPROVAL_CARD_TTL_HOURS`. Tap, list and a startup sweep
+settle due cards and cards of closed threads, and restore expires every pending
+card. A list reads cards without a write lock unless one is due. The Web shows
+the server's card state, never the device clock. Expiry answers the question with `expired`. Other results
+answer it with approved, declined, stale or a failure reason, reusing ordinary question delivery
+to steer or wake the thread. Both plain questions and cards in private threads
+have owner-only list, answer, dismiss and Needs-you notification delivery.
+The approval endpoint is a member control, not a voice or WebMCP tool.

@@ -22,8 +22,6 @@
   --rule: #bec7d0;
   --shadow-rgb: 61 77 96;
   --accent-ink: #ffffff;
-  --display: "Lucida Grande", "Lucida Sans Unicode", "Helvetica Neue", sans-serif;
-  --ui: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --shadow: 1px 14px 30px rgb(var(--shadow-rgb) / 22%), 0 2px 5px rgb(var(--shadow-rgb) / 12%);
   --aqua-surface: linear-gradient(145deg, #f2f4f6, #e1e5e9);
   --aqua-toolbar: linear-gradient(#f2f4f6, #dce1e7);

@@ -22,6 +22,7 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import build_group_context
+from rcp.agents.memory_files import prepare_project_memory, task_has_project_memory
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     GraphReadPrompt,
@@ -67,8 +68,7 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
-from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_operational_context_pointer
+from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
     QuestionSnapshot,
@@ -136,10 +136,6 @@ def _discuss_execution_instructions(
     from rcp.runs.agent_names import name_command_usage
 
     instructions = []
-    if "lesson" in handler.allowed_verbs:
-        instructions.append(
-            lesson_command_usage(actions=handler.lesson_actions, client=COMMAND_CLIENT)
-        )
     if "name" in handler.allowed_verbs:
         instructions.append(name_command_usage(COMMAND_CLIENT))
     if "ask" in handler.allowed_verbs:
@@ -227,7 +223,7 @@ def _prepare_discuss_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
+        memory_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
         invoked_skill_pointers=invoked_package_pointers(
@@ -1119,6 +1115,15 @@ async def stream_discuss_run(
                     attachment_pointers=attachment_pointers,
                     ontology_extensions=context.ontology_extensions,
                 )
+            memory_write_dirs = []
+            if execution is not None:
+                task = execution.store.agent_task(execution.operation_id)
+                if task_has_project_memory(task):
+                    assert task is not None
+                    shared, _index_bytes = prepare_project_memory(
+                        execution.store, task.project_id, remote_stage
+                    )
+                    memory_write_dirs = [Path(shared)]
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
@@ -1137,7 +1142,7 @@ async def stream_discuss_run(
                 "capability": "discuss",
                 "network_access": True,
                 "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
-                "write_directory_count": 0,
+                "write_directory_count": len(memory_write_dirs),
             },
         )
         assert artifact_scope_id is not None
@@ -1169,7 +1174,7 @@ async def stream_discuss_run(
                     session_id=request.session_id,
                     required_session_id=required_session_id,
                     read_dirs=read_dirs,
-                    write_dirs=[],
+                    write_dirs=memory_write_dirs,
                     write_scope=None,
                     execution_host=execution_host,
                     execution=execution,

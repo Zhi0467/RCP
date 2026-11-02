@@ -1525,7 +1525,6 @@ button.agent-provider-label {
 .project-members > header,
 .project-notifications > header,
 .project-consolidation > header,
-.project-lessons > header,
 .boundary-settings > header {
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -1553,7 +1552,6 @@ button.agent-provider-label {
 .project-members > header > span:first-child,
 .project-notifications > header > span:first-child,
 .project-consolidation > header > span:first-child,
-.project-lessons > header > span:first-child,
 .skill-settings > header > span:first-child,
 .boundary-settings > header > span:first-child {
   align-items: center;
@@ -1567,7 +1565,6 @@ button.agent-provider-label {
 .project-members h2,
 .project-notifications h2,
 .project-consolidation h2,
-.project-lessons h2,
 .skill-settings h2,
 .boundary-settings h2,
 .agent-defaults h2 {

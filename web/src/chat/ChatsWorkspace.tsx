@@ -1,8 +1,14 @@
+import { AgentRename } from "./AgentRename";
+import { AgentThreadView } from "../agents/AgentThreadView";
+import { sinceLabel, threadIsLive, threadTimeLabel } from "../agents/agentThreadModel";
+import type { VoiceAgent } from "../voice/useVoiceAgent";
+import type { AgentThread } from "../core/types";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import {
   Circle,
   Ellipsis,
   Kanban,
+  LoaderCircle,
   MessageCircle,
   PanelLeft,
   Pause,
@@ -16,7 +22,6 @@ import { ResizeHandle } from "../ui/ResizeHandle";
 import { useStoredSplit } from "../ui/useStoredSplit";
 import {
   AGENT_LIST_SECTIONS,
-  AGENT_NAME_MAX_CHARS,
   CONVERSATION_AGENT_GROUPS,
   conversationAgentConfig,
   conversationAgentStatus,
@@ -115,11 +120,26 @@ interface Props {
   orchestratorEpisodes?: readonly Episode[];
   episodeAction?: string | null;
   onSendOrchestratorMessage?: SendOrchestratorMessage;
+  /** The member's own private thread for this project, which leads the list. */
+  ownThread?: OwnThread | null;
+}
+
+export interface OwnThread {
+  thread: AgentThread;
+  /** The member's agent-thread watermark, which reloads the open thread. */
+  revision: string | null;
+  voice: VoiceAgent | null;
+  onThreadChanged: (thread: AgentThread) => void;
 }
 
 const chatListCollapsedStorageKey = (projectId: string) => `rcp:chat-list-collapsed:${projectId}`;
+
 const readChatListCollapsed = (projectId: string) =>
   readPref(chatListCollapsedStorageKey(projectId)) === "true";
+
+function showingOwnThreadAtEntry(ownThread: OwnThread | null, selectedChatId: string | null) {
+  return ownThread !== null && ownThread.thread.thread_id === selectedChatId;
+}
 
 type AgentFilter = "all" | "working" | "archived";
 
@@ -151,16 +171,6 @@ function AgentGroupIcon({ group }: { group: AgentListSection }) {
     done: null,
   }[group];
   return Icon ? <Icon className="agent-group-icon" size={14} aria-hidden="true" /> : null;
-}
-
-function sinceLabel(timestamp: string | null | undefined, now: number): string {
-  const at = timestamp ? Date.parse(timestamp) : Number.NaN;
-  if (!Number.isFinite(at)) return "";
-  const minutes = Math.max(0, Math.round((now - at) / 60_000));
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h`;
-  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 /** A task phase id as words: `awaiting_remote_result` reads "Awaiting remote result". */
@@ -233,34 +243,6 @@ function agentCardState(status: ConversationAgentStatus, since: string): string 
   if (status.state === "stopped") return "Stopped";
   if (status.unread) return "New reply";
   return since;
-}
-
-function AgentRename({ title, onDone }: { title: string; onDone: (title: string | null) => void }) {
-  return (
-    <form
-      className="agent-row-rename"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const value = new FormData(event.currentTarget).get("title");
-        const title = typeof value === "string" ? value.trim() : "";
-        // The agent has one stored name; a blank entry keeps it.
-        onDone(title || null);
-      }}
-    >
-      <input
-        name="title"
-        aria-label="Agent name"
-        autoFocus
-        maxLength={AGENT_NAME_MAX_CHARS}
-        defaultValue={title}
-        onFocus={(event) => event.currentTarget.select()}
-        onBlur={(event) => event.currentTarget.form?.requestSubmit()}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onDone(null);
-        }}
-      />
-    </form>
-  );
 }
 
 interface AgentMenuProps {
@@ -379,12 +361,16 @@ export function ChatsWorkspace({
   orchestratorEpisodes = NO_EPISODES,
   episodeAction = null,
   onSendOrchestratorMessage,
+  ownThread = null,
 }: Props) {
   const narrow = useNarrowViewport();
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [filter, setFilter] = useState<AgentFilter>("all");
   const [query, setQuery] = useState("");
-  const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
+  // The member's own thread opens full width; the team's list is one press away.
+  const [listCollapsed, setListCollapsed] = useState(
+    () => showingOwnThreadAtEntry(ownThread, selectedChatId) || readChatListCollapsed(project.id),
+  );
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
     chatListWidthBounds(typeof window === "undefined" ? 1200 : window.innerWidth),
   );
@@ -410,17 +396,25 @@ export function ChatsWorkspace({
     .map((conversation) => `${conversation.chatId}\u0000${conversation.title}`)
     .join("\u0001");
   useEffect(() => setRenamed({}), [summaryNames]);
+  const ownThreadId = ownThread?.thread.thread_id ?? null;
+  const showingOwnThread = ownThreadId !== null && selectedChatId === ownThreadId;
+  useEffect(() => {
+    if (showingOwnThread) setListCollapsed(true);
+  }, [showingOwnThread]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(
-        storedConversations.map((conversation) =>
-          renamed[conversation.chatId]
-            ? { ...conversation, title: renamed[conversation.chatId] }
-            : conversation,
-        ),
+        storedConversations
+          // The member's own thread leads the list on its own row, never in a group.
+          .filter((conversation) => conversation.chatId !== ownThreadId)
+          .map((conversation) =>
+            renamed[conversation.chatId]
+              ? { ...conversation, title: renamed[conversation.chatId] }
+              : conversation,
+          ),
         orchestratorEpisodes,
       ),
-    [storedConversations, renamed, orchestratorEpisodes],
+    [storedConversations, renamed, orchestratorEpisodes, ownThreadId],
   );
   const filteredConversations = listedAgentConversations(
     conversations,
@@ -591,6 +585,7 @@ export function ChatsWorkspace({
           title: row.conversation.title,
           column,
           working: row.status.state === "working",
+          draft: !row.conversation.updatedAt && row.conversation.tasks.length === 0,
           conversation: row.conversation,
           status: row.status,
         });
@@ -636,14 +631,19 @@ export function ChatsWorkspace({
     const ordered = saveAgentBoardColumn(boardOrder, columnIds);
     setBoardOrder(ordered);
     writeAgentBoardOrder(project.id, ordered);
+    if (drop === "remove") removeDraft(card.id);
     if (drop === "archive") void archive(card.id, true);
     if (drop === "restore") void archive(card.id, false);
   };
 
   useEffect(() => {
-    setListCollapsed(readChatListCollapsed(project.id));
+    setListCollapsed(
+      showingOwnThreadAtEntry(ownThread, selectedChatId) || readChatListCollapsed(project.id),
+    );
     setQuery("");
     setFilter("all");
+    // A project switch starts from its own entry; a later selection keeps the list as it is.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per project
   }, [project.id]);
 
   useEffect(() => {
@@ -909,6 +909,13 @@ export function ChatsWorkspace({
             {archiveError}
           </p>
         )}
+        <AgentBoard
+          columns={boardColumns}
+          labels={BOARD_LABELS}
+          renderCard={renderBoardCard}
+          onOpen={openCard}
+          onDrop={dropCard}
+        />
         <BulletinPanel
           key={`${project.id}:${graphTarget.kind === "branch" ? graphTarget.branch_id : "main"}`}
           projectId={project.id}
@@ -916,13 +923,6 @@ export function ChatsWorkspace({
           actorId={actorId}
           nodes={nodes}
           onOpenNode={onOpenNode}
-        />
-        <AgentBoard
-          columns={boardColumns}
-          labels={BOARD_LABELS}
-          renderCard={renderBoardCard}
-          onOpen={openCard}
-          onDrop={dropCard}
         />
       </section>
     );
@@ -942,7 +942,7 @@ export function ChatsWorkspace({
       <aside
         className="conversation-list"
         aria-label="Project conversations"
-        hidden={narrow ? !mobileListOpen && selected !== null : listCollapsed}
+        hidden={narrow ? !mobileListOpen && (selected !== null || showingOwnThread) : listCollapsed}
         id="conversation-list-panel"
       >
         <div className="agent-list-tools">
@@ -1014,6 +1014,37 @@ export function ChatsWorkspace({
           </p>
         )}
         <div role="listbox" aria-label="Conversations">
+          {ownThread && filter === "all" && (
+            <div className="agent-row thread-row your-thread-row">
+              <button
+                type="button"
+                role="option"
+                aria-selected={showingOwnThread}
+                aria-current={showingOwnThread ? "page" : undefined}
+                aria-label={`${ownThread.thread.agent_name}, your agent${ownThread.thread.unread ? ", unread" : ""}`}
+                className={`${showingOwnThread ? "active" : ""}${ownThread.thread.unread ? " has-unread" : ""}`}
+                onClick={() => {
+                  onSelect(ownThread.thread.thread_id);
+                  if (narrow) setMobileListOpen(false);
+                }}
+              >
+                <span className="thread-row-icon" aria-hidden="true">
+                  {threadIsLive(ownThread.thread) ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : ownThread.thread.unread ? (
+                    <span className="unread-dot" />
+                  ) : null}
+                </span>
+                <span className="agent-row-body">
+                  <span className="agent-row-title">{ownThread.thread.agent_name}</span>
+                  <span className="agent-row-meta">You</span>
+                </span>
+                <time className={threadIsLive(ownThread.thread) ? "live" : undefined}>
+                  {threadTimeLabel(ownThread.thread, now)}
+                </time>
+              </button>
+            </div>
+          )}
           {visibleGroups.map((group) =>
             groups[group].length === 0 ? null : (
               <div
@@ -1120,7 +1151,58 @@ export function ChatsWorkspace({
         />
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">
-        {!narrow && listCollapsed && (
+        {showingOwnThread && ownThread ? (
+          <AgentThreadView
+            thread={ownThread.thread}
+            actorId={actorId}
+            project={project}
+            revision={ownThread.revision}
+            voice={ownThread.voice}
+            onThreadChanged={ownThread.onThreadChanged}
+            leading={
+              narrow ? (
+                <button
+                  aria-controls="conversation-list-panel"
+                  aria-expanded={mobileListOpen}
+                  aria-label="Team agents"
+                  className="icon-button"
+                  onClick={() => setMobileListOpen(!mobileListOpen)}
+                  type="button"
+                >
+                  <PanelLeft size={16} />
+                </button>
+              ) : (
+                listCollapsed && (
+                  <>
+                    <button
+                      aria-controls="conversation-list-panel"
+                      aria-expanded={false}
+                      aria-keyshortcuts="Meta+B"
+                      aria-label="Expand conversation list"
+                      className="conversation-list-fold with-count"
+                      onClick={() => setListCollapsed(false)}
+                      title="Team agents"
+                      type="button"
+                    >
+                      <PanelLeft size={16} />
+                      <span className="team-count">{filteredConversations.length}</span>
+                    </button>
+                    <button
+                      aria-label="Show the agents board"
+                      className="conversation-list-fold"
+                      onClick={() => onBoardChange(true)}
+                      title="Show the agents board"
+                      type="button"
+                    >
+                      <Kanban size={16} />
+                    </button>
+                  </>
+                )
+              )
+            }
+          />
+        ) : null}
+        {!showingOwnThread && !narrow && listCollapsed && (
           <button
             aria-controls="conversation-list-panel"
             aria-expanded={false}
@@ -1134,7 +1216,7 @@ export function ChatsWorkspace({
             <PanelLeft size={16} />
           </button>
         )}
-        {selected && selected.conversationKind === "auto_research" ? (
+        {showingOwnThread ? null : selected && selected.conversationKind === "auto_research" ? (
           <NodeChat
             key={selected.chatId}
             project={project}
@@ -1153,6 +1235,8 @@ export function ChatsWorkspace({
             watchers={orchestratorWatchers}
             agentSetup={selected.agentSetup}
             chatId={selected.chatId}
+            archived={selectedArchived}
+            onRestore={() => void archive(selected.chatId, false)}
             presentation="workspace"
             // While the chain runs its turns are the orchestrator's; once it ends,
             // the card takes ordinary chat turns on the chain's branch.
@@ -1202,21 +1286,13 @@ export function ChatsWorkspace({
             origin={selected.origin}
             agentSetup={selected.agentSetup}
             chatId={selected.chatId}
+            archived={selectedArchived}
+            onRestore={() => void archive(selected.chatId, false)}
             presentation="workspace"
-            readOnly={Boolean(selected.humanTurnRefusal) || selectedArchived}
+            readOnly={Boolean(selected.humanTurnRefusal)}
             allowArtifactComments={selected.conversationKind === "auto_research_child"}
             readOnlyNotice={
-              selectedArchived ? (
-                <div className="chat-composer" role="status">
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => void archive(selected.chatId, false)}
-                  >
-                    Restore
-                  </button>
-                </div>
-              ) : selected.humanTurnRefusal ? (
+              selected.humanTurnRefusal ? (
                 <div className="chat-composer" role="status">
                   <p>{selected.humanTurnRefusal.detail}</p>
                   {orchestratorCanUnlock(selected.humanTurnRefusal) && (

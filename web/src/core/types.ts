@@ -33,7 +33,7 @@ export type SteerReceiptStatus = {
   readonly [OPAQUE_STEER_RECEIPT_STATUS]: "SteerReceiptStatus";
 };
 export type ConversationMode = "discuss" | "work";
-export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
+export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
 export type AgentCapability =
   "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";
@@ -2269,6 +2269,7 @@ export interface RevisionSummary {
   author: "agent" | "human" | null;
   producer: "agent" | "human" | "system";
   authorized_by: AuthorizedHuman | null;
+  via_agent?: ViaAgent | null;
   profile: "ordinary" | "orchestrator" | null;
   task_id: string | null;
   episode_id: string | null;
@@ -2498,6 +2499,8 @@ export interface AgentStatus {
 }
 
 export interface AgentTask {
+  /** Answer delivery identity for task-only transcript reconstruction. */
+  question_id?: string | null;
   /** Local command feedback; never sent to the backend. */
   action_error?: string;
   action_error_action?: "pause" | "resume" | "retry" | "stop";
@@ -2532,6 +2535,11 @@ export interface AgentTask {
   agent_status?: AgentStatus | null;
   /** Current chat binding resolved by the server, independent of this historical turn. */
   current_chat_session_id?: string | null;
+  /** Latest recorded session decision for this turn, absent on older servers. */
+  chat_session_resolution?: {
+    outcome: "continued" | "fresh" | "forking" | "refused";
+    reason_code: string | null;
+  } | null;
   history_only: boolean;
   stage_host?: string | null;
   stage_root?: string | null;
@@ -2541,6 +2549,8 @@ export interface AgentTask {
   phase: string;
   last_activity_at?: string | null;
   authorized_by?: AuthorizedHuman | null;
+  /** Set when the member's own agent thread ran this; absent from older servers. */
+  via_agent?: ViaAgent | null;
   elapsed_seconds: number;
   progress: number;
   can_pause: boolean;
@@ -2722,6 +2732,7 @@ export interface Episode extends EpisodeLoopMetadata {
   starting_instruction: string | null;
   budget: EpisodeBudgetMeter;
   authorized_by: AuthorizedHuman | null;
+  via_agent?: ViaAgent | null;
   stop_requested_at: string | null;
   ending: EpisodeEnding | null;
   ending_diagnostic: string | null;
@@ -3047,6 +3058,8 @@ export interface ChatArtifactComments {
 }
 
 export interface ChatMessage {
+  /** The question this member delivery answers; approval cards show its outcome in place. */
+  question_id?: string | null;
   turn_outcome: TurnOutcome | null;
   browser_status?: BrowserTurnStatus | null;
   /** The turn's live agent status, joined by the chat route; display only. */
@@ -3069,7 +3082,11 @@ export interface ChatMessage {
   graph_update: GraphUpdateResult | null;
   trigger: TaskTrigger;
   attachments: ChatAttachmentDescriptor[];
+  /** Where a member message came from; absent means the composer. */
+  source?: ChatMessageSource | null;
 }
+
+export type ChatMessageSource = "voice" | "handoff" | "slack";
 
 export interface ChatAttachmentDescriptor {
   attachment_id: string;
@@ -3810,45 +3827,9 @@ export interface VoiceLimits {
 
 export interface VoiceSessionResponse {
   sdp_answer: string;
-  limits: VoiceLimits & {
-    transcript_entry_max_bytes: number;
-    transcript_session_max_bytes: number;
-    transcript_max_receipts: number;
-    transcript_max_entries: number;
-  };
-  session: VoiceSavedSession;
+  limits: VoiceLimits;
+  /** True when the thread's tail was cut to fit the session's input bounds. */
   input_truncated: boolean;
-}
-
-export interface VoiceSavedSession {
-  id: string;
-  member_id: string;
-  generation: string;
-  revision: number;
-  created_at: number;
-  updated_at: number;
-  ended: boolean;
-  entries: import("../voice/voiceExecutor").VoiceTranscriptEntry[];
-  receipts: import("../voice/voiceExecutor").VoiceReceipt[];
-  /** Projects this session's tools ran in; older records have none. */
-  projects?: VoiceSessionProject[];
-}
-
-export interface VoiceSessionProject {
-  project_id: string;
-  project_name: string;
-}
-
-export type VoiceSessionMetadata = Pick<
-  VoiceSavedSession,
-  "id" | "created_at" | "updated_at" | "ended" | "projects"
-> & {
-  entry_count: number;
-};
-
-export interface VoiceSessionPage {
-  sessions: VoiceSessionMetadata[];
-  next_offset: number | null;
 }
 
 export interface TerminalWorkTurn {
@@ -3952,6 +3933,8 @@ export interface AgentQuestion {
   withdrawn_readonly: boolean;
   can_answer: boolean;
   created_at: string;
+  /** Set on an approval card's question; its outcome is the answer. */
+  card?: ApprovalCard | null;
 }
 
 export interface AnswerQuestionRequest {
@@ -4023,19 +4006,6 @@ export interface ConsolidationView {
   recent_nights: ConsolidationNight[];
 }
 
-export type LessonAuthor =
-  | { kind: "agent"; operation_id: string }
-  | { kind: "human"; user_id: string; display_name: string | null };
-
-export interface Lesson {
-  lesson_id: string;
-  text: string;
-  created_at: string;
-  updated_at: string;
-  author: LessonAuthor;
-  human_owned: boolean;
-}
-
 export interface ProjectDigestMark {
   seq: number;
   marked_at: string;
@@ -4105,4 +4075,144 @@ export interface MachineBrowserReadiness {
   detail: string | null;
   apt_command: string | null;
   admin_command: string | null;
+}
+
+/** "Member, via Pip": the member's own agent thread that acted for them. */
+export interface ViaAgent {
+  thread_id: string;
+  name: string;
+}
+
+export type AgentThreadKind = "space" | "project";
+
+export type AgentThreadLiveState =
+  "idle" | "queued" | "running" | "paused" | "needs_you" | "closed";
+
+/** One of the member's private agent threads; the Space thread lists first. */
+export interface AgentThread {
+  thread_id: string;
+  kind: AgentThreadKind;
+  project_id: string | null;
+  project_name: string | null;
+  agent_name: string;
+  unread: boolean;
+  last_activity_at: string | null;
+  live_state: AgentThreadLiveState;
+  /** The thread's newest visible task, running or settled. */
+  latest_operation_id: string | null;
+  browser_requested: boolean;
+  /** The member's agent pick, which every turn of the thread runs; null until one is made. */
+  agent: AgentRunConfig | null;
+}
+
+export interface AgentThreadList {
+  threads: AgentThread[];
+}
+
+/** A turn sent to a thread; the timezone is the browser's IANA name. */
+export interface AgentThreadTurnRequest {
+  references?: ProjectReferenceSelector[];
+  attachment_set_id?: string;
+  attachment_client_id?: string;
+  artifact_context?: ArtifactContextRequest | null;
+  message: string;
+  provider?: ProviderId;
+  model?: string;
+  reasoning?: string;
+  timezone: string;
+}
+
+export type AgentScheduleState = "active" | "cancelled" | "disabled" | "done";
+
+export interface AgentSchedule {
+  schedule_id: string;
+  /** Exactly one of `cron` and `at_local` is set. */
+  cron?: string | null;
+  /** `YYYY-MM-DDTHH:MM` in `timezone`. */
+  at_local?: string | null;
+  timezone: string;
+  note: string;
+  state: AgentScheduleState;
+  disabled_reason?: "restore" | "access_lost" | "unschedulable" | null;
+  next_fire_at?: string | null;
+  last_fired_at?: string | null;
+  /** First due fire still waiting for its wake. */
+  pending_since?: string | null;
+  /** Why the waiting wake has not started yet; it retries each minute. */
+  deferred_reason?: string | null;
+}
+
+export interface AgentScheduleList {
+  schedules: AgentSchedule[];
+}
+
+export interface AgentThreadVoiceEntry {
+  entry_id: string;
+  speaker: "member" | "agent";
+  text: string;
+  at: string;
+}
+
+export interface AgentThreadMemory {
+  shared_index?: string | null;
+  truncated: boolean;
+}
+
+/** A protected act the agent asks the member to approve, by `kind`. */
+export type ApprovalCardAction =
+  | {
+      kind: "proposal";
+      project_id: string;
+      proposal_id: string;
+      decision: "approved" | "rejected";
+      reason?: string | null;
+    }
+  | { kind: "truth_scope"; project_id: string; alias: string; writable: boolean }
+  | {
+      kind: "auto_research";
+      project_id: string;
+      invocation_ceiling: number;
+      starting_instruction?: string | null;
+      code_worktree?: boolean | null;
+      worktree_repository?: string | null;
+      branch_name?: string | null;
+      provider?: ProviderId | null;
+      model?: string | null;
+      reasoning?: string | null;
+    }
+  | { kind: "merge_branch"; project_id: string; branch_id: string }
+  | {
+      kind: "merge_episode";
+      project_id: string;
+      episode_id: string;
+      target_branch?: string | null;
+      history_mode: "merge" | "squash";
+      remove_worktree: boolean;
+      delete_code_branch: boolean;
+      archive_graph_branch: boolean;
+      keep_branch_open: boolean;
+      confirm_unfinished_jobs: boolean;
+    };
+
+export type ApprovalCardKind = ApprovalCardAction["kind"];
+
+export interface ApprovalCard {
+  kind: ApprovalCardKind;
+  action: ApprovalCardAction;
+  /** The live facts read when the card was made; shown under See details. */
+  pinned: Record<string, unknown>;
+  pinned_sha256: string;
+  expires_at: string;
+  state: "pending" | "running" | "expired";
+}
+
+export interface ApprovalCardDecision {
+  decision: "approve" | "decline";
+  pinned_sha256: string;
+}
+
+export interface ApprovalCardResult {
+  outcome: "approved" | "declined" | "stale" | "failed" | "expired";
+  result?: unknown;
+  reason?: string | null;
 }

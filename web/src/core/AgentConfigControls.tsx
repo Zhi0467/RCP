@@ -17,8 +17,11 @@ import {
 } from "../projects/providers";
 import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "./types";
 
+/** What a picker reads: each machine's provider readiness, and the machines' hosts. */
+export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness" | "machines">;
+
 interface Props {
-  project: ProjectSnapshot;
+  project: AgentConfigSource;
   value: AgentRunConfig;
   onChange: (value: AgentRunConfig) => void;
   locked?: boolean;
@@ -83,7 +86,7 @@ export function AgentConfigChip({
   onToggle,
   ref,
 }: {
-  project: ProjectSnapshot;
+  project: AgentConfigSource;
   value: AgentRunConfig;
   effectiveModel?: string;
   open: boolean;
@@ -135,7 +138,7 @@ export function AgentConfigChip({
  *  probed and does not block, a probe that found it missing or signed out does.
  *  A Work-like launch also needs the Work probe, read as the full picker reads it. */
 export function launchProviderReady(
-  project: ProjectSnapshot,
+  project: AgentConfigSource,
   value: AgentRunConfig,
   workLike = false,
   continued = false,

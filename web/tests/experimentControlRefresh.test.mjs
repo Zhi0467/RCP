@@ -55,7 +55,11 @@ test("branch-retained views share project task state and one completion reader",
   assert.equal(reads.length, 1);
   reads[0].resolve([task("running")]);
   await flush();
-  store.observe("p", [{ name: "tasks.status", version: "done" }]);
+  // Task rows name their agent, so the profile also follows chat renames.
+  store.observe("p", [
+    { name: "tasks.status", version: "done" },
+    { name: "chats", version: "1" },
+  ]);
   assert.equal(reads.length, 2);
   reads[1].resolve([task("succeeded")]);
   await flush();

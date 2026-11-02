@@ -37,8 +37,9 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
+        "handoff",
+        "schedule",
         "ask",
-        "lesson",
         "bulletin",
         "name",
         "flag",
@@ -85,38 +86,23 @@ BULLETIN_DELETE = ("delete", "--delete", "<post-id>")
 BULLETIN_REPLY_TO = ("reply_to", "--reply-to", "<post-id>")
 BULLETIN_CURSOR = ("cursor", "--cursor", "<cursor>")
 BULLETIN_BODY = ("body_file", "<body-file>")
-LESSON_OPTIONS = {
-    "add": ((KEY_OPTION, True), (("text", "--text", "<text>"), True)),
-    "list": ((("cursor", "--cursor", "<cursor>"), False),),
-    "update": (
-        (KEY_OPTION, True),
-        (("id", "--id", "<lesson-id>"), True),
-        (("text", "--text", "<text>"), True),
-    ),
-    "delete": ((KEY_OPTION, True), (("id", "--id", "<lesson-id>"), True)),
-}
 NAME_VALUE = ("name", "<name>")
+PROJECTS_SHOW = ("project_id", "<project-id>")
+HANDOFF_MESSAGE = ("message_file", "<message-file>")
+
+
+def handoff_usage():
+    picks = " ".join(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS)
+    return f"handoff {_option_usage(KEY_OPTION)} {picks} {PROJECTS_SHOW[1]} {HANDOFF_MESSAGE[1]}"
+
+
+def projects_usages():
+    return ("projects list", f"projects show {PROJECTS_SHOW[1]}")
 
 
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
-
-
-def lesson_usages(actions):
-    return tuple(
-        " ".join(
-            [
-                "lesson",
-                action,
-                *(
-                    _option_usage(option) if required else f"[{_option_usage(option)}]"
-                    for option, required in LESSON_OPTIONS[action]
-                ),
-            ]
-        )
-        for action in actions
-    )
 
 
 def merge_usage():
@@ -129,6 +115,25 @@ def branch_usage():
 
 def name_usage():
     return f"name {NAME_VALUE[1]}"
+
+
+SCHEDULE_OPTIONS = (
+    ("key", "--key", "<key>"),
+    ("cron", "--cron", "<five-fields>"),
+    ("at", "--at", "<YYYY-MM-DDTHH:MM>"),
+    ("timezone", "--timezone", "<IANA-zone>"),
+    ("note", "--note", "<note>"),
+    ("schedule_id", "--schedule-id", "<schedule-id>"),
+)
+
+
+def schedule_usages():
+    key, cron, at, timezone, note, schedule_id = map(_option_usage, SCHEDULE_OPTIONS)
+    return (
+        f"schedule add {key} ({cron} | {at}) [{timezone}] {note}",
+        "schedule list",
+        f"schedule cancel {key} {schedule_id}",
+    )
 
 
 def bulletin_usages(*, turn_artifacts: bool):
@@ -309,6 +314,17 @@ def _parser():
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
+    projects = subparsers.add_parser("projects")
+    project_actions = projects.add_subparsers(dest="projects_action", required=True)
+    project_actions.add_parser("list")
+    project_show = project_actions.add_parser("show")
+    project_show.add_argument(PROJECTS_SHOW[0])
+    handoff = subparsers.add_parser("handoff")
+    handoff.add_argument(KEY_OPTION[1], required=True)
+    _add_profile_pick_arguments(handoff)
+    handoff.add_argument(PROJECTS_SHOW[0])
+    handoff.add_argument(HANDOFF_MESSAGE[0])
+
     graph_diff = subparsers.add_parser("graph_diff", aliases=["graph-diff"])
     graph_diff.add_argument("from_head", nargs="?")
     graph_diff.add_argument("to_head", nargs="?")
@@ -354,18 +370,17 @@ def _parser():
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
-    lesson = subparsers.add_parser("lesson")
-    lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
-    for action, options in LESSON_OPTIONS.items():
-        command = lesson_actions.add_parser(action)
-        for (dest, flag, value), required in options:
-            command.add_argument(flag, dest=dest, metavar=value, required=required)
+    schedule = subparsers.add_parser("schedule")
+    schedule.add_argument("action", choices=("add", "list", "cancel"))
+    for dest, flag, metavar in SCHEDULE_OPTIONS:
+        schedule.add_argument(flag, dest=dest, metavar=metavar)
 
     ask = subparsers.add_parser("ask")
     ask.add_argument("--key", required=True)
     ask.add_argument("--question", required=True)
     ask.add_argument("--choice", action="append", default=[])
     ask.add_argument("--multiple", action="store_true")
+    ask.add_argument("--action", help="Approval action JSON; private project threads only")
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
@@ -457,6 +472,24 @@ def _nonblank(value, label):
 
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
+    if verb == "projects":
+        arguments = {"action": namespace.projects_action}
+        if namespace.projects_action == "show":
+            arguments["project_id"] = _nonblank(namespace.project_id, "project id")
+        return verb, None, arguments
+    if verb == "handoff":
+        filename = namespace.message_file
+        if not _SAFE_FILE.fullmatch(filename) or filename in (".", ".."):
+            raise ClientInputError("handoff requires a safe workspace filename")
+        return (
+            verb,
+            _nonblank(namespace.key, "idempotency key"),
+            {
+                "project_id": _nonblank(namespace.project_id, "project id"),
+                "message_file": filename,
+                **_profile_pick(namespace),
+            },
+        )
     if verb in ("validate", "merge_answers"):
         is_patch = verb == "validate"
         label = "patch.json" if is_patch else "answers file"
@@ -518,6 +551,16 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
+    if verb == "schedule":
+        arguments = {"action": namespace.action}
+        for field in ("cron", "at", "timezone", "note", "schedule_id"):
+            value = getattr(namespace, field)
+            if value is not None:
+                arguments[field] = value
+        key = namespace.key
+        if namespace.action != "list" and not key:
+            raise ClientInputError("schedule mutations require --key")
+        return verb, key, arguments
     if verb == "bulletin":
         if namespace.channel is not None and not (
             namespace.read or (namespace.post and not namespace.reply_to)
@@ -602,18 +645,6 @@ def _request_arguments(namespace, workspace):
                 ),
             },
         )
-    if verb == "lesson":
-        action = namespace.lesson_action
-        arguments = {"action": action}
-        if action == "list":
-            if namespace.cursor is not None:
-                arguments["cursor"] = _nonblank(namespace.cursor, "cursor")
-            return verb, None, arguments
-        if action in ("add", "update"):
-            arguments["text"] = _nonblank(namespace.text, "lesson text")
-        if action in ("update", "delete"):
-            arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
-        return verb, _nonblank(namespace.key, "idempotency key"), arguments
     if verb == "branch":
         return (
             verb,
@@ -641,6 +672,16 @@ def _request_arguments(namespace, workspace):
             "choices": [_nonblank(choice, "choice") for choice in namespace.choice],
             "multiple": namespace.multiple,
         }
+        if namespace.action is not None:
+            if namespace.choice or namespace.multiple:
+                raise ClientInputError("--action cannot be combined with --choice or --multiple")
+            try:
+                action = json.loads(namespace.action)
+            except ValueError as exc:
+                raise ClientInputError("--action must be a JSON object") from exc
+            if not isinstance(action, dict):
+                raise ClientInputError("--action must be a JSON object")
+            arguments["action"] = action
     elif verb == "apply":
         patch_file = _keyed_command_file(
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
@@ -1205,8 +1246,10 @@ def _display_body(response, verb):
 def _requested_verb(argv):
     for argument in argv:
         if argument in (
+            "projects",
+            "handoff",
+            "schedule",
             "ask",
-            "lesson",
             "bulletin",
             "name",
             "flag",

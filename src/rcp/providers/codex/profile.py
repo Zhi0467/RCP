@@ -33,7 +33,7 @@ from rcp.providers.codex.remote import AppServerTurnFence, CodexSessionFormat
 from rcp.providers.turn_fence import TurnFence
 
 if TYPE_CHECKING:
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
 
@@ -305,7 +305,7 @@ class CodexProfile(ProviderProfile):
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -346,6 +346,10 @@ class CodexProfile(ProviderProfile):
                     _codex_permission_profile(scope, hidden_read_scope),
                 ]
             )
+        elif capability == "session_summary":
+            if write_scope is not None or write_dirs:
+                raise ValueError("Session summaries cannot carry write grants")
+            command.extend(_codex_summary_config(hidden_read_scope))
         elif capability == "paper_suggest":
             if write_scope is not None:
                 raise ValueError("paper_suggest cannot carry a project write scope")
@@ -373,7 +377,9 @@ class CodexProfile(ProviderProfile):
                         "--config",
                         'default_permissions="rcp_discuss"',
                         "--config",
-                        _codex_discuss_permission_profile(cwd, hidden_read_scope),
+                        _codex_discuss_permission_profile(
+                            cwd, hidden_read_scope, write_dirs=write_dirs
+                        ),
                     ]
                 )
             if capability != "discuss" and hidden_read_scope is not None:
@@ -462,7 +468,7 @@ class CodexProfile(ProviderProfile):
 
 
 def _codex_permission_profile(
-    scope: ProjectWriteScope, hidden_read_scope: HiddenReadScope | None = None
+    scope: ProviderWriteScope, hidden_read_scope: HiddenReadScope | None = None
 ) -> str:
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
@@ -542,6 +548,27 @@ def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
     ]
 
 
+def _codex_summary_config(hidden_read_scope: HiddenReadScope | None) -> list[str]:
+    """Resume history without granting a scratch, temporary or repository write root."""
+    denials = _codex_read_denials(hidden_read_scope)
+    return [
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "multi_agent",
+        "--config",
+        'web_search="disabled"',
+        "--config",
+        'approval_policy="never"',
+        "--config",
+        'default_permissions="rcp_summary"',
+        "--config",
+        'permissions={rcp_summary={filesystem={":root"="read"'
+        + ("," + denials if denials else "")
+        + "},network={enabled=false}}}",
+    ]
+
+
 def _codex_stage_permission_profile(cwd: Path, hidden_read_scope: HiddenReadScope) -> str:
     filesystem = (
         '":root"="read",":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
@@ -572,13 +599,15 @@ def _codex_paper_permission_profile(
 
 
 def _codex_discuss_permission_profile(
-    cwd: Path, hidden_read_scope: HiddenReadScope | None = None
+    cwd: Path,
+    hidden_read_scope: HiddenReadScope | None = None,
+    *,
+    write_dirs: list[Path] | None = None,
 ) -> str:
     denials = _codex_read_denials(hidden_read_scope)
+    roots = ",".join(f"{json.dumps(str(path))}=true" for path in [cwd, *(write_dirs or [])])
     return (
-        "permissions={rcp_discuss={workspace_roots={"
-        + json.dumps(str(cwd))
-        + '=true},filesystem={":root"="read",'
+        "permissions={rcp_discuss={workspace_roots={" + roots + '},filesystem={":root"="read",'
         '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
         + ("," + denials if denials else "")
         + "},network={enabled=true}}}"

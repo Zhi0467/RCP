@@ -76,6 +76,7 @@ class ProjectWriteScope(BaseModel):
     stage_root: str = Field(min_length=1)
     workspace_root: str = Field(min_length=1)
     repositories: list[WritableRepositoryRoot] = Field(default_factory=list)
+    memory_roots: list[str] = Field(default_factory=list)
     git_metadata_roots: list[str] = Field(default_factory=list)
     # Space-machine writable paths plus the default temporary roots. Present
     # only on launches that also write repositories.
@@ -109,6 +110,10 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("write-scope repository roots must be absolute")
         if len(paths) != len(set(paths)):
             raise ValueError("write-scope repository roots must be exact and unique")
+        if self.memory_roots != sorted(set(self.memory_roots)) or any(
+            not PurePosixPath(item).is_absolute() for item in self.memory_roots
+        ):
+            raise ValueError("memory roots must be absolute, sorted and unique")
         if self.git_metadata_roots != sorted(set(self.git_metadata_roots)):
             raise ValueError("Git metadata roots must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.git_metadata_roots):
@@ -146,6 +151,7 @@ class ProjectWriteScope(BaseModel):
         workspace_root: str,
         repositories: list[WritableRepositoryRoot],
         protected_write_paths: list[str],
+        memory_roots: list[str] | None = None,
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
@@ -169,6 +175,8 @@ class ProjectWriteScope(BaseModel):
             ],
             "protected_write_paths": sorted(set(protected_write_paths)),
         }
+        if memory_roots:
+            payload["memory_roots"] = sorted(set(memory_roots))
         if git_metadata_roots:
             payload["git_metadata_roots"] = sorted(set(git_metadata_roots))
         if granted_roots:
@@ -197,6 +205,7 @@ class ProjectWriteScope(BaseModel):
                     self.workspace_root,
                     *self.repository_roots,
                     *self.git_metadata_roots,
+                    *self.memory_roots,
                     *self.granted_roots,
                 ]
             )
@@ -206,11 +215,112 @@ class ProjectWriteScope(BaseModel):
         # Retain every existing unbound scope fingerprint across this additive
         # field: only worktree scopes carry Git metadata outside their checkout.
         excluded = {"fingerprint", "absent_protected_paths"}
+        if not self.memory_roots:
+            excluded.add("memory_roots")
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
         if self.episode_worktree is None:
             excluded.add("episode_worktree")
         return _without_grants(self.model_dump(mode="json", exclude=excluded))
+
+
+@dataclass(frozen=True)
+class CompositeWriteScope:
+    """A local Space stage plus separately validated per-project write scopes.
+
+    With no projects the provider can still write its outcome in the stage;
+    there is no graph write-scope fingerprint to persist on the task.
+    """
+
+    stage_root: str
+    projects: tuple[ProjectWriteScope, ...] = ()
+    execution_machine: str = "local"
+    execution_host: str = ""
+    capability: Literal["work_auto"] = "work_auto"
+
+    def __post_init__(self) -> None:
+        stage = PurePosixPath(self.stage_root)
+        if not stage.is_absolute() or self.execution_host:
+            raise ValueError("Space scopes require an absolute local stage")
+        ids = [scope.project_id for scope in self.projects]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Space scopes require unique project bindings")
+        for scope in self.projects:
+            if (
+                scope.execution_host
+                or scope.capability != "work_auto"
+                or PurePosixPath(scope.stage_root) != stage / "projects" / scope.project_id
+            ):
+                raise ValueError("Space project scope must use its exact local project stage")
+        object.__setattr__(
+            self, "projects", tuple(sorted(self.projects, key=lambda item: item.project_id))
+        )
+
+    @property
+    def workspace_root(self) -> str:
+        return self.stage_root
+
+    @property
+    def fingerprint(self) -> str | None:
+        if not self.projects:
+            return None
+        return hashlib.sha256(
+            json.dumps(
+                sorted(scope.fingerprint for scope in self.projects), separators=(",", ":")
+            ).encode()
+        ).hexdigest()
+
+    @property
+    def repository_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.repository_roots})
+
+    @property
+    def memory_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.memory_roots})
+
+    @property
+    def writable_roots(self) -> list[str]:
+        return list(
+            dict.fromkeys(
+                [
+                    self.stage_root,
+                    *(root for scope in self.projects for root in scope.writable_roots),
+                ]
+            )
+        )
+
+    @property
+    def protected_write_paths(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.protected_write_paths})
+
+    # The union a write-boundary prompt renders, read from the scopes it enforces.
+    @property
+    def repositories(self) -> list[WritableRepositoryRoot]:
+        roots = {
+            (item.alias, item.machine, item.path): item
+            for scope in self.projects
+            for item in scope.repositories
+        }
+        return [roots[key] for key in sorted(roots)]
+
+    @property
+    def git_metadata_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.git_metadata_roots})
+
+    @property
+    def granted_roots(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.granted_roots})
+
+    @property
+    def episode_worktree(self) -> None:
+        return None
+
+    @property
+    def absent_protected_paths(self) -> list[str]:
+        return sorted({root for scope in self.projects for root in scope.absent_protected_paths})
+
+
+ProviderWriteScope = ProjectWriteScope | CompositeWriteScope
 
 
 def resolve_project_write_scope(
@@ -231,6 +341,7 @@ def resolve_project_write_scope(
     conversation_worktree: WorktreeBinding | None = None,
     include_shared_checkout: bool = False,
     machine_writable_paths: list[str] | None = None,
+    memory_roots: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve and verify one exact Work-like scope on its execution machine.
 
@@ -491,6 +602,7 @@ def resolve_project_write_scope(
         workspace_root=canonical_workspace,
         repositories=repository_roots,
         git_metadata_roots=[binding.git_common_dir] if binding else [],
+        memory_roots=memory_roots,
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,

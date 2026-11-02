@@ -227,9 +227,8 @@ The RCP-authored prefix exposes the resolved closed vocabulary from
 [Auto-research commands](../../src/rcp/runs/auto_research.py). It includes validation,
 keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
 merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
-guarded finish, lesson actions when the project has them, a one-time self-name,
-and the graph history reads. Workers get validation, status, message, and the
-same lesson, Bulletin, and history verbs. Spawn and kickoff may choose the provider, model, and effort.
+guarded finish, a one-time self-name, and the graph history reads. Workers get
+validation, status, message, and the same Bulletin and history verbs. Spawn and kickoff may choose the provider, model, and effort.
 The root has no helper verbs. Child Work uses ordinary generic launch or direct
 scheduler submission.
 

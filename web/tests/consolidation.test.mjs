@@ -14,13 +14,11 @@ const {
   CONSOLIDATION_AUTHORIZATION_DAYS,
   CONSOLIDATION_RECENT_NIGHTS,
   CONSOLIDATION_RENEWAL_WINDOW_DAYS,
-  LESSON_TEXT_MAX_CHARS,
   consolidationAttentionCount,
   consolidationAuthorization,
   consolidationCountdown,
   consolidationNeedsRenewal,
   consolidationNightSlots,
-  lessonTextIsValid,
   openConsolidationItems,
   timeZoneOptions,
 } = await server.ssrLoadModule("/src/projects/consolidation.ts");
@@ -60,14 +58,6 @@ test("only open consolidation rows count toward the Inbox", () => {
   assert.equal(consolidationAttentionCount(openConsolidationItems(view), false), 2);
   assert.equal(consolidationAttentionCount(openConsolidationItems(view), true), 3);
   assert.equal(consolidationAttentionCount([], true), 1);
-});
-
-test("lesson text must be non-blank and within the code-point limit", () => {
-  assert.equal(lessonTextIsValid("   "), false);
-  assert.equal(lessonTextIsValid("x".repeat(LESSON_TEXT_MAX_CHARS)), true);
-  assert.equal(lessonTextIsValid("x".repeat(LESSON_TEXT_MAX_CHARS + 1)), false);
-  // Astral characters are one code point each, as the server counts them.
-  assert.equal(lessonTextIsValid("\u{1F600}".repeat(LESSON_TEXT_MAX_CHARS)), true);
 });
 
 test("the card's countdown, authorization share, and night strip", () => {

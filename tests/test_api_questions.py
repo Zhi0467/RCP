@@ -274,3 +274,16 @@ def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):
         )
         assert answered.status_code == 200
     assert app.state.reconcile_question_answers.call_args_list == [call(project_id)]
+
+
+def test_answer_in_archived_chat_is_refused_unstored(questions_api):
+    app, client, store, project_id = questions_api
+    question = _question(store, project_id)
+    store.set_chat_archived(project_id, "chat", store.local_owner.user_id, archived=True)
+    response = client.post(
+        f"/api/projects/{project_id}/questions/{question.question_id}/answer",
+        json={"choices": ["a"]},
+    )
+    assert response.status_code == 409
+    assert store.get_question(question.question_id) == question
+    app.state.reconcile_question_answers.assert_not_called()

@@ -20,6 +20,7 @@ import {
   groupConversationAgents,
   isConversationModeShortcut,
   latestConversation,
+  pickOrCreateConversation,
   conversationAgentConfig,
   latestPersistedChatConfig,
   latestPersistedConversationMode,
@@ -35,7 +36,7 @@ import {
   orchestratorCanUnlock,
   orchestratorChatTurns,
 } from "../src/chat/chatWorkspace.ts";
-import { agentBoardColumn } from "../src/chat/agentBoardModel.ts";
+import { agentBoardColumn, agentBoardDrop } from "../src/chat/agentBoardModel.ts";
 import { graphTargetFromHash } from "../src/core/graphTarget.ts";
 import { parseProjectHash } from "../src/experiments/experimentBoardModel.ts";
 
@@ -815,4 +816,36 @@ test("an orchestrator whose chain needs action lights the Agents indicator", () 
     chatIndicator(withEpisodeAttention([orchestrator], [episode("needs_action")]), new Set()),
     "active",
   );
+});
+
+test("node Ask and New session skip archived conversations and drafts", () => {
+  const rows = groupChatConversations([], [], {}, "Project", [
+    { chatId: "archived", kind: "node_chat", nodeId: "node/a", title: "Node" },
+    { chatId: "open", kind: "node_chat", nodeId: "node/a", title: "Node" },
+  ]);
+  for (const reuse of ["latest", "draft"]) {
+    const choose = (archived) =>
+      pickOrCreateConversation(rows, archived, "node_chat", "node/a", () => "fresh", { reuse });
+    assert.equal(choose(["archived"]), "open");
+    assert.equal(choose(["archived", "open"]), "fresh");
+  }
+  const sent = rows.map((row) => ({ ...row, updatedAt: "2026-10-01T00:00:00Z" }));
+  assert.equal(
+    pickOrCreateConversation(sent, ["archived"], "node_chat", "node/a", () => "fresh"),
+    "open",
+  );
+  assert.equal(
+    pickOrCreateConversation(sent, ["archived", "open"], "node_chat", "node/a", () => "fresh"),
+    "fresh",
+  );
+  assert.equal(
+    pickOrCreateConversation(sent, [], "node_chat", "node/a", () => "fresh", { reuse: "draft" }),
+    "fresh",
+  );
+});
+
+test("dropping an unsent draft into Archived removes it", () => {
+  assert.equal(agentBoardDrop("done", "archived", false, true), "remove");
+  assert.equal(agentBoardDrop("done", "archived", false, false), "archive");
+  assert.equal(agentBoardDrop("working", "archived", true, true), null);
 });

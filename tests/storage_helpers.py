@@ -9,6 +9,16 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     """Reconstruct older schema eras without retaining the later owner triggers."""
     # The ledger write first: a read-only store must refuse here, before DDL.
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=49")
+    for table in (
+        "agent_threads",
+        "agent_schedules",
+        "approval_cards",
+        "agent_handoffs",
+        "space_turn_project_bindings",
+        "memory_migrations",
+        "memory_deletions",
+    ):
+        connection.execute(f'DROP TABLE IF EXISTS "{table}"')
     connection.execute("DROP TABLE IF EXISTS episode_merge_request_receipts")
     connection.execute("DROP TABLE IF EXISTS evidence_flag_carries")
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES

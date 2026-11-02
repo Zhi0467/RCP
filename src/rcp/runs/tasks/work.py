@@ -109,8 +109,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
     stage_chat_loop_status,
 )
-from rcp.runs.lesson_commands import lesson_command_usage
-from rcp.runs.lessons import stage_operational_context_pointer
+from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -304,7 +303,6 @@ def _prepare_work_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
-    launch_instructions: str,
     ontology_extensions: bool,
     question_part: str = "",
     read_context: str = "",
@@ -326,15 +324,16 @@ def _prepare_work_chat_prompt(
         values=stable_values
         if browser_grant is None
         else {**stable_values, "browser": browser_prompt_line(browser_grant)},
+        # A master rendered before this session's first Work turn lacks the launch
+        # instructions, so that turn reopens the Work master that holds them.
+        required_master_value="work",
     )
-    # A master rendered before this session's first Work turn lacks the launch instructions.
-    first_work_turn = not master.bootstrap and "work" not in (master.values or {})
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
         node=node,
         master=master,
-        lessons_pointer=stage_operational_context_pointer(
+        memory_pointer=stage_operational_context_pointer(
             execution,
             local_stage,
             remote_stage,
@@ -348,7 +347,6 @@ def _prepare_work_chat_prompt(
         ),
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
-        launch_instructions=launch_instructions if first_work_turn else None,
         message_author=(
             "orchestrator"
             if execution is not None
@@ -388,31 +386,40 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
-    if lifecycle is not None and lifecycle.lesson_actions is not None:
-        verbs, actions, artifacts = (
+    if lifecycle is not None and lifecycle.allowed_verbs is not None:
+        verbs, artifacts = (
             lifecycle.allowed_verbs,
-            lifecycle.lesson_actions,
             WORK_TURN_ARTIFACTS,
         )
     else:
         handler = _work_turn_command_handler(turn)
-        verbs, actions, artifacts = (
+        verbs, artifacts = (
             handler.allowed_verbs,
-            handler.lesson_actions,
             handler.turn_artifacts,
         )
     assert verbs is not None
     instructions = []
+    if "schedule" in verbs and turn.execution is not None:
+        from rcp.agents.staged_command_client import schedule_usages
+        from rcp.runs.agent_schedules import schedule_instructions
+
+        command = client or turn.patch_inputs.validator_staged.client_command()
+        instructions.append(
+            schedule_instructions(
+                turn.execution.store,
+                turn.execution.operation_id,
+                tuple(f"{command} {usage}" for usage in schedule_usages()),
+            )
+        )
     if "flag" in verbs:
         instructions.append(
             flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
-    if "lesson" in verbs:
+    if "projects" in verbs:
+        from rcp.runs.agent_thread_commands import projects_command_usage
+
         instructions.append(
-            lesson_command_usage(
-                actions=actions,
-                client=client or turn.patch_inputs.validator_staged.client_command(),
-            )
+            projects_command_usage(client or turn.patch_inputs.validator_staged.client_command())
         )
     if "name" in verbs:
         from rcp.runs.agent_names import name_command_usage
@@ -429,6 +436,14 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     if "ask" in verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
+        from rcp.runs.approval_cards import approval_card_usage, private_project_thread_turn
+
+        if turn.execution is not None and private_project_thread_turn(
+            turn.execution.store, turn.execution.operation_id
+        ):
+            instructions.append(
+                approval_card_usage(client or turn.patch_inputs.validator_staged.client_command())
+            )
     if "apply" in verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
@@ -1237,7 +1252,6 @@ def _compose_fresh_prompt(
     prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        launch_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),
@@ -2702,6 +2716,23 @@ async def _stream_work_run(
             data_dir=data_dir,
             local_stage=turn.local_stage,
         )
+        from functools import partial
+
+        from rcp.runs.agent_threads import (
+            prepare_project_summary_scope,
+            staged_history_seed,
+            thread_history_seed,
+        )
+
+        history_seed = await staged_history_seed(
+            launcher,
+            turn.request,
+            execution,
+            thread_history_seed(service, turn.request),
+            prepare_scope=partial(prepare_project_summary_scope, service, execution, data_dir),
+            local_stage=turn.local_stage,
+            remote_stage=turn.remote_stage,
+        )
         browser_grant = await browser_stack.enter_async_context(
             browser_turn(
                 turn.request,
@@ -2748,7 +2779,7 @@ async def _stream_work_run(
                     browser_grant=browser_grant,
                 )
         contract_path = composed_prompt.contract_path
-        prompt = composed_prompt.prompt
+        prompt = composed_prompt.prompt + history_seed
         retry_baseline = _capture_retry_deliverable_baseline(turn)
     except BaseException as exc:
         if validator_lifecycle is not None:
