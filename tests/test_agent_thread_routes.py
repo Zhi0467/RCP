@@ -465,8 +465,10 @@ def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypa
                 ).model_dump(mode="json"),
             )
         )
+        # The web names the backend machine by its id; a Space thread runs there anyway.
         picked = client.post(
-            f"/api/agent-threads/{space['thread_id']}/agent", json={"provider": "claude"}
+            f"/api/agent-threads/{space['thread_id']}/agent",
+            json={"provider": "claude", "run_on": "backend-machine-id"},
         )
         assert picked.status_code == 200, picked.text
         assert picked.json()["agent"]["provider"] == "claude"

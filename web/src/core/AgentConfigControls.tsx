@@ -15,10 +15,16 @@ import {
   reasoningOptions,
   runtimeOptions,
 } from "../projects/providers";
-import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "./types";
+import type { AgentProfile, AgentRunConfig, ProjectSnapshot, ProviderReadiness } from "./types";
 
 /** What a picker reads: each machine's provider readiness, and the machines' hosts. */
-export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness" | "machines">;
+/**
+ * What a pick reads. `registry` is the backend's provider registry, when the source
+ * carries it: every supported provider is offered, and readiness only annotates it.
+ */
+export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness" | "machines"> & {
+  registry?: Pick<ProviderReadiness, "provider" | "label">[];
+};
 
 interface Props {
   project: AgentConfigSource;
@@ -210,7 +216,7 @@ export function AgentConfigControls({
   // machine: which providers exist, what they are called, which models they
   // accept, and which reasoning efforts each of those models accepts.
   const models = readiness?.models ?? [];
-  const providers = providerOptions(Object.values(onMachine), value.provider);
+  const providers = providerOptions(project.registry ?? Object.values(onMachine), value.provider);
   // What the select shows is what runs: the chosen model, else the backend's
   // exported effective model. An empty value with no known head shows blank.
   const shownModel = value.model || effectiveModel;

@@ -139,18 +139,22 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
       // The Space thread runs on the backend's own machine, the one with no host.
       const machine = (await loadSpaceMachines()).find((item) => !item.host);
       if (!machine) return null;
-      const providers = Object.values(machine.provider_readiness) as ProviderReadiness[];
-      const first = providers.find((item) => item.authenticated) ?? providers[0];
+      // Every registered provider is offered; a probe only annotates it.
+      const ready = Object.values(machine.provider_readiness) as ProviderReadiness[];
+      const first =
+        ready.find((item) => item.authenticated)?.provider ?? machine.providers[0]?.provider;
       if (!first) return null;
-      const { model, reasoning = "" } = providerChange(first.models ?? [], first.provider, "");
+      const models = ready.find((item) => item.provider === first)?.models ?? [];
+      const { model, reasoning = "" } = providerChange(models, first, "");
       return {
         source: {
           provider_readiness: {
             [machine.machine_id]: machine.provider_readiness as Record<string, ProviderReadiness>,
           },
           machines: [],
+          registry: machine.providers,
         },
-        value: { provider: first.provider, model, reasoning, run_on: machine.machine_id },
+        value: { provider: first, model, reasoning, run_on: machine.machine_id },
       };
     };
     // Without readiness the pick stays away and the backend picks the provider.

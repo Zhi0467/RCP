@@ -117,9 +117,12 @@ def space_agent_profile(
     reasoning: str | None = None,
     run_on: str | None = None,
 ) -> AgentSurfaceConfig:
-    """The Space thread's agent: the named pick, else the backend default."""
-    if run_on not in {None, "local"}:
-        raise ValueError("Space threads run on the backend machine")
+    """The Space thread's agent: the named pick, else the backend default.
+
+    A Space thread always runs on the backend machine, so `run_on` (the picker's
+    machine id for that machine) is not a choice and is normalised, not checked.
+    """
+    del run_on
     return AgentSurfaceConfig(
         provider=provider or "codex",
         model=model or "",

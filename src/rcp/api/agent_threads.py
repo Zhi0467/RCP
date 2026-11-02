@@ -534,13 +534,11 @@ def retry_space_task(
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
     _reject_history_only_control(_space_task(store, thread, operation_id))
-    if body is not None and body.run_on not in {None, "local"}:
-        raise HTTPException(status_code=422, detail="Space threads run on the backend machine")
+    # A Space thread always runs on the backend machine, so a retry's run_on is not a choice.
+    overrides = body.model_dump(exclude_none=True, exclude={"run_on"}) if body else {}
     try:
         return background_tasks.retry(
-            operation_id,
-            authorized_by=authorized,
-            **(body.model_dump(exclude_none=True) if body else {}),
+            operation_id, authorized_by=authorized, **overrides
         ).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

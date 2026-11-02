@@ -25,7 +25,10 @@ export function withSaved(options: Option[], saved: string): Option[] {
   return [...options, { id: saved, label: saved }];
 }
 
-export function providerOptions(providers: ProviderReadiness[], saved: string): Option[] {
+export function providerOptions(
+  providers: Pick<ProviderReadiness, "provider" | "label">[],
+  saved: string,
+): Option[] {
   return withSaved(
     providers.map((item) => ({ id: item.provider, label: item.label || item.provider })),
     saved,
