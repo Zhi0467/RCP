@@ -225,12 +225,10 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await offer.waitFor({ state: "detached" });
       await composer.fill("A draft survives opening the conversation list.");
       await composer.focus();
-      // A wrapped draft spans the card, so its width is taken once it is typed.
-      const draftWidth = (await composer.boundingBox()).width;
       await toggleList();
       await list.waitFor();
       assert.equal(await composer.inputValue(), "A draft survives opening the conversation list.");
-      assert.equal((await composer.boundingBox()).width, draftWidth);
+      assert.equal((await composer.boundingBox()).width, composerWidth);
       assert.ok(
         (await composer.evaluate((element) => parseFloat(getComputedStyle(element).fontSize))) >=
           16,

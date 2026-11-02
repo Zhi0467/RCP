@@ -11,9 +11,8 @@ import {
 /**
  * The one composer shell chat and the Paper coach share: skills, the provider
  * switch hint, staged comments and files, then one row of Add, the message field
- * and the send actions. Once the text wraps, the field takes the full width and
- * Add and the send actions move beneath it. The caller's own tools and notice take
- * a further row, which exists only when the caller has something for it.
+ * and the send actions. The caller's own tools and notice take a second row, which
+ * exists only when the caller has something for it.
  */
 export function ChatComposer({
   hint,
@@ -94,13 +93,6 @@ export function ComposerField({
     const from = field.style.height;
     field.style.transition = "none";
     field.style.height = "auto";
-    // Once the text wraps, the field stays above the buttons until it is cleared,
-    // so a rewrap at the wider width never flips the layout back and forth.
-    const oneLine = Number.parseFloat(getComputedStyle(field).minHeight);
-    field.toggleAttribute(
-      "data-stacked",
-      value !== "" && (field.hasAttribute("data-stacked") || field.scrollHeight > oneLine + 1),
-    );
     const to = `${field.scrollHeight}px`;
     field.style.height = from;
     // Commit the old height before easing to the new one, so the change never jumps.
