@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
 import type { ConversationMode } from "../core/types";
 import { StagedAnswerComments, type AnswerComments } from "./answerComments";
@@ -10,8 +10,9 @@ import {
 
 /**
  * The one composer shell chat and the Paper coach share: skills, the provider
- * switch hint, staged comments and files, the message field, then the tools row
- * (Add first, then the caller's own tools) and the send actions.
+ * switch hint, staged comments and files, then one row of Add, the message field
+ * and the send actions. The caller's own tools and notice take a second row, which
+ * exists only when the caller has something for it.
  */
 export function ChatComposer({
   hint,
@@ -52,15 +53,52 @@ export function ChatComposer({
       {hint}
       <StagedAnswerComments comments={comments} />
       {composer && <ComposerAttachmentChips composer={composer} />}
-      {field}
-      <div className="chat-send">
-        <div className="chat-composer-tools">
-          {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}
-          {tools}
-        </div>
+      <div className="chat-composer-row">
+        {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}
+        {field}
         <div className="chat-send-actions">{actions}</div>
-        {notice}
       </div>
+      {(tools || notice) && (
+        <div className="chat-composer-tools">
+          {tools}
+          {notice}
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * The message field, one line tall until its text needs more. WebKit has no
+ * `field-sizing: content` on every macOS the app supports, so the height is
+ * measured here and eased by the stylesheet's height transition.
+ */
+export function ComposerField({
+  ref,
+  value,
+  ...props
+}: Omit<ComponentProps<"textarea">, "value"> & { value: string }) {
+  const own = useRef<HTMLTextAreaElement | null>(null);
+  const attach = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      own.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+  useLayoutEffect(() => {
+    const field = own.current;
+    if (!field) return;
+    const from = field.style.height;
+    field.style.transition = "none";
+    field.style.height = "auto";
+    const to = `${field.scrollHeight}px`;
+    field.style.height = from;
+    // Commit the old height before easing to the new one, so the change never jumps.
+    void field.offsetHeight;
+    field.style.transition = "";
+    field.style.height = to;
+  }, [value]);
+  return <textarea {...props} ref={attach} rows={1} value={value} />;
 }

@@ -8,7 +8,7 @@ import { useAgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
 import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatOriginLink } from "./ChatBranchPicker";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { memberDraftKey } from "../core/draftStorage";
@@ -1717,7 +1717,7 @@ function ComposerTextarea({
   ...props
 }: { draft: ComposerDraft } & Omit<React.ComponentProps<"textarea">, "value">) {
   const value = useComposerDraft(draft);
-  return <textarea {...props} value={value} />;
+  return <ComposerField {...props} value={value} />;
 }
 
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
