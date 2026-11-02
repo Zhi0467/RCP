@@ -150,7 +150,7 @@ def test_nonregular_space_output_is_refused_without_blocking(tmp_path):
         read_space_output(fifo)
     link = tmp_path / "patch.json"
     link.symlink_to(fifo)
-    with pytest.raises(OSError):
+    with pytest.raises(ValueError, match="regular file"):
         read_space_output(link)
 
 

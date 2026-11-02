@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents.command_protocol import AskArguments
+from rcp.core.models import AuthorizedHuman
 from rcp.projects import ProjectCatalog
 from rcp.runs.approval_cards import settle_interrupted_approval_cards
 from rcp.service import ProjectService
@@ -896,3 +897,50 @@ def test_request_receipts_need_their_durable_row(store):
         "user_id": None,
     }
     assert committed_receipt(store, _no_service, card) is None
+
+
+def _traced(store, monkeypatch):
+    """Record every statement the store runs."""
+    from contextlib import contextmanager
+
+    statements: list[str] = []
+    connection = store.connection
+
+    @contextmanager
+    def traced():
+        with connection() as opened:
+            opened.set_trace_callback(statements.append)
+            yield opened
+
+    monkeypatch.setattr(store, "connection", traced)
+    return statements
+
+
+def test_sweep_with_nothing_due_takes_no_write_lock(store, origin, monkeypatch):
+    make_card(store, origin)
+    statements = _traced(store, monkeypatch)
+    assert store.expire_approval_cards() == set()
+    assert not [statement for statement in statements if "BEGIN" in statement]
+
+
+def test_question_list_reads_do_not_grow_with_answered_history(questions_api, monkeypatch):
+    app, client, store, project_id = questions_api
+    api_card(questions_api)
+    url = f"/api/projects/{project_id}/chats/private/questions"
+
+    human = AuthorizedHuman(
+        space_id=store.space_id, user_id=store.local_owner.user_id, display_name="Member"
+    )
+    statements = _traced(store, monkeypatch)
+
+    def statements_per_list() -> int:
+        statements.clear()
+        assert client.get(url).status_code == 200
+        return len(statements)
+
+    before = statements_per_list()
+    for index in range(5):
+        answered = api_fixtures._question(store, project_id, owner_id="private", key=f"k{index}")
+        store.dismiss_question(answered.question_id, resolved_by=human)
+    assert len(client.get(url).json()) == 7
+    assert statements_per_list() == before

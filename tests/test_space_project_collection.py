@@ -85,12 +85,14 @@ def _statuses(results):
     return {project_id: result.status for project_id, result in results.items()}
 
 
-def _space_turn(manifest, tmp_path, operation_id="space-test"):
+def _space_turn(manifest, tmp_path, operation_id="space-test", *, more=()):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    for path in more:
+        app.state.catalog.register(str(path), identity_action="created")
     store = app.state.background_tasks.store
     human = _authorizer(store)
     threads = store.ensure_agent_threads(
-        human.user_id, [app.state.default_project_id], default_names=("Pip",)
+        human.user_id, [project.project_id for project in store.projects()], default_names=("Pip",)
     )
     thread = next(item for item in threads if item.kind == "space")
     request = _work_request().model_copy(update={"chat_id": thread.thread_id})
@@ -120,6 +122,29 @@ def _prepared(owner, request, execution, stage):
     found = prepare_space_projects(owner, request, execution, stage)
     bind_space_projects(owner, execution, stage, found)
     return found
+
+
+def test_space_turn_reads_the_catalog_inventory_once(manifest, tmp_path, monkeypatch):
+    from rcp.projects import ProjectCatalog
+
+    other = tmp_path / "other"
+    for alias in ("repo-a", "repo-b"):
+        (other / alias / ".research").mkdir(parents=True)
+    text = manifest.path.read_text().replace(str(tmp_path), str(other))
+    (other / "repo-a" / ".research" / "manifest.toml").write_text(text)
+    builds = []
+    whole = ProjectCatalog.repository_ownership_inventory
+
+    def counted(self):
+        builds.append(1)
+        return whole(self)
+
+    monkeypatch.setattr(ProjectCatalog, "repository_ownership_inventory", counted)
+    *_, found = _space_turn(
+        manifest, tmp_path, more=[other / "repo-a" / ".research" / "manifest.toml"]
+    )
+    assert len(found.writers) == 2
+    assert len(builds) == 1
 
 
 def test_space_collection_uses_work_apply_guards(manifest, tmp_path, monkeypatch):

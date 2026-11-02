@@ -40,27 +40,15 @@ def consolidate(store):
         )
 
 
-def test_legacy_lessons_are_read_only_migration_source(store):
+def lessons(store, project_id):
     with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO operational_lessons VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "old",
-                "project",
-                "Preserved note",
-                "before",
-                "before",
-                "agent",
-                "old-turn",
-                None,
-                None,
-                0,
-            ),
-        )
-    assert store.list_lessons("project")[0]["text"] == "Preserved note"
-    assert store.list_lessons("other") == []
-    for removed in ("add_lesson", "update_lesson", "delete_lesson", "execute_lesson_command"):
-        assert not hasattr(store, removed)
+        return [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM operational_lessons WHERE project_id=? ORDER BY lesson_id",
+                (project_id,),
+            )
+        ]
 
 
 def test_legacy_lessons_and_receipts_survive_restore_and_alias_then_delete(store):
@@ -75,14 +63,15 @@ def test_legacy_lessons_and_receipts_survive_restore_and_alias_then_delete(store
         connection.execute(
             "INSERT INTO lesson_command_receipts VALUES ('project','turn','add','key','digest','{}')"
         )
-    original = store.list_lessons("project")
+    original = lessons(store, "project")
+    assert original
     tables = {"operational_lessons", "lesson_command_receipts"}
     assert tables <= TRANSFER_EXCLUDED_PROJECT_TABLES
     store.detach_restored_lifecycle(diagnostic="Restore test", confirmed_by="Human")
-    assert store.list_lessons("project") == original
+    assert lessons(store, "project") == original
     canonical = str(uuid4())
     store.migrate_project_identity("project", canonical, str(uuid4()))
-    assert store.list_lessons(canonical) == original
+    assert [row[2:] for row in lessons(store, canonical)] == [row[2:] for row in original]
     with store.connection() as connection:
         for table in tables:
             assert connection.execute(f"SELECT project_id FROM {table}").fetchone()[0] == canonical
