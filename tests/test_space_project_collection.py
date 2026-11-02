@@ -11,9 +11,10 @@ from tests.test_storage import _task_record
 
 
 def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypatch):
-    from rcp.runs.space_projects import collect_space_projects, prepare_space_projects
+    from rcp.runs.space_projects import collect_space_projects
 
-    owner, request, execution, stage, projects, excluded = _space_turn(manifest, tmp_path)
+    owner, request, execution, stage, found = _space_turn(manifest, tmp_path)
+    projects = found.writers
     store = owner.store
     assert len(projects) == 1
     project = projects[0]
@@ -37,7 +38,7 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
     with monkeypatch.context() as patch:
         patch.setattr(store, "record_agent_task_receipt", fail_after_collection)
         with pytest.raises(ValueError):
-            collect_space_projects(owner, execution, projects, excluded, stage)
+            collect_space_projects(owner, execution, found, stage)
     assert project.service.history.state().revision == before + 1
     assert not (stage / "patch.json").exists()
     assert not (stage / "watch.json").exists()
@@ -57,10 +58,11 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
         retry.operation_id, store, AgentProcessControl(), continuation="retry"
     )
     execution.checkpoint_stage("", str(stage))
-    projects, _, excluded = prepare_space_projects(owner, request, execution, stage)
+    found = _prepared(owner, request, execution, stage)
+    projects = found.writers
     project = projects[0]
     project.patch_path.write_text(agent_patch_json(seed_patch()))
-    assert _statuses(collect_space_projects(owner, execution, projects, excluded, stage)) == {
+    assert _statuses(collect_space_projects(owner, execution, found, stage)) == {
         project.project_id: "applied"
     }
     assert not project.patch_path.exists()
@@ -70,7 +72,7 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
             "DELETE FROM space_turn_project_bindings WHERE operation_id=?", (retry.operation_id,)
         )
     project.patch_path.write_text("invalid")
-    assert _statuses(collect_space_projects(owner, execution, projects, excluded, stage)) == {
+    assert _statuses(collect_space_projects(owner, execution, found, stage)) == {
         project.project_id: "rejected"
     }
     assert not project.patch_path.exists()
@@ -81,8 +83,6 @@ def _statuses(results):
 
 
 def _space_turn(manifest, tmp_path, operation_id="space-test"):
-    from rcp.runs.space_projects import prepare_space_projects
-
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     human = _authorizer(store)
@@ -108,21 +108,29 @@ def _space_turn(manifest, tmp_path, operation_id="space-test"):
     stage.mkdir(parents=True)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
     execution.checkpoint_stage("", str(stage))
-    projects, _, excluded = prepare_space_projects(owner, request, execution, stage)
-    return owner, request, execution, stage, projects, excluded
+    return owner, request, execution, stage, _prepared(owner, request, execution, stage)
+
+
+def _prepared(owner, request, execution, stage):
+    from rcp.runs.space_projects import bind_space_projects, prepare_space_projects
+
+    found = prepare_space_projects(owner, request, execution, stage)
+    bind_space_projects(owner, execution, stage, found)
+    return found
 
 
 def test_space_collection_uses_work_apply_guards(manifest, tmp_path, monkeypatch):
     from rcp.runs.space_projects import collect_space_projects
     from rcp.transport.state import BatchPublishFailed
 
-    owner, _, execution, stage, projects, excluded = _space_turn(manifest, tmp_path)
+    owner, _, execution, stage, found = _space_turn(manifest, tmp_path)
+    projects = found.writers
     (project,) = projects
     history = project.service.history
     before = len(history.load_patches())
     # An empty Patch appends no transition.
     project.patch_path.write_text(agent_patch_json(seed_patch().model_copy(update={"ops": []})))
-    results = collect_space_projects(owner, execution, projects, excluded, stage)
+    results = collect_space_projects(owner, execution, found, stage)
     assert _statuses(results) == {project.project_id: "none"}
     assert len(history.load_patches()) == before
     assert owner.store.agent_task_patch_output(execution.operation_id) is not None
@@ -134,24 +142,92 @@ def test_space_collection_uses_work_apply_guards(manifest, tmp_path, monkeypatch
         raise BatchPublishFailed("lost at the commit point", commit_status="unknown")
 
     monkeypatch.setattr(history, "append", unknown)
-    (result,) = collect_space_projects(owner, execution, projects, excluded, stage).values()
+    (result,) = collect_space_projects(owner, execution, found, stage).values()
     assert (result.status, result.commit_status) == ("unavailable", "unknown")
     assert project.patch_path.exists()
 
 
-def test_space_binding_change_is_a_visible_rejection(manifest, tmp_path):
-    from rcp.runs.space_projects import collect_space_projects, prepare_space_projects
+def test_space_binding_change_is_a_visible_rejection(manifest, tmp_path, monkeypatch):
+    from rcp.runs.space_projects import collect_space_projects
 
-    owner, request, execution, stage, projects, _ = _space_turn(manifest, tmp_path)
+    owner, request, execution, stage, found = _space_turn(manifest, tmp_path)
+    projects = found.writers
     (project,) = projects
     with owner.store.connection() as connection:
         connection.execute(
             "UPDATE space_turn_project_bindings SET write_scope_fingerprint='changed' WHERE operation_id=?",
             (execution.operation_id,),
         )
-    projects, _, excluded = prepare_space_projects(owner, request, execution, stage)
-    assert projects == [] and project.project_id in excluded
+    found = _prepared(owner, request, execution, stage)
+    projects = found.writers
+    assert projects == [] and found.excluded[project.project_id]["code"] == "binding_changed"
     project.patch_path.write_text(agent_patch_json(seed_patch()))
-    results = collect_space_projects(owner, execution, projects, excluded, stage)
-    assert _statuses(results) == {project.project_id: "rejected"}
-    assert not project.patch_path.exists()
+    # A project the member gained mid-turn is reported, not silently discarded.
+    late = stage / "projects" / "late-project" / "patch.json"
+    late.parent.mkdir(parents=True)
+    late.write_text(agent_patch_json(seed_patch()))
+    members = owner.store.member_project_ids(owner.thread.user_id)
+    monkeypatch.setattr(owner.store, "member_project_ids", lambda _: {*members, "late-project"})
+    results = collect_space_projects(owner, execution, found, stage)
+    assert _statuses(results) == {project.project_id: "rejected", "late-project": "rejected"}
+    assert found.excluded["late-project"]["code"] == "added_after_start"
+    assert not project.patch_path.exists() and not late.exists()
+
+
+def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, monkeypatch):
+    from rcp.agents.command_protocol import GraphLogCommandRequest, ValidateCommandRequest
+    from rcp.runs.space_projects import prepare_space_projects
+    from rcp.service import ProjectService
+
+    owner, request, execution, stage, found = _space_turn(manifest, tmp_path)
+    (writer,) = found.writers
+    assert writer.read_scope.verbs | {"bulletin", "validate"} == writer.verbs
+    loaded = ProjectService.manifest.fget
+
+    def remote_base(service):
+        local = loaded(service)
+        machines = [item.model_copy(update={"host": "gpu.example"}) for item in local.machines]
+        return local.model_copy(update={"machines": machines})
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ProjectService, "manifest", property(remote_base))
+        found = prepare_space_projects(owner, request, execution, stage)
+    # State readable here keeps a read client; writing goes through handoff.
+    (reader,) = found.readers
+    assert found.writers == [] and found.excluded[reader.project_id]["code"] == "base_remote"
+    assert reader.verbs == reader.read_scope.verbs | {"bulletin"}
+    identity = {"mailbox_id": "a" * 32, "request_id": "b" * 32, "credential": "c" * 64}
+    validate = ValidateCommandRequest(verb="validate", arguments={"patch": "{}"}, **identity)
+    log = GraphLogCommandRequest(verb="graph_log", arguments={"id": "missing"}, **identity)
+    assert reader.command(validate, None).status == "invalid"
+    assert reader.command(log, None).status == "ok"
+
+
+def test_space_git_failure_leaves_out_only_that_project(manifest, tmp_path):
+    from rcp.agents.git_access import ProviderGitAccess
+    from rcp.runs.space_chat import _prepare_space_git
+
+    owner, request, execution, stage, found = _space_turn(manifest, tmp_path)
+    (project,) = found.writers
+    access = ProviderGitAccess(None, tmp_path, "", (("repo", "/checkout"),))
+    _prepare_space_git(owner, execution, found, lambda *_: access)
+    assert found.writers and execution.git_access == access
+
+    def unreachable(*_):
+        raise OSError("transport down")
+
+    _prepare_space_git(owner, execution, found, unreachable)
+    assert found.writers == []
+    assert found.excluded[project.project_id]["code"] == "git_unavailable"
+
+
+def test_space_limits_derive_lacking_commands_from_grants(manifest, tmp_path):
+    from rcp.agents.write_scope import CompositeWriteScope
+    from rcp.runs.space_chat import space_limits_section
+
+    _, _, _, stage, found = _space_turn(manifest, tmp_path)
+    scope = CompositeWriteScope(stage_root=str(stage))
+    section = space_limits_section(frozenset({"handoff", "schedule"}), scope, found)
+    # Granted verbs never show as lacking; lifecycle verbs the turn lacks do.
+    assert "`episode`" in section and "`launch`" in section
+    assert "`schedule`" not in section and "`bulletin`" not in section
