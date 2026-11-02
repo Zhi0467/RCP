@@ -1665,29 +1665,43 @@ button.agent-provider-label {
   gap: 13px;
   padding: 16px;
 }
+/* One row per agent: its name, its four choices, and its readiness check. */
 .settings-agent {
-  border: 1px solid var(--line);
+  align-items: end;
   background: var(--surface);
+  border: 1px solid var(--line);
+  column-gap: 14px;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.6fr) minmax(0, 4fr) auto;
+  padding: 11px 13px;
 }
 .settings-agent > header {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
+  align-items: flex-start;
+  align-self: center;
   display: flex;
-  justify-content: space-between;
-  padding: 11px 13px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .settings-agent > header strong {
   display: block;
-}
-.settings-agent > header strong {
   font-family: var(--editorial);
   font-size: var(--type-lg);
   font-weight: 550;
 }
+/* The controls' wrapper steps aside so its fields and check sit in the row. */
 .settings-agent .agent-config {
-  background: var(--paper);
-  border-bottom: 0;
-  padding: 13px;
+  display: contents;
+}
+.settings-agent .agent-readiness {
+  margin-top: 0;
+  min-height: 31px;
+}
+/* A readiness problem carries a sentence, so it takes a line of its own. */
+.settings-agent .agent-readiness:not(.ready, .pending) {
+  grid-column: 1 / -1;
+  margin-top: 9px;
+  min-height: 0;
 }
 .skill-defaults-settings > header {
   align-items: flex-start;
@@ -2599,6 +2613,31 @@ button.agent-provider-label {
   .agent-config-fields,
   .agent-role-fields {
     grid-template-columns: repeat(2, 1fr);
+  }
+  /* Too narrow for one row: the name, tag, and check share the first line and
+     the choices take the full width below. */
+  .settings-agent {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 10px;
+  }
+  .settings-agent > header {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .settings-agent .agent-readiness {
+    align-self: center;
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .settings-agent .agent-config-fields {
+    grid-column: 1 / -1;
+  }
+  .settings-agent .agent-readiness:not(.ready, .pending) {
+    grid-row: auto;
   }
   .settings-page {
     padding: 35px 20px 70px;

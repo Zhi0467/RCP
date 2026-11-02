@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { hasRow, rowOf } from "../core/agentRows";
 import { api } from "../core/api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../core/desktopRuntime";
 import {
@@ -85,13 +86,14 @@ const steps = [
 let repositorySequence = 1;
 
 const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed" },
+  { id: "seed", label: "Seed and refresh" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
+const agentRows = agentExecutionProfiles.filter(({ id }) => hasRow(id));
 
 // The provider is filled from the registry once it answers; the backend lists
 // its default first. Hardcoding one here is what this whole change removes.
@@ -273,7 +275,7 @@ function PersonalProjectSetup({
     default_auto_research_invocation_ceiling: defaultAutoResearchInvocationCeiling,
     execution: canonicalExecution,
     agents: Object.fromEntries(
-      agentExecutionProfiles.map(({ id }) => [id, { ...agents[id], ...canonicalExecution }]),
+      agentExecutionProfiles.map(({ id }) => [id, { ...agents[rowOf(id)], ...canonicalExecution }]),
     ) as SetupAgents,
     confirmed: false,
   });
@@ -552,7 +554,7 @@ function PersonalProjectSetup({
                 />
               </label>
               <div className="agent-role-stack">
-                {agentExecutionProfiles.map(({ id, label }) => {
+                {agentRows.map(({ id, label }) => {
                   const profile = agents[id];
                   const readiness = readinessFor(providers, profile.provider);
                   const models = readiness?.models ?? [];
@@ -797,9 +799,7 @@ function PersonalProjectSetup({
           <LedgerItem
             number="C"
             label="Agent roles"
-            value={agentExecutionProfiles
-              .map(({ id, label }) => `${label}: ${agents[id].provider}`)
-              .join(" · ")}
+            value={agentRows.map(({ id, label }) => `${label}: ${agents[id].provider}`).join(" · ")}
           />
         </aside>
       </main>

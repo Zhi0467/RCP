@@ -1630,12 +1630,40 @@ moves forward. Markers are not moved with a transferred project.
 Paper owns the co-edited file tree, its previews, and coach change
 cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
-server status (team spaces), machine cards with their names (renamed in place)
-and their Sign-ins fold, and the personal space's clear-all-caches. Project Settings owns
+display preferences in its Appearance pane
+([grammar](interface-and-visual-design.md#visual-grammar)), the server status
+(team spaces), This Mac's power controls (personal space), machine cards with
+their names (renamed in place) and their Sign-ins fold, Dictation and voice,
+and the personal space's clear-all-caches. A personal space shows its release
+check in the Space Settings header. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
-membership, and prospective episode limits, not ontology authoring. Display
-preferences live in the identity menu.
+membership, and prospective episode limits, not ontology authoring. Each
+preference has one home, so Project Settings has no Appearance pane. Seed and
+Refresh run on one profile. Project Settings and both project setup flows show
+one Seed and refresh row, and every save writes its choice to both stored
+profiles, so the two cannot drift apart.
+
+Both levels show a section rail beside one pane at a time. The rail lists only
+the sections that exist, each with an icon and a label. The open section lives
+in memory and has no link, so leaving Settings or reloading opens the first
+section next time. Every pane stays mounted, so drafts, open dialogs, and
+loaded data survive a switch without a refetch. Choosing a section scrolls to
+the top. At phone width the rail becomes a strip at the top of the page that
+scrolls within its own width. Project Settings shows its save bar under every
+pane. While the auto-research ceiling is invalid, the bar says so on every pane,
+since only Agent defaults shows the field. Switching projects starts Project
+Settings on the new project's first section. A personal space lists This Mac
+while its power status loads, so an entry point that asks for it never shows
+another pane first. A status that loads as unsupported removes it.
+
+Entry points open a given pane. The gear opens Appearance. The space home's
+power warning opens This Mac. A sign-in notice opens Machines at that login's
+Sign-ins fold. The voice window's settings button opens Dictation and voice. In
+a project, the Inbox's consolidation renewal row opens Nightly consolidation
+and a compute route notice opens Machines. The tab strip and WebMCP open the
+first section. An entry point
+fired while Space Settings is open reopens it on the requested pane.
 
 Project memory has no Settings screen; members manage notes through project chat.
 
