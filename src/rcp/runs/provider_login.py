@@ -118,33 +118,7 @@ def parked_provider_work(
             work[account].queued.append(operation_id)
     # Episode recovery has its own durable queue. Other failed turns must also
     # wake after sign-in, including Work chats with no episode.
-    with store.connection() as connection:
-        failed = connection.execute(
-            "SELECT failed.operation_id FROM graph_runs failed WHERE failed.project_id=? "
-            "AND failed.status='failed' AND failed.failure_kind='provider_auth' "
-            "AND failed.history_only=0 AND failed.kind NOT IN ('auto_research', 'episode_report') "
-            "AND NOT EXISTS (SELECT 1 FROM auto_research_recoveries recovery "
-            "WHERE recovery.operation_id=failed.operation_id) "
-            "AND NOT EXISTS (SELECT 1 FROM graph_runs later WHERE later.project_id=failed.project_id "
-            "AND later.graph_target_json=failed.graph_target_json AND later.rowid>failed.rowid "
-            "AND later.status NOT IN ('queued', 'running', 'pausing') "
-            "AND json_extract(later.request_json, '$.chat_id')="
-            "json_extract(failed.request_json, '$.chat_id'))",
-            (project_id,),
-        ).fetchall()
-    for row in failed:
-        current = store.agent_task(row["operation_id"])
-        if (
-            current is None
-            or not current.can_retry
-            or store.agent_task_has_continuation(current.operation_id)
-            or store.consolidation_run_for_operation(current.operation_id) is not None
-        ):
-            continue
-        if current.episode_id:
-            episode = store.episode(current.episode_id)
-            if episode is None or episode.status != "running" or episode.stop_requested_at:
-                continue
+    for current in auth_retry_candidates(store, project_id=project_id):
         account = resolved_task_login(store, current)
         if account is not None:
             work[account].retries.append(current.operation_id)
@@ -160,6 +134,48 @@ def parked_provider_work(
             if account is not None:
                 work[account].watcher_groups.append(group)
     return work
+
+
+def auth_retry_candidates(
+    store: AppStore, *, project_id: str | None = None, operation_id: str | None = None
+) -> list[AgentTaskRecord]:
+    """Sign-in failures a later sign-in still retries, in a project or one turn.
+
+    A turn its chat has since moved past, or one already continued, is final.
+    """
+    if (project_id is None) == (operation_id is None):
+        raise ValueError("Name exactly one project or operation")
+    column, value = ("project_id", project_id) if project_id else ("operation_id", operation_id)
+    with store.connection() as connection:
+        failed = connection.execute(
+            f"SELECT failed.operation_id FROM graph_runs failed WHERE failed.{column}=? "
+            "AND failed.status='failed' AND failed.failure_kind='provider_auth' "
+            "AND failed.history_only=0 AND failed.kind NOT IN ('auto_research', 'episode_report') "
+            "AND NOT EXISTS (SELECT 1 FROM auto_research_recoveries recovery "
+            "WHERE recovery.operation_id=failed.operation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM graph_runs later WHERE later.project_id=failed.project_id "
+            "AND later.graph_target_json=failed.graph_target_json AND later.rowid>failed.rowid "
+            "AND later.status NOT IN ('queued', 'running', 'pausing') "
+            "AND json_extract(later.request_json, '$.chat_id')="
+            "json_extract(failed.request_json, '$.chat_id'))",
+            (value,),
+        ).fetchall()
+    candidates = []
+    for row in failed:
+        current = store.agent_task(row["operation_id"])
+        if (
+            current is None
+            or not current.can_retry
+            or store.agent_task_has_continuation(current.operation_id)
+            or store.consolidation_run_for_operation(current.operation_id) is not None
+        ):
+            continue
+        if current.episode_id:
+            episode = store.episode(current.episode_id)
+            if episode is None or episode.status != "running" or episode.stop_requested_at:
+                continue
+        candidates.append(current)
+    return candidates
 
 
 def resume_provider_account(

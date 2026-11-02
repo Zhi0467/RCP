@@ -818,6 +818,8 @@ AGENT_THREAD_TAIL_MAX_BYTES = 64 * 1024
 AGENT_THREAD_COMPACT_TIMEOUT_SECONDS = 300
 AGENT_THREAD_COMPACT_MAX_BYTES = 64 * 1024
 AGENT_HANDOFF_MAX_CHARS = 16_000
+# A handoff whose delivery stays transiently refused this long is refused for its sender.
+AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS = 30 * 60
 AGENT_PROJECTS_MAX_ITEMS = 100
 AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
 # Member-requested standing schedules per private agent thread.

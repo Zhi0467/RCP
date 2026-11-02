@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -23,13 +24,14 @@ from rcp.agents.command_protocol import (
 from rcp.core.project_types import project_type_of
 from rcp.digest import digest_counts
 from rcp.limits import (
+    AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS,
     AGENT_HANDOFF_MAX_CHARS,
     AGENT_PROJECT_DETAILS_MAX_ITEMS,
     AGENT_PROJECTS_MAX_ITEMS,
 )
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
-from rcp.runs.provider_login import AdmissionRefused
+from rcp.runs.provider_login import AdmissionRefused, auth_retry_candidates
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import AgentHandoffRecord, AgentThreadRecord
 from rcp.turn_outcomes import TurnOutcome
@@ -336,14 +338,17 @@ def _newest_continuation(connection, operation_id: str):
     ).fetchone()
 
 
-def _handoff_turn_settled(store: AppStore, row) -> bool:
+def _handoff_turn_settled(store: AppStore, background: BackgroundAgentTasks, row) -> bool:
     """A Stopped turn reports at once; a failure RCP still retries itself does not."""
     if row is None or row["history_only"] or row["status"] not in _HANDOFF_SETTLED:
         return False
     if row["status"] != "failed":
         return True
+    if background.retry_undecided(row["operation_id"]):
+        return False
     if row["failure_kind"] == "provider_auth":
-        return False  # A sign-in release retries it.
+        # A sign-in release retries it, until its chat moves past it.
+        return not auth_retry_candidates(store, operation_id=row["operation_id"])
     return not (
         row["failure_kind"] == "transport_lost"
         and store.agent_task_has_receipt(row["operation_id"], "transport_auto_retry")
@@ -497,8 +502,8 @@ def dispatch_thread_handoffs(
                 admitted.append(operation_id)
         except Exception:
             logger.exception("Handoff %s delivery failed", handoff.handoff_id)
-    deferred = _project_delivered_handoff_messages(store, catalog)
-    for handoff in _settle_delivered_handoffs(store, deferred):
+    _project_delivered_handoff_messages(store, catalog)
+    for handoff in _settle_delivered_handoffs(store, background):
         try:
             if operation_id := _wake_space(store, background, handoff):
                 admitted.append(operation_id)
@@ -507,26 +512,32 @@ def dispatch_thread_handoffs(
     return admitted
 
 
-def _settle_delivered_handoffs(store: AppStore, deferred: set[str]) -> list[AgentHandoffRecord]:
+def _settle_delivered_handoffs(
+    store: AppStore, background: BackgroundAgentTasks
+) -> list[AgentHandoffRecord]:
     """Settle delivered handoffs whose newest turn settled; return those owed a wake.
 
-    A handoff whose request message is not yet in the project transcript (`deferred`)
-    stays unsettled, so the next pass projects it before it can settle.
+    A handoff whose request message is not yet in the project transcript stays
+    unsettled, so the next pass projects it before it can settle.
     """
     with store.connection() as connection:
-        delivered = connection.execute(
-            "SELECT handoff_id,target_operation_id FROM agent_handoffs "
-            "WHERE settled_at IS NULL AND target_operation_id IS NOT NULL"
-        ).fetchall()
-        for handoff_id, operation_id in delivered:
-            if operation_id in deferred:
-                continue
-            newest = _newest_continuation(connection, operation_id)
-            if _handoff_turn_settled(store, newest):
+        delivered = [
+            (handoff_id, _newest_continuation(connection, operation_id))
+            for handoff_id, operation_id in connection.execute(
+                "SELECT handoff_id,target_operation_id FROM agent_handoffs "
+                "WHERE settled_at IS NULL AND target_operation_id IS NOT NULL "
+                "AND message_projected_at IS NOT NULL"
+            ).fetchall()
+        ]
+    for handoff_id, newest in delivered:
+        newest = _fail_unlaunchable_turn(store, newest)
+        if newest is not None and _handoff_turn_settled(store, background, newest):
+            with store.connection() as connection:
                 connection.execute(
-                    "UPDATE agent_handoffs SET settled_at=? WHERE handoff_id=?",
+                    "UPDATE agent_handoffs SET settled_at=? WHERE handoff_id=? AND settled_at IS NULL",
                     (newest["finished_at"] or store.now(), handoff_id),
                 )
+    with store.connection() as connection:
         rows = connection.execute(
             "SELECT * FROM agent_handoffs WHERE settled_at IS NOT NULL "
             "AND notified_operation_id IS NULL AND COALESCE(refusal_reason,'') NOT LIKE ? "
@@ -534,6 +545,19 @@ def _settle_delivered_handoffs(store: AppStore, deferred: set[str]) -> list[Agen
             (_SOURCE_REFUSAL + "%",),
         ).fetchall()
     return [AgentHandoffRecord.model_validate(dict(row)) for row in rows]
+
+
+def _fail_unlaunchable_turn(store: AppStore, row):
+    """A queued turn whose thread closed or archived can never launch; it fails."""
+    if row is None or row["status"] != "queued":
+        return row
+    task = store.agent_task(row["operation_id"])
+    refusal = store.agent_task_turn_refusal(task) if task is not None else None
+    if refusal is None:
+        return row
+    store.fail_agent_task(row["operation_id"], f"The turn could not start: {refusal}")
+    with store.connection() as connection:
+        return _newest_continuation(connection, row["operation_id"])
 
 
 def _deliver_handoff(
@@ -555,8 +579,19 @@ def _deliver_handoff(
             store, catalog, background, handoff, source, target, project_admission
         )
     except _TRANSIENT_DELIVERY as exc:
-        # Kept for the next settlement, sign-in release or startup.
-        _note_once(store, handoff, f"Handoff {handoff.handoff_id} delivery deferred: {exc}")
+        # Kept for the next settlement, sign-in release or startup, for a bounded time.
+        since = datetime.fromisoformat(store.defer_agent_handoff_delivery(handoff.handoff_id))
+        waited = (datetime.fromisoformat(store.now()) - since).total_seconds()
+        if waited >= AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS:
+            store.refuse_agent_handoff(
+                handoff.handoff_id, f"delivery_timed_out: {exc}"[:AGENT_HANDOFF_MAX_CHARS]
+            )
+        else:
+            _note_once(
+                store,
+                handoff.source_operation_id,
+                f"Handoff {handoff.handoff_id} delivery deferred: {exc}",
+            )
     except (ValueError, KeyError) as exc:
         store.refuse_agent_handoff(handoff.handoff_id, str(exc) or type(exc).__name__)
     return None
@@ -624,10 +659,11 @@ def _admit_delivery(
             ).operation_id
 
 
-def _note_once(store: AppStore, handoff: AgentHandoffRecord, note: str) -> None:
-    events = store.agent_task_events(handoff.source_operation_id)
+def _note_once(store: AppStore, operation_id: str, note: str) -> None:
+    events = store.agent_task_events(operation_id)
     if all(event.message != note for event in events):
-        store.record_agent_task_event(handoff.source_operation_id, note, level="warning")
+        logger.warning("%s", note)
+        store.record_agent_task_event(operation_id, note, level="warning")
 
 
 def _wake_space(
@@ -659,7 +695,11 @@ def _wake_space(
             handoff_wake_id=handoff.handoff_id,
         ).operation_id
     except (ValueError, KeyError, OSError, RuntimeError) as exc:
-        _note_once(store, handoff, f"Handoff {handoff.handoff_id} Space wake deferred: {exc}")
+        _note_once(
+            store,
+            handoff.source_operation_id,
+            f"Handoff {handoff.handoff_id} Space wake deferred: {exc}",
+        )
         return None
 
 
@@ -766,16 +806,13 @@ def unstarted_handoff_turns(store: AppStore) -> list[AgentTaskRecord]:
 
 
 def restart_handoff_turns(background: BackgroundAgentTasks, tasks: list[AgentTaskRecord]) -> None:
-    from rcp.runs.task_policy import load_stored_request
-    from rcp.service import RunRequest
+    """Relaunch through admitted launch, which refuses a closed thread's turn.
 
+    The dispatcher then fails that turn so its handoff reports.
+    """
     for task in tasks:
         try:
-            request = load_stored_request(RunRequest, task.request, operation_id=task.operation_id)
-            background.admit_provider_task(
-                task.project_id, request, authorized_by=task.authorized_by
-            )
-            background._spawn_record(task, request, continuation="fresh")
+            background.launch_admitted(task.operation_id)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             logger.warning("Handoff task %s restart deferred: %s", task.operation_id, exc)
             background.store.record_agent_task_event(
@@ -783,10 +820,10 @@ def restart_handoff_turns(background: BackgroundAgentTasks, tasks: list[AgentTas
             )
 
 
-def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog) -> set[str]:
+def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog) -> None:
     """Replay the file projection from committed admissions, including crash recovery.
 
-    Returns the target operations whose projection was deferred this pass.
+    Each handoff's copy is recorded once it lands, so later passes skip it.
     """
     from rcp.runs.agent_threads import task_owner
     from rcp.runs.chat import _append_chat_records, _chat_path
@@ -795,12 +832,14 @@ def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog
 
     with store.connection() as connection:
         rows = connection.execute(
-            "SELECT target_operation_id FROM agent_handoffs WHERE target_operation_id IS NOT NULL AND settled_at IS NULL"
+            "SELECT handoff_id,target_operation_id FROM agent_handoffs "
+            "WHERE target_operation_id IS NOT NULL AND settled_at IS NULL "
+            "AND message_projected_at IS NULL"
         ).fetchall()
-    deferred: set[str] = set()
-    for row in rows:
-        task = store.agent_task(row[0])
+    for handoff_id, operation_id in rows:
+        task = store.agent_task(operation_id)
         if task is None or task.kind != "project_chat":
+            store.mark_agent_handoff_message_projected(handoff_id)  # Nothing to copy.
             continue
         try:
             service = task_owner(store, task, catalog=catalog)
@@ -838,9 +877,6 @@ def _project_delivered_handoff_messages(store: AppStore, catalog: ProjectCatalog
                     reserve_prompt=True,
                 )
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            logger.warning("Handoff message %s projection deferred: %s", task.operation_id, exc)
-            store.record_agent_task_event(
-                task.operation_id, f"Handoff message projection deferred: {exc}", level="warning"
-            )
-            deferred.add(task.operation_id)
-    return deferred
+            _note_once(store, task.operation_id, f"Handoff message projection deferred: {exc}")
+            continue
+        store.mark_agent_handoff_message_projected(handoff_id)
