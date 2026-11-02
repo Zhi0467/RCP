@@ -36,9 +36,9 @@ def test_new_reading_reports_are_rejected(manifest, kind: str) -> None:
 
 
 def test_historical_reading_report_replays_without_outputs_or_history_rewrite(manifest) -> None:
+    """A pre-transition historical seed contains real graph operations and a report."""
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
-    # A pre-transition historical seed contains real graph operations and a report.
     raw = seed_patch().model_dump(mode="json")
     raw["revision"] = 1
     raw["ops"].append(
@@ -83,11 +83,11 @@ def test_old_graph_snapshot_discards_reading_report_without_mutating_input() -> 
 def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
     manifest, tmp_path
 ) -> None:
-    # An upgrade can land while a Seed or Refresh keeps a retained stage, and that
-    # stage's version-2 context still names `coverage_path`. `RunContext` forbids
-    # extras, so without the retirement allowlist the checkpoint would fail a
-    # native continuation and quietly force a retry to rebuild the context it
-    # promised to reuse.
+    """An upgrade can land while a Seed or Refresh keeps a retained stage whose version-2 context
+    names `coverage_path`. `RunContext` forbids extras, so without the retirement allowlist a native
+    continuation would fail and force a rebuild. The file on disk stays as evidence, and only the
+    retired key is dropped.
+    """
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
@@ -106,7 +106,6 @@ def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
     prepared_path = stage / "inputs/prepared-context.json"
     payload = json.loads(prepared_path.read_text(encoding="utf-8"))
     payload["context"]["coverage_path"] = str(manifest.research_dir / "coverage.json")
-    # Staged inputs are written read-only; rewrite as the previous version would have.
     prepared_path.chmod(0o600)
     prepared_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -129,10 +128,8 @@ def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
     assert prepared.graph_revision == context.graph_revision
     assert prepared.context.research_md_path == context.research_md_path
     assert "coverage_path" not in prepared.context.model_dump()
-    # The file on disk is evidence of the prior attempt, not a migration target.
     assert json.loads(prepared_path.read_text(encoding="utf-8"))["context"]["coverage_path"]
 
-    # The allowlist stays closed: only the retired key is dropped.
     payload["context"]["unrecognized_path"] = "/tmp/unknown"
     prepared_path.write_text(json.dumps(payload), encoding="utf-8")
 

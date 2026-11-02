@@ -55,10 +55,9 @@ def _wait_for_episode(
     report_ready: bool | None = None,
     timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> dict[str, object]:
-    # One acceptance episode runs several invocations and then wraps up, and
-    # needs about fourteen seconds of this on an unloaded machine. CI runs the
-    # suite with `-n auto` on two cores, where a budget sized from local timing
-    # is no budget at all, so this waits as long as any other settling task.
+    """One acceptance episode needs about fourteen seconds unloaded; CI runs `-n auto` on two cores,
+    so this waits as long as any other settling task.
+    """
     last_episode: dict[str, object] | None = None
 
     def matching_episode() -> dict[str, object] | None:
@@ -281,6 +280,9 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     manifest,
     tmp_path,
 ) -> None:
+    """Startup, not construction, reconciles the abandoned root, so this is read inside the
+    lifespan.
+    """
     data_dir = tmp_path / "data"
     app = create_named_app(
         str(manifest.path),
@@ -328,8 +330,6 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     restarted_store = restarted.state.background_tasks.store
 
     with signed_in_client(restarted) as client:
-        # Startup reconciles the abandoned root, not construction, so this is
-        # read inside the lifespan rather than immediately after create_app.
         interrupted = restarted_store.agent_task(root_operation_id)
         assert interrupted is not None and interrupted.status == "interrupted"
         retried = client.post(
@@ -455,6 +455,9 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
     manifest,
     tmp_path,
 ) -> None:
+    """The continuation reaches its provider in the ended episode's session and stage, and messages
+    follow the chain to its newest member.
+    """
     app = create_named_app(
         str(manifest.path),
         data_dir=tmp_path / "data",
@@ -517,8 +520,6 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
             json={"invocation_ceiling": 1, "request_id": str(uuid.uuid4())},
         )
         assert refused.status_code == 409, refused.text
-        # The continuation turn reaches its provider in the ended episode's session and
-        # stage; the fixture holds a reauthorized turn until it is released.
         stage = _wait_for_task_stage(store, continuation_root_id)
         _wait_for_path(stage / ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE)
         (stage / ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE).write_text(
@@ -534,8 +535,6 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
             old_episode_id,
             continuation_id,
         ]
-        # Messages follow the chain to its newest member, so the message
-        # projection moves with the continuation.
         moved = {
             "continued_by_episode_id",
             "can_continue",

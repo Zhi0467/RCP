@@ -62,7 +62,7 @@ def test_only_stop_endings_withdraw_questions(tmp_path, path, withdrawn):
 
 
 def test_episode_lifecycle_refreshes_question_cards(tmp_path):
-    # A card's offer reads its episode's lifecycle, so ending it must refresh cards.
+    """A card's offer reads its episode's lifecycle, so ending it must refresh cards."""
     store = AppStore(tmp_path / "app.sqlite3")
     episode = store.create_episode(_episode(store, "episode"))
     _question(store, episode)
@@ -115,6 +115,9 @@ def test_continuations_reopen_ancestor_questions_without_changing_origins(tmp_pa
 
 @pytest.mark.parametrize("delivered", [False, True])
 def test_only_undelivered_question_mail_goes_to_the_next_continuation(tmp_path, delivered):
+    """Continuation admission requires the orchestrator's saved session and stage. A late idempotent
+    ending replay must not withdraw reopened ancestor cards.
+    """
     from rcp.storage import (
         AutoResearchLifecycleNoticeRecord,
         AutoResearchMessageRecord,
@@ -124,7 +127,6 @@ def test_only_undelivered_question_mail_goes_to_the_next_continuation(tmp_path, 
     from .test_auto_research_commands import _auto_research_authority, _setup_auto_research
 
     store, original_episode, root = _setup_auto_research(tmp_path)
-    # Continuation admission requires the orchestrator's saved session and stage.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET native_session_id = 'session', stage_root = '/stage' "
@@ -197,12 +199,10 @@ def test_only_undelivered_question_mail_goes_to_the_next_continuation(tmp_path, 
         assert not replayed
         first_turns.append(task)
         store.complete_agent_task(task.operation_id, applied_revision=None, result={})
-    # A late idempotent ending replay must not withdraw reopened ancestor cards.
     store.end_episode_without_report(
         original_episode.episode_id, ending="exhausted", diagnostic=None
     )
     assert not store.get_question(question.question_id).withdrawn_readonly
-    # Undelivered answer mail is claimed by the next continuation's first turn.
     moved = store.readdress_auto_research_question_answer(question.question_id)
     claimant = root if delivered else first_turns[0]
     assert moved.episode_id == claimant.episode_id

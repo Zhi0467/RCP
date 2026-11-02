@@ -74,7 +74,7 @@ def test_code_admission_requires_one_repository(manifest, tmp_path) -> None:
 
 @pytest.mark.parametrize("ineligible", [None, "repositories", "git", "grant"])
 def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeypatch, ineligible):
-    # The default needs exactly one repository the project's agents can write.
+    """The default needs exactly one repository the project's agents can write."""
     if ineligible != "repositories":
         manifest.path.write_text(
             manifest.path.read_text().replace(
@@ -108,7 +108,7 @@ def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeyp
 
 
 def test_a_chosen_worktree_repository_narrows_the_run_to_it(manifest, tmp_path, monkeypatch):
-    # Both repositories are writable, so only the human's pick can enable the worktree.
+    """Both repositories are writable, so only the human's pick can enable the worktree."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     monkeypatch.setattr(
@@ -333,6 +333,7 @@ def test_branch_experiment_host_must_match_owner(manifest, tmp_path) -> None:
 
 
 def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, tmp_path) -> None:
+    """After a recorded removal, a scratch-only launch such as a report needs no worktree."""
     store = AppStore(tmp_path / "data" / "rcp.sqlite3")
     owner = _episode(store, "owner").model_copy(
         update={
@@ -370,7 +371,6 @@ def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, t
     assert scope.repository_roots == []
     assert store.episode_isolation_state("project", "owner").status == "ready"
     assert store.episode_isolation("project", "owner").worktree == binding
-    # After a recorded removal, a scratch-only launch (a report) needs no worktree.
     for expected, status in (("ready", "removing"), ("removing", "removed")):
         store.set_episode_isolation_status(
             "project", "owner", expected_status=expected, status=status
@@ -479,18 +479,17 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
     [
         ("active", True, None, True),
         ("completed", True, None, False),
-        # Stop ends observation without proving the job finished.
         ("stopped", True, None, True),
-        # A graph-only binding has no worktree a job could write.
         ("active", False, None, False),
-        # A graph-condition watcher observes the graph and runs no job.
         ("active", True, "{}", False),
     ],
 )
 def test_merge_job_gate_sees_scheduler_watchers(
     manifest, tmp_path, status, worktree, condition, pauses
 ):
-    # A scheduler job has no compute-job row; only its watcher observes it.
+    """Stop ends observation without proving the job finished, graph-only bindings and
+    graph-condition watchers run no job, and a scheduler job is observed only by its watcher.
+    """
     store, owner, attempt = _merge_owner(manifest, tmp_path)
     with store.connection() as connection:
         if worktree:

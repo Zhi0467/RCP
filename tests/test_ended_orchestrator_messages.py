@@ -22,6 +22,7 @@ from tests.test_episode_api import _sse, create_terminal_auto_episode
 
 
 def _ended_app(manifest, tmp_path, monkeypatch, *, launch=False):
+    """Inspects the committed launch inputs before any provider is started."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     tasks = app.state.background_tasks
@@ -34,7 +35,6 @@ def _ended_app(manifest, tmp_path, monkeypatch, *, launch=False):
         invocation_ceiling=2,
         report_error="Report unavailable.",
     )
-    # Inspect the committed launch inputs before any provider is started.
     if not launch:
         fake_launch_admitted(monkeypatch, tasks)
     return (
@@ -48,6 +48,7 @@ def _ended_app(manifest, tmp_path, monkeypatch, *, launch=False):
 def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
     manifest, tmp_path, monkeypatch
 ):
+    """A rename between a lost response and its retry is still the same member."""
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch)
     body = {
         "body": "Investigate the alternative explanation.",
@@ -75,7 +76,6 @@ def test_ended_message_claims_notice_and_mail_and_replays_exact_request(
             ("reauthorized", continued.root_operation_id)
         ]
         assert client.post(url, json=body).json() == message
-        # A rename between a lost response and its retry is still the same member.
         store.rename_space_user(continued.authorized_by.user_id, "Renamed researcher")
         assert client.post(url, json=body).json() == message
         conflict = client.post(url, json={**body, "body": "A different instruction."})
@@ -124,9 +124,9 @@ def test_a_sender_racing_a_continuation_mails_it_instead(manifest, tmp_path, mon
     first = {}
 
     def another_sender_continues_first(store_, episode):
+        """Sender A's continuation commits after sender B passed the ended check."""
         refusal = projected(store_, episode)
         if not first:
-            # Sender A's continuation commits after sender B passed the ended check.
             first["episode"], _ = continue_auto_research(
                 app.state.background_tasks,
                 episode,
@@ -161,10 +161,11 @@ def test_a_sender_racing_a_continuation_mails_it_instead(manifest, tmp_path, mon
 def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
     manifest, tmp_path, monkeypatch
 ):
+    """The test ends the first continuation by hand, so the app's own wrap-up settlement is
+    disabled; otherwise whichever ran first decided the outcome. A lost response still replays its
+    original records after the chain advances.
+    """
     app, store, original, url = _ended_app(manifest, tmp_path, monkeypatch, launch=True)
-    # This test ends the first continuation by hand below. The app's own settlement
-    # may also start that wrap-up once the root turn goes quiet, with a different
-    # fence, so whichever ran first decided the outcome; keep the test's path only.
     monkeypatch.setattr(
         EpisodeReconciler, "reconcile_auto_research_wrapup", lambda *_args, **_kwargs: False
     )
@@ -199,7 +200,6 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
         first_episode = store.episode(first_message["episode_id"])
         assert first_episode is not None
         wait_for_task(store, first_episode.root_operation_id, expect="succeeded")
-        # End the first continuation through the existing report workflow.
         signal = auto_research_exhaustion_signal(store, first_episode.episode_id)
         begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
         attempt = store.allocate_episode_report_attempt(first_episode.episode_id)
@@ -224,7 +224,6 @@ def test_first_turn_reads_mail_and_old_endpoint_follows_an_ended_continuation(
             (first_episode.episode_id, first_message["message_id"], original.episode_id),
             (second_episode.episode_id, second_message["message_id"], first_episode.episode_id),
         ]
-        # A lost response still replays its original records after the chain advances.
         assert client.post(url, json=payload).json() == first_message
         changed_ceiling = client.post(url, json={**payload, "invocation_ceiling": 4})
         assert changed_ceiling.status_code == 409
@@ -251,6 +250,10 @@ def test_ordinary_mail_consent_cannot_start_a_continuation(
 def test_continuation_first_turn_claims_answers_held_since_the_ending(
     manifest, tmp_path, monkeypatch
 ):
+    """Held answers claim together in mail order, and past one wake's bound the rest wait for
+    ordinary mail. One mailed while the orchestrator ran moves too, and the turn's chat line does
+    not repeat the cards' answers.
+    """
     import rcp.runs.auto_research_admission as admission
     from rcp.runs.auto_research_questions import (
         auto_research_question_snapshot,
@@ -259,14 +262,11 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
     from tests.test_episode_questions import _question
 
     app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
-    # Held answers claim together in mail order; past one wake's bound the rest
-    # wait for ordinary mail delivery instead of refusing the continuation.
     monkeypatch.setattr(admission, "AUTO_RESEARCH_MAIL_MAX_MESSAGES", 3)
     answers = [
         _question(store, original, key=f"held-{index}", state="answered") for index in range(5)
     ]
     held = answers[0]
-    # One was mailed while the orchestrator ran and never delivered; it moves too.
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         store._insert_auto_research_message(
@@ -291,7 +291,6 @@ def test_continuation_first_turn_claims_answers_held_since_the_ending(
         for item in [*answers[:3], answers[4]]
     }
     assert all(mail.delivery_operation_id == root.operation_id for mail in mails)
-    # The cards show the answers; the turn's chat line does not repeat their mail.
     turn_lines = store.orchestrator_chat_messages(continued.project_id, original.episode_id)
     assert not any(line.get("operation_id") == root.operation_id for line in turn_lines)
     mail = next(mail for mail in mails if held.question_id in mail.message_id)

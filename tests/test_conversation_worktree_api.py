@@ -39,11 +39,11 @@ class _ChatLauncher:
         self.sessions: dict[str, str] = {}
 
     async def stream(self, _provider, prompt, **kwargs):
+        """A continuation carries its current write scope inline beside the files it names."""
         request = self.request
         session = kwargs.get("session_id") or str(uuid.uuid4())
         self.sessions[request.chat_id] = session
         scope = kwargs.get("write_scope")
-        # A continuation carries its current write scope inline beside the files it names.
         named = {Path(item.group()).parent for item in re.finditer(r"/[^\s`\"]+\.md", prompt)}
         inputs = "\n".join(
             [prompt, *(path.read_text() for folder in named for path in folder.glob("*.md"))]
@@ -170,6 +170,7 @@ def test_chooser_requires_one_repository_and_first_work_turn(harness):
 
 
 def test_http_binding_discuss_restart_and_other_chat_keep_exact_roots(harness):
+    """An unbound chat writes every repository the project's agents can write."""
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True, message="edit notes")
     binding = harness.store.conversation_worktree(harness.project_id, chat)
@@ -186,7 +187,6 @@ def test_http_binding_discuss_restart_and_other_chat_keep_exact_roots(harness):
     other = str(uuid.uuid4())
     harness.turn(other, message="edit notes")
     assert harness.store.conversation_worktree(harness.project_id, other) is None
-    # An unbound chat writes every repository the project's agents can write.
     assert set(harness.launcher.launches[-1]["scope"].repository_roots) == {
         str(harness.repository),
         harness.manifest.repository_map["repo-b"].path,
@@ -316,6 +316,7 @@ def test_missing_worktree_refuses_before_launch(harness):
 
 
 def test_retry_resumes_interrupted_integration_on_its_persisted_target(harness):
+    """A new turn cannot claim the temporary target as normal conversation state."""
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True)
     binding = harness.store.conversation_worktree(harness.project_id, chat)
@@ -324,18 +325,18 @@ def test_retry_resumes_interrupted_integration_on_its_persisted_target(harness):
     interrupted = False
 
     async def disconnect_after_target_checkout(provider, prompt, **kwargs):
+        """A turn cut off mid-integration never stated an outcome. The resumed provider reaches its
+        original target checkout to finish its work and restore the bound branch.
+        """
         nonlocal interrupted
         async for event in original_stream(provider, prompt, **kwargs):
             if event.event == "answer" and not interrupted:
                 _git(worktree, "checkout", "release")
                 interrupted = True
-                # A turn cut off mid-integration never stated an outcome.
                 (Path(kwargs["cwd"]) / "outcome.json").unlink()
                 yield AgentEvent(event="error", text="Disconnected during integration")
                 return
             if event.event == "answer":
-                # The resumed provider has reached its original target checkout;
-                # it can finish/abort its own work and restore the bound branch.
                 assert _git(worktree, "branch", "--show-current") == "release"
                 _git(worktree, "checkout", binding.branch)
             yield event
@@ -350,7 +351,6 @@ def test_retry_resumes_interrupted_integration_on_its_persisted_target(harness):
     )
     assert failed["status"] == "failed", failed
     assert failed["error"] == "Disconnected during integration"
-    # A new turn cannot claim the temporary target as normal conversation state.
     refused = harness.send(chat)
     assert refused.status_code == 422 and "checked-out branch changed" in refused.text
     retry = harness.client.post(
@@ -467,7 +467,7 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
     calls = []
 
     def canonicalize_on_execution_account(store, *, host, operation, **kwargs):
-        # This stub exercises remote identity semantics without calling SSH.
+        """This stub exercises remote identity semantics without calling SSH."""
         assert host == binding.execution_host
         assert operation == "canonicalize"
         assert kwargs["shared_path"] == "/registered/repository-link"
@@ -489,6 +489,10 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
 
 @pytest.mark.parametrize("change", ["shared", "worktree", "missing_target"])
 def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch, change):
+    """Recovery may find its own target checked out but must still reject newly dirty files before
+    making the shared root writable. Each refusal precedes admission and changes nothing, so one
+    setup serves all routes.
+    """
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True)
     result = harness.turn(chat, worktree_integration="default_branch")
@@ -497,8 +501,6 @@ def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch
     if change == "missing_target":
         _git(worktree, "branch", "-D", "release")
     else:
-        # Recovery may find its own target checked out, but it must still reject
-        # newly dirty files on either side before making the shared root writable.
         _git(worktree, "checkout", "release")
         root = harness.repository if change == "shared" else worktree
         (root / "late-edit.txt").write_text("preserve this edit\n")
@@ -509,7 +511,6 @@ def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch
     expected = (
         "target branch does not exist" if change == "missing_target" else "uncommitted changes"
     )
-    # Each refusal precedes admission and changes nothing, so one setup serves all routes.
     for recovery in ("resume", "retry", "repair-graph-update"):
         method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
         monkeypatch.setattr(harness.app.state.background_tasks, method, forbidden_recovery)
@@ -571,8 +572,9 @@ def test_removal_waits_for_recovery_admission_then_refuses_active_task(
     removal_requested = Event()
 
     def reserve_recovery(_operation_id, **_kwargs):
-        # Pause at the existing BackgroundAgentTasks admission boundary. The API
-        # must retain its conversation lock until the durable queued row exists.
+        """Pauses at the BackgroundAgentTasks admission boundary; the API must hold its conversation
+        lock until the durable queued row exists.
+        """
         admitted.set()
         assert release.wait(TASK_SETTLE_TIMEOUT)
         record = AgentTaskRecord(

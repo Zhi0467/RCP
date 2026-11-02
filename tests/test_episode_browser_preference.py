@@ -20,6 +20,9 @@ from .test_experiment_episode_storage import _bind, _task
 @pytest.mark.parametrize("path", ["watcher", "queued_message", "episode_resume"])
 @pytest.mark.parametrize("requested", [False, True])
 def test_child_continuation_browser_matrix(tmp_path, path, requested):
+    """A child turn the orchestrator started recovers through its episode route; generic Retry would
+    make it human-owned and is refused.
+    """
     tasks, episode, child, watchers, _ = _waiting_child(tmp_path, browser_requested=requested)
     assert episode.browser_requested is requested
     assert child.request["browser_requested"] is requested
@@ -48,8 +51,6 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
                 "UPDATE graph_runs SET status = 'failed', error = 'interrupted' WHERE operation_id = ?",
                 (child.operation_id,),
             )
-        # A child turn the orchestrator started recovers through its episode
-        # route; generic Retry would make it human-owned and is refused.
         resumed = resume_auto_research_child_work(tasks, episode.episode_id, watchers[0].worker_id)
         assert resumed.task is not None, resumed.reason
         operation_id = resumed.task.operation_id
