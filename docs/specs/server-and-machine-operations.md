@@ -42,10 +42,13 @@ Optional gaps name their feature and its visible limitation. Feature-specific
 versions stay with their concrete owners.
 
 Dependency admission checks local macOS and Linux in-process and remote Linux
-over state SSH with nonce-bounded output. Unsupported remote OSes and definite
-missing tools cause refusal before task creation. Unreachable hosts, timeouts
-and unreadable results remain `not checked` and allow admission. Cached missing
-results are rechecked before refusal. Remote helpers use their declared
+over state SSH with nonce-bounded output. A remote run checks the local machine first.
+Unsupported remote OSes and definite missing tools cause refusal before task
+creation. Unreachable hosts, timeouts and unreadable results remain `not checked`
+and allow admission. Cached `missing` or `unsupported` results are rechecked
+before refusal. Linux distributions other than Ubuntu are admitted but marked not
+tested. Only Ubuntu, Debian, and their derivatives get an apt install command;
+others get per-program install notes. Remote helpers use their declared
 standard-library Python compatibility floor.
 
 [state_transfer.py](../../src/rcp/transport/state_transfer.py) selects rsync by
@@ -487,8 +490,10 @@ source starts. Failure after choice preserves candidate data.
 
 Reboot qualification uses disposable Linux VMs and interruption at journal and
 root boundaries, including repeated rollback and network-free recovery. Changed
-boot identity is required. A process restart is not reboot proof. Production
-promotion requires the corresponding qualification and human approval.
+boot identity is required. A process restart is not reboot proof. Reboot
+qualification is a separate manual workflow on `main`; promotion does not check
+its result and enforces only the copied-data qualification receipt and human
+dispatch.
 
 ## Central checkouts and repository credentials
 

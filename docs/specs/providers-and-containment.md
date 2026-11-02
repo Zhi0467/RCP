@@ -368,8 +368,10 @@ Selected-secret policy is rendered from `HiddenReadScope` on every capability:
 Claude receives the staged shell prefix plus native read-path denies; Codex
 receives file, directory, and glob denies in both exec and app-server policies,
 plus the environment deny list; OpenCode receives the shell wrapper and native
-read, grep, glob, and list denies where its rules can express them. An uncovered
-native tool makes the launch visibly unhidden. macOS shell calls use a selected
+`read` denies only; its grep and glob rules match search patterns rather than
+paths, so every OpenCode launch reports `unhidden` with
+`provider_native_tools_uncovered`. An uncovered native tool makes the launch
+visibly unhidden. macOS shell calls use a selected
 path Seatbelt deny policy; Linux uses `bwrap` without a network namespace.
 On Linux the wrapper empties the parent of a glob whose wildcard is in its last
 path component and binds its other existing entries back, so a match created
@@ -443,7 +445,8 @@ App-server verifies that this profile is active before delivering the turn.
 
 ### Browser grants
 
-Browser is a per-chat human grant, off by default, resolved immutably at admission
+Browser is a per-chat human grant, off by default for ordinary chats and on when
+a member's agent thread is created, resolved immutably at admission
 and passed through launch construction. Work, orchestration and Discuss may use
 it; Paper, ingestion, scratch correction and recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.
@@ -821,7 +824,7 @@ Conversation graph changes collect only `patch.json` from their exact task stage
 Ordinary Work also collects `watch.json` and the required `outcome.json` there;
 the latter reports the turn outcome and grants no graph authority.
 Ingestion and branch merge prefer it, then accept exactly one patch-shaped JSON
-file if it is missing or not Patch-shaped. They inspect at most eight files,
+file if it is missing or not Patch-shaped. They inspect at most eight JSON files,
 `patch.json` first then filename order; multiple candidates are refused.
 Local and remote collection read only regular files and never follow a link.
 The labelled final assistant message is the answer, separate from traces,
@@ -874,8 +877,8 @@ scheduler route are owned by [machines and compute](machines-and-compute.md).
 The standalone broker bounds its stdin wait so Stop signals are handled even
 when a serving thread receives the signal and its parent keeps input open.
 
-Remote Discuss, Work, Experiment and child Work mailboxes retain one thread owner
-through settlement. Disconnected accepted turns transfer it to reconciliation.
+Remote Discuss, Work, Experiment, child Work, Seed/Refresh, branch-merge and
+paper-coach mailboxes retain one thread owner through settlement. Disconnected accepted turns transfer it to reconciliation.
 Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
 reservations and results before liveness checks. Restoration requires both a
@@ -1424,15 +1427,16 @@ owns remote state locking.
 
 Every remote launch is supervised; owners do not opt in. Ordinary Work,
 Discuss, Experiment-loop, Auto-research actors and child Work, graph Seed and
-Refresh, episode reports, artifact edits and branch merges register typed,
-durable finalizers. Routing uses the retained contract, never chat kind.
+Refresh, episode reports, artifact edits, branch merges and the paper coach
+register typed, durable finalizers. Routing uses the retained contract, never chat kind.
 Zero or multiple contracts leave the task visibly waiting. Local turns register
 no remote finalizer.
 
 Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
 and session binding; the child's parent-authorized result; Experiment's joint
 Patch/watch admission and wake binding; an Auto-research actor's Patch and
-reply; graph Seed/Refresh's Patch; a report's stage file; a merge's answers. Experiment records its baseline, control
+reply; graph Seed/Refresh's Patch; a report's stage file; a merge's answers; the paper coach's recorded changes
+folder for its round. Experiment records its baseline, control
 snapshot and committed wake session before launch. Recovery creates no second
 child or invocation and retains the original authority, target and accounting.
 
@@ -1571,8 +1575,9 @@ results; explicit Refresh probes all targets, including edited native skills.
 Claude's zero-cost Work startup probe uses enforced settings, stream-json and
 closed empty stdin. It proves CLI acceptance, not containment. Its availability
 and diagnostic are separate from general readiness and shown for profiles that
-can launch Work, including chat. Work/orchestrate enforce it with the version
-floor; Discuss and Paper do not. Transport failures stay transport failures.
+can launch Work, including chat. Work/orchestrate refuse launch when this probe
+fails and enforce the version floor; Discuss does neither, and Paper enforces
+only the version floor. Transport failures stay transport failures.
 
 The first decoded error includes bounded, TTY-filtered stderr; a result lacking
 text uses its subtype. Service start/end logs carry only identifiers and RCP
@@ -1872,8 +1877,9 @@ local write projects retains the local account's default secret and private
 transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
 `too_many_hidden_folders`.
 
-Collection reads only `patch.json` and `watch.json` at the stage top level and
-in each `projects/<id>` folder. It applies each admitted project's Patch through
+Collection reads `patch.json` and `watch.json` at the stage top level and in
+each `projects/<id>` folder, plus the top-level `outcome.json` for the turn
+outcome, which grants no graph authority. It applies each admitted project's Patch through
 Work Apply, in project-id order, under that project's lock and live membership
 check. Each project's Work graph-update status (`applied`, `none`, `rejected` or
 `unavailable`) goes to `project_results`, and its first reason to the

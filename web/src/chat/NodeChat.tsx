@@ -279,14 +279,8 @@ export function NodeChat({
     return [...messages.values()];
   }, [chatId, historyMessages, steeringMessages]);
   const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
-  const {
-    transcript,
-    statusTasks,
-    compactionByLine,
-    continuedTaskIds,
-    latestGraphReceiptLineIds,
-    inlineArtifactRefreshToken,
-  } = useAgentWindowLines({ messages: displayedMessages, tasks: relatedTasks, pendingTurn });
+  const { transcript, statusTasks, compactionByLine, continuedTaskIds, latestGraphReceiptLineIds } =
+    useAgentWindowLines({ messages: displayedMessages, tasks: relatedTasks, pendingTurn });
   const endpoints = useMemo(
     () => projectAgentWindowEndpoints(project.id, chatId),
     [project.id, chatId],
@@ -1249,7 +1243,6 @@ export function NodeChat({
     comments,
     onRefreshTask,
     setSubmitError,
-    inlineArtifactRefreshToken,
     readOnly,
     allowArtifactComments,
     repositories: project.repositories,

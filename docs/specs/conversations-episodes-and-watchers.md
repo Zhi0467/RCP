@@ -55,7 +55,7 @@ the thread (`bound_thread` in `storage/agent_threads.py`); member memory, the
 claims all use it. Threads have no
 Discuss mode. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
-Agent view or a project's Agents view is shown.
+Agent view, a project's Agents view, or a voice session is active.
 Private threads cannot be archived. Ensuring the thread list clears legacy
 archive flags along with reopening eligible threads. It takes the write lock only
 when a thread is missing, closed or archived.
@@ -83,8 +83,9 @@ reply with no outcome file is not stated, as in project Work.
 `handoff` passes a Space request to the same member's project thread, with that
 member's authority. It is not mail. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
-that turn's own Patch lands first. A Stopped or failed Space turn cancels its
-pending handoffs without a wake. Delivery appends a member message with
+that turn's own Patch lands first. A Space turn that ends without succeeding
+(Stopped, paused, failed, interrupted, or missing) cancels its pending handoffs
+without a wake. Delivery appends a member message with
 `source: "handoff"` and admits its turn when the target is idle; it runs after
 each settlement, after a provider sign-in release, and at startup. Pending
 handoffs deliver oldest first, one turn each, and the idempotency key prevents
@@ -126,9 +127,10 @@ the agent; member renaming uses the ordinary name rules. Browser starts on.
 
 Each thread stores its agent pick (provider, model, reasoning, machine), set by
 `POST /api/agent-threads/{thread_id}/agent`, by a member send that carries a
-pick, or by `handoff --provider/--model/--effort`. The route and handoff check
-the pick against the thread machine's readiness; a send is checked by its own
-admission. Every turn on the thread runs the stored pick: member sends, Retry,
+pick, or by `handoff --provider/--model/--effort`. A handoff pick must be
+runnable on the project thread's machine now. The route keeps a project-thread
+pick whose provider is not signed in yet and does not check a Space-thread pick;
+the launch checks both. A send is checked by its own admission. Every turn on the thread runs the stored pick: member sends, Retry,
 schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
 replaces the failed request's agent with it. Without a pick, a project thread
 uses its project's Settings Work profile and the Space thread the backend
@@ -181,8 +183,9 @@ refuses launch rather than dropping the privacy policy.
 
 Schedule creation checks the admitted task's member message, trigger, source and
 question-follow-up binding; display transcripts never establish that authority.
-Composer, voice and handoff messages count as member messages; question
-follow-ups and wakes do not.
+Composer and voice messages count as member messages, and so do handoffs sent
+by a Space turn that itself carried the member's message. Question follow-ups,
+wakes, and handoffs sent from a wake do not.
 
 Each thread keeps one native session, which the provider compacts. Before a
 provider switch's first turn, project and Space threads ask the old provider to

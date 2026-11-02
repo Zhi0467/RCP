@@ -60,12 +60,10 @@ export function ReferenceEmbed({
   href,
   title,
   resolve,
-  refreshToken,
 }: {
   href: string;
   title: string;
   resolve: (href: string) => Promise<ResolvedReference>;
-  refreshToken: string;
 }) {
   const [found, setFound] = useState<{ href: string; value: ResolvedReference } | null>(null);
   const resolveRef = useRef(resolve);
@@ -90,7 +88,6 @@ export function ReferenceEmbed({
       projectId={shown.projectId}
       artifactId={shown.artifactId}
       title={title.trim()}
-      refreshToken={refreshToken}
     />
   );
 }
@@ -194,13 +191,11 @@ function SavedArtifactEmbed({
   projectId,
   artifactId,
   title,
-  refreshToken,
 }: {
   href: string;
   projectId: string;
   artifactId: string;
   title: string;
-  refreshToken: string;
 }) {
   const profile = artifactStateProfile(projectId, artifactId);
   const state = useResource(`${projectId}:reference:${artifactId}`, profile);
@@ -227,7 +222,6 @@ function SavedArtifactEmbed({
       stateProfile={profile}
       artifact={descriptor}
       title={title || state.value.name}
-      refreshToken={refreshToken}
       canComment={false}
       keeping={false}
       onExpand={() => openArtifact({ projectId, artifactId })}

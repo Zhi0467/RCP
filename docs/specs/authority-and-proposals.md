@@ -306,7 +306,9 @@ profile, or the merge source head and preview. The preview already pins main's
 value of every field the source changed, and the merge plans against live main,
 so an unrelated main commit leaves a merge card current. Ask refuses an
 Auto-research card whose provider is not ready, and an action whose target does
-not exist (`branch_not_found`, `approval_target_not_found`). Reusing an ask key
+not exist or no longer applies (for example `branch_not_found`,
+`approval_target_not_found`, `proposal_not_pending_or_stale`, or
+`truth_scope_unchanged`). Reusing an ask key
 requires the same action and question; it does not refresh the presented pins.
 The agent's usage renders each action kind and its fields from the action models,
 and the meaning of each outcome. The question snapshot shows each card's action
@@ -316,15 +318,19 @@ Only the thread's member can resolve a card. The tap checks membership, claims
 once, compares the presented hash and live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
-A tap settles `stale` only when the live pins no longer match or their target
-is gone; it executes nothing and uses the card up. A closed admission, an
+A tap settles `stale` only when the presented hash or the live pins no longer
+match, their target is gone, or the merge handler reports changed heads; it
+executes nothing and uses the card up. A mismatched presented hash settles
+`stale` even for Decline. A closed admission, an
 unavailable writer or base, or a handler `503` releases the claim and returns
 `409` or `503`, so the member can tap again. A refusal settles `failed` with the
 handler's own reason, including Patch rejection and halted replay. An approved
 result names the `episode_id` or `operation_id` the action created. A card
-expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes; a tap on it
-returns `expired`. Ordinary answer and dismiss endpoints reject card questions
-with `409 approval_card`; a second tap returns `409 card_taken`.
+expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes. The first tap
+on an expired card in a live thread returns `expired`; a tap in a closed or
+archived thread returns `409` with that thread refusal. Ordinary answer and
+dismiss endpoints reject card questions with `409 approval_card`; any later tap
+returns `409 card_taken`.
 
 Card creation stores a random UUID4 request id; every result retains it.
 Episode start, branch merge and episode merge pass it to their native request-id
@@ -339,8 +345,8 @@ receipt, the Proposal's decided status, or the repository's requested truth
 membership. Otherwise it fails as interrupted. When the graph cannot be read,
 the claim is released and a later tap rechecks the pins.
 
-Cards expire after `APPROVAL_CARD_TTL_HOURS`. Tap, list and a startup sweep
-settle due cards and cards of closed threads, and restore expires every pending
+Cards expire after `APPROVAL_CARD_TTL_HOURS`. Tap, list, a startup sweep, and
+the sweep after every watcher poll settle due cards and cards of closed threads, and restore expires every pending
 card. A list reads cards without a write lock unless one is due. The Web shows
 the server's card state, never the device clock. Expiry answers the question with `expired`. Other results
 answer it with approved, declined, stale or a failure reason, reusing ordinary question delivery

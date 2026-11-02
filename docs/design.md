@@ -21,7 +21,8 @@ Human authorization bounds autonomous episodes and nightly consolidation.
 Episode branches, human-dispatched merges, and optional repository worktrees have
 separate owners. See [Auto-research](specs/auto-research-and-branch-merge.md) and
 [consolidation](specs/graph-consolidation-and-lessons.md). Ordinary conversations
-remain distinct from episode authority.
+hold no episode authority of their own, except that a member's Work turn may start
+or resume a ready Experiment the member asked for, as that member's Run would.
 
 The paper workspace is human-controlled. Coach changes are reviewed or applied
 under the chat's human-authorized mode. Artifacts, reports, comments, and versions
@@ -61,7 +62,8 @@ home for repository-wide invariants and their stable identifiers.
 - An **Artifact** is an RCP-owned file with SQLite metadata and immutable versions.
   It is never a graph object or a second answer channel.
 - An **Episode** is a persisted parent for bounded Experiment control or
-  Auto-research. It has one budget, a native-session binding, and a graceful
+  Auto-research. It has one human-set invocation ceiling (Auto-research adds a
+  derived child-Experiment allowance), a native-session binding, and a graceful
   Stop boundary.
 - A **Watcher** is a durable observation that may admit a continuation.
   It does not prove external success.
@@ -88,8 +90,8 @@ home for repository-wide invariants and their stable identifiers.
   orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
 - [Graph consolidation and memory](specs/graph-consolidation-and-lessons.md) covers
-  the authorized nightly consolidation turns, their Inbox rows, per-project
-  memory files, and private agent schedules.
+  the authorized nightly consolidation turns, their Inbox rows, shared
+  per-project and private per-member memory files, and private agent schedules.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) covers
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.
@@ -114,15 +116,18 @@ Linux desktop packages, a hosted service, and multi-server failover.
 - Graph branches are episode branches or forks of exact heads, not free-form
   histories. There is no conflict viewer, repository rollback, orchestrator merge
   into main, frontend transition-rule engine, or user-authored rule language.
-- Watchers wake on completion rather than intermediate output. Observation
+- Watchers wake on completion, a met graph condition, or persistent
+  unobservability, never on intermediate output. Observation
   failures remain visible, as does the history of completed, stopped, or degraded
   work. There is no separate history-cleanup feature.
 - Parallel repository work has no exclusive repository lease. Shared-checkout
   concurrency and explicit code integration are separate from graph branching.
 - Human graph editing uses preview and Sync. Artifact selection supplies
   conversation context, not an Evidence-creation or human-judgment shortcut.
-- Provider containment is not a provider-neutral hostile-process sandbox. There
-  is no hard provider interruption or persistent provider daemon. Steering uses
+- Provider containment is not a provider-neutral hostile-process sandbox. Episode
+  Stop is graceful and never interrupts a running provider; only an explicit human
+  Pause terminates the live provider process. There is no persistent provider
+  daemon. Steering uses
   the existing ordinary chat attempt.
 - [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
   connects the orchestrator to its workers in a star. There is no peer or

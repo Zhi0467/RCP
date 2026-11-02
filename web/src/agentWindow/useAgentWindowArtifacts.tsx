@@ -35,7 +35,6 @@ export function useAgentWindowArtifacts({
   comments,
   onRefreshTask,
   setSubmitError,
-  inlineArtifactRefreshToken = "",
   readOnly = false,
   allowArtifactComments = false,
   repositories = NO_REPOSITORIES,
@@ -47,7 +46,6 @@ export function useAgentWindowArtifacts({
   comments: AnswerComments;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
   setSubmitError: (error: string | null) => void;
-  inlineArtifactRefreshToken?: string;
   readOnly?: boolean;
   allowArtifactComments?: boolean;
   repositories?: ProjectSnapshot["repositories"];
@@ -387,13 +385,7 @@ export function useAgentWindowArtifacts({
     // Any other repository file or saved artifact shows from where it lives.
     if (!found)
       return isReferenceHrefCandidate(src) ? (
-        <ReferenceEmbed
-          key={src}
-          href={src}
-          title={alt}
-          resolve={resolveOriginal}
-          refreshToken={inlineArtifactRefreshToken}
-        />
+        <ReferenceEmbed key={src} href={src} title={alt} resolve={resolveOriginal} />
       ) : null;
     const { artifact } = found;
     // An older reply's task, or the earlier turn it cites, has aged out of the recent
@@ -440,7 +432,6 @@ export function useAgentWindowArtifacts({
         }
         artifact={artifact}
         title={title}
-        refreshToken={inlineArtifactRefreshToken}
         canComment={endpoints.canCommentArtifacts && (!readOnly || allowArtifactComments)}
         keeping={keepingArtifacts.has(key)}
         actionError={artifactShellErrors.get(key)}

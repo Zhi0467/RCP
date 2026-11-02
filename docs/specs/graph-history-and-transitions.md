@@ -147,14 +147,16 @@ JSON conversion belongs only at serialization and compatibility boundaries.
 ## Append-only history and graph targets
 
 [Invariant 1](../../AGENTS.md#stable-invariants) owns append-only canonical history
-and replaceable projections. Human Sync publishes one visible batch by atomic
-directory rename, ignoring hidden staging. Materialization replaces container
+and replaceable projections. Human Sync commits its whole batch as one transition,
+written atomically as a single `patches/NNNNNN.json`; replay still reads historical
+`batch-*` directories and ignores hidden `.batch-*` staging. Materialization replaces container
 slots without mutating objects shared with earlier revisions.
 
 Targets are `main` or `branch:<branch_id>`. Heads include target, integer revision,
-and the last transition id. Branch metadata binds the project, chain-root episode
-and its id, kind, authorizer, and creation time. It also binds the immutable parent
-head, current head, and receipts.
+and the last transition id. Branch metadata binds the project, owning episode, kind,
+creating operation, authorizer, creation time, root main base, immutable parent
+head, and current head. Merge receipts are separate files under the branch's
+`merges/` directory.
 An episode branch's parent head is a main head. A fork's parent head is any exact
 main or branch head.
 Branch creation builds the complete layout in a unique temporary sibling and
@@ -177,8 +179,9 @@ refs the run could read. Admission checks `repositories_read` against that stamp
 never the live group, so a sibling leaving the group later changes no verdict. A
 Patch written before the stamp has none. It keeps its exact bytes and transition
 id, and it may read any repository of its project. Branch Patches name the
-target. A main merge also records the source branch, episode, base, and head.
-It records the prepared main head, merge task, and human dispatcher too.
+target. Every branch merge Patch, into main or into a fork's parent branch, also
+records the source branch, episode, parent head, and branch head, plus the
+prepared destination head, merge task, and human dispatcher.
 Summary prose cannot replace those identities.
 
 ## Transition preparation
@@ -213,8 +216,9 @@ create Evidence, approve Proposals, delete resolved Blockers, or serve layout.
 
 ## Blockers, Experiment phase, and guidance
 
-Resolving or superseding a Blocker retains it and its relations but removes its
-gate. Active flow and attention omit it. History and detail retain it.
+Resolving or superseding a Blocker retains it and its relations and removes its
+gate. Attention omits both, while the active flow omits only resolved Blockers.
+History and detail retain them.
 Resolution watchers fire once from the final committed event.
 
 `blocked` is not a current Experiment phase. Old history adapts it in memory to
@@ -225,9 +229,10 @@ and readiness.
 `current_summary` and `next_action` are authored text with backend-owned validity.
 Gate changes mark affected nonempty fields stale, including text written in that
 transition. Only a later explicit authorized update refreshes that field. Active
-UI never presents stale text as current. Invalidators include `blocked_by`, linked
-Blocker lifecycle, governing Decisions and pending Proposals, and causal upstream
-Evidence relations, assessments, or lifecycle. Dependencies use current graph
+UI never presents stale text as current. Invalidators include `blocked_by` and linked
+Blocker lifecycle, `governed_by` Decisions (status, selected option, pending
+Proposal), the Experiment's `tests` edges, and the relation, assessment, or
+lifecycle of any current Evidence edge into a Hypothesis it tests. Dependencies use current graph
 paths, not a second authored graph.
 
 ## Human preview and agent correction

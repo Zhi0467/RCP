@@ -200,8 +200,6 @@ ARTIFACT_ERROR_INTERVAL_MS = 1000
 # An artifact shown inside a reply has a frame this tall from before it loads, so
 # loading never moves the chat; taller content scrolls inside it. The web mirrors it.
 ARTIFACT_INLINE_HEIGHT_PX = 480
-# A live inline artifact rechecks its viewer state this often, to show Finished.
-ARTIFACT_INLINE_LIVE_STATE_REFRESH_MS = 10_000
 # Selections one chat turn may carry from an artifact viewer; the web mirrors it.
 ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
 # A boxed region of an image artifact is cropped for the agent, scaled to fit this side.

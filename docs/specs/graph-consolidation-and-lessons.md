@@ -114,7 +114,9 @@ In-turn Apply lets the report describe committed work.
 The outcome is distinct from the task verdict. Settlement reconciles the run,
 ended task, canonical operation commits on its target, and captured artifact.
 Success requires a succeeded task and a viewable HTML report.
-It also requires that no graph update was rejected or unavailable.
+It also requires that no graph update was rejected or unavailable, and that
+every keyed Apply whose last attempt was unavailable has a verified canonical
+commit; otherwise the run fails as `keyed_apply_unavailable`.
 Startup and scheduling retry settlement. Settled outcomes are final.
 Later history recovery verifies revisions and counts. It cannot turn failure into
 success or coverage. Paused, stopped, abandoned, or irrecoverably interrupted runs
@@ -187,8 +189,8 @@ Address keeps the member in Inbox. Open chat enters the conversation.
 
 With at least two addressable findings, Address all submits the oldest bounded
 batch. [API request types](../../src/rcp/api/consolidation.py) own the bound and
-reject empty or duplicate ids, non-open flags, notice-only kinds, mixed targets,
-and absent or retired Evidence. One finding uses node Work.
+reject empty or duplicate ids. Flag admission and the endpoint reject non-open
+flags, notice-only kinds, mixed targets, and absent or retired Evidence. One finding uses node Work.
 Multiple findings share one project Work turn.
 Sorted locks and one task transaction bind all flags or none.
 The request key and exact ids survive a 5xx or network failure and replay their
@@ -240,8 +242,10 @@ or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
 note storage. Launch uses `lstat` for the index; an oversized index prompts the
 agent to read its start and prune it; add-only runs request consolidation pruning. There
 is no staged lesson snapshot or lesson command. After migration, a symlink or
-non-regular index, or an unusable shared or notes directory, does not stop a
-launch: the prompt reports an unusable index and asks the agent to repair it.
+non-regular index does not stop a launch: the prompt reports an unusable index
+and asks the agent to repair it. An unusable shared or notes directory is not
+granted; the prompt says memory is not writable this turn and asks the agent to
+have the member repair it.
 Migration still refuses these paths before recording completion.
 
 On the first launch build per project, the backend migrates all legacy
@@ -260,9 +264,10 @@ after a lost SSH response; an occupied destination with a remaining source refus
 the move. Project deletion atomically queues memory cleanup with removal of its
 records, including any old alias folders. The browser lifecycle cleanup owner
 attempts deletion after commit and retries failures at later turn boundaries.
-An unreachable base never rolls back project deletion. Memory preparation waits
-for a pending deletion only on the same state location, including when the same
-project is registered again there. A deletion owed on another base never blocks a launch.
+An unreachable base never rolls back project deletion. A pending deletion on
+the same state location refuses the launch until cleanup succeeds, including when
+the same project is registered again there. A deletion owed on another base never
+blocks a launch.
 Restore keeps a project's migration marker only when the archive brought back its
 local memory folder; a remote base's marker is always dropped, and the next launch
 re-runs the create-if-absent migration.
@@ -273,7 +278,9 @@ rows name the live host's paths.
 
 ## Transfer, backup, and restore
 
-Memory folders are outside SQLite backup and project transfer. A transfer to the
+Backups capture the backend's local `memory/` tree, project and member folders
+alike, and restore brings it back. A remote base's memory folders and every
+project transfer leave memory out. A transfer to the
 same base and account finds the existing folder by project id. Note authorship
 is not tracked after migration. Legacy lesson rows, flags, schedules, per-target
 coverage, runs and receipts remain space-local; SQLite backup captures them.
@@ -317,8 +324,10 @@ active or awaiting Resume. A wake that provider sign-in, machine dependencies, o
 a thread refusal defers keeps its notes pending, records `deferred_reason`, and
 retries each tick. Once eligible, one atomic admission claims all observed notes
 for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
-its missed fire count. Admission retains the thread's latest provider, native
-session, scratch, and member binding through ordinary current-session resolution,
+its missed fire count. The wake runs the thread's saved agent pick, else
+the Space default on a Space thread or the latest turn's agent on a project
+thread. Admission retains the thread's latest native session, scratch, and member
+binding through ordinary current-session resolution,
 including its receipt, also after a restore made that turn history-only, and
 rechecks the ordinary project write fence and session constraints. A claimed wake
 whose thread closed before launch settles failed. A succeeded schedule wake on a

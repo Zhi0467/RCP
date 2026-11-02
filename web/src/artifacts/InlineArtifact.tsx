@@ -33,8 +33,6 @@ interface InlineArtifactProps {
   title: string;
   /** Fetches the owning turn once, when an embed mounts without its artifact. */
   onLoadTask?: () => void;
-  /** Changes when a turn in this chat settles, so a published edit is picked up. */
-  refreshToken: string;
   /** Whether this reader may stage comments; false in a read-only transcript. */
   canComment: boolean;
   keeping: boolean;
