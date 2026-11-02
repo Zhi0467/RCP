@@ -386,8 +386,12 @@ Long reasons wrap without failure coloring.
 
 ## Agent view
 
-The space home switches between Cards and Agent. Agent has a left rail with the
-member's Space thread first, then each project thread. Rows show the agent name,
+The space home switches between Cards and Agent. A personal space remembers the
+last tab per member on that browser, defaulting to Agent on the first visit.
+Explicit Cards, Agent thread, project, and project-group links take precedence.
+The Cards tab opens `#/cards` in every space, so it stays an explicit link.
+Agent has a left rail with the member's Space thread first, then each project
+thread. Rows show the agent name,
 the project or Space, and an unread dot or a needs-you mark. The rail folds like
 the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
