@@ -1472,7 +1472,7 @@ test("handoff results read as one row and browser loss shows once on the menu", 
             answer,
           }),
         `op-${id}`,
-        { trigger: "watcher", timestamp: ago(minutes) },
+        { trigger: "watcher", source: "handoff_report", timestamp: ago(minutes) },
       );
     await page.route("**/api/agent-threads/space/transcript", (route) =>
       route.fulfill({
