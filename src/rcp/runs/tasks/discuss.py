@@ -1123,7 +1123,7 @@ async def stream_discuss_run(
                     shared, _index_bytes = prepare_project_memory(
                         execution.store, task.project_id, remote_stage
                     )
-                    memory_write_dirs = [Path(shared)]
+                    memory_write_dirs = [] if shared is None else [Path(shared)]
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return

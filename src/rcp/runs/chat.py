@@ -1559,7 +1559,7 @@ def _project_write_scope(
     memory_roots = []
     if task is not None and execution is not None and task_has_project_memory(task):
         shared, _index_bytes = prepare_project_memory(execution.store, project_id, remote_stage)
-        memory_roots = [shared]
+        memory_roots = [] if shared is None else [shared]
     scope = resolve_project_write_scope(
         manifest=service.manifest,
         truth_scope=write_repositories(service.history.state()),

@@ -615,7 +615,7 @@ class _LocalBackedRemoteStage:
     base: Path
 
     def project_memory(self, request: dict) -> dict:
-        from rcp.agents.memory_file_io import memory_root, prepare_files
+        from rcp.agents.memory_file_io import memory_root, prepare_files, shared_folder_usable
 
         root = memory_root(self.base, request["project_id"])
         size = (
@@ -623,7 +623,11 @@ class _LocalBackedRemoteStage:
             if "lessons" in request
             else 0
         )
-        return {"root": str(root), "index_bytes": size}
+        return {
+            "root": str(root),
+            "index_bytes": size,
+            "shared_usable": shared_folder_usable(root),
+        }
 
     def __init__(self, host: str) -> None:
         self.host = host

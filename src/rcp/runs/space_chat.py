@@ -400,7 +400,10 @@ class _SpaceTurn:
                 for project_id in self.found.names
             ),
         ]:
-            clear_space_output(path)
+            # Admission already excluded a project whose folder is a link; leave it
+            # as found so its stray Patch is reported as rejected, never followed.
+            if path.parent.resolve() == path.parent:
+                clear_space_output(path)
 
     def summary_scope_preparer(self, data_dir: Path):
         from rcp.runs.agent_threads import prepare_project_summary_scope

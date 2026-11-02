@@ -206,7 +206,7 @@ def test_remote_io_does_not_lock_unrelated_database_writers(tmp_path, monkeypatc
     def remote(stage, request):
         with sqlite3.connect(store.path, timeout=0.01) as connection:
             connection.execute("INSERT INTO memory_migrations VALUES ('other','now',0)")
-        return {"root": "/remote/.rcp/memory/project", "index_bytes": 0}
+        return {"root": "/remote/.rcp/memory/project", "index_bytes": 0, "shared_usable": True}
 
     monkeypatch.setattr(RemoteRunStage, "project_memory", remote)
     prepare_project_memory(store, "project", RemoteRunStage("example.invalid"))
@@ -252,7 +252,8 @@ def test_ordinary_launch_reports_unusable_memory(tmp_path, entry, shape):
     )
     pointer = project_memory_pointer(execution, None)
     assert "unusable" in pointer and "repair" in pointer
-    assert shared in pointer
+    # A redirected folder is never named, so no launch grants it as a write root.
+    assert (shared in pointer) if entry.endswith("MEMORY.md") else shared is None
     assert list(outside.iterdir()) == []
 
 

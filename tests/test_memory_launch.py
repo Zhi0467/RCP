@@ -163,3 +163,40 @@ def test_launch_stats_the_live_index_and_reports_its_bound(tmp_path, monkeypatch
     pointer = operational_context.project_memory_pointer(execution, None)
     assert (str(MEMORY_INDEX_MAX_BYTES) in pointer) is oversized
     assert root + "/MEMORY.md" in pointer
+
+
+def test_launch_withholds_a_redirected_shared_folder(tmp_path, monkeypatch):
+    import shutil
+
+    from rcp.agents.memory_files import prepare_project_memory
+    from rcp.runs import chat
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    shared, _size = prepare_project_memory(store, "project")
+    shutil.rmtree(shared)
+    (tmp_path / "outside" / "notes").mkdir(parents=True)
+    Path(shared).symlink_to(tmp_path / "outside", target_is_directory=True)
+    monkeypatch.setattr(
+        store, "agent_task", lambda _: SimpleNamespace(kind="project_chat", project_id="project")
+    )
+    monkeypatch.setattr(chat, "resolve_project_write_scope", lambda **kwargs: kwargs)
+    monkeypatch.setattr(chat, "write_repositories", lambda state: [])
+    monkeypatch.setattr(chat, "_machine_writable_paths", lambda *args: [])
+    service = SimpleNamespace(
+        history=SimpleNamespace(state=lambda: None),
+        manifest=None,
+        repository_ownership_inventory=lambda **kwargs: [],
+    )
+    result = chat._project_write_scope(
+        SimpleNamespace(repositories=[]),
+        service,
+        "local",
+        workspace=tmp_path / "stage",
+        remote_stage=None,
+        data_dir=tmp_path,
+        execution=SimpleNamespace(store=store, operation_id="turn"),
+        capability="work_auto",
+        stage_only=True,
+    )
+    assert result["memory_roots"] == []
