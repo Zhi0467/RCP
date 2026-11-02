@@ -20,6 +20,14 @@ export const runtime = {
     activeProjectId: () => activeProject,
     onLostAccess: () => {},
     send: async (request) => ({
+      // A test moves the member's agent-thread watermark by setting this global.
+      agent_threads: request.agent_threads
+        ? {
+            version: String(
+              (globalThis as { agentThreadsVersion?: string }).agentThreadsVersion ?? "1",
+            ),
+          }
+        : null,
       epoch: "fixture",
       as_of: new Date().toISOString(),
       unavailable: [],
