@@ -55,8 +55,14 @@ shared-contract changes, or integration uncertainty.
   Run `npm --prefix web run build` when source or types change.
 - Run `uv run pre-commit run --files <changed paths>`, including new files.
   All-file hooks see tracked files only.
-- Pre-commit runs `basedpyright` against `.basedpyright/baseline.json`. Fix new
-  errors. Never use `--writebaseline`. The baseline only shrinks.
+- Pre-commit runs `basedpyright` against `.basedpyright/baseline.json` and the
+  comment ratchet against `.ratchet/baseline.json` and
+  `web/eslint-suppressions.json`. Fix new errors. Commit shrunk baselines;
+  never regrow one or use `--writebaseline`.
+- Write no comments: name it, test it, or put the why in the owning spec.
+  Invariant citations, lint pragmas, and docstrings stay allowed.
+- A bug that a live drive or team rehearsal finds also adds its data shape to
+  the installed-upgrade or release-upgrade seed in the same PR.
 - Before a push, read `uv run python scripts/quality_delta.py origin/main`. It never gates.
 - Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view

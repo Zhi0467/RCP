@@ -119,6 +119,17 @@ npm --prefix web run build
 uv run pre-commit run --all-files
 ```
 
+When you delete comments, commit the shrunk comment baselines. Rebuild them
+after a merge brings in new files:
+
+```bash
+uv run python scripts/comment_ratchet.py --write
+npm --prefix web run lint -- --suppress-all
+```
+
+`npm --prefix web run build` comes before `npm --prefix web test`, because the
+bundle budget reads the build manifest.
+
 ### Opt-in test gates
 
 Enable applicable gates below. Point live checks at throwaway accounts,

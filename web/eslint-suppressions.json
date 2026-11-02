@@ -936,7 +936,7 @@
   },
   "tests/agentThreads.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 56
+      "count": 53
     }
   },
   "tests/agentThreads.test.mjs": {
