@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from rcp.config import load_manifest, resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
-from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS
+from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
 from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
@@ -46,6 +46,7 @@ from rcp.server_ops.backup_models import (
 from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.server_ops.backup_project_io import (
     BackupProjectFileUnavailable,
+    capture_app_data_root,
     capture_chat_files,
     discard_failed_project_capture,
     fact_backup_sources,
@@ -142,6 +143,8 @@ class BackupProjectFileCaptureReceipt(_StrictProjectCaptureModel):
     sqlite_capture_status: Literal["complete", "partial"]
     projects: tuple[BackupProjectCapture, ...]
     imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
+    app_data_files: tuple[BackupFileEntry, ...] = ()
+    uncaptured_app_data_entries: tuple[str, ...] = ()
     status: Literal["complete", "partial"]
 
     @field_validator("capture_id", "space_id")
@@ -194,8 +197,23 @@ class BackupProjectFileCaptureReceipt(_StrictProjectCaptureModel):
             or set(imported_ids) != captured_ids
         ):
             raise ValueError("project-file imported sources must inventory captured projects")
-        partial = self.sqlite_capture_status == "partial" or any(
-            project.status == "uncaptured" for project in self.projects
+        paths = tuple(entry.archive_path for entry in self.app_data_files)
+        failures = self.uncaptured_app_data_entries
+        if (
+            len(paths) > BACKUP_INVENTORY_MAX_ENTRIES
+            or tuple(sorted(set(paths))) != paths
+            or any(
+                entry.group not in {"space_thread", "local_memory"} for entry in self.app_data_files
+            )
+            or tuple(sorted(set(failures))) != failures
+            or not set(failures).issubset({"agent-threads", "memory"})
+            or any(PurePosixPath(path).parts[0] in failures for path in paths)
+        ):
+            raise ValueError("app-data capture entries and failures must be bounded and disjoint")
+        partial = bool(
+            self.uncaptured_app_data_entries
+            or self.sqlite_capture_status == "partial"
+            or any(project.status == "uncaptured" for project in self.projects)
         )
         if self.status != ("partial" if partial else "complete"):
             raise ValueError("project-file capture status does not match its results")
@@ -251,7 +269,12 @@ class BackupProjectFileCaptureCoordinator:
             raise BackupCaptureUnavailable("Offline capture names a different live data boundary.")
         return self._capture_verified(sqlite_receipt_path, sqlite_receipt, expected_sha256)
 
-    def _capture_verified(self, sqlite_receipt_path, sqlite_receipt, expected_sha256):
+    def _capture_verified(
+        self,
+        sqlite_receipt_path: Path,
+        sqlite_receipt: BackupSQLiteCaptureReceipt,
+        expected_sha256: str,
+    ) -> BackupProjectFileCapturePublication:
         validate_backup_sqlite_snapshot(sqlite_receipt)
         capture_root = sqlite_receipt_path.parent
         projects_root = capture_root / "projects"
@@ -293,10 +316,23 @@ class BackupProjectFileCaptureCoordinator:
             capture_root,
             captured_project_ids=captured_project_ids,
         )
+        app_data_files: list[BackupFileEntry] = []
+        uncaptured_app_data_entries: list[str] = []
+        roots: tuple[Literal["agent-threads", "memory"], ...] = ("agent-threads", "memory")
+        for root_name in roots:
+            try:
+                app_data_files.extend(capture_app_data_root(self.data_dir, capture_root, root_name))
+            except (OSError, ValueError, BackupProjectFileUnavailable):
+                destination = capture_root / root_name
+                if destination.exists():
+                    shutil.rmtree(destination)
+                uncaptured_app_data_entries.append(root_name)
         fsync_directory(projects_root)
         completed_at = datetime.now(UTC)
-        partial = sqlite_receipt.status == "partial" or any(
-            project.status == "uncaptured" for project in projects
+        partial = bool(
+            uncaptured_app_data_entries
+            or sqlite_receipt.status == "partial"
+            or any(project.status == "uncaptured" for project in projects)
         )
         receipt = BackupProjectFileCaptureReceipt(
             capture_id=sqlite_receipt.capture_id,
@@ -309,6 +345,8 @@ class BackupProjectFileCaptureCoordinator:
             sqlite_capture_status=sqlite_receipt.status,
             projects=projects,
             imported_sources=imported_sources,
+            app_data_files=tuple(app_data_files),
+            uncaptured_app_data_entries=tuple(uncaptured_app_data_entries),
             status="partial" if partial else "complete",
         )
         receipt_path = capture_root / "project-files.json"

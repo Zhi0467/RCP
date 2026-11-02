@@ -43,6 +43,8 @@ EPISODE_RECEIPT_MAX_BYTES = 8 * 1024
 TURN_OUTCOME_REASON_MAX_CHARS = 240
 TURN_OUTCOME_CORRECTION_MAX_ROUNDS = 1
 AGENT_TASK_RESULT_MAX_BYTES = 64 * 1024
+# A Space turn's per-project Apply statuses kept on its task result.
+SPACE_PROJECT_RESULTS_MAX_COUNT = 64
 AGENT_COMMAND_EVENT_MAX_BYTES = 32 * 1024
 PATCH_OUTPUT_RETENTION_DAYS = 7
 RUN_TRACE_RETENTION_DAYS = 90
@@ -198,8 +200,6 @@ ARTIFACT_ERROR_INTERVAL_MS = 1000
 # An artifact shown inside a reply has a frame this tall from before it loads, so
 # loading never moves the chat; taller content scrolls inside it. The web mirrors it.
 ARTIFACT_INLINE_HEIGHT_PX = 480
-# A live inline artifact rechecks its viewer state this often, to show Finished.
-ARTIFACT_INLINE_LIVE_STATE_REFRESH_MS = 10_000
 # Selections one chat turn may carry from an artifact viewer; the web mirrors it.
 ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
 # A boxed region of an image artifact is cropped for the agent, scaled to fit this side.
@@ -614,11 +614,10 @@ EVIDENCE_FLAG_SOURCE_MAX_CHARS = 1000
 # Project groups are space-local labels over related projects.
 PROJECT_GROUP_NAME_MAX_CHARS = 120
 
-# Operational lessons are bounded context, independent of graph authority.
-LESSON_TEXT_MAX_CHARS = 600
-LESSONS_PER_PROJECT_MAX = 200
-LESSONS_RENDER_MAX_BYTES = 32 * 1024
-LESSONS_LIST_PAGE_SIZE = 20
+# The memory index is notes, independent of graph authority.
+MEMORY_INDEX_MAX_BYTES = 32 * 1024
+# A migrated lesson's index title is its first line, capped so one lesson cannot fill the index.
+MEMORY_MIGRATED_TITLE_MAX_CHARS = 120
 
 # In-memory dictation uploads and bounded service calls.
 TRANSCRIPTION_AUDIO_MAX_BYTES = 4 * 1024 * 1024
@@ -665,6 +664,10 @@ BROWSER_MAX_SESSIONS_PER_HOST = 8
 # Per-launch secret-hiding policy and per-machine folder payload bounds.
 HIDDEN_READ_PATH_MAX_LENGTH = 4096
 HIDDEN_READ_PATH_MAX_COUNT = 256
+# How deep Codex expands a `**` deny glob on Linux. A login home's credential sits
+# one folder below the glob root; without a cap Codex logs a warning into stderr,
+# which the launcher then shows inside every failed turn.
+CODEX_DENY_GLOB_SCAN_MAX_DEPTH = 4
 # A machine's own folders join the defaults in one scope, so they get a smaller share.
 HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT = 64
 HIDDEN_READ_ENV_NAME_MAX_LENGTH = 256
@@ -806,3 +809,27 @@ PAPER_CHANGES_PREVIEW_LINES = 12
 # the changed middle becomes one card instead of a quadratic comparison.
 PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
 PAPER_COACH_MAX_REFRESH_ROUNDS = 2
+
+# Single-entry agent context and command bounds.
+AGENT_THREAD_TAIL_MAX_MESSAGES = 40
+AGENT_THREAD_TAIL_MAX_BYTES = 64 * 1024
+AGENT_THREAD_COMPACT_TIMEOUT_SECONDS = 300
+AGENT_THREAD_COMPACT_MAX_BYTES = 64 * 1024
+AGENT_HANDOFF_MAX_CHARS = 16_000
+# A handoff whose delivery stays transiently refused this long is refused for its sender.
+AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS = 30 * 60
+AGENT_PROJECTS_MAX_ITEMS = 100
+AGENT_PROJECT_DETAILS_MAX_ITEMS = 20
+# Member-requested standing schedules per private agent thread.
+AGENT_SCHEDULES_MAX_ACTIVE = 20
+AGENT_SCHEDULE_NOTE_MAX_CHARS = 4000
+# The largest --count one repeating schedule may take.
+AGENT_SCHEDULE_MAX_COUNT = 10_000
+# Consecutive fires of one schedule, or one-shots on one thread, stay this far apart.
+AGENT_SCHEDULE_MIN_GAP_MINUTES = 15
+
+# Human approval cards expire on read or resolution, with no background sweeper.
+APPROVAL_CARD_TTL_HOURS = 72
+
+# Gregorian leap-day schedules may span eight years across a non-leap century.
+AGENT_SCHEDULE_SEARCH_DAYS = 366 * 8

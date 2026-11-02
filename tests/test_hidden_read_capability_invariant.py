@@ -153,13 +153,17 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
             protected_write_paths=["/project/state"],
             granted_roots=["/project/outputs"],
         )
-    grant = BrowserGrant(
-        requested=browser_enabled,
-        status="granted" if browser_enabled else "not_requested",
-        session_name="browser-session" if browser_enabled else None,
-        invocation_dir=str(tmp_path),
-        path_prefix="/browser/bin",
-        env={"PLAYWRIGHT_CLI_SESSION": "browser-session"} if browser_enabled else {},
+    grant = (
+        None
+        if capability == "session_summary"
+        else BrowserGrant(
+            requested=browser_enabled,
+            status="granted" if browser_enabled else "not_requested",
+            session_name="browser-session" if browser_enabled else None,
+            invocation_dir=str(tmp_path),
+            path_prefix="/browser/bin",
+            env={"PLAYWRIGHT_CLI_SESSION": "browser-session"} if browser_enabled else {},
+        )
     )
     request = ProviderTurnRequest(
         prompt="task",
@@ -182,8 +186,13 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         browser_grant=grant,
         hidden_read_scope=empty,
     )
-    baseline = _render(provider, request)
     hidden_request = replace(request, hidden_read_scope=populated)
+    if capability == "session_summary" and provider == "opencode":
+        for summary_request in (request, hidden_request):
+            with pytest.raises(ValueError, match="session summaries"):
+                _render(provider, summary_request)
+        return
+    baseline = _render(provider, request)
     # The wrapper lives in a folder named by the policy fingerprint.
     hidden = json.loads(
         json.dumps(_render(provider, hidden_request)).replace(

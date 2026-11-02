@@ -524,3 +524,29 @@ test("history exposes fork controls for independent and grouped revisions", () =
   assert.equal((html.match(/aria-label="Fork from here"[^>]*disabled=""/g) ?? []).length, 2);
   assert.equal((html.match(/aria-haspopup="menu"/g) ?? []).length, 2);
 });
+
+test("history names the member's agent without linking an unverified private thread", () => {
+  const render = (via_agent) =>
+    renderToStaticMarkup(
+      React.createElement(ProjectHistoryDrawer, {
+        projectId: "project",
+        summaries: [
+          {
+            ...latestSummary,
+            authorized_by: { display_name: "Ada", user_id: "member", space_id: "space" },
+            via_agent,
+          },
+        ],
+        tasks: [],
+        loading: false,
+        error: null,
+        onInspectTask() {},
+        onClose() {},
+        episodeReportHref: () => "",
+      }),
+    );
+  const html = render({ name: "Moss", thread_id: "private-thread" });
+  assert.match(html, /Moss/);
+  assert.doesNotMatch(html, /href=.*private-thread/);
+  assert.doesNotMatch(render(null), /Moss/);
+});

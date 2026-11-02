@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.resources
 import json
 import math
 import os
@@ -112,6 +113,18 @@ class RemoteRunStage:
     def transport_partition(self) -> str | None:
         return run_stage_partition(self.host, self.root)
 
+    def project_memory(self, request: dict) -> dict:
+        """Run the memory owner's shipped operations on this stage's host."""
+        source = (
+            importlib.resources.files("rcp.agents")
+            .joinpath("memory_file_io.py")
+            .read_text(encoding="utf-8")
+        )
+        result = self._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
+        if result.returncode:
+            raise _ssh_failure(result, "could not prepare project memory")
+        return json.loads(result.stdout)
+
     def sweep(
         self,
         *,
@@ -146,6 +159,7 @@ class RemoteRunStage:
         *,
         reuse: bool = False,
         protected_roots: Iterable[str] | None = (),
+        thread_owner: str | None = None,
     ) -> RemoteRunStage:
         """Create this stage, or with `reuse` adopt it when it already exists.
 
@@ -162,6 +176,7 @@ class RemoteRunStage:
                 "create",
                 label,
                 "1" if reuse else "0",
+                *([thread_owner] if thread_owner is not None else []),
             ]
         )
         remote_root = result.stdout.strip()
@@ -1436,7 +1451,15 @@ def remote_stage_name(root: str) -> str | None:
     if (
         parent.is_absolute()
         and len(parent.parts) > 3
-        and parent.parts[-2:] == (".rcp", "stages")
+        and (
+            parent.parts[-2:] == (".rcp", "stages")
+            or (
+                len(parent.parts) > 5
+                and parent.parts[-4:-2] == (".rcp", "agent-threads")
+                and parent.name == "stages"
+                and remote_stage_root.MEMBER_ID.fullmatch(parent.parent.name) is not None
+            )
+        )
         and ".." not in parent.parts
     ):
         return name

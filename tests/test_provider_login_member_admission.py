@@ -23,11 +23,11 @@ def test_admission_resolves_member_before_allocation(tmp_path):
     tasks = BackgroundAgentTasks(store, _unused_stream)
     request = RunRequest(provider="codex")
     with pytest.raises(ProviderSignedOut):
-        tasks.admit_provider_task("project", request, authorized_by=human)
+        tasks.admit_provider_task("project", request, authorized_by=human, execution_host="")
     own = store.add_provider_login("codex", "", member_id=human.user_id, added_by=human.user_id)
     key = LoginKey("codex", "", own.login_id)
     store.mark_provider_login_verified(key, member_id=human.user_id, detail="verified")
-    tasks.admit_provider_task("project", request, authorized_by=human)
+    tasks.admit_provider_task("project", request, authorized_by=human, execution_host="")
     assert store.provider_login_assignment(key).last_assigned_at is None
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 0

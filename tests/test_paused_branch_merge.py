@@ -79,7 +79,7 @@ async def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="local",
+        run_on="laptop",
         run_truth_scope=["repo-a"],
     )
     merge = store.create_branch_merge_task(

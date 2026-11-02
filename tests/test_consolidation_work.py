@@ -359,7 +359,6 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     assert work_command_handler(execution, None).allowed_verbs == {
         "validate",
         "apply",
-        "lesson",
         "flag",
         "bulletin",
     }

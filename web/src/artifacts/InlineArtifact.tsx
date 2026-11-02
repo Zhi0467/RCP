@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { FileX, Maximize2, MessageSquarePlus, RefreshCw, TriangleAlert } from "lucide-react";
 import { useResource, useRefreshRuntime } from "../core/useResource";
+import type { ResourceProfile } from "../core/resourceStore";
+import type { ArtifactViewerState } from "../core/types";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { errorMessage } from "../core/errors";
@@ -22,14 +24,15 @@ export interface InlineArtifactSelectionEvent {
 }
 
 interface InlineArtifactProps {
-  projectId: string;
+  projectId: string | null;
+  /** Transient artifacts can use an owner-checked viewer directly, without project state. */
+  viewerUrl?: string;
+  stateProfile?: ResourceProfile<ArtifactViewerState> | null;
   /** Null while the turn that owns it loads; the same element then shows it. */
   artifact: AgentArtifactDescriptor | null;
   title: string;
   /** Fetches the owning turn once, when an embed mounts without its artifact. */
   onLoadTask?: () => void;
-  /** Changes when a turn in this chat settles, so a published edit is picked up. */
-  refreshToken: string;
   /** Whether this reader may stage comments; false in a read-only transcript. */
   canComment: boolean;
   keeping: boolean;
@@ -52,6 +55,8 @@ interface InlineArtifactProps {
  * version never moves the reply around it; taller content scrolls inside. */
 export function InlineArtifact({
   projectId,
+  stateProfile,
+  viewerUrl,
   artifact,
   title,
   onLoadTask,
@@ -70,16 +75,18 @@ export function InlineArtifact({
   const [near, setNear] = useState(false);
   const { store } = useRefreshRuntime();
   const owner = useId();
-  const resource = useResource(
-    `${projectId}:inline:${owner}`,
-    near && artifact ? artifactStateProfile(projectId, artifact.artifact_id) : null,
-  );
+  const profile =
+    stateProfile !== undefined
+      ? stateProfile
+      : projectId && artifact
+        ? artifactStateProfile(projectId, artifact.artifact_id)
+        : null;
+  const resource = useResource(`${projectId}:inline:${owner}`, near && artifact ? profile : null);
   const state = resource.value;
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
-  const [commentMode, setCommentMode] = useState(false);
-  const commentModeRef = useRef(commentMode);
-  commentModeRef.current = commentMode;
+  // null until the reader presses the toggle; comment mode starts on.
+  const [commentChoice, setCommentChoice] = useState<boolean | null>(null);
   const onVersionChangeRef = useRef(onVersionChange);
   onVersionChangeRef.current = onVersionChange;
   const freshSessionRef = useRef(false);
@@ -124,6 +131,13 @@ export function InlineArtifact({
     setPageError(null);
   }, [currentVersion]);
 
+  const selectable =
+    canComment &&
+    Boolean(state?.can_comment) &&
+    (artifact?.view === "html" || artifact?.view === "image");
+  // Derived, so a refresh that withdraws commenting (another edit reserving the
+  // artifact) also ends comment mode, with no Done left to press.
+  const commentMode = selectable && (commentChoice ?? true);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: onSelectionCancel,
@@ -135,16 +149,6 @@ export function InlineArtifact({
       }),
   });
 
-  const selectable =
-    canComment &&
-    Boolean(state?.can_comment) &&
-    (artifact?.view === "html" || artifact?.view === "image");
-  // A refresh can withdraw commenting, such as another edit reserving the
-  // artifact, and would leave comment mode on with no Done to end it.
-  useEffect(() => {
-    if (selectable || !commentModeRef.current) return;
-    setCommentMode(false);
-  }, [selectable]);
   if (!artifact)
     return (
       <span ref={host} className="chat-inline-artifact">
@@ -159,7 +163,8 @@ export function InlineArtifact({
         </span>
       </span>
     );
-  const source = state?.viewer_url ? inlineViewerUrl(state.viewer_url) : null;
+  const resolvedViewer = state?.viewer_url ?? (near ? viewerUrl : null);
+  const source = resolvedViewer ? inlineViewerUrl(resolvedViewer) : null;
   const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (
     <span
@@ -188,11 +193,7 @@ export function InlineArtifact({
             <button
               aria-label="Retry artifact"
               title={error}
-              onClick={() =>
-                store.invalidate(
-                  resourceKeyId(artifactStateProfile(projectId, artifact.artifact_id).key),
-                )
-              }
+              onClick={() => profile && store.invalidate(resourceKeyId(profile.key))}
             >
               <RefreshCw size={14} />
             </button>
@@ -221,7 +222,7 @@ export function InlineArtifact({
                 : "Select a part of this artifact to comment on it"
             }
             aria-label={commentMode ? "Done commenting" : "Comment on a part"}
-            onClick={() => setCommentMode(!commentMode)}
+            onClick={() => setCommentChoice(!commentMode)}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>
@@ -276,11 +277,6 @@ export function InlineArtifact({
           <strong className="chat-inline-artifact-error" role="alert">
             {actionError}
           </strong>
-        )}
-        {commentMode && (
-          <span className="chat-inline-artifact-hint" role="status">
-            Drag across a part, or select its text, to comment on it.
-          </span>
         )}
       </span>
     </span>

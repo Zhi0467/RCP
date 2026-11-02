@@ -334,6 +334,7 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
         execution=None,
         remote_stage=None,
         hidden_read_scope=scope,
+        stage=tmp_path,
     )
     stage = SimpleNamespace(workspace=tmp_path, execution_host="", remote=None)
     # Execute the actual task's admission expression through browser_turn. The

@@ -21,7 +21,7 @@ from rcp.providers.browser_grant import BrowserGrant
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
-    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
     from rcp.providers.session_format import SessionFormat
@@ -32,6 +32,7 @@ AgentCapability = Literal[
     "orchestrate",
     "scratch_patch",
     "paper_suggest",
+    "session_summary",
 ]
 
 
@@ -171,7 +172,7 @@ class ProviderTurnRequest:
     session_id: str | None
     read_dirs: list[Path]
     write_dirs: list[Path]
-    write_scope: ProjectWriteScope | None
+    write_scope: ProviderWriteScope | None
     capability: AgentCapability
     provider_version: str | None
     browser_grant: BrowserGrant | None = None
@@ -185,6 +186,15 @@ class ProviderTurnRequest:
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
     fork_session_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.capability == "session_summary" and (
+            self.write_dirs
+            or self.write_scope is not None
+            or self.invocation_gate is not None
+            or (self.browser_grant is not None and self.browser_grant.status == "granted")
+        ):
+            raise ValueError("Session summaries cannot carry write, command or browser grants")
 
 
 @dataclass(frozen=True)
@@ -586,7 +596,7 @@ class ProviderProfile:
         session_id: str | None,
         read_dirs: list[Path],
         write_dirs: list[Path],
-        write_scope: ProjectWriteScope | None,
+        write_scope: ProviderWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
         browser_grant: BrowserGrant | None = None,
@@ -688,11 +698,11 @@ def _paper_changes_root(write_dirs: list[Path]) -> Path:
 
 
 def _require_project_write_scope(
-    scope: ProjectWriteScope | None,
+    scope: ProviderWriteScope | None,
     *,
     capability: AgentCapability,
     write_dirs: list[Path],
-) -> ProjectWriteScope:
+) -> ProviderWriteScope:
     if scope is None:
         raise ValueError(f"{capability} launch requires a resolved project write scope")
     if scope.capability != capability:

@@ -64,6 +64,8 @@ type StartCall = { message: string; requestId: string | undefined };
 const fresh = new URLSearchParams(window.location.search).has("fresh");
 
 function Fixture() {
+  const surface = new URLSearchParams(window.location.search).get("archived");
+  const [archived, setArchived] = useState(Boolean(surface));
   const [tasks, setTasks] = useState<object[]>([]);
   const [failNext, setFailNext] = useState(true);
   const fixture = window as unknown as {
@@ -82,7 +84,13 @@ function Fixture() {
         tasks={tasks as never}
         historyMessages={fresh ? undefined : (history as never)}
         chatId="send-chat"
-        presentation="workspace"
+        presentation={surface === "floating" ? "floating" : "workspace"}
+        fixedConversation={surface === "run"}
+        archived={archived}
+        onRestore={() => setArchived(false)}
+        readOnly={archived && surface === "orchestrator"}
+        allowArtifactComments={true}
+        readOnlyNotice={<button>Orchestrator send</button>}
         onStartTask={async (_kind, request, requestId) => {
           fixture.startCalls.push({ message: String(request.message), requestId });
           if (fresh) {

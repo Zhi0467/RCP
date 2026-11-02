@@ -19,6 +19,22 @@ if TYPE_CHECKING:
     from rcp.transport.run_stage import RemoteRunStage
 
 
+DEFAULT_AGENT_NAMES = (
+    "Pip",
+    "Puck",
+    "Ariel",
+    "Scout",
+    "Bartleby",
+    "Sancho",
+    "Alice",
+    "Orlando",
+    "Marvin",
+    "Moss",
+    "Biscuit",
+    "Juniper",
+)
+
+
 def handle_name(store: AppStore, operation_id: str, request: NameCommandRequest) -> CommandResponse:
     try:
         result = store.self_name_chat_for_task(operation_id, request.arguments.name)
@@ -40,10 +56,12 @@ def resolve_agent_name_state(execution: AgentTaskExecution | None) -> dict[str, 
     """Resolve once for this launch so grants and staged context share one snapshot."""
     from rcp.runs.consolidation import is_consolidation
 
-    if execution is None or is_consolidation(execution):
+    if execution is None:
         return {}
     if execution.agent_name_state is None:
         execution.agent_name_state = task_agent_name_state(execution.store, execution.operation_id)
+        if execution.agent_name_state and is_consolidation(execution):
+            execution.agent_name_state["can_self_name"] = False
     return execution.agent_name_state
 
 
@@ -56,15 +74,22 @@ def task_agent_name_state(store: AppStore, operation_id: str) -> dict[str, objec
         if row is None or actor is None:
             return {}
         chat_id = actor.split(":", 1)[1]
+        thread = connection.execute(
+            "SELECT project_id FROM agent_threads WHERE thread_id=?", (chat_id,)
+        ).fetchone()
+        scope_id = (thread["project_id"] or store.space_id) if thread else row["project_id"]
         if (
             connection.execute(
                 "SELECT 1 FROM chat_display WHERE project_id=? AND chat_id=?",
-                (row["project_id"], chat_id),
+                (scope_id, chat_id),
             ).fetchone()
             is None
         ):
             return {}
-    return store.agent_name_state(row["project_id"], chat_id)
+    state = store.agent_name_state(scope_id, chat_id)
+    if thread is not None:
+        state["can_self_name"] = False
+    return state
 
 
 def stage_agent_name_pointer(
@@ -73,7 +98,7 @@ def stage_agent_name_pointer(
     remote_stage: RemoteRunStage | None,
 ) -> str:
     state = resolve_agent_name_state(execution)
-    if not state.get("can_self_name"):
+    if not state:
         return ""
     if remote_stage is not None:
         path = remote_stage.workspace / "agent-name.json"

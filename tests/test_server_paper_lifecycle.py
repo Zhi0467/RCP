@@ -297,7 +297,7 @@ def test_deletion_failing_after_stop_resumes_kept_paper(manifest, tmp_path, monk
     owner = PaperOwner()
     monkeypatch.setitem(paper_lifecycle._owners, store, owner)
 
-    def fail(project_id):
+    def fail(project_id, *, memory_host_key=None):
         raise RuntimeError("records stayed")
 
     monkeypatch.setattr(store, "delete_project_records", fail)

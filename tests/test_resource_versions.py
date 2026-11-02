@@ -212,6 +212,13 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
 # Tables outside subscribed display resources. Provisioning belongs to setup;
 # notifications shown in Settings/membership are registered by their owners.
 _EXEMPT_TABLES = {
+    "agent_threads": "private thread index; thread views poll directly",
+    "agent_schedules": "private schedule state; thread views poll directly",
+    "approval_cards": "question-owned action; questions invalidate resolution",
+    "agent_handoffs": "durable delivery",
+    "space_turn_project_bindings": "admitted authority",
+    "memory_migrations": "migration",
+    "memory_deletions": "cleanup receipt",
     "_legacy_campaign_invocations_archive": "legacy",
     "_legacy_campaign_messages_archive": "legacy",
     "_legacy_campaign_recoveries_archive": "legacy",

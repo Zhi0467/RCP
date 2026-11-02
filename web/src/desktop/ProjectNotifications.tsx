@@ -7,7 +7,9 @@ export type NotificationKind =
   | "blocker"
   | "episode_needs_action"
   | "episode_finished"
-  | "consolidation";
+  | "consolidation"
+  | "bulletin_mention"
+  | "agent_thread";
 
 export type NotificationPreferences = Record<NotificationKind, boolean>;
 
@@ -18,6 +20,8 @@ export const NOTIFICATION_KINDS: Array<{ kind: NotificationKind; label: string }
   { kind: "episode_needs_action", label: "Episodes that need you" },
   { kind: "episode_finished", label: "Episodes finished" },
   { kind: "consolidation", label: "Nightly consolidation" },
+  { kind: "bulletin_mention", label: "Bulletin mentions" },
+  { kind: "agent_thread", label: "Agent threads" },
 ];
 
 interface Props {

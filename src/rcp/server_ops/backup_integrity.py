@@ -13,8 +13,9 @@ def canonical_backup_manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
     """Return the one byte representation stored in protected archives."""
 
     payload = manifest.model_dump(mode="json")
-    if "artifact_inventory" not in manifest.model_fields_set:
-        payload.pop("artifact_inventory", None)
+    for field in ("artifact_inventory", "app_data_files"):
+        if field not in manifest.model_fields_set:
+            payload.pop(field, None)
     return canonical_json_line(payload)
 
 

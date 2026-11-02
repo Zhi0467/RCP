@@ -90,6 +90,13 @@ class ChatForkStoreMixin(StoreMixinBase):
         self, connection: sqlite3.Connection, project_id: str, source_chat_id: str
     ) -> sqlite3.Row:
         """The chat's latest turn, which must hold a settled, usable native session."""
+        if (
+            connection.execute(
+                "SELECT 1 FROM agent_threads WHERE thread_id=?", (source_chat_id,)
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("A private agent thread cannot fork into a public conversation")
         return cast("AppStore", self)._usable_chat_fork_source(
             connection, self._latest_chat_turn_id(connection, project_id, source_chat_id)
         )

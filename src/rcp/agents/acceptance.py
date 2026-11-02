@@ -26,7 +26,7 @@ from rcp.agents.launcher import (
 )
 from rcp.agents.prompts import COMMAND_CLIENT, PromptFactory
 from rcp.agents.provider_accounts import ProviderAccounts
-from rcp.agents.write_scope import ProjectWriteScope
+from rcp.agents.write_scope import ProviderWriteScope
 from rcp.core.models import HiddenReadScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
@@ -159,7 +159,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         fork_source_cwd: str | None = None,
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
-        write_scope: ProjectWriteScope | None = None,
+        write_scope: ProviderWriteScope | None = None,
         host: str = "",
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,

@@ -240,6 +240,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    via_agent: dict[str, str] | None = None
     episode_id: str
     project_id: str
     mode: EpisodeMode
@@ -500,6 +501,7 @@ def serialize_episode(
             else store.episode_budget_meter(episode.episode_id)
         ),
         authorized_by=episode.authorized_by,
+        via_agent=store.via_agent(episode.root_operation_id),
         stop_requested_at=episode.stop_requested_at,
         ending=episode.ending,
         ending_diagnostic=None if stopped else episode.ending_diagnostic,

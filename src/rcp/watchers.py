@@ -753,6 +753,9 @@ class WatcherDelivery:
             return
         watcher_ids = [item.watcher_id for item in group]
         first = group[0]
+        if first.chat_id and self._store.chat_turn_refusal(first.project_id, first.chat_id):
+            self._store.stop_watchers(first.project_id, watcher_ids)
+            return
         continuation = first.continuation
         # Experiment observations may be adopted across episodes or maintained
         # by another member. The receiving episode owns their wake authority;

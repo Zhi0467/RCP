@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
+from rcp.agents.prompts import PromptFactory
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
@@ -784,15 +785,29 @@ def _stage_attempt_contract(
     contract: str,
     phase: LaunchPhase,
 ) -> tuple[str, str]:
-    """Send the report instructions inline, with no pointer to the operational master.
+    """Stage the report contract and point to it, with no pointer to the operational master.
 
-    The staged copy may already exist when a queued attempt is relaunched after a crash,
-    so it is reused rather than refused.
+    The prompt itself revokes the operational instructions. Both staged copies may already
+    exist when a queued attempt is relaunched after a crash, so they are reused rather than
+    refused.
     """
 
+    token = _task_token(execution)
+    contract_path = _stage_or_reuse_task_input(
+        stage.local,
+        stage.remote,
+        f"task-{token}-episode-report-contract-{attempt_number}.md",
+        contract,
+    )
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        f"episode_report_contract_{attempt_number}",
+        contract,
+        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
+    )
     prompt = compose(
         classify(phase),
-        parts=[contract, browser_prompt_line(BrowserGrant())],
+        parts=[PromptFactory.launch_prompt(contract_path), browser_prompt_line(BrowserGrant())],
         master=None,
         delta=None,
     )
@@ -807,7 +822,7 @@ def _stage_attempt_contract(
     path = _stage_or_reuse_task_input(
         stage.local,
         stage.remote,
-        f"task-{_task_token(execution)}-episode-report-{attempt_number}.md",
+        f"task-{token}-episode-report-{attempt_number}.md",
         prompt,
     )
     return path, prompt

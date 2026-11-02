@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import tarfile
 import uuid
+from collections.abc import Collection
 from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -50,6 +51,21 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Single-entry agent tables (v68-73): fresh, immutable fixtures, and in-place upgrades.
+        "06648185128e17b509fb431adbb5cb6b4b2b5e452a9710c3f1b91a863bc026c9",
+        "2486a78010708a6af3d6f1d948cd9718bc5ab25a25bd997c6850f0f87005a03c",
+        "2a619610a827a8d9f255f8260c809c414a32144557914f4b30a7976046b9c679",
+        "3a86e40854c119e43e2e3347efc4d72971e41875d8597be931f4e6c506c45aa6",
+        "68d9192e3ea22228ab17f0ca600eef1b0abefc7a95a4434a495e061108b6881f",
+        "750caf31dd74d479ae7e9a759be11ef887e5397e2a1112e5731c54ff73b118c8",
+        "90677f88615f125591332dfea5bece61b59464ea95469bf426125795dbcf3024",
+        "96210162c036cbc0532a2ffc2b7d0b7f585e7f9a9ed21208759e4e640239d7e6",
+        "c2209f196a690ca7d98f42c218a8d55059e5c788f8840e1e4719e3187ac1a3db",
+        "cfd3d20a50aad3409653dfe02eb4783f69f7f8931646bd3b7a25eeaa67764741",
+        "d1cb0432efe53b241bdb1fdca8c6e513b9ff79fcc72146230ff975bd9a37b8b5",
+        "fbf8c94174d36648b588100ba11dc1f5dd521b9fe69e30d339a39546566a4aa0",
+        "2b17efd8b903d8f0d05e6047b3ef55e727d31e5f03d1d0bcd6ec1998e2bbdc00",
+        "662a2eba962ce2221e5bbf08e078ae49a2e8ad0f1dbb1700967c0556b58fd460",
         # Evidence flag origins and episode merge requests (v66-67): fresh,
         # immutable fixture upgrades, and the in-place compatibility boundaries.
         "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",
@@ -660,6 +676,7 @@ def detach_restore_database(
     *,
     confirmed_by: str,
     detached_at: datetime,
+    restored_memory_projects: Collection[str] = (),
 ) -> None:
     with closing(AppStore(database)) as store:
         store.detach_restored_lifecycle(
@@ -669,6 +686,7 @@ def detach_restore_database(
             ),
             confirmed_by=confirmed_by,
             detached_at=detached_at.isoformat(),
+            restored_memory_projects=restored_memory_projects,
         )
     _verify_sqlite_integrity(database)
 
@@ -721,6 +739,7 @@ def _extract_verified_archive(
                 for entry in (
                     manifest.sqlite_snapshot,
                     *artifact_backup_entries(manifest.artifact_inventory),
+                    *manifest.app_data_files,
                     *(item for project in manifest.projects for item in project.files),
                     *(item for capture in manifest.imported_sources for item in capture.files),
                 )
@@ -1446,6 +1465,10 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         restored_project_owners,
     )
     from rcp.server_ops.application_snapshot import _set_private_directory_modes, copy_proof_tree
+    from rcp.server_ops.application_validation import (
+        CandidateRehearsalRefused,
+        copy_backup_app_data_files,
+    )
     from rcp.server_ops.backup_capture import (
         BackupSnapshotProjectInventory,
         BackupSQLiteCaptureReceipt,
@@ -1525,8 +1548,35 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     if has_artifact_storage and "artifact_inventory" not in manifest.model_fields_set:
         raise RestoreRefused("An artifact-storage database requires its protected inventory.")
     detach_restore_database(
-        database, confirmed_by=request.confirmed_by, detached_at=request.detached_at
+        database,
+        confirmed_by=request.confirmed_by,
+        detached_at=request.detached_at,
+        restored_memory_projects={
+            PurePosixPath(entry.source_relative_path).parts[1]
+            for entry in manifest.app_data_files
+            if entry.group == "local_memory"
+        },
     )
+    stale = request.remove_stale_member
+    app_data_files = tuple(
+        entry
+        for entry in manifest.app_data_files
+        if not (
+            (
+                entry.group == "space_thread"
+                and PurePosixPath(entry.source_relative_path).parts[1] == stale
+            )
+            # Member memory notes: memory/members/<user_id>/...
+            or (
+                entry.group == "local_memory"
+                and PurePosixPath(entry.source_relative_path).parts[1:3] == ("members", stale)
+            )
+        )
+    )
+    try:
+        copy_backup_app_data_files(payload, app, app_data_files)
+    except (OSError, CandidateRehearsalRefused) as exc:
+        raise RestoreRefused("Captured application files failed restore verification.") from exc
     for item in manifest.artifact_inventory:
         source = payload / "artifacts" / item.artifact_id / item.file_id
         target = app / "artifacts" / item.artifact_id / item.file_id
@@ -1780,6 +1830,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             sqlite_capture_status=sqlite_receipt.status,
             projects=manifest.projects,
             imported_sources=manifest.imported_sources,
+            app_data_files=app_data_files,
             status=sqlite_receipt.status,
         )
         project_digest = write_immutable_backup_receipt(

@@ -58,7 +58,7 @@ def _waiting_child(tmp_path, *, ceiling=6, browser_requested=False):
         RunRequest(
             browser_requested=not browser_requested,
             provider="codex",
-            run_on="local",
+            run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",

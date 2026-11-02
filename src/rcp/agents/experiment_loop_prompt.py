@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v16"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v17"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -563,32 +563,39 @@ Experiment, resubmit work, or cause a new external side effect.
     ]
 
 
+def experiment_watcher_maintenance_rules(
+    resource: dict[str, str], *, work_execution_host: str
+) -> str:
+    """The maintenance rules of one node-attached watcher resource, for a staged file.
+
+    The turn may have gained the resource after its session master was written, so no
+    earlier file is guaranteed to hold them.
+    """
+
+    return _work_experiment_watcher_resource_section(
+        [resource], work_execution_host=work_execution_host
+    ).strip()
+
+
 def experiment_watcher_maintenance_correction_contract(
     *,
-    resource: dict[str, str],
-    work_execution_host: str,
+    watch_path: str,
+    rules_path: str,
     diagnostics_path: str,
 ) -> str:
     """Repair one node-attached watcher file by that resource's own maintenance rules."""
 
-    if not diagnostics_path or not resource.get("watch_path"):
+    if not diagnostics_path or not watch_path or not rules_path:
         raise ValueError(
-            "Experiment watcher maintenance correction is missing diagnostics or watch path."
+            "Experiment watcher maintenance correction is missing diagnostics, watch, or rules path."
         )
-    # The rules are restated for this one resource: the turn may have gained it after the
-    # session master was written, so no earlier file is guaranteed to hold them.
-    rules = _work_experiment_watcher_resource_section(
-        [resource], work_execution_host=work_execution_host
-    ).strip()
     return f"""# RCP Experiment watcher maintenance correction
 
 RCP rejected the node-attached Experiment watcher maintenance file this Work turn wrote. Rewrite
-only `{resource["watch_path"]}`, by the rules below; the diagnostic grants no new authority. Do not
-rerun an Experiment, resubmit work, repeat an external side effect, change `patch.json` or this
-conversation's own watcher file, or add a target or control field.
+only `{watch_path}`, by the maintenance rules in `{rules_path}`; the diagnostic grants no new
+authority. Do not rerun an Experiment, resubmit work, repeat an external side effect, change
+`patch.json` or this conversation's own watcher file, or add a target or control field.
 - Maintenance diagnostic: `{diagnostics_path}`
-
-{rules}
 
 Your final response should only confirm that the file was rewritten."""
 

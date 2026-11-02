@@ -136,6 +136,7 @@ test("external job Cancel uses one watcher and the machine card saves compute on
     );
 
     // One machine's card is open at a time; its tile opens it.
+    await page.locator('.settings-rail [data-settings-section="machines"]').click();
     const card = page.locator(".provider-machine");
     const compute = card.locator('[data-machine-fold="compute"]');
     const open = async (alias) => {

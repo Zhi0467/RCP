@@ -19,15 +19,17 @@ A project names space machines by aliases and assigns each repository to one.
 The space card owns provider paths, compute settings and access hints. Manifests
 retain machine identity and repository placement. Legacy per-project settings
 are validated and migrated to the card. They are not a second live
-configuration. [MachineConfig](../../src/rcp/config.py) and
-[space_machines.py](../../src/rcp/storage/space_machines.py) own the types.
+configuration. [MachineConfig](../../src/rcp/config.py) and `SpaceMachineRecord`
+([storage/models.py](../../src/rcp/storage/models.py)) own the types;
+[space_machines.py](../../src/rcp/storage/space_machines.py) owns card storage.
 
 ## Execution route
 
 Each space machine card sets an optional job manager and `jobs_root`. A project
-configures neither. A card's job manager starts undecided. A route check of the
-card, or of a project using it, turns Slurm on when the account has `sbatch`,
-`squeue` and `scancel`. The check turns Slurm off when those commands are
+configures neither. A card's job manager starts undecided. A card check, a save of
+the card's compute fields, or a project's re-check or startup route check turns
+Slurm on when the account has `sbatch`, `squeue` and `scancel`; the operator
+probe never decides a job manager. The check turns Slurm off when those commands are
 missing. An unreachable machine stays undecided. A human's choice is never
 overridden. Slurm adds direct scheduler submission. Independently, the helper
 resolves `systemd_user` on Linux with a reachable user manager or `launchd` on
@@ -84,8 +86,8 @@ which refreshes open pages. The machine card's compute fields, its **Check
 compute again** button and their synchronous re-check are
 [card endpoints](api-web-and-desktop-projections.md#paper-settings-and-history).
 
-Runs shows each unready route's diagnostic, action, Settings link and **Check
-again**. The button calls
+Runs shows each unready route's diagnostic, its fix, a button that opens
+Settings, and a re-check button. The re-check calls
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check`. The
 [operator probe](../server.md) uses the service socket and saves its results. It
 refuses a route the machine does not offer and succeeds only for a ready route.
@@ -213,9 +215,10 @@ receipts for recovery. Background reconciliation does not block startup. It uses
 the saved execution identity even when the project manifest or graph history is
 unavailable. Transport errors remain diagnostics rather than evidence of
 completion. Helper job directories are not included in whole-database backup
-payloads. Restoring a row does not recreate its outputs. Project deletion runs
-each running helper job's cancel action first and confirms it with the job's
-check. A job it cannot stop is reported without refusing deletion
+payloads. Restoring a row does not recreate its outputs. Project deletion finally
+runs the saved cancel action of each running helper job and each watched external
+job, and confirms each with its saved check. A job it cannot stop, or a watched
+job without a cancel action that still runs, is reported without refusing deletion
 ([deletion](projects-spaces-and-operations.md#deletion)).
 
 Project transfer retains watcher worker identity and cancellation attribution,

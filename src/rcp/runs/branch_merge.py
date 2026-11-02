@@ -41,7 +41,6 @@ from rcp.agents.continuation_prompt import (
     master_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
-from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
 from rcp.agents.write_scope import ProjectWriteScope
@@ -762,7 +761,7 @@ async def stream_branch_merge_run(
     outcome.rebased_main_head = plan.destination_head
     token = _task_token(execution)
     session_id: str | None = None
-    session_master: tuple[str, str, bool] | None = None
+    session_master: tuple[str, str] | None = None
     master_values: dict[str, object] | None = None
     delivered_head: GraphHeadRef | None = None
     previous_plan_id = plan.plan_id
@@ -825,14 +824,16 @@ async def stream_branch_merge_run(
                         role="branch_merge",
                     )
                     master_values = values
-                    ontology = _has_ontology_extensions(context.main_graph)
-                    session_master = (label, contract, ontology)
+                    session_master = (label, contract)
                     if execution is not None:
                         record_session_master(
                             execution.store,
                             execution.operation_id,
                             contract,
-                            master_key(BRANCH_MERGE_POLICY_VERSION, ontology_extensions=ontology),
+                            master_key(
+                                BRANCH_MERGE_POLICY_VERSION,
+                                ontology_extensions=_has_ontology_extensions(context.main_graph),
+                            ),
                             values,
                         )
                     continuation = "initial"
@@ -840,7 +841,6 @@ async def stream_branch_merge_run(
                     if session_id is None:
                         raise ValueError("The merge continuation lost its native session.")
                     master = _restaged_merge_master(stage, session_master, master_values)
-                    rules, session_master = _changed_graph_rules(context, session_master)
                     prompt = compose(
                         classify(LaunchPhase(session_id=session_id, phase="turn")),
                         parts=branch_merge_rebase_parts(
@@ -848,8 +848,7 @@ async def stream_branch_merge_run(
                             previous_plan_id=previous_plan_id,
                             plan_id=plan.plan_id,
                             code=bool(code_block),
-                        )
-                        + rules,
+                        ),
                         master=master,
                         delta={
                             **(changed_since_master(master, values) or {}),
@@ -1278,14 +1277,14 @@ def _stage_answers_plan(
 
 def _restaged_merge_master(
     stage: BranchMergeStage,
-    session_master: tuple[str, str, bool] | None,
+    session_master: tuple[str, str] | None,
     values: dict[str, object] | None,
 ) -> MasterRef:
     """Point a merge continuation at the start contract this session completed a turn with."""
 
     if session_master is None:
         raise ValueError("A branch merge continuation has no start contract in its session.")
-    label, content, _ = session_master
+    label, content = session_master
     return MasterRef(
         path=_stage_or_reuse_task_input(stage.local_stage, stage.remote_stage, label, content),
         bootstrap=False,
@@ -1312,25 +1311,6 @@ def _merge_master_values(
         "retained_answers": retained_answers.model_dump(mode="json"),
         "history_client": history_client,
     }
-
-
-def _changed_graph_rules(
-    context: BranchMergeContext, session_master: tuple[str, str, bool] | None
-) -> tuple[list[str], tuple[str, str, bool] | None]:
-    """The current graph rules, only when main's ontology extensions differ from the last sent.
-
-    The session record comes back updated to the mode now sent, so a later rebase that
-    returns main to the master's mode sends the rules again.
-    """
-
-    current = _has_ontology_extensions(context.main_graph)
-    if session_master is None or session_master[2] == current:
-        return [], session_master
-    return [graph_rules(edits=True, ontology_extensions=current)], (
-        session_master[0],
-        session_master[1],
-        current,
-    )
 
 
 def _provider_turn(

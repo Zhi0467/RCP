@@ -14,7 +14,7 @@ import { ApiError, markChatRead } from "../core/api";
 import { chatSummariesForTarget, mergeChatSummaryPage } from "./chatApi";
 import {
   chatReadThrough,
-  latestConversation,
+  pickOrCreateConversation,
   type ChatConversation,
   type ChatKind,
   type DraftConversation,
@@ -358,12 +358,16 @@ export function useChatState({
       node: GraphNode | null,
       projectTitle: string,
     ): string => {
-      return (
-        latestConversation(conversations, kind, node?.id ?? null, graphTarget)?.chatId ??
-        startConversation(kind, node, projectTitle)
+      return pickOrCreateConversation(
+        conversations,
+        chatReads?.archived ?? [],
+        kind,
+        node?.id ?? null,
+        () => startConversation(kind, node, projectTitle),
+        { graphTarget },
       );
     },
-    [graphTarget, startConversation],
+    [chatReads?.archived, graphTarget, startConversation],
   );
   const refreshChatSummaries = useCallback(
     async (requestedProjectId: string, base: string) => {

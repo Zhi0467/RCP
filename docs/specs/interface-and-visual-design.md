@@ -22,12 +22,44 @@ Expanded detail and unavailable artifacts do not.
 Artifact preview targets span the row. Source chat is a separate target.
 Type, status, warning, and focus remain distinct.
 
-Display places Mode (System, Light, or Dark) above Theme (Classic or Aqua).
-The settings are independent. They are remembered per origin, applied before
-paint, and shared across projects. System follows the OS appearance.
+**Snowbound** is an 8-bit cabin in snowy woods: a snowy day in Light mode and a
+starry night in Dark mode. It shares Aqua's element rules and swaps their
+materials for pixel ones. Only Aqua's own light and dark token blocks stay
+Aqua-only, so the two themes keep one structure and cannot drift. Corners are
+square everywhere; one theme-wide rule does this because the app has no radius
+token. Frames are 2px with the corner pixels knocked out. Shadows are hard and
+unblurred, offset down and right. Controls rise a pixel on hover and press into
+their shadow on click, with the usual short transitions. The selected tab,
+segment, or Settings section is a lit square inside the notched frame. Focus is
+a dashed outline in the accent color.
+
+On the space home, Snowbound draws a band of pixel woods with the cabin centered
+at every width, and slow pixel snow falls behind the content. On the Projects
+tab the band sits at the page bottom, below padding that keeps it clear of
+cards and Runs. On the Agent tab the band is fixed to the window floor behind
+the chat, and the chat keeps a solid background over it. On windows wider than
+a phone and at least 700px tall, the chat stops 128px above the bottom so the
+woods show; phones and short windows give the chat the full height. The scene
+sits behind the content without a new stacking context, so space-home dialogs
+stay above the voice window.
+
+The Appearance pane of
+[Space Settings](api-web-and-desktop-projections.md#paper-settings-and-history)
+places Mode (System, Light, or Dark) above Theme (Classic, Aqua, or Snowbound).
+The desktop app adds Text size. The settings are independent. They are
+remembered per origin, applied before paint, and shared across projects. System follows the OS appearance.
 The defaults are the Aqua theme and System mode.
 Legacy mode choices retain their mode in Aqua. Soft Aqua becomes Aqua in Light mode.
 The unified logo contains RCP once, without a redundant initial tile.
+
+Every theme sets interface and display text in Figtree and code in JetBrains
+Mono. Snowbound is the one exception: it sets short titles in Pixelify Sans.
+These are the space and group titles on the space home, the space Runs
+heading, project and group tile titles, Settings section titles, and Settings
+rail labels. Long research text reads slower in a pixel face, so
+questions, node text, chat, Paper, and data stay in Figtree. All three fonts are
+pinned packages bundled into the web build, so the desktop app needs no font
+install.
 
 ## No commentary lines
 
@@ -42,13 +74,16 @@ It does not use a stacked box or caption. An unsent turn has a red edge and
 Resend at the top right.
 More detail belongs in an explicit read-only inspector.
 Chat and coaching have no sample prompts, slogans, instructional empty states,
-or textarea placeholders. Empty conversations are empty.
+or textarea placeholders. Empty conversations are empty, except the empty agent
+thread's welcome described under [Agent view](#agent-view).
 
 ## Smooth motion
 
 State changes are smooth, never choppy. Loading, polling, and switching keep
 their layout: no content jumps, no flicker between states, and no row that
 resizes when its data arrives. Transitions are short and honor reduced motion.
+Ambient decoration, such as Snowbound's snowfall, may move continuously when it
+sits behind content and never shifts layout. It stops under reduced motion.
 
 ## Phone layout
 
@@ -62,7 +97,7 @@ RCP windows. Verify at 390px.
 ## Project shell
 
 No wordmark, logo, or revision label sits beside the project name.
-Group the labelled Sync and Ask controls together.
+The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
@@ -81,7 +116,7 @@ At widths <=560px, one top bar holds Back, project name (opens the project dock)
 Sync only for staged changes, the branch picker with Retry graph or Retry tasks
 when stale, and a labelled-row ⋯ menu. Bottom tabs show Overview,
 Inbox, Research, Runs, and More. More is active for its destinations.
-Ask floats above the bar except in Agents and Paper. Status banners and the Overview
+Status banners and the Overview
 revision use one line. Provider and compute notices expand from a summary while
 keeping failures visible. Inbox counts share a row.
 
@@ -245,8 +280,9 @@ shrink columns. Fit preserves pins. Returning restores zoom, scroll, and offsets
 Chat Options holds Browser use beside Work in a worktree. Its unlabelled sliders
 chip counts enabled options. On phones, the menu spans the screen-height composer.
 An outside click, Escape, or a chat change closes it.
-Browser use starts off in new chats. Failed saves retain the server value and
-offer Check again. Coaching has no Browser switch.
+Browser use starts off in new chats. A failed save returns to the server value,
+outlines the control in red, and offers one icon-only retry with the error on
+hover. Coaching has no Browser switch.
 
 Episode options sit inside the agent picker below the provider fields.
 The chip matches Start's height and counts enabled options.
@@ -265,7 +301,8 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 Discuss is plum. Work is forest. Shift+Tab toggles an idle focused composer.
 Each turn retains its mode. The Agents header has a title, a picker for provider,
-model, and effort, a context ring, and one menu. The menu holds Rename, Archive,
+model, and effort, a context ring, an active-watcher count toggle when watchers
+exist, and one menu. The menu holds Rename, Archive,
 New session, Branch this chat, and repository scope.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
@@ -274,7 +311,12 @@ Cards have fixed size, one-line title, and secondary metadata. Their menus remov
 unsent drafts or rename, pin, or archive chats. Rename is inline.
 A blank name keeps the current name.
 Archived counts include unloaded chats and offer Restore.
-An archived composer shows only Restore. Revisits retain loaded rows until refresh.
+The shared chat shows only Restore in place of an archived composer's controls,
+including floating node chats, Auto-research orchestrators, and Experiment run
+conversations. It cannot send until restored. Conversation selection for node
+Ask and New session skips archived conversations, including archived drafts;
+when no eligible chat remains, it creates a fresh one. Revisits retain
+loaded rows until refresh.
 Display ownership and admission follow
 [Agents](api-web-and-desktop-projections.md#agents).
 Use the shipped provider logos, with Claude in orange and others in monochrome.
@@ -282,7 +324,11 @@ Use labels when a logo is unavailable.
 
 Human requests are quiet paper cards in one readable column.
 Assistant prose is unboxed. Progress folds behind Activity.
-Failures and recovery stay explicit. The composer is a contained writing surface.
+Failures and recovery stay explicit. The composer is a contained writing surface:
+one card in every theme, with Add, the message, and the send actions on one row.
+The message has no box of its own, starts one line tall, and eases taller with
+its text. A second row holds the caller's own tools, such as Discuss/Work and
+Options, only when it has any.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.
 Done contains read successes, unsent drafts, or unloaded turns.
@@ -302,8 +348,9 @@ main. It opens orchestrators in place. There is no graph filter or tags for bran
 or role. User tags remain. Children in the active lineage show Working or Done.
 Attention belongs to the orchestrator. Posting and ownership follow the API spec.
 
-Entry opens the board unless a link selects a chat or a chat was left open in
-this project. Inside Agents, its tab returns to the board. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
+Entry reopens the chat left open in this project, else the member's own project
+thread; the board opens only when the member has none. A link that selects a chat
+opens it. The list's board button opens the board. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
 folding is per viewer.
 Cards show a logo or spinner, title, provider, model, effort, type, state, age,
 and offered recovery. Branch cards also show their source chat.
@@ -313,12 +360,13 @@ Clicking a card opens chat with the list folded and the composer focused.
 Mouse dragging, Alt+Up, or Alt+Down reorders cards within columns, with pins first.
 The order is stored per project in the browser.
 Cross-column moves only archive or restore eligible chats.
+Dragging an unsent draft to Archived removes it, matching its Remove action.
 Working chats cannot be archived.
 Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.
 
 At <=560px, the header is one row of picker, ring, and menu without chat name.
-More → Agents opens the board unless a chat was left open. Wider layouts retain
+More → Agents follows the same entry rule. Wider layouts retain
 resizable-list preferences independently of viewport changes. Only code, tables,
 and display math scroll sideways. Paths and URLs wrap.
 Code Copy is icon-only and copies the exact text. It has 44px phone targets.
@@ -376,9 +424,82 @@ Hide in the browser or project affects completed rows only.
 Show hidden watchers restores them. Renewed activity overrides hiding.
 
 Work replies show a neutral Done, Partial · reason, Couldn't do it · reason, or
-No outcome stated chip beside the graph receipt, even without graph updates.
+No outcome stated chip above the graph receipt, even without graph updates. The
+receipt is a card as wide as the answer.
 Other modes without outcome metadata show no chip.
 Long reasons wrap without failure coloring.
+
+## Agent view
+
+The space home switches between Projects (the project cards) and Agent. At
+phone width the switch shows its icons alone and the title aligns with the cards. A
+personal space remembers the last tab per member on that browser, defaulting to
+Agent on the first visit. Explicit Projects, Agent thread, project, and
+project-group links take precedence. The Projects tab opens `#/cards` in every
+space, so it stays an explicit link that never collides with `#/projects/<id>`.
+Agent has a left rail with the member's Space thread first, then each project
+thread. Rows show the agent name,
+the project or Space, and a mark. The Space row always shows the Space icon; a
+project row shows a spinner while live, a needs-you mark, an unread dot, or at
+rest the chat icon. Every row ends with live or the time since it last moved. The rail folds like
+the Agents conversation list and remembers its fold per device. At phone width
+the rail is the list, and a chosen thread fills the screen.
+
+Inside a project, Agents opens the member's own project thread, which leads the
+conversation list and counts in its filters. Its mark leads its meta line, where
+team rows show their provider, so every title starts in one column. The team's
+board conversations stay in that list. The thread header holds an Upcoming
+button, present only when schedules exist, that counts the ones that will run
+without the member and opens a popover of them, sized to the viewport and
+scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
+threads share that pick: one `provider · model · effort` row that opens the
+shared fields in the menu. Opening the menu reads provider readiness again, so a
+sign-in from Settings appears without a reload. A pick is stored on the thread
+at once and every later turn runs it, retries and wakes included. Until the
+member picks, the row shows the project's Settings profile, or for the Space
+thread the backend machine's first signed-in provider, else its first registered
+provider. When the browser was
+unavailable on the latest turn, the browser item carries a warning icon and the
+fix on hover; turns carry no browser notice. The composer holds the voice
+button. Once a thread's transcript has loaded empty, a centered welcome lists
+what the agent can do under the header that names it, rendered from the
+capability lines the backend gives each verb the thread kind's turns are
+granted, above three starters. A starter fills the composer without sending, and the first turn removes the welcome.
+A failed turn shows its error once, in the message column, with Retry.
+A member's Stop reads Stopped, with Resume and Retry, in the same column, on
+one rounded row shaped like the failed turn's. Send stays off until the stopped
+turn is resumed or retried. A
+Resume or Retry continues its turn, so the member's message shows once. The
+thread's reading column is a step wider than a board chat's, and the composer
+matches it. A provider pick moves to that provider's first model; a provider
+that declares its models lists them before any probe.
+Switching threads shows each thread's last loaded view while it reloads. Each
+Upcoming row shows its note (in full on hover), its time and zone, the next run
+of a recurring one, and since when a due wake waits. The reason a waiting wake
+cannot start shows in the row. Every row has Cancel; an active row has Pause and
+a member-paused row Resume, unless it is a one-shot whose time passed. A row the system disabled says why on hover and has
+Enable unless it is a one-shot whose time passed; a refused Enable shows the
+backend's reason. Row actions are icons. A wake shows its trigger: Handoff and
+Watcher as text chips, and a schedule as a calendar chip with its fire time,
+the note on hover, leading its message. Until a wake has text, only the live row
+shows it. A handoff result is one row with its Handoff
+chip, the agent that ran it, and how it ended, with its answer below.
+Board chats and threads
+share the agent window transcript, scrolling, artifact rendering, comments, and
+composer parts. Project threads support node references, saved artifacts, and
+artifact-selection comments. Space threads render their own turn artifacts and
+accept files and answer comments; they offer no node references, Keep, or
+artifact-selection comments. Both open artifacts in the shared in-app viewer,
+including on desktop. Voice and handoff source icons sit inside the human message
+bubble. Answer comments join the next message in both.
+Approval cards stay where the agent raised them, before later transcript lines,
+and show the action with Approve and Decline. Their outcome replaces the need
+for a separate member answer bubble. There is no separate Ask or voice launcher.
+A turn that starts a fresh session shows a quiet chip alongside its first message,
+except for the thread's first turn. Its recorded reason appears only on hover.
+Revision history names an attributed member as "<member>, via <agent name>" when
+the change came through their thread. The name stays plain text when the view
+cannot establish that the viewer owns the private thread.
 
 ## Terminals
 
@@ -407,7 +528,7 @@ control. Files and History open as panels.
 
 ## Auto-research and episode history
 
-Auto-research starts in the project header beside Ask. Its exact invocation budget
+Auto-research starts in the project header beside Sync. Its exact invocation budget
 has its observed cost beside it. Hidden report allocation stays outside that meter.
 Report lifecycle belongs to
 [episode reports](paper-artifacts-and-result-views.md#episode-reports).

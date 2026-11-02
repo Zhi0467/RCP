@@ -13,11 +13,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from rcp.agents.memory_files import change_project_memory
 from rcp.core.models import HiddenReadScope
+from rcp.keyed_locks import KeyedLocks
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
-from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
+from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, ProjectRecord
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 logger = logging.getLogger(__name__)
+_MEMORY_CLEANUP_LOCKS = KeyedLocks()
 
 
 def browser_host_key(host: str) -> str:
@@ -158,6 +161,32 @@ def close_chat_browser_owners(
     retry_browser_cleanup(store, project_id=project_id, chat_id=chat_id)
 
 
+def _retry_memory_cleanup(store: AppStore) -> None:
+    # Read pending rows under the lock: a second retry must not delete new memory
+    # created after the first retry completed and removed its receipt.
+    with _MEMORY_CLEANUP_LOCKS(str(store.path.resolve())):
+        with store.connection() as connection:
+            pending_memory = connection.execute("SELECT * FROM memory_deletions").fetchall()
+        for pending in pending_memory:
+            try:
+                project = ProjectRecord.model_validate_json(pending["project_json"])
+                if project.state_remote:
+                    host = project.state_location.partition(":/")[0]
+                    if not pending["host_key"] or browser_host_key(host) != pending["host_key"]:
+                        logger.warning(
+                            "Project memory cleanup remains pending: base identity unavailable or changed"
+                        )
+                        continue
+                change_project_memory(store.path.parent, project, None)
+                with store.connection() as connection:
+                    connection.execute(
+                        "DELETE FROM memory_deletions WHERE project_id = ? AND state_location = ?",
+                        (pending["project_id"], pending["state_location"]),
+                    )
+            except Exception:
+                logger.exception("Project memory cleanup remains pending")
+
+
 def retry_browser_cleanup(
     store: AppStore,
     *,
@@ -165,6 +194,7 @@ def retry_browser_cleanup(
     chat_id: str | None = None,
     finished_operation_id: str | None = None,
 ) -> None:
+    _retry_memory_cleanup(store)
     active_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
     placeholders = ",".join("?" for _ in active_statuses)
     with store.connection() as connection:

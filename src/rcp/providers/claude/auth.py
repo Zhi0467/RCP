@@ -30,6 +30,29 @@ class ClaudeAuthentication(ProviderAuthentication):
     token_variable = "CLAUDE_CODE_OAUTH_TOKEN"
     #: Variables that would make Claude bill an API key instead of the token.
     conflicting_variables = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    #: A hosting Claude Code session's identity and channels back to it, inherited
+    #: when RCP itself runs inside one. `CLAUDE_CODE_ENTRYPOINT=claude-desktop`
+    #: alone swaps in the desktop system prompt and adds ten desktop tools
+    #: (probed on 2.1.312); the rest would bind a headless turn to that session or
+    #: account. Member configuration such as Bedrock or Vertex settings stays.
+    host_session_variables = (
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_HOST_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+        "CLAUDE_CODE_ACCOUNT_UUID",
+        "CLAUDE_CODE_ORGANIZATION_UUID",
+        "CLAUDE_CODE_USER_EMAIL",
+        "CLAUDE_CODE_OAUTH_SCOPES",
+        "CLAUDE_CODE_DESKTOP_APP_VERSION",
+        "CLAUDE_AGENT_SDK_VERSION",
+        "CLAUDE_PID",
+    )
     #: Where a remote execution account keeps the token RCP placed for it.
     remote_token_path = "~/.config/rcp/claude-setup-token"
     # Keep delegated Claude work inside the invocation that owns it, and keep
@@ -109,7 +132,7 @@ class ClaudeAuthentication(ProviderAuthentication):
         environment = {
             name: value
             for name, value in os.environ.items()
-            if name not in self.conflicting_variables
+            if name not in self.conflicting_variables and name not in self.host_session_variables
         }
         token = credentials.token(self.credential_namespace, host, login_id)
         environment.pop(self.token_variable, None)

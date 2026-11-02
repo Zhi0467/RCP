@@ -19,9 +19,9 @@
   --rose-paper: #f5e5df;
   --rule: #d8ccbb;
   --shadow: 0 18px 52px rgba(65, 46, 29, 0.14);
-  --display: Charter, "Bitstream Charter", "Iowan Old Style", Palatino, Georgia, serif;
-  --ui: "Avenir Next", Avenir, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --ui: "Figtree Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --display: var(--ui);
+  --mono: "JetBrains Mono Variable", "SF Mono", ui-monospace, Menlo, monospace;
 
   /* Existing component names are aliases, not a second visual system. */
   --ink: var(--walnut);
@@ -390,13 +390,18 @@ button:disabled {
     width: 44px;
   }
 }
-/* Read by assistive technology, never drawn; `.chat-task-live` is the chat's live region. */
+/* Read by assistive technology, never drawn; `.chat-task-live` is the chat's live region.
+   Pinned to its containing block's corner: at its static place, one inside a scrolling
+   panel with no positioned ancestor stretched the document and scrolled the page into
+   empty space below the panel. */
 .visually-hidden,
 .chat-task-live {
   clip-path: inset(50%);
   height: 1px;
+  left: 0;
   overflow: hidden;
   position: absolute;
+  top: 0;
   width: 1px;
 }
 /* A vertical splitter: transparent until the pointer or focus finds it. */

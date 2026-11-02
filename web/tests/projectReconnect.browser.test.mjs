@@ -722,7 +722,7 @@ test("a loaded index stays on screen while a quick return refreshes it", async (
   });
   await authoritativeLoaded;
   await page.evaluate(() => {
-    location.hash = "";
+    location.hash = "#/cards";
   });
   await page.locator(".project-shelf").waitFor();
   // Leave for a project whose snapshot is still loading, then come straight back.
@@ -733,7 +733,7 @@ test("a loaded index stays on screen while a quick return refreshes it", async (
   await page.locator(".app-loading").waitFor();
   state.indexGate = Promise.withResolvers();
   await page.evaluate(() => {
-    location.hash = "";
+    location.hash = "#/cards";
   });
   await page.evaluate(() => new Promise(requestAnimationFrame));
   assert.equal(await page.locator(".project-shelf").count(), 1);
@@ -1877,7 +1877,7 @@ for (const owned of [true, false]) {
       },
     );
     await page.evaluate(() => {
-      window.location.hash = "/";
+      window.location.hash = "#/cards";
     });
     await page.locator(".project-shelf").waitFor();
     await page.evaluate(() => new Promise(requestAnimationFrame));

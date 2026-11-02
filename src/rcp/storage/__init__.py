@@ -8,7 +8,10 @@ Record models and exceptions live in `models` and are re-exported here.
 
 from __future__ import annotations
 
+from rcp.storage.agent_schedules import AgentSchedulesStoreMixin
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.agent_threads import AgentThreadStoreMixin
+from rcp.storage.approval_cards import ApprovalCardStoreMixin
 from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifact_models import (
     Artifact,
@@ -32,7 +35,6 @@ from rcp.storage.digest import DigestStoreMixin
 from rcp.storage.episodes import EpisodeStoreMixin
 from rcp.storage.evidence_flags import EvidenceFlagStoreMixin
 from rcp.storage.experiments import ExperimentStoreMixin
-from rcp.storage.lessons import LessonStoreMixin
 from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.notifications import NotificationStoreMixin
@@ -58,13 +60,15 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    AgentThreadStoreMixin,
+    AgentSchedulesStoreMixin,
+    ApprovalCardStoreMixin,
     ResearchViewStoreMixin,
     BranchNameStoreMixin,
     ClientRequestStoreMixin,
     OwnerAuthStoreMixin,
     DigestStoreMixin,
     ConsolidationStoreMixin,
-    LessonStoreMixin,
     BulletinStoreMixin,
     EvidenceFlagStoreMixin,
     QuestionStoreMixin,

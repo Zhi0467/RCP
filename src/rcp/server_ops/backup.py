@@ -693,6 +693,7 @@ def build_archive_manifest(
             {
                 *sqlite_receipt.app_data_plan.deferred_entries,
                 *sqlite_receipt.app_data_plan.unclassified_entries,
+                *project_receipt.uncaptured_app_data_entries,
             }
         )
     )
@@ -708,15 +709,28 @@ def build_archive_manifest(
         source_deploy_key_label=source_label,
         source_public_key_fingerprint=source_fingerprint,
         excluded_app_data_entries=sqlite_receipt.app_data_plan.excluded_entries,
-        captured_app_data_entries=sqlite_receipt.app_data_plan.captured_entries,
+        captured_app_data_entries=tuple(
+            sorted(
+                (
+                    set(sqlite_receipt.app_data_plan.captured_entries)
+                    | {
+                        Path(entry.archive_path).parts[0]
+                        for entry in project_receipt.app_data_files
+                    }
+                )
+                - set(uncaptured_app_data)
+            )
+        ),
         uncaptured_app_data_entries=uncaptured_app_data,
         projects=project_receipt.projects,
         imported_sources=project_receipt.imported_sources,
         artifact_inventory=sqlite_receipt.artifact_inventory,
+        app_data_files=project_receipt.app_data_files,
         status=("partial" if project_receipt.status == "partial" else "complete"),
         total_bytes=(
             sqlite_receipt.sqlite_snapshot.size_bytes
             + sum(item.size_bytes for item in sqlite_receipt.artifact_inventory)
+            + sum(item.size_bytes for item in project_receipt.app_data_files)
             + sum(project.total_bytes for project in project_receipt.projects)
             + sum(capture.total_bytes for capture in project_receipt.imported_sources)
         ),
@@ -1050,6 +1064,7 @@ def _write_deterministic_archive(
         entries = (
             manifest.sqlite_snapshot,
             *artifact_backup_entries(manifest.artifact_inventory),
+            *manifest.app_data_files,
             *(entry for project in manifest.projects for entry in project.files),
             *(entry for capture in manifest.imported_sources for entry in capture.files),
         )

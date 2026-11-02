@@ -1,7 +1,7 @@
 {
   "name": "rcp-web",
   "private": true,
-  "version": "0.4.37",
+  "version": "0.4.38",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -24,6 +24,9 @@
     "@codemirror/legacy-modes": "6.5.5",
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
+    "@fontsource-variable/figtree": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource/pixelify-sans": "5.3.0",
     "@tailwindcss/vite": "^4.1.11",
     "@tauri-apps/api": "^2.11.1",
     "@xterm/addon-fit": "^0.11.0",

@@ -14,7 +14,9 @@ from tests.test_branch_context import branch_services as branch_services
 def _resolve(services, selectors):
     main, _branch = services
     catalog = SimpleNamespace(open=lambda project_id: main)
-    return resolve_project_references(main.paper.store, catalog, "project", selectors)
+    return resolve_project_references(
+        main.paper.store, catalog, "project", selectors, viewer_id=None
+    )
 
 
 def test_node_snapshot_keeps_source_branch_and_coherent_head(branch_services, monkeypatch):

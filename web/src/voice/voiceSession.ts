@@ -2,7 +2,6 @@
 // Audio goes between this page and OpenAI; RCP's backend only exchanges the SDP.
 // The page owns the lifetime: every way the session ends goes through `end`.
 
-import { createVoiceSession } from "../core/api.ts";
 import { RCP_PLAYBOOK } from "../webmcp/playbook.ts";
 import { claimMicrophone, type MicrophoneClaim } from "./microphone.ts";
 import type { VoiceFunctionCall, VoiceIdentityGate } from "./voiceExecutor.ts";
@@ -27,7 +26,8 @@ export type VoiceSessionEvents = {
 export type VoiceSessionDeps = {
   claim?: () => MicrophoneClaim;
   createPeer?: () => RTCPeerConnection;
-  requestSession?: (
+  /** The caller binds the session to its thread when it exchanges the offer. */
+  requestSession: (
     body: { sdp_offer: string; tools: unknown[]; playbook: string },
     signal?: AbortSignal,
   ) => Promise<VoiceSessionResponse>;
@@ -102,7 +102,7 @@ export async function openVoiceSession(
   tools: unknown[],
   events: VoiceSessionEvents,
   gate: VoiceIdentityGate,
-  deps: VoiceSessionDeps = {},
+  deps: VoiceSessionDeps,
 ): Promise<VoiceSession> {
   const claim = (deps.claim ?? (() => claimMicrophone("voice")))();
   let peer: RTCPeerConnection | null = null;
@@ -134,7 +134,7 @@ export async function openVoiceSession(
     // The local description, unlike the bare offer, carries the gathered candidates.
     const sdp = pc.localDescription?.sdp;
     if (!sdp) throw new Error("Voice has no local session description.");
-    const answer = await (deps.requestSession ?? createVoiceSession)(
+    const answer = await deps.requestSession(
       { sdp_offer: sdp, tools, playbook: RCP_PLAYBOOK },
       setup.signal,
     );

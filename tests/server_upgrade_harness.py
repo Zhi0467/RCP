@@ -120,6 +120,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "607f2cc62f5c26fdc8e518a157d8617887d537a1",
         "70dd1ff9a7c78bfc3b2a8b7a58ef906a4a1328ba4f47fe85318180988da773db",
     ),
+    "pre-memory-files-v38-603edb0": (
+        "603edb06d9c27877b590051726eaf206ffda9451",
+        "ade956b6679b7a8b761ad4093f60f37e076154f7be270fab6dc49ac06dd94370",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

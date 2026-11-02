@@ -152,5 +152,13 @@ def test_only_run_request_kinds_drop_the_frozen_compute_selection(kind: str) -> 
 
     stored = {"active_compute_ids": ["gpu"], "resolved_compute_context": {"active": []}}
     migrated = migrate_stored_task_request(kind, stored, warn=False)
-    loads_run_request = kind not in {"paper_coach", "auto_research", "episode_report"}
-    assert (migrated == {}) == loads_run_request
+    # Space threads were introduced after frozen compute selections were retired.
+    used_frozen_compute = kind in {
+        "seed",
+        "refresh",
+        "node_chat",
+        "project_chat",
+        "branch_merge",
+        "artifact_edit",
+    }
+    assert (migrated == {}) == used_frozen_compute

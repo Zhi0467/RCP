@@ -2,9 +2,10 @@
 //
 // Each beat sends one batched watermark request for every open project: the
 // active project is due every beat, hidden projects every third beat, and any
-// project whose `valid_until` has passed. Only one request is in flight; the
-// next beat is scheduled after it settles. Failures back off 3, 6, 12, 30 s
-// while every tab keeps its last good data. The scheduler never names a
+// project whose `valid_until` has passed. While anything watches the member's
+// agent threads, each beat also carries `agent_threads`, even with no project
+// open. Only one request is in flight; the next beat is scheduled after it
+// settles. Failures back off 3, 6, 12, 30 s while every tab keeps its last good data. The scheduler never names a
 // resource; owners register profiles with the store.
 
 import { retryBackoffMs, type ResourceStore, type ResourceWatermark } from "./resourceStore";
@@ -35,6 +36,8 @@ export interface WatermarkRequest {
   }[];
   due: string[];
   activated?: string;
+  /** Asks for the caller's own agent-thread version, which needs no project. */
+  agent_threads?: boolean;
 }
 
 export interface WatermarkResponse {
@@ -47,6 +50,8 @@ export interface WatermarkResponse {
     sync: ProjectSyncHealth;
   }[];
   unavailable: string[];
+  /** Set when the request asked for it; null otherwise. */
+  agent_threads?: { version: string } | null;
 }
 
 export interface RefreshHealth {
@@ -98,6 +103,7 @@ export class RefreshScheduler {
   private readonly clock: RefreshClock;
   private readonly visibility: RefreshVisibility;
   private readonly listeners = new Set<() => void>();
+  private readonly agentThreadWatchers = new Set<(version: string | null) => void>();
   private timer: unknown = null;
   private retryTimer: unknown = null;
   private inFlight: AbortController | null = null;
@@ -153,6 +159,13 @@ export class RefreshScheduler {
 
   getHealth = (): RefreshHealth => this.health;
 
+  /** Reports the member's agent-thread version after every beat that carried it. */
+  watchAgentThreads = (watcher: (version: string | null) => void): (() => void) => {
+    this.agentThreadWatchers.add(watcher);
+    this.now();
+    return () => this.agentThreadWatchers.delete(watcher);
+  };
+
   // Subscribers re-render the whole app shell, so an unchanged beat publishes nothing.
   private setHealth(next: RefreshHealth): void {
     if (next.failing === this.health.failing && sameSync(next.sync, this.health.sync)) return;
@@ -194,7 +207,8 @@ export class RefreshScheduler {
     if (this.visibility.isHidden()) return;
     const { store } = this.options;
     const open = this.options.openProjects();
-    if (open.length === 0) {
+    const agentThreads = this.agentThreadWatchers.size > 0;
+    if (open.length === 0 && !agentThreads) {
       this.schedule(REFRESH_BEAT_MS);
       return;
     }
@@ -213,6 +227,7 @@ export class RefreshScheduler {
       })),
       due,
       ...(activated ? { activated } : {}),
+      ...(agentThreads ? { agent_threads: true } : {}),
     };
     const controller = new AbortController();
     const observations = new Map(
@@ -250,6 +265,10 @@ export class RefreshScheduler {
         this.options.onLostAccess(id);
       }
       this.setHealth({ failing: false, sync });
+      if (agentThreads) {
+        const version = response.agent_threads?.version ?? null;
+        for (const watcher of [...this.agentThreadWatchers]) watcher(version);
+      }
     } catch (error) {
       if (this.inFlight !== controller) return;
       this.failures += 1;

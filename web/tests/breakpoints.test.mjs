@@ -11,9 +11,13 @@ const CONTENT_THRESHOLDS_PX = new Set([640, 680, 700, 720, 820, 1180]);
 function stylesheets() {
   const root = new URL("../src/", import.meta.url);
   const styles = readdirSync(new URL("styles/", root)).map((name) => `styles/${name}`);
-  return [...styles, "ui/AppearancePicker.css", "chat/WorktreeControls.css"].map((path) =>
-    readFileSync(new URL(path, root), "utf8"),
-  );
+  return [
+    ...styles,
+    "themes/snowbound.css",
+    "ui/AppearancePicker.css",
+    "ui/SettingsRail.css",
+    "chat/WorktreeControls.css",
+  ].map((path) => readFileSync(new URL(path, root), "utf8"));
 }
 
 test("every width query is the phone width, the tablet width, or a known content threshold", () => {

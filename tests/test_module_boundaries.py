@@ -571,6 +571,8 @@ def holder(service, request):
 APPROVED_PATH_SINKS = {
     "_append_chat_records",
     "rcp.runs.chat._append_chat_records",
+    # Dispatches a steer receipt to the project or Space append sink, nothing else.
+    "_append_steering_records",
 }
 
 
@@ -629,14 +631,28 @@ def test_task_runtime_never_reads_chat_transcripts() -> None:
     the approved append sink. This is a guardrail against a cooperative edit,
     in the same spirit as the repository's write-scope enforcement, not a
     sound dataflow analysis against a hostile author.
+
+    One reader is the contract: a private agent thread that starts a fresh
+    native session gets a bounded tail of its own display history, labelled
+    as history and not authority (conversations spec, private agent threads).
     """
 
+    history_seed = {("runs/agent_threads.py", "thread_history_seed")}
     offenders: list[str] = []
     for package in TASK_RUNTIME:
         for path in _python_files(SOURCE / package):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             aliases = _import_aliases(tree, path)
+            module = path.relative_to(SOURCE).as_posix()
+            seeded = {
+                id(node)
+                for function in ast.walk(tree)
+                if isinstance(function, ast.FunctionDef) and (module, function.name) in history_seed
+                for node in ast.walk(function)
+            }
             for node in ast.walk(tree):
+                if id(node) in seeded:
+                    continue
                 if _references_transcript_reader(node, aliases):
                     offenders.append(
                         f"{path.relative_to(SOURCE)}:{node.lineno} references a reader"

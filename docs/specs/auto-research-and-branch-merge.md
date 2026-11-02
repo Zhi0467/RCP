@@ -13,7 +13,9 @@ orchestrator profile. Each graph branch has at most one live Auto-research episo
 Other episodes appear in capped lists in status and the start dialog without
 gating admission. An optional opening instruction grants no authority. Start pins
 the provider, model, and reasoning from the human's choices or the orchestrator
-profile. Children use the orchestrator's choices or node-chat defaults. All
+profile. Children use the orchestrator's choices or the Work profile for their
+seat: node chat for node workers and Experiments, project chat for project
+workers. All
 profiles run on the project's base machine, as enforced by
 `config.require_base_machine`. Unsupported choices are refused before admission.
 Prompts show the same probed choices.
@@ -81,7 +83,9 @@ The Web field lowercases text and collapses spaces and hyphens while typing.
 It trims edges only on submission. Invalid and taken names produce distinct refusals.
 
 Blank names derive from the root's UTC date as `research-<mon>-<day>` or
-`experiment-<mon>-<day>`. Collisions use numeric suffixes in creation order.
+`experiment-<mon>-<day>`. Collisions use numeric suffixes in creation order. A blank member fork name
+becomes `fork-<mon>-<day>` the same way; a lineage fork is named
+`fork-<24-hex id prefix>`.
 Migration backfills legacy names and their reservations. Renames preserve other names.
 Transfer carries current and retired reservations.
 
@@ -124,9 +128,9 @@ episode lineage owner or, for member forks, no episode. A lineage owns its
 persistent branch and the forks it created. Metadata and replay follow the
 history spec.
 
-Spawn and Experiment kickoff accept `--at <ref@R>` to fork an exact head. A bare
-`@R` means the root branch. They accept `--target <branch>` for an open branch
-owned by the lineage. Main, foreign, and archived targets are refused. Omitting
+Spawn and Experiment kickoff accept either `--at <ref@R>`, which forks an
+exact head and needs an explicit graph ref (a bare `@R` is refused), or
+`--target <branch>` for an open branch owned by the lineage, never both. Main, foreign, and archived targets are refused. Omitting
 the target keeps the root's branch. Seat options never choose the target.
 `--seed-file` requires `--at` and nonempty operations valid under the orchestrator
 profile. Fork reservation, the seed snapshot, admission, and spend commit together.
@@ -163,11 +167,12 @@ reserves its isolation ownership at admission. Later Experiments there share it.
 
 ## Graph and code isolation
 
-Auto-research always isolates its graph. Code isolation defaults on only with
-one repository, Git 2.38+, and no overlapping writable shared-checkout grant.
-When several repositories are writable on the orchestrator's machine, the start
-dialog's Code worktree option picks one, and the run writes only that one. With
-none, the option is off and disabled. Explicit ineligible choices are refused. The root owns the optional worktree.
+Auto-research always isolates its graph. The start dialog turns code isolation
+on by default with the first writable repository on the orchestrator's machine;
+when several qualify, the human picks one, and the run writes only that one. With
+none, the option is off and disabled. An API start that names neither choice gets
+code isolation only with one repository, Git 2.38+, and no overlapping writable
+shared-checkout grant. Explicit ineligible choices are refused. The root owns the optional worktree.
 Children, continuations, and human-started Experiments there share the immutable
 [isolation binding](conversations-episodes-and-watchers.md#episode-isolation).
 Without code isolation, they keep ordinary repository scope. Neither choice
@@ -224,12 +229,11 @@ This neither cancels jobs nor widens human retire controls.
 ## Staged command client
 
 The RCP-authored prefix exposes the resolved closed vocabulary from
-[Auto-research commands](../../src/rcp/runs/auto_research.py). It includes validation,
+[Auto-research commands](../../src/rcp/agents/auto_research_commands.py). It includes validation,
 keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
 merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
-guarded finish, lesson actions when the project has them, a one-time self-name,
-and the graph history reads. Workers get validation, status, message, and the
-same lesson, Bulletin, and history verbs. Spawn and kickoff may choose the provider, model, and effort.
+guarded finish, a one-time self-name, and the graph history reads. Workers get
+validation, status, message, and the same Bulletin and history verbs. Spawn and kickoff may choose the provider, model, and effort.
 The root has no helper verbs. Child Work uses ordinary generic launch or direct
 scheduler submission.
 
@@ -302,7 +306,8 @@ The opening wake claims a reauthorization notice.
 **Why:** delayed old callbacks cannot mutate a reopened run.
 
 Continuation requires a terminal source that has not yet continued and a bound
-session and stage. It requires available isolation, no live turn or merge, no
+session and stage, with the saved stage still on the machine its execution
+alias names. It requires available isolation, no live turn or merge, no
 competing branch-node episode, and no human-owned turn in a lineage child. Exact
 request replay returns the same continuation. Stopped watchers stay stopped.
 Absent bindings require a new run. Message orchestrator targets the newest member.
@@ -359,7 +364,7 @@ graph answers, subsequent graph delivery runs without an agent. A missing landin
 fails, and the next Merge starts fresh. Later graph failure never undoes landed code.
 
 Default history is a merge commit. Squash is available only without an agent.
-It records its commit and forbids Keep branch open. Verification proves source
+It records its commit and cannot keep the branch open. Verification proves source
 ancestry or the recorded squash. Code and graph delivery records are separate.
 **Why:** deterministic tested trees need no paid judgment. Only the episode owns
 its leftovers, and shared files and the index must remain intact.
@@ -368,7 +373,7 @@ Cleanup independently retries worktree removal, code-branch deletion, and graph
 archive. Merge keeps the worktree while a confirmed job still reads unfinished,
 skips branch deletion while the worktree is kept, and skips graph archive after
 any kept worktree or failed step, so a later Merge finishes them. Branch deletion requires a removed worktree and verified delivery or
-squash. Keep branch open skips cleanup. Discard or archive before delivery needs
+squash. Keeping the branch open for more runs skips cleanup. Discard or archive before delivery needs
 confirmation. Live turns block removal. Live or unobservable jobs need human
 confirmation. Cleanup failure does not turn delivery into failure.
 
@@ -446,8 +451,8 @@ Zero semantic preview counts still require a no-change receipt. Graph-only
 requests for already-delivered or unchanged heads are refused.
 
 Preview counts changes, commits, conflicts, and Proposals. It selects the target,
-eligible merge or squash, cleanup, and Keep branch open. Squash cannot keep the
-branch open. Submission rechecks state. Failures mark the same Merge action red
+eligible merge or squash, cleanup, and whether to keep the branch open. Squash
+cannot keep the branch open. Submission rechecks state. Failures mark the same Merge action red
 with the reason in a tooltip. Clicking it gets a fresh preview. There is no
 separate Retry. An in-flight request or missing preview disables submission.
 [Picker behavior](api-web-and-desktop-projections.md#project-graph-ref-inventory)

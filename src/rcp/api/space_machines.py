@@ -325,8 +325,13 @@ def _machine_view(
         "jobs_root": machine.jobs_root,
         "access_hint": machine.access_hint,
         "provider_paths": dict(machine.provider_paths),
+        # Each provider's declared models, so a pick lists them before any probe.
         "providers": [
-            {"provider": profile.id, "label": profile.label}
+            {
+                "provider": profile.id,
+                "label": profile.label,
+                "models": [choice.model_dump(mode="json") for choice in profile.declared],
+            }
             for profile in map(profile_for, PROVIDER_IDS)
         ],
         "provider_readiness": {
@@ -530,6 +535,8 @@ def list_space_machines(
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
     usage = _machine_usage(store)
+    # The Space thread's picker reads the backend's card, so it exists before any turn.
+    store.backend_space_machine()
     return {
         "machines": [
             _machine_view(machine, usage, visible, store, catalog.launcher)

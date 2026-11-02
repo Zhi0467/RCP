@@ -11,6 +11,7 @@ from typing import Literal
 from rcp.limits import QUESTION_SNAPSHOT_INLINE_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
 from rcp.runs.shared import _stage_or_reuse_task_input
 from rcp.storage import AppStore
+from rcp.storage.question_models import QuestionRecord
 from rcp.transport import RemoteRunStage
 
 
@@ -108,24 +109,7 @@ def question_snapshot(
         )
     )
     for item in records:
-        if item.withdrawn_readonly:
-            continue
-        eligible = (
-            item.state == "pending"
-            or (item.state == "dismissed" and item.dismissal_delivered_at is None)
-            or (
-                item.state == "answered"
-                and item.client_receipt_revision is None
-                and (
-                    item.followup_operation_id in delivery_operations
-                    or (
-                        item.followup_operation_id is None
-                        and item.origin.operation_id in delivery_operations
-                    )
-                )
-            )
-        )
-        if not eligible:
+        if not _eligible(item, delivery_operations):
             continue
         if len(entries) >= QUESTION_SNAPSHOT_MAX_RECORDS:
             omitted += 1
@@ -144,11 +128,41 @@ def question_snapshot(
                 answer=item.answer,
                 chosen_choices=item.chosen_choices,
             )
+        if card := _card_entry(store, item.question_id):
+            entry["card"] = card
         if item.state == "dismissed":
             dismissals.append(item.question_id)
         entries.append(entry)
     text = json.dumps({"questions": entries, "omitted": omitted}, ensure_ascii=False)
     return QuestionSnapshot(text=text, dismissal_ids=tuple(dismissals))
+
+
+def _eligible(item: QuestionRecord, delivery_operations: set[str]) -> bool:
+    """Open questions, undelivered dismissals, and this invocation's unreceived answers."""
+    if item.withdrawn_readonly:
+        return False
+    if item.state == "pending":
+        return True
+    if item.state == "dismissed":
+        return item.dismissal_delivered_at is None
+    if item.state != "answered" or item.client_receipt_revision is not None:
+        return False
+    if item.followup_operation_id is not None:
+        return item.followup_operation_id in delivery_operations
+    return item.origin.operation_id in delivery_operations
+
+
+def _card_entry(store: AppStore, question_id: str) -> dict[str, object] | None:
+    """What the agent asked for and what the tap created."""
+    card = store.approval_card(question_id)
+    if card is None:
+        return None
+    entry: dict[str, object] = {"action": card["action"]}
+    if card["result"] is not None:
+        entry["result"] = {
+            key: value for key, value in card["result"].items() if key != "request_id"
+        }
+    return entry
 
 
 def question_snapshot_part(

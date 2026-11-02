@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronDown, Ellipsis, Menu, MessageCircle } from "lucide-react";
+import { ArrowLeft, ChevronDown, Ellipsis, Menu } from "lucide-react";
 
 /**
  * A disclosure panel that closes on Escape, on a press outside it, and when a
@@ -146,18 +146,5 @@ export function PhoneTabBar({
         {more}
       </div>
     </nav>
-  );
-}
-
-export function PhoneAskButton({ disabled, onAsk }: { disabled: boolean; onAsk: () => void }) {
-  return (
-    <button
-      className="phone-ask-button"
-      aria-label="Ask about this project"
-      disabled={disabled}
-      onClick={onAsk}
-    >
-      <MessageCircle size={22} />
-    </button>
   );
 }

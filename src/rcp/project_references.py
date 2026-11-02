@@ -22,6 +22,7 @@ from rcp.limits import (
     PROJECT_REFERENCE_NODE_MAX_BYTES,
 )
 from rcp.storage import AppStore
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ def resolve_project_artifact(
     project_id: str,
     artifact_id: str,
     *,
+    viewer_id: str | None,
     max_bytes: int = CHAT_ATTACHMENT_MAX_TOTAL_BYTES,
 ) -> ResolvedProjectReference:
     """Copy the current project artifact under its lock, preserving lifetime and size limits."""
@@ -50,6 +52,11 @@ def resolve_project_artifact(
         with store.artifact_lock(artifact_id):
             artifact = store.readable_artifact(project_id, artifact_id)
             if artifact is None:
+                raise ValueError("Project reference artifact is unavailable.")
+            with store.connection() as connection:
+                owner = private_artifact_owner(connection, artifact)
+            # A private thread's output reads like a missing one to everyone else.
+            if owner not in {None, viewer_id}:
                 raise ValueError("Project reference artifact is unavailable.")
             size = next(
                 version.size_bytes
@@ -79,6 +86,8 @@ def resolve_project_references(
     catalog: ProjectCatalog,
     project_id: str,
     selectors: list[ProjectReferenceSelector],
+    *,
+    viewer_id: str | None,
 ) -> list[ResolvedProjectReference]:
     """Read sources once; attachment admission owns retention and combined caps."""
 
@@ -103,6 +112,7 @@ def resolve_project_references(
                     store,
                     project_id,
                     selector.artifact_id,
+                    viewer_id=viewer_id,
                     max_bytes=CHAT_ATTACHMENT_MAX_TOTAL_BYTES - artifact_bytes,
                 )
                 artifact_bytes += len(item.content)

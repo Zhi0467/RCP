@@ -3,13 +3,8 @@ import test from "node:test";
 
 import {
   appendVoiceTranscript,
-  boundVoiceTranscript,
-  createVoiceSourceLabels,
-  noteVoiceProject,
-  createVoiceSaveQueue,
   createFinishedResultOffer,
   voiceWatchFromReceipt,
-  reconcileVoiceReceipts,
   createIdentityGate,
   createVoiceExecutor,
   voiceCallOutcome,
@@ -408,7 +403,7 @@ const receiptTarget = {
   graph_target: { kind: "main", branch_id: null },
 };
 
-test("lost-response Send resumes to an accepted receipt and exact watch", async () => {
+test("a lost-response Send keeps its request key and an accepted receipt names its watch", async () => {
   const receipts = [];
   let first;
   first = harness({
@@ -432,116 +427,12 @@ test("lost-response Send resumes to an accepted receipt and exact watch", async 
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
   assert.equal(first.runs[0].requestId, receipts[0].request_id);
-  const resumed = await reconcileVoiceReceipts(receipts, async (projectId, requestId) => {
-    assert.equal(projectId, "p");
-    assert.equal(requestId, receipts[0].request_id);
-    return { route: "tasks/node_chat", operation_id: "task-one" };
-  });
-  assert.equal(resumed[0].outcome, "accepted");
   assert.equal(receipts[0].mode, "work");
-  assert.equal(voiceWatchFromReceipt(resumed[0]).id, "task-one");
-  // A Discuss send never becomes earlier work after Resume.
-  assert.equal(voiceWatchFromReceipt({ ...resumed[0], mode: "discuss" }), null);
+  const accepted = { ...receipts[0], outcome: "accepted", task_id: "task-one" };
+  assert.equal(voiceWatchFromReceipt(accepted).id, "task-one");
+  // A Discuss send never becomes watched work.
+  assert.equal(voiceWatchFromReceipt({ ...accepted, mode: "discuss" }), null);
 });
-
-test("a restored keyless unknown receipt fences its exact call in its own target", async () => {
-  const receipts = [];
-  const first = harness({
-    mode: "none",
-    failWith: new TypeError("dropped"),
-    receiptDeps: {
-      target: () => receiptTarget,
-      saveReceipt: async (receipt) => receipts.push(receipt),
-    },
-  });
-  const args = { mode: "work", message: "m" };
-  await first.executor.run(call("a", "rcp_send_conversation_message", args));
-  // A lookup that cannot answer leaves the receipt unknown instead of failing Resume.
-  const [unanswered] = await reconcileVoiceReceipts(receipts, async () => {
-    throw { status: 503 };
-  });
-  assert.equal(unanswered.outcome, "unknown");
-  const { request_id: _key, ...keyless } = unanswered;
-  const resumed = harness({
-    mode: "none",
-    receiptDeps: { target: () => receiptTarget, initialReceipts: [keyless] },
-  });
-  assert.equal(
-    code(await resumed.executor.run(call("b", "rcp_send_conversation_message", args))),
-    "unknown_outcome",
-  );
-  assert.equal(resumed.runs.length, 0);
-  const other = harness({
-    mode: "none",
-    receiptDeps: {
-      target: () => ({ ...receiptTarget, project_id: "other" }),
-      initialReceipts: [keyless],
-    },
-  });
-  await other.executor.run(call("b", "rcp_send_conversation_message", args));
-  assert.equal(other.runs.length, 1);
-});
-
-test("Resume's 404 keeps the receipt unknown and a re-ask reuses the saved key", async () => {
-  const receipts = [];
-  const first = harness({
-    mode: "none",
-    failWith: new TypeError("dropped"),
-    receiptDeps: {
-      target: () => receiptTarget,
-      saveReceipt: async (receipt) => receipts.push(receipt),
-    },
-  });
-  const args = { mode: "work", message: "m" };
-  await first.executor.run(call("a", "rcp_send_conversation_message", args));
-  const reconciled = await reconcileVoiceReceipts(receipts, async () => {
-    throw { status: 404 };
-  });
-  assert.equal(reconciled[0].outcome, "unknown");
-  const saved = [];
-  const resumed = harness({
-    confirmations: [true],
-    result: { project_id: "p", task_id: "task-one" },
-    receiptDeps: {
-      target: () => receiptTarget,
-      initialReceipts: reconciled,
-      saveReceipt: async (receipt) => saved.push(receipt),
-    },
-  });
-  await resumed.executor.run(call("b", "rcp_send_conversation_message", args));
-  assert.equal(resumed.asked.length, 1);
-  assert.equal(resumed.runs.length, 1);
-  assert.equal(resumed.runs[0].requestId, receipts[0].request_id);
-  assert.equal(saved.at(-1).outcome, "accepted");
-});
-
-test("accepted receipts restore exact watches but never confirmation authority", async () => {
-  const receipts = [];
-  const original = harness({
-    confirmations: [true],
-    result: { project_id: "p", episode_id: "e" },
-    receiptDeps: {
-      target: () => receiptTarget,
-      saveReceipt: async (receipt) => receipts.push(receipt),
-    },
-  });
-  await original.executor.run(call("a", "rcp_start_experiment"));
-  assert.deepEqual(
-    receipts.map((receipt) => receipt.outcome),
-    ["unknown", "accepted"],
-  );
-  const accepted = receipts.at(-1);
-  assert.equal(voiceWatchFromReceipt(accepted).id, "e");
-  const resumed = harness({
-    receiptDeps: { target: () => receiptTarget, initialReceipts: [accepted] },
-  });
-  assert.equal(
-    code(await resumed.executor.run(call("b", "rcp_start_experiment"))),
-    "not_confirmed",
-  );
-  assert.equal(resumed.runs.length, 0);
-});
-
 test("refusal receipts only replace a persisted pre-dispatch unknown receipt", async () => {
   for (const dispatched of [false, true]) {
     const receipts = [];
@@ -576,129 +467,12 @@ test("a failed pending receipt save prevents side effects", async () => {
   assert.equal(run.runs.length, 0);
 });
 
-test("transcript bounds include metadata, receipts, complete unicode, and newest entries", () => {
-  const raw = appendVoiceTranscript([], "member", "😀".repeat(100), "item-1");
-  const record = { entries: raw, receipts: [], revision: 1, updated_at: 1, id: "session" };
-  const limits = { entry_bytes: 16, session_bytes: 550, max_entries: 3 };
-  const bounded = boundVoiceTranscript(record, limits);
-  assert.ok(bounded.entries.length > 0 && bounded.entries.length <= 3);
-  assert.ok(Buffer.byteLength(JSON.stringify(bounded)) <= limits.session_bytes);
-  assert.ok(
-    bounded.entries.every(
-      (entry) => Buffer.byteLength(entry.text) <= 16 && !entry.text.includes("�"),
-    ),
-  );
-  const newest = boundVoiceTranscript(
-    { ...bounded, entries: appendVoiceTranscript(bounded.entries, "agent", "newest", "item-2") },
-    limits,
-  );
-  assert.equal(newest.entries.at(-1).text, "newest");
-  assert.equal(newest.entries.at(-1).provider_order, "item-2");
-  assert.equal(
-    appendVoiceTranscript(
-      [{ speaker: "member", text: "first", provider_order: null, source: null }],
-      "member",
-      " next",
-    )[0].text,
-    "first next",
-  );
-  const quoted = appendVoiceTranscript([], "agent", "a".repeat(24), "item-3", "tool:read");
-  const continued = appendVoiceTranscript(quoted, "agent", "b", "item-3", "tool:read");
-  const fresh = appendVoiceTranscript(continued, "agent", "c", "item-3", null);
-  assert.equal(fresh.length, 2);
-  assert.equal(fresh[0].source, "tool:read");
-  assert.equal(fresh[1].source, null);
-  assert.throws(() =>
-    boundVoiceTranscript({ ...record, receipts: [{ tool: "x".repeat(600) }] }, limits),
-  );
+test("a voice segment grows in place and a new segment starts a new entry", () => {
+  const first = appendVoiceTranscript([], "member", "first", "1");
+  assert.equal(appendVoiceTranscript(first, "member", " next", "1")[0].text, "first next");
+  assert.equal(appendVoiceTranscript(first, "agent", "reply", "2").length, 2);
+  assert.equal(appendVoiceTranscript(first, "member", "again", "3").length, 2);
 });
-
-test("source labels stay with their call and expire on the next response item", () => {
-  const labels = createVoiceSourceLabels();
-  labels.capture("a", "read", "{}", receiptTarget);
-  labels.capture("b", "read", "{}", { ...receiptTarget, project_id: "other" });
-  labels.discard("b");
-  labels.succeeded("a");
-  const source = labels.speech("agent", "item-1");
-  const expected = createVoiceSourceLabels();
-  expected.capture("a", "read", "{}", receiptTarget);
-  expected.succeeded("a");
-  assert.equal(source, expected.speech("agent", "item-1"));
-  assert.notEqual(source, null);
-  assert.equal(labels.speech("agent", "item-1"), source);
-  assert.equal(labels.speech("agent", "item-2"), null);
-  labels.capture("c", "read", "{}", receiptTarget);
-  labels.succeeded("c");
-  assert.equal(labels.speech("agent", "item-3"), source);
-  assert.equal(labels.speech("member", "member-1"), null);
-  assert.equal(labels.speech("agent", "item-4"), null);
-});
-
-test("a session notes each project a tool ran in once, with its latest name", () => {
-  const first = noteVoiceProject([], receiptTarget);
-  assert.deepEqual(first, [{ project_id: "p", project_name: receiptTarget.project_name }]);
-  const renamed = noteVoiceProject(first, { ...receiptTarget, project_name: "Renamed" });
-  assert.deepEqual(renamed, [{ project_id: "p", project_name: "Renamed" }]);
-  assert.deepEqual(noteVoiceProject(renamed, null), renamed);
-});
-
-test("two reads through one tool and target keep distinct sources", () => {
-  const labels = createVoiceSourceLabels();
-  const sourceOf = (callId, args, item) => {
-    labels.capture(callId, "rcp_read", args, receiptTarget);
-    labels.succeeded(callId);
-    return labels.speech("agent", item);
-  };
-  assert.notEqual(
-    sourceOf("a", '{"route":"/graph"}', "item-1"),
-    sourceOf("b", '{"route":"/history"}', "item-2"),
-  );
-  // Chained reads before one response all stay in that response's source.
-  for (const [id, route] of [
-    ["c", "/graph"],
-    ["d", "/history"],
-  ]) {
-    labels.capture(id, "rcp_read", JSON.stringify({ route }), receiptTarget);
-    labels.succeeded(id);
-  }
-  const chained = labels.speech("agent", "item-3");
-  assert.ok(chained.includes("/graph") && chained.includes("/history"));
-  // A cut through an emoji keeps whole characters, so the label stays valid UTF-8.
-  labels.capture("e", "rcp_read", "x".repeat(1_000) + "😀".repeat(40), receiptTarget);
-  labels.succeeded("e");
-  const clipped = labels.speech("agent", "item-4");
-  assert.ok(Array.from(clipped).length <= 1_024);
-  assert.ok(clipped.isWellFormed());
-});
-
-test("saves serialize, coalesce pending snapshots, and stop after identity changes", async () => {
-  let release;
-  let current = true;
-  const saved = [];
-  const queue = createVoiceSaveQueue(
-    async (snapshot) => {
-      saved.push(snapshot);
-      if (snapshot === 1)
-        await new Promise((resolve) => {
-          release = resolve;
-        });
-    },
-    () => current,
-  );
-  const first = queue.save(1);
-  await new Promise((resolve) => setImmediate(resolve));
-  const second = queue.save(2);
-  const third = queue.save(3);
-  assert.deepEqual(saved, [1]);
-  release();
-  await Promise.all([first, second, third]);
-  await queue.flush();
-  assert.deepEqual(saved, [1, 3]);
-  current = false;
-  await assert.rejects(queue.save(4));
-  assert.deepEqual(saved, [1, 3]);
-});
-
 test("finished results only open on explicit acceptance under captured project and graph", async () => {
   let target = receiptTarget;
   let listed = 0;
@@ -822,11 +596,5 @@ test("the page starts a new speech segment at each tool result, announcement, an
   const segments = heard.map(([, segment]) => segment);
   assert.equal(segments[0], segments[1]);
   assert.equal(new Set(segments.slice(1)).size, segments.length - 1);
-  // A commentary after an answer cannot inherit the answer's quoted source.
-  const labels = createVoiceSourceLabels();
-  labels.capture("c1", "rcp_read", "{}", null);
-  labels.succeeded("c1");
-  assert.notEqual(labels.speech("agent", segments[2]), null);
-  assert.equal(labels.speech("agent", segments[3]), null);
   await session.end("member", { immediate: true });
 });

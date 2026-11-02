@@ -146,3 +146,35 @@ test("on a touch phone Return types a newline and only the send button sends", a
     await server.close();
   }
 });
+
+test("archived floating, orchestrator and run chats only compose after Restore", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    for (const surface of ["floating", "orchestrator", "run"]) {
+      await page.goto(
+        `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/chatSend.html?archived=${surface}`,
+      );
+      const restore = page.getByRole("button", { name: "Restore", exact: true });
+      await restore.waitFor();
+      assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).count(), 0);
+      assert.equal(await page.getByRole("button", { name: "Orchestrator send" }).count(), 0);
+      assert.deepEqual(await page.evaluate(() => window.startCalls), []);
+      await restore.click();
+      await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

@@ -1,7 +1,7 @@
-# Graph consolidation and lessons
+# Graph consolidation and memory
 
 This spec owns nightly consolidation, its schedule, Inbox attention, and
-operational lessons. The implementation owners are
+shared operational memory. The implementation owners are
 [the scheduler](../../src/rcp/consolidation.py),
 [run storage](../../src/rcp/storage/consolidation.py), and
 [the official workflow](../../src/rcp/skills/workflows/graph-consolidation/WORKFLOW.md).
@@ -53,7 +53,7 @@ workflow and dependencies resolve through the skill registry independently of
 project defaults and appear in the launch receipt.
 
 The command client offers `validate`, keyed `apply`, `flag`, `bulletin` (a run with
-no episode always holds it), `lesson` when lesson actions resolve, and the graph
+no episode always holds it), and the graph
 history reads when a read scope exists.
 It refuses watcher handoff. Apply persists immutable bytes and their digest under
 the operation and key. It returns the committed revision.
@@ -114,7 +114,9 @@ In-turn Apply lets the report describe committed work.
 The outcome is distinct from the task verdict. Settlement reconciles the run,
 ended task, canonical operation commits on its target, and captured artifact.
 Success requires a succeeded task and a viewable HTML report.
-It also requires that no graph update was rejected or unavailable.
+It also requires that no graph update was rejected or unavailable, and that
+every keyed Apply whose last attempt was unavailable has a verified canonical
+commit; otherwise the run fails as `keyed_apply_unavailable`.
 Startup and scheduling retry settlement. Settled outcomes are final.
 Later history recovery verifies revisions and counts. It cannot turn failure into
 success or coverage. Paused, stopped, abandoned, or irrecoverably interrupted runs
@@ -187,8 +189,8 @@ Address keeps the member in Inbox. Open chat enters the conversation.
 
 With at least two addressable findings, Address all submits the oldest bounded
 batch. [API request types](../../src/rcp/api/consolidation.py) own the bound and
-reject empty or duplicate ids, non-open flags, notice-only kinds, mixed targets,
-and absent or retired Evidence. One finding uses node Work.
+reject empty or duplicate ids. Flag admission and the endpoint reject non-open
+flags, notice-only kinds, mixed targets, and absent or retired Evidence. One finding uses node Work.
 Multiple findings share one project Work turn.
 Sorted locks and one task transaction bind all flags or none.
 The request key and exact ids survive a 5xx or network failure and replay their
@@ -206,38 +208,141 @@ graph transition.
 Visual states, source links, and phone controls belong to
 [the interface spec](interface-and-visual-design.md#evidence-to-check).
 
-## Operational lessons
+## Memory
 
-Lessons are short operational notes in RCP data, never graph state or authority.
-A member's ordinary Discuss or Work chat (`node_chat` or `project_chat`) may add,
-list, update, or delete every project lesson. This includes question answers and
-watcher follow-ups. Each command checks live project membership.
-Edits and additions are human-owned, with the user id and display name captured.
-Members also manage lessons in Settings.
+Project memory is Markdown on the project's base, outside Git, owned by
+[`memory_files.py`](../../src/rcp/agents/memory_files.py). The local root is
+`<data_dir>/memory/<project_id>/`; the remote root is the base account's
+`~/.rcp/memory/<project_id>/`. Launch creates it on demand using the existing
+remote transport where needed. Shared notes live in `shared/notes/`; the index
+is `shared/MEMORY.md`. Each index line links a note and gives a one-line hook.
+Notes begin with `# Title`. Project memory is shared within the project.
 
-Child Work, Experiment, and Auto-research roots and workers may only add lessons.
-Consolidation may manage all notes, including human-owned ones.
-It reports every change. A note's author is its last editor, but an agent's
-edit keeps a human-owned note human-owned, so it still leads `lessons.md`.
-Seed, Refresh, and branch merge have no lesson commands.
-Discuss gains no graph or Apply authority. Resolved handler actions render usage
-from parser option records.
-**Why:** ordinary chat acts for its member on operational notes.
-Nightly pruning keeps the shared set useful without touching human repository
-instructions.
+Each member also has private memory on the backend at
+`<data_dir>/memory/members/<user_id>/`, with the same `MEMORY.md` index and
+`notes/` layout. It holds facts about the member, such as preferences and
+standing requests. Launch creates it on demand. A symlinked or non-directory
+folder is never granted.
 
-Mutation receipts use the operation, subcommand, and key as their identity.
-Mutations commit with their result and replay even after deletion.
-Discuss, Work, Experiment, Auto-research, and consolidation receive a pointer to
-staged `lessons.md`. Its contents are bounded by `LESSONS_RENDER_MAX_BYTES`.
-Human-owned notes come first, with the newest notes first within each group.
-The file also gives the count of omitted notes.
-`limits.py` owns text and count caps. Lessons cannot widen capability, roots,
-target, or budget. They have no replay, merge, or paper meaning.
+Ordinary project Work and Discuss chats, including private project threads,
+read and write `shared/`. A member's own thread turns also read and write that
+member's private folder: the Space thread, and each private project thread that
+runs on the backend machine. A private project thread on another machine gets no
+member folder, and its prompt says so. Space-thread turns receive no project
+memory root. Other members' folders are hidden from every run. Experiment,
+Auto-research roots and workers read and add notes; retaining existing notes is
+a prompt rule. Consolidation reads, edits, merges and prunes shared files,
+reports each change, and never touches member folders. Seed, Refresh, branch
+merge, Paper coach and artifact edit receive no memory access. Memory has no
+graph, replay, merge or paper authority. Member removal deletes the member's
+private folder.
+
+Launch prompts point to each live index and label it as notes, never instructions
+or authority. `MEMORY_INDEX_MAX_BYTES` bounds the recommended index size, not
+note storage. Launch uses `lstat` for the index; an oversized index prompts the
+agent to read its start and prune it; add-only runs request consolidation pruning. There
+is no staged lesson snapshot or lesson command. After migration, an unusable
+index does not stop a launch. A non-regular index is reported as unusable and the
+agent is asked to repair it. A symlinked index, or an unusable shared or notes
+directory, withholds the shared grant, because a file editor could follow the link
+out of memory; the prompt says memory is not writable this turn and asks the agent
+to have the member repair it.
+Migration still refuses these paths before recording completion.
+
+On the first launch build per project, the backend migrates all legacy
+`operational_lessons` rows into `shared/notes/lesson-<lesson_id>.md`, with
+`origin: lesson <lesson_id>` on the second line. Create-if-absent preserves files
+after an interrupted migration. The index orders human-owned notes first and
+newest first within each group. Only after writes complete does the backend
+record `memory_migrations`; an unreachable base defers completion. Legacy lesson
+and command receipt tables remain read-only migration sources. Settings and
+WebMCP no longer expose lessons; agents maintain memory through file edits.
+Project identity migration commits before the catalog moves the entire memory
+folder, including member notes. The existing alias record and old migration marker
+retain an unfinished move; the next launch retries it before creating the new root.
+The marker moves only after filesystem success. A missing source makes retry safe
+after a lost SSH response; an occupied destination with a remaining source refuses
+the move. Project deletion atomically queues memory cleanup with removal of its
+records, including any old alias folders. The browser lifecycle cleanup owner
+attempts deletion after commit and retries failures at later turn boundaries.
+An unreachable base never rolls back project deletion. A pending deletion on
+the same state location refuses the launch until cleanup succeeds, including when
+the same project is registered again there. A deletion owed on another base never
+blocks a launch.
+Restore keeps a project's migration marker only when the archive brought back its
+local memory folder; a remote base's marker is always dropped, and the next launch
+re-runs the create-if-absent migration.
+Remote deletion retains the resolved host/account identity at removal and checks it
+on retry. An unresolved origin or repointed alias leaves cleanup pending.
+Restore and candidate rehearsal drop every pending cleanup row, because those
+rows name the live host's paths.
 
 ## Transfer, backup, and restore
 
-Lessons, flags, schedules, per-target coverage, runs, and receipts stay with the
-space, outside project transfer. SQLite backup captures them. Restore retains
-lessons, coverage, and closed rows. It fails unresolved runs on every target.
-It disables schedules until a member enables them again.
+Backups capture the backend's local `memory/` tree, project and member folders
+alike, and restore brings it back. A remote base's memory folders and every
+project transfer leave memory out. A transfer to the
+same base and account finds the existing folder by project id. Note authorship
+is not tracked after migration. Legacy lesson rows, flags, schedules, per-target
+coverage, runs and receipts remain space-local; SQLite backup captures them.
+Restore retains legacy lessons, coverage and closed rows, fails unresolved runs
+on every target, and deletes consolidation schedules until a member configures them again.
+
+## Private agent schedules
+
+Private threads expose `schedule add`, `list`, `pause`, `resume`, and `cancel` to
+every thread turn, wakes included. The agent adds one when the member asks for a
+reminder or a recurring check. Mutations carry an idempotency key keyed on the turn's
+Resume/Retry lineage root, so a re-run returns the same schedule.
+`AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread. A turn carrying the
+member's own message (composer, voice, or the member's Space handoff, with no
+question-follow-up binding) may schedule any cadence. A wake turn's cron or
+`--every` fires must be at least `AGENT_SCHEDULE_MIN_GAP_MINUTES` apart.
+
+A schedule names an IANA timezone and exactly one time: a local
+`YYYY-MM-DDTHH:MM` one-shot (`--at`), a plain interval (`--every`, such as `1m`,
+`90m`, `2h` or `1d`), or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
+`SUN`-`SAT` names, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+Only a repeat (cron or interval) takes bounds, all local times in its zone.
+`--from` sets its start. Without it, cron starts at its next match and an interval
+starts one interval from now. `--until` makes it done after its last fire at or
+before that time. `--count` makes it done after that many fires; it stores the
+fires left. With both, whichever ends first wins. Fires missed during downtime count
+against `--count`. An interval keeps its phase across downtime.
+Sunday is 0 or 7. As in Vixie cron, when neither day field starts with `*`,
+either matches; otherwise both must. Local times use consolidation's first-fold
+and next-valid-gap-minute rules. The member's zone comes from the turn's composer
+or, failing that, the member's latest composer turn; `--timezone` overrides it
+only when the member named a zone. Every add and list result, and the schedule
+instructions, carry the zone and the member's local now. Refusals return a code
+and a plain reason saying what to do.
+
+The consolidation poller advances due schedules and preserves their first pending
+occurrence in one transaction before the automatic-launch cooldown check. Wake
+dispatch then runs first in the tick, in its own error boundary, per thread.
+One-shot schedules, and repeats past their bounds, become done. Notes stay pending while the thread's turn is
+active or awaiting Resume. A wake that provider sign-in, machine dependencies, or
+a thread refusal defers keeps its notes pending, records `deferred_reason`, and
+retries each tick. Once eligible, one atomic admission claims all observed notes
+for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
+its missed fire count. The wake runs the thread's saved agent pick, else
+the Space default on a Space thread or the latest turn's agent on a project
+thread. Admission retains the thread's latest native session, scratch, and member
+binding through ordinary current-session resolution,
+including its receipt, also after a restore made that turn history-only, and
+rechecks the ordinary project write fence and session constraints. A claimed wake
+whose thread closed before launch settles failed. A succeeded schedule wake on a
+project thread pushes the owner's `agent_thread` notification. Lost thread access
+disables active schedules; done one-shots keep their pending note.
+A schedule whose next occurrence cannot be computed is disabled with reason
+`unschedulable`; it never blocks other schedules or consolidation.
+
+Pause keeps a schedule's next fire and bounds and drops its waiting note; a paused
+schedule never fires. Resume picks the next fire after now, so fires missed while
+paused are skipped. A schedule with no fire left, such as one past `--until`, is
+done on resume. Schedule controls are owner-only. Backup restore disables active and disabled
+schedules with reason `restore`, clears every pending wake, and requires explicit
+re-enabling; a done one-shot stays done. A schedule with no fire left, such as a
+past one-shot, cannot be re-enabled. Consolidation's separate restore behavior remains
+delete-on-restore. Restore deletes undelivered handoffs and marks delivered ones
+notified, so the restored host neither launches nor wakes for them.

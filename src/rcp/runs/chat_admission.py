@@ -34,8 +34,8 @@ def admit_fresh_chat_turn(
     with conversation_worktree_locks(f"{store.path}:{project_id}:{request.chat_id}"):
         require_chat_graph_target(service, store, project_id, request.chat_id)
         # Archive is shared, so a tab that has not seen it yet cannot revive the chat.
-        if store.chat_archived(project_id, request.chat_id):
-            raise AgentTaskAdmissionConflict("chat_archived")
+        if refusal := store.chat_turn_refusal(project_id, request.chat_id):
+            raise AgentTaskAdmissionConflict(refusal)
         if store.has_resumable_paused_chat_task(project_id, kind, request.chat_id):
             raise AgentTaskAdmissionConflict(
                 "This conversation has a paused turn. Resume or retry it before starting a new turn."

@@ -13,6 +13,7 @@ export function tasksResourceKey(projectId: string): string {
 
 export function taskStatusProfile(projectId: string): ResourceProfile<AgentTask[]> {
   return {
+    watch: [{ name: "chats" }],
     key: key(projectId, "tasks.status"),
     fetch: (signal) => api(`/api/projects/${encodeURIComponent(projectId)}/tasks`, { signal }),
   };
@@ -27,6 +28,7 @@ export function taskResourceProfile(
   operationId: string,
 ): ResourceProfile<AgentTask> {
   return {
+    watch: [{ name: "chats" }],
     key: key(projectId, "task", operationId),
     fetch: (signal) =>
       api(

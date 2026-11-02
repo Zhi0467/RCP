@@ -23,6 +23,7 @@ from rcp.limits import (
     BACKUP_STABLE_READ_ATTEMPTS,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
 )
+from rcp.regular_file_reader import _open_local_directory
 from rcp.server_ops._local_primitives import fsync_directory
 from rcp.server_ops._local_primitives import write_all as _write_all
 from rcp.server_ops.backup_models import BackupFileEntry
@@ -41,11 +42,77 @@ ProjectFileGroup = Literal[
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
+    "space_thread",
+    "local_memory",
 ]
 
 
 class BackupProjectFileUnavailable(RuntimeError):
     """One project could not support an honest optimistic file capture."""
+
+
+def capture_app_data_root(
+    data_dir: Path,
+    capture_root: Path,
+    root_name: Literal["agent-threads", "memory"],
+) -> tuple[BackupFileEntry, ...]:
+    """Inventory an owned root, then copy its regular files through stable reads."""
+    root = data_dir / root_name
+    try:
+        root_metadata = root.lstat()
+    except FileNotFoundError:
+        return ()
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("The app-data root is not a regular directory.")
+    pending = [root]
+    sources: list[tuple[Path, os.stat_result]] = []
+    observed_entries = 0
+    while pending:
+        directory = pending.pop()
+        directory_descriptor = _open_local_directory(directory)
+        try:
+            with os.scandir(directory_descriptor) as children:
+                for child in children:
+                    observed_entries += 1
+                    if observed_entries > BACKUP_INVENTORY_MAX_ENTRIES:
+                        raise ValueError("The app-data inventory exceeds its entry bound.")
+                    metadata = child.stat(follow_symlinks=False)
+                    path = directory / child.name
+                    relative = path.relative_to(root)
+                    if stat.S_ISDIR(metadata.st_mode):
+                        if root_name == "agent-threads" and len(relative.parts) > 1:
+                            if len(relative.parts) == 2 and child.name == "stages":
+                                continue
+                            raise ValueError(
+                                "The transcript root contains an unexpected directory."
+                            )
+                        pending.append(path)
+                    elif stat.S_ISREG(metadata.st_mode):
+                        if root_name == "agent-threads" and (
+                            len(relative.parts) != 2 or path.suffix != ".jsonl"
+                        ):
+                            raise ValueError("The transcript root contains an unexpected file.")
+                        if root_name == "memory" and len(relative.parts) < 2:
+                            raise ValueError("Memory files must belong to a project directory.")
+                        sources.append((path, metadata))
+                    else:
+                        raise ValueError("The app-data root contains a non-regular entry.")
+        finally:
+            os.close(directory_descriptor)
+    entries = tuple(
+        stable_copy_entry(
+            source,
+            capture_root,
+            None,
+            PurePosixPath(source.relative_to(data_dir).as_posix()),
+            group="space_thread" if root_name == "agent-threads" else "local_memory",
+            expected_size=metadata.st_size if root_name == "memory" else None,
+            observed=metadata,
+            complete_lines=root_name == "agent-threads",
+        )
+        for source, metadata in sorted(sources, key=lambda item: item[0])
+    )
+    return entries
 
 
 def capture_chat_files(
@@ -188,11 +255,20 @@ def _copy_fact_source(
 def stable_copy_entry(
     source: Path,
     project_root: Path,
-    project_id: str,
+    project_id: str | None,
     relative: PurePosixPath,
     *,
-    group: Literal["canonical", "paper_introduction", "paper_projection", "fact"],
+    group: Literal[
+        "canonical",
+        "paper_introduction",
+        "paper_projection",
+        "fact",
+        "space_thread",
+        "local_memory",
+    ],
     expected_size: int | None = None,
+    observed: os.stat_result | None = None,
+    complete_lines: bool = False,
 ) -> BackupFileEntry:
     destination = _destination_path(project_root, relative)
     _prepare_destination_parent(project_root, destination.parent)
@@ -204,6 +280,8 @@ def stable_copy_entry(
                 source,
                 temporary,
                 expected_size=expected_size,
+                observed=observed,
+                complete_lines=complete_lines,
             )
             os.replace(temporary, destination)
             fsync_directory(destination.parent)
@@ -221,8 +299,18 @@ def _copy_one_stable_file(
     destination: Path,
     *,
     expected_size: int | None,
+    observed: os.stat_result | None = None,
+    complete_lines: bool = False,
 ) -> tuple[str, int]:
-    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    directory_descriptor = _open_local_directory(source.parent)
+    try:
+        source_descriptor = os.open(
+            source.name,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+    finally:
+        os.close(directory_descriptor)
     destination_descriptor = -1
     try:
         initial = os.fstat(source_descriptor)
@@ -231,6 +319,13 @@ def _copy_one_stable_file(
             not stat.S_ISREG(initial.st_mode)
             or (initial.st_dev, initial.st_ino) != (current.st_dev, current.st_ino)
             or (expected_size is not None and initial.st_size != expected_size)
+            or (
+                observed is not None
+                and (
+                    (initial.st_dev, initial.st_ino) != (observed.st_dev, observed.st_ino)
+                    or initial.st_size < observed.st_size
+                )
+            )
         ):
             raise ValueError("The project file changed before capture.")
         destination_descriptor = os.open(
@@ -239,23 +334,38 @@ def _copy_one_stable_file(
             0o400,
         )
         digest = hashlib.sha256()
+        complete_digest = digest.copy()
+        complete_size = 0
         size = 0
-        while True:
-            chunk = os.read(source_descriptor, BACKUP_COPY_BUFFER_BYTES)
+        boundary = observed.st_size if complete_lines and observed is not None else initial.st_size
+        while size < boundary:
+            chunk = os.read(source_descriptor, min(BACKUP_COPY_BUFFER_BYTES, boundary - size))
             if not chunk:
                 break
             _write_all(destination_descriptor, chunk)
-            digest.update(chunk)
+            newline = chunk.rfind(b"\n") + 1 if complete_lines else 0
+            if newline:
+                digest.update(chunk[:newline])
+                complete_digest = digest.copy()
+                complete_size = size + newline
+            digest.update(chunk[newline:])
             size += len(chunk)
         final = os.fstat(source_descriptor)
         path_final = source.lstat()
-        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        stable_fields = (
+            ("st_dev", "st_ino")
+            if complete_lines
+            else ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        )
         if any(getattr(initial, field) != getattr(final, field) for field in stable_fields) or any(
             getattr(final, field) != getattr(path_final, field) for field in stable_fields
         ):
             raise ValueError("The project file changed during capture.")
-        if size != final.st_size:
+        if size != boundary or final.st_size < boundary or path_final.st_size < boundary:
             raise ValueError("The project file copy is incomplete.")
+        if complete_lines:
+            os.ftruncate(destination_descriptor, complete_size)
+            digest, size = complete_digest, complete_size
         os.fchmod(destination_descriptor, 0o400)
         os.fsync(destination_descriptor)
         return digest.hexdigest(), size
@@ -316,14 +426,18 @@ def write_bytes_entry(
 
 
 def _file_entry(
-    project_id: str,
+    project_id: str | None,
     relative: PurePosixPath,
     group: ProjectFileGroup,
     sha256: str,
     size: int,
 ) -> BackupFileEntry:
     return BackupFileEntry(
-        archive_path=(PurePosixPath("projects") / project_id / relative).as_posix(),
+        archive_path=(
+            (PurePosixPath("projects") / project_id / relative).as_posix()
+            if project_id is not None
+            else relative.as_posix()
+        ),
         source_relative_path=relative.as_posix(),
         group=group,
         sha256=sha256,
@@ -401,6 +515,7 @@ def fsync_directory_tree(root: Path) -> None:
 
 __all__ = [
     "BackupProjectFileUnavailable",
+    "capture_app_data_root",
     "capture_chat_files",
     "discard_failed_project_capture",
     "fact_backup_sources",

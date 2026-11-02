@@ -1,44 +1,39 @@
-import type { ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
-import type { AgentRunConfig, AgentTask, ConversationMode, ProjectSnapshot } from "../core/types";
+import type { ConversationMode } from "../core/types";
 import { StagedAnswerComments, type AnswerComments } from "./answerComments";
 import {
   ComposerAddPicker,
   ComposerAttachmentChips,
   type ComposerAttachments,
 } from "./composerAttachments";
-import { ProviderSwitchHint } from "./ProviderSwitchHint";
 
 /**
  * The one composer shell chat and the Paper coach share: skills, the provider
- * switch hint, staged comments and files, the message field, then the tools row
- * (Add first, then the caller's own tools) and the send actions.
+ * switch hint, staged comments and files, then one row of Add, the message field
+ * and the send actions. The caller's own tools and notice take a second row, which
+ * exists only when the caller has something for it.
  */
 export function ChatComposer({
-  project,
-  config,
-  tasks,
-  sessionId,
+  hint,
   mode,
   composer,
   comments,
   skills,
-  addDisabled,
+  addDisabled = false,
   className,
   field,
   tools,
   actions,
   notice,
 }: {
-  project: ProjectSnapshot;
-  config: AgentRunConfig;
-  tasks: AgentTask[];
-  sessionId: string | null | undefined;
+  /** A caller-owned hint above staged comments, such as a provider switch. */
+  hint?: ReactNode;
   mode: ConversationMode;
-  composer: ComposerAttachments;
+  composer?: ComposerAttachments;
   comments: AnswerComments;
-  skills: SkillPickerProps;
-  addDisabled: boolean;
+  skills?: SkillPickerProps;
+  addDisabled?: boolean;
   /** The caller's own state, such as a failure edge. */
   className?: string;
   /** The message field, which each caller keys and submits its own way. */
@@ -50,23 +45,60 @@ export function ChatComposer({
 }) {
   return (
     <div
-      className={`chat-composer${className ? ` ${className}` : ""}${composer.dragging ? " is-dragging-files" : ""}`}
+      className={`chat-composer${className ? ` ${className}` : ""}${composer?.dragging ? " is-dragging-files" : ""}`}
       data-mode={mode}
-      {...composer.dropTarget()}
+      {...composer?.dropTarget()}
     >
-      <SkillPicker {...skills} />
-      <ProviderSwitchHint project={project} config={config} tasks={tasks} sessionId={sessionId} />
+      {skills && <SkillPicker {...skills} />}
+      {hint}
       <StagedAnswerComments comments={comments} />
-      <ComposerAttachmentChips composer={composer} />
-      {field}
-      <div className="chat-send">
-        <div className="chat-composer-tools">
-          <ComposerAddPicker composer={composer} disabled={addDisabled} />
-          {tools}
-        </div>
+      {composer && <ComposerAttachmentChips composer={composer} />}
+      <div className="chat-composer-row">
+        {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}
+        {field}
         <div className="chat-send-actions">{actions}</div>
-        {notice}
       </div>
+      {(tools || notice) && (
+        <div className="chat-composer-tools">
+          {tools}
+          {notice}
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * The message field, one line tall until its text needs more. WebKit has no
+ * `field-sizing: content` on every macOS the app supports, so the height is
+ * measured here and eased by the stylesheet's height transition.
+ */
+export function ComposerField({
+  ref,
+  value,
+  ...props
+}: Omit<ComponentProps<"textarea">, "value"> & { value: string }) {
+  const own = useRef<HTMLTextAreaElement | null>(null);
+  const attach = useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      own.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+  useLayoutEffect(() => {
+    const field = own.current;
+    if (!field) return;
+    const from = field.style.height;
+    field.style.transition = "none";
+    field.style.height = "auto";
+    const to = `${field.scrollHeight}px`;
+    field.style.height = from;
+    // Commit the old height before easing to the new one, so the change never jumps.
+    void field.offsetHeight;
+    field.style.transition = "";
+    field.style.height = to;
+  }, [value]);
+  return <textarea {...props} ref={attach} rows={1} value={value} />;
 }

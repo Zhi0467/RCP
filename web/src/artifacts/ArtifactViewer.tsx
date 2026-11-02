@@ -64,7 +64,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
   const profile =
     target?.kind === "artifact" ? artifactStateProfile(target.projectId, target.artifactId) : null;
   const resource = useResource("artifact-viewer", profile);
-  const state = resource.value;
+  const state = target?.kind === "artifact" ? resource.value : null;
   const refs = useResource(
     "artifact-pin-refs",
     target?.kind === "artifact" ? refsProfile(target.projectId) : null,
@@ -172,7 +172,9 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
     ? null
     : target.kind === "repository"
       ? target.path.split("/").pop() || target.path
-      : (state?.name ?? "Artifact");
+      : target.kind === "space-artifact"
+        ? target.name
+        : (state?.name ?? "Artifact");
   // A docked viewer is an item in the project's dock, which the workspace renders.
   useEffect(() => {
     publishDockedArtifact(collapsed && title ? { title, restore } : null);
@@ -180,10 +182,18 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
   useEffect(() => () => publishDockedArtifact(null), []);
 
   if (!target || !title || collapsed || hidden) return null;
+  const targetKey =
+    target.kind === "repository"
+      ? target.path
+      : target.kind === "space-artifact"
+        ? target.viewerUrl
+        : target.artifactId;
   const source =
     target.kind === "repository"
       ? repositoryFilePreviewUrl(target.projectId, { path: target.path, line: target.line ?? null })
-      : state?.viewer_url;
+      : target.kind === "space-artifact"
+        ? target.viewerUrl
+        : state?.viewer_url;
   const undo = async () => {
     if (target.kind !== "artifact" || undoing) return;
     const generation = requestGeneration.current;
@@ -261,7 +271,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
       className="artifact-viewer"
       kind="detail"
       viewer={{ placement, onChange: updatePlacement }}
-      focusRequestToken={target.kind === "artifact" ? target.artifactId : target.path}
+      focusRequestToken={targetKey}
     >
       <header
         style={
@@ -309,7 +319,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
             className="artifact-viewer-control"
           />
         )}
-        {state?.can_pin && (
+        {target.kind === "artifact" && state?.can_pin && (
           <>
             <button
               className="artifact-viewer-control pin-view-action"
@@ -399,13 +409,8 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
         </button>
       </header>
       {source ? (
-        <iframe
-          ref={iframe}
-          key={`${target.kind === "artifact" ? target.artifactId : target.path}:${reload}`}
-          src={source}
-          title={title}
-        />
-      ) : state ? (
+        <iframe ref={iframe} key={`${targetKey}:${reload}`} src={source} title={title} />
+      ) : target.kind === "artifact" && state ? (
         <StoredArtifactDownload
           key={state.artifact_id}
           projectId={target.projectId}

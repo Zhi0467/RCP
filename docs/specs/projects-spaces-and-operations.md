@@ -444,7 +444,7 @@ compatibility and exact failure. Compatible state opens without manifest overwri
 incompatible state may expose its last coherent materialization read-only without
 claiming home or repairing history.
 
-**Start fresh** requires exact human review. Under the local/remote append lock,
+Archiving existing research to start fresh requires exact human review. Under the local/remote append lock,
 it rechecks manifest/history fingerprints and atomically renames all `.research`
 to a unique timestamped sibling. Drift requires review again; incomplete archive
 proof prevents initialization. Later failure leaves the archive recoverable and
