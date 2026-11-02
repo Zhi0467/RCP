@@ -38,6 +38,11 @@ def test_other_members_private_thread_is_hidden_from_existing_routes(manifest, t
         f"tasks/{task.operation_id}",
     ):
         assert client.get(f"{base}/{path}").status_code == 404
+    # Per-operation controls resolve the private owner through the task's chat.
+    for control in ("steer", "pause", "resume", "retry"):
+        assert (
+            client.post(f"{base}/tasks/{task.operation_id}/{control}", json={}).status_code == 404
+        )
     for action in ("answer", "dismiss"):
         assert (
             client.post(f"{base}/questions/{question.question_id}/{action}", json={}).status_code
