@@ -1803,10 +1803,16 @@ and Auto-research. No agent has a `lesson` verb; memory files replace it.
 
 A Space turn runs locally in its persistent
 [member/thread stage](conversations-episodes-and-watchers.md#private-agent-threads).
-Admission checks the registered state host before opening execution, skips remote
-projects without contacting them, and records unavailable or broken local projects
-as `space_project_not_admitted` while admitting the others. The prompt names
-each project left out, with a short reason, as a `handoff` target. Its
+Admission checks the registered state host before opening execution and skips a
+project whose state is remote without contacting it. A project whose state is
+local but whose base machine is remote gets a read-only client. Each project left
+out carries a code and a short line from `SPACE_EXCLUSIONS` in
+[space_projects.py](../../src/rcp/runs/space_projects.py). Raw errors stay in the
+`space_project_not_admitted` receipt. A project whose Git transport or read-hiding
+policy cannot be prepared, or cannot join the merged policy, is left out the same
+way. It does not fail the turn. Admission binds the remaining writers only after
+that preparation. The prompt lists every member project with its client, or with
+its reason and `handoff` as the next step. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
@@ -1816,11 +1822,18 @@ is NULL. A changed admitted project set is recorded on the turn and does not
 change the thread's native-session identity.
 
 The top-level client grants `projects`, `handoff` and `schedule`; it has no
-`ask`. Each project client has its own authenticated mailbox and grants only
-`validate`, `graph_log`, `graph_diff` and `bulletin`. A Space turn has no
-project memory root. Native subagents remain permitted; MCP servers remain off.
-Project lifecycle work, including protected-action approval cards, goes through
-`handoff` to the member's own project thread. The top-level usage text renders
+`ask`. Each project client has its own authenticated mailbox. It grants its
+`GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. The
+mailbox allowlist, the handler guard and the rendered usage all read that one set.
+A Space turn has no project memory root. Native subagents remain permitted; MCP
+servers remain off. The prompt lists the protocol's mutating verbs that no client
+of the turn grants, so the list follows enforcement. Work that needs one of
+them, a project memory note, or a change the graph authority contract withholds
+from agents goes to that project's own thread through `handoff`, with the
+project, node ids and exact request. The project thread runs what its own
+grants allow and raises an approval card for what needs the member. The Space
+agent relays the answer when the handoff settles. Only the member's tap on a card
+is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
 from the same resolved verbs the handler enforces.
 The provider receives the union of project Git transports and read-hiding
 policies; the combined policy is installed before launch. Even a turn without
@@ -1841,10 +1854,12 @@ Patch files are removed; an `unavailable` Patch, whose commit Apply could not
 settle, stays for the retry. Project-local failures do not stop collection of
 others, and cleanup failures are receipted per project. A Patch in the folder of a
 project left out of admission, including one whose binding changed mid-turn, is
-reported `rejected` with its reason. Other Patch files and all watch files are
+reported `rejected` with its reason. So is a Patch for a member project added
+after the turn started. Other Patch files and all watch files are
 receipted and discarded. A `rejected` or `unavailable` project makes the turn
-outcome partial, naming each project and reason, without undoing another
-project's accepted transition. The next turn's prompt carries the last turn's
+outcome partial, naming each project by display name with its reason, without
+undoing another project's accepted transition. The assistant transcript record
+carries that outcome. The next turn's prompt carries the last turn's
 per-project results. Watcher
 storage also refuses a Space-task origin.
 

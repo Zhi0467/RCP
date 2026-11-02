@@ -29,6 +29,7 @@ from tests.test_storage import _task_record
         (2, "unavailable"),
         (2, "missing"),
         (2, "remote"),
+        (2, "hidden"),
         (2, "collection"),
         (2, "directory"),
     ],
@@ -51,10 +52,12 @@ def test_space_runtime_real_storage_and_partial_apply(
         app.state.catalog.register(
             str(locator), seat_member=human.user_id, identity_action="created"
         )
+    unavailable_id = min(store.member_project_ids(human.user_id), default=None)
+    if broken == "hidden":
+        project_count -= 1
     if broken in {"unavailable", "missing", "remote"}:
         from rcp.transport import StateUnavailable
 
-        unavailable_id = sorted(store.member_project_ids(human.user_id))[0]
         original_open = app.state.catalog.open_execution
 
         def open_project(project_id):
@@ -68,12 +71,15 @@ def test_space_runtime_real_storage_and_partial_apply(
 
         monkeypatch.setattr(app.state.catalog, "open_execution", open_project)
         if broken == "remote":
-            original_local = app.state.catalog.same_machine
-            monkeypatch.setattr(
-                app.state.catalog,
-                "same_machine",
-                lambda pid: pid != unavailable_id and original_local(pid),
-            )
+            original_record = store.project
+
+            def remote_record(pid):
+                record = original_record(pid)
+                if pid == unavailable_id and record is not None:
+                    return record.model_copy(update={"state_remote": True})
+                return record
+
+            monkeypatch.setattr(store, "project", remote_record)
         project_count -= 1
     threads = store.ensure_agent_threads(
         human.user_id, list(store.member_project_ids(human.user_id)), default_names=("Pip",)
@@ -108,7 +114,12 @@ def test_space_runtime_real_storage_and_partial_apply(
         "rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: installed.append(scope)
     )
 
-    async def prepare_policy(*args, **kwargs):
+    async def prepare_policy(service, *args, **kwargs):
+        if broken == "hidden" and service.history.project_id == unavailable_id:
+            from rcp.agents.hidden_read import HiddenFolderRejected
+
+            # One project's read-hiding failure leaves it out, not the whole turn.
+            raise HiddenFolderRejected(code="invalid_hidden_folder")
         return default_space_hidden_read_scope(owner, request, kwargs["workspace"], execution)
 
     monkeypatch.setattr("rcp.runs.shared._prepare_hidden_read_scope", prepare_policy)
@@ -191,7 +202,8 @@ def test_space_runtime_real_storage_and_partial_apply(
                 key for key, value in execution.project_results.items() if value == failed
             ]
             assert execution.turn_outcome.reason is not None
-            assert failed_id in execution.turn_outcome.reason
+            record = store.project(failed_id)
+            assert record is not None and record.name in execution.turn_outcome.reason
         from rcp.core.transition_models import GraphTargetRef
 
         for project_id in execution.project_results:
@@ -209,13 +221,15 @@ def test_space_runtime_real_storage_and_partial_apply(
     else:
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
-    if broken in {"unavailable", "missing", "remote"}:
+    if broken in {"unavailable", "missing", "remote", "hidden"}:
         # A project the turn cannot write is named to the agent, for handoff.
         assert f'"{unavailable_id}":' in prompts[0]
     transcript = read_space_chat_transcript(tmp_path / "data", human.user_id, thread.thread_id)
     assert transcript is not None
     assert [message.role for message in transcript.messages] == ["user", "assistant"]
     assert transcript.messages[-1].text == "Finished the requested work."
+    # The answer carries how its graph updates settled, not plain success.
+    assert transcript.messages[-1].turn_outcome == execution.turn_outcome
     assert store.chat_session_context("claude", "local", "space-native").kind == "space_chat"
 
     if broken is None:
@@ -296,3 +310,24 @@ def test_space_output_clear_removes_agent_directories_without_following_links(tm
     # A malformed output never survives into the next fresh turn.
     assert not made.exists() and not linked.is_symlink()
     assert (outside / "kept").exists()
+
+
+def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
+    from types import SimpleNamespace
+
+    from rcp.limits import AGENT_THREAD_TAIL_MAX_BYTES
+    from rcp.runs.space_chat import _space_seed
+    from rcp.service import RunRequest
+
+    prior = SimpleNamespace(
+        messages=[
+            SimpleNamespace(role="user", text="x" * AGENT_THREAD_TAIL_MAX_BYTES),
+            SimpleNamespace(role="user", text="older"),
+            SimpleNamespace(role="assistant", text="newer"),
+        ]
+    )
+    fresh = RunRequest(message="m", mode="work")
+    seed = _space_seed(fresh, prior)
+    assert seed.index("older") < seed.index("newer") and "x" * 100 not in seed
+    assert _space_seed(fresh.model_copy(update={"session_id": "s"}), prior) == ""
+    assert _space_seed(fresh, None) == ""
