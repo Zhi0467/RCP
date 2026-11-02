@@ -25,11 +25,16 @@ export function projectFor(id: string): ProjectSnapshot {
     id,
     name: id,
     run_on: "local",
-    agent_profiles: Object.fromEntries(
-      ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map(
-        (kind) => [kind, profile],
+    agent_profiles: {
+      ...Object.fromEntries(
+        ["seed", "node_chat", "project_chat", "paper_coach", "orchestrator"].map((kind) => [
+          kind,
+          profile,
+        ]),
       ),
-    ),
+      // Saved before Seed and Refresh shared one profile, so the two differ.
+      refresh: { ...profile, reasoning: "high" },
+    },
     providers: { codex: readiness },
     provider_readiness: { local: { codex: readiness } },
     repositories: [

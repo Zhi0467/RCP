@@ -42,6 +42,7 @@ import {
 } from "./settingsDraft";
 import { providerPathPresentation } from "./providerPaths";
 import { SettingsRail, type SettingsSection } from "../ui/SettingsRail";
+import { hasRow, rowOf } from "../core/agentRows";
 import type { ProjectReadinessRetention } from "../graph/projectSession";
 import type {
   AgentExecutionProfile,
@@ -91,13 +92,14 @@ export function publishCacheMetrics(
 }
 
 const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed" },
+  { id: "seed", label: "Seed and refresh" },
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper coach" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
+const executionRows = executionProfiles.filter(({ id }) => hasRow(id));
 
 /** Every agent runs on the base: the machine that holds the canonical state repository. */
 function baseMachine(project: ProjectSnapshot): string {
@@ -397,7 +399,9 @@ export function ProjectSettings({
     setStatus(null);
     const body: ProjectSettingsRequest = {
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
-      agent_profiles: profiles,
+      agent_profiles: Object.fromEntries(
+        executionProfiles.map(({ id }) => [id, profiles[rowOf(id)]]),
+      ) as Record<AgentExecutionProfile, AgentProfileSettings>,
       skill_defaults: skillDefaults,
     };
     try {
@@ -767,7 +771,7 @@ export function ProjectSettings({
             </label>
           </header>
           <div className="settings-agent-list">
-            {executionProfiles.map(({ id, label }) => (
+            {executionRows.map(({ id, label }) => (
               <article className="settings-agent" key={id}>
                 <header>
                   <span>

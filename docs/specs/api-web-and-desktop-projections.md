@@ -1639,7 +1639,10 @@ check in the Space Settings header. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Each
-preference has one home, so Project Settings has no Appearance pane.
+preference has one home, so Project Settings has no Appearance pane. Seed and
+Refresh run on one profile. Project Settings and both project setup flows show
+one Seed and refresh row, and every save writes its choice to both stored
+profiles, so the two cannot drift apart.
 
 Both levels show a section rail beside one pane at a time. The rail lists only
 the sections that exist, each with an icon and a label. The open section lives

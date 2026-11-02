@@ -196,3 +196,25 @@ test("an invalid ceiling shows in the save bar on every pane and keeps Save disa
   assert.doesNotMatch(await status.getAttribute("class"), /\berror\b/);
   assert.equal(await save.isDisabled(), false);
 });
+
+test("Seed and Refresh share one row, and a save gives Refresh the Seed profile", async (t) => {
+  let sent;
+  const saved = new Promise((resolve) => (sent = resolve));
+  const page = await openRail(t, {
+    query: "?project",
+    // The save is held open: only the request body matters here.
+    configure: (page) =>
+      page.route("**/api/projects/alpha/settings", (route) =>
+        route.request().method() === "PUT"
+          ? sent(route.request().postDataJSON())
+          : route.fallback(),
+      ),
+  });
+  await select(page, "agent-defaults");
+  assert.equal(await page.locator(".settings-agent").count(), 5);
+  await ceiling(page).fill("12");
+  await page.locator(".settings-savebar .button.primary").click();
+  const body = await saved;
+  assert.deepEqual(body.agent_profiles.refresh, body.agent_profiles.seed);
+  assert.equal(Object.keys(body.agent_profiles).length, 6);
+});
