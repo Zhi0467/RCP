@@ -274,20 +274,6 @@ function settingsProject() {
   };
 }
 
-const sectionClasses = (html) =>
-  [
-    "server-settings",
-    "space-machine-settings",
-    "transcription-settings",
-    "space-cache-settings",
-    "display-settings",
-    "provider-path-settings",
-    "boundary-settings",
-    "skill-settings",
-    "agent-defaults",
-    "cache-settings",
-  ].filter((name) => new RegExp(`class="[^"]*\\b${name}\\b`).test(html));
-
 // Each rail pane in order, and the one pane a fresh page shows.
 const panes = (html) => {
   const found = [...html.matchAll(/data-settings-pane="([^"]+)"( hidden="")?/g)];
@@ -356,15 +342,22 @@ test("space-wide sections render on space Settings and project sections on proje
       }),
     );
     assert.match(html, /data-settings-level="project"/);
-    assert.deepEqual(sectionClasses(html), [
-      "provider-path-settings",
-      "boundary-settings",
-      "skill-settings",
-      "agent-defaults",
-      "cache-settings",
-    ]);
+    assert.deepEqual(panes(html), {
+      ids: [
+        "usage",
+        "members",
+        "repos",
+        "machines",
+        "notifications",
+        "consolidation",
+        "agent-defaults",
+        "skills",
+        "cache",
+      ],
+      shown: ["usage"],
+    });
     assert.match(html, /data-machine-action="add-machine"/);
-    assert.doesNotMatch(html, /app-cache-danger-row/);
+    assert.doesNotMatch(html, /app-cache-danger-row|appearance-picker/);
   }
 });
 

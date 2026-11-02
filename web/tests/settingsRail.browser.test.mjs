@@ -23,7 +23,7 @@ after(async () => {
   await server?.close();
 });
 
-async function openSpace(
+async function openRail(
   t,
   { query = "", viewport = { width: 1280, height: 900 }, machinePower, configure } = {},
 ) {
@@ -62,7 +62,7 @@ const shownPanes = (page) =>
 
 test("choosing a rail item shows only its pane, and a draft in another pane survives", async (t) => {
   let machineReads = 0;
-  const page = await openSpace(t, {
+  const page = await openRail(t, {
     configure: (page) =>
       page.route("**/api/space/machines", (route) => {
         machineReads += 1;
@@ -87,18 +87,18 @@ test("choosing a rail item shows only its pane, and a draft in another pane surv
 });
 
 test("the initial section selects its pane, and an unknown one opens the first", async (t) => {
-  const voice = await openSpace(t, { query: "?section=voice" });
+  const voice = await openRail(t, { query: "?section=voice" });
   assert.deepEqual(await shownPanes(voice), ["voice"]);
   assert.deepEqual(await current(voice), ["voice"]);
 
-  const unknown = await openSpace(t, { query: "?section=nowhere" });
+  const unknown = await openRail(t, { query: "?section=nowhere" });
   const [first] = await railIds(unknown);
   assert.deepEqual(await shownPanes(unknown), [first]);
 });
 
 test("on a phone the rail strip keeps its selected item in view without widening the page", async (t) => {
   for (const width of [390, 360]) {
-    const page = await openSpace(t, {
+    const page = await openRail(t, {
       query: "?section=caches",
       viewport: { width, height: 800 },
     });
@@ -117,7 +117,7 @@ test("on a phone the rail strip keeps its selected item in view without widening
 });
 
 test("opening again remounts Space Settings on the requested section", async (t) => {
-  const page = await openSpace(t);
+  const page = await openRail(t);
   await select(page, "voice");
   await page.evaluate(() => window.openSpaceSettings("machines"));
   await page.waitForFunction(
@@ -136,7 +136,7 @@ test("This Mac waits in the rail while its status loads and leaves only when uns
   for (const supported of [true, false]) {
     const held = Promise.withResolvers();
     const release = Promise.withResolvers();
-    const page = await openSpace(t, {
+    const page = await openRail(t, {
       query: "?section=this-mac",
       machinePower: null,
       configure: (page) =>
@@ -160,4 +160,39 @@ test("This Mac waits in the rail while its status loads and leaves only when uns
       assert.deepEqual(await shownPanes(page), [first]);
     }
   }
+});
+
+const ceiling = (page) => page.locator(".agent-auto-research-default input");
+
+test("switching Project Settings to another project starts on its first section", async (t) => {
+  const page = await openRail(t, { query: "?project" });
+  const [first] = await railIds(page);
+  await select(page, "agent-defaults");
+  assert.deepEqual(await shownPanes(page), ["agent-defaults"]);
+  await page.getByRole("button", { name: "Open beta", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".agent-auto-research-default input")?.value === "20",
+  );
+  assert.deepEqual(await shownPanes(page), [first]);
+  assert.deepEqual(await current(page), [first]);
+});
+
+test("an invalid ceiling shows in the save bar on every pane and keeps Save disabled", async (t) => {
+  const page = await openRail(t, { query: "?project" });
+  const status = page.locator(".settings-savebar .settings-save-status");
+  const save = page.locator(".settings-savebar .button.primary");
+  await select(page, "agent-defaults");
+  await ceiling(page).fill("0");
+  for (const pane of ["repos", "agent-defaults"]) {
+    await select(page, pane);
+    assert.deepEqual(await shownPanes(page), [pane]);
+    assert.equal(await status.isVisible(), true);
+    assert.match(await status.getAttribute("class"), /\berror\b/);
+    assert.notEqual((await status.innerText()).trim(), "");
+    assert.equal(await save.isDisabled(), true);
+  }
+  await ceiling(page).fill("5");
+  await select(page, "repos");
+  assert.doesNotMatch(await status.getAttribute("class"), /\berror\b/);
+  assert.equal(await save.isDisabled(), false);
 });
