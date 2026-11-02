@@ -554,3 +554,47 @@ def test_project_work_thread_exposes_projects_with_open_graph_items(
     assert [node["id"] for node in decisions] == ["decision"]
     assert [node["id"] for node in blockers] == ["blocker"]
     assert "handoff" not in handler.allowed_verbs
+
+
+def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.runs import agent_names, agent_schedules, questions
+    from rcp.runs.agent_thread_commands import _THREAD_VERBS, thread_capabilities
+    from rcp.runs.tasks.compute_commands import WorkComputeCommands
+
+    # A Space turn's handler grants each table verb, and each record carries its line.
+    assert all(verb.capability for verb in _THREAD_VERBS.values())
+    # A project thread's Work turn with every gate open: its grant is the line table's keys.
+    task = SimpleNamespace(
+        dispatch_authority=SimpleNamespace(task_contract="work_auto"),
+        request={"chat_id": "thread"},
+    )
+    store = SimpleNamespace(
+        consolidation_run_for_operation=lambda _: None,
+        agent_task=lambda _: task,
+        bulletin_enabled_for_task=lambda _: True,
+        agent_thread=lambda _: object(),
+    )
+    monkeypatch.setattr(agent_names, "resolve_agent_name_state", lambda _: {"can_self_name": True})
+    monkeypatch.setattr(agent_schedules, "schedule_thread", lambda *_: {})
+    monkeypatch.setattr(questions, "work_ask_authorized", lambda _: True)
+    monkeypatch.setattr(questions, "work_experiment_allowed", lambda _: True)
+    compute = SimpleNamespace(
+        allowed_verbs=WorkComputeCommands.allowed_verbs.fget(
+            SimpleNamespace(helper_backend=object())
+        )
+    )
+    handler = questions.work_command_handler(
+        SimpleNamespace(operation_id="turn", store=store),  # pyright: ignore[reportArgumentType]
+        compute,  # pyright: ignore[reportArgumentType]
+        service=SimpleNamespace(project_catalog=object()),  # pyright: ignore[reportArgumentType]
+        graph_read_scope=GraphReadScope.model_construct(
+            verbs=GraphReadScope.model_fields["verbs"].default
+        ),
+    )
+    assert handler.allowed_verbs == set(questions.WORK_THREAD_VERB_CAPABILITIES)
+    space, project = thread_capabilities("space"), thread_capabilities("project")
+    assert space and project and space != project
+    assert len(set(project)) == len(project)

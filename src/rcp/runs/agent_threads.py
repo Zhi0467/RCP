@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from rcp.runs.agent_thread_commands import thread_capabilities
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord
@@ -73,6 +74,8 @@ def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, o
         "browser_requested": store.chat_browser_requested(scope, thread.thread_id),
         # The member's stored pick; null until one is made, when the default applies.
         "agent": thread.agent,
+        # What this kind's agent can do, from its granted verbs; an empty thread shows it.
+        "capabilities": thread_capabilities(thread.kind),
     }
 
 

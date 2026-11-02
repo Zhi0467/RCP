@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
@@ -255,6 +255,8 @@ class ThreadCommandHandler:
 class _ThreadVerb:
     handle: Callable[..., dict[str, object] | CommandResponse]
     usages: Callable[[], tuple[str, ...]]
+    #: The member-facing line an empty thread's welcome shows for this verb.
+    capability: str
 
 
 def _handoff_usages() -> tuple[str, ...]:
@@ -280,12 +282,35 @@ def _schedule_usages() -> tuple[str, ...]:
     return schedule_usages()
 
 
-#: One table grants each verb, routes it, and renders its usage.
+#: One table grants each verb, routes it, and renders its usage and capability.
 _THREAD_VERBS: dict[str, _ThreadVerb] = {
-    "projects": _ThreadVerb(ThreadCommandHandler.projects, _projects_usages),
-    "handoff": _ThreadVerb(ThreadCommandHandler.handoff, _handoff_usages),
-    "schedule": _ThreadVerb(ThreadCommandHandler.schedule, _schedule_usages),
+    "projects": _ThreadVerb(
+        ThreadCommandHandler.projects,
+        _projects_usages,
+        "Answers questions about any project's graph",
+    ),
+    "handoff": _ThreadVerb(
+        ThreadCommandHandler.handoff, _handoff_usages, "Hands work to a project's own agent"
+    ),
+    "schedule": _ThreadVerb(
+        ThreadCommandHandler.schedule, _schedule_usages, "Reminds you or checks back on a schedule"
+    ),
 }
+
+
+def thread_capabilities(kind: Literal["space", "project"]) -> list[str]:
+    """One line per capability of a thread kind's agent, from the verbs its turns are granted.
+
+    A Space turn's handler grants every verb of `_THREAD_VERBS`; a project thread's
+    Work turn may be granted each verb of `WORK_THREAD_VERB_CAPABILITIES`.
+    """
+    if kind == "space":
+        lines = [verb.capability for verb in _THREAD_VERBS.values()]
+    else:
+        from rcp.runs.questions import WORK_THREAD_VERB_CAPABILITIES
+
+        lines = [line for line in WORK_THREAD_VERB_CAPABILITIES.values() if line]
+    return list(dict.fromkeys(lines))
 
 
 def _thread_busy(store: AppStore, thread: AgentThreadRecord) -> bool:

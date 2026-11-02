@@ -4103,6 +4103,8 @@ export interface AgentThread {
   browser_requested: boolean;
   /** The member's agent pick, which every turn of the thread runs; null until one is made. */
   agent: AgentRunConfig | null;
+  /** What this kind's agent can do, one line per capability of its granted verbs. */
+  capabilities: string[];
 }
 
 export interface AgentThreadList {

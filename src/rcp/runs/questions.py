@@ -15,6 +15,7 @@ from rcp.agents.command_protocol import (
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
+    CommandVerb,
     EpisodeCommandRequest,
     FlagCommandRequest,
     GraphDiffCommandRequest,
@@ -311,6 +312,22 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
     for operation_id in store.question_receipt_candidate_operations(question_id):
         record_settled_question_receipts(store, operation_id)
 
+
+#: The welcome line for each verb `work_command_handler` may grant a member's
+#: project thread turn; None marks a verb with no member-facing capability.
+#: Its keys are exactly that grant with every gate open, which a test enforces.
+WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
+    "graph_diff": "Answers questions about this project's graph",
+    "graph_log": "Answers questions about this project's graph",
+    "projects": "Looks across your other projects",
+    "validate": "Records results in the project graph",
+    "launch": "Runs jobs on the project's machines",
+    "episode": "Starts experiments you ask for",
+    "bulletin": "Posts and replies on the project Bulletin",
+    "schedule": "Reminds you or checks back on a schedule",
+    "ask": "Asks you when it needs a decision",
+    "name": None,
+}
 
 # Every Work launch, an Auto-research child's included, stages and publishes a turn
 # artifact directory, so its Bulletin --link can name a file written there.

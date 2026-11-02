@@ -2255,12 +2255,16 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `GET /api/agent-threads` returns the acting member's lazily created Space and
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_activity_at`, `live_state`,
-`latest_operation_id` and `browser_requested`. The Space thread comes first,
-then project threads by latest activity. `live_state` is idle, queued, running,
+`latest_operation_id`, `browser_requested` and `capabilities`. The Space
+thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused or `needs_you` (an open question or card). `latest_operation_id` names
 the newest visible turn, so a view can follow a project turn whose member
 message reaches the transcript only when it settles. Threads of projects the
 member left are closed and omitted; listing reopens every other thread.
+`capabilities` lists one member-facing line per capability of the thread kind,
+from the record of each verb its turns can be granted: the Space handler's verb
+table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
+thread. A test holds every grantable verb to a line.
 
 Thread transcript, title, read and browser routes under `/api/agent-threads/{id}`
 require ownership; another member gets 404. A project thread otherwise uses the
