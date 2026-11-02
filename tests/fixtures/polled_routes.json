@@ -1,5 +1,4 @@
 {
-  "session_touch": "Every cookie-signed request updates its session's last_seen_at and expiry inside BEGIN IMMEDIATE.",
   "routes": [
     {"method": "POST", "path": "/api/resource-watermarks", "json": {"client_id": "polled-routes", "open": [{"project_id": "{project_id}", "current_ref": "main", "resources": []}], "due": ["{project_id}"], "agent_threads": true}},
     {"method": "GET", "path": "/api/agent-threads"},

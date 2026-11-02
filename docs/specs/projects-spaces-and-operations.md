@@ -31,7 +31,8 @@ JSON with `owner_sign_in_code`, absent for reused/team outcomes. Redemption may
 replace the secret and revoke old sessions. Raw codes/secrets are never persisted.
 
 Owner/team sessions share hashed storage, expiry and revocation, but separate
-admission and cookies. Owner cookie is host-only HttpOnly SameSite=Strict, Secure
+admission and cookies. A request slides a session's idle expiry at most once a
+minute, so polling never takes the write lock just to authenticate. Owner cookie is host-only HttpOnly SameSite=Strict, Secure
 on HTTPS. Snapshots exclude owner credentials/codes/sessions; restore requires
 fresh personal sign-in.
 

@@ -30,7 +30,6 @@ from rcp.transport.state import LocalStateWorkspace
 from .helpers import (
     authorized_human,
     create_named_app,
-    is_write_statement,
     signed_in_client,
     trace_requests,
 )
@@ -45,18 +44,6 @@ ALLOWED = {
 }
 
 RouteKey = tuple[str, str]
-
-
-def _is_session_touch(writes: list[str]) -> bool:
-    return (
-        len(writes) == 2
-        and writes[0] == "BEGIN IMMEDIATE"
-        and writes[1].lstrip().startswith("UPDATE team_sessions SET last_seen_at")
-    )
-
-
-def _exempt(writes: list[str]) -> bool:
-    return bool(POLLED_ROUTES.get("session_touch")) and _is_session_touch(writes)
 
 
 def _fill(value: Any, ids: dict[str, str]) -> Any:
@@ -75,11 +62,10 @@ def _routes(space: str) -> list[dict[str, Any]]:
 
 def _trace_routes(
     app: FastAPI, client: TestClient, space: str, ids_for: Any
-) -> tuple[dict[RouteKey, dict[str, list[Any]]], bool]:
-    """Each route's effects, and whether any request touched its session."""
+) -> dict[RouteKey, dict[str, list[Any]]]:
+    """Each route's effects."""
 
     found: dict[RouteKey, dict[str, list[Any]]] = {}
-    touched = False
     for route in _routes(space):
         ids = ids_for(route)
         with trace_requests(app) as trace:
@@ -87,14 +73,8 @@ def _trace_routes(
                 route["method"], _fill(route["path"], ids), json=_fill(route.get("json"), ids)
             )
         assert response.status_code == route.get("status", 200), (route["path"], response.text)
-        found[(route["method"], route["path"])] = trace.effects(_exempt)
-        touched = touched or any(
-            _is_session_touch(
-                [statement for statement in transaction if is_write_statement(statement)]
-            )
-            for transaction in trace.transactions
-        )
-    return found, touched
+        found[(route["method"], route["path"])] = trace.effects()
+    return found
 
 
 def _assert_matches_allowlist(found: dict[RouteKey, dict[str, list[Any]]]) -> None:
@@ -204,10 +184,7 @@ def test_personal_polled_routes_stay_read_only(manifest, tmp_path, monkeypatch) 
         space_route = route["path"].startswith("/api/agent-threads/")
         return {**ids, "operation_id": space_task if space_route else project_task}
 
-    found, touched = _trace_routes(app, client, "personal", ids_for)
-    _assert_matches_allowlist(found)
-    if POLLED_ROUTES.get("session_touch"):
-        assert touched, "Requests no longer touch their session; remove session_touch."
+    _assert_matches_allowlist(_trace_routes(app, client, "personal", ids_for))
 
 
 def test_team_polled_routes_stay_read_only(tmp_path) -> None:
@@ -228,5 +205,5 @@ def test_team_polled_routes_stay_read_only(tmp_path) -> None:
         "pairing_id": pairing.json()["pairing_id"],
     }
 
-    found, _touched = _trace_routes(app, client, "team", lambda _route: ids)
+    found = _trace_routes(app, client, "team", lambda _route: ids)
     _assert_matches_allowlist(found)

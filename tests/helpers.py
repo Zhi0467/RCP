@@ -857,23 +857,21 @@ class RequestTrace:
     def statements(self) -> list[str]:
         return [statement for transaction in self.transactions for statement in transaction]
 
-    def writes(self, exempt: Callable[[list[str]], bool] = lambda _writes: False) -> list[str]:
-        """Write statements, leaving out each connection use whose writes `exempt` accepts."""
+    def writes(self) -> list[str]:
+        """Write statements across every connection use."""
 
-        found: list[str] = []
-        for transaction in self.transactions:
-            writes = [statement for statement in transaction if is_write_statement(statement)]
-            if writes and not exempt(writes):
-                found.extend(writes)
-        return found
+        return [
+            statement
+            for transaction in self.transactions
+            for statement in transaction
+            if is_write_statement(statement)
+        ]
 
-    def effects(
-        self, exempt: Callable[[list[str]], bool] = lambda _writes: False
-    ) -> dict[str, list[Any]]:
+    def effects(self) -> dict[str, list[Any]]:
         """Every non-empty effect a read-only route must not have."""
 
         found = {
-            "writes": self.writes(exempt),
+            "writes": self.writes(),
             "subprocesses": self.subprocesses,
             "http": self.http,
             "remote_reads": self.remote_reads,
