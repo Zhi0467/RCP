@@ -2,6 +2,7 @@ import {
   CalendarClock,
   ChevronRight,
   GitPullRequestArrow,
+  Hourglass,
   LoaderCircle,
   Mic,
   MicOff,
@@ -71,7 +72,9 @@ import {
   browserTimezone,
   handoffReport,
   latestTurnId,
+  oneShotPassed,
   readThrough,
+  scheduleInstant,
   scheduleWhen,
   turnCommands,
   turnCommandsSummary,
@@ -276,6 +279,12 @@ function TurnProgress({ task }: { task: AgentTask }) {
   );
 }
 
+const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, string> = {
+  restore: "Paused by a restore",
+  access_lost: "Paused while you had no access to the project",
+  unschedulable: "Paused because its time can no longer be worked out",
+};
+
 function SchedulesPopover({
   thread,
   schedules,
@@ -319,46 +328,70 @@ function SchedulesPopover({
       {open && (
         <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
           <h3>Upcoming</h3>
-          {upcoming.map((schedule) => (
-            <div
-              className="upcoming-row"
-              data-state={schedule.state}
-              key={schedule.schedule_id}
-              title={
-                schedule.disabled_reason === "restore"
-                  ? "Paused by a restore"
-                  : schedule.disabled_reason === "access_lost"
-                    ? "Paused while you had no access to the project"
-                    : undefined
-              }
-            >
-              <strong>{schedule.note}</strong>
-              <time>{scheduleWhen(schedule)}</time>
-              {schedule.state === "active" ? (
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label={`Cancel ${schedule.note}`}
-                  title="Cancel"
-                  onClick={() =>
-                    void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id))
-                  }
-                >
-                  <X size={14} />
-                </button>
-              ) : (
-                <button
-                  className="button compact"
-                  type="button"
-                  onClick={() =>
-                    void act(() => enableThreadSchedule(thread.thread_id, schedule.schedule_id))
-                  }
-                >
-                  Enable
-                </button>
-              )}
-            </div>
-          ))}
+          {upcoming.map((schedule) => {
+            const cancel = () =>
+              void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
+            const next = schedule.state === "active" && schedule.cron && schedule.next_fire_at;
+            return (
+              <div
+                className="upcoming-row"
+                data-state={schedule.state}
+                key={schedule.schedule_id}
+                title={
+                  schedule.disabled_reason ? PAUSED_BECAUSE[schedule.disabled_reason] : undefined
+                }
+              >
+                <strong title={schedule.note}>{schedule.note}</strong>
+                <span className="upcoming-when">
+                  <time>{scheduleWhen(schedule)}</time>
+                  <span className="upcoming-zone">{schedule.timezone}</span>
+                  {next && (
+                    <time className="upcoming-next" dateTime={next} title="Next run">
+                      → {scheduleInstant(next)}
+                    </time>
+                  )}
+                </span>
+                {schedule.pending_since && (
+                  <span
+                    className="upcoming-pending"
+                    data-deferred={schedule.deferred_reason ? "" : undefined}
+                    title={
+                      schedule.deferred_reason ? undefined : "Starts when the current turn ends"
+                    }
+                  >
+                    <Hourglass size={11} aria-hidden="true" />
+                    <time dateTime={schedule.pending_since}>
+                      {scheduleInstant(schedule.pending_since)}
+                    </time>
+                    {/* A wake that cannot start says why in the row; it retries each minute. */}
+                    {schedule.deferred_reason && <span>{schedule.deferred_reason}</span>}
+                  </span>
+                )}
+                <span className="upcoming-actions">
+                  {schedule.state === "disabled" && !oneShotPassed(schedule) && (
+                    <button
+                      className="button compact"
+                      type="button"
+                      onClick={() =>
+                        void act(() => enableThreadSchedule(thread.thread_id, schedule.schedule_id))
+                      }
+                    >
+                      Enable
+                    </button>
+                  )}
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Cancel ${schedule.note}`}
+                    title="Cancel"
+                    onClick={cancel}
+                  >
+                    <X size={14} />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
           {error && (
             <p className="upcoming-error" role="alert">
               {error}

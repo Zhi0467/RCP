@@ -405,7 +405,7 @@ the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list. The team's board conversations stay in that list. The thread
-header holds a schedules list with Cancel and re-enable, the context ring, and a
+header holds a scrolling schedules list, the context ring, and a
 ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
@@ -416,7 +416,12 @@ thread the backend machine's first signed-in provider. When the browser was
 unavailable on the latest turn, the browser item carries a warning icon and the
 fix on hover; turns carry no browser notice. The composer holds the voice
 button. A failed turn shows its error once, in the message column, with Retry.
-Switching threads shows each thread's last loaded view while it reloads. A
+Switching threads shows each thread's last loaded view while it reloads. Each
+schedule row shows its note (in full on hover), its time and zone, the next run
+of a recurring one, and since when a due wake waits. The reason a waiting wake
+cannot start shows in the row; a paused row says why on hover. Every row has
+Cancel; a paused one also has Enable unless it is a one-shot whose time passed,
+and a refused Enable shows the backend's reason. A
 wake shows its trigger: Handoff, Schedule, or Watcher. A handoff result is one
 row naming the agent that ran it and how it ended, with its answer below.
 Board chats and threads

@@ -9,6 +9,7 @@ import {
   chosenThread,
   handoffReport,
   latestTurnId,
+  oneShotPassed,
   parseAgentHash,
   agentThreadHash,
   railThreads,
@@ -128,9 +129,21 @@ test("Upcoming keeps schedules that can still run and reads common cron times", 
       schedule({ schedule_id: "b", state: "cancelled" }),
       schedule({ schedule_id: "c", state: "disabled" }),
       schedule({ schedule_id: "d", state: "done" }),
+      schedule({ schedule_id: "e", state: "done", pending_since: "2026-11-01T08:00:00Z" }),
     ]).map((item) => item.schedule_id),
-    ["a", "c"],
+    ["a", "c", "e"],
   );
+  // A one-shot's time is read in its own zone: 09:00 UTC is 18:00 in Tokyo.
+  const at = new Date(Date.UTC(2026, 10, 1, 9, 0));
+  assert.equal(
+    oneShotPassed(schedule({ at_local: "2026-11-01T17:59", timezone: "Asia/Tokyo" }), at),
+    true,
+  );
+  assert.equal(
+    oneShotPassed(schedule({ at_local: "2026-11-01T18:30", timezone: "Asia/Tokyo" }), at),
+    false,
+  );
+  assert.equal(oneShotPassed(schedule({ cron: "0 9 * * *" }), at), false);
   const now = new Date(2026, 10, 1, 8, 0);
   assert.equal(scheduleWhen(schedule({ at_local: "2026-11-01T18:00" }), now), "Today 18:00");
   assert.equal(scheduleWhen(schedule({ at_local: "2026-11-03T09:30" }), now), "2026-11-03 09:30");

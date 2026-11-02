@@ -173,11 +173,50 @@ export function scheduleWhen(schedule: AgentSchedule, now = new Date()): string 
   return schedule.cron ?? "";
 }
 
-/** Active schedules and those the member can switch back on; the rest are history. */
+/** Active schedules, those the member can switch back on, and a done one-shot whose
+ *  wake still waits; the rest are history. */
 export function upcomingSchedules(schedules: readonly AgentSchedule[]): AgentSchedule[] {
   return schedules.filter(
-    (schedule) => schedule.state === "active" || schedule.state === "disabled",
+    (schedule) =>
+      schedule.state === "active" ||
+      schedule.state === "disabled" ||
+      (schedule.state === "done" && Boolean(schedule.pending_since)),
   );
+}
+
+/** Whether a one-shot's local time has passed in its own zone, so it cannot resume. */
+export function oneShotPassed(schedule: AgentSchedule, now = new Date()): boolean {
+  if (!schedule.at_local) return false;
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: schedule.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+  } catch {
+    return false;
+  }
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? "";
+  const wall = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
+  return schedule.at_local <= wall;
+}
+
+/** An instant as the reader's short weekday and time, such as `Mon 09:00`. */
+export function scheduleInstant(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime())
+    ? ""
+    : at.toLocaleString([], {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      });
 }
 
 /** The newest message time, which Mark read sends as `read_through`. */
