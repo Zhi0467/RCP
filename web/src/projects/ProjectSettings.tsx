@@ -743,6 +743,7 @@ export function ProjectSettings({
     },
     {
       id: "agent-defaults",
+      drafts: true,
       label: "Agent defaults",
       icon: <Bot size={16} />,
       content: (
@@ -827,6 +828,7 @@ export function ProjectSettings({
     },
     {
       id: "skills",
+      drafts: true,
       label: "Skills & workflows",
       icon: <Sparkles size={16} />,
       content: (
@@ -884,28 +886,35 @@ export function ProjectSettings({
   return (
     <section className="settings-page" data-settings-level="project">
       <SettingsRail key={project.id} sections={sections} initialSection={initialSection}>
-        <footer className="settings-savebar">
-          <div
-            className={
-              barStatus ? `settings-save-status ${barStatus.kind}` : "settings-save-status"
-            }
-          >
-            {barStatus?.kind === "error" && <TriangleAlert size={16} />}
-            {barStatus?.kind === "saved" && <Check size={16} />}
-            <span>{barStatus?.text}</span>
-          </div>
-          <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
-            <RotateCcw size={14} /> Reset
-          </button>
-          <button
-            className="button primary"
-            disabled={writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid}
-            onClick={() => void save()}
-          >
-            {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
-            {saving ? "Saving" : "Save"}
-          </button>
-        </footer>
+        {/* The bar shows where drafts are edited, or when it has unsaved edits or a result to show. */}
+        {(section) =>
+          (section.drafts || dirty || barStatus) && (
+            <footer className="settings-savebar">
+              <div
+                className={
+                  barStatus ? `settings-save-status ${barStatus.kind}` : "settings-save-status"
+                }
+              >
+                {barStatus?.kind === "error" && <TriangleAlert size={16} />}
+                {barStatus?.kind === "saved" && <Check size={16} />}
+                <span>{barStatus?.text}</span>
+              </div>
+              <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
+                <RotateCcw size={14} /> Reset
+              </button>
+              <button
+                className="button primary"
+                disabled={
+                  writesDisabled || !dirty || saving || !autoResearchInvocationCeilingIsValid
+                }
+                onClick={() => void save()}
+              >
+                {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
+                {saving ? "Saving" : "Save"}
+              </button>
+            </footer>
+          )
+        }
       </SettingsRail>
       {inspectedPackage && (
         <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />

@@ -1653,8 +1653,10 @@ in memory and has no link, so leaving Settings or reloading opens the first
 section next time. Every pane stays mounted, so drafts, open dialogs, and
 loaded data survive a switch without a refetch. Choosing a section scrolls to
 the top. At phone width the rail becomes a strip at the top of the page that
-scrolls within its own width. Project Settings shows its save bar under every
-pane. While the auto-research ceiling is invalid, the bar says so on every pane,
+scrolls within its own width. Project Settings shows its save bar under the
+panes whose fields wait for Save, Agent defaults and Skills. Other panes act at
+once, so they show the bar only while there are unsaved edits or a result to
+report. While the auto-research ceiling is invalid, the bar says so on every pane,
 since only Agent defaults shows the field. Switching projects starts Project
 Settings on the new project's first section. A personal space lists This Mac
 while its power status loads, so an entry point that asks for it never shows
