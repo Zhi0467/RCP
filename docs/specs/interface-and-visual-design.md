@@ -404,8 +404,15 @@ the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list. The team's board conversations stay in that list. The thread
-header holds a schedules list with Cancel and re-enable; the composer holds the
-voice button. Board chats and threads
+header holds a schedules list with Cancel and re-enable, and a ⋯ menu with
+Rename, the browser switch, and the agent pick. Space and project threads share
+that pick: one `provider · model · effort` row that opens the shared fields in
+the menu. It shows exactly what the next turn sends, defaulting to the thread's
+last turn, then the project's Settings profile, or for the Space thread the
+backend machine's first signed-in provider. The composer holds the voice
+button. A failed turn shows its error once, in the message column, with Retry.
+Switching threads shows each thread's last loaded view while it reloads.
+Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and

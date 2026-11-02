@@ -8,6 +8,7 @@ import {
   approvalCardExpired,
   chosenThread,
   latestTurnId,
+  nextTurnConfig,
   parseAgentHash,
   agentThreadHash,
   railThreads,
@@ -53,6 +54,17 @@ test("the rail leads with the Space thread and leaves closed threads out", () =>
   assert.equal(chosenThread(rows, null).thread_id, "space");
   assert.equal(chosenThread(rows, "b").thread_id, "b");
   assert.equal(chosenThread(rows, "missing").thread_id, "space");
+});
+
+test("the next turn's agent is the newest turn's, else the default", () => {
+  const fallback = { provider: "claude", model: "opus", reasoning: "high", run_on: "local" };
+  const said = (provider, model, reasoning) => ({ provider, model, reasoning });
+  assert.deepEqual(nextTurnConfig(null, fallback), fallback);
+  assert.deepEqual(nextTurnConfig([said(null, null, null)], fallback), fallback);
+  assert.deepEqual(
+    nextTurnConfig([said("claude", "opus", "high"), said("codex", "gpt-6.1-sol", null)], fallback),
+    { provider: "codex", model: "gpt-6.1-sol", reasoning: "", run_on: "local" },
+  );
 });
 
 test("a working thread reads live; an idle one reads how long ago it moved", () => {

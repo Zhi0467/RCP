@@ -160,6 +160,50 @@
 .thread-back {
   margin-left: -8px;
 }
+/* The agent pick is the menu's last row; it opens the shared fields beneath it. */
+.thread-menu-list {
+  width: min(300px, calc(100vw - 24px));
+}
+.thread-agent-picker {
+  border-top: 1px solid var(--line);
+  display: grid;
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.thread-agent-picker .agent-config-chip {
+  font-weight: inherit;
+  min-width: 0;
+  width: 100%;
+}
+.thread-agent-picker .agent-config-chip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-agent-picker .agent-config-chip > svg {
+  color: var(--muted);
+  flex: none;
+  transition: transform 0.16s ease;
+}
+.thread-agent-picker .agent-config-chip[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+.thread-agent-picker .agent-config.compact {
+  animation: agent-pop-in 0.14s ease-out;
+  background: transparent;
+  border: 0;
+  padding: 2px 10px 6px;
+}
+/* Each select names its own value; the field captions stay for screen readers. */
+.thread-agent-picker .agent-config-fields label > span {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
 .upcoming-button {
   align-items: center;
   background: transparent;
@@ -235,6 +279,11 @@
 .upcoming-row .icon-button {
   height: 28px;
   width: 28px;
+}
+/* A pause, or a stop with no error row, sits in the message column. */
+.agent-thread .node-chat-lines > .chat-task-inline.paused {
+  margin: 0 auto 24px;
+  max-width: 820px;
 }
 .upcoming-error {
   color: var(--coral);
@@ -538,7 +587,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .upcoming-popover,
-  .approval-card {
+  .approval-card,
+  .thread-agent-picker .agent-config.compact {
     animation: none;
   }
 }
@@ -619,6 +669,16 @@
   }
   .approval-see {
     flex-basis: 100%;
+    min-height: 44px;
+  }
+  .upcoming-button {
+    height: 44px;
+    min-width: 44px;
+    justify-content: center;
+  }
+  .thread-agent-picker .agent-config-chip,
+  .thread-agent-picker .agent-config-fields select {
+    min-height: 44px;
   }
   .approval-actions .button {
     flex: 1 1 0;
