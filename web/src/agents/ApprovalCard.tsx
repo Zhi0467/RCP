@@ -12,7 +12,7 @@ import { useState } from "react";
 import { ApiError } from "../core/api";
 import { errorMessage } from "../core/errors";
 import type { AgentQuestion, ApprovalCard, ApprovalCardKind } from "../core/types";
-import { approvalCardDetails, approvalCardExpired, approvalCardTitle } from "./agentThreadModel";
+import { approvalCardDetails, approvalCardTitle } from "./agentThreadModel";
 import { resolveApprovalCard } from "./agentThreadsApi";
 
 const ICONS: Record<ApprovalCardKind, LucideIcon> = {
@@ -43,7 +43,8 @@ export function ApprovalCardView({
   const [error, setError] = useState<string | null>(null);
   const Icon = ICONS[card.kind];
   const answered = question.state === "answered" || question.state === "dismissed";
-  const expired = !answered && approvalCardExpired(card, Date.now());
+  // The server settles expiry; a device clock never decides it.
+  const expired = !answered && card.state === "expired";
   const pending = !answered && !expired;
   const running = card.state === "running" || busy !== null;
   const state = answered ? (question.answer ?? "answered") : expired ? "expired" : "pending";

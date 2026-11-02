@@ -77,3 +77,7 @@ ApprovalAction = Annotated[
     ProposalAction | TruthScopeAction | AutoResearchAction | MergeBranchAction | MergeEpisodeAction,
     Field(discriminator="kind"),
 ]
+
+
+#: A settled card's outcome; the agent-facing meaning lives with the usage text.
+ApprovalOutcome = Literal["approved", "declined", "stale", "expired", "failed"]

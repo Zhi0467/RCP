@@ -300,30 +300,46 @@ and episode merge. Plain question answers never authorize these actions.
 The question and its slim `approval_cards` row are committed together. The row
 pins the action and live facts under one SHA-256: pending non-stale Proposal
 content, repository identity and current membership, the resolved Auto-research
-profile and readiness, or merge source/main heads and preview. Reusing an ask key
+profile, or the merge source head and preview. The preview already pins main's
+value of every field the source changed, and the merge plans against live main,
+so an unrelated main commit leaves a merge card current. Ask refuses an
+Auto-research card whose provider is not ready, and an action whose target does
+not exist (`branch_not_found`, `approval_target_not_found`). Reusing an ask key
 requires the same action and question; it does not refresh the presented pins.
+The agent's usage renders each action kind and its fields from the action models,
+and the meaning of each outcome. The question snapshot shows each card's action
+and its result.
 
 Only the thread's member can resolve a card. The tap checks membership, claims
 once, compares the presented hash and live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
-A stale card executes nothing, and the tap still uses the card up. A card
+A tap settles `stale` only when the live pins no longer match or their target
+is gone; it executes nothing and uses the card up. A closed admission, an
+unavailable writer or base, or a handler `503` releases the claim and returns
+`409` or `503`, so the member can tap again. A refusal settles `failed` with the
+handler's own reason, including Patch rejection and halted replay. An approved
+result names the `episode_id` or `operation_id` the action created. A card
 expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes; a tap on it
 returns `expired`. Ordinary answer and dismiss endpoints reject card questions
 with `409 approval_card`; a second tap returns `409 card_taken`.
 
 Card creation stores a random UUID4 request id; every result retains it.
 Episode start, branch merge and episode merge pass it to their native request-id
-admission. Episode merge compares the pinned source and main heads again under
-its admission lock, before reconciliation or merge writes.
+admission. Episode merge compares the pinned source head again under its admission lock,
+before reconciliation or merge writes.
 Sync and repository membership have no request-id argument; the durable card
 claim supplies their single-use execution identity. At startup a claimed card
-without a result is never rerun. It settles as approved when its request id's
-episode-start, branch-merge task or accepted episode-merge receipt exists, and
-otherwise fails as interrupted.
+without a result is never rerun. It settles as approved when its effect exists:
+the request id's episode-start, branch-merge task or accepted episode-merge
+receipt, the Proposal's decided status, or the repository's requested truth
+membership. Otherwise it fails as interrupted. When the graph cannot be read,
+the claim is released and a later tap rechecks the pins.
 
-Cards expire after `APPROVAL_CARD_TTL_HOURS`, checked on tap and list. Listing
-also expires cards of closed threads, and restore expires every pending card. Expiry answers the question with `expired`. Other results
+Cards expire after `APPROVAL_CARD_TTL_HOURS`. Tap, list and a startup sweep
+settle due cards and cards of closed threads, and restore expires every pending
+card. A list reads cards without a write lock unless one is due. The Web shows
+the server's card state, never the device clock. Expiry answers the question with `expired`. Other results
 answer it with approved, declined, stale or a failure reason, reusing ordinary question delivery
 to steer or wake the thread. Both plain questions and cards in private threads
 have owner-only list, answer, dismiss and Needs-you notification delivery.

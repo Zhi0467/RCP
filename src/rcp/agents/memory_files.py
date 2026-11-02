@@ -89,15 +89,19 @@ def prepare_project_memory(
     """
     safe_component(project_id)
     with _MEMORY_LOCKS(f"{store.path.resolve()}:{project_id}"):
+        project = store.project(project_id)
+        location = project.state_location if project else None
+        # Only a deletion still owed on this same base could remove the new notes;
+        # one left on an old or unreachable base never blocks a launch.
         with store.connection() as connection:
             pending = connection.execute(
-                "SELECT 1 FROM memory_deletions WHERE project_id = ? OR project_id IN "
-                "(SELECT alias_id FROM project_aliases WHERE canonical_project_id = ?)",
-                (project_id, project_id),
+                "SELECT 1 FROM memory_deletions WHERE (? IS NULL OR state_location = ?) "
+                "AND (project_id = ? OR project_id IN (SELECT alias_id FROM project_aliases "
+                "WHERE canonical_project_id = ?))",
+                (location, location, project_id, project_id),
             ).fetchone()
         if pending:
             raise ValueError("Project memory deletion remains pending; retry cleanup before launch")
-        project = store.project(project_id)
         if project is not None:
             finish_project_memory_rename(store, project)
         with store.connection() as connection:

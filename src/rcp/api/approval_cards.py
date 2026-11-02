@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-from contextlib import nullcontext
+from collections.abc import Callable
+from contextlib import ExitStack
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from rcp.api.dependencies import (
@@ -23,11 +23,16 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.approval_actions import ApprovalAction, MergeEpisodeBody
+from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
+from rcp.history import PatchRejected, ReplayHalted
 from rcp.projects import ProjectCatalog
-from rcp.runs.approval_cards import approval_pins
+from rcp.runs.approval_cards import approval_pins, approved_receipt
+from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
+from rcp.storage.question_models import QuestionRecord
+from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -47,6 +52,7 @@ def _execute(
     catalog: ProjectCatalog,
     identity_access: IdentityAccess,
     pinned: dict[str, Any],
+    service: ProjectService,
 ):
     from rcp.api.episode_routes import (
         MergeBranchBody,
@@ -61,7 +67,6 @@ def _execute(
 
     project_id = action.project_id
     if action.kind == "proposal":
-        service = get_project_writer(catalog, project_id)
         return sync_graph(
             project_id,
             GraphSyncRequest.model_validate(
@@ -124,21 +129,108 @@ def _execute(
         identity_access=identity_access,
         background_tasks=request.app.state.background_tasks,
         expected_source_head=GraphHeadRef.model_validate(pinned["source_head"]),
-        expected_main_head=GraphHeadRef.model_validate(pinned["main_head"]),
+        # Main is not pinned; the handler's head check needs only the source.
+        expected_main_head=service.history.head_ref(),
     )
 
 
-@router.post("/api/approval-cards/{question_id}")
-def resolve_approval_card(
-    question_id: str,
+class _NotNow(Exception):
+    def __init__(self, status_code: int, detail: Any) -> None:
+        super().__init__(detail)
+        self.status_code, self.detail = status_code, detail
+
+
+def _reason(detail: Any) -> str:
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("code") or "action failed")
+    return str(detail)
+
+
+def _resolve(
+    card: dict[str, Any],
     body: ResolveApprovalBody,
     request: Request,
-    *,
-    store: Annotated[AppStore, Depends(get_store)],
-    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
-    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
-):
-    human = identity_access.require_patch_capable_identity(request)
+    store: AppStore,
+    catalog: ProjectCatalog,
+    identity_access: IdentityAccess,
+    human: AuthorizedHuman,
+) -> dict[str, Any]:
+    """Stale only when live pins differ; outages raise `_NotNow` before any write."""
+    if body.pinned_sha256 != card["pinned_sha256"]:
+        return {"outcome": "stale"}
+    if body.decision == "decline":
+        return {"outcome": "declined"}
+    action = TypeAdapter(ApprovalAction).validate_python(card["action"])
+    with ExitStack() as admission:
+        service = _admit(admission, action, request, store, catalog)
+        try:
+            pinned = approval_pins(service, store, action, human)
+        except (KeyError, ValueError):
+            # The pinned target no longer exists or no longer applies.
+            return {"outcome": "stale"}
+        except (StateUnavailable, OSError) as exc:
+            raise _NotNow(503, str(exc)) from exc
+        if card_sha256(card["action"], pinned) != card["pinned_sha256"]:
+            return {"outcome": "stale"}
+        return _run(
+            lambda: _execute(
+                action,
+                card["request_id"],
+                request,
+                store,
+                catalog,
+                identity_access,
+                pinned,
+                service,
+            ),
+            card["request_id"],
+        )
+
+
+def _admit(
+    admission: ExitStack,
+    action: ApprovalAction,
+    request: Request,
+    store: AppStore,
+    catalog: ProjectCatalog,
+) -> ProjectService:
+    """Open the project's write admission and writer, or raise `_NotNow`."""
+    try:
+        store.require_project_accepts_new_work(action.project_id)
+        # Direct calls skip FastAPI dependencies. Proposal and episode merge
+        # handlers acquire this non-reentrant fence themselves.
+        if action.kind not in {"proposal", "merge_episode"}:
+            admission.enter_context(project_write_admission(action.project_id, request))
+        return get_project_writer(catalog, action.project_id)
+    except ValueError as exc:
+        raise _NotNow(409, str(exc)) from exc
+    except HTTPException as exc:
+        raise _NotNow(exc.status_code, exc.detail) from exc
+
+
+def _run(execute: Callable[[], object], request_id: str) -> dict[str, Any]:
+    """Map the human handler's outcome; an outage leaves the card for another tap."""
+    try:
+        response = execute()
+    except HTTPException as exc:
+        if exc.detail == {"code": "merge_heads_changed"}:
+            return {"outcome": "stale"}
+        if exc.status_code == 503:
+            raise _NotNow(503, exc.detail) from exc
+        return {"outcome": "failed", "reason": _reason(exc.detail)}
+    except StateUnavailable as exc:
+        raise _NotNow(503, str(exc)) from exc
+    except (PatchRejected, ReplayHalted) as exc:
+        return {"outcome": "failed", "reason": str(exc)}
+    except Exception:
+        logger.exception("Approval request %s failed", request_id)
+        return {"outcome": "failed", "reason": "action failed"}
+    return {"outcome": "approved", "result": approved_receipt(response)}
+
+
+def _owned_card(
+    store: AppStore, question_id: str, request: Request, human: AuthorizedHuman
+) -> tuple[QuestionRecord, dict[str, Any]]:
     question = store.get_question(question_id)
     if (
         question is None
@@ -152,57 +244,32 @@ def resolve_approval_card(
     card = store.approval_card(question_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Approval card not found")
+    return question, card
+
+
+@router.post("/api/approval-cards/{question_id}")
+def resolve_approval_card(
+    question_id: str,
+    body: ResolveApprovalBody,
+    request: Request,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
+):
+    human = identity_access.require_patch_capable_identity(request)
+    question, card = _owned_card(store, question_id, request, human)
     if not store.claim_approval_card(question_id):
         store.approval_card(question_id)  # Expiry may have passed since the first read.
         if store.take_expired_approval_card(question_id):
             return {"outcome": "expired"}
         raise HTTPException(status_code=409, detail={"code": "card_taken"})
     try:
-        if body.pinned_sha256 != card["pinned_sha256"]:
-            result = {"outcome": "stale"}
-        elif body.decision == "decline":
-            result = {"outcome": "declined"}
-        else:
-            action = TypeAdapter(ApprovalAction).validate_python(card["action"])
-            # Direct calls skip FastAPI dependencies. Proposal and episode merge
-            # handlers acquire this non-reentrant fence themselves.
-            with (
-                project_write_admission(action.project_id, request)
-                if action.kind not in {"proposal", "merge_episode"}
-                else nullcontext()
-            ):
-                try:
-                    pinned = approval_pins(
-                        get_project_writer(catalog, action.project_id), store, action, human
-                    )
-                except (KeyError, ValueError):
-                    pinned = None
-                if pinned is None or card_sha256(card["action"], pinned) != card["pinned_sha256"]:
-                    result = {"outcome": "stale"}
-                else:
-                    result = {
-                        "outcome": "approved",
-                        "result": jsonable_encoder(
-                            _execute(
-                                action,
-                                card["request_id"],
-                                request,
-                                store,
-                                catalog,
-                                identity_access,
-                                pinned,
-                            )
-                        ),
-                    }
-    except HTTPException as exc:
-        result = (
-            {"outcome": "stale"}
-            if exc.detail == {"code": "merge_heads_changed"}
-            else {"outcome": "failed", "reason": str(exc.detail)}
-        )
-    except Exception:
-        logger.exception("Approval card %s failed", question_id)
-        result = {"outcome": "failed", "reason": "action failed"}
+        result = _resolve(card, body, request, store, catalog, identity_access, human)
+    except _NotNow as exc:
+        # An outage or closed admission is not the member's answer; keep the card open.
+        store.release_approval_card(question_id)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     store.settle_approval_card(question_id, result, resolved_by=human)
     try:
         request.app.state.reconcile_question_answers(question.origin.project_id)

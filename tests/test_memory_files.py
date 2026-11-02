@@ -368,6 +368,34 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
         assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 0
 
 
+def test_a_deletion_owed_on_another_base_does_not_block_launch(tmp_path):
+    from rcp.storage.models import ProjectRecord
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project = ProjectRecord(
+        project_id="project",
+        locator="/project/manifest.toml",
+        name="Project",
+        state_location=str(tmp_path / "new" / ".research"),
+        state_remote=False,
+        added_at=store.now(),
+    )
+    store.upsert_project(project)
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO memory_deletions VALUES (?,?,?,?)",
+            ("project", "gone:/old/.research", project.model_dump_json(), None),
+        )
+    shared, _size = prepare_project_memory(store, "project")
+    assert Path(shared).is_dir()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE memory_deletions SET state_location=?", (project.state_location,)
+        )
+    with pytest.raises(ValueError, match="deletion remains pending"):
+        prepare_project_memory(store, "project")
+
+
 @pytest.mark.parametrize("lost_response", [False, True])
 def test_rename_retries_on_next_launch_after_remote_failure(tmp_path, monkeypatch, lost_response):
     from uuid import uuid4
