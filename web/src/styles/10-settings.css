@@ -2614,6 +2614,31 @@ button.agent-provider-label {
   .agent-role-fields {
     grid-template-columns: repeat(2, 1fr);
   }
+  /* Too narrow for one row: the name, tag, and check share the first line and
+     the choices take the full width below. */
+  .settings-agent {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 10px;
+  }
+  .settings-agent > header {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .settings-agent .agent-readiness {
+    align-self: center;
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .settings-agent .agent-config-fields {
+    grid-column: 1 / -1;
+  }
+  .settings-agent .agent-readiness:not(.ready, .pending) {
+    grid-row: auto;
+  }
   .settings-page {
     padding: 35px 20px 70px;
   }
@@ -2642,26 +2667,6 @@ button.agent-provider-label {
 }
 
 @media (max-width: 560px) {
-  /* The name and its check share the first line; the choices stack below. */
-  .settings-agent {
-    grid-template-columns: minmax(0, 1fr) auto;
-    row-gap: 9px;
-  }
-  .settings-agent > header {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .settings-agent .agent-readiness {
-    align-self: center;
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .settings-agent .agent-config-fields {
-    grid-column: 1 / -1;
-  }
-  .settings-agent .agent-readiness:not(.ready, .pending) {
-    grid-row: auto;
-  }
   .project-header {
     flex-wrap: wrap;
     gap: 6px 0;
