@@ -106,7 +106,8 @@ def api_card(questions_api, action=None):
     app, client, store, project_id = questions_api
     with store.connection() as connection:
         connection.execute(
-            "INSERT OR IGNORE INTO agent_threads VALUES (?,?,?,?,?,NULL,NULL)",
+            "INSERT OR IGNORE INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES (?,?,?,?,?)",
             ("private", store.local_owner.user_id, "project", project_id, store.now()),
         )
     action = action or {
@@ -272,7 +273,8 @@ def test_private_question_push_has_only_owner_recipient(tmp_path):
         )["device_id"]
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO agent_threads VALUES ('private',?,'project','project',?,NULL,NULL)",
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES ('private',?,'project','project',?)",
             (owner.user_id, store.now()),
         )
     question = api_fixtures._question(store, "project", owner_id="private")
@@ -374,7 +376,8 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
     assert store.list_questions() == []
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO agent_threads VALUES ('chat',?,'project','project',?,NULL,NULL)",
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES ('chat',?,'project','project',?)",
             (human.user_id, store.now()),
         )
     response = handler(request, identity())

@@ -1007,7 +1007,6 @@ def create_app(
                     request,
                     app_data,
                     execution,
-                    deliver_handoffs=reconcile_thread_handoffs,
                     project_git_access=lambda admitted_id, service: provider_git_access(
                         service.manifest,
                         project_id=admitted_id,
@@ -1270,9 +1269,13 @@ def create_app(
     def reconcile_thread_handoffs() -> None:
         from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
 
-        dispatch_thread_handoffs(
-            store, catalog, background_tasks, project_admission=thread_project_admission
-        )
+        # Its own guard: startup and settlement owners after it must still run.
+        try:
+            dispatch_thread_handoffs(
+                store, catalog, background_tasks, project_admission=thread_project_admission
+            )
+        except Exception:
+            logger.exception("Could not reconcile agent thread handoffs")
 
     machine_power = (
         MachinePowerController(
@@ -1608,21 +1611,31 @@ def create_app(
 
     from rcp.runs.provider_login import provider_login_changed
 
-    provider_sign_ins.resume_account = lambda login: provider_login_changed(
-        background_tasks,
-        key=login,
-        reconcile_episodes=reconcile_episodes,
-        watcher_delivery=watcher_delivery,
-    )
+    def resume_account(login: LoginKey) -> dict[str, int]:
+        released = provider_login_changed(
+            background_tasks,
+            key=login,
+            reconcile_episodes=reconcile_episodes,
+            watcher_delivery=watcher_delivery,
+        )
+        # Handoffs deferred on a signed-out account deliver on its release.
+        reconcile_thread_handoffs()
+        return released
 
-    provider_sign_ins.resume_setting = lambda member_id, provider, host: provider_login_changed(
-        background_tasks,
-        member_id=member_id,
-        provider=provider,
-        host=host,
-        reconcile_episodes=reconcile_episodes,
-        watcher_delivery=watcher_delivery,
-    )
+    def resume_setting(member_id: str, provider: str, host: str) -> dict[str, int]:
+        released = provider_login_changed(
+            background_tasks,
+            member_id=member_id,
+            provider=provider,
+            host=host,
+            reconcile_episodes=reconcile_episodes,
+            watcher_delivery=watcher_delivery,
+        )
+        reconcile_thread_handoffs()
+        return released
+
+    provider_sign_ins.resume_account = resume_account
+    provider_sign_ins.resume_setting = resume_setting
 
     live_artifact_pass_lock = threading.Lock()
     live_artifact_shutdown = threading.Event()

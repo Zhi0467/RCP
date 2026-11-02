@@ -44,6 +44,22 @@ class AgentThreadRecord(BaseModel):
     created_at: str
     closed_at: str | None = None
     closed_reason: str | None = None
+    agent_provider: str | None = None
+    agent_model: str | None = None
+    agent_reasoning: str | None = None
+    agent_run_on: str | None = None
+
+    @property
+    def agent(self) -> dict[str, str | None] | None:
+        """The member's stored agent pick; None until one is made."""
+        if self.agent_provider is None:
+            return None
+        return {
+            "provider": self.agent_provider,
+            "model": self.agent_model,
+            "reasoning": self.agent_reasoning,
+            "run_on": self.agent_run_on,
+        }
 
 
 class AgentHandoffRecord(BaseModel):
@@ -57,6 +73,18 @@ class AgentHandoffRecord(BaseModel):
     target_operation_id: str | None = None
     settled_at: str | None = None
     notified_operation_id: str | None = None
+    #: Why a handoff settled without delivery; None for a delivered turn.
+    refusal_reason: str | None = None
+
+
+def _unused_name(names: tuple[str, ...], used: set[str]) -> str:
+    """The first unused seeded name, then numbered suffixes."""
+    suffix = 1
+    while True:
+        candidates = [name if suffix == 1 else f"{name} {suffix}" for name in names]
+        if name := next((candidate for candidate in candidates if candidate not in used), None):
+            return normalize_chat_name(name)
+        suffix += 1
 
 
 def migrate_agent_threads(connection: sqlite3.Connection) -> None:
@@ -64,6 +92,7 @@ def migrate_agent_threads(connection: sqlite3.Connection) -> None:
         thread_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
         kind TEXT NOT NULL CHECK(kind IN ('space', 'project')),
         project_id TEXT, created_at TEXT NOT NULL, closed_at TEXT, closed_reason TEXT,
+        agent_provider TEXT, agent_model TEXT, agent_reasoning TEXT, agent_run_on TEXT,
         CHECK((kind='space' AND project_id IS NULL) OR
               (kind='project' AND project_id IS NOT NULL)))""")
     connection.execute(
@@ -82,7 +111,7 @@ def migrate_agent_handoffs(connection: sqlite3.Connection) -> None:
         source_operation_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
         target_thread_id TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL,
         target_operation_id TEXT, settled_at TEXT, notified_operation_id TEXT,
-        UNIQUE(source_operation_id, idempotency_key))""")
+        refusal_reason TEXT, UNIQUE(source_operation_id, idempotency_key))""")
     connection.execute("""CREATE INDEX agent_handoffs_pending ON agent_handoffs(target_thread_id, created_at)
         WHERE target_operation_id IS NULL""")
 
@@ -180,16 +209,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
                         (project_id or space_id, row[0]),
                     )
                     continue
-                suffix = 1
-                while True:
-                    candidates = [name if suffix == 1 else f"{name} {suffix}" for name in names]
-                    name = next(
-                        (candidate for candidate in candidates if candidate not in used), None
-                    )
-                    if name is not None:
-                        name = normalize_chat_name(name)
-                        break
-                    suffix += 1
+                name = _unused_name(names, used)
                 used.add(name)
                 thread_id = str(uuid.uuid4())
                 connection.execute(
@@ -212,6 +232,23 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     (scope_id, thread_id),
                 )
         return self.agent_threads(user_id)
+
+    def set_agent_thread_pick(
+        self,
+        thread_id: str,
+        *,
+        provider: str,
+        model: str | None,
+        reasoning: str | None,
+        run_on: str | None,
+    ) -> None:
+        """Every later turn on the thread runs this pick: sends, Retry, wakes and handoffs."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_threads SET agent_provider=?, agent_model=?, agent_reasoning=?, "
+                "agent_run_on=? WHERE thread_id=?",
+                (provider, model, reasoning, run_on, thread_id),
+            )
 
     def close_agent_thread(self, thread_id: str, *, reason: str) -> None:
         with self.connection() as connection:
@@ -294,23 +331,21 @@ class AgentThreadStoreMixin(StoreMixinBase):
             ).fetchall()
         return [AgentHandoffRecord.model_validate(dict(row)) for row in rows]
 
-    def refuse_agent_handoff(self, handoff_id: str) -> None:
+    def refuse_agent_handoff(self, handoff_id: str, reason: str) -> None:
         """A settled handoff without a target turn is a final delivery refusal."""
         with self.connection() as connection:
             connection.execute(
-                "UPDATE agent_handoffs SET settled_at=COALESCE(settled_at,?) "
-                "WHERE handoff_id=? AND target_operation_id IS NULL",
-                (self.now(), handoff_id),
+                "UPDATE agent_handoffs SET settled_at=?, refusal_reason=? "
+                "WHERE handoff_id=? AND target_operation_id IS NULL AND settled_at IS NULL",
+                (self.now(), reason, handoff_id),
             )
 
-    def mark_agent_handoff_delivered(self, handoff_id: str, operation_id: str) -> None:
+    def agent_handoff(self, handoff_id: str) -> AgentHandoffRecord | None:
         with self.connection() as connection:
-            updated = connection.execute(
-                "UPDATE agent_handoffs SET target_operation_id=? WHERE handoff_id=? AND ((target_operation_id IS NULL AND settled_at IS NULL) OR target_operation_id=?)",
-                (operation_id, handoff_id, operation_id),
-            )
-            if updated.rowcount != 1:
-                raise ValueError("handoff already delivered or missing")
+            row = connection.execute(
+                "SELECT * FROM agent_handoffs WHERE handoff_id=?", (handoff_id,)
+            ).fetchone()
+        return AgentHandoffRecord.model_validate(dict(row)) if row is not None else None
 
 
 def agent_thread_attribution(
@@ -350,37 +385,8 @@ def claim_handoff_turn(
     selected = handoff_id or handoff_wake_id
     if selected is None:
         return False
-    row = connection.execute(
-        "SELECT * FROM agent_handoffs WHERE handoff_id=?", (selected,)
-    ).fetchone()
-    if row is None:
-        raise ValueError("Handoff not found")
     wake = handoff_wake_id is not None
-    thread_id = row["source_thread_id" if wake else "target_thread_id"]
-    thread = connection.execute(
-        "SELECT * FROM agent_threads WHERE thread_id=?", (thread_id,)
-    ).fetchone()
-    if (
-        thread is None
-        or thread["closed_at"] is not None
-        or record.authorized_by is None
-        or record.authorized_by.user_id != thread["user_id"]
-        or record.request.get("chat_id") != thread_id
-        or record.request.get("mode") != "work"
-        or record.kind != ("space_chat" if wake else "project_chat")
-    ):
-        raise ValueError("Handoff turn changed its member or thread binding")
-    if not wake and (
-        record.project_id != thread["project_id"]
-        or record.request.get("source") != "handoff"
-        or record.request.get("trigger", "human") != "human"
-        or record.request.get("message") != row["message"]
-    ):
-        raise ValueError("Handoff turn changed its request")
-    if wake and row["settled_at"] is None:
-        raise ValueError("Handoff has not settled")
-    if not wake and row["settled_at"] is not None and row["target_operation_id"] is None:
-        raise ValueError("Handoff was refused")
+    row = _require_handoff_turn(connection, selected, record, wake=wake)
     column = "notified_operation_id" if wake else "target_operation_id"
     previous = row[column]
     if previous is not None:
@@ -391,3 +397,52 @@ def claim_handoff_turn(
         f"UPDATE agent_handoffs SET {column}=? WHERE handoff_id=?", (record.operation_id, selected)
     )
     return False
+
+
+def _require_handoff_turn(
+    connection: sqlite3.Connection, handoff_id: str, record: AgentTaskRecord, *, wake: bool
+) -> sqlite3.Row:
+    row = connection.execute(
+        "SELECT * FROM agent_handoffs WHERE handoff_id=?", (handoff_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Handoff not found")
+    _require_handoff_thread(connection, row, record, wake=wake)
+    if wake and row["settled_at"] is None:
+        raise ValueError("Handoff has not settled")
+    if not wake:
+        _require_handoff_delivery(row, record)
+    return row
+
+
+def _require_handoff_thread(
+    connection: sqlite3.Connection, row: sqlite3.Row, record: AgentTaskRecord, *, wake: bool
+) -> None:
+    """The turn runs on the open thread it names, authorized by that thread's member."""
+    column, kind = (
+        ("source_thread_id", "space_chat") if wake else ("target_thread_id", "project_chat")
+    )
+    thread_id = row[column]
+    thread = connection.execute(
+        "SELECT user_id, project_id FROM agent_threads WHERE thread_id=? AND closed_at IS NULL",
+        (thread_id,),
+    ).fetchone()
+    if thread is None:
+        raise ValueError("Handoff turn changed its member or thread binding")
+    user_id = record.authorized_by.user_id if record.authorized_by else None
+    binding = (user_id, record.request.get("chat_id"), record.request.get("mode"), record.kind)
+    if binding != (thread["user_id"], thread_id, "work", kind) or (
+        not wake and record.project_id != thread["project_id"]
+    ):
+        raise ValueError("Handoff turn changed its member or thread binding")
+
+
+def _require_handoff_delivery(row: sqlite3.Row, record: AgentTaskRecord) -> None:
+    if row["settled_at"] is not None and row["target_operation_id"] is None:
+        raise ValueError("Handoff was refused")
+    if (
+        record.request.get("source") != "handoff"
+        or record.request.get("trigger", "human") != "human"
+        or record.request.get("message") != row["message"]
+    ):
+        raise ValueError("Handoff turn changed its request")

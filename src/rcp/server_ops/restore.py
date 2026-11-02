@@ -51,17 +51,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Single-entry agent tables (v68-73): fresh, immutable fixtures, and in-place upgrades.
-        "1fb54dd7c782d9ac3f7fad38f0f431e34866c57c04cfc7f0492f2cfb4c25da20",
-        "2242ab075c1f4719e4db286b84a7f60d9312cc623d7113ef2ac469b5683fc987",
-        "4be0b915079fcd850797e8b04dcba238d5854dea42ca9558b8ee0dc9dad0d92e",
-        "672b818145360f5fad524452a5deddae8fceef5b557742613992056a5f1a7549",
-        "9413d951478a7c047a213cdfa9b773236e2b09a7b764c02c0dca4be0e43f0d2d",
-        "980aad777a6fdbc23ba6ff8a76fe106af6c98f2ba7faf659372fc59d7a0b56bb",
-        "a23763a554e045e5f85811f7504659d2a006267b8be5d66dbf717ef610451ed6",
-        "aa57e6fabd0f9b90c1380b5e9a61eefc065a8a90b31f41011d39a4b4d283d446",
-        "d47a85cf63e52579de5f154c6873eaa46f8c24c48d148b0df1b4b5545c30ea7b",
-        "ee15c0e732603b4d60308414ed938154fa0441eac86877e0f16456b88d874612",
-        "f2dae801a89b3a1e589e6c5a6be81c28b2cad3cd5cc0d7e081c6bbc82f8d57cb",
+        "056bb19de8f6bb948cf266a6e8348bce3ce27e4bf551c0af9c58b8bb65be00fb",
+        "182a1c3d76e511aebdb0f1eaee7c2a4c5b625e485e313f0e8cef5873ec377452",
+        "3975299e3b5ac699567fb7eafd3fbc7aa0f47470f098ef48e97809dd70c57027",
+        "4264762d0c05288abec3c3eaa6043678e1beae8b62ffbb1e64592904bc89da4d",
+        "76120a6ee5c5375df4906767b8cee37de0f2e507e20bf70735f5885f86c2af74",
+        "8e291af96d04cf786ce5ad8c4d49710db7f30ec6ba5d8633df9794dcf996192a",
+        "8eeb7b3b4fbc6485f3c331110a7eb9ade07ee2eb4ffeeef08cf31ea1ddb9dd74",
+        "9c93f7df0ef2a570059da802d6548d8aa97f6ba744d3dc8264d4ef1bd796fb9a",
+        "b452901feab393ee6077e2ecb99b3c10b5b8c2ad0f204e65df7600d127c4bd2f",
+        "baaa7c3c5fa26e1722a4561e9ced9cd328a281578e61214e70e1048824f0cdac",
+        "bbda7a76dc46d427aa503f1f62d9edde0bcfc61cadac41d11cdcda1f7af38bdd",
         # Evidence flag origins and episode merge requests (v66-67): fresh,
         # immutable fixture upgrades, and the in-place compatibility boundaries.
         "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",

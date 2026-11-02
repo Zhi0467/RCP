@@ -84,9 +84,10 @@ def test_handoff_deduplication_preserves_pending_delivery(tmp_path: Path) -> Non
     first = store.create_agent_handoff(**arguments)
     assert store.create_agent_handoff(**arguments) == first
     assert store.pending_agent_handoffs(target.thread_id) == [first]
-    store.mark_agent_handoff_delivered(first.handoff_id, "target-turn")
+    store.refuse_agent_handoff(first.handoff_id, "thread_closed")
+    store.refuse_agent_handoff(first.handoff_id, "later")
     assert store.pending_agent_handoffs(target.thread_id) == []
-    assert store.create_agent_handoff(**arguments).target_operation_id == "target-turn"
+    assert store.create_agent_handoff(**arguments).refusal_reason == "thread_closed"
 
 
 def test_restore_disables_schedules_expires_cards_and_preserves_handoffs(tmp_path: Path) -> None:
