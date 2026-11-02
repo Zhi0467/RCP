@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tests.helpers import create_named_app, signed_in_client
 
 
@@ -471,3 +473,32 @@ def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypa
         # Retry follows the pick the member made after the failure.
         retried = background.retry("failed", authorized_by=store.agent_task("failed").authorized_by)
         assert retried.request["provider"] == "claude"
+
+
+def test_member_pick_waits_for_sign_in_but_agent_pick_must_run(manifest, tmp_path, monkeypatch):
+    from rcp.runs import auto_research_admission
+    from rcp.runs.agent_thread_commands import store_thread_pick
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    project_id = app.state.default_project_id
+    thread = next(
+        row
+        for row in store.ensure_agent_threads(
+            store.local_owner.user_id, [project_id], default_names=("Pip",)
+        )
+        if row.kind == "project"
+    )
+
+    def unready(*args, **kwargs):
+        raise auto_research_admission.AutoResearchChildProfileInvalid(
+            "provider_unready", "not signed in"
+        )
+
+    monkeypatch.setattr(
+        auto_research_admission, "require_auto_research_child_profile_pick", unready
+    )
+    with pytest.raises(ValueError):
+        store_thread_pick(store, catalog, thread, provider="claude")
+    store_thread_pick(store, catalog, thread, provider="claude", wait_for_sign_in=True)
+    assert store.agent_thread(thread.thread_id).agent["provider"] == "claude"

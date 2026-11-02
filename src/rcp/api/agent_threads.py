@@ -249,7 +249,7 @@ def pick_thread_agent(
     """Store the thread's agent pick; every later turn on the thread runs it."""
     thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
     try:
-        store_thread_pick(store, catalog, thread, **body.model_dump())
+        store_thread_pick(store, catalog, thread, **body.model_dump(), wait_for_sign_in=True)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return thread_projection(store, store.agent_thread(thread_id) or thread)

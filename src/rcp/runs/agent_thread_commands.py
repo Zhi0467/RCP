@@ -381,8 +381,14 @@ def store_thread_pick(
     model: str | None = None,
     reasoning: str | None = None,
     run_on: str | None = None,
+    wait_for_sign_in: bool = False,
 ) -> None:
-    """Check a pick against the thread's machine readiness, then make it the thread's agent."""
+    """Check a pick against the thread's machine readiness, then make it the thread's agent.
+
+    A member's own pick may name a provider that is not signed in yet
+    (`wait_for_sign_in`): it is kept, the picker shows the provider's readiness,
+    and a launch is checked when it runs. An agent's handoff pick must run now.
+    """
     if thread.project_id is None:
         from rcp.runs.space_chat import space_agent_profile
 
@@ -403,9 +409,10 @@ def store_thread_pick(
                 member_id=thread.user_id,
             )
         except AutoResearchChildProfileInvalid as exc:
-            raise ValueError(
-                f"{provider} cannot run that pick on this project's machine: {exc.reason}"
-            ) from exc
+            if not (wait_for_sign_in and exc.reason == "provider_unready"):
+                raise ValueError(
+                    f"{provider} cannot run that pick on this project's machine: {exc.reason}"
+                ) from exc
     store.set_agent_thread_pick(
         thread.thread_id, provider=provider, model=model, reasoning=reasoning, run_on=run_on
     )
