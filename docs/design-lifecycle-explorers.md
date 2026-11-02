@@ -57,7 +57,7 @@ class Machine(Protocol):
     bound: int                       # PR bound
     states: int                      # exact state count at that bound
     horizon: int                     # liveness look-ahead, default 3
-    covers: Mapping[object, str]     # Literal type -> View field holding its values
+    covers: Mapping[object, tuple[str, int | None]]  # Literal type -> (View field, column in its row tuples)
     tables: frozenset[str]           # tables this machine owns (see §2)
     writers: tuple[Callable, ...]    # product functions that change this machine's state
     unreached_values: Mapping[str, str]       # status value -> why no state reaches it
@@ -65,26 +65,41 @@ class Machine(Protocol):
     rules: tuple[Rule, ...]
 
     def seams(self) -> ContextManager[None]: ...   # class-level patches, entered once
-    def start(self, root: Path) -> None: ...       # seed the start state into a fresh tree
-    def boot(self, root: Path) -> World: ...       # build store and engine over a tree, with instance patches
+    def start(self, root: Path, clock: Clock) -> None: ...  # seed the start state into a fresh tree
+    def boot(self, root: Path, clock: Clock) -> World: ...  # build store and engine over a tree, with instance patches
     def actions(self, view: View) -> list[Action]: ...
     def apply(self, world: World, action: Action) -> None: ...
     def view(self, world: World) -> View: ...
-    def save_memory(self, world: World) -> object: ...      # clock, timers, workers, decided, …
-    def restore_memory(self, world: World, saved: object) -> None: ...
+    def save_memory(self, world: World) -> Memory: ...      # see "Memory" below
+    def restore_memory(self, world: World, saved: Memory) -> None: ...
 ```
 
-`boot` reapplies the module's instance patches on every call; each module's
-docstring lists them. `start(root)` receives a fresh tree; step 1 pulls a plain manifest builder out
+`boot` reapplies the module's instance patches and binds `store.now` to the
+clock on every call; each module's docstring lists its patches. `start` runs
+under the same `seams` and binds `store.now` to the same clock, so seeded
+times (a target "due three days ago") are relative to the fixed instant.
+`start` receives a fresh tree; step 1 pulls a plain manifest builder out
 of the `manifest` fixture in `tests/conftest.py` so `start` can build one.
 
 - `World` holds the live store, engine and clock for one machine run.
 - An `Action` is a frozen dataclass: `name`, `args`, `environment: bool`.
 - A `View` is a `NamedTuple` per machine. A field holding many rows is a sorted
   tuple of per-row tuples; coverage reads a `Literal`'s values from the field
-  `covers` names, across every row in it.
-- **Restart** is an ordinary action whose `apply` builds a new engine over the
-  same store, drops in-memory state, and runs the machine's startup recovery.
+  and column `covers` names (column `None` for a scalar field), so a
+  matching string in another column never counts.
+- **Memory** is `Memory(engine, environment)`. `engine` is what the product
+  holds in process (timers, workers, decided retries); `environment` is what
+  the explorer holds (the clock, the episode's outage flag). Both name tasks
+  by the view's lineage names, never by operation id, because ids are random
+  and two paths to one view create different ids.
+- **Restart** is an ordinary action. It advances the clock by 1 s (so strict
+  `claimed_before`-style comparisons see the earlier claim), drops `engine`
+  memory, keeps `environment` memory, builds the world through `boot`, and
+  runs exactly the startup reconciliation `api/app.py` runs for the
+  machine's tables, in the app's order. Each module's docstring lists those
+  calls: handoff and agent task `recover_at_startup`; Proposals
+  `settle_interrupted_approval_cards(claimed_before=<clock>)`; episode,
+  schedules and consolidation the calls the same startup sequence makes.
 - **Clock:** one `Clock` holder per exploration, starting at the fixed instant
   2026-01-15T12:00:00Z, so state counts never depend on when CI runs. `boot`
   binds `store.now` and the module's clock seams to it; local dates are read
@@ -93,7 +108,8 @@ of the `manifest` fixture in `tests/conftest.py` so `start` can build one.
 - **Shared clock seam:** `seams` replaces `datetime` in `rcp.storage.rows`
   with a `datetime` subclass whose `now()` reads the holder, so
   `fromisoformat` and every other use keep working. Handoff and agent task
-  use it for attachment expiry.
+  use it for attachment expiry. The episode module also patches
+  `rcp.watchers._now` to read the holder.
 
 **Rules** are named objects with a docstring stating the rule in one sentence
 and a `source` (spec heading, invariant number, or "code guard at
@@ -111,18 +127,18 @@ and a `source` (spec heading, invariant number, or "code guard at
 explorer does today: a state's save copies the tree except the SQLite files,
 takes each SQLite database through `sqlite3.Connection.backup` (the store
 runs in WAL mode, so a file copy of an open database can tear), and keeps
-`save_memory` (which always holds the clock). A step replaces the tree
+`save_memory`. A step replaces the tree
 (`rmtree` then `copytree`), calls `boot`, then `restore_memory`. Whole trees
 mean no file list to keep and no file a sibling branch wrote survives; a
 fresh boot means no stale history cache (`HistoryManager` revisions and
 engines).
-- **Restore check:** the first edge explored at each depth (so `bound` edges
-  per machine) is also replayed from `start` on a fresh tree; the test
-  asserts the view equals the restored view. A memory field `save_memory`
-  misses then fails CI.
+- **Restore check:** the first explored edge of each action name is also
+  replayed from `start` on a fresh tree, so every action that touches memory
+  is replayed at least once; the test asserts the view equals the restored
+  view. A memory field `save_memory` misses then fails CI.
 - **Merge check:** when an edge reaches a view already explored, the engine
-  asserts its saved memory, apart from the absolute clock, equals the stored
-  one. Memory that matters but is left out of the view then fails CI instead
+  asserts its saved memory (lineage-named, apart from the absolute clock)
+  equals the stored one. Memory that matters but is left out of the view then fails CI instead
   of silently merging two different states.
 - A faster live mode (database backup into a running store) is added only if
   step 1's measurement misses the budget, as a recorded change to this design.
@@ -181,7 +197,10 @@ complete.
   backtick, plus calls to declared gates. `ON CONFLICT … DO UPDATE SET` names
   no table and is skipped. The outermost enclosing function or method (by AST
   line range) is the writer, since a nested `def` cannot be imported or
-  counted.
+  counted. A literal `<t>` counts only if it is a table in the
+  `sqlite_master` of a freshly created `AppStore`, so prose in docstrings
+  ("update the row") is never read as a table; an interpolated `<t>` always
+  counts.
 - **Rule.** Every writer of an owned table appears in its owner's `writers` or
   in its owner's `unreached_writers` with a reason (for example "driven by
   the episode explorer"). So the owner accounts for every writer of its
@@ -194,8 +213,8 @@ complete.
   table name as an argument, and SQL assembled outside one literal.
 - Its self-test runs the scan on a small sample with an f-string `SET`, an
   `INSERT OR REPLACE`, `UPDATE OR IGNORE {table}`, `DELETE FROM "{table}"`, a
-  `ON CONFLICT (id) DO UPDATE SET`, a gate call and a `WHERE`-only mention,
-  and asserts the exact set found.
+  `ON CONFLICT (id) DO UPDATE SET`, a gate call, a `WHERE`-only mention and
+  a docstring saying "update the row", and asserts the exact set found.
 
 **Witnesses.** A rule gets a witness only where one is free: a real fix that a
 seam can revert, or a trace this PR confirms. The witness is a seam patch (the
@@ -244,16 +263,22 @@ the budget rule above if the trace does not fit.
 
 ### Agent task (`tests/lifecycles/agent_task.py`)
 - **Start:** `BackgroundAgentTasks(store, _done_stream)` over the `_store`
-  helper and `_admitted_launch_task` of `tests/test_background.py`; no app.
-- **Actions** and the product call each makes: claim (`launch_admitted`);
+  helper and `_admitted_launch_task` of `tests/test_background.py`, plus one
+  provider login that `resolved_task_login` finds; no app.
+- **Actions** and the product call each makes: claim (`launch_admitted`,
+  with `_spawn_record` stubbed as handoff does, so no thread starts);
   settle(success | transport_lost | provider_auth | session_refused | paused)
-  through the fake provider stream; finish (`_task_settled`); member Pause,
-  Resume and Retry (their API routes, which call `retry`); retry timer fire
+  runs the claimed worker's body inline in the explorer thread with a
+  scripted stream per outcome, each taken from the existing test in
+  `tests/test_background.py` that produces that outcome; finish
+  (`_task_settled`); member Pause, Resume and Retry
+  (`BackgroundAgentTasks.pause`, `.resume`, `.retry`); retry timer fire
   (`_run_transport_retry`); refused fire (`_run_transport_retry` after a
   child exists, so `_transport_retry_superseded` refuses it); restart
   (`recover_at_startup`); member removal (`request_member_removal_pause`);
   project deletion (`stop_for_project_deletion`); sign-in release
-  (`auth_retry_candidates` then `_claim_auth_retry`); clock past attachment
+  (`resume_provider_account`, which claims with `_claim_auth_retry` and then
+  calls `retry`); clock past attachment
   expiry (the start state carries one attachment, as in handoff).
 - **Rules:** status moves follow `AGENT_TASK_TRANSITIONS`; Resume and Retry
   never rewrite the parent's status; at most one recovery child per parent;
