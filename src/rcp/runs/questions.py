@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
@@ -31,7 +31,11 @@ from rcp.runs.work_experiment_commands import (
     work_experiment_allowed,
 )
 from rcp.storage import AppStore
-from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
+from rcp.storage.question_models import (
+    QuestionArgumentConflict,
+    QuestionOrigin,
+    QuestionRecord,
+)
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -57,44 +61,11 @@ def handle_ask(
     """
     try:
         arguments = request.arguments.model_dump(exclude={"action"})
-        action = request.arguments.action
         card = None
-        if action is not None:
-            from rcp.runs.approval_cards import approval_pins, private_project_thread_turn
+        if request.arguments.action is not None:
+            from rcp.runs.approval_cards import approval_card_for_ask
 
-            task = store.agent_task(origin.operation_id)
-            owner = (
-                store.private_question_owner(origin.owner_id)
-                if origin.owner_kind == "chat"
-                else None
-            )
-            if (
-                service is None
-                or task is None
-                or task.authorized_by is None
-                or owner != task.authorized_by.user_id
-                or action.project_id != origin.project_id
-                or origin.capability != "work_auto"
-                or not private_project_thread_turn(store, origin.operation_id)
-            ):
-                raise ValueError("approval_requires_own_project_thread")
-            previous = next(
-                (
-                    item
-                    for item in store.list_questions(
-                        project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
-                    )
-                    if item.key == request.idempotency_key
-                ),
-                None,
-            )
-            existing_card = store.approval_card(previous.question_id) if previous else None
-            card = {
-                "action": action.model_dump(mode="json"),
-                "pinned": existing_card["pinned"]
-                if existing_card
-                else approval_pins(service, store, action, task.authorized_by),
-            }
+            card = approval_card_for_ask(store, request, origin, service)
             arguments["choices"] = ["Approve", "Decline"]
         question = store.create_or_get_question(
             origin=origin,
@@ -108,31 +79,36 @@ def handle_ask(
             status="invalid",
             message=str(exc),
         )
+    return CommandResponse(
+        request_id=request.request_id,
+        status="ok",
+        result=_ask_result(store, request, question, parked).model_dump(exclude_none=True),
+    )
+
+
+def _ask_result(
+    store: AppStore, request: AskCommandRequest, question: QuestionRecord, parked: bool
+) -> AskResult:
     # A parked reply ends the wait at once, so it is neither an attempt nor a live wait.
     pending = question.state == "pending" and not parked
+    attempt = None
     if pending:
         attempt = store.question_activity.pending(question.question_id, request.call_id)
+    elif question.state == "answered":
+        # The answer is in flight to the client until its receipt; keep that
+        # visible so no steer delivers it a second time.
+        store.question_activity.returned(question.question_id)
     else:
-        attempt = None
-        if question.state == "answered":
-            # The answer is in flight to the client until its receipt; keep that
-            # visible so no steer delivers it a second time.
-            store.question_activity.returned(question.question_id)
-        else:
-            # Resolved, or parked: either way no ask call is waiting on it now.
-            store.question_activity.forget(question.question_id)
-    result = AskResult(
+        # Resolved, or parked: either way no ask call is waiting on it now.
+        store.question_activity.forget(question.question_id)
+    answered = question.state == "answered"
+    return AskResult(
         attempt=attempt,
         max_attempts=ASK_MAX_ATTEMPTS if pending else None,
         question_id=question.question_id,
         state="parked" if parked and question.state == "pending" else question.state,
-        answer=question.answer if question.state == "answered" else None,
-        choices=question.chosen_choices if question.state == "answered" else [],
-    )
-    return CommandResponse(
-        request_id=request.request_id,
-        status="ok",
-        result=result.model_dump(exclude_none=True),
+        answer=question.answer if answered else None,
+        choices=question.chosen_choices if answered else [],
     )
 
 
@@ -359,242 +335,297 @@ class WorkCommandHandler:
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        def refuse(message: str, code: str | None = None) -> CommandResponse:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message=message,
-                result={"code": code} if code else {},
-            )
-
+        graph_history = isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
         if request.verb not in self.allowed_verbs:
-            return refuse(
-                "This turn does not authorize that command.",
-                "graph_history_verb_not_granted"
-                if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
-                else None,
-            )
+            return _not_granted(request, graph_history)
         if request.verb == "projects":
-            from rcp.runs.agent_thread_commands import ThreadCommandHandler
-
-            if (
-                self.execution is None
-                or self.service is None
-                or self.service.project_catalog is None
-            ):
-                return refuse("Project listing is unavailable for this turn.")
-            return ThreadCommandHandler(
-                self.execution.store,
-                self.service.project_catalog,
-                self.execution.operation_id,
-                self.mailbox.workspace if self.mailbox is not None else None,
-            )(request, identity)
-        if isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest)):
-            if self.graph_read_scope is None or self.service is None:
-                return refuse(
-                    "This turn has no graph history scope.", "graph_history_scope_required"
-                )
-            if self.execution is not None and identity.task_id != self.execution.operation_id:
-                return refuse("Graph history requires this turn's broker authority.")
-            return handle_graph_history_command(
-                self.service,
-                self.graph_read_scope,
-                request,
-                resolve_project=self.service.resolve_project_service,
-            )
-        if isinstance(request, FlagCommandRequest):
-            execution = self.execution
-            if (
-                execution is None
-                or self.service is None
-                or identity.authority != "broker"
-                or identity.task_id != execution.operation_id
-            ):
-                return refuse("Evidence flags require this consolidation turn's broker authority.")
-            return handle_flag(self.service, execution.store, execution.operation_id, request)
-        if isinstance(request, ScheduleCommandRequest):
-            from rcp.runs.agent_schedules import handle_schedule
-
-            execution = self.execution
-            if (
-                execution is None
-                or identity.task_id != execution.operation_id
-                or identity.authority != "broker"
-            ):
-                return refuse("Schedules require this turn's broker authority.")
-            return handle_schedule(execution.store, execution.operation_id, request)
-
-        if isinstance(request, NameCommandRequest):
-            from rcp.runs.agent_names import handle_name
-
-            execution = self.execution
-            if (
-                execution is None
-                or identity.task_id != execution.operation_id
-                or identity.authority != "broker"
-            ):
-                return refuse(
-                    "Naming requires this turn's broker authority.", "name_task_unavailable"
-                )
-            return handle_name(execution.store, execution.operation_id, request)
-
-        if isinstance(request, BulletinCommandRequest):
-            from rcp.runs.bulletin import handle_bulletin
-
-            execution = self.execution
-            if (
-                execution is None
-                or identity.task_id != execution.operation_id
-                or identity.authority != "broker"
-            ):
-                return refuse(
-                    "The Bulletin requires this turn's task binding.", "bulletin_task_unavailable"
-                )
-            return handle_bulletin(
-                execution.store,
-                execution.operation_id,
-                request,
-                post_allowed=True,
-                turn_artifacts=self.turn_artifacts,
-                mailbox=self.mailbox,
-            )
+            return self._projects(request, identity)
+        if graph_history:
+            return self._graph_history(request, identity)
         if isinstance(request, ApplyCommandRequest) and self.consolidation_apply is not None:
             return self.consolidation_apply(request, identity)
-        if isinstance(request, EpisodeCommandRequest):
-            execution = self.execution
-            if (
-                execution is None
-                or identity.authority != "broker"
-                or identity.task_id != execution.operation_id
-            ):
-                return refuse("Experiment commands require this Work turn's broker authority.")
-            return handle_work_episode_command(execution, self.mailbox, request)
-        if isinstance(request, AskCommandRequest):
-            execution = self.execution
-            if (
-                execution is None
-                or identity.authority != "broker"
-                or identity.task_id != execution.operation_id
-            ):
-                return refuse("Questions require this turn's broker authority.")
-            try:
-                origin = question_origin(execution)
-            except ValueError as exc:
-                return refuse(str(exc))
-            current_episode_id = origin.owner_id if origin.owner_kind == "episode" else None
-            # Keys survive turns and episode continuation, but an answer never
-            # crosses to a different native session or authority binding.
-            owner_ids = (
-                execution.store.experiment_question_owner_ids(origin.owner_id)
-                if origin.owner_kind == "episode"
-                else [origin.owner_id]
-            )
-            for owner_id in owner_ids:
-                previous = next(
-                    (
-                        item
-                        for item in execution.store.list_questions(
-                            project_id=origin.project_id,
-                            owner_kind=origin.owner_kind,
-                            owner_id=owner_id,
-                        )
-                        if item.key == request.idempotency_key
-                    ),
-                    None,
-                )
-                if previous is None:
-                    continue
-                binding_fields = {
-                    "provider",
-                    "native_session_id",
-                    "stage_root",
-                    "stage_host",
-                    "capability",
-                    "write_scope_fingerprint",
-                    "graph_target",
-                }
-                if previous.origin.model_dump(include=binding_fields) != origin.model_dump(
-                    include=binding_fields
-                ):
-                    return refuse("question_origin_binding_unavailable")
-                origin = previous.origin
-                break
-            # Maintenance closes the human's access before it drains turns, so a
-            # waiting ask would hold the drain on a human it locked out.
-            maintenance = execution.admission is not None and execution.admission.closed
-            response = handle_ask(
-                execution.store, request, origin, parked=maintenance, service=self.service
-            )
-            if maintenance and response.result.get("state") == "parked":
-                response.message = (
-                    "Server maintenance is under way, so the human cannot answer now. "
-                    "End your turn; the question stays on their card and their answer "
-                    "resumes this conversation."
-                )
-            if current_episode_id is not None:
-                episode = execution.store.episode(current_episode_id)
-                if (
-                    episode is None
-                    or episode.stop_requested_at is not None
-                    or episode.ending == "stopped"
-                ):
-                    # Close the create-vs-Stop race: a fence before insertion did
-                    # not see this card. A later fence withdraws it itself. Other
-                    # endings keep the card; its answer continues the episode.
-                    execution.store.set_episode_questions_withdrawn(
-                        origin.project_id, origin.owner_id, withdrawn=True
-                    )
-                    return refuse("question_episode_ended")
-            if response.status == "ok" and response.result.get("state") == "answered":
-                question = execution.store.get_question(response.result["question_id"])
-                assert question is not None
-                offered = next(
-                    (
-                        item.payload
-                        for item in execution.store.agent_task_receipts_by_category(
-                            execution.operation_id, "question_answer_offered"
-                        )
-                        if item.payload.get("question_id") == question.question_id
-                        and item.payload.get("answer_revision") == question.answer_revision
-                        and item.payload.get("receipt_token")
-                    ),
-                    None,
-                )
-                if request.receipt_token is not None:
-                    if offered is None or not secrets.compare_digest(
-                        request.receipt_token, offered["receipt_token"]
-                    ):
-                        return refuse("question_receipt_mismatch")
-                    if not any(
-                        item.payload.get("receipt_token") == request.receipt_token
-                        for item in execution.store.agent_task_receipts_by_category(
-                            execution.operation_id, "question_answer_acknowledged"
-                        )
-                    ):
-                        execution.store.record_agent_task_receipt(
-                            execution.operation_id,
-                            "question_answer_acknowledged",
-                            offered,
-                            tier="diagnostic",
-                        )
-                if offered is None:
-                    offered = {
-                        "question_id": question.question_id,
-                        "answer_revision": question.answer_revision,
-                        "request_id": request.request_id,
-                        "receipt_token": secrets.token_hex(32),
-                    }
-                    execution.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "question_answer_offered",
-                        offered,
-                        tier="diagnostic",
-                    )
-                response.result["receipt_token"] = offered["receipt_token"]
-            return response
+        brokered = next((kind for kind in _BROKER_VERBS if isinstance(request, kind)), None)
+        if brokered is not None:
+            return self._brokered(_BROKER_VERBS[brokered], request, identity)
         if self.compute_commands is not None:
             return self.compute_commands(request, identity)
-        return refuse("This turn does not authorize that command.")
+        return _refuse(request, "This turn does not authorize that command.")
+
+    def _brokered(
+        self,
+        verb: tuple[Callable[..., CommandResponse], str, str | None],
+        request: CommandRequest,
+        identity: CommandTurnIdentity,
+    ) -> CommandResponse:
+        handle, refusal, code = verb
+        execution = self._broker_execution(identity)
+        if execution is None:
+            return _refuse(request, refusal, code)
+        return handle(self, execution, request)
+
+    def _broker_execution(self, identity: CommandTurnIdentity) -> AgentTaskExecution | None:
+        """This turn's execution, when the caller holds its broker authority."""
+        execution = self.execution
+        if (
+            execution is None
+            or identity.authority != "broker"
+            or identity.task_id != execution.operation_id
+        ):
+            return None
+        return execution
+
+    def _projects(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
+        from rcp.runs.agent_thread_commands import ThreadCommandHandler
+
+        if self.execution is None or self.service is None or self.service.project_catalog is None:
+            return _refuse(request, "Project listing is unavailable for this turn.")
+        return ThreadCommandHandler(
+            self.execution.store,
+            self.service.project_catalog,
+            self.execution.operation_id,
+            self.mailbox.workspace if self.mailbox is not None else None,
+        )(request, identity)
+
+    def _graph_history(
+        self,
+        request: GraphDiffCommandRequest | GraphLogCommandRequest,
+        identity: CommandTurnIdentity,
+    ) -> CommandResponse:
+        if self.graph_read_scope is None or self.service is None:
+            return _refuse(
+                request, "This turn has no graph history scope.", "graph_history_scope_required"
+            )
+        if self.execution is not None and identity.task_id != self.execution.operation_id:
+            return _refuse(request, "Graph history requires this turn's broker authority.")
+        return handle_graph_history_command(
+            self.service,
+            self.graph_read_scope,
+            request,
+            resolve_project=self.service.resolve_project_service,
+        )
+
+    def _flag(self, execution: AgentTaskExecution, request: FlagCommandRequest) -> CommandResponse:
+        if self.service is None:
+            return _refuse(
+                request, "Evidence flags require this consolidation turn's broker authority."
+            )
+        return handle_flag(self.service, execution.store, execution.operation_id, request)
+
+    def _schedule(
+        self, execution: AgentTaskExecution, request: ScheduleCommandRequest
+    ) -> CommandResponse:
+        from rcp.runs.agent_schedules import handle_schedule
+
+        return handle_schedule(execution.store, execution.operation_id, request)
+
+    def _name(self, execution: AgentTaskExecution, request: NameCommandRequest) -> CommandResponse:
+        from rcp.runs.agent_names import handle_name
+
+        return handle_name(execution.store, execution.operation_id, request)
+
+    def _bulletin(
+        self, execution: AgentTaskExecution, request: BulletinCommandRequest
+    ) -> CommandResponse:
+        from rcp.runs.bulletin import handle_bulletin
+
+        return handle_bulletin(
+            execution.store,
+            execution.operation_id,
+            request,
+            post_allowed=True,
+            turn_artifacts=self.turn_artifacts,
+            mailbox=self.mailbox,
+        )
+
+    def _episode(
+        self, execution: AgentTaskExecution, request: EpisodeCommandRequest
+    ) -> CommandResponse:
+        return handle_work_episode_command(execution, self.mailbox, request)
+
+    def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
+        try:
+            current = question_origin(execution)
+            origin = _reused_origin(execution.store, current, request)
+        except ValueError as exc:
+            return _refuse(request, str(exc))
+        # Maintenance closes the human's access before it drains turns, so a
+        # waiting ask would hold the drain on a human it locked out.
+        maintenance = execution.admission is not None and execution.admission.closed
+        response = handle_ask(
+            execution.store, request, origin, parked=maintenance, service=self.service
+        )
+        if maintenance and response.result.get("state") == "parked":
+            response.message = (
+                "Server maintenance is under way, so the human cannot answer now. "
+                "End your turn; the question stays on their card and their answer "
+                "resumes this conversation."
+            )
+        if _episode_stopped(execution.store, current, origin):
+            return _refuse(request, "question_episode_ended")
+        if response.status == "ok" and response.result.get("state") == "answered":
+            try:
+                response.result["receipt_token"] = _answer_receipt_token(
+                    execution, request, str(response.result["question_id"])
+                )
+            except ValueError as exc:
+                return _refuse(request, str(exc))
+        return response
+
+
+_BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]] = {
+    FlagCommandRequest: (
+        WorkCommandHandler._flag,
+        "Evidence flags require this consolidation turn's broker authority.",
+        None,
+    ),
+    ScheduleCommandRequest: (
+        WorkCommandHandler._schedule,
+        "Schedules require this turn's broker authority.",
+        None,
+    ),
+    NameCommandRequest: (
+        WorkCommandHandler._name,
+        "Naming requires this turn's broker authority.",
+        "name_task_unavailable",
+    ),
+    BulletinCommandRequest: (
+        WorkCommandHandler._bulletin,
+        "The Bulletin requires this turn's task binding.",
+        "bulletin_task_unavailable",
+    ),
+    EpisodeCommandRequest: (
+        WorkCommandHandler._episode,
+        "Experiment commands require this Work turn's broker authority.",
+        None,
+    ),
+    AskCommandRequest: (
+        WorkCommandHandler._ask,
+        "Questions require this turn's broker authority.",
+        None,
+    ),
+}
+
+#: Origin fields an answer never crosses: a different session or authority binding.
+_QUESTION_BINDING_FIELDS = {
+    "provider",
+    "native_session_id",
+    "stage_root",
+    "stage_host",
+    "capability",
+    "write_scope_fingerprint",
+    "graph_target",
+}
+
+
+def _not_granted(request: CommandRequest, graph_history: bool) -> CommandResponse:
+    code = "graph_history_verb_not_granted" if graph_history else None
+    return _refuse(request, "This turn does not authorize that command.", code)
+
+
+def _refuse(request: CommandRequest, message: str, code: str | None = None) -> CommandResponse:
+    return CommandResponse(
+        request_id=request.request_id,
+        status="invalid",
+        message=message,
+        result={"code": code} if code else {},
+    )
+
+
+def _reused_origin(
+    store: AppStore, origin: QuestionOrigin, request: AskCommandRequest
+) -> QuestionOrigin:
+    """Keys survive turns and episode continuation, keeping their first origin."""
+    owner_ids = (
+        store.experiment_question_owner_ids(origin.owner_id)
+        if origin.owner_kind == "episode"
+        else [origin.owner_id]
+    )
+    for owner_id in owner_ids:
+        previous = next(
+            (
+                item
+                for item in store.list_questions(
+                    project_id=origin.project_id, owner_kind=origin.owner_kind, owner_id=owner_id
+                )
+                if item.key == request.idempotency_key
+            ),
+            None,
+        )
+        if previous is None:
+            continue
+        if previous.origin.model_dump(include=_QUESTION_BINDING_FIELDS) != origin.model_dump(
+            include=_QUESTION_BINDING_FIELDS
+        ):
+            raise ValueError("question_origin_binding_unavailable")
+        return previous.origin
+    return origin
+
+
+def _episode_stopped(store: AppStore, current: QuestionOrigin, origin: QuestionOrigin) -> bool:
+    """Close the create-vs-Stop race: a fence before insertion did not see this card.
+
+    `current` is this turn's episode; `origin` the question's first one. A later
+    fence withdraws it itself. Other endings keep the card; its answer continues
+    the episode.
+    """
+    if current.owner_kind != "episode":
+        return False
+    episode = store.episode(current.owner_id)
+    if episode is not None and episode.stop_requested_at is None and episode.ending != "stopped":
+        return False
+    store.set_episode_questions_withdrawn(origin.project_id, origin.owner_id, withdrawn=True)
+    return True
+
+
+def _answer_receipt_token(
+    execution: AgentTaskExecution, request: AskCommandRequest, question_id: str
+) -> str:
+    """Offer each answer revision one receipt token; a returned token acknowledges it."""
+    store = execution.store
+    question = store.get_question(question_id)
+    assert question is not None
+    offered: dict[str, Any] | None = next(
+        (
+            item.payload
+            for item in store.agent_task_receipts_by_category(
+                execution.operation_id, "question_answer_offered"
+            )
+            if item.payload.get("question_id") == question.question_id
+            and item.payload.get("answer_revision") == question.answer_revision
+            and item.payload.get("receipt_token")
+        ),
+        None,
+    )
+    if request.receipt_token is not None:
+        if offered is None or not secrets.compare_digest(
+            request.receipt_token, str(offered["receipt_token"])
+        ):
+            raise ValueError("question_receipt_mismatch")
+        _acknowledge(execution, request.receipt_token, offered)
+    if offered is None:
+        offered = {
+            "question_id": question.question_id,
+            "answer_revision": question.answer_revision,
+            "request_id": request.request_id,
+            "receipt_token": secrets.token_hex(32),
+        }
+        store.record_agent_task_receipt(
+            execution.operation_id, "question_answer_offered", offered, tier="diagnostic"
+        )
+    return str(offered["receipt_token"])
+
+
+def _acknowledge(execution: AgentTaskExecution, token: str, offered: dict) -> None:
+    store = execution.store
+    if not any(
+        item.payload.get("receipt_token") == token
+        for item in store.agent_task_receipts_by_category(
+            execution.operation_id, "question_answer_acknowledged"
+        )
+    ):
+        store.record_agent_task_receipt(
+            execution.operation_id, "question_answer_acknowledged", offered, tier="diagnostic"
+        )
 
 
 def work_command_handler(
