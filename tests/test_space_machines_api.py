@@ -48,6 +48,14 @@ def _machine(client: TestClient, name: str) -> dict[str, object]:
     return next(machine for machine in machines if machine["name"] == name)
 
 
+def test_listing_always_offers_the_backend_machine(app) -> None:
+    client = signed_in_client(app)
+    _store(app).delete_space_machine(_machine(client, "laptop")["machine_id"])
+    # The Space thread's picker reads this card before any Space turn has run.
+    machines = client.get("/api/space/machines").json()["machines"]
+    assert [machine["host"] for machine in machines].count("") == 1
+
+
 def test_repository_machine_cannot_be_deleted(app, manifest) -> None:
     client = signed_in_client(app)
     project_id = app.state.default_project_id

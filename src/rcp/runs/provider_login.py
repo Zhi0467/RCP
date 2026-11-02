@@ -55,18 +55,13 @@ def run_on_host(
 ) -> str:
     """The host a task's `run_on` names.
 
-    A Space task names a Space machine card by id. A project task names a machine
-    alias in its manifest, read from the project unless `manifest` is given.
-    None names the owner's default machine: the backend for the Space, and for a
-    project the base machine every agent profile runs on.
+    A Space task always runs on the backend, so its `run_on` (a card id that may
+    since have been deleted) is never looked up. A project task names a machine
+    alias in its manifest, read from the project unless `manifest` is given; None
+    names the base machine every agent profile runs on.
     """
     if project_id == store.space_id:
-        if run_on is None:
-            return ""
-        try:
-            return store.space_machine(run_on).host
-        except KeyError:
-            raise ValueError(f"unknown execution machine: {run_on}") from None
+        return ""
     if manifest is None:
         project = store.project(project_id)
         if project is None:
