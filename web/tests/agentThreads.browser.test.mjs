@@ -279,6 +279,53 @@ async function mockApi(page, writes) {
 
 const shots = process.env.RCP_AGENT_SHOTS;
 
+test("personal home remembers each member's tab at phone width and honors links", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mockApi(page, []);
+    const base = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html?personal`;
+    const agent = page.getByRole("button", { name: "Agent", exact: true });
+    const cards = page.getByRole("button", { name: "Cards", exact: true });
+    await page.goto(base);
+    await page.getByRole("listbox", { name: "Threads" }).waitFor();
+    assert.equal(await agent.getAttribute("aria-pressed"), "true");
+    await cards.click();
+    await page.goto(base);
+    assert.equal(await cards.getAttribute("aria-pressed"), "true");
+    await page.goto(`${base}&member=other`);
+    assert.equal(await agent.getAttribute("aria-pressed"), "true");
+    await page.goto(base);
+    assert.equal(await cards.getAttribute("aria-pressed"), "true");
+    await page.goto(`${base}#/agent/moss`);
+    await page.getByRole("region", { name: "Moss" }).waitFor();
+    await page.goto(base);
+    assert.equal(await agent.getAttribute("aria-pressed"), "true");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    // Storage denial still permits both tabs, with no persisted preference.
+    await page.addInitScript(() => {
+      Storage.prototype.getItem = Storage.prototype.setItem = () => {
+        throw new Error("Storage unavailable");
+      };
+    });
+    await page.goto(base);
+    await cards.click();
+    assert.equal(await cards.getAttribute("aria-pressed"), "true");
+    await agent.click();
+    assert.equal(await agent.getAttribute("aria-pressed"), "true");
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 test("the space Agent view lists threads, opens one, and resolves a card by tap", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
@@ -540,6 +587,58 @@ test("a send, a read mark and history reads stay with the thread they belong to"
       await space.getByRole("textbox", { name: "Message" }).inputValue(),
       "Plan the sweep",
     );
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("a sent turn stays live when an older reload answers late", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, []);
+    // The load's read of the previous turn is held until after the send. The
+    // project transcript gains the new turn only when it settles.
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    await page.route("**/api/projects/p1/tasks/op-moss", async (route) => {
+      await held;
+      await route.fallback();
+    });
+    const running = {
+      ...settled("op-new"),
+      active: true,
+      settled: false,
+      status_message: "Running",
+    };
+    await page.route("**/api/projects/p1/tasks/project_chat", (route) =>
+      route.fulfill({ status: 202, json: running }),
+    );
+    await page.route("**/api/projects/p1/tasks/op-new", (route) =>
+      route.fulfill({ json: running }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html#/agent/moss`,
+    );
+    const moss = page.getByRole("region", { name: "Moss" });
+    await moss.getByRole("textbox", { name: "Message" }).fill("Start the 128k run");
+    await moss.getByRole("button", { name: "Send", exact: true }).click();
+    const live = moss.locator(".agent-turn-live");
+    await live.waitFor();
+    release();
+    await page.waitForTimeout(500);
+    assert.equal(await live.count(), 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
