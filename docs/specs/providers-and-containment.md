@@ -674,8 +674,9 @@ A continuation sends its reason, new human input/skills/trigger/diagnostics,
 current restrictions, and stable values that differ from the master. Paths,
 command clients, write roots, repositories, skills and execution facts use this
 delta. Current values override the master; omitted values retain it. Graph head
-uses the owner's seen head instead. Attachments are plain listings. Watcher
-maintenance corrections restate their resource's current rules.
+uses the owner's seen head instead. Attachments are plain listings. A watcher
+maintenance correction stages its resource's current rules as a content-addressed
+file and names it, since the session master may predate the resource.
 
 One final pointer identifies the original contract and asks for a read only
 after compaction or lost understanding. RCP restores the exact master bytes to
@@ -683,8 +684,10 @@ the stage before each pointer, selected by native session id even for owners
 with per-turn stages. A missing stage fails closed. Only a succeeded operation's
 master counts; absent records or changed master keys bootstrap a replacement.
 The key includes shared master version, graph-rules digest, owner policy version
-and ontology-extension mode. Branch-merge continuation also resends graph rules
-when main's extensions differ.
+and ontology-extension mode. A Work turn in a session whose committed values lack
+Work's launch values, as after Discuss, replaces its master with the Work master
+rather than carrying the launch instructions inline. A branch-merge rebase sends only its reason and
+changed values; its master holds no graph rules.
 
 **Why:** A stable pointer recovers compacted context without repeating a full
 contract each wake. Durable bytes prevent dangling pointers; successful delivery
@@ -697,9 +700,10 @@ a commented writable file is edited in place. The `live-pages` package supplies
 examples; only episodes offer episode needs. Existing sessions keep their master
 until its version key changes.
 
-A report is a separate prompt node: it revokes operational instructions and
-carries no master pointer. The next operational launch explicitly reopens its
-master until an operational attempt succeeds. Each owner builds its parts;
+A report is a separate prompt node: it points to its staged report contract,
+revokes operational instructions inline, and carries no master pointer. The
+next operational launch explicitly reopens its master until an operational
+attempt succeeds. Each owner builds its parts;
 `agents/continuation_prompt.py` composes them and `runs/session_master.py` owns
 the durable record.
 

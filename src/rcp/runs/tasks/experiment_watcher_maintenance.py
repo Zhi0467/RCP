@@ -7,7 +7,10 @@ from contextlib import aclosing
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.experiment_loop_prompt import experiment_watcher_maintenance_correction_contract
+from rcp.agents.experiment_loop_prompt import (
+    experiment_watcher_maintenance_correction_contract,
+    experiment_watcher_maintenance_rules,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.history import ReplayHalted
@@ -19,12 +22,13 @@ from rcp.runs.experiment_loop import (
     persist_experiment_watchers_idempotently,
     read_experiment_watcher_outputs,
 )
-from rcp.runs.session_master import record_inline_prompt
+from rcp.runs.session_master import record_inline_prompt, session_master_label
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stream_agent_events,
 )
 from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
@@ -288,9 +292,17 @@ async def _process_experiment_watcher_maintenance(
                     "problem": problem,
                 },
             )
+            rules = experiment_watcher_maintenance_rules(
+                staged.prompt_value(), work_execution_host=execution_host
+            )
             correction_contract = experiment_watcher_maintenance_correction_contract(
-                resource=staged.prompt_value(),
-                work_execution_host=execution_host,
+                watch_path=staged.watch_path,
+                rules_path=_stage_or_reuse_task_input(
+                    local_stage,
+                    remote_stage,
+                    session_master_label("experiment-watcher-rules", rules),
+                    rules,
+                ),
                 diagnostics_path=diagnostics_path,
             )
             if continuation is None:

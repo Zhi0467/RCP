@@ -570,7 +570,6 @@ def _compose_child_fresh_prompt(
     prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        launch_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),
