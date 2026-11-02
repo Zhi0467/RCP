@@ -40,7 +40,8 @@ plus one module per machine.
 
 ## Non-goals
 
-Remote stages and SSH, races between threads, races inside one function, the
+Remote stages and SSH (beyond one patched outage in the episode explorer),
+races between threads, races inside one function, the
 UI, and provider behavior. Each action is atomic. The approval-card tap is not
 split, so its suspected check-then-sync race stays out of reach and is reported
 in the PR body.
@@ -56,24 +57,25 @@ class Machine(Protocol):
     states: int                      # exact state count at that bound
     horizon: int                     # liveness look-ahead, default 3
     covers: Mapping[object, str]     # Literal type -> View field holding its values
-    tables: frozenset[str]           # tables whose rows are this machine's state
+    tables: frozenset[str]           # tables this machine owns (see §2)
     writers: tuple[Callable, ...]    # product functions that change this machine's state
     unreached_values: Mapping[str, str]       # status value -> why no state reaches it
     unreached_writers: Mapping[Callable, str] # writer -> why no action calls it
     rules: tuple[Rule, ...]
-    reboot_per_step: bool            # True for machines that write graph history
 
-    def seams(self) -> ContextManager[None]: ...   # patches for every engine it builds
-    def start(self, root: Path) -> World: ...      # seeded start state in a fresh tree
+    def seams(self) -> ContextManager[None]: ...   # class-level patches, entered once
+    def start(self, root: Path) -> None: ...       # seed the start state into a fresh tree
+    def boot(self, root: Path) -> World: ...       # build store and engine over a tree, with instance patches
     def actions(self, view: View) -> list[Action]: ...
     def apply(self, world: World, action: Action) -> None: ...
     def view(self, world: World) -> View: ...
-    def files(self, world: World) -> list[Path]: ...        # files the state lives in
     def save_memory(self, world: World) -> object: ...      # clock, timers, workers, decided, …
     def restore_memory(self, world: World, saved: object) -> None: ...
 ```
 
-`start(root)` receives a fresh tree; step 1 pulls a plain manifest builder out
+`boot` reapplies instance patches (handoff's `store.now`, `_spawn_record` and
+`_schedule_transport_retry`; consolidation's `background_tasks` launch
+patch) on every call. `start(root)` receives a fresh tree; step 1 pulls a plain manifest builder out
 of the `manifest` fixture in `tests/conftest.py` so `start` can build one.
 
 - `World` holds the live store, engine and clock for one machine run.
@@ -96,31 +98,33 @@ and a `source` (spec heading, invariant number, or "code guard at
   state at depth ≤ bound − horizon, some run of at most `horizon` actions
   from `allowed` reaches it. The default is every environment action except
   restart, so neither a restart nor a member action can hide a stuck state.
-  Each module lists any widened `allowed` set with its reason.
+  Each module lists any widened `allowed` set with its reason. Handoff widens
+  its goal to include restart, as today (crash recovery is restart's job), so
+  its state count stays 106.
 
-**State save and restore.** A state's save is `sqlite3.Connection.backup`
-into an in-memory database, the bytes of `files(world)`, and `save_memory`
-(which always holds the clock and the `store.now` binding).
-- Database-only machines (agent task, schedules) keep one live `World`. A step
-  backs the saved database up into the live store's file after closing its
-  cached connections, rewrites the declared files, and calls
-  `restore_memory`.
-- Machines that write graph history (handoff, episode, consolidation,
-  Proposals) set `reboot_per_step`: a step restores the same bytes, then
-  builds a fresh backend over them, as the handoff explorer does today. A live
-  app would keep stale history caches (`HistoryManager` revisions and
-  engines).
+**State save and restore.** One mode for every machine, as the handoff
+explorer does today: a state's save is a whole-tree copy plus `save_memory`
+(which always holds the clock). A step replaces the tree (`rmtree` then
+`copytree`), calls `boot`, then `restore_memory`. Whole trees mean no file
+list to keep and no file a sibling branch wrote survives; a fresh boot means
+no stale history cache (`HistoryManager` revisions and engines).
 - **Restore check:** for a fixed sample of edges per machine, the test also
   replays the edge's trace from `start` on a fresh tree and asserts the view
-  equals the restored view. A missing file or memory field then fails CI.
+  equals the restored view. A memory field `save_memory` misses then fails CI.
+- A faster live mode (database backup into a running store) is added only if
+  step 1's measurement misses the budget, as a recorded change to this design.
 
-Step 1 measures the cost per edge on handoff (reboot) and on the agent task
-(live), with a target of ≤ 0.02 s live. **Minimum bound:** each machine's bound
-must be at least horizon + 1 and at least the length of its longest suspected
-trace below. Its budget is ≤ 10 s locally (CI runners are about 2× slower).
-When the minimum does not fit, the machine first drops member actions that no
-rule or suspected trace needs, then lowers its horizon to 2, and only then
-exceeds the budget, with the reason in its docstring.
+**Bounds.** Step 1 measures the cost per edge on handoff and records each
+machine's state count as it is built. **Minimum bound:** at least
+horizon + 1, at least the length of every Safety or Step trace a suspected
+defect or witness needs, and at least the depth of every suspected stuck
+state plus the horizon (a Goal is checked only from depth ≤ bound − horizon).
+**Budget:** ≤ 10 s locally per machine, and a hard ceiling of 60 s on CI
+enforced by the faulthandler hang guard (the handoff test's `HANG_SECONDS`,
+lowered from 300 to 60 and shared by every machine's test). When the minimum does not fit the budget,
+the machine first drops member actions that no rule or suspected trace
+needs, then lowers its horizon to 2, and only then records the machine as
+over budget in its docstring; it never exceeds the CI ceiling.
 
 ## 2. Checking the checks
 
@@ -133,47 +137,61 @@ that one `Exploration`:
    reason.
 3. **Every declared writer runs.** During exploration the engine counts calls
    to each function in `writers` with `sys.monitoring` `PY_START` events on
-   that function's code object, so every call counts however it was imported
-   or bound. Each must run at least once, or be in `unreached_writers` with a
-   reason.
+   `inspect.unwrap(f).__code__`, so every call counts however it was imported
+   or bound, and a shared decorator's wrapper code is never counted. Each must
+   run at least once, or be in `unreached_writers` with a reason.
+   `sys.monitoring` exists only from Python 3.12; on the 3.11 shards this one
+   assertion is skipped with that reason. The 3.12 shards of the same PR CI
+   run enforce it, so no change merges unchecked.
 4. **No rule is vacuous.** Each `Safety` and `Step` rule's `applies` was true
    in at least one explored state or edge; each `Goal` was checked from at
    least one state where it was not already reached.
 
 A fifth test, `tests/lifecycles/test_writers.py`, keeps the `writers` lists
-complete. It scans `src/rcp` string literals and f-strings with a regular
-expression for `UPDATE <t>`, `INSERT [OR …] INTO <t>` and `DELETE FROM <t>`,
-plus calls to declared gates (`_transition_agent_task`).
-- A literal `<t>` that is in some machine's or catalog entry's `tables` makes
-  the enclosing function (by AST line range) a writer of that table.
+complete.
+- **Ownership.** Every table holding lifecycle state has exactly one owner: a
+  machine or a catalog entry lists it in `tables`, and no two list the same
+  table. `graph_runs` belongs to the agent task machine; handoff, episode and
+  consolidation read it but do not own it. Declared gates map to their table
+  (`_transition_agent_task` → `graph_runs`).
+- **Scan.** It scans `src/rcp` string literals and f-strings with a regular
+  expression for `UPDATE [OR <word>] <t>`, `INSERT [OR <word>] INTO <t>` and
+  `DELETE FROM <t>`, where `<t>` may be quoted with `"` or a backtick, plus
+  calls to declared gates. The enclosing function (by AST line range) is a
+  writer of `<t>`.
+- **Rule.** Every writer of an owned table appears in its owner's `writers` or
+  in its owner's `unreached_writers` with a reason (for example "driven by
+  the episode explorer"). So the owner accounts for every writer of its
+  table, whichever explorer drives it.
 - An interpolated `<t>` (`{table}`) is an unknown table: its function must be
-  declared somewhere or allowlisted, because the scan cannot tell which
-  machine it touches (project deletion and transfer loop over tables this
-  way).
-- Every such function must appear in some machine's `writers`, in a catalog
-  entry's writers, or in a short allowlist with a reason (migrations,
-  backup-API restores). Listing a writer once anywhere satisfies it.
+  declared by some owner or allowlisted with a reason (project deletion and
+  transfer loop over tables this way). Migrations and backup-API restores sit
+  in the same short allowlist.
 - Blind spots, stated in the test's docstring: a helper that receives the
   table name as an argument, and SQL assembled outside one literal.
 - Its self-test runs the scan on a small sample with an f-string `SET`, an
-  `INSERT OR REPLACE`, an interpolated `{table}`, a gate call and a
-  `WHERE`-only mention, and asserts the exact set found.
+  `INSERT OR REPLACE`, `UPDATE OR IGNORE {table}`, `DELETE FROM "{table}"`, a
+  gate call and a `WHERE`-only mention, and asserts the exact set found.
 
 **Witnesses.** A rule gets a witness only where one is free: a real fix that a
 seam can revert, or a trace this PR confirms. The witness is a seam patch (the
 same seams existing tests patch) or a seeded bad state, never a copied old
 function body. For `Safety` and `Step` rules the witness replays its trace
-with the patch and asserts the rule reports. For `Goal` rules it runs a
-bounded exploration (bound ≤ 3) under the patch and asserts the goal reports.
-Starting witnesses, each with its seam:
+with the patch and asserts that named rule reports. For `Goal` rules it runs
+the machine's own exploration under the patch and asserts that named goal
+reports. Rules read engine state directly (`_workers`, `_retry_decided`),
+never through a function a witness stubs. Starting witnesses, each with its
+seam:
 - handoff: stub `BackgroundAgentTasks._rearm_owed_transport_retries` to a
-  no-op (reverts `3cb576199`); stub `retry_undecided` to return False
-  (reverts the #368 race fix);
+  no-op (reverts `3cb576199`); stub `retry_undecided` to return False, which
+  changes only the product call in `runs/agent_thread_commands.py` (reverts
+  the #368 race fix);
 - consolidation: seed the 0.4.35 queued request with `graph_target`
   (`b12897489`) and a legacy archived consolidation chat row (`09f7519f6`);
   both are seeded bad states, not code patches;
-- episode: stub `settle_ready_experiment_loop_stops` to skip failed and
-  paused leaves (reverts `e87b06f58`).
+- episode: wrap `_experiment_stop_unresolved_tasks` so its failed and paused
+  rows report as running, which makes `_settle_experiment_loop_stop` treat
+  them as live (reverts `e87b06f58`).
 Each builder confirms its seam reverts the fix before keeping the witness;
 one that cannot be reverted by a seam is dropped.
 
@@ -186,7 +204,11 @@ builder into the module and importing it from both places.
 Moved from `tests/lifecycle_explorer.py`; `tests/test_lifecycle_handoff.py`
 becomes `tests/lifecycles/test_handoff.py`, and both old files are deleted.
 Adds a clock-expiry action (attachment expiry), which makes the
-stood-down-retry defect of `3ef7773ec` reachable.
+stood-down-retry defect of `3ef7773ec` reachable. The start state's delivered
+turn carries one attachment descriptor whose `expires_at` is set from the
+explorer clock, and `seams` patches the `datetime` that
+`rcp.storage.rows._chat_attachments_expired` reads so its `now` is the
+explorer clock.
 
 ### Agent task (`tests/lifecycles/agent_task.py`)
 - **Start:** `BackgroundAgentTasks(store, _done_stream)` over the `_store`
@@ -219,7 +241,9 @@ stood-down-retry defect of `3ef7773ec` reachable.
   Stop retires only the current episode's observations.
 - **Suspected:** startup leaves a Stop recovery pending on a transient remote
   outage, then `settle_ready_experiment_loop_stops` abandons the interrupted
-  turn anyway.
+  turn anyway. The outage action seeds the leaf's `stage_host` and patches
+  `RemoteRunStage.directory_exists` to raise (`runs/experiment_recovery.py`);
+  nothing else is remote.
 
 ### Agent schedules (`tests/lifecycles/schedules.py`)
 - **Start:** the `schedule_store` fixture of `tests/test_agent_schedules.py`,
@@ -250,9 +274,11 @@ stood-down-retry defect of `3ef7773ec` reachable.
 ### Proposals with approval cards (`tests/lifecycles/proposals.py`)
 - **Start:** the `filed` fixture of `tests/test_proposal_refresh.py`, moved to
   a plain builder, plus one card built as `real_card(api, action)` in
-  `tests/test_approval_cards.py` does, with `api` from `questions_api` over the
-  same app and `action = {"kind": "proposal", "project_id": …,
-  "proposal_id": PROPOSAL, "decision": "approved"}`.
+  `tests/test_approval_cards.py` does. `api` is the tuple
+  `(app, signed_in_client(app), store, project_id)` over `filed`'s app with
+  `reconcile_question_answers = Mock()`, rebuilt on each `boot`; `action =
+  {"kind": "proposal", "project_id": …, "proposal_id": PROPOSAL, "decision":
+  "approved"}`.
 - **Actions:** agent files, agent withdraws, a dependency moves, member
   approves or rejects through Sync, refresh, ask card, tap (approve | decline
   | old hash), outage tap, claim then restart, expire, close thread.
@@ -269,11 +295,12 @@ removal, enrollment codes, device pairing, project invitation, Auto-research
 recovery, Auto-research children, episode isolation and merge, conversation
 worktree, branch merge, compute job, paper changes, paper live, mirrored
 terminal, artifact, server step journal, restore, project deletion; episode
-wrap-up belongs to the episode explorer). Each entry references the real
-objects directly: its status `Literal` type (or the column name where none
-exists), its writer functions as imported callables, and its rules as named
-objects with docstrings and sources. Import and basedpyright check the
-references; the writer scan of §2 counts the catalog's writers as declared.
+wrap-up belongs to the episode explorer). Each entry is a frozen dataclass
+`Entry(name, status, tables, writers, rules)`: `status` is the status
+`Literal` type or the column name where none exists, `tables` the tables it
+owns, `writers` imported callables, and `rules` named objects with docstrings
+and sources. Import and basedpyright check the references; the writer scan of
+§2 treats an entry as the owner of its tables.
 
 ## 5. Defects
 
@@ -289,36 +316,40 @@ A suspected defect the explorer cannot reach goes into the PR body with why.
 ## Ownership, order, and checks
 
 Shared and serial: `tests/lifecycles/engine.py`, `tests/conftest.py`,
-`pyproject.toml`. Fixture moves touch each machine's existing test file; that
-file belongs to the machine's step.
+`tests/shards.py`, `pyproject.toml`, and `tests/lifecycles/test_writers.py`.
+Fixture moves touch each machine's existing test file; that file belongs to
+the machine's step.
 
 | Step | Owner files | Check |
 |---|---|---|
-| 1 | `tests/lifecycles/{__init__,engine,handoff,test_handoff}.py`, delete the two old files; measured cost per edge | `uv run pytest -n0 tests/lifecycles/test_handoff.py` |
-| 2 | completeness assertions and `test_writers.py`, against handoff; writers of other machines' tables sit in a temporary allowlist section | the two files |
+| 1 | `tests/lifecycles/{__init__,engine,handoff,test_handoff}.py`, delete the two old files; manifest builder; explorer weights in `tests/shards.py`; measured cost per edge | `uv run pytest -n0 tests/lifecycles/test_handoff.py` (still 106 states) |
+| 2 | completeness assertions and `test_writers.py`, against handoff; writers of tables no machine owns yet sit in a temporary allowlist section | the two files |
 | 3a | `agent_task.py`, its test, `tests/test_background.py` builder move, fixes | its test, `tests/test_background.py`, tests for touched product modules |
 | 3b | `episode.py`, its test, `tests/test_experiment_stop.py` builder move, fixes | likewise |
 | 3c | `schedules.py`, its test, `tests/test_agent_schedules.py` builder move, fixes | likewise |
 | 3d | `consolidation.py`, its test, `tests/test_consolidation_runtime.py` builder move, fixes | likewise |
 | 3e | `proposals.py`, its test, `tests/test_proposal_refresh.py` and `tests/test_approval_cards.py` builder moves, fixes | likewise |
 | 4 | `catalog.py` | `test_writers.py` and basedpyright |
-| 5 | `docs/install.md` command, spec links, delete this file | `test_agent_instructions.py` |
+| 5 | integrator: removes each merged step's entries from the temporary allowlist, then deletes the empty section | `test_writers.py` |
+| 6 | `docs/install.md` command, spec links, delete this file | `test_agent_instructions.py` |
 
-Steps 1 and 2 are serial. Each step 3 and step 4 moves its machine's writers
-out of the temporary allowlist section; the last integration step asserts that
-section is empty and deletes it. Steps 3a–3e run in parallel, each in its own
-worktree, after step 2; step 4 runs alongside them. The integrator serializes
-defect fixes that touch the same product module.
+Steps 1 and 2 are serial. Steps 3a–3e run in parallel, each in its own
+worktree, after step 2; step 4 runs alongside them. Those steps never edit
+`test_writers.py`: each reports which of its machine's writers it now owns,
+and the integrator (step 5) removes those entries when merging it. The
+integrator also serializes defect fixes that touch the same product module.
 
 ## Risks
 
-- **CI time.** Six machines at ≤ 20 s on CI is about two minutes. Each machine
-  has its own test file, so `--dist loadfile` spreads them across workers.
+- **CI time.** Each machine is ≤ 10 s locally and capped at 60 s on CI, and
+  the suite runs once per Python version (3.11 and 3.12). `tests/shards.py`
+  weighs files by size, which underweights these small slow files, so step 1
+  gives the explorer files a fixed weight there; `--dist loadfile` then
+  spreads them across workers.
 - **Exact state counts** break on view changes; that is deliberate, and the
   failure names the new count.
-- **Timing on loaded runners.** Bounds are set against the local budget,
-  which is half the CI one; each machine's test also sets the faulthandler
-  hang guard the handoff test uses.
+- **Timing on loaded runners.** Bounds are set against the local budget, well
+  under the CI ceiling.
 - **Coupling.** Explorers patch private engine seams; an engine refactor must
   keep them green.
 - **Fix scope.** Eight suspected defects may grow the PR; each fix is its own
