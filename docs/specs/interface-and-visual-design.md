@@ -22,16 +22,44 @@ Expanded detail and unavailable artifacts do not.
 Artifact preview targets span the row. Source chat is a separate target.
 Type, status, warning, and focus remain distinct.
 
-Display places Mode (System, Light, or Dark) above Theme (Classic or Aqua).
-The settings are independent. They are remembered per origin, applied before
-paint, and shared across projects. System follows the OS appearance.
+**Snowbound** is an 8-bit cabin in snowy woods: a snowy day in Light mode and a
+starry night in Dark mode. It shares Aqua's element rules and swaps their
+materials for pixel ones. Only Aqua's own light and dark token blocks stay
+Aqua-only, so the two themes keep one structure and cannot drift. Corners are
+square everywhere; one theme-wide rule does this because the app has no radius
+token. Frames are 2px with the corner pixels knocked out. Shadows are hard and
+unblurred, offset down and right. Controls rise a pixel on hover and press into
+their shadow on click, with the usual short transitions. The selected tab,
+segment, or Settings section is a lit square inside the notched frame. Focus is
+a dashed outline in the accent color.
+
+On the space home, Snowbound draws a band of pixel woods with the cabin centered
+at every width, and slow pixel snow falls behind the content. On the Projects
+tab the band sits at the page bottom, below padding that keeps it clear of
+cards and Runs. On the Agent tab the band is fixed to the window floor behind
+the chat, and the chat keeps a solid background over it. On windows wider than
+a phone and at least 700px tall, the chat stops 128px above the bottom so the
+woods show; phones and short windows give the chat the full height. The scene
+sits behind the content without a new stacking context, so space-home dialogs
+stay above the voice window.
+
+The Appearance pane of
+[Space Settings](api-web-and-desktop-projections.md#paper-settings-and-history)
+places Mode (System, Light, or Dark) above Theme (Classic, Aqua, or Snowbound).
+The desktop app adds Text size. The settings are independent. They are
+remembered per origin, applied before paint, and shared across projects. System follows the OS appearance.
 The defaults are the Aqua theme and System mode.
 Legacy mode choices retain their mode in Aqua. Soft Aqua becomes Aqua in Light mode.
 The unified logo contains RCP once, without a redundant initial tile.
 
 Every theme sets interface and display text in Figtree and code in JetBrains
-Mono. Both are pinned packages bundled into the web build, so the desktop app
-needs no font install.
+Mono. Snowbound is the one exception: it sets short titles in Pixelify Sans.
+These are the space and group titles on the space home, the space Runs
+heading, project and group tile titles, Settings section titles, and Settings
+rail labels. Long research text reads slower in a pixel face, so
+questions, node text, chat, Paper, and data stay in Figtree. All three fonts are
+pinned packages bundled into the web build, so the desktop app needs no font
+install.
 
 ## No commentary lines
 
@@ -53,6 +81,8 @@ or textarea placeholders. Empty conversations are empty.
 State changes are smooth, never choppy. Loading, polling, and switching keep
 their layout: no content jumps, no flicker between states, and no row that
 resizes when its data arrives. Transitions are short and honor reduced motion.
+Ambient decoration, such as Snowbound's snowfall, may move continuously when it
+sits behind content and never shifts layout. It stops under reduced motion.
 
 ## Phone layout
 
