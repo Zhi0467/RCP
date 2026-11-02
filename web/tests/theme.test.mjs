@@ -17,11 +17,12 @@ import {
 import { appStylesheet } from "./appStylesheet.mjs";
 
 test("theme and color mode normalize independently with Aqua and System defaults", () => {
-  for (const value of [null, undefined, "", "sepia", "dark", "system"]) {
+  for (const value of [null, undefined, "", "sepia", "dark", "system", "Snowbound"]) {
     assert.equal(normalizeThemeChoice(value), "aqua");
   }
-  assert.equal(normalizeThemeChoice("aqua"), "aqua");
-  assert.equal(normalizeThemeChoice("classic"), "classic");
+  for (const choice of ["classic", "aqua", "snowbound"]) {
+    assert.equal(normalizeThemeChoice(choice), choice);
+  }
   for (const value of [null, undefined, "", "aqua"]) {
     assert.equal(normalizeColorModeChoice(value), "system");
   }
@@ -42,6 +43,10 @@ test("legacy preferences adopt Aqua while preserving mode, and saved themes take
   });
   assert.deepEqual(readStoredAppearance('{"theme":"aqua","mode":"dark"}', "light"), {
     theme: "aqua",
+    mode: "dark",
+  });
+  assert.deepEqual(readStoredAppearance('{"theme":"snowbound","mode":"dark"}', "aqua"), {
+    theme: "snowbound",
     mode: "dark",
   });
   assert.deepEqual(readStoredAppearance('{"theme":"aqua","mode":"invalid"}', "dark"), {

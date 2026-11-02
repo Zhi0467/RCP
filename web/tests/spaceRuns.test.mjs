@@ -113,6 +113,8 @@ test("every space lifecycle badge color pair meets WCAG AA contrast in every the
     "aqua-light",
     "classic-dark",
     "classic-light",
+    "snowbound-dark",
+    "snowbound-light",
   ]);
   for (const [theme, palette] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
     assert.deepEqual(

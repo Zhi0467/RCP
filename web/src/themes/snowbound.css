@@ -265,9 +265,15 @@
   background-image: url("./snowbound-woods-dark.svg");
 }
 
-/* Behind Pip's chat the band stays on the viewport floor. */
+/* Behind Pip's chat the band stays on the viewport floor. The chat window
+   keeps the paper the shell no longer paints, so it overlays the band even
+   before a thread opens. */
 :root[data-theme="snowbound"] .landing-shell.agent-mode::after {
   position: fixed;
+}
+
+:root[data-theme="snowbound"] .space-agent {
+  background: var(--paper);
 }
 
 /* Snowfall: one 96px tile of flakes drifting on its own layer. It moves by
