@@ -863,3 +863,41 @@ test("chat activity refreshes name projections without refetching graph or inven
   );
   store.release("view");
 });
+
+test("agent-thread watchers ride the beat with no project open, and only while watching", async () => {
+  const time = fakeClock();
+  const requests = [];
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [],
+    activeProjectId: () => null,
+    send: async (request) => {
+      requests.push(request);
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [],
+        unavailable: [],
+        agent_threads: { version: "v" },
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  await time.advance(2500);
+  assert.equal(requests.length, 0);
+  const seen = [];
+  const unwatch = scheduler.watchAgentThreads((version) => seen.push(version));
+  await time.advance(2500);
+  assert.ok(requests.length >= 2 && requests.every((request) => request.agent_threads === true));
+  assert.equal(seen.length, requests.length);
+  assert.ok(seen.every((version) => version === "v"));
+  unwatch();
+  const before = requests.length;
+  await time.advance(2500);
+  assert.equal(requests.length, before);
+  scheduler.stop();
+});

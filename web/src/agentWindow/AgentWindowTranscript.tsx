@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
 import {
   isActiveTask,
@@ -124,6 +124,10 @@ export function AgentWindowTranscript({
   );
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
   const relatedActive = relatedTasks.some(isActiveTask);
+  const taskById = useMemo(
+    () => new Map(relatedTasks.map((task) => [task.operation_id, task])),
+    [relatedTasks],
+  );
   const toggleHumanMessage = (messageId: string) =>
     setExpandedHumanMessageIds((current) => {
       const next = new Set(current);
@@ -145,7 +149,7 @@ export function AgentWindowTranscript({
           );
         const line = entry.line;
         const messageId = line.lineId;
-        const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
+        const task = taskById.get(line.taskId);
         const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
         const pausedLineTask =
           !line.steering &&
@@ -181,6 +185,7 @@ export function AgentWindowTranscript({
             <div
               className={`node-chat-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
               data-source={line.source ?? undefined}
+              data-task-id={line.taskId}
             >
               {lineLead?.(line, task)}
               {browserNotices && (
@@ -380,10 +385,7 @@ export function AgentWindowTranscript({
                       }
                       repairContinued={continuedTaskIds.has(line.taskId)}
                       latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
-                      canApplyAgain={
-                        relatedTasks.find((task) => task.operation_id === line.taskId)
-                          ?.can_apply_again === true
-                      }
+                      canApplyAgain={taskById.get(line.taskId)?.can_apply_again === true}
                       repairError={repairErrors.get(line.taskId) ?? null}
                       onInspectTask={onInspectTask}
                       onOpenInbox={onOpenInbox}

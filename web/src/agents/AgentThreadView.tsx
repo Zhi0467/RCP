@@ -14,7 +14,15 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -99,14 +107,32 @@ import {
   setThreadSchedulePaused,
 } from "./agentThreadsApi";
 
-/** A live turn is checked this often; a quiet thread follows its rail row instead. */
+/** A live turn's task is read this often while the page shows; the rest follows the watermark. */
 const LIVE_POLL_MS = 2_000;
 const NO_QUESTIONS: AgentQuestion[] = [];
 const NO_SCHEDULES: AgentSchedule[] = [];
 const NO_MESSAGES: ChatMessage[] = [];
 
-/** Load settled turn details in bounded batches, newest first. */
-const TURN_BATCH_SIZE = 12;
+/** A turn's detail loads once its row comes this close to the view. */
+const TURN_DETAIL_MARGIN = "600px 0px";
+
+/** The first row showing at the top of the transcript, and where it sits. */
+function topRow(root: HTMLElement | null): { row: HTMLElement; top: number } | null {
+  if (!root) return null;
+  const edge = root.getBoundingClientRect().top;
+  for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line")) {
+    const box = row.getBoundingClientRect();
+    if (box.bottom > edge) return { row, top: box.top };
+  }
+  return null;
+}
+
+/** Reloads that changed nothing keep their old value, so the transcript does not re-render. */
+function unchanged<T>(previous: T | undefined, next: T): T {
+  return previous !== undefined && JSON.stringify(previous) === JSON.stringify(next)
+    ? previous
+    : next;
+}
 
 type Picker = { source: AgentConfigSource; value: AgentRunConfig } | null;
 
@@ -652,21 +678,46 @@ export function AgentThreadView({
       const latestTask = turnId ? await owner.loadTask(turnId) : null;
       if (!fresh()) return;
       refreshSeq.current.shown = seq;
-      setLoaded((known) =>
-        new Map(known).set(current.thread_id, {
+      setLoaded((known) => {
+        const previous = known.get(current.thread_id);
+        const next = {
           threadId: current.thread_id,
-          messages: transcript.messages,
-          questions: asked,
-          latest: latestTask,
+          messages: unchanged(previous?.messages, transcript.messages),
+          questions: unchanged(previous?.questions, asked),
+          latest: unchanged(previous?.latest, latestTask),
           finishedAt: current.last_finished_at,
-        }),
-      );
+        };
+        return previous &&
+          next.messages === previous.messages &&
+          next.questions === previous.questions &&
+          next.latest === previous.latest &&
+          next.finishedAt === previous.finishedAt
+          ? known
+          : new Map(known).set(current.thread_id, next);
+      });
       setFreshThreadId(current.thread_id);
       setLoadError(null);
     } catch (failure) {
       if (fresh()) setLoadError({ threadId: current.thread_id, text: errorMessage(failure) });
     }
   }, []);
+  // Watermark moves reload one at a time; a move during a reload runs it once more after.
+  // A send's own reload never waits behind them.
+  const reloading = useRef<{ threadId: string; again: boolean } | null>(null);
+  const reloadOnce = useCallback(async () => {
+    const threadId = threadRef.current.thread_id;
+    if (reloading.current?.threadId === threadId) {
+      reloading.current.again = true;
+      return;
+    }
+    const entry = { threadId, again: false };
+    reloading.current = entry;
+    do {
+      entry.again = false;
+      await refresh();
+    } while (entry.again && threadRef.current.thread_id === threadId);
+    if (reloading.current === entry) reloading.current = null;
+  }, [refresh]);
 
   const refreshSchedules = useCallback(async () => {
     const current = threadRef.current;
@@ -684,47 +735,113 @@ export function AgentThreadView({
     setRenaming(false);
   }, [thread.thread_id]);
   useEffect(() => {
-    void refresh();
+    void reloadOnce();
     void refreshSchedules();
-  }, [refresh, refreshSchedules, thread.thread_id, revision]);
+  }, [reloadOnce, refreshSchedules, thread.thread_id, revision]);
 
-  // While a turn runs, its progress and outcome are polled until it settles.
-  const live = latest?.active ?? false;
+  // While a turn runs, only its task is read, one read at a time and never while the
+  // page is hidden; its settling reloads the thread for the outcome.
+  const liveTaskId = latest?.active ? latest.operation_id : null;
   useEffect(() => {
-    if (!live) return;
-    const timer = window.setInterval(() => void refresh(), LIVE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [live, refresh]);
+    if (!liveTaskId) return;
+    const threadId = threadRef.current.thread_id;
+    const owner = endpointsRef.current;
+    let stopped = false;
+    let reading = false;
+    let timer: number | undefined;
+    const beat = async () => {
+      window.clearTimeout(timer);
+      if (stopped || reading || document.visibilityState === "hidden") return;
+      reading = true;
+      try {
+        const task = await owner.loadTask(liveTaskId);
+        if (stopped) return;
+        setLoaded((known) => {
+          const view = known.get(threadId);
+          if (view?.latest?.operation_id !== liveTaskId) return known;
+          const latest = unchanged(view.latest, task);
+          return latest === view.latest ? known : new Map(known).set(threadId, { ...view, latest });
+        });
+        if (!task.active) void refresh();
+      } catch {
+        // The next beat reads it again.
+      } finally {
+        reading = false;
+      }
+      if (!stopped) timer = window.setTimeout(() => void beat(), LIVE_POLL_MS);
+    };
+    const onVisibility = () => void beat();
+    document.addEventListener("visibilitychange", onVisibility);
+    timer = window.setTimeout(() => void beat(), LIVE_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [liveTaskId, refresh]);
 
-  // Settled turns never change, so each is kept once fetched. A failed read changes
-  // nothing here and is tried again when the transcript next loads.
+  // A turn's detail loads once, when its row nears the view. A failed or unsettled
+  // read is tried again only after the watermark moves.
+  const historyTurnIds = useMemo(
+    () => new Set(messages?.flatMap((message) => message.operation_id ?? []) ?? []),
+    [messages],
+  );
+  const [nearTurns, setNearTurns] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    const root = linesRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) =>
+        setNearTurns((known) => {
+          const next = new Set(known);
+          for (const entry of entries) {
+            const id = (entry.target as HTMLElement).dataset.taskId!;
+            if (entry.isIntersecting) next.add(id);
+            else next.delete(id);
+          }
+          return next.size === known.size && [...next].every((id) => known.has(id)) ? known : next;
+        }),
+      { root, rootMargin: TURN_DETAIL_MARGIN },
+    );
+    for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line[data-task-id]"))
+      observer.observe(row);
+    return () => observer.disconnect();
+  }, [lines.transcript]);
+  // A loaded turn can grow a row above the reader; the row at the top stays where it was.
+  const readerAnchor = useRef<{ row: HTMLElement; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const anchor = readerAnchor.current;
+    readerAnchor.current = null;
+    if (anchor && linesRef.current)
+      linesRef.current.scrollTop += anchor.row.getBoundingClientRect().top - anchor.top;
+  }, [turnTasks]);
+  const triedTurns = useRef(new Set<string>());
+  useEffect(() => {
+    triedTurns.current.clear();
+  }, [revision]);
   const latestId = latest?.operation_id ?? null;
   useEffect(() => {
-    if (!messages) return;
-    const wanted = [
-      ...new Set(
-        messages.filter((message) => message.operation_id).map((message) => message.operation_id!),
-      ),
-    ]
-      .filter((id) => !turnTasks.has(id) && id !== latestId)
-      .slice(-TURN_BATCH_SIZE);
+    const wanted = [...nearTurns].filter(
+      (id) =>
+        historyTurnIds.has(id) &&
+        id !== latestId &&
+        !turnTasks.has(id) &&
+        !triedTurns.current.has(id),
+    );
     if (!wanted.length) return;
+    for (const id of wanted) triedTurns.current.add(id);
     const owner = endpointsRef.current;
-    let current = true;
     void Promise.all(wanted.map((id) => owner.loadTask(id).catch(() => null))).then((tasks) => {
-      if (!current) return;
       const settled = tasks.filter((task): task is AgentTask => Boolean(task?.settled));
       if (!settled.length) return;
+      readerAnchor.current = followRef.current ? null : topRow(linesRef.current);
       setTurnTasks((known) => {
         const next = new Map(known);
         for (const task of settled) next.set(task.operation_id, task);
         return next;
       });
     });
-    return () => {
-      current = false;
-    };
-  }, [messages, turnTasks, latestId]);
+  }, [nearTurns, historyTurnIds, turnTasks, latestId, followRef]);
 
   // Reading marks the thread read through the turn its reloaded transcript shows.
   const newest = view?.finishedAt ?? null;

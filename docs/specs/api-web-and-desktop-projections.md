@@ -34,7 +34,11 @@ Triggers bump only the owning member on that member's thread rows, thread turns,
 reads, names, browser choice, thread questions, approval cards, schedules,
 project membership and handoff creation, delivery and settlement. A turn's file-backed transcript
 append publishes through its task row; a voice append bumps the owner's counter
-directly. A changed version reloads the thread list and the open thread.
+directly. The refresh scheduler asks for it on its own beat while a thread list
+is shown, with or without an open project. A changed version reloads the thread
+list and the open thread's transcript and questions. While the open thread's turn
+runs, only that task is read, every 2 s while the page shows, one read at a time.
+Earlier turns load their task detail once, when their row nears the view.
 Task, episode timeline, run-artifact, Bulletin and digest profiles also watch
 project `chats`; the client combines that token with the resource's own version.
 Graph snapshots, history, refs and episode inventories do not watch `chats`, so

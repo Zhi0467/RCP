@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, ExternalLink, File } from "lucide-react";
 import { api } from "../core/api";
 import { isDesktopRuntime } from "../core/desktopRuntime";
@@ -53,6 +53,10 @@ export function useAgentWindowArtifacts({
   repositories?: ProjectSnapshot["repositories"];
 }) {
   const { annotations } = comments;
+  const taskById = useMemo(
+    () => new Map(relatedTasks.map((task) => [task.operation_id, task])),
+    [relatedTasks],
+  );
   const ownerRef = useRef({ key: endpoints.scopeKey });
   if (ownerRef.current.key !== endpoints.scopeKey) ownerRef.current = { key: endpoints.scopeKey };
   const owner = ownerRef.current;
@@ -282,7 +286,7 @@ export function useAgentWindowArtifacts({
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
             await openArtifact(owner, artifact);
           } else {
-            if (!relatedTasks.some((candidate) => candidate.operation_id === owner))
+            if (!taskById.has(owner))
               await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
             if (!isCurrent()) return;
             const card = document.getElementById(`artifact-${owner}-${artifact.artifact_id}`);
@@ -342,7 +346,7 @@ export function useAgentWindowArtifacts({
 
   // A task's descriptors from the recent list or the on-demand cache; undefined until loaded.
   const knownTaskArtifacts = (taskId: string) => {
-    const task = relatedTasks.find((candidate) => candidate.operation_id === taskId);
+    const task = taskById.get(taskId);
     if (task) return taskArtifacts(task);
     const aged = agedInlineArtifacts.get(taskId);
     return Array.isArray(aged) ? aged : undefined;
@@ -471,8 +475,7 @@ export function useAgentWindowArtifacts({
           return null;
         if (artifact.view === "video" && artifact.available && artifact.can_open)
           return renderArtifactPlayer(line.taskId, artifact.name, artifact, artifact.name);
-        const taskUpdatedAt =
-          relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
+        const taskUpdatedAt = taskById.get(line.taskId)?.updated_at ?? "";
         const previewFailed = failedArtifactPreviews.has(`${line.taskId}:${artifact.artifact_id}`);
         const unavailable = !artifact.available;
         const unavailableReason =
