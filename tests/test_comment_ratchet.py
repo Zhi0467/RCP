@@ -37,6 +37,7 @@ def test_allowed_comments_are_not_counted() -> None:
         "z = 1  # pyright: ignore[reportGeneralTypeIssues]\n"
         "w = 2  # basedpyright: ignore\n"
         "# fmt: off\n"
+        "if x:  # pragma: no cover\n"
     )
 
     assert ratchet.count_comments(source) == 0

@@ -3,9 +3,9 @@
 
 Code carries no comments: name it, test it, or put the why in the owning spec.
 Allowed are invariant citations (``invariant 10f``), lint pragmas (``noqa``,
-``type: ignore``, ``pyright:``, ``basedpyright:``, ``fmt:``), and the shebang
-and encoding lines. Docstrings are strings, not comments. Each banned comment
-line counts once.
+``type: ignore``, ``pyright:``, ``basedpyright:``, ``fmt:``, coverage
+``pragma:``), and the shebang and encoding lines. Docstrings are strings, not
+comments. Each banned comment line counts once.
 
 ``.ratchet/baseline.json`` records ``{file: {rule: count}}``, sorted, one file
 per line, so concurrent branches merge by line. A run fails when a file's count
@@ -37,7 +37,7 @@ BASELINE = ROOT / ".ratchet" / "baseline.json"
 RULE = "comment"
 
 _ALLOWED = re.compile(
-    r"(?i)invariant \d+[a-z]?|\bnoqa\b|\btype:\s*ignore\b|\b(?:based)?pyright:|\bfmt:"
+    r"(?i)invariant \d+[a-z]?|\bnoqa\b|\btype:\s*ignore\b|\b(?:based)?pyright:|\bfmt:|\bpragma:"
 )
 _ENCODING = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+")
 
