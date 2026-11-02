@@ -34,7 +34,7 @@ import { spaceHomeHash } from "./spaceHome";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { SpaceRuns } from "../experiments/SpaceRuns";
-import type { AppearancePickerProps, TextScaleControl } from "../ui/AppearancePicker";
+import type { SpaceSettingsSectionId } from "./SpaceSettings";
 import type { ArchiveEpisodeAction } from "../experiments/EpisodeRunControls";
 import { LandingIdentityMenu } from "./LandingIdentityMenu";
 import { ProjectDock } from "./ProjectDock";
@@ -61,7 +61,7 @@ const AgentHome = lazy(() =>
   import("../agents/AgentHome").then((module) => ({ default: module.AgentHome })),
 );
 
-interface Props extends AppearancePickerProps {
+interface Props {
   palette: ResolvedTheme;
   projects: ProjectCard[];
   groups: ProjectGroup[];
@@ -85,11 +85,10 @@ interface Props extends AppearancePickerProps {
   identityError: string | null;
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
-  onOpenSpaceSettings?: () => void;
+  onOpenSpaceSettings?: (section?: SpaceSettingsSectionId) => void;
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
   /** The page's voice session, which a thread's mic binds to that thread. */
   voice: VoiceAgent;
-  textScale?: TextScaleControl;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -368,11 +367,6 @@ export function ProjectLanding({
   onOpenSpaceSettings,
   onOpenSignIns,
   voice,
-  textScale,
-  themeChoice,
-  colorModeChoice,
-  onThemeChoiceChange,
-  onColorModeChoiceChange,
   palette,
 }: Props) {
   const [groupId, setGroupId] = useState(() =>
@@ -627,7 +621,7 @@ export function ProjectLanding({
             type="button"
             aria-label="Space settings"
             title="Space settings"
-            onClick={onOpenSpaceSettings}
+            onClick={() => onOpenSpaceSettings()}
           >
             <Settings size={16} aria-hidden="true" />
           </button>
@@ -637,13 +631,6 @@ export function ProjectLanding({
           identityError={identityError}
           onRequestName={onRequestIdentityName}
           onAddTeamSpace={desktop ? () => setAddTeamOpen(true) : undefined}
-          appearance={{
-            themeChoice,
-            colorModeChoice,
-            onThemeChoiceChange,
-            onColorModeChoiceChange,
-          }}
-          textScale={textScale}
         />
       </header>
 
@@ -665,7 +652,10 @@ export function ProjectLanding({
         </main>
       ) : (
         <main className="landing-main">
-          <MachinePowerWarning status={machinePower.status} onOpenSettings={onOpenSpaceSettings} />
+          <MachinePowerWarning
+            status={machinePower.status}
+            onOpenSettings={onOpenSpaceSettings && (() => onOpenSpaceSettings("this-mac"))}
+          />
           {machinePower.error && <p role="alert">{machinePower.error}</p>}
           <ProviderLoginNotice
             // Another member's own login is theirs to sign in, not this viewer's notice.

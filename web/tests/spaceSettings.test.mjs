@@ -274,43 +274,55 @@ function settingsProject() {
   };
 }
 
-const sectionClasses = (html) =>
-  [
-    "server-settings",
-    "space-machine-settings",
-    "transcription-settings",
-    "space-cache-settings",
-    "display-settings",
-    "provider-path-settings",
-    "boundary-settings",
-    "skill-settings",
-    "agent-defaults",
-    "cache-settings",
-  ].filter((name) => new RegExp(`class="[^"]*\\b${name}\\b`).test(html));
+// Each rail pane in order, and the one pane a fresh page shows.
+const panes = (html) => {
+  const found = [...html.matchAll(/data-settings-pane="([^"]+)"( hidden="")?/g)];
+  return {
+    ids: found.map((match) => match[1]),
+    shown: found.filter((match) => !match[2]).map((match) => match[1]),
+  };
+};
+
+const appearance = {
+  themeChoice: "classic",
+  colorModeChoice: "system",
+  onThemeChoiceChange() {},
+  onColorModeChoiceChange() {},
+};
+
+const spaceSettings = (spaceKind, props = {}) =>
+  renderMarkup(
+    React.createElement(SpaceSettings, {
+      spaceKind,
+      appearance,
+      cacheProjectId: projectId,
+      cacheClearDisabled: false,
+      onAllCachesCleared() {},
+      onClose() {},
+      ...props,
+    }),
+  );
 
 test("space-wide sections render on space Settings and project sections on project Settings", () => {
-  const space = (spaceKind) =>
-    renderMarkup(
-      React.createElement(SpaceSettings, {
-        spaceKind,
-        cacheProjectId: projectId,
-        cacheClearDisabled: false,
-        onAllCachesCleared() {},
-        onClose() {},
-      }),
-    );
-  assert.deepEqual(sectionClasses(space("team")), [
-    "server-settings",
-    "space-machine-settings",
-    "transcription-settings",
-    "provider-path-settings",
+  // This Mac stays in a personal space's rail while its status loads.
+  assert.deepEqual(panes(spaceSettings("team")), {
+    ids: ["appearance", "server", "machines", "voice"],
+    shown: ["appearance"],
+  });
+  assert.deepEqual(panes(spaceSettings("personal")), {
+    ids: ["appearance", "this-mac", "machines", "voice", "caches"],
+    shown: ["appearance"],
+  });
+  assert.deepEqual(panes(spaceSettings("personal", { cacheProjectId: null })).ids, [
+    "appearance",
+    "this-mac",
+    "machines",
+    "voice",
   ]);
-  assert.deepEqual(sectionClasses(space("personal")), [
-    "space-machine-settings",
-    "transcription-settings",
-    "space-cache-settings",
-    "provider-path-settings",
-    "cache-settings",
+  assert.deepEqual(panes(spaceSettings("team", { initialSection: "voice" })).shown, ["voice"]);
+  // A section the space lacks opens the first one.
+  assert.deepEqual(panes(spaceSettings("team", { initialSection: "caches" })).shown, [
+    "appearance",
   ]);
 
   for (const spaceKind of ["personal", "team"]) {
@@ -330,15 +342,22 @@ test("space-wide sections render on space Settings and project sections on proje
       }),
     );
     assert.match(html, /data-settings-level="project"/);
-    assert.deepEqual(sectionClasses(html), [
-      "provider-path-settings",
-      "boundary-settings",
-      "skill-settings",
-      "agent-defaults",
-      "cache-settings",
-    ]);
+    assert.deepEqual(panes(html), {
+      ids: [
+        "usage",
+        "members",
+        "repos",
+        "machines",
+        "notifications",
+        "consolidation",
+        "agent-defaults",
+        "skills",
+        "cache",
+      ],
+      shown: ["usage"],
+    });
     assert.match(html, /data-machine-action="add-machine"/);
-    assert.doesNotMatch(html, /app-cache-danger-row/);
+    assert.doesNotMatch(html, /app-cache-danger-row|appearance-picker/);
   }
 });
 
@@ -383,7 +402,7 @@ test("the machine holding the state repository is the one tagged as the base", (
   assert.equal(slurm.signals("gpu"), slurm.signals("local"));
 });
 
-test("the identity menu holds Display, and Space settings sits beside it", () => {
+test("Space settings holds Appearance, and the identity menu no longer does", () => {
   const identity = {
     space_id: "space",
     space_kind: "personal",
@@ -400,18 +419,14 @@ test("the identity menu holds Display, and Space settings sits beside it", () =>
       identity,
       identityError: null,
       onRequestName() {},
-      appearance: {
-        themeChoice: "classic",
-        colorModeChoice: "system",
-        onThemeChoiceChange() {},
-        onColorModeChoiceChange() {},
-      },
-      textScale: { value: 100, onChange() {} },
     }),
   );
   assert.doesNotMatch(html, /data-identity-action="space-settings"/);
-  assert.match(html, /class="appearance-picker"/);
-  assert.match(html, /class="text-scale-controls"/);
+  assert.doesNotMatch(html, /appearance-picker/);
+  const settings = spaceSettings("personal", { textScale: { value: 100, onChange() {} } });
+  const pane = settings.match(/data-settings-pane="appearance".*?data-settings-pane=/s)[0];
+  assert.match(pane, /class="appearance-picker"/);
+  assert.match(pane, /class="text-scale-controls"/);
 });
 
 test("a filter typed in one folder never runs after the picker opens another", () => {

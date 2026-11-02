@@ -31,11 +31,6 @@ import {
   notificationStatusLabel,
   PersonalDevicesPanel,
 } from "../desktop/NotificationDevices";
-import {
-  AppearancePicker,
-  type AppearancePickerProps,
-  type TextScaleControl,
-} from "../ui/AppearancePicker";
 import type {
   IdentityResponse,
   SpaceUserSummary,
@@ -51,8 +46,6 @@ interface Props {
   identityError: string | null;
   onRequestName: () => Promise<boolean> | void;
   onAddTeamSpace?: () => void;
-  appearance?: AppearancePickerProps;
-  textScale?: TextScaleControl;
   /** Inside a project the trigger shows the initial alone. */
   compact?: boolean;
 }
@@ -715,8 +708,6 @@ export function LandingIdentityMenu({
   identityError,
   onRequestName,
   onAddTeamSpace,
-  appearance,
-  textScale,
   compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -847,7 +838,6 @@ export function LandingIdentityMenu({
             teamSpaces={teamSpaces}
             onAddTeamSpace={onAddTeamSpace}
           />
-          {appearance && <AppearancePicker {...appearance} textScale={textScale} />}
         </section>
       )}
     </div>

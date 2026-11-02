@@ -220,7 +220,9 @@ export function useGraphSelection({
       const panelScroll = new Map(panelScrollRef.current);
       const dagViewport =
         dagViewportRefsRef.current.get(graphSessionKey(id, target))?.current ?? null;
-      if (panelRef.current) panelScroll.set(viewRef.current, panelRef.current.scrollTop);
+      // Settings always opens at the top; its rail picks the section.
+      if (panelRef.current && viewRef.current !== "settings")
+        panelScroll.set(viewRef.current, panelRef.current.scrollTop);
       const current = selectionSnapshotRef.current;
       return {
         ...current,
@@ -574,7 +576,7 @@ export function useGraphSelection({
     viewRef.current = view;
     if (!loading && loadedProjectId) rememberSubview(loadedProjectId, view);
     const panel = panelRef.current;
-    if (panel) panel.scrollTop = panelScrollRef.current.get(view) ?? 0;
+    if (panel) panel.scrollTop = view === "settings" ? 0 : (panelScrollRef.current.get(view) ?? 0);
   }, [loading, loadedProjectId, view]);
 
   return {
