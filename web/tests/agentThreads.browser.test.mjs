@@ -1439,3 +1439,98 @@ test("handoff results read as one row and browser loss shows once on the menu", 
     assert.deepEqual(errors, []);
   });
 });
+
+test("Upcoming shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
+  await withFixture(async (browser, base) => {
+    const rows = [
+      {
+        schedule_id: "daily",
+        cron: "0 9 * * *",
+        timezone: "Europe/Paris",
+        note: "Morning summary of every run that finished overnight across all four projects",
+        state: "active",
+        next_fire_at: new Date(now + 3_600_000).toISOString(),
+        pending_since: ago(2),
+      },
+      {
+        schedule_id: "blocked",
+        at_local: "2026-11-01T18:00",
+        timezone: "UTC",
+        note: "Check the sweep",
+        state: "active",
+        next_fire_at: ago(5),
+        pending_since: ago(5),
+        deferred_reason: "Sign in to Codex to run this turn.",
+      },
+      {
+        schedule_id: "past",
+        at_local: "2020-01-01T09:00",
+        timezone: "UTC",
+        note: "Old reminder",
+        state: "disabled",
+        disabled_reason: "restore",
+      },
+      {
+        schedule_id: "broken",
+        cron: "0 9 * * 1-5",
+        timezone: "UTC",
+        note: "Weekday digest",
+        state: "disabled",
+        disabled_reason: "unschedulable",
+      },
+      ...Array.from({ length: 6 }, (_, index) => ({
+        schedule_id: `extra-${index}`,
+        cron: `0 ${10 + index} * * *`,
+        timezone: "UTC",
+        note: `Extra check ${index}`,
+        state: "active",
+        next_fire_at: new Date(now + (index + 2) * 3_600_000).toISOString(),
+      })),
+    ];
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      await page.route("**/api/agent-threads/space/schedules", (route) =>
+        route.fulfill({ json: { schedules: rows } }),
+      );
+      await page.route("**/api/agent-threads/space/schedules/broken/enable", (route) =>
+        route.fulfill({
+          status: 409,
+          json: { detail: "This schedule's time cannot be computed." },
+        }),
+      );
+      await page.goto(`${base}#/agent/space`);
+      const thread = page.getByRole("region", { name: "Pip" });
+      await thread.getByRole("button", { name: `${rows.length} upcoming` }).click();
+      const popover = page.getByRole("dialog", { name: "Upcoming" });
+      const row = (id) =>
+        popover.locator(".upcoming-row").nth(rows.findIndex((item) => item.schedule_id === id));
+      // Every row can be cancelled; only a disabled schedule that can still run offers Enable.
+      assert.equal(await popover.getByRole("button", { name: /^Cancel / }).count(), rows.length);
+      assert.equal(await popover.getByRole("button", { name: "Enable" }).count(), 1);
+      assert.equal(await row("past").getByRole("button", { name: "Enable" }).count(), 0);
+      assert.ok(await row("broken").getAttribute("title"));
+      assert.ok(await row("daily").locator("strong").getAttribute("title"));
+      assert.equal(await row("daily").locator(".upcoming-zone").textContent(), "Europe/Paris");
+      assert.equal(await row("daily").locator(".upcoming-next").count(), 1);
+      // Waiting reads on hover; a reason that blocks the wake shows in the row.
+      assert.ok(await row("daily").locator(".upcoming-pending").getAttribute("title"));
+      assert.equal(
+        await row("blocked").locator(".upcoming-pending[data-deferred] span").count(),
+        1,
+      );
+      const box = await popover.evaluate((element) => ({
+        scroll: element.scrollHeight > element.clientHeight,
+        right: element.getBoundingClientRect().right,
+      }));
+      assert.ok(box.scroll, "a long list scrolls inside the popover");
+      assert.ok(box.right <= width);
+      await page.waitForTimeout(200);
+      if (shots) await page.screenshot({ path: `${shots}/upcoming-${width}.png` });
+      // An Enable the backend refuses says why.
+      await row("broken").getByRole("button", { name: "Enable" }).click();
+      await popover.locator(".upcoming-error").waitFor();
+      await page.close();
+    }
+  });
+});
