@@ -715,18 +715,18 @@ def test_space_voice_append_shares_the_turn_transcript_lock(voice_setup):
     from threading import Event
 
     from rcp.runs.space_chat import space_transcript_lock
-    from rcp.service import read_space_chat_transcript
-    from rcp.voice_threads import VoiceEntry, append_space_entries, owned_thread, transcript_path
+    from rcp.service import canonical_space_chat_path, read_space_chat_transcript
+    from rcp.voice_threads import VoiceEntry, append_space_entries, owned_thread
 
     store, private, _ = voice_setup
     thread = owned_thread(store, THREAD_ID, private.member_id)
-    path = transcript_path(store.path.parent, thread)
+    path = canonical_space_chat_path(store.path.parent, private.member_id, THREAD_ID)
     entry = VoiceEntry(entry_id="first", speaker="member", text="Hello", at=store.now())
     started = Event()
 
     def append():
         started.set()
-        return append_space_entries(store, path, thread, [entry])
+        return append_space_entries(store, store.path.parent, thread, [entry])
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         with space_transcript_lock(store, THREAD_ID):
@@ -736,7 +736,7 @@ def test_space_voice_append_shares_the_turn_transcript_lock(voice_setup):
                 future.result(timeout=0.05)
             assert not path.exists()
         assert future.result(timeout=5) == 1
-    assert append_space_entries(store, path, thread, [entry]) == 0
+    assert append_space_entries(store, store.path.parent, thread, [entry]) == 0
     transcript = read_space_chat_transcript(store.path.parent, private.member_id, THREAD_ID)
     assert transcript is not None
     assert [(message.text, message.source) for message in transcript.messages] == [

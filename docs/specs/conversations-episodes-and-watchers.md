@@ -138,16 +138,21 @@ on each record. The reader verifies the filename against the record. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
 private transcripts never enter ingestion or consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
-use `chatScope: "space"` without node or graph target fields. A separate reader
-accepts only that scope. A missing file is an empty thread; an unreadable or
-mislabeled one refuses with the voice reader's `thread_transcript_unavailable`
+use `chatScope: "space"` without node or graph target fields. One reader,
+`read_space_chat_records`, serves Space turns, steering, the transcript route
+and voice, and accepts only that scope. A missing file is an empty thread; an
+unreadable or mislabeled one refuses with `thread_transcript_unavailable`
 (503) or `thread_transcript_invalid` (409), so a Space turn fails rather than
-running without its history. Optional message `source` distinguishes voice and
+running without its history. Every record ends with a newline, so bytes after
+the last one are a write a crash cut short: the reader ignores them and the
+next append removes them. Optional message `source` distinguishes voice and
 handoff input, RCP's `handoff_report` (and the reserved Slack source); absent
 source means the composer
 and is omitted from serialization, preserving old records. Space turns, steering,
-and voice entries share one transcript lock; both deduplicate by record `uuid`
-under that lock before appending.
+and voice entries share one transcript lock and one appender,
+`append_space_records`, which deduplicates by record `uuid` under that lock. A
+steer's later receipt reuses its message's `uuid`, so a changed receipt is
+appended and the reader folds it over the earlier one.
 
 Private chats, their tasks and their questions are visible and controllable only
 by their owner. Project question pushes target that owner. A failed or
@@ -197,7 +202,9 @@ carries one pointer that says to read the file again after a compaction. The com
 task's immutable database contract so a same-task restart reuses it without
 another summary call. Other fresh starts retain their existing
 reasons and receive the tail, bounded by `AGENT_THREAD_TAIL_MAX_MESSAGES` and
-`AGENT_THREAD_TAIL_MAX_BYTES`, newest kept. Summary calls use the fixed
+`AGENT_THREAD_TAIL_MAX_BYTES`, newest kept. An older message that does not fit
+ends the tail; a newest message that alone exceeds the budget is cut to fit and
+marked `truncated`, so the tail is never empty. Summary calls use the fixed
 [summary capability](providers-and-containment.md#session-summaries), preserve
 the thread's hidden-read policy, and charge usage to the same task under the old
 provider and model. Stop shares the turn's process fence and prevents the new

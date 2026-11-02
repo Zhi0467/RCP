@@ -32,6 +32,7 @@ from rcp.voice_threads import (
     owned_thread,
     pending_records,
     read_records,
+    space_records,
     transcript_path,
 )
 
@@ -100,7 +101,7 @@ async def session(request: Request, body: SessionRequest):
             records = read_records(transcript_path(root, thread), thread)
     else:
         with space_transcript_lock(store.store, thread["thread_id"]):
-            records = read_records(transcript_path(store.store.path.parent, thread), thread)
+            records = space_records(store.store.path.parent, thread)
     session_input, truncated = voice_resume_input(
         [
             {
@@ -147,7 +148,7 @@ def voice_entries(request: Request, thread_id: str, body: VoiceEntries):
                 appended = len(records)
     else:
         appended = append_space_entries(
-            private.store, transcript_path(private.store.path.parent, thread), thread, body.entries
+            private.store, private.store.path.parent, thread, body.entries
         )
     if appended:
         private.store.bump_agent_threads_version(private.member_id)

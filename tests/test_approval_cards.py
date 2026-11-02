@@ -60,7 +60,11 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
     assert sorted(results) == [False, True]
     reopened = AppStore(store.path)
     assert not reopened.claim_approval_card(question.question_id)
-    settle_interrupted_approval_cards(reopened, service_for=lambda project_id: _scope_service([]))
+    settle_interrupted_approval_cards(
+        reopened,
+        service_for=lambda project_id: _scope_service([]),
+        claimed_before=reopened.now(),
+    )
     answered = reopened.get_question(question.question_id)
     assert answered is not None and answered.answer == "failed: interrupted"
     card = reopened.approval_card(question.question_id)
@@ -87,7 +91,9 @@ def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
             ("project", "episode", request_id, "alex", "{}", "d", "a", "{}", "merge-task", "t"),
         )
     reopened = AppStore(store.path)
-    settle_interrupted_approval_cards(reopened, service_for=_no_service)
+    settle_interrupted_approval_cards(
+        reopened, service_for=_no_service, claimed_before=reopened.now()
+    )
     card = reopened.approval_card(question.question_id)
     assert card is not None and card["result"]["outcome"] == "approved"
     answered = reopened.get_question(question.question_id)
@@ -241,9 +247,22 @@ def test_restart_settles_a_committed_truth_scope_card(store, origin):
     assert store.claim_approval_card(question.question_id)
     # Membership already matches the action: the change committed before the stop.
     settle_interrupted_approval_cards(
-        store, service_for=lambda project_id: _scope_service(["code"])
+        store,
+        service_for=lambda project_id: _scope_service(["code"]),
+        claimed_before=store.now(),
     )
     assert store.get_question(question.question_id).answer == "approved"
+
+
+def test_restart_leaves_a_card_this_process_claimed_running(store, origin):
+    started = store.now()
+    question = make_card(store, origin)
+    assert store.claim_approval_card(question.question_id)
+    # A live tap claimed it after this process started; its own request settles it.
+    settle_interrupted_approval_cards(store, service_for=_no_service, claimed_before=started)
+    card = store.approval_card(question.question_id)
+    assert card is not None and card["result"] is None
+    assert store.get_question(question.question_id).state == "pending"
 
 
 def test_sweep_expires_cards_without_a_read(store, origin):

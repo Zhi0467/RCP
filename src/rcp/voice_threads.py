@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from rcp import limits
-from rcp.agents.memory_file_io import ensure_directory, safe_component
+from rcp.agents.memory_file_io import safe_component
 from rcp.service_connections import ConnectionError
 from rcp.storage import AppStore
 
@@ -53,11 +53,20 @@ def owned_thread(store: AppStore, thread_id: str, user_id: str) -> dict:
 
 
 def transcript_path(root: Path, thread: dict) -> Path:
+    """A project thread's private file in its project's state workspace."""
     thread_id = str(uuid.UUID(thread["thread_id"]))
     user_id = safe_component(thread["user_id"])
-    if thread["kind"] == "space":
-        return root / "agent-threads" / user_id / f"{thread_id}.jsonl"
     return root / "chat" / f"private-{user_id}-{thread_id}.jsonl"
+
+
+def space_records(data_dir: Path, thread: dict) -> list[dict]:
+    """A Space thread's records, read by the one Space transcript reader."""
+    from rcp.service import read_space_chat_records
+
+    return [
+        record.model_dump(mode="json", by_alias=True)
+        for record in read_space_chat_records(data_dir, thread["user_id"], thread["thread_id"])
+    ]
 
 
 def read_records(path: Path, thread: dict) -> list[dict]:
@@ -97,12 +106,8 @@ def _read_records(path: Path, thread: dict) -> list[dict]:
                 or not isinstance(row.get("uuid"), str)
                 or str(uuid.UUID(row["uuid"])) != row["uuid"]
                 or datetime.fromisoformat(row["timestamp"]).tzinfo is None
-                or (
-                    thread["kind"] == "project"
-                    and row.get("graphTarget", {"kind": "main", "branch_id": None})
-                    != {"kind": "main", "branch_id": None}
-                )
-                or (thread["kind"] == "space" and row.get("graphTarget") is not None)
+                or row.get("graphTarget", {"kind": "main", "branch_id": None})
+                != {"kind": "main", "branch_id": None}
             ):
                 raise ValueError("Transcript identity mismatch")
         return records
@@ -142,21 +147,12 @@ def pending_records(path: Path, thread: dict, entries: list[VoiceEntry]) -> list
 
 
 def append_space_entries(
-    store: AppStore, path: Path, thread: dict, entries: list[VoiceEntry]
+    store: AppStore, data_dir: Path, thread: dict, entries: list[VoiceEntry]
 ) -> int:
-    from rcp.runs.space_chat import space_transcript_lock
+    """Append through the one Space appender, under the Space turns' lock."""
+    from rcp.runs.space_chat import append_space_records
 
-    # Use the same lock as Space turns and steering for deduplication and append.
-    with space_transcript_lock(store, thread["thread_id"]):
-        ensure_directory(path.parent)
-        pending = pending_records(path, thread, entries)
-        if pending:
-            descriptor = os.open(
-                path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600
-            )
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                for row in pending:
-                    stream.write(json.dumps(row, ensure_ascii=False) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-        return len(pending)
+    record = store.agent_thread(thread["thread_id"])
+    if record is None:
+        raise ConnectionError("thread_not_found", 404)
+    return append_space_records(store, data_dir, record, entry_records(thread, entries))

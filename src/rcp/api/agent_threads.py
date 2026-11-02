@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Literal, Self
 
 from fastapi import (
@@ -45,6 +47,7 @@ from rcp.api.tasks import (
 )
 from rcp.attachments import ChatAttachmentUpload
 from rcp.config import load_manifest
+from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
@@ -508,16 +511,17 @@ def resume_space_task(
     store: StoreDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
     _reject_history_only_control(_space_task(store, thread, operation_id))
-    try:
-        return background_tasks.resume(operation_id, authorized_by=authorized).model_dump(
-            mode="json"
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with _space_control_admission(store, authorized, idempotency_key, operation_id, "resume") as (
+        existing
+    ):
+        return existing or background_tasks.resume(
+            operation_id, authorized_by=authorized
+        ).model_dump(mode="json")
 
 
 @router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/retry", status_code=202)
@@ -530,16 +534,39 @@ def retry_space_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     body: RetryAgentTaskRequest | None = None,
+    idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
     _reject_history_only_control(_space_task(store, thread, operation_id))
     # A Space thread always runs on the backend machine, so a retry's run_on is not a choice.
     overrides = body.model_dump(exclude_none=True, exclude={"run_on"}) if body else {}
-    try:
-        return background_tasks.retry(
+    with _space_control_admission(store, authorized, idempotency_key, operation_id, "retry") as (
+        existing
+    ):
+        return existing or background_tasks.retry(
             operation_id, authorized_by=authorized, **overrides
         ).model_dump(mode="json")
+
+
+@contextmanager
+def _space_control_admission(
+    store: AppStore,
+    authorized: AuthorizedHuman,
+    idempotency_key: UUID4 | None,
+    operation_id: str,
+    action: str,
+) -> Iterator[dict[str, object] | None]:
+    """Admit one Retry or Resume per key; a repeat gets the task the first one started."""
+    try:
+        with store.client_request_admission(
+            store.space_id,
+            authorized.user_id,
+            str(idempotency_key) if idempotency_key is not None else None,
+            f"tasks/{operation_id}/{action}",
+        ) as admitted:
+            record = store.agent_task(admitted.operation_id or "") if admitted else None
+            yield record.model_dump(mode="json") if record else None
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

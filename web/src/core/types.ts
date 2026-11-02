@@ -4096,6 +4096,8 @@ export interface AgentThread {
   project_name: string | null;
   agent_name: string;
   unread: boolean;
+  /** The newest turn's finish; marking read through it clears `unread`. */
+  last_finished_at: string | null;
   last_activity_at: string | null;
   live_state: AgentThreadLiveState;
   /** The thread's newest visible task, running or settled. */

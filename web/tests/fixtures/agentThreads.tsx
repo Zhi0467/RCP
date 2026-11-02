@@ -99,6 +99,7 @@ const moss: AgentThread = {
   project_name: "Sparse attention",
   agent_name: "Moss",
   unread: false,
+  last_finished_at: null,
   last_activity_at: new Date().toISOString(),
   live_state: "needs_you",
   browser_requested: true,

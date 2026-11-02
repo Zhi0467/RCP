@@ -26,6 +26,8 @@ const threads = [
     project_name: "Sparse attention",
     agent_name: "Moss",
     unread: true,
+    // The turn finishes after its messages are stamped.
+    last_finished_at: ago(7),
     last_activity_at: ago(12),
     live_state: "needs_you",
     browser_requested: true,
@@ -158,7 +160,6 @@ const mossTranscript = transcript("moss", [
     { timestamp: ago(8) },
   ),
 ]);
-const mossNewest = mossTranscript.messages.at(-1).timestamp;
 
 const card = {
   question_id: "q1",
@@ -584,10 +585,15 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     assert.equal(await moss.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
     assert.equal(await moss.locator(".node-chat-line").getByText("Plan the sweep").count(), 0);
 
-    // Moss is marked read only through its own newest message.
+    // Moss is marked read through the finish of the turn its transcript shows.
     const reads = writes.filter((write) => write.path.endsWith("/read"));
+    const mossFinished = threads[1].last_finished_at;
     assert.deepEqual(reads, [
-      { method: "POST", path: "/api/agent-threads/moss/read", body: { read_through: mossNewest } },
+      {
+        method: "POST",
+        path: "/api/agent-threads/moss/read",
+        body: { read_through: mossFinished },
+      },
     ]);
 
     // A failing history read is retried with the transcript, not in a tight loop.

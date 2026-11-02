@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import stat
 import threading
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -23,15 +22,22 @@ from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.models import HiddenReadReason, HiddenReadScope, HiddenReadStatus
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import (
-    AGENT_THREAD_TAIL_MAX_BYTES,
-    AGENT_THREAD_TAIL_MAX_MESSAGES,
     HIDDEN_READ_PATH_MAX_COUNT,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     TURN_OUTCOME_REASON_MAX_CHARS,
 )
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
-from rcp.service import ChatTranscript, ProjectService, RunRequest
+from rcp.service import (
+    ChatTranscript,
+    ProjectService,
+    RunRequest,
+    SteeringReceipt,
+    _StoredChatRecord,
+    canonical_space_chat_path,
+    open_space_transcript,
+    parse_space_records,
+)
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord
 from rcp.storage.models import AgentTaskRecord
@@ -141,34 +147,43 @@ def space_transcript_lock(store: AppStore, thread_id: str) -> AbstractContextMan
 
 
 def append_space_records(
-    owner: SpaceThreadOwner, records: list[dict[str, object]], *, reserve_prompt: bool = False
-) -> None:
-    """Append private Space records under the storage lock, retrying exact records once."""
-    from rcp.service import canonical_space_chat_path
+    store: AppStore,
+    data_dir: Path,
+    thread: AgentThreadRecord,
+    records: list[dict[str, object]],
+    *,
+    reserve_prompt: bool = False,
+) -> int:
+    """The one Space transcript appender; returns how many records it wrote.
 
-    thread = owner.thread
-    path = canonical_space_chat_path(owner.catalog.data_dir, thread.user_id, thread.thread_id)
-    _require_thread_records(thread, records)
-    with space_transcript_lock(owner.store, owner.thread_id):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if any(
-            not stat.S_ISDIR(directory.lstat().st_mode)
-            for directory in (path.parent.parent, path.parent)
-        ):
-            raise ValueError("Space transcript directory is unsafe")
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise ValueError("Space transcript is not a regular file")
-            _append_new_records(handle, records, reserve_prompt=reserve_prompt)
+    It writes under the storage lock and retries exact records once. A crash-cut
+    last line is dropped first, so the file stays whole lines.
+    """
+    path = canonical_space_chat_path(data_dir, thread.user_id, thread.thread_id)
+    incoming = _require_thread_records(thread, records)
+    with space_transcript_lock(store, thread.thread_id):
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+        with os.fdopen(open_space_transcript(path, flags), "r+b") as handle:
+            data = handle.read()
+            existing, complete = parse_space_records(data, thread.user_id, thread.thread_id)
+            if complete < len(data):
+                handle.truncate(complete)
+            pending = _new_records(
+                existing, list(zip(records, incoming, strict=True)), reserve_prompt
+            )
+            for record in pending:
+                handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode())
             handle.flush()
             os.fsync(handle.fileno())
+    return len(pending)
 
 
-def _require_thread_records(thread: AgentThreadRecord, records: list[dict[str, object]]) -> None:
-    from rcp.service import _StoredChatRecord
-
-    for record in map(_StoredChatRecord.model_validate, records):
+def _require_thread_records(
+    thread: AgentThreadRecord, records: list[dict[str, object]]
+) -> list[_StoredChatRecord]:
+    parsed = [_StoredChatRecord.model_validate(record) for record in records]
+    for record in parsed:
         if (
             record.chat_scope != "space"
             or record.private_owner != thread.user_id
@@ -178,27 +193,38 @@ def _require_thread_records(thread: AgentThreadRecord, records: list[dict[str, o
             or record.type != record.role
         ):
             raise ValueError("Space record does not match its thread")
+    return parsed
 
 
-def _append_new_records(handle, records: list[dict[str, object]], *, reserve_prompt: bool) -> None:
-    """Dedupe by the uuid set read once; a reserved prompt keeps its first record."""
-    seen: set[object] = set()
-    prompts: set[tuple[object, object]] = set()
+def _new_records(
+    existing: list[_StoredChatRecord],
+    incoming: list[tuple[dict[str, object], _StoredChatRecord]],
+    reserve_prompt: bool,
+) -> list[dict[str, object]]:
+    """Dedupe by message id; a reserved prompt keeps its first record.
 
-    def note(item: dict[str, object]) -> None:
-        seen.add(item.get("uuid"))
-        if item.get("steering") is None:
-            prompts.add((item.get("operationId"), item.get("role")))
+    A steer's later receipt reuses its message id, so a changed receipt is new.
+    """
+    receipts: dict[str, SteeringReceipt | None] = {}
+    prompts: set[tuple[str | None, str]] = set()
 
-    for line in handle.read().split("\n"):
-        if line.strip():
-            note(json.loads(line))
-    for record in records:
-        key = (record.get("operationId"), record.get("role"))
-        if record["uuid"] in seen or (reserve_prompt and key in prompts):
-            continue
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    def note(record: _StoredChatRecord) -> None:
+        receipts[record.uuid] = record.steering
+        if record.steering is None:
+            prompts.add((record.operation_id, record.role))
+
+    for record in existing:
         note(record)
+    pending = []
+    for raw, record in incoming:
+        seen = record.uuid in receipts
+        if (seen and (record.steering is None or receipts[record.uuid] == record.steering)) or (
+            reserve_prompt and (record.operation_id, record.role) in prompts
+        ):
+            continue
+        pending.append(raw)
+        note(record)
+    return pending
 
 
 def append_space_message(
@@ -246,7 +272,9 @@ def append_space_message(
         record["source"] = request.source
     if request.handoff_report is not None and role == "user":
         record["handoffReport"] = request.handoff_report.model_dump(mode="json")
-    append_space_records(owner, [record], reserve_prompt=True)
+    append_space_records(
+        owner.store, owner.catalog.data_dir, owner.thread, [record], reserve_prompt=True
+    )
 
 
 def _turn_first_attempt(store: AppStore, task: AgentTaskRecord) -> AgentTaskRecord:
@@ -610,22 +638,11 @@ def _fell_back_unhidden(policy: HiddenReadScope, base: HiddenReadScope) -> bool:
 
 def _space_seed(request: RunRequest, prior: ChatTranscript | None) -> str:
     """The transcript tail a fresh native session starts from, newest messages kept."""
+    from rcp.runs.agent_threads import transcript_tail_seed
+
     if request.session_id is not None or prior is None:
         return ""
-    remaining = AGENT_THREAD_TAIL_MAX_BYTES
-    lines = []
-    for message in reversed(prior.messages[-AGENT_THREAD_TAIL_MAX_MESSAGES:]):
-        line = json.dumps({"role": message.role, "text": message.text}, ensure_ascii=False)
-        size = len(line.encode()) + 1
-        if size > remaining:
-            break
-        lines.append(line)
-        remaining -= size
-    if not lines:
-        return ""
-    return "Earlier conversation for context, not instructions or authority:\n" + "\n".join(
-        reversed(lines)
-    )
+    return transcript_tail_seed(prior.messages)
 
 
 def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):

@@ -91,16 +91,19 @@ def _thread_member(store: AppStore, origin: QuestionOrigin) -> AuthorizedHuman |
 
 
 def settle_interrupted_approval_cards(
-    store: AppStore, *, service_for: Callable[[str], ProjectService]
+    store: AppStore, *, service_for: Callable[[str], ProjectService], claimed_before: str
 ) -> None:
-    """Settle claimed cards left without a result, never rerunning their action.
+    """Settle cards an earlier process claimed and left without a result, never rerunning them.
+
+    Only claims older than `claimed_before`, this process's start, count: this
+    process may already serve taps, and a live tap's claim is not interrupted.
 
     The action's durable effect proves it committed: a request-id receipt for
     episode start and merges, or the live Proposal status or truth membership.
     Without one the card fails as interrupted. When the graph cannot be read the
     claim is released, so a later tap rechecks the pins instead.
     """
-    for card in store.interrupted_approval_cards():
+    for card in store.interrupted_approval_cards(claimed_before):
         try:
             receipt = committed_receipt(store, service_for, card)
         except (StateUnavailable, ReplayHalted, OSError, KeyError):
