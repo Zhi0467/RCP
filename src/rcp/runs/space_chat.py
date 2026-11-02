@@ -105,14 +105,27 @@ class SpaceThreadOwner:
         reasoning: str | None = None,
         run_on: str | None = None,
     ) -> AgentSurfaceConfig:
-        if run_on not in {None, "local"}:
-            raise ValueError("Space threads run on the backend machine")
-        return AgentSurfaceConfig(
-            provider=provider or "codex",
-            model=model or "",
-            reasoning=reasoning or "medium",
-            run_on="local",
+        return space_agent_profile(
+            provider=provider, model=model, reasoning=reasoning, run_on=run_on
         )
+
+
+def space_agent_profile(
+    *,
+    provider: ProviderId | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    run_on: str | None = None,
+) -> AgentSurfaceConfig:
+    """The Space thread's agent: the named pick, else the backend default."""
+    if run_on not in {None, "local"}:
+        raise ValueError("Space threads run on the backend machine")
+    return AgentSurfaceConfig(
+        provider=provider or "codex",
+        model=model or "",
+        reasoning=reasoning or "medium",
+        run_on="local",
+    )
 
 
 _SPACE_TRANSCRIPT_LOCKS = KeyedLocks(threading.RLock)
@@ -221,6 +234,8 @@ def append_space_message(
         record["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
     if request.source is not None and role == "user":
         record["source"] = request.source
+    if request.handoff_report is not None and role == "user":
+        record["handoffReport"] = request.handoff_report.model_dump(mode="json")
     append_space_records(owner, [record], reserve_prompt=True)
 
 
@@ -231,7 +246,6 @@ async def stream_space_chat_run(
     data_dir: Path,
     execution: AgentTaskExecution,
     *,
-    deliver_handoffs: Callable[[], None] | None = None,
     project_git_access: Callable[[str, ProjectService], ProviderGitAccess] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run one local provider with one exact, independently authorized stage per project."""
@@ -273,7 +287,7 @@ async def stream_space_chat_run(
     lifecycles = []
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
-        gate, handler = _start_space_mailboxes(turn, lifecycles, deliver_handoffs)
+        gate, handler = _start_space_mailboxes(turn, lifecycles)
         async with _space_browser(turn) as browser:
             prompt = render_space_prompt(
                 turn, handler.allowed_verbs, seed, _previous_space_results(owner.store, prior)
@@ -586,7 +600,7 @@ def _space_seed(request: RunRequest, prior: ChatTranscript | None) -> str:
     )
 
 
-def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list, deliver_handoffs):
+def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):
     """Start every project client's mailbox and the top-level one gating them all."""
     from rcp.runs.agent_thread_commands import ThreadCommandHandler
     from rcp.runs.patch_validator import PatchValidationBudget, stage_patch_validation_mailbox
@@ -628,11 +642,7 @@ def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list, deliver_handoffs)
     gate = replace(top.invocation_gate, children=tuple(children))
     top = replace(top, invocation_gate=gate)
     handler = ThreadCommandHandler(
-        turn.owner.store,
-        turn.owner.catalog,
-        execution.operation_id,
-        turn.stage,
-        deliver=deliver_handoffs,
+        turn.owner.store, turn.owner.catalog, execution.operation_id, turn.stage
     )
     lifecycles.append(
         start_work_validator_mailbox(

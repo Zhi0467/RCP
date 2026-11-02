@@ -65,13 +65,40 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
     with pytest.raises(ValueError):
         store.create_agent_task(wrong, handoff_id=handoff.handoff_id)
     assert store.agent_task("duplicate") is None
+    report = record.model_copy(
+        update={
+            "operation_id": "report",
+            "kind": "space_chat",
+            "project_id": store.space_id,
+            "request": {"chat_scope": "project", "chat_id": source.thread_id, "mode": "work"},
+        }
+    )
+    with pytest.raises(ValueError):  # The delivered turn has not settled yet.
+        store.create_agent_task(report, handoff_wake_id=handoff.handoff_id)
+    refused = store.create_agent_handoff(
+        source_thread_id=source.thread_id,
+        source_operation_id="source",
+        target_thread_id=target.thread_id,
+        idempotency_key="refused",
+        message="Please check",
+    )
+    store.refuse_agent_handoff(refused.handoff_id, "thread_closed")
+    with pytest.raises(ValueError):  # A refusal is final.
+        store.create_agent_task(wrong, handoff_id=refused.handoff_id)
+    assert store.agent_task("report") is None and store.agent_task("duplicate") is None
 
 
-def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_path: Path) -> None:
+def test_projects_and_handoff_share_cards_and_member_ownership(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from contextlib import nullcontext
+
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.agents.command_protocol import HandoffArguments, HandoffCommandRequest
+    from rcp.limits import AGENT_HANDOFF_MAX_CHARS
     from rcp.runs.agent_thread_commands import (
         ThreadCommandHandler,
+        dispatch_thread_handoffs,
         project_details,
         projects_projection,
     )
@@ -149,20 +176,64 @@ def test_projects_and_handoff_share_cards_and_member_ownership(manifest, tmp_pat
     denied = handler(request, CommandTurnIdentity(None, "another-task", "turn", "broker"))
     assert denied.status == "invalid"
     (tmp_path / "symlink.md").symlink_to(tmp_path / "message.md")
-    unsafe = request.model_copy(
+    (tmp_path / "large.md").write_text("x" * (AGENT_HANDOFF_MAX_CHARS + 1))
+    (tmp_path / "blank.md").write_text("  ")
+    (tmp_path / "binary.md").write_bytes(b"\xff")
+    for name in ("symlink.md", "large.md", "blank.md", "binary.md", "missing.md"):
+        unsafe = request.model_copy(
+            update={
+                "idempotency_key": name,
+                "arguments": HandoffArguments(project_id=project_id, message_file=name),
+            }
+        )
+        assert handler(unsafe, identity).status == "invalid"
+    picked = request.model_copy(
         update={
-            "idempotency_key": "unsafe",
-            "arguments": HandoffArguments(project_id=project_id, message_file="symlink.md"),
+            "idempotency_key": "picked",
+            "arguments": HandoffArguments(
+                project_id=project_id, message_file="message.md", provider="claude"
+            ),
         }
     )
-    assert handler(unsafe, identity).status == "invalid"
+    target_id = cards[0]["thread_id"]
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
+        lambda *args, **kwargs: {"claude": {}},
+    )
+    assert handler(picked, identity).result["state"] == "pending"
+    assert store.agent_thread(target_id).agent["provider"] == "claude"
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
+        lambda *args, **kwargs: {},
+    )
+    unready = picked.model_copy(update={"idempotency_key": "unready"})
+    assert handler(unready, identity).status == "invalid"  # Not ready there: nothing stored.
+    assert len(store.pending_agent_handoffs()) == 2
+    # The handoff waits on the running Space turn; that turn's Stop cancels it, with no wake.
+    background = app.state.background_tasks
+    assert (
+        dispatch_thread_handoffs(
+            store, catalog, background, project_admission=lambda _: nullcontext()
+        )
+        == []
+    )
+    assert len(store.pending_agent_handoffs()) == 2
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='paused' WHERE operation_id='source'")
+    assert (
+        dispatch_thread_handoffs(
+            store, catalog, background, project_admission=lambda _: nullcontext()
+        )
+        == []
+    )
+    refused = handler(request, identity).result
+    assert (refused["state"], refused["reason"]) == ("refused", "source_turn_paused")
 
 
-@pytest.mark.parametrize("refusal", [None, "archived", "closed", "resumed"])
+@pytest.mark.parametrize("refusal", [None, "archived", "closed", "paused", "retried"])
 def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     manifest, tmp_path: Path, monkeypatch, refusal
 ) -> None:
-    import json
     from contextlib import nullcontext
 
     from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
@@ -244,7 +315,11 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert len(wakes) == 1
         wake = store.agent_task(wakes[0])
         assert wake.kind == "space_chat"
-        assert json.loads(wake.request["message"].split("\n", 1)[1])["status"] == "refused"
+        report = wake.request["handoff_report"]
+        assert (report["status"], report["reason"]) == (
+            "refused",
+            "chat_archived" if refusal == "archived" else "thread_closed",
+        )
         assert store.pending_agent_handoffs() == []
         store.set_chat_archived(project_id, target.thread_id, actor.user_id, archived=False)
         store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
@@ -252,6 +327,10 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert store.agent_task_events("source") == []
         return
     assert drain() == []
+    for thread in (source, target):
+        store.set_agent_thread_pick(
+            thread.thread_id, provider="claude", model=None, reasoning=None, run_on=None
+        )
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET status='succeeded',finished_at=? WHERE operation_id='busy'",
@@ -263,6 +342,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert turn is not None
     assert turn.request["source"] == "handoff"
     assert turn.request["trigger"] == "human"
+    assert turn.request["provider"] == "claude"  # The target thread's stored pick.
     transcript = catalog.open_execution(project_id).chat_transcript(target.thread_id)
     assert transcript is not None
     assert [(message.source, message.text) for message in transcript.messages] == [
@@ -274,32 +354,73 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert recovered is not None and recovered.status == "queued"
     assert drain() == []
     settled = turn.operation_id
-    if refusal == "resumed":
-        # Stop then Resume: the handoff settles on the newest turn of the chain.
+    store.mark_agent_task_running(settled)
+    if refusal == "paused":
+        # Stop reports at once instead of holding the handoff until a Resume.
         with store.connection() as connection:
             connection.execute(
                 "UPDATE graph_runs SET status='paused' WHERE operation_id=?", (settled,)
             )
+        report = store.agent_task(drain()[0]).request["handoff_report"]
+        assert report["status"] == "paused"
+        return
+    if refusal == "retried":
+        # A lost link RCP retries itself is not a settlement; the retry's result is.
+        store.fail_agent_task(settled, "link lost")
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET failure_kind='transport_lost' WHERE operation_id=?",
+                (settled,),
+            )
+        store.record_agent_task_receipt(settled, "transport_auto_retry", {"attempt": 1})
         assert drain() == []
-        settled = "resumed"
+        settled = "retried"
         store.create_agent_task(
             turn.model_copy(
                 update={"operation_id": settled, "parent_operation_id": turn.operation_id}
             ),
-            continuation_cause="resume",
+            continuation_cause="retry",
         )
+        store.mark_agent_task_running(settled)
+    store.complete_agent_task(
+        settled,
+        applied_revision=None,
+        result={"messages": ["Looking.", "Checked"], "turn_outcome": {"status": "done"}},
+    )
+    # The report waits for the Space thread's own turn and for a member still in the Space.
+    space_turn = source_request.model_copy(update={"message": "Busy"})
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="space-busy",
+            project_id=store.space_id,
+            kind="space_chat",
+            authorized_by=actor,
+            request=space_turn.model_dump(mode="json"),
+        )
+    )
+    assert drain() == []
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET status='succeeded',finished_at=?,result_json=? WHERE operation_id=?",
-            (store.now(), '{"answer":"Checked"}', settled),
+            "UPDATE graph_runs SET status='succeeded' WHERE operation_id='space-busy'"
+        )
+        connection.execute(
+            "UPDATE space_users SET removal_started_at=? WHERE user_id=?",
+            (store.now(), actor.user_id),
+        )
+    assert drain() == []
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE space_users SET removal_started_at=NULL WHERE user_id=?", (actor.user_id,)
         )
     wakes = drain()
     assert len(wakes) == 1
     wake = store.agent_task(wakes[0])
     assert wake is not None
     assert wake.kind == "space_chat"
-    assert wake.request["trigger"] == "watcher"
-    assert "Checked" in wake.request["message"]
+    assert (wake.request["source"], wake.request["provider"]) == ("handoff_report", "claude")
+    report = wake.request["handoff_report"]
+    assert (report["answer"], report["turn_outcome"]["status"]) == ("Checked", "done")
     assert drain() == []
     with store.connection() as connection:
         assert tuple(

@@ -48,6 +48,7 @@ from rcp.config import load_manifest
 from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
+from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_id
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
@@ -226,6 +227,34 @@ def rename_thread(
     return thread_projection(store, thread)
 
 
+class ThreadAgentBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    provider: ProviderId
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    reasoning: str | None = Field(default=None, min_length=1, max_length=100)
+    run_on: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+@router.post("/api/agent-threads/{thread_id}/agent")
+def pick_thread_agent(
+    thread_id: str,
+    body: ThreadAgentBody,
+    request: Request,
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+):
+    """Store the thread's agent pick; every later turn on the thread runs it."""
+    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    try:
+        store_thread_pick(store, catalog, thread, **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return thread_projection(store, store.agent_thread(thread_id) or thread)
+
+
 @router.post("/api/agent-threads/{thread_id}/read")
 def read_thread(
     thread_id: str,
@@ -379,7 +408,7 @@ def space_turn(
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
-    owned_space_thread(store, thread_id, authorized.user_id)
+    thread = owned_space_thread(store, thread_id, authorized.user_id)
     try:
         with store.client_request_admission(
             store.space_id,
@@ -389,21 +418,16 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
-            owner = SpaceThreadOwner(store, catalog, thread_id)
-            profile = owner.resolve_agent_profile(
-                provider=body.provider, model=body.model, reasoning=body.reasoning
-            )
-            turn = RunRequest(
-                chat_id=thread_id,
-                chat_scope="project",
-                mode="work",
-                message=body.message,
-                provider=profile.provider,
-                model=profile.model,
-                reasoning=profile.reasoning,
-                run_on=profile.run_on,
-                timezone=body.timezone,
-                browser_requested=store.chat_browser_requested(store.space_id, thread_id),
+            turn = RunRequest.model_validate(
+                {
+                    **sent_thread_agent(store, thread, body.model_dump()),
+                    "chat_id": thread_id,
+                    "chat_scope": "project",
+                    "mode": "work",
+                    "message": body.message,
+                    "timezone": body.timezone,
+                    "browser_requested": store.chat_browser_requested(store.space_id, thread_id),
+                }
             )
             operation_id = str(uuid.uuid4())
             claimed = None

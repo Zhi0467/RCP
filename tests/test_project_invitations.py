@@ -199,11 +199,15 @@ def test_leaving_removes_read_dispatch_and_apply(manifest, tmp_path) -> None:
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
     client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
     assert client.get(f"/api/projects/{project_id}").status_code == 200
+    store.ensure_agent_threads(leaver.user_id, [project_id], default_names=("Pip",))
 
     left = client.post(f"/api/projects/{project_id}/leave", json={})
 
     assert left.status_code == 204
     assert not store.is_project_member(project_id, leaver.user_id)
+    # The thread closes now, so its pending handoffs refuse instead of stalling.
+    thread = next(t for t in store.agent_threads(leaver.user_id) if t.project_id == project_id)
+    assert thread.closed_at is not None
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert client.get("/api/projects").json() == []
     assert client.post(f"/api/projects/{project_id}/tasks/seed", json={}).status_code == 404

@@ -74,14 +74,28 @@ Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
 branch and starts no episodes.
 
 `handoff` passes a Space request to the same member's project thread, with that
-member's authority. It is not mail. Delivery appends a member message with
-`source: "handoff"` and admits its turn at once when the target is idle, or
-after the target's turn settles or at startup. Pending handoffs deliver oldest
-first, one turn each, and the idempotency key prevents duplicates. When the
-handed-off turn, or its newest Resume or Retry, settles, RCP admits one Space
-wake that reports it.
-A handoff to an archived chat or closed thread settles as refused and uses that
-same report path once; it is not deferred for another delivery attempt.
+member's authority. It is not mail. The verb records the request and returns at
+once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
+that turn's own Patch lands first. A Stopped or failed Space turn cancels its
+pending handoffs without a wake. Delivery appends a member message with
+`source: "handoff"` and admits its turn when the target is idle; it runs after
+each settlement, after a provider sign-in release, and at startup. Pending
+handoffs deliver oldest first, one turn each, and the idempotency key prevents
+duplicates. A transient admission refusal keeps the request pending and is noted
+once on the Space turn; any other refusal is final.
+
+A handoff settles when its delivered turn, or that turn's newest Resume or Retry,
+succeeds, fails, is interrupted, or is paused by Stop. A failure RCP still retries
+itself (a lost link before its retries are exhausted, or a provider sign-in
+failure) does not settle it. A handoff refused because the target is archived,
+closed, no longer the member's project, or holding a Stopped turn settles at once
+with that stored reason; leaving a project closes its thread. Each settled
+handoff admits one Space wake with source `handoff_report`. Its message is
+`render_handoff_report` of a `HandoffReport`: status, refusal reason, failure kind,
+the provider's failure text, the project agent's stated turn outcome, and its
+last message, each bounded to the handoff limit. The same report is stored on the
+message as `handoff_report` for display. Content is omitted once the member has
+left the project.
 
 A thread wakes on a member message from the composer, voice or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
@@ -93,6 +107,17 @@ The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
 unused name and then numbered suffixes. These seeded names cannot be changed by
 the agent; member renaming uses the ordinary name rules. Browser starts on.
 
+Each thread stores its agent pick (provider, model, reasoning, machine), set by
+`POST /api/agent-threads/{thread_id}/agent`, by a member send that carries a
+pick, or by `handoff --provider/--model/--effort`. The route and handoff check
+the pick against the thread machine's readiness; a send is checked by its own
+admission. Every turn on the thread runs the stored pick: member sends, Retry,
+schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
+replaces the failed request's agent with it. Without a pick, a project thread
+uses its project's Settings Work profile and the Space thread the backend
+default; `thread_agent` resolves both. A changed provider takes the provider
+switch path below.
+
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
 on each record. The reader verifies the filename against the record. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
@@ -103,7 +128,8 @@ accepts only that scope. A missing file is an empty thread; an unreadable or
 mislabeled one refuses with the voice reader's `thread_transcript_unavailable`
 (503) or `thread_transcript_invalid` (409), so a Space turn fails rather than
 running without its history. Optional message `source` distinguishes voice and
-handoff input (and the reserved Slack source); absent source means the composer
+handoff input, RCP's `handoff_report` (and the reserved Slack source); absent
+source means the composer
 and is omitted from serialization, preserving old records. Space turns, steering,
 and voice entries share one transcript lock; both deduplicate by record `uuid`
 under that lock before appending.

@@ -6,9 +6,13 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIVE
+
+if TYPE_CHECKING:
+    from rcp.storage.agent_threads import AgentThreadRecord
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +358,7 @@ def _dispatch_thread(poller, thread_id: str, schedules, now: datetime) -> None:
     if record is None or _thread_busy(store, record):
         return
     try:
-        task = schedule_wake_task(poller, dict(thread), schedule_wake_message(schedules, now), now)
+        task = schedule_wake_task(poller, record, schedule_wake_message(schedules, now), now)
         poller.tasks.admit_provider_task(
             task.project_id,
             RunRequest.model_validate(task.request),
@@ -382,16 +386,16 @@ def dispatch_agent_schedules(poller, now: datetime, pending) -> None:
             logger.exception("Agent schedule wake failed for thread %s", thread_id)
 
 
-def _latest_member_turn(store, thread: dict, project_id: str):
+def _latest_member_turn(store, thread: AgentThreadRecord, project_id: str):
     """The thread's latest turn, bound to its still-present member."""
-    user = store.space_user(thread["user_id"])
+    user = store.space_user(thread.user_id)
     if user is None or user.removed_at is not None or user.removal_started_at is not None:
         raise ValueError("schedule_member_unavailable")
     with store.connection() as connection:
         row = connection.execute(
             "SELECT * FROM graph_runs WHERE project_id=? AND json_extract(request_json, '$.chat_id')=? "
             "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
-            (project_id, thread["thread_id"]),
+            (project_id, thread.thread_id),
         ).fetchone()
     if row is None:
         raise ValueError("schedule_thread_has_no_admitted_turn")
@@ -403,28 +407,25 @@ def _latest_member_turn(store, thread: dict, project_id: str):
     return previous
 
 
-def schedule_wake_task(poller, thread: dict, message: str, now: datetime):
+def schedule_wake_task(poller, thread: AgentThreadRecord, message: str, now: datetime):
     """Continue the thread's latest Work binding, like a question follow-up."""
     from uuid import uuid4
 
+    from rcp.runs.agent_thread_commands import thread_agent
     from rcp.runs.task_policy import resolved_dispatch_authority
     from rcp.service import RunRequest
     from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord
 
-    project_id = thread["project_id"] or poller.store.space_id
-    if refusal := poller.store.chat_turn_refusal(project_id, thread["thread_id"]):
+    project_id = thread.project_id or poller.store.space_id
+    if refusal := poller.store.chat_turn_refusal(project_id, thread.thread_id):
         raise AgentTaskAdmissionConflict(refusal)
     previous = _latest_member_turn(poller.store, thread, project_id)
     request = RunRequest.model_validate(previous.request).model_copy(
         update={
-            **(
-                poller.store.current_chat_agent(project_id, previous.kind, thread["thread_id"])
-                or {}
-            ),
+            # The thread's stored pick, else its default agent.
+            **thread_agent(poller.store, thread),
             "session_id": None,
-            "browser_requested": poller.store.chat_browser_requested(
-                project_id, thread["thread_id"]
-            ),
+            "browser_requested": poller.store.chat_browser_requested(project_id, thread.thread_id),
             "message": message,
             "trigger": "schedule",
             "source": None,

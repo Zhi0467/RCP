@@ -92,7 +92,8 @@ HANDOFF_MESSAGE = ("message_file", "<message-file>")
 
 
 def handoff_usage():
-    return f"handoff {_option_usage(KEY_OPTION)} {PROJECTS_SHOW[1]} {HANDOFF_MESSAGE[1]}"
+    picks = " ".join(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS)
+    return f"handoff {_option_usage(KEY_OPTION)} {picks} {PROJECTS_SHOW[1]} {HANDOFF_MESSAGE[1]}"
 
 
 def projects_usages():
@@ -320,6 +321,7 @@ def _parser():
     project_show.add_argument(PROJECTS_SHOW[0])
     handoff = subparsers.add_parser("handoff")
     handoff.add_argument(KEY_OPTION[1], required=True)
+    _add_profile_pick_arguments(handoff)
     handoff.add_argument(PROJECTS_SHOW[0])
     handoff.add_argument(HANDOFF_MESSAGE[0])
 
@@ -485,6 +487,7 @@ def _request_arguments(namespace, workspace):
             {
                 "project_id": _nonblank(namespace.project_id, "project id"),
                 "message_file": filename,
+                **_profile_pick(namespace),
             },
         )
     if verb in ("validate", "merge_answers"):

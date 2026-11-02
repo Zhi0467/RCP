@@ -889,6 +889,12 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        thread = self.store.agent_thread(str(previous.request.get("chat_id") or ""))
+        if thread is not None and thread.agent and provider is model is reasoning is run_on is None:
+            # A thread's stored pick replaces the failed turn's agent, as the member chose.
+            pick = thread.agent
+            provider, run_on = pick["provider"], pick["run_on"]
+            model, reasoning = pick["model"] or "", pick["reasoning"] or ""
         if (
             isinstance(original, RunRequest)
             and original.artifact_edit is not None

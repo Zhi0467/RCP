@@ -144,6 +144,14 @@ class HandoffArguments(BaseModel):
 
     project_id: str = Field(min_length=1, max_length=200)
     message_file: str = Field(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9._-]+$")
+    # An optional agent pick for the target thread; it becomes that thread's stored pick.
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    reasoning: str | None = Field(
+        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def valid_target(self) -> HandoffArguments:

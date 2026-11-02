@@ -24,7 +24,7 @@ def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
     thread_id = str(uuid.uuid4())
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO agent_threads VALUES (?,?,'project',?,?,NULL,NULL)",
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) VALUES (?,?,'project',?,?)",
             (thread_id, store.local_owner.user_id, project_id, store.now()),
         )
     question = store.create_or_get_question(

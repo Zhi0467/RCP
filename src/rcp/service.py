@@ -180,6 +180,27 @@ class _ProjectSnapshotDraft:
 
 ConversationMode = Literal["discuss", "work"]
 TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher", "schedule"]
+#: Who wrote a member-side message; `handoff_report` is RCP's settled-handoff report.
+ChatMessageSource = Literal["voice", "handoff", "slack", "handoff_report"]
+
+
+class HandoffReport(BaseModel):
+    """A settled handoff, shown as one row and given to the Space agent as data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    handoff_id: str
+    project_id: str
+    thread_id: str
+    operation_id: str | None = None
+    status: str
+    reason: str | None = None
+    failure_kind: str | None = None
+    error: str | None = None
+    turn_outcome: TurnOutcome | None = None
+    answer: str | None = None
+
+
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 
@@ -319,9 +340,7 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message_id: str
-    source: Literal["voice", "handoff", "slack"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
+    source: ChatMessageSource | None = Field(default=None, exclude_if=lambda value: value is None)
     operation_id: str | None = None
     #: The question whose answer this member message delivers, when applicable.
     question_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -347,6 +366,9 @@ class ChatMessage(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    handoff_report: HandoffReport | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class ChatOriginView(ChatForkOrigin):
@@ -416,9 +438,7 @@ class _StoredChatRecord(BaseModel):
     private_owner: str | None = Field(
         default=None, alias="privateOwner", exclude_if=lambda value: value is None
     )
-    source: Literal["voice", "handoff", "slack"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
+    source: ChatMessageSource | None = Field(default=None, exclude_if=lambda value: value is None)
     provider: str | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -439,6 +459,9 @@ class _StoredChatRecord(BaseModel):
     trigger: TaskTrigger = "human"
     steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    handoff_report: HandoffReport | None = Field(
+        default=None, alias="handoffReport", exclude_if=lambda value: value is None
+    )
 
 
 def _chat_message_from_record(record: _StoredChatRecord) -> ChatMessage:
@@ -464,6 +487,7 @@ def _chat_message_from_record(record: _StoredChatRecord) -> ChatMessage:
         trigger=record.trigger,
         steering=record.steering,
         attachments=record.attachments,
+        handoff_report=record.handoff_report,
     )
 
 
@@ -1043,7 +1067,8 @@ class RunRequest(BaseModel):
 
     browser_requested: bool = False
     timezone: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    source: Literal["voice", "handoff", "slack"] | None = Field(
+    source: ChatMessageSource | None = Field(default=None, exclude_if=lambda value: value is None)
+    handoff_report: HandoffReport | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
 

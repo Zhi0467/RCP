@@ -421,3 +421,53 @@ def test_corrupt_space_transcript_is_a_visible_conflict(manifest, tmp_path):
     response = client.get(f"/api/agent-threads/{thread['thread_id']}/transcript")
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "thread_transcript_invalid"
+
+
+def test_thread_pick_is_owner_only_and_drives_retry(manifest, tmp_path, monkeypatch):
+    from rcp.core.models import AuthorizedHuman
+    from rcp.service import RunRequest
+    from tests.helpers import fake_launch_admitted
+    from tests.test_storage import _task_record
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    background = app.state.background_tasks
+    store = background.store
+    fake_launch_admitted(monkeypatch, background)
+    monkeypatch.setattr(background, "admit_provider_task", lambda *args, **kwargs: None)
+    with signed_in_client(app) as client:
+        space = client.get("/api/agent-threads").json()["threads"][0]
+        other = store.ensure_agent_threads("someone-else", [], default_names=("Pip",))[0]
+        assert (
+            client.post(
+                f"/api/agent-threads/{other.thread_id}/agent", json={"provider": "claude"}
+            ).status_code
+            == 404
+        )
+        owner = store.local_owner
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="failed",
+                project_id=store.space_id,
+                kind="space_chat",
+                status="failed",
+                authorized_by=AuthorizedHuman(
+                    space_id=store.space_id, user_id=owner.user_id, display_name="Member"
+                ),
+                request=RunRequest(
+                    provider="codex",
+                    chat_scope="project",
+                    chat_id=space["thread_id"],
+                    mode="work",
+                    message="Hi",
+                ).model_dump(mode="json"),
+            )
+        )
+        picked = client.post(
+            f"/api/agent-threads/{space['thread_id']}/agent", json={"provider": "claude"}
+        )
+        assert picked.status_code == 200, picked.text
+        assert picked.json()["agent"]["provider"] == "claude"
+        # Retry follows the pick the member made after the failure.
+        retried = background.retry("failed", authorized_by=store.agent_task("failed").authorized_by)
+        assert retried.request["provider"] == "claude"

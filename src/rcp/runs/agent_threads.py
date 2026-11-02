@@ -71,6 +71,8 @@ def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, o
         # A running turn's member message reaches the transcript only when it settles.
         "latest_operation_id": task["operation_id"] if task else None,
         "browser_requested": store.chat_browser_requested(scope, thread.thread_id),
+        # The member's stored pick; null until one is made, when the default applies.
+        "agent": thread.agent,
     }
 
 

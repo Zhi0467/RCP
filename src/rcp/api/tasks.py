@@ -395,6 +395,9 @@ def start_ordinary_task(
                 detail="Agent threads require Work on the project main graph.",
             )
         body = {**body, "mode": "work", "chat_scope": "project"}
+        from rcp.runs.agent_thread_commands import sent_thread_agent
+
+        body = {**body, **sent_thread_agent(store, thread, body)}
     service = get_graph_service(catalog, project_id, branch_id, initialize=False, write=True)
     if branch_id is not None and kind not in {"node_chat", "project_chat"}:
         raise HTTPException(
