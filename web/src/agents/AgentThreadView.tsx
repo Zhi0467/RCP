@@ -256,9 +256,11 @@ function HandoffResult({
   return (
     <div className="handoff-result" data-status={report.status}>
       <div className="handoff-result-row">
-        <GitPullRequestArrow size={12} aria-hidden="true" />
+        <span className="chat-turn-trigger handoff">Handoff</span>
         <strong>{agentName}</strong>
-        <span>{HANDOFF_STATUS[report.status] ?? report.status.replaceAll("_", " ")}</span>
+        <span className="handoff-result-status">
+          {HANDOFF_STATUS[report.status] ?? report.status.replaceAll("_", " ")}
+        </span>
       </div>
       {report.answer && (
         <div className="chat-markdown">
@@ -383,7 +385,6 @@ function SchedulesPopover({
                 <span className="upcoming-when">
                   <time>{[scheduleWhen(schedule), ...scheduleLimits(schedule)].join(" · ")}</time>
                   <span className="upcoming-zone">{schedule.timezone}</span>
-                  {paused && <span>Paused</span>}
                   {next && (
                     <time className="upcoming-next" dateTime={next} title="Next run">
                       → {scheduleInstant(next)}
@@ -409,13 +410,15 @@ function SchedulesPopover({
                 <span className="upcoming-actions">
                   {schedule.state === "disabled" && !oneShotPassed(schedule) && (
                     <button
-                      className="button compact"
+                      className="icon-button"
                       type="button"
+                      aria-label={`Enable ${schedule.note}`}
+                      title="Enable"
                       onClick={() =>
                         void act(() => enableThreadSchedule(thread.thread_id, schedule.schedule_id))
                       }
                     >
-                      Enable
+                      <Play size={14} />
                     </button>
                   )}
                   {(paused || schedule.state === "active") && (
@@ -1188,7 +1191,7 @@ export function AgentThreadView({
           latestGraphReceiptLineIds={lines.latestGraphReceiptLineIds}
           showModes={false}
           lineClassName={(line) =>
-            line.trigger === "schedule" && line.role === "human" ? "agent" : line.role
+            line.trigger === "schedule" && line.role === "human" ? "agent schedule-wake" : line.role
           }
           humanBody={(line) => (line.trigger === "schedule" ? <></> : undefined)}
           browserNotices={false}
@@ -1203,10 +1206,9 @@ export function AgentThreadView({
               />
             );
           }}
+          // A handoff result carries its chip inside its own row.
           triggerChip={(line) =>
-            line.trigger !== "watcher" ? null : handoffReport(line) ? (
-              <span className="chat-turn-trigger handoff">Handoff</span>
-            ) : (
+            line.trigger !== "watcher" || handoffReport(line) ? null : (
               <span className="chat-turn-trigger watcher">Watcher</span>
             )
           }

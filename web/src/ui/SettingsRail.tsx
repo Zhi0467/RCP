@@ -6,6 +6,8 @@ export interface SettingsSection {
   label: string;
   icon: ReactNode;
   content: ReactNode;
+  /** The pane holds fields staged for a page-level Save. */
+  drafts?: boolean;
 }
 
 interface SettingsRailProps {
@@ -13,8 +15,8 @@ interface SettingsRailProps {
   sections: SettingsSection[];
   /** Absent, unknown, or missing: the first section. */
   initialSection?: string;
-  /** Page-level footer below the pane, such as a save bar. */
-  children?: ReactNode;
+  /** Page-level footer below the shown section's pane, such as a save bar. */
+  children?: (section: SettingsSection) => ReactNode;
 }
 
 /**
@@ -77,7 +79,7 @@ export function SettingsRail({ sections, initialSection, children }: SettingsRai
             {section.content}
           </div>
         ))}
-        {children}
+        {selected && children?.(selected)}
       </div>
     </div>
   );

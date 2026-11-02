@@ -446,6 +446,10 @@ export function ChatsWorkspace({
     unreadChatIds,
     query,
   );
+  // The member's own thread counts in All, and in Working while its turn runs.
+  const ownThreadLive = ownThread !== null && threadIsLive(ownThread.thread);
+  const ownThreadListed =
+    ownThread !== null && (filter === "all" || (filter === "working" && ownThreadLive));
   const pinnedChatIds = new Set(display.pinned);
   const visibleGroups = AGENT_LIST_SECTIONS.filter(
     (group) => filter === "all" || showingArchived || group === filter,
@@ -987,8 +991,9 @@ export function ChatsWorkspace({
                 value === "archived"
                   ? archivedCount
                   : value === "all"
-                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0)
-                    : activeGroups[value].length;
+                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0) +
+                      (ownThread ? 1 : 0)
+                    : activeGroups[value].length + (ownThreadLive ? 1 : 0);
               return (
                 <button
                   type="button"
@@ -1014,7 +1019,7 @@ export function ChatsWorkspace({
           </p>
         )}
         <div role="listbox" aria-label="Conversations">
-          {ownThread && filter === "all" && (
+          {ownThread && ownThreadListed && (
             <div className="agent-row thread-row your-thread-row">
               <button
                 type="button"
@@ -1028,16 +1033,21 @@ export function ChatsWorkspace({
                   if (narrow) setMobileListOpen(false);
                 }}
               >
-                <span className="thread-row-icon" aria-hidden="true">
-                  {threadIsLive(ownThread.thread) ? (
-                    <LoaderCircle className="spin" size={14} />
-                  ) : ownThread.thread.unread ? (
-                    <span className="unread-dot" />
-                  ) : null}
-                </span>
                 <span className="agent-row-body">
                   <span className="agent-row-title">{ownThread.thread.agent_name}</span>
-                  <span className="agent-row-meta">You</span>
+                  {/* The state mark leads the meta line, where team rows show their provider. */}
+                  <span className="agent-row-meta">
+                    <span className="thread-row-icon" aria-hidden="true">
+                      {threadIsLive(ownThread.thread) ? (
+                        <LoaderCircle className="spin" size={12} />
+                      ) : ownThread.thread.unread ? (
+                        <span className="unread-dot" />
+                      ) : (
+                        <MessageCircle size={12} />
+                      )}
+                    </span>
+                    You
+                  </span>
                 </span>
                 <time className={threadIsLive(ownThread.thread) ? "live" : undefined}>
                   {threadTimeLabel(ownThread.thread, now)}
@@ -1185,7 +1195,9 @@ export function ChatsWorkspace({
                       type="button"
                     >
                       <PanelLeft size={16} />
-                      <span className="team-count">{filteredConversations.length}</span>
+                      <span className="team-count">
+                        {filteredConversations.length + (ownThread ? 1 : 0)}
+                      </span>
                     </button>
                     <button
                       aria-label="Show the agents board"

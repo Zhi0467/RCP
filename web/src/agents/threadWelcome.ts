@@ -1,9 +1,7 @@
 import type { AgentThread } from "../core/types";
 
-/** What an empty thread shows before its first message. */
+/** What an empty thread shows before its first message; the header names the agent. */
 export type ThreadWelcome = {
-  title: string;
-  subtitle: string;
   /** The agent's capabilities, as the backend renders them from its granted verbs. */
   lines: readonly string[];
   /** Starters that fill the composer; none sends. */
@@ -15,14 +13,12 @@ export type ThreadWelcome = {
  * member's first project, or offers to set one up when there is none.
  */
 export function threadWelcome(
-  thread: Pick<AgentThread, "kind" | "agent_name" | "project_name" | "capabilities">,
+  thread: Pick<AgentThread, "kind" | "capabilities">,
   firstProjectName: string | null,
 ): ThreadWelcome {
   const lines = thread.capabilities ?? [];
   if (thread.kind === "space")
     return {
-      title: thread.agent_name || "Pip",
-      subtitle: "Your agent across every project",
       lines,
       prompts: [
         "What changed in my projects this week?",
@@ -33,8 +29,6 @@ export function threadWelcome(
       ],
     };
   return {
-    title: thread.agent_name || thread.project_name || "Project agent",
-    subtitle: thread.project_name ?? "",
     lines,
     prompts: [
       "Summarize this project's open questions",

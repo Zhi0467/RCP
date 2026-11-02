@@ -10,8 +10,6 @@ export function AgentThreadWelcome({
 }) {
   return (
     <div className="thread-welcome">
-      <h2>{welcome.title}</h2>
-      {welcome.subtitle && <p className="thread-welcome-subtitle">{welcome.subtitle}</p>}
       {welcome.lines.length > 0 && (
         <ul>
           {welcome.lines.map((line) => (

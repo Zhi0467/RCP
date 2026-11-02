@@ -177,6 +177,24 @@ test("switching Project Settings to another project starts on its first section"
   assert.deepEqual(await current(page), [first]);
 });
 
+test("the save bar shows only on panes with staged fields until there are edits", async (t) => {
+  const page = await openRail(t, { query: "?project" });
+  const bar = page.locator(".settings-savebar");
+  for (const [pane, shown] of [
+    ["members", false],
+    ["agent-defaults", true],
+    ["skills", true],
+    ["repos", false],
+  ]) {
+    await select(page, pane);
+    assert.equal(await bar.count(), shown ? 1 : 0, pane);
+  }
+  await select(page, "agent-defaults");
+  await ceiling(page).fill("12");
+  await select(page, "members");
+  assert.equal(await bar.count(), 1);
+});
+
 test("an invalid ceiling shows in the save bar on every pane and keeps Save disabled", async (t) => {
   const page = await openRail(t, { query: "?project" });
   const status = page.locator(".settings-savebar .settings-save-status");

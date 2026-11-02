@@ -427,21 +427,24 @@ Long reasons wrap without failure coloring.
 
 ## Agent view
 
-The space home switches between Projects (the project cards) and Agent. A
+The space home switches between Projects (the project cards) and Agent. At
+phone width the switch shows its icons alone and the title aligns with the cards. A
 personal space remembers the last tab per member on that browser, defaulting to
 Agent on the first visit. Explicit Projects, Agent thread, project, and
 project-group links take precedence. The Projects tab opens `#/cards` in every
 space, so it stays an explicit link that never collides with `#/projects/<id>`.
 Agent has a left rail with the member's Space thread first, then each project
 thread. Rows show the agent name,
-the project or Space, and an unread dot or a needs-you mark. The rail folds like
+the project or Space, and a mark: a spinner while live, an unread dot, a
+needs-you mark, or at rest the Space or chat icon. The rail folds like
 the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
-conversation list. The team's board conversations stay in that list. The thread
-header holds a scrolling schedules list, the context ring, and a
-⋯ menu with Rename, the browser switch, and the agent pick. Space and project
+conversation list and counts in its filters. Its mark leads its meta line, where
+team rows show their provider, so every title starts in one column. The team's
+board conversations stay in that list. The thread header holds a scrolling
+schedules list, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
 sign-in from Settings appears without a reload. A pick is stored on the thread
@@ -450,12 +453,13 @@ member picks, the row shows the project's Settings profile, or for the Space
 thread the backend machine's first signed-in provider. When the browser was
 unavailable on the latest turn, the browser item carries a warning icon and the
 fix on hover; turns carry no browser notice. The composer holds the voice
-button. Once a thread's transcript has loaded empty, a centered welcome names the
-agent and lists what it can do, rendered from the capability lines the backend
-gives each verb the thread kind's turns are granted, above three starters. A
-starter fills the composer without sending, and the first turn removes the welcome.
+button. Once a thread's transcript has loaded empty, a centered welcome lists
+what the agent can do under the header that names it, rendered from the
+capability lines the backend gives each verb the thread kind's turns are
+granted, above three starters. A starter fills the composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Retry.
-A member's Stop reads Stopped, with Resume and Retry, in the same column. A
+A member's Stop reads Stopped, with Resume and Retry, in the same column, on
+one rounded row shaped like the failed turn's. A
 Resume or Retry continues its turn, so the member's message shows once. The
 thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
@@ -465,9 +469,9 @@ schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
 cannot start shows in the row; a paused row says why on hover. Every row has
 Cancel; a paused one also has Enable unless it is a one-shot whose time passed,
-and a refused Enable shows the backend's reason. A
-wake shows its trigger: Handoff, Schedule, or Watcher. A handoff result is one
-row naming the agent that ran it and how it ended, with its answer below.
+and a refused Enable shows the backend's reason. Row actions are icons. A wake
+shows its trigger: Handoff, Schedule, or Watcher. A schedule's chip leads its answer. A handoff result is one row with its Handoff
+chip, the agent that ran it, and how it ended, with its answer below.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
