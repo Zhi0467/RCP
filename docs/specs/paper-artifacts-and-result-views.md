@@ -85,7 +85,8 @@ by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backen
 with `--untrusted` and bounded time, output, and concurrency. Compilation changes
 no state and is available to members. Identical concurrent requests join. A newer,
 different request cancels the project's older request and shows Retry. Previous
-PDFs remain readable within retention.
+PDFs remain readable within retention. An uploaded PDF renders in the in-app PDF
+viewer, with Download in the panel header and area comments, but without SyncTeX.
 
 Preview selects the one compile root that reaches the open file. A LaTeX file
 with its own `\documentclass` is its own root, so the file the user is in
@@ -423,8 +424,9 @@ reload it. Expand and Download use authored fallback colors. Markdown and text
 run no script. The fixed embed height persists through loading, refreshes, and
 version changes. Content scrolls internally, and images are centered. The caption
 stays on one row until an action, avoiding chat motion. Frames mount near the
-reader in the chat scroll box. They refresh when turns settle, the version or
-visibility changes, and on a slow live interval. Live relay is one-way.
+reader in the chat scroll box. A mounted frame re-reads its state when the
+project's artifacts watermark moves and reloads when the current version changes.
+Live relay is one-way.
 
 An inline artifact opens in comment mode, whose dashed outline is also its
 visible edge. Done hands the page back for clicks and drags until the reader
@@ -441,8 +443,8 @@ references. Both paths can publish tracked next versions. Keep follows viewer st
 
 ### Selection and comments
 
-HTML, raster images, and SVG support gestures immediately in the panel and by
-opt-in inline. Other viewable types allow whole-file comments. PDFs and types
+HTML, raster images, and SVG support gestures immediately in the panel and
+inline, where comment mode starts on until the reader presses Done. Other viewable types allow whole-file comments. PDFs and types
 available only for download refuse comments. Text selection highlights text.
 Dragging on figures or blank space selects a boxed region. Add saves a comment
 in the tray.
@@ -535,7 +537,8 @@ traces, and other formats. See [current exclusions](../design.md).
 
 ## Keeping an artifact
 
-Keep stops expiry without writing to the canonical repository. SQLite owns the
+Keep stops expiry without writing to the canonical repository. Inline embeds
+and chat cards present it as saving to Artifacts; the viewer calls it Keep. SQLite owns the
 metadata. Immutable digest files for each artifact write atomically in RCP data.
 Original and recent versions are bounded. Publication checks the base and
 idempotency under the shared lock. Capture guards delay pruning and unlinking.

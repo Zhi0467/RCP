@@ -35,8 +35,9 @@ reads, names, browser choice, thread questions, approval cards, schedules,
 project membership and handoff creation, delivery and settlement. A turn's file-backed transcript
 append publishes through its task row; a voice append bumps the owner's counter
 directly. The refresh scheduler asks for it on its own beat while a thread list
-is shown, with or without an open project. A changed version reloads the thread
-list and the open thread's transcript and questions. While the open thread's turn
+is shown or a voice session is open, with or without an open project. A changed
+version reloads the thread list and the open thread's transcript, questions,
+and schedules. While the open thread's turn
 runs, only that task is read, every 2 s while the page shows, one read at a time.
 Earlier turns load their task detail once, when their row nears the view.
 Task, episode timeline, run-artifact, Bulletin and digest profiles also watch
@@ -104,7 +105,7 @@ dispatched it; eligibility uses the isolation reservation and writer checks.
 
 `PUT .../graph-refs/{branch_id}/name` takes `{"name": str}`;
 `PUT .../graph-refs/{branch_id}/archived` takes `{"archived": bool}`.
-Both admit project members and return the GraphRef. Rename returns 422
+Both require project write admission and return the GraphRef. Rename returns 422
 `branch_name_invalid` or 409 `branch_name_taken`; unknown branches return 404.
 Main cannot be renamed or archived. Archive updates the branch record and mirrors
 the flag into isolation state only for an episode's own target branch, creating
@@ -320,8 +321,9 @@ items younger than 24 hours. Each item carries its stable notification id and
 only a fixed reason code, project name, and hash-route deep link as content.
 Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
-Bulletin mentions use the channel query link described in
-[Bulletin channels](#bulletin-channels).
+Chat questions link to their chat (`?view=chats&chat=`), agent-thread items to
+`#/agent/{thread_id}`, and Bulletin mentions use the channel query link
+described in [Bulletin channels](#bulletin-channels).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
 Graph item age starts at its accepted Patch, and terminal episode age starts
@@ -350,10 +352,10 @@ every item it covers, and a rejected one leaves them for retry.
 
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's toggles: `proposal`, `decision`, `blocker`,
-`episode_needs_action`, `episode_finished`, `consolidation`, and
-`bulletin_mention`. All default on except `episode_finished`. These routes require project membership. Project Settings
-shows them as a **Notifications** card after Machines, which also says the
-project name appears on the lock screen.
+`episode_needs_action`, `episode_finished`, `consolidation`,
+`bulletin_mention`, and `agent_thread`. All default on except
+`episode_finished`. These routes require project membership. Project Settings
+shows every toggle in a **Notifications** card after Machines.
 
 The Web app resolves a notification link once, at load or on a hash change,
 into the item's ordinary route: a Proposal, Decision, or Blocker opens the Inbox.
@@ -506,8 +508,8 @@ The strict request rejects additional fields.
 `POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
 card only, and never wakes an owner.
 
-Approval questions add `card: {kind, action, pinned, pinned_sha256, expires_at,
-state}`, where state is pending, running or expired. Ordinary answer and dismiss
+Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
+expires_at, state, result}`, where state is pending, running or expired. Ordinary answer and dismiss
 return `409 approval_card` for these questions. The owner resolves through
 `POST /api/approval-cards/{question_id}` with
 `{decision: "approve" | "decline", pinned_sha256}`. The response is
@@ -991,10 +993,12 @@ remembers the exact route it left, so returning lands on that page even when the
 tab's snapshot is gone (for example after a backend restart). Within a project,
 each view tab reopens the sub-view the viewer last had open there (Research its
 graph, Artifacts its Paper, Agents the chat it was left on while that chat still
-exists, else its board), remembered per project in browser storage. Activating a tab is
+exists, else the member's own project thread), remembered per project in browser storage. Activating a tab is
 cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
-left, and the last close returns to the index.
+left, and the last close returns to the index. In the desktop app, ⌘T returns
+to the index, and ⌥⌘← and ⌥⌘→ activate the previous or next tab, wrapping,
+except while an editable field has focus.
 
 Open tabs survive hiding/reopening the same desktop window but reset on full
 page reload or app quit. An inactive tab is not kept mounted merely because it
@@ -2264,7 +2268,8 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `GET /api/agent-threads` returns the acting member's lazily created Space and
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_finished_at`, `last_activity_at`, `live_state`,
-`latest_operation_id`, `browser_requested` and `capabilities`. The Space
+`latest_operation_id`, `browser_requested`, `capabilities`, and `agent` (the
+thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused or `needs_you` (an open question or card). `latest_operation_id` names
 the newest visible turn, so a view can follow a project turn whose member

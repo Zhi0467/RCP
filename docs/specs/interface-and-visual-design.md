@@ -74,7 +74,8 @@ It does not use a stacked box or caption. An unsent turn has a red edge and
 Resend at the top right.
 More detail belongs in an explicit read-only inspector.
 Chat and coaching have no sample prompts, slogans, instructional empty states,
-or textarea placeholders. Empty conversations are empty.
+or textarea placeholders. Empty conversations are empty, except the empty agent
+thread's welcome described under [Agent view](#agent-view).
 
 ## Smooth motion
 
@@ -279,8 +280,9 @@ shrink columns. Fit preserves pins. Returning restores zoom, scroll, and offsets
 Chat Options holds Browser use beside Work in a worktree. Its unlabelled sliders
 chip counts enabled options. On phones, the menu spans the screen-height composer.
 An outside click, Escape, or a chat change closes it.
-Browser use starts off in new chats. Failed saves retain the server value and
-offer Check again. Coaching has no Browser switch.
+Browser use starts off in new chats. A failed save returns to the server value,
+outlines the control in red, and offers one icon-only retry with the error on
+hover. Coaching has no Browser switch.
 
 Episode options sit inside the agent picker below the provider fields.
 The chip matches Start's height and counts enabled options.
@@ -299,7 +301,8 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 Discuss is plum. Work is forest. Shift+Tab toggles an idle focused composer.
 Each turn retains its mode. The Agents header has a title, a picker for provider,
-model, and effort, a context ring, and one menu. The menu holds Rename, Archive,
+model, and effort, a context ring, an active-watcher count toggle when watchers
+exist, and one menu. The menu holds Rename, Archive,
 New session, Branch this chat, and repository scope.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
@@ -345,8 +348,9 @@ main. It opens orchestrators in place. There is no graph filter or tags for bran
 or role. User tags remain. Children in the active lineage show Working or Done.
 Attention belongs to the orchestrator. Posting and ownership follow the API spec.
 
-Entry opens the board unless a link selects a chat or a chat was left open in
-this project. Inside Agents, its tab returns to the board. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
+Entry reopens the chat left open in this project, else the member's own project
+thread; the board opens only when the member has none. A link that selects a chat
+opens it. The list's board button opens the board. The columns are Needs you, Working, Done, and Archived. Archived starts folded;
 folding is per viewer.
 Cards show a logo or spinner, title, provider, model, effort, type, state, age,
 and offered recovery. Branch cards also show their source chat.
@@ -362,7 +366,7 @@ Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.
 
 At <=560px, the header is one row of picker, ring, and menu without chat name.
-More → Agents opens the board unless a chat was left open. Wider layouts retain
+More → Agents follows the same entry rule. Wider layouts retain
 resizable-list preferences independently of viewport changes. Only code, tables,
 and display math scroll sideways. Paths and URLs wrap.
 Code Copy is icon-only and copies the exact text. It has 44px phone targets.
@@ -435,22 +439,25 @@ project-group links take precedence. The Projects tab opens `#/cards` in every
 space, so it stays an explicit link that never collides with `#/projects/<id>`.
 Agent has a left rail with the member's Space thread first, then each project
 thread. Rows show the agent name,
-the project or Space, and a mark: a spinner while live, an unread dot, a
-needs-you mark, or at rest the Space or chat icon. The rail folds like
+the project or Space, and a mark. The Space row always shows the Space icon; a
+project row shows a spinner while live, a needs-you mark, an unread dot, or at
+rest the chat icon. Every row ends with live or the time since it last moved. The rail folds like
 the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
-board conversations stay in that list. The thread header holds a scrolling
-schedules list, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
+board conversations stay in that list. The thread header holds an Upcoming
+count button, present only when schedules exist, that opens a scrolling popover
+of them, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
 sign-in from Settings appears without a reload. A pick is stored on the thread
 at once and every later turn runs it, retries and wakes included. Until the
 member picks, the row shows the project's Settings profile, or for the Space
-thread the backend machine's first signed-in provider. When the browser was
+thread the backend machine's first signed-in provider, else its first registered
+provider. When the browser was
 unavailable on the latest turn, the browser item carries a warning icon and the
 fix on hover; turns carry no browser notice. The composer holds the voice
 button. Once a thread's transcript has loaded empty, a centered welcome lists
@@ -465,12 +472,14 @@ thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
 that declares its models lists them before any probe.
 Switching threads shows each thread's last loaded view while it reloads. Each
-schedule row shows its note (in full on hover), its time and zone, the next run
+Upcoming row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
-cannot start shows in the row; a paused row says why on hover. Every row has
-Cancel; a paused one also has Enable unless it is a one-shot whose time passed,
-and a refused Enable shows the backend's reason. Row actions are icons. A wake
-shows its trigger: Handoff, Schedule, or Watcher. A schedule's chip leads its answer. A handoff result is one row with its Handoff
+cannot start shows in the row. Every row has Cancel; an active row has Pause and
+a member-paused row Resume. A row the system disabled says why on hover and has
+Enable unless it is a one-shot whose time passed; a refused Enable shows the
+backend's reason. Row actions are icons. A wake shows its trigger: Handoff and
+Watcher as text chips, and a schedule as a calendar chip with its fire time,
+the note on hover, leading its message. A handoff result is one row with its Handoff
 chip, the agent that ran it, and how it ended, with its answer below.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
