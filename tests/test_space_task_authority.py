@@ -10,12 +10,11 @@ from tests.test_dispatch_authority import _authorizer, _record, _work_authority,
 
 
 def test_space_patch_requires_exact_persisted_project_binding(tmp_path):
+    """Old writer task shape, upgraded in place into the new kind."""
     store = AppStore(tmp_path / "app.sqlite3")
     human = _authorizer(store)
     request = _work_request()
     authority = _work_authority(request)
-    # Old writer task shape, upgraded in place into the new kind: provenance
-    # continues to use the existing task row and human snapshot.
     task = _record(
         store,
         operation_id="space-turn",

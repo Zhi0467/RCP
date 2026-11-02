@@ -59,10 +59,12 @@ def isolated_script(account: Path, source: str, *arguments: str) -> list[str]:
 def test_native_install_is_ready_without_path_or_symlink(
     account: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
+    """Only the SSH transport and OS account database are replaced, so no human account
+    is touched.
+    """
     binary = executable(account / ".opencode/bin/opencode")
     if host:
-        # Execute the shipped program and real stub CLI, replacing only the SSH
-        # transport and OS account database so no human account is touched.
+
         def probe(_host: str, command: list[str], **_kwargs):
             if command[:2] == ["python3", "-c"]:
                 command = isolated_script(account, command[2], *command[3:])

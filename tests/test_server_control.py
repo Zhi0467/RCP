@@ -821,9 +821,8 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(
         refusal_queued.set()
 
     def resolve_after_refusal(connection):
+        """A server that closes immediately loses the kernel credentials on macOS."""
         assert refusal_queued.wait(TASK_SETTLE_TIMEOUT)
-        # Use real kernel credentials after the refusal was queued. A server
-        # that closes immediately loses these credentials on macOS.
         return control.unix_peer_identity(connection)
 
     monkeypatch.setattr(server, "_send_error", announce_refusal)
@@ -885,8 +884,9 @@ def test_a_rejection_queued_before_the_request_survives_a_refused_send(
     server.start()
 
     def resolve_after_close(_connection) -> ServerControlPeer:
-        # The client resolves the peer between connecting and sending, so this
-        # is where the test forces the losing side of the race deterministically.
+        """The client resolves the peer between connecting and sending, which is where
+        the race is forced.
+        """
         assert closed.wait(TASK_SETTLE_TIMEOUT)
         return ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid())
 

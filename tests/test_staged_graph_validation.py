@@ -955,14 +955,15 @@ def test_forward_edge_layer_is_derived_after_later_endpoints_materialize() -> No
 
 @pytest.fixture
 def merge_check(monkeypatch):
+    """Planner and preparation were built in parallel slices, so this tests only the
+    command boundary against their frozen contract.
+    """
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.agents.command_protocol import MergeAnswersArguments, MergeAnswersCommandRequest
     from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
     from rcp.runs.merge_contract import MergePlan, MergePreparationContract
     from rcp.runs.patch_validator import MergeAnswersCheck
 
-    # Planner and preparation are implemented in parallel slices. This tests only
-    # the command boundary against their frozen contract.
     plan = MergePlan.model_construct(
         merge_task_id="merge-task",
         plan_id="a" * 64,

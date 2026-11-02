@@ -1,3 +1,5 @@
+"""Test vectors are from RFC 8291 section 5 and appendix A."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +17,6 @@ from rcp.storage import AppStore
 from rcp.web_push import Subscription, VapidKey, WebPushRefused, b64url_decode, b64url_encode
 from tests.helpers import signed_in_client
 
-# RFC 8291 section 5 and appendix A.
 _RFC_UA_PUBLIC = (
     "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
 )
@@ -201,7 +202,6 @@ def test_team_phone_registers_receives_and_detaches(manifest, tmp_path) -> None:
         f"/api/notifications/devices/{device_id}/test", json={}, headers=origin
     ).json() == {"outcome": "posted"}
     assert len(sent) == 1
-    # A revisit keeps the device; a new endpoint from the session replaces it.
     same = client.post("/api/notifications/devices/web-push", json=registration, headers=origin)
     assert same.json()["device_id"] == device_id
     again = client.post(
@@ -220,7 +220,6 @@ def test_team_phone_registers_receives_and_detaches(manifest, tmp_path) -> None:
     assert client.post("/api/team/session/logout", json={}, headers=origin).status_code == 200
     assert store.notification_devices() == []
     assert store.web_push_subscription(again.json()["device_id"]) is None
-    # The key survives the device and is reused, not regenerated.
     assert store.notification_vapid_key() == store.notification_vapid_key()
 
 
@@ -273,7 +272,6 @@ def test_sender_delivers_queued_items_and_drops_gone_phones(manifest, tmp_path, 
             body, private_key=private, auth_secret=b64url_decode(auth), version="aes128gcm"
         )
     )
-    # A notify-only phone has no read access, so it gets no link.
     assert set(payload) == {"notification_id", "reason", "project_name"}
     if status == 201:
         assert [row["last_status"] for row in store.notification_outbox()] == ["posted"]

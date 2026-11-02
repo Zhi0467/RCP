@@ -163,7 +163,6 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
             record.project_id, stop_work=lambda project_id: stopped.append(project_id) or []
         )
 
-    # A refused deletion stops no in-flight work.
     assert stopped == []
     assert marker.read_text(encoding="utf-8") == "source"
     assert cached.read_text(encoding="utf-8") == "saved cache"
@@ -424,7 +423,6 @@ def test_delete_reconciles_finished_helper_jobs_before_the_running_fence(
             exit_path=str(root / "exit"),
         )
     )
-    # The helper finished after the last refresh; only its watcher observed that.
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: False)
 
     response = signed_in_client(app).delete(f"/api/projects/{project_id}")
@@ -475,15 +473,12 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
             updated_at=now,
         )
     )
-    # The helper's owner script is gone, so its cancel cannot run.
     store.create_compute_job(
         job_record("lost-owner", project_id=project_id, job_root=str(tmp_path / "gone"))
     )
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
     monkeypatch.setattr(project_deletion, "PROJECT_DELETION_CANCEL_CONFIRM_SECONDS", 0.0)
     cancelled = tmp_path / "external-job-cancelled"
-    # One cancel stops its job, one is accepted while its job keeps running, and
-    # one job has no cancel at all and still runs.
     store.create_watchers(
         [
             WatcherRecord(
@@ -541,7 +536,6 @@ def test_delete_stops_a_task_already_pausing(manifest, tmp_path) -> None:
             status_message="queued",
         )
     )
-    # A human Pause the worker never finished: a second pause request is refused.
     store.request_agent_task_pause("pausing-turn")
     client = signed_in_client(app)
     preview = client.get(f"/api/projects/{project_id}/deletion-preview").json()
@@ -576,13 +570,11 @@ def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
             status_message="queued",
         )
     )
-    # The worker settles its task when signalled, then outlives the wait.
     release = threading.Event()
     worker = threading.Thread(target=release.wait, daemon=True)
     worker.start()
     background._workers["lingering-turn"] = worker
     monkeypatch.setattr(background, "_signal_agent_task_pause", store.pause_agent_task)
-    # Its watcher is retired by the first attempt, so the cancel cannot wait for a retry.
     cancelled = tmp_path / "watched-job-cancelled"
     store.create_watchers(
         [

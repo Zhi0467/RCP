@@ -74,6 +74,7 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
     monkeypatch: pytest.MonkeyPatch,
     provider: str,
 ) -> None:
+    """Agents may write /tmp, so the installer is staged in protected ~/.rcp/tmp."""
     layout = _layout(tmp_path)
     account = _account(layout)
     binary = layout.service_home / ".local" / "bin" / provider
@@ -87,6 +88,7 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
     monkeypatch.setattr("rcp.server_ops.provider_update.os.chown", lambda *_args: None)
 
     def runner(_account, argv: tuple[str, ...], _timeout: float):
+        """A status command reads the credential file, so an update runs none."""
         calls.append(argv)
         if argv[-1] == "--version":
             version = "2.1.253" if state["updated"] else "2.1.252"
@@ -106,8 +108,6 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
             binary.chmod(0o755)
             state["updated"] = True
             return subprocess.CompletedProcess(argv, 0, "installed", "")
-        # A status command is a presence check, not proof, and reads the
-        # credential file; an update runs none.
         raise AssertionError(f"unexpected provider command: {argv}")
 
     output = StringIO()
@@ -131,7 +131,6 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
     assert not any(call[-2:] in {("login", "status"), ("auth", "status")} for call in calls)
     if provider == "codex":
         (download,) = [call for call in calls if call[0] == "/usr/bin/curl"]
-        # Agents may write /tmp, so the installer is staged in protected ~/.rcp/tmp.
         assert Path(download[-1]).parent.parent == layout.service_home / ".rcp" / "tmp"
         assert any(
             call[:3] == ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh") for call in calls
@@ -197,7 +196,6 @@ def test_provider_update_finds_the_native_opencode_install_without_a_symlink(
 
     assert exit_code == 0, output.getvalue()
     assert state["updated"] is True
-    # The documented install writes only ~/.opencode/bin; no symlink is needed.
     assert (str(binary), "upgrade") in calls
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert events[-1]["step"]["state"] == "succeeded"

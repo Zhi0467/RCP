@@ -204,7 +204,6 @@ def test_codex_session_on_signed_out_shared_login_continues_on_own_login(account
     own = _login(accounts, "codex", own=True)
     other = _login(accounts, "codex", own=True, member="other")
     start = datetime.fromisoformat(accounts.store.now()) - timedelta(minutes=5)
-    # Rows as v0.4.36 wrote them: earlier turns ran on the machine login.
     _task(accounts.store, "earlier", machine, started=start.isoformat())
     _task(accounts.store, "queued", machine, session="session")
     accounts.store.mark_provider_login_signed_out(
@@ -214,7 +213,6 @@ def test_codex_session_on_signed_out_shared_login_continues_on_own_login(account
     assert accounts.resolve_launch_login(
         "codex", "", "member", session_id="session", exclude_operation_id="queued"
     ) == (own, "unhealthy")
-    # Another member's own login is usable but never this member's.
     accounts.store.mark_provider_login_signed_out(
         own, member_id="member", source="restore", detail="out"
     )

@@ -80,7 +80,6 @@ def test_installed_upgrade_followup_is_capturable_until_injected_rejection(tmp_p
     app = create_named_app(data_dir=data_dir)
     store = app.state.catalog.store
     task = store.agent_task(followup["operation_id"])
-    # The installed journey reads it back through the served task route.
     assert task is not None and task.status == "succeeded" and task.visible
     (question,) = store.list_questions(project_id=fixture["project_id"])
     origin_task = store.agent_task(question.origin.operation_id)
@@ -112,8 +111,9 @@ def test_installed_upgrade_followup_is_capturable_until_injected_rejection(tmp_p
 
 
 def test_a_project_registered_beside_a_running_server_is_readable(tmp_path, monkeypatch):
-    # The installed-upgrade journey seeds its project from another process
-    # while the server runs; the server must not need a restart to read it.
+    """The installed-upgrade journey seeds its project from another process while the
+    server runs.
+    """
     data_dir = tmp_path / "data"
     data_dir.mkdir(mode=0o700)
     account = pwd.getpwuid(os.geteuid()).pw_name

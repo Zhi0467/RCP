@@ -102,7 +102,6 @@ async def test_remote_stream_reserves_before_provider_and_settles_pre_prompt_fal
                 ("first", first_pid)
             ]
             advanced.append("first process")
-            # The first candidate failed before a prompt, with confirmed process absence.
             yield AgentEvent(event="remote_process_stop", text=first_pid)
             assert store.unresolved_remote_provider_passes("remote", "/stage") == []
             second_pid = "/stage/fallback.pid"
@@ -117,7 +116,7 @@ async def test_remote_stream_reserves_before_provider_and_settles_pre_prompt_fal
     outcome, events = await _consume(store, Launcher(), tmp_path)
     assert advanced == ["first process", "fallback process"]
     assert outcome.completed
-    assert events == []  # Internal process evidence is not user-visible provider text.
+    assert events == []
     assert store.unresolved_remote_provider_passes("remote", "/stage") == []
 
 

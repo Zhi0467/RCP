@@ -1,3 +1,7 @@
+"""The captured journal is v0.4.35's nightly consolidation failure, oldest first; doctor
+reads newest first, as `journalctl --reverse` prints.
+"""
+
 from __future__ import annotations
 
 import json
@@ -484,8 +488,10 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
     healthy = _HealthyRunner(layout=layout, commit=COMMIT, pid=os.getpid())
 
     def runner(argv: tuple[str, ...], *, cwd: Path | None = None):
+        """loginctl fails outright for an account that is neither logged in nor
+        lingering.
+        """
         if argv[0] == "loginctl" and linger is None:
-            # loginctl fails outright for an account that is neither logged in nor lingering.
             return subprocess.CompletedProcess(argv, 1, "", "Failed to get user: not logged in\n")
         if argv[0] == "loginctl":
             assert argv[2] == "rcp"
@@ -497,10 +503,6 @@ def test_doctor_reports_service_account_without_linger(tmp_path: Path, linger: s
     assert problems == ["service account linger is not enabled; rerun rcp server install"]
 
 
-# Captured shape of v0.4.35's nightly consolidation failure: six minute-by-minute
-# `Consolidation dispatch failed for <uuid>` records with their tracebacks, between
-# uvicorn access lines. The file is oldest first; doctor reads newest first, as
-# `journalctl --output=json --reverse` prints them.
 _JOURNAL_SAMPLE = "".join(
     reversed(
         (Path(__file__).parent / "fixtures/service_journal/consolidation_launch_failure.jsonl")
@@ -559,7 +561,6 @@ def test_doctor_groups_the_captured_journal_into_one_recurring_problem(tmp_path:
     problems, warnings, calls = _inspect_service_errors(tmp_path, _JOURNAL_SAMPLE)
 
     assert len(problems) == 1 and warnings == ()
-    # Only the service's own unit is read, through the doctor runner.
     assert [argv[:2] for argv in calls] == [("journalctl", "--unit=rcp.service")]
     exit_code, output, _ = _run_doctor(_report(problems=tuple(problems)), machine_readable=True)
     final = json.loads(output.splitlines()[-1])["step"]
@@ -624,7 +625,10 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     hidden_reason,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The service journal is read only on Linux; a lone error is a warning.
+    """Root ancestry is covered by projection-reader tests, so this uses a test-owned
+    tree. A bad team address file is a configuration problem, never a report that
+    fails to build.
+    """
     monkeypatch.setattr(server_doctor, "sys", SimpleNamespace(platform="linux"))
     runtime_temp = tempfile.TemporaryDirectory(prefix="rcpd-", dir="/tmp")
     runtime_dir = Path(runtime_temp.name)
@@ -720,14 +724,9 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             root_identity=(uid, gid),
             dependency_check=lambda: _DEPENDENCIES_READY,
         )
-        # Root ancestry is exercised by projection-reader tests; this temporary
-        # complete workflow deliberately uses an unprivileged test-owned tree.
         report._read_root_document = lambda path: json.loads(path.read_text())
         report = report.inspect()
 
-        # An unreadable or invalid team address file is a configuration
-        # problem on an otherwise healthy server, never a report that fails
-        # to build; the address is loaded before the overall state is derived.
         def _invalid_team(path: Path) -> ServerTeamConfig | None:
             raise ValueError("team.toml is not valid")
 

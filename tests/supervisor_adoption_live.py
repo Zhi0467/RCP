@@ -67,7 +67,6 @@ def drive(ubuntu: str, bundles: Path, adoption: Path, output: Path) -> None:
                             ).stdout
                         )
                     except Exception as diagnostic_error:
-                        # Do not replace the drive failure or publish raw output.
                         receipt["diagnostic_collection_error"] = type(diagnostic_error).__name__
                 try:
                     guest.collect(

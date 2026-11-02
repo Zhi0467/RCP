@@ -2,6 +2,9 @@
 
 The old-data upgrade gate runs this with a recent release's code, then validates
 the captured update with the candidate, as a real server update does.
+
+The candidate test policy is imported only when its constructor exists, since older
+releases lack the authority argument.
 """
 
 from __future__ import annotations
@@ -29,8 +32,6 @@ from rcp.server_runtime import ServerMetadata  # noqa: E402
 from rcp.storage import AppStore  # noqa: E402
 from tests.supervisor_reboot_data import prepare_data  # noqa: E402
 
-# The same fixture runs against prior releases without the required authority argument.
-# Import the candidate test policy only when that constructor supports it.
 _HISTORY_AUTHORITY: dict[str, Any] = {}
 if "write_authority" in inspect.signature(HistoryManager).parameters:
     from tests.helpers import unchecked_write_authority
@@ -39,6 +40,9 @@ if "write_authority" in inspect.signature(HistoryManager).parameters:
 
 
 def main(root: Path, *, stale_cache: bool) -> None:
+    """A running server holds each project's display cache, which the switched release
+    reads.
+    """
     account = pwd.getpwuid(os.geteuid()).pw_name
     storage_models.DEFAULT_SERVER_LAYOUT = SimpleNamespace(
         service_account=account, projects_root=root / "projects"
@@ -47,7 +51,6 @@ def main(root: Path, *, stale_cache: bool) -> None:
     receipt = prepare_data(
         data, root / "projects", account=account, empty_branch=True, merge_branch=True
     )
-    # A running server holds each project's display cache; the switched release reads it.
     app = create_app(
         data_dir=data, trusted_principal_resolver=lambda _request, _store: receipt["member_id"]
     )

@@ -1,3 +1,8 @@
+"""Owner rows carry only the fields their schema requires, so every mutation exercises
+the same commit and rollback contract. Unsubscribed tables are either ledgers no view
+reads or are owned by another resource.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,8 +13,6 @@ import pytest
 
 from rcp.storage import AppStore
 
-# Real owner rows with only the fields their schema requires. Every mutation
-# exercises the same commit/rollback contract, including deletion/pruning.
 _CASES = [
     (
         "graph_runs",
@@ -209,8 +212,6 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
         assert _generation(connection, "tasks.status") > 0
 
 
-# Tables outside subscribed display resources. Provisioning belongs to setup;
-# notifications shown in Settings/membership are registered by their owners.
 _EXEMPT_TABLES = {
     "agent_threads": "private thread index; thread views poll directly",
     "agent_schedules": "private schedule state; thread views poll directly",
@@ -225,7 +226,6 @@ _EXEMPT_TABLES = {
     "_legacy_campaign_reports_archive": "legacy",
     "_legacy_campaigns_archive": "legacy",
     "graph_seen_heads": "agent-context",
-    # Immutable; the chat_display row written with it bumps the chats resource.
     "chat_forks": "immutable origin",
     "notification_episode_observations": "delivery",
     "notification_graph_markers": "delivery",
@@ -238,11 +238,9 @@ _EXEMPT_TABLES = {
     "owner_credentials": "credential",
     "owner_sign_in_codes": "credential",
     "project_aliases": "identity",
-    # The flag command's idempotency ledger; no view reads it.
     "evidence_flag_command_receipts": "receipt",
     "evidence_flag_carries": "receipt",
     "episode_merge_request_receipts": "receipt",
-    # The Bulletin post idempotency ledger; no view reads it.
     "bulletin_command_receipts": "receipt",
     "bulletin_mention_observations": "delivery",
     "bulletin_reads": "member-local read cursor",
@@ -265,7 +263,6 @@ _EXEMPT_TABLES = {
     "team_device_pairings": "pairing",
     "team_member_tokens": "credential",
     "team_sessions": "authentication",
-    # Live Paper content; paper_publication owns the paper resource for saves.
     "paper_files": "paper content",
     "paper_updates": "paper content",
     "paper_doc_states": "paper content",
@@ -337,7 +334,6 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
 @pytest.mark.parametrize(
     "table,fields,changes_graph,changes_refs",
     [
-        # The ref inventory marks branches that have open questions.
         ("questions", {"owner_kind": "chat", "state": "pending", "multiple": 0}, False, True),
         ("episode_invocations", {"invocation_number": 1, "operation_id": "task"}, False, False),
         ("episode_reports", {"allocation_operation_id": "task"}, True, False),

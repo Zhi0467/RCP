@@ -46,7 +46,6 @@ def serve(root: Path) -> None:
                     ),
                     flush=True,
                 )
-                # The fixture owns startup and shutdown; background schedules stay off.
                 server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="warning"))
                 server.run(sockets=[listener])
         finally:

@@ -27,7 +27,7 @@ def _setup(manifest, tmp_path):
 
 
 def _append(app, service, patch):
-    # The fixture writer bypasses the production manager's accepted-transition hook.
+    """The fixture writer bypasses the production manager's accepted-transition hook."""
     append_fixture_patch(service, patch)
     app.state.notification_sender.signal(app.state.default_project_id)
 
@@ -152,7 +152,6 @@ def test_graph_baseline_restart_reopen_and_no_watchers(manifest, tmp_path, nonem
     _append(app, service, _blocker_patch("blk/new"))
     sender.run_pass()
     assert [row["item_id"] for row in store.notification_outbox()] == ["blk/new"]
-    # Canonical work accepted while the owner is down is replayed on restart.
     _append(app, service, _blocker_patch("blk/down"))
     restarted = NotificationSender(store, app.state.catalog, admission=RuntimeAdmissionGate())
     restarted.run_pass()
@@ -163,6 +162,9 @@ def test_graph_baseline_restart_reopen_and_no_watchers(manifest, tmp_path, nonem
 
 
 def test_disabled_kinds_advance_the_marker_and_dirty_projects_hold(manifest, tmp_path):
+    """The marker predates the resolution, so pulls hold the item until the pass
+    reconciles that project.
+    """
     app, store, project_id, device = _setup(manifest, tmp_path)
     service = app.state.catalog.open(project_id)
     sender = app.state.notification_sender
@@ -174,7 +176,6 @@ def test_disabled_kinds_advance_the_marker_and_dirty_projects_hold(manifest, tmp
     sender.run_pass()
     store.set_notification_preferences(project_id, owner, {"blocker": True})
     sender.run_pass()
-    # Attention from while every kind was off is not replayed as new.
     assert store.notification_outbox() == []
     _append(app, service, _blocker_patch("blk/on"))
     sender.run_pass()
@@ -196,8 +197,6 @@ def test_disabled_kinds_advance_the_marker_and_dirty_projects_hold(manifest, tmp
             ],
         ),
     )
-    # The marker predates the resolution, so a pull before the pass holds the item,
-    # and so does a pull while the pass is still reconciling that project.
     assert sender.pending_desktop(device["device_id"]) == []
     assert len(store.notification_outbox()) == 1
     reconcile, pulled = sender.reconcile_project, []
@@ -238,14 +237,12 @@ def test_unreachable_graph_does_not_advance_or_enqueue(manifest, tmp_path, monke
         raise OSError("offline")
 
     monkeypatch.setattr(app.state.catalog, "open", offline)
-    # A pass with no accepted change does not replay history.
     sender.run_pass()
     assert opened == []
     sender.signal(project_id)
     sender.run_pass()
     assert store.notification_graph_marker(project_id) == marker
     assert store.notification_outbox() == []
-    # A failed replay stays pending for the next pass.
     sender.run_pass()
     assert opened == [project_id, project_id]
 
@@ -433,7 +430,6 @@ def test_delivery_drops_changed_observation_even_within_same_kind(tmp_path):
             "UPDATE graph_runs SET failure_kind='provider_auth' WHERE operation_id=?",
             (root.operation_id,),
         )
-    # Delivery itself checks current health, before the next reconciliation pass.
     assert sender.pending_desktop(device["device_id"]) == []
     assert store.notification_outbox() == []
     sender.run_pass()
@@ -450,11 +446,11 @@ def test_delivery_drops_changed_observation_even_within_same_kind(tmp_path):
 
 
 def test_signals_and_pulls_do_not_wait_for_a_running_pass(manifest, tmp_path):
+    """A pass holds this lock across remote reads and push requests."""
     app, _store, project_id, device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     done = threading.Event()
     with sender._lock:
-        # A pass holds this lock across remote reads and push requests.
         threading.Thread(
             target=lambda: (
                 sender.signal(project_id),
@@ -484,14 +480,12 @@ def test_attention_accepted_during_the_first_baseline_read_is_delivered(
     with ThreadPoolExecutor(max_workers=1) as executor:
         first_pass = executor.submit(sender.run_pass)
         assert entered.wait(5), "the first pass did not begin its graph read"
-        # The API is serving: a human accepts attention before the baseline exists.
         _, result = append_fixture_patch(open_project(project_id), _blocker_patch("blk/serving"))
         sender.signal(project_id, result.state.revision)
         release.set()
         first_pass.result(timeout=10)
     assert [row["item_id"] for row in store.notification_outbox()] == ["blk/serving"]
     assert store.notification_graph_marker(project_id)["revision"] == result.state.revision
-    # The signal re-dirtied the project mid-pass, so pulls hold it once more.
     assert sender.pending_desktop(device["device_id"]) == []
     sender.run_pass()
     assert len(store.notification_outbox()) == 1
@@ -502,7 +496,6 @@ def test_a_late_signal_recovers_only_a_silent_first_baseline(manifest, tmp_path)
     app, store, project_id, _device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     service = app.state.catalog.open(project_id)
-    # The first read saw the accepted transition before its signal arrived.
     _, result = append_fixture_patch(service, _blocker_patch("blk/raced"))
     sender.run_pass()
     assert store.notification_outbox() == []
@@ -510,7 +503,6 @@ def test_a_late_signal_recovers_only_a_silent_first_baseline(manifest, tmp_path)
     sender.run_pass()
     assert [row["item_id"] for row in store.notification_outbox()] == ["blk/raced"]
     assert store.notification_graph_marker(project_id)["revision"] == result.state.revision
-    # A repeated signal, or one after a restart, never replays a delivered boundary.
     sender.signal(project_id, result.state.revision)
     sender.run_pass()
     restarted = NotificationSender(store, app.state.catalog, admission=RuntimeAdmissionGate())
@@ -524,7 +516,6 @@ def test_late_startup_signal_preserves_newer_delivery(manifest, tmp_path, resolv
     app, store, project_id, device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     service = app.state.catalog.open(project_id)
-    # The canonical write is visible before its post-commit callback runs.
     _, first = append_fixture_patch(service, _blocker_patch("blk/first"))
     sender.run_pass()
     _, second = append_fixture_patch(service, _blocker_patch("blk/second"))
@@ -569,6 +560,9 @@ def test_late_startup_signal_preserves_newer_delivery(manifest, tmp_path, resolv
 
 
 def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp_path, monkeypatch):
+    """Local episode observation precedes every remote graph read; an update boundary
+    cannot interrupt a read in flight, but the pass yields before the next project.
+    """
     app, store, project_id, _device = _setup(manifest, tmp_path)
     other = "other-project"
     store.upsert_project(
@@ -597,16 +591,13 @@ def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp
     sender.start()
     try:
         assert entered.wait(5), "the first pass did not begin its graph read"
-        # Local episode observation precedes every remote graph read.
         assert store.notification_project_baseline(project_id) is not None
         assert store.notification_project_baseline(other) is not None
-        # An update boundary cannot interrupt the read it finds in flight ...
         sender.stop(timeout=0.2)
         assert sender.is_running()
     finally:
         release.set()
     sender._thread.join(5)
-    # ... but the pass yields before the next project, which stays dirty.
     assert not sender.is_running()
     assert len(opened) == 1
     [remaining] = {project_id, other} - set(opened)
@@ -619,6 +610,10 @@ def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp
 def test_startup_serves_while_graph_reconciliation_is_blocked(
     manifest, tmp_path, monkeypatch, restarting
 ):
+    """Reconciliation must precede delivery, but a remote graph read must not hold the
+    health endpoint closed; episode health is local, so its baseline precedes
+    serving.
+    """
     app, store, project_id, device = _setup(manifest, tmp_path)
     service = app.state.catalog.open(project_id)
     if restarting:
@@ -644,8 +639,6 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
                 ],
             ),
         )
-    # A fresh application must reconcile existing history before delivering it,
-    # but a remote graph read must not hold its health endpoint closed.
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     sender = app.state.notification_sender
     entered = threading.Event()
@@ -654,8 +647,9 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
     open_project = app.state.catalog.open
 
     def slow_open(identifier):
-        # Only the sender's read is slow; any other startup or request path
-        # that opens a project must not be mistaken for the readiness gate.
+        """Only the sender's read is slow, so no other startup path is mistaken for the
+        readiness gate.
+        """
         if threading.current_thread().name != "rcp-notifications":
             return open_project(identifier)
         entered.set()
@@ -677,8 +671,6 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
         try:
             assert entered.wait(5), "startup did not begin graph reconciliation"
             assert serving.wait(5), "API startup waited for the remote graph"
-            # Episode health is local, so its baseline precedes serving even
-            # while the graph read is still blocked.
             assert store.notification_project_baseline(project_id) is not None
         finally:
             release.set()
@@ -692,8 +684,6 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
     marker = store.notification_graph_marker(project_id)
     assert marker is not None
     assert marker["revision"] == service.history.materialize(write_outputs=False).state.revision
-    # Old attention is a silent first baseline; stale queued attention after a
-    # restart is dropped once the resolution has been reconciled.
     assert sender.pending_desktop(device["device_id"]) == []
     assert store.notification_outbox() == []
     _append(app, service, _blocker_patch("blk/after-startup"))

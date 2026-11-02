@@ -54,7 +54,6 @@ def test_an_outcome_edge_is_stale_until_rejudged_after_its_evidence_moves(filed)
     _rejudge(service)
     assert _stale(service) == []
 
-    # A standing judgment on the Evidence is a move too, as for Proposals.
     append_fixture_patch(
         service,
         Patch(
@@ -150,7 +149,6 @@ def test_edge_refresh_starts_one_light_work_chat_on_its_evidence(filed, light_ca
     assert context["citing_proposal_ids"] == [PROPOSAL]
     assert light_catalog == ["node_chat"]
 
-    # A response lost after the agent removed the edge still finds its chat.
     _agent_patch(service, [{"op": "remove_edges", "edge_ids": [EDGE]}])
     assert client.post(url, json=seen).json() == result
 
@@ -268,7 +266,6 @@ def test_a_merged_reword_lands_stale_unless_the_fork_revised_the_edge(manifest, 
     plan = _plan(history, branch)
     _commit(history, branch, plan, _answers(plan))
 
-    # Merge carries content only: an unchanged edge keeps main's older revision.
     assert project_graph_attention(history.state()).stale_edge_ids == (
         [] if revised else [edge["id"]]
     )

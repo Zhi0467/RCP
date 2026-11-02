@@ -841,16 +841,15 @@ _BLK = {"id": "blk/b", "type": "blocker", "title": "B", "description": "State is
 
 
 def test_edge_layer_is_derived_from_the_endpoints_not_the_relation_name() -> None:
-    # has_decision and blocked_by both declare "action" in RELATION_SPEC, but a
-    # research_question is epistemic, so from that source they cross and are seams.
+    """has_decision and blocked_by declare "action", but from an epistemic source they
+    are seams.
+    """
     assert _layer_of(_RQ, _DEC, "has_decision") == "seam"
     assert _layer_of(_RQ, _BLK, "blocked_by") == "seam"
 
-    # The same relation stays inside the action layer from an action-layer source.
     assert _layer_of(_EXP, _DEC, "governed_by") == "action"
     assert _layer_of(_EXP, _BLK, "blocked_by") == "action"
 
-    # Action evidence crosses from the epistemic layer into the action layer.
     assert _layer_of(_EV, _DEC, "informs") == "seam"
     assert _layer_of(_EV, _BLK, "addresses") == "seam"
 
@@ -860,9 +859,9 @@ def test_declared_seam_relations_still_resolve_to_seam() -> None:
 
 
 def test_meta_relations_keep_their_layer_regardless_of_endpoints() -> None:
-    # supersedes joins two same-type nodes, so endpoint derivation would call it
-    # epistemic. Meta describes what the edge says about the graph, not where its
-    # endpoints sit, so it is preserved.
+    """Meta describes what the edge says about the graph, so endpoint derivation does
+    not apply.
+    """
     other = dict(_RQ) | {"id": "rq/older"}
     assert _layer_of(other, _RQ, "supersedes") == "meta"
 
@@ -895,8 +894,9 @@ def _dependency_state() -> GraphState:
 
 
 def test_proposal_dependencies_walks_every_operation_not_just_the_first() -> None:
-    # Both typed operations contribute dependencies. Stopping after the first
-    # would silently drop the removal and its incident edge.
+    """Stopping after the first operation would silently drop the removal and its
+    incident edge.
+    """
     state = _dependency_state()
     ops = [
         proposal_operation(
@@ -917,8 +917,6 @@ def test_proposal_dependencies_walks_every_operation_not_just_the_first() -> Non
 
 
 def test_proposal_dependencies_records_the_decision_a_status_change_cites() -> None:
-    # A status change caused by a Decision depends on that Decision node; one
-    # caused by an evidence edge depends on the edge instead.
     state = _dependency_state()
     by_decision = proposal_operation(
         {

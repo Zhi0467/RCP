@@ -26,6 +26,9 @@ def seed_space_state(request, fixture: dict, cookie: str) -> dict:
     """Through the serving previous release: coach machine, ended Experiment, nightly schedule.
 
     Each part is seeded only where the release has its routes.
+
+    0.4.35 runs every agent on the project's base machine; earlier releases let the
+    coach choose its own.
     """
     with request("/openapi.json") as response:
         schema = json.load(response)
@@ -38,8 +41,6 @@ def seed_space_state(request, fixture: dict, cookie: str) -> dict:
     base = f"/api/projects/{fixture['project_id']}"
     with request(base, cookie=cookie) as response:
         project = json.load(response)
-    # 0.4.35 runs every agent on the project's base machine; earlier releases let
-    # the coach choose its own, and their display cache records that choice.
     coach = version < (0, 4, 35) and "/api/projects/{project_id}/machines" in routes
     experiment = "/api/projects/{project_id}/experiments/{node_id}/run" in routes
     schedule = "/api/projects/{project_id}/consolidation/schedule" in routes
@@ -55,10 +56,8 @@ def seed_space_state(request, fixture: dict, cookie: str) -> dict:
     if coach or schedule:
         _put_profiles(request, base, project, settings, cookie, coach=coach, defer_chat=schedule)
     if experiment:
-        # The space indexes read a main loop through the main display cache.
         seeded["experiment_episode_id"] = _ended_experiment(request, base, cookie)
     if schedule:
-        # A minute ahead keeps the admitted run's timestamps near the real clock.
         due = datetime.now(UTC) + timedelta(minutes=1)
         with request(
             f"{base}/consolidation/schedule",
@@ -75,6 +74,8 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
 
     The candidate consolidates main and each branch. The previous release's
     queued run holds main, so only this branch makes the candidate admit a run.
+
+    Releases before 0.4.38 let a member archive the consolidation chat.
     """
     if not fixture["upgrade_state"]["schedule"]:
         return None
@@ -98,8 +99,6 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
     with request("/openapi.json") as response:
         routes = set(json.load(response)["paths"])
     if "/api/projects/{project_id}/chats/{chat_id}/archive" in routes:
-        # Releases before 0.4.38 let a member archive the consolidation chat; the
-        # candidate must still admit this branch's night.
         from rcp.consolidation import consolidation_chat_id
 
         with request(
@@ -113,10 +112,10 @@ def seed_edited_branch(request, fixture: dict, cookie: str) -> str | None:
 
 
 def _add_coach_machine(request, base: str, cookie: str) -> None:
+    """Naming the account skips the SSH login probe; nothing connects to it."""
     with request(
         "/api/space/machines",
         method="POST",
-        # Naming the account skips the SSH login probe; nothing connects to it.
         body={"name": "Coach GPU", "host": "coach-gpu.invalid", "os_account": "rcp"},
         cookie=cookie,
     ) as response:
@@ -143,6 +142,9 @@ def _put_profiles(
     """Save the project's settings as read, with only the agent profiles changed.
 
     `settings` names the fields this release's settings request accepts.
+
+    Claude is signed out, so every nightly launch defers and the run stays queued
+    through the update.
     """
     keys = ("provider", "runtime", "model", "reasoning", "run_on")
     profiles = {
@@ -152,8 +154,6 @@ def _put_profiles(
     if coach:
         profiles["paper_coach"]["run_on"] = COACH_MACHINE
     if defer_chat:
-        # Nightly runs use the chat profile. Claude is signed out, so every launch
-        # defers and the run stays queued through each restart and the update.
         profiles["project_chat"].update(provider="claude", runtime="", model="")
     with request(
         f"{base}/settings",
@@ -162,7 +162,6 @@ def _put_profiles(
         | {"agent_profiles": profiles},
         cookie=cookie,
     ) as response:
-        # The response is the display snapshot the release just cached.
         cached = json.load(response)["agent_profiles"]
     assert {surface: cached[surface]["run_on"] for surface in profiles} == {
         surface: profile["run_on"] for surface, profile in profiles.items()
@@ -239,6 +238,8 @@ def admit_due_consolidation(data_dir: Path) -> str:
     Runs with the service stopped. The poller writes the run and its queued turn;
     the stand-in launcher only records it. Live services defer its launch for the
     signed-out Claude login, so it stays queued into the candidate.
+
+    0.4.10's store has no close; the helper process exits next.
     """
     from rcp.api import create_app
     from rcp.consolidation import ConsolidationPoller
@@ -265,7 +266,6 @@ def admit_due_consolidation(data_dir: Path) -> str:
     (operation_id,) = launched
     task = store.agent_task(operation_id)
     assert task is not None and task.status == "queued", task
-    # 0.4.10's store has no close; this helper process exits next.
     return operation_id
 
 
@@ -301,11 +301,14 @@ def seed_shared_consolidation_workspace(data_dir: Path, project_id: str, target:
 
 
 def assert_space_reads(request, fixture: dict, seeded: dict, cookie: str) -> None:
-    """The candidate's space-wide reads, before any project opens, serve old caches and rows."""
+    """The candidate's space-wide reads, before any project opens, serve old caches and rows.
+
+    An unreadable display cache drops a loop from the list with only a warning, while
+    Experiment indexes degrade it to a row.
+    """
     project_id = fixture["project_id"]
     with request("/api/space/runs", cookie=cookie) as response:
         listed = {entry["episode_id"] for entry in json.load(response)}
-    # An unreadable display cache drops the loop from the list with only a warning.
     if seeded["experiment_episode_id"] is not None:
         assert seeded["experiment_episode_id"] in listed, listed
     loops = "mode=experiment_loop"
@@ -316,10 +319,8 @@ def assert_space_reads(request, fixture: dict, seeded: dict, cookie: str) -> Non
     ):
         with request(path, cookie=cookie) as response:
             payload = json.load(response)
-        # The Experiment indexes degrade an unreadable loop to a row instead of failing.
         if "episodes" in path:
             assert payload["unavailable"] == [], (path, payload["unavailable"])
-    # Every project resource a member page subscribes to, as the rehearsal reads them.
     from rcp.server_ops.application_validation import _WATERMARK_RESOURCES
 
     with request(
@@ -386,7 +387,6 @@ def check_queued_launches(data_dir: Path) -> dict:
 
     with instance_lock(data_dir, timeout=0.0), _phase_log() as log:
         projects, queued, consolidation, admitted, effects = asyncio.run(check())
-    # Every project is live here, so no warning is about uncopied state.
     refusal = log.refusal(projects)
     assert refusal is None, refusal
     assert not effects, effects

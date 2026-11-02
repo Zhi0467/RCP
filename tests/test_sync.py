@@ -562,7 +562,6 @@ def test_direct_choice_repairs_a_legacy_selected_but_open_decision(app) -> None:
             GraphSyncNodeChange(
                 node_id=decision.id,
                 base_updated_rev=decision.updated_rev,
-                # What the UI sends for a click on the already-selected option.
                 changes={"status": "decided"},
                 standing="accepted",
             )
@@ -808,6 +807,9 @@ def test_graph_sync_updates_blocker_lifecycle_directly(
 def test_graph_sync_builds_and_commits_from_the_single_in_lock_current_replay(
     app, monkeypatch
 ) -> None:
+    """There is no pending batch replay path whose private staging files could diverge
+    from history.
+    """
     service = app.state.service
     node = service.history.state().nodes["rq/learning-after-shift"]
     calls: list[tuple[bool, bool]] = []
@@ -838,9 +840,6 @@ def test_graph_sync_builds_and_commits_from_the_single_in_lock_current_replay(
     )
 
     assert state.revision == 3
-    # The transition is prepared from one current replay, then the one committed
-    # patch is replayed to write every materialized output. There is no pending
-    # batch replay path whose private staging files could diverge from history.
     assert calls == [(False, False), (True, False)]
 
 

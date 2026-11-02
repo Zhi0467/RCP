@@ -274,7 +274,6 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
             "UPDATE graph_runs SET created_at = ?, history_only = 1 WHERE operation_id = ?",
             (old, task.operation_id),
         )
-    # Enough newer tasks to push the saved output outside the ordinary task list.
     for index in range(AGENT_TASK_LIST_MAX_LIMIT + 1):
         store.create_agent_task(
             AgentTaskRecord(
@@ -372,7 +371,6 @@ def test_legacy_project_url_lists_saved_outputs_with_canonical_viewer_urls(manif
             "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
             (alias, project_id),
         )
-    # Reopen to load the durable alias into the catalog's request-path snapshot.
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     with signed_in_client(app) as client:
         canonical = client.get(f"/api/projects/{project_id}/artifacts")
@@ -445,9 +443,8 @@ def test_report_links_to_its_concluding_chat_on_exact_target(
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     if branch_owned:
-        store.keep_artifact(report.artifact_id)  # A child Experiment's report is listed once kept.
+        store.keep_artifact(report.artifact_id)
     client = signed_in_client(app)
-    # Inventory uses summaries and the concluding operation, never report HTML.
     with monkeypatch.context() as patch:
         patch.setattr(
             store, "read_artifact_bytes", lambda *args: pytest.fail("inventory read report bytes")
@@ -476,6 +473,7 @@ def test_report_links_to_its_concluding_chat_on_exact_target(
 
 @pytest.mark.parametrize("routed", [True, False])
 def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest, tmp_path, routed):
+    """Damaged provenance must not expose a destination with unverifiable ancestry."""
     app, _, parent, parent_root = _app_branch(manifest, tmp_path)
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -498,8 +496,6 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     )
     _save_source_chat(app, task)
     if not routed:
-        # Damaged provenance: the episode still claims the turn, but its worker
-        # route is gone. Do not expose a destination with unverifiable ancestry.
         with store.connection() as connection:
             connection.execute(
                 "DELETE FROM auto_research_child_work_attempts WHERE operation_id = ?",
@@ -510,7 +506,6 @@ def test_auto_research_worker_artifact_opens_its_validated_branch_chat(manifest,
     entry = next(item for item in entries if item["operation_id"] == task.operation_id)
     assert entry["episode_mode"] == "auto_research"
     assert client.get(entry["viewer_url"]).status_code == 200
-    # The tag names the branch even when no source link survives.
     assert (
         entry["graph_branch_name"] == store.branch_names(project_id)[parent.graph_target.branch_id]
     )
@@ -644,6 +639,9 @@ def test_saved_preview_survives_missing_or_unavailable_source_chat(
 
 
 def test_report_provenance_cannot_link_to_another_projects_chat(manifest, tmp_path):
+    """A damaged legacy wrap-up must never turn provenance into cross-project
+    navigation.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     first = app.state.default_project_id
@@ -657,7 +655,6 @@ def test_report_provenance_cannot_link_to_another_projects_chat(manifest, tmp_pa
         episode_id="foreign-origin",
         report_html="<!doctype html><h1>Retained report</h1>",
     )
-    # A damaged legacy wrap-up must never turn provenance into cross-project navigation.
     with store.connection() as connection:
         connection.execute(
             "UPDATE episode_wrapups SET concluding_operation_id = ? WHERE episode_id = ?",
@@ -708,7 +705,6 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     assert entry["kind"] == "artifact"
     assert task.authorized_by is not None
     assert entry["authorized_by"]["user_id"] == task.authorized_by.user_id
-    # The episode it came from, so an episode filter still finds it after its task ages out.
     assert task.episode_id and entry["episode_id"] == task.episode_id
     assert "/tasks/" in entry["viewer_url"]
     assert client.get(entry["viewer_url"]).status_code == 200

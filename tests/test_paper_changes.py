@@ -118,7 +118,7 @@ def test_line_diff_merges_nearby_and_rewrites_large_changes():
 
 
 def test_line_diff_compares_only_a_bounded_middle(monkeypatch):
-    # Repeated lines once made one inserted line a quadratic comparison.
+    """Regression: repeated lines once made one inserted line a quadratic comparison."""
     repeated = "entry\n" * 10000
     assert [change.after for change in line_changes(repeated, "changed\n" + repeated)] == [
         "changed\n"
@@ -162,7 +162,6 @@ def test_accept_idempotency_rebase_and_guarded_undo(setup):
     assert changes.accept("p", group.group_id, "human").state == "accepted"
     assert len(receipts(live)) == 1
     accepted = saved(live).files[0].text or ""
-    # An edit inside the accepted region refuses Undo; one elsewhere does not.
     human_edit(live, "f1", accepted.replace("improved 10", "improved 10 more"))
     with pytest.raises(OutdatedChange):
         changes.undo("p", group.group_id, "human")
@@ -621,7 +620,6 @@ def test_new_directory_collision_marks_card_outdated(setup):
 @pytest.mark.parametrize("case", ["nul", "path", "doc", "upload", "tree", "count"])
 def test_collection_enforces_live_tree_validation(setup, monkeypatch, case):
     snapshot, _live, changes, output = setup
-    # NUL is refused in an existing text file; a new file with NUL is binary.
     name, body = ("bad\x01.md", b"ok") if case == "path" else ("section.md", b"a\0b")
     if case in {"doc", "upload", "tree", "count"}:
         name, body = ("new.pdf", b"1234") if case == "upload" else ("new.md", b"1234")
@@ -774,12 +772,10 @@ def test_typing_during_accept_never_outdates_a_valid_card(setup):
 
     changes._prepare = prepare_then_type
     try:
-        # Another file changed: the card's file is intact, so the accept applies.
         typed.append(("f2", "typed\n"))
         assert changes.accept("p", group.group_id, "human").state == "accepted"
         changes.undo("p", group.group_id, "human")
         retry = changes.collect("p", "t2", saved(live), read_paper_changes(output))[0]
-        # The same file changed outside the card: refused once, still reviewable.
         typed.append(("f1", before.replace("line 25\n", "human 25\n")))
         with pytest.raises(OutdatedChange):
             changes.accept("p", retry.group_id, "human")

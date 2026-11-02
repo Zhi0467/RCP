@@ -13,10 +13,8 @@ APT = ["apt-get", "install", "--yes", "rsync"]
 @pytest.mark.parametrize(
     ("route", "root", "expected"),
     [
-        # Personal space: RCP runs as the human.
         (OperatorRoute(), True, ["sudo", *APT]),
         (OperatorRoute(host="gpu"), True, ["ssh", "-t", "gpu", shlex.join(["sudo", *APT])]),
-        # Team server: the human is in their own login, RCP is the service account.
         (OperatorRoute(service_account="rcp"), True, ["sudo", *APT]),
         (OperatorRoute(service_account="rcp"), False, ["sudo", "-u", "rcp", "-H", *APT]),
         (

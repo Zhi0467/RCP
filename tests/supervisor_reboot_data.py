@@ -1,4 +1,8 @@
-"""Representative synthetic team data owned only by the disposable guest drive."""
+"""Representative synthetic team data owned only by the disposable guest drive.
+
+The candidate test policy is imported only when its constructor exists, since older
+releases lack the authority argument.
+"""
 
 from __future__ import annotations
 
@@ -32,8 +36,6 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
 )
 
-# The same fixture runs against prior releases without the required authority argument.
-# Import the candidate test policy only when that constructor supports it.
 _HISTORY_AUTHORITY: dict[str, Any] = {}
 if "write_authority" in inspect.signature(HistoryManager).parameters:
     from tests.helpers import unchecked_write_authority
@@ -79,7 +81,13 @@ def _prepare_data(
     merge_branch: bool,
     project_name: str,
 ) -> dict:
-    """Use application owners to build one completed, fully capturable project."""
+    """Use application owners to build one completed, fully capturable project.
+
+    One node of every type and one edge per endpoint pairing, so a field added with a
+    default shows up in a cross-version update. Stored Proposal operations keep only
+    authored fields, so an update must not fill their defaults. Every SQLite handle is
+    released to model a stopped server; older releases lack AppStore.close.
+    """
     data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     projects_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if member_token is not None:
@@ -291,8 +299,6 @@ def _prepare_data(
                     ],
                 },
                 {
-                    # One node of every type and one edge per endpoint pairing, so a
-                    # field added with a default shows up in a cross-version update.
                     "op": "create_edges",
                     "edges": [
                         {
@@ -340,8 +346,6 @@ def _prepare_data(
             repositories_read=["paper"],
             ops=[
                 {
-                    # Stored Proposal operations keep only authored fields, so an
-                    # update must not fill their defaults.
                     "op": "create_proposals",
                     "proposals": [
                         {
@@ -371,7 +375,6 @@ def _prepare_data(
         empty_patches = str(_create_branch(history, project.project_id, authority).patches_dir)
     merge_branch_id = None
     if merge_branch:
-        # The candidate must merge what this release wrote, Proposal filing stamps included.
         branch = _create_branch(history, project.project_id, authority)
         branch.append(
             Patch(
@@ -417,8 +420,6 @@ def _prepare_data(
                 ],
             )
         )
-        # Each collection the merge carries: new Evidence and its assessed edge, an
-        # edge removal and a glossary term, all written by this release.
         branch.append(
             Patch(
                 kind="refresh",
@@ -520,8 +521,6 @@ def _prepare_data(
         "merge_branch_id": merge_branch_id,
     }
 
-    # These bytes next model a stopped server; release every live SQLite handle.
-    # The fixture also runs under older releases, before AppStore exposed close.
     for retired in (app.state.catalog.store, store):
         close = getattr(retired, "close", None)
         if close is not None:
@@ -530,9 +529,9 @@ def _prepare_data(
 
 
 def _create_branch(history: HistoryManager, project_id: str, authority: AuthorizedHuman):
+    """Published releases used the older names; each fixture runs its own binary."""
     base = history.head_ref()
     branch_id = str(uuid.uuid4())
-    # Published releases used the older names; each fixture runs its own binary.
     create_branch = (
         getattr(history, "create_branch", None)
         or getattr(history, "create_episode_branch", None)

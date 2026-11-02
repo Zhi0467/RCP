@@ -246,7 +246,6 @@ def test_experiment_control_publishes_whether_the_human_closed_the_node(
 
     assert snapshot.status_code == 200, snapshot.text
     controls = snapshot.json()["experiment_control"]
-    # Overview reads this instead of restating the closed-status vocabulary.
     assert {node_id: control["node_closed"] for node_id, control in controls.items()} == {
         "exp/open": False,
         "exp/closed": True,

@@ -1,3 +1,7 @@
+"""The help text is verbatim from `claude --help` on claude-code 2.1.267; values sit on
+a wrapped continuation line, which is why the parser flattens the text first.
+"""
+
 from __future__ import annotations
 
 import json
@@ -27,10 +31,6 @@ def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProces
     return subprocess.CompletedProcess([], returncode, stdout, "")
 
 
-# Copied verbatim from `claude --help` on claude-code 2.1.267. The accepted
-# values sit on a wrapped continuation line and never beside `--effort`, which is
-# the whole reason the parser flattens the text first. Identical at COLUMNS 60,
-# 80 and 200.
 CLAUDE_HELP = """Options:
   --disable-slash-commands              Disable all skills
   --effort <level>                      Effort level for the current session
@@ -39,7 +39,6 @@ CLAUDE_HELP = """Options:
                                         the given self-hosted environment
 """
 
-# Also verbatim; the dash is an em dash and the run still exits 0.
 CLAUDE_EFFORT_WARNING = (
     "Warning: Unknown --effort value 'ultra' \u2014 ignoring it and using the "
     "default effort. Valid values: low, medium, high, xhigh, max."
@@ -123,6 +122,9 @@ def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None
 
 
 def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
+    """The barrier proves the second caller joined the in-flight probe rather than
+    hitting the cache after release.
+    """
     launcher = AgentLauncher()
     entered = threading.Event()
     release = threading.Event()
@@ -141,8 +143,6 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
             launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
         )
         assert entered.wait(timeout=1)
-        # Prove the second caller joined the in-flight probe: without this it can
-        # arrive after release, hit the cache, and pass without coalescing.
         (in_flight,) = launcher._readiness_probes.values()
         joined = threading.Event()
         completed = in_flight.completed
@@ -253,6 +253,9 @@ def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
 
 
 def test_codex_models_come_from_the_cli_catalog_with_per_model_efforts() -> None:
+    """Efforts differ per model; a provider-wide list would offer `ultra` on a model
+    that rejects it.
+    """
     models = CodexProfile().models(_result(CATALOG))
 
     assert [item.id for item in models] == ["gpt-5.6-sol", "gpt-5.5"], (
@@ -260,8 +263,6 @@ def test_codex_models_come_from_the_cli_catalog_with_per_model_efforts() -> None
     )
     sol, five_five = models
     assert sol.label == "GPT-5.6-Sol"
-    # The efforts genuinely differ per model; a provider-wide list would offer
-    # `ultra` on a model that rejects it.
     assert sol.reasoning == ["low", "high", "ultra"]
     assert five_five.reasoning == ["low", "high"]
     assert five_five.default_reasoning == "medium"
@@ -278,12 +279,12 @@ def test_codex_models_come_from_the_cli_catalog_with_per_model_efforts() -> None
     ],
 )
 def test_a_broken_catalog_probe_yields_no_models_rather_than_raising(catalog) -> None:
-    # An unusable catalog leaves the UI on the saved manifest values. Raising
-    # here would take down the whole readiness snapshot for every machine.
+    """Raising would take down the whole readiness snapshot for every machine."""
     assert CodexProfile().models(catalog) == []
 
 
 def test_claude_probes_its_efforts_and_declares_only_its_aliases() -> None:
+    """Claude's CLI reports one effort list for every model, so every alias carries it."""
     profile = ClaudeProfile()
 
     assert profile.catalog_command("claude") == ["claude", "--help"], (
@@ -293,9 +294,6 @@ def test_claude_probes_its_efforts_and_declares_only_its_aliases() -> None:
     assert [item.id for item in models] == ["opus", "sonnet", "haiku", "fable"], (
         "aliases stay hand-declared; --help names them only by example"
     )
-    # Claude's efforts are provider-wide: the CLI reports the same list for every
-    # model and rejects an unknown one while parsing arguments, before a model is
-    # chosen. Every alias therefore carries the one probed list.
     for model in models:
         assert model.reasoning == ["low", "medium", "high", "xhigh", "max"]
         assert model.default_reasoning == "medium"
@@ -307,20 +305,17 @@ def test_claude_probes_its_efforts_and_declares_only_its_aliases() -> None:
     [
         "usage: claude [options]",
         "  --effort <level>  Effort level for the current session",
-        # A parenthesis that is prose, not a value list, must not become efforts.
         "  --effort <level>  Effort level (only works with --print)",
-        # An option that lists no values must not borrow a later option's.
         "  --effort <level>  Effort level\n  --environment <id>  Run it (self-hosted)",
     ],
 )
 def test_claude_falls_back_to_its_declared_efforts_when_help_cannot_be_read(
     help_text: str,
 ) -> None:
+    """An unreadable probe degrades to the vendored list rather than leaving no efforts."""
     profile = ClaudeProfile()
 
     assert profile.parse_catalog(help_text) == []
-    # An unreadable probe must degrade to the vendored list rather than leaving
-    # the human with no efforts at all.
     assert [item.id for item in profile.models(_result(help_text))] == list(
         item.id for item in profile.declared
     )
@@ -334,6 +329,9 @@ def test_claude_falls_back_to_its_declared_efforts_when_help_cannot_be_read(
 
 
 def test_claude_reports_an_effort_it_was_told_was_ignored() -> None:
+    """Codex rejects an unusable effort at the API and fails the run, so it has nothing
+    to add on success.
+    """
     profile = ClaudeProfile()
 
     assert (
@@ -341,8 +339,6 @@ def test_claude_reports_an_effort_it_was_told_was_ignored() -> None:
     )
     assert profile.launch_degradation("", requested_reasoning="high") is None
     assert profile.launch_degradation(CLAUDE_EFFORT_WARNING, requested_reasoning=None) is None
-    # Codex rejects an unusable effort at the API and fails the run, so it has
-    # nothing to add on a successful exit.
     assert (
         CodexProfile().launch_degradation(CLAUDE_EFFORT_WARNING, requested_reasoning="ultra")
         is None
@@ -411,12 +407,10 @@ def test_readiness_names_the_runtimes_and_the_one_an_omitted_value_means() -> No
         assert [choice.id for choice in readiness.runtimes] == [
             choice.id for choice in profile.runtime_choices
         ]
-        # A surface reads the default by name rather than taking a position.
         assert readiness.default_runtime in {choice.id for choice in readiness.runtimes}
 
 
 def test_a_durable_runtime_id_is_named_for_the_surface_that_reports_it() -> None:
-    # A record naming a runtime this build no longer offers keeps its stored id.
     assert runtime_label("codex", "codex.retired.v1") == "codex.retired.v1"
 
 
@@ -448,7 +442,6 @@ def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -
         provider_paths={"codex": "/opt/codex/bin/codex"},
     )
     assert configured.os_account == "alice"
-    # An older manifest's key still loads, for the one-time import onto the card.
     assert configured.legacy_provider_paths == {"codex": "/opt/codex/bin/codex"}
     with pytest.raises(ValueError, match="must be absolute"):
         MachineConfig(alias="local", provider_paths={"codex": "bin/codex"})
@@ -709,11 +702,12 @@ def test_remote_recorded_path_probe_reports_missing_and_non_executable(
 def test_an_unreachable_host_is_not_reported_as_a_missing_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """ssh exits 255 when it cannot reach the host, while discovery exits 1 when the
+    binary is merely absent; conflating them would send the human to install on a
+    machine that never answered.
+    """
     from rcp.agents.launcher import AgentLauncher
 
-    # ssh exits 255 when it cannot reach the host; the shipped discovery
-    # program exits 1 when the binary is merely absent. Conflating them tells
-    # the human to go install something on a machine that never answered.
     launcher = AgentLauncher()
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 255))
     assert (
@@ -727,7 +721,6 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
         == "unconfigured"
     )
 
-    # Discovery that did not run at all is named as such, not as a missing install.
     monkeypatch.setattr(
         AgentLauncher,
         "_probe",
@@ -774,9 +767,11 @@ def test_discover_provider_separates_absent_from_no_verdict(
 
 
 def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
+    """ssh exits 255 when the connection drops; asyncio negates the signal number of the
+    killed ssh client, which is what S14's interrupt produced.
+    """
     from rcp.agents.launcher import _exit_reason, _meaningful_stderr
 
-    # `bash -lic` emits these on every remote run, successful ones included.
     noise = (
         "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n"
         "bash: no job control in this shell"
@@ -786,14 +781,10 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
         "error: real provider failure"
     )
 
-    # With the noise gone, a severed connection must say so rather than fall
-    # back to shell chatter — ssh exits 255 when the connection drops.
     assert "was lost" in _exit_reason("codex", 255, "gpu0")
     assert "exited 1" in _exit_reason("codex", 1, "gpu0")
     assert "exited 1" in _exit_reason("codex", 1, "")
 
-    # asyncio negates the signal number; a severed remote link surfaces as the
-    # killed ssh client, which is what S14's interrupt actually produced.
     assert "ended (SIGKILL)" in _exit_reason("codex", -9, "gpu0")
     assert "stopped by SIGKILL" in _exit_reason("codex", -9, "")
 
@@ -872,7 +863,6 @@ def test_claude_stream_reports_live_status_for_display(tmp_path: Path):
             "subagent_type": "general-purpose",
             **sid,
         },
-        # The subagent's own call must not move the parent's context.
         {
             "type": "assistant",
             "parent_tool_use_id": "toolu_01",
@@ -946,7 +936,6 @@ def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt
     assert command[command.index("--setting-sources") + 1] == "user"
     settings = json.loads(command[command.index("--settings") + 1])
     assert settings["disableAllHooks"] is True
-    # The probe carries no project write authority, so it grants no write root.
     assert settings["permissions"]["allow"] == ["Bash", "WebSearch", "WebFetch"]
     assert settings["permissions"]["deny"] == []
     assert settings["sandbox"] == {"enabled": False}
@@ -971,8 +960,9 @@ def _granted_scope():
 
 
 def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
-    # Precedence was probed with the real sandbox (codex-cli 0.157.0): a
-    # workspace root inside a "read" entry stays writable.
+    """Precedence was probed with the real sandbox (codex-cli 0.157.0): a workspace root
+    inside a "read" entry stays writable.
+    """
     from rcp.providers.codex.profile import _codex_permission_profile
 
     profile = _codex_permission_profile(_granted_scope())
@@ -1058,6 +1048,9 @@ def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
 def test_codex_hidden_read_scope_covers_every_capability(
     tmp_path, capability, runtime, session_id, unhidden
 ):
+    """Legacy sandboxPolicy would replace the verified profile and remove the selected-
+    secret denies.
+    """
     import tomllib
 
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
@@ -1132,6 +1125,4 @@ def test_codex_hidden_read_scope_covers_every_capability(
                 }
             )
         )
-        # The turn inherits the verified profile; legacy sandboxPolicy would
-        # replace it and remove the selected-secret denies.
         assert "sandboxPolicy" not in json.loads(started.outgoing[0])["params"]

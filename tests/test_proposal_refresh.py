@@ -128,7 +128,6 @@ def test_rewording_cause_evidence_stales_rule_two_and_newer_proposals(filed):
     assert project_graph_attention(state).stale_proposal_ids == [PROPOSAL]
     merge_review = proposal.model_copy(update={"dependency_rule": 3})
     assert proposal_is_stale(state, merge_review)
-    # Proposals filed before rule 2 stay judged as replay judged them.
     legacy = Proposal.model_validate(proposal.model_dump(mode="json") | {"dependency_rule": 1})
     assert not proposal_is_stale(state, legacy)
 
@@ -143,7 +142,6 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
         yield _event_frame(AgentEvent(event="done"))
 
     filed.state.background_tasks.stream = stream
-    # The light chat takes the lowest effort the model's probed catalog lists.
     catalog = ProviderReadiness(
         provider=service.resolve_agent_profile("node_chat").provider,
         installed=True,
@@ -158,7 +156,6 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert fresh.status_code == 409
     assert fresh.json()["detail"]["code"] == "proposal_not_stale"
 
-    # No client request can claim the refresh key first.
     project_id = filed.state.default_project_id
     preclaim = client.post(
         f"/api/projects/{project_id}/tasks/node_chat",
@@ -181,7 +178,6 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert PROPOSAL in task.request["message"] and EV in task.request["message"]
     assert launches == ["node_chat"]
 
-    # A response lost after the agent withdrew the Proposal still finds its chat.
     _agent_patch(
         service,
         [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "Refiled."}]}],

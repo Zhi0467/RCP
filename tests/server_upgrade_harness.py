@@ -1,4 +1,8 @@
-"""Build prior RCP source exactly and verify immutable upgrade fixture integrity."""
+"""Build prior RCP source exactly and verify immutable upgrade fixture integrity.
+
+EXPECTED_BOUNDARIES follows the real upgrade chain; each entry starts a stored-shape or
+migration-interpretation era.
+"""
 
 from __future__ import annotations
 
@@ -17,8 +21,6 @@ from pathlib import Path, PurePosixPath
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "server_upgrade"
 EXACT_BASE_ENV = "RCP_RUN_EXACT_BASE_UPGRADE"
-# Ordered by the real upgrade chain. Each entry starts a distinct stored-shape
-# or migration-interpretation era; transaction-only refactors are not eras.
 EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
     "pre-artifacts-v15-ff090e1": (
         "ff090e1fa0374d30374449ecc85283733025e416",
@@ -263,11 +265,12 @@ def update_source_floor() -> str:
 
 
 def published_release_tags() -> list[str]:
-    """Every promoted stable release at or above the application's update floor."""
+    """Every promoted stable release at or above the application's update floor.
+
+    gh release list needs a finite --limit, so the request grows until it is exhausted.
+    """
     floor = update_source_floor()
     floor_version = tuple(map(int, floor.split(".")))
-    # gh release list paginates internally but requires a finite --limit. Grow
-    # that request until it is exhausted; this is not a source-release ceiling.
     limit = 100
     while True:
         releases = json.loads(
@@ -332,7 +335,11 @@ def _bundle_receipt(output: Path, *, tag: str, full_commit: str, **extra: object
 def build_installed_candidate(
     output: Path, *, run_number: str, sha: str, workspace: Path = REPOSITORY_ROOT
 ) -> dict:
-    """Build production assets from the actual working tree without stamping it."""
+    """Build production assets from the actual working tree without stamping it.
+
+    Exported to stdout so the lock header names no temporary path and stays
+    reproducible.
+    """
     if output.exists():
         raise ValueError("Installed candidate output must be a new directory.")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -359,8 +366,6 @@ def build_installed_candidate(
             (source, "requirements.lock.txt"),
             (source / "supervisor", "supervisor-requirements.lock.txt"),
         ):
-            # Export from the project to stdout: the header names no temporary path, so a
-            # dependency-free supervisor still gets a nonempty, reproducible lock.
             (output / name).write_text(
                 _capture(
                     [
@@ -417,7 +422,9 @@ def download_installed_release(tag: str, output: Path) -> dict:
 
 
 def build_release_checkout(tag: str, work_root: Path) -> Path:
-    # A release update never serves the web bundle, so a placeholder satisfies the wheel.
+    """A release update never serves the web bundle, so a placeholder satisfies the
+    wheel.
+    """
     return _build_checkout(tag, work_root, web=False)
 
 
@@ -467,10 +474,12 @@ def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) 
 def capture_release_update_with(
     checkout: Path, root: Path, *, stale_cache: bool
 ) -> dict[str, object]:
-    """Create data and capture SQLite with the old release; candidate owns preparation."""
+    """Create data and capture SQLite with the old release; candidate owns preparation.
+
+    `-I` keeps an inherited PYTHONPATH from putting candidate code on the base side.
+    """
     script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
     output = _capture(
-        # `-I` keeps an inherited PYTHONPATH from putting candidate code on the base side.
         [
             "uv",
             "run",

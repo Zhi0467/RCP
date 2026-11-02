@@ -67,7 +67,7 @@ def test_release_catalog_is_complete_and_missing_sources_fail(
 
     monkeypatch.setattr(server_upgrade_harness, "_capture", release_list)
     assert published_release_tags() == tags
-    releases.pop(0)  # Newer releases alone cannot satisfy the floor gate.
+    releases.pop(0)
     with pytest.raises(ValueError):
         published_release_tags()
     with pytest.raises(subprocess.CalledProcessError):
@@ -320,7 +320,6 @@ def test_node_worker_upgrade_preserves_attempt_and_allows_project_seat(tmp_path:
         "2026-01-01T00:00:00+00:00",
     )
     old_attempt = (operation, "old-worker", operation, old_worker[-1])
-    # Write the frozen old schema directly, before any current model or migration runs.
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(
@@ -428,6 +427,10 @@ def test_release_update_from_every_published_release_validates(
     against the old release's data and display cache, current or left stale by a
     failed refresh. Then the candidate's merge self-check must accept a graph branch
     the old release populated.
+
+    Uses the candidate's preparation path, since installed releases cannot classify
+    scratch from tools newer than them. A copied cache may be stale on a real server, so
+    a current cache must equal a fresh replay.
     """
     from rcp.server_ops.deployment import (
         PrepareRequest,
@@ -437,7 +440,6 @@ def test_release_update_from_every_published_release_validates(
         verify_live_application,
     )
 
-    # git archive fails for a missing tag; an incomplete fetch cannot skip a source.
     checkout = release_checkout(release_tag)
     root = tmp_path / "update"
     capture = capture_release_update_with(checkout, root, stale_cache=stale_cache)
@@ -450,8 +452,6 @@ def test_release_update_from_every_published_release_validates(
             projects_root=root / "projects",
         ),
     )
-    # Use the candidate's preparation path: installed releases cannot classify
-    # scratch produced by every tool an agent may have used after their release.
     prepared = prepare(
         PrepareRequest(
             version=1,
@@ -477,8 +477,6 @@ def test_release_update_from_every_published_release_validates(
         catalog=live.state.catalog,
         store=live.state.background_tasks.store,
     )
-    # On a real server the copied cache can be stale while the live one is current,
-    # so each check may read either; a current cache must equal a fresh replay.
     for card in live.state.catalog.cards():
         status, cached = live.state.catalog.cached_snapshot_status(card["id"])
         _service, fresh = live.state.catalog.open_snapshot(card["id"])
@@ -492,7 +490,11 @@ def test_release_update_from_every_published_release_validates(
 
 @pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
 def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, stale_cache):
-    """Frozen v3 bytes retain legacy links through replay, cache restart and merge."""
+    """Frozen v3 bytes retain legacy links through replay, cache restart and merge.
+
+    Captured with cc9ca220's own models before the relation rules narrowed; never
+    regenerate it with the candidate writer.
+    """
     from rcp.core.materialize import materialize_patches_from_state
     from rcp.core.models import Patch, upgrade_graph_projection
     from rcp.core.transition_models import GraphHeadRef
@@ -505,8 +507,6 @@ def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, sta
     from tests.helpers import unchecked_write_authority
     from tests.test_merge_patch import plan_from_context
 
-    # Captured using cc9ca220's actual models and HistoryManager before narrowing
-    # the relation rules. Never regenerate this bundle with the candidate writer.
     payload = (Path(__file__).parent / "fixtures/ontology_links_v3.json.gz").read_bytes()
     assert hashlib.sha256(payload).hexdigest() == (
         "1a762af908739cec6509bdec5b19c209a874a3014d96e8a0094a6799d92f69a8"
@@ -591,7 +591,6 @@ def test_old_writer_link_rules_survive_upgrade_and_merge(manifest, tmp_path, sta
         context=ValidationContext(project_truth_scope=expected.project_truth_scope),
     )
     assert semantic_delta(replayed.state, merged).is_empty
-    # A branch link of a since-retired shape merges as main's own legacy links do.
     for index in range(4):
         legacy_plan = plan_merge(context(bundle["branches"][f"legacy-{index}"]))
         assert not legacy_plan.conflicts and not legacy_plan.review_groups
@@ -663,7 +662,6 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     store = live.state.background_tasks.store
     metadata = service.history.branch_metadata(branch_id)
     now = store.now()
-    # The old seed wrote the branch alone; the merge reads its owner through the episode.
     episode = store.create_episode(
         EpisodeRecord(
             episode_id=branch_id,
@@ -729,7 +727,6 @@ def _assert_old_branch_merge_validates(live, branch_id: str) -> None:
     )
     merged = service.history.state()
     base, source = context.base_graph, context.branch_graph
-    # Every content field the old release changed on the branch is on main now.
     for collection in ("nodes", "edges", "proposals", "glossary"):
         before, after = getattr(base, collection), getattr(merged, collection)
         for identity, item in getattr(source, collection).items():
@@ -762,7 +759,6 @@ def _exercise_candidate_upgrade(
     with chdir(fixture):
         store = AppStore(database)
         if baseline_schema is not None:
-            # Every immutable boundary converges on the schema a fresh store creates.
             assert _normalized_schema(database) == baseline_schema
         space_id = _metadata_string(metadata, "space_id")
         user_id = _metadata_string(metadata, "user_id")

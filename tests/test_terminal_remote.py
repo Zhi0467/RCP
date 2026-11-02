@@ -99,8 +99,7 @@ def test_the_shipped_wrapper_refuses_a_connection_on_the_wrong_account(tmp_path)
 
 
 def test_shipped_cooperative_shell_emits_completion_even_for_exit_255(tmp_path):
-    # Execute the exact shipped module in a subprocess with a disposable HOME;
-    # no SSH process, key, config or remote host participates in this test.
+    """No SSH process, key, config or remote host participates."""
     result = subprocess.run(
         [
             sys.executable,
@@ -195,14 +194,12 @@ def test_shipped_profile_uses_remote_existing_paths_and_remote_home(tmp_path, mo
     remote_terminal.run_session(settings(tmp_path, "mirrored"))
     command = commands[0]
     assert f"HOME={home}" in command
-    # Account setup persists in the real folders; RCP's host keys and identities stay read-only.
     ssh, gcloud = home / ".ssh", home / ".config" / "gcloud"
     assert gcloud.stat().st_mode & 0o777 == 0o700
     separator = command.index("--", command.index("rcp-terminal"))
     for root in (ssh, gcloud):
         assert f'BindPaths="{root}"' in command
         assert str(root) in command[command.index("rcp-terminal") + 1 : separator]
-    # A protected file the account lacks is created, so the shell cannot create it.
     for kept in (ssh / "known_hosts", ssh / "authorized_keys", ssh / "id_ed25519"):
         assert f'ReadOnlyPaths="{kept}"' in command
         assert str(kept) in command[separator + 1 :]
@@ -307,6 +304,10 @@ def test_remote_profile_preserves_lexical_and_resolved_denies(tmp_path, monkeypa
 
 
 def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
+    """Bash's default prompt ends in "# " for root and "$ " otherwise. Regression: CI
+    once lost the session to an interrupt sent before bash prompted; interrupting a
+    running job cannot race the fork.
+    """
     import fcntl
     import pty
     import select
@@ -328,7 +329,6 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     )
     os.close(slave)
     output = bytearray()
-    # Bash's default prompt ends in "# " for root and "$ " otherwise.
     PROMPTS = (b"$ ", b"# ")
 
     def read_until(marker, seconds=10, start=0):
@@ -341,8 +341,6 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
             try:
                 chunk = os.read(master, 4096)
             except OSError as error:
-                # EIO: the session hung up. Report it through the caller's
-                # assertion, which prints everything the shell wrote.
                 if error.errno != errno.EIO:
                     raise
                 return False
@@ -367,17 +365,12 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
 
     try:
         require(profile._READY_MARKER)
-        # The marker is printed just before bash starts. Type nothing until bash
-        # prompts: CI once lost the whole session to an interrupt sent in that gap.
         assert read_until(PROMPTS, 10, output.index(profile._READY_MARKER)), output.decode(
             errors="replace"
         )
-        # Interrupt a job that is already running: it prints only once the shell
-        # has forked it into the foreground, so the interrupt cannot race the fork.
         os.write(master, b"sh -c 'printf \"job-%s\\n\" started; exec sleep 30'\n")
         require(b"job-started\r\n")
         interrupt()
-        # The shell survived the interrupt and still runs commands.
         os.write(master, b"printf 'job-%s\\n' control\n")
         require(b"job-control\r\n")
         assert b"no job control" not in output
@@ -448,6 +441,9 @@ def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
 
 
 def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_path, monkeypatch):
+    """A home too deep for sockets moves them to a short /tmp folder that a grant cannot
+    reopen.
+    """
     home = tmp_path / "remote-home"
     (home / ".ssh").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
@@ -479,7 +475,6 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
     command = commands[0]
     assert f'BindPaths="{home.resolve()}"' in command
     owned = home.resolve() / ".rcp"
-    # Read-only whether the launcher already created it or it is masked absent.
     assert any(arg.endswith(f'"{owned}"') and "ReadOnly" in arg for arg in command)
     assert str(owned) in command[command.index("--", command.index("rcp-terminal")) :]
     assert f'ReadOnlyPaths="{home / ".ssh"}"' not in command
@@ -492,8 +487,6 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
     request.update(writable_paths=[str(history)])
     with pytest.raises(ValueError, match="inside"):
         remote_terminal.run_session(request)
-    # A home too deep for sockets moves them to a short /tmp folder, named on
-    # the far side from the expanded home; a grant cannot reopen it.
     long_home = tmp_path / ("h" * 80)
     long_home.mkdir()
     monkeypatch.setenv("HOME", str(long_home))

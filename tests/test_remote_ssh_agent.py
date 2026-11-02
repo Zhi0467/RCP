@@ -55,13 +55,13 @@ class LocalStage:
     "state", ["confirmed", "missing_public", "stale_public", "wrong_agent", "sign_failed"]
 )
 def test_shipped_confirmation_uses_separate_agents_and_verified_pairs(home, monkeypatch, state):
+    """A distinct user socket is essential: the deploy agent must not confirm it."""
     credentials = home / ".local/share/rcp/credentials"
     deploy = make_key(credentials / "projects/p/r/id_ed25519")
     user = make_key(home / ".ssh/id_ed25519")
     (home / ".ssh/config").write_text(f"IdentityFile {deploy}\n")
     agent = ssh_agent.BackendSSHAgent(credentials, home=home)
     agent.start()
-    # A distinct user socket is essential: the deploy agent must not confirm it.
     user_socket = home / "user.sock"
     user_agent = subprocess.Popen(
         ["ssh-agent", "-D", "-a", str(user_socket)],
@@ -81,7 +81,6 @@ def test_shipped_confirmation_uses_separate_agents_and_verified_pairs(home, monk
         elif state == "wrong_agent":
             environment["SSH_AUTH_SOCK"] = str(agent.socket)
         elif state == "sign_failed":
-            # Exercise the same shipped function with a failing signer only.
             original = remote_ssh_agent._run
 
             def run(argv, *args, **kwargs):
@@ -117,6 +116,9 @@ def test_shipped_confirmation_uses_separate_agents_and_verified_pairs(home, monk
     "platform,backend", [("linux", SystemdUserBackend), ("darwin", LaunchdBackend)]
 )
 def test_remote_failure_returns_readable_inventory(home, monkeypatch, failure, platform, backend):
+    """A started owner gets the real limit, since its agent can take longer than a short
+    one to come up.
+    """
     deploy = make_key(home / ".local/share/rcp/credentials/projects/p/r/id_ed25519")
     calls = []
     owners = []
@@ -143,12 +145,9 @@ def test_remote_failure_returns_readable_inventory(home, monkeypatch, failure, p
                     stderr=subprocess.DEVNULL,
                 )
             )
-        # Nonzero submission means the subsequent evidence still gets checked.
 
     monkeypatch.setattr(backend, "start_account_service", start)
     if failure != "started":
-        # These paths wait out the whole limit; a started owner must get the real
-        # one, since its agent can take longer than a short limit to come up.
         monkeypatch.setattr(ssh_agent, "AGENT_COMMAND_TIMEOUT_SECONDS", 0.2)
     try:
         stage = Stage(dict(os.environ))

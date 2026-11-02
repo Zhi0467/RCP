@@ -15,7 +15,7 @@ from rcp.git_access import deploy_key_ssh_command
 
 @pytest.fixture
 def agent_home():
-    # macOS's pytest temp paths exceed sun_path. Use a disposable short home.
+    """macOS's pytest temp paths exceed sun_path, so a short disposable home is used."""
     with tempfile.TemporaryDirectory(prefix="rcp-a-", dir="/tmp") as directory:
         yield Path(directory)
 
@@ -114,7 +114,6 @@ def test_account_lock_and_verified_orphan_recovery(agent_home):
             agent_socket=str(owner.socket),
         )
         assert all(item.agent_confirmed and item.visibility == "hidden" for item in evidence)
-        # Simulate backend death, retaining only the separately owned daemon.
         os.close(owner._lock)
         owner._lock = None
         owner._pid = None

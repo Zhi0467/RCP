@@ -89,8 +89,6 @@ def test_plan_removes_every_finished_checkpoint_and_keeps_the_newest_releases(tm
     for record in chain:
         _workspace(checkpoints, record["operation_id"])
     records = [(record, float(index)) for index, record in enumerate(chain)]
-    # Two newer journals aborted after preparing a candidate but before any
-    # checkpoint was recorded; terminal and recorded, they are reclaimed too.
     aborted_ids = set()
     for offset in (1, 2):
         aborted = _record(
@@ -110,8 +108,6 @@ def test_plan_removes_every_finished_checkpoint_and_keeps_the_newest_releases(tm
         protected_operation_ids=frozenset(),
     )
 
-    # A committed update never restores old data, so no finished checkpoint
-    # serves recovery: every one, and every failed attempt's quarantine, goes.
     assert RETAINED_CHECKPOINTS == 0 and RETAINED_RELEASES == 2
     assert plan.kept_checkpoints == ()
     assert {path.name for path in plan.remove_checkpoints} == {
@@ -144,6 +140,7 @@ def test_plan_refuses_as_a_whole_when_the_machine_state_disagrees(tmp_path, defe
 
 
 def test_plan_reclaims_failed_preparations_and_leaves_unrecognized_entries_alone(tmp_path):
+    """Preparation is serialized, so an unsealed build is a failed attempt."""
     checkpoints, releases = _roots(tmp_path, range(100, 102))
     committed = _record(checkpoints, _release(releases, 100), _release(releases, 101))
     _workspace(checkpoints, committed["operation_id"])
@@ -154,7 +151,6 @@ def test_plan_reclaims_failed_preparations_and_leaves_unrecognized_entries_alone
     (checkpoints / "notes.txt").write_text("operator notes")
     (releases / "install.log").write_text("log")
     (releases / "99").symlink_to(releases / "100")
-    # Preparation is serialized, so an unsealed build is a failed attempt.
     (releases / "42").mkdir(mode=0o700)
 
     plan = plan_retention(
@@ -572,6 +568,9 @@ def test_runtime_logs_bound_failure_bytes_and_count(tmp_path, monkeypatch):
 
 
 def test_self_update_keeps_runtime_resolved_before_current_pointer_changes(tmp_path, monkeypatch):
+    """sys.executable may resolve to a shared managed Python, so it cannot identify this
+    package environment.
+    """
     from rcp_supervisor import retention
 
     paths, store = _metadata_fixture(tmp_path)
@@ -585,8 +584,6 @@ def test_self_update_keeps_runtime_resolved_before_current_pointer_changes(tmp_p
         children.append(child)
     current = paths.supervisor / "current"
     current.symlink_to(children[0])
-    # Import took place via the old pointer; sys.executable may resolve directly
-    # to a shared managed Python and cannot identify this package environment.
     monkeypatch.setattr(
         retention, "_RUNNING_MODULE", (current / "rcp_supervisor/retention.py").resolve()
     )

@@ -31,9 +31,6 @@ def _invite(client: TestClient, project_id: str, user_id: str):
     return client.post(f"/api/projects/{project_id}/invitations", json={"user_id": user_id})
 
 
-# --- invitation, acceptance, refusal -----------------------------------------
-
-
 def test_a_project_invitation_appears_on_the_project_index(manifest, tmp_path) -> None:
     _app, client, _store, people, acting = _team_app(tmp_path, members=3)
     creator, invitee, _third = people
@@ -42,7 +39,6 @@ def test_a_project_invitation_appears_on_the_project_index(manifest, tmp_path) -
     assert _invite(client, project_id, invitee.user_id).status_code == 201
 
     acting[0] = invitee.user_id
-    # Before accepting, the project is not theirs, but the invitation is visible.
     assert client.get("/api/projects").json() == []
     pending = client.get("/api/project-invitations").json()
     assert len(pending) == 1
@@ -90,7 +86,6 @@ def test_accepting_issues_no_token_and_does_not_change_space_membership(manifest
     body = client.post(f"/api/project-invitations/{invitation_id}/accept", json={}).json()
 
     assert tokens_and_users() == before
-    # The record itself carries no secret of any kind.
     assert set(body) == {
         "invitation_id",
         "project_id",
@@ -114,7 +109,6 @@ def test_every_project_member_may_invite_another_space_member(manifest, tmp_path
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
     client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
 
-    # The newly seated member invites, with no elevated role anywhere.
     assert _invite(client, project_id, third.user_id).status_code == 201
     acting[0] = third.user_id
     assert len(client.get("/api/project-invitations").json()) == 1
@@ -160,7 +154,6 @@ def test_declining_leaves_no_membership_and_no_residual_access(manifest, tmp_pat
     assert client.get("/api/projects").json() == []
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert client.get("/api/project-invitations").json() == []
-    # A declined invitation cannot be answered again into acceptance.
     assert (
         client.post(f"/api/project-invitations/{invitation_id}/accept", json={}).status_code == 409
     )
@@ -177,16 +170,12 @@ def test_the_server_derives_membership_and_never_reads_it_from_the_request_body(
     project_id = _create_project(client, tmp_path / "repo")
 
     acting[0] = outsider.user_id
-    # A non-member cannot invite, and cannot claim to be one in the payload.
     forged = client.post(
         f"/api/projects/{project_id}/invitations",
         json={"user_id": target.user_id, "invited_by": people[0].user_id},
     )
     assert forged.status_code == 404
     assert store.pending_project_invitations(target.user_id) == []
-
-
-# --- leaving ------------------------------------------------------------------
 
 
 def test_leaving_removes_read_dispatch_and_apply(manifest, tmp_path) -> None:
@@ -205,7 +194,6 @@ def test_leaving_removes_read_dispatch_and_apply(manifest, tmp_path) -> None:
 
     assert left.status_code == 204
     assert not store.is_project_member(project_id, leaver.user_id)
-    # The thread closes now, so its pending handoffs refuse instead of stalling.
     thread = next(t for t in store.agent_threads(leaver.user_id) if t.project_id == project_id)
     assert thread.closed_at is not None
     assert client.get(f"/api/projects/{project_id}").status_code == 404
@@ -227,9 +215,6 @@ def test_the_only_member_cannot_leave_the_project(manifest, tmp_path) -> None:
     assert store.is_project_member(project_id, creator.user_id)
 
 
-# --- the fence ----------------------------------------------------------------
-
-
 class _RecordingStopper:
     """Stands in for Auto-research Stop, which is a module function now."""
 
@@ -248,7 +233,11 @@ def _running_auto_research_episode(
     authorizer: AuthorizedHuman,
     episode_id: str = "episode-one",
 ) -> EpisodeRecord:
-    """One live Auto-research episode with unspent invocations."""
+    """One live Auto-research episode with unspent invocations.
+
+    One invocation goes through the real adapter, which moves the episode to `running`
+    and leaves the rest of the ceiling unspent.
+    """
 
     now = store.now()
     episode = EpisodeRecord(
@@ -300,8 +289,6 @@ def _running_auto_research_episode(
         ),
         root,
     )
-    # Spend one invocation through the real adapter, which is what moves the
-    # episode to `running` and leaves the rest of the ceiling unspent.
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.create_auto_research_agent_task(
         root.model_copy(
@@ -374,8 +361,6 @@ def test_leaving_through_the_route_fences_and_survives_a_restart(manifest, tmp_p
     assert survived is not None
     assert survived.stop_requested_at is not None
     assert not reopened.is_project_member(project_id, leaver.user_id)
-    # The turn that was already authorized keeps its record; the fence never
-    # deletes work, it only refuses new admissions.
     assert reopened.auto_research_tasks(episode.episode_id)
 
 
@@ -440,7 +425,6 @@ def test_revoking_a_token_does_not_fence_running_work(manifest, tmp_path) -> Non
     assert still_running is not None
     assert still_running.stop_requested_at is None
     assert still_running.status == "running"
-    # Membership is untouched by revocation: it is about a credential, not a project.
     assert store.is_project_member(project_id, alice.user_id)
 
 
@@ -464,9 +448,6 @@ def test_no_agent_path_writes_a_membership_row(manifest, tmp_path) -> None:
     assert offenders == []
 
 
-# --- S100's deferred revocation drive ------------------------------------------
-
-
 def test_membership_lost_between_dispatch_and_apply_is_refused_at_apply(manifest, tmp_path) -> None:
     """S100 could not demonstrate a permission that changes. Membership is one."""
 
@@ -479,13 +460,11 @@ def test_membership_lost_between_dispatch_and_apply_is_refused_at_apply(manifest
     history = catalog.open(project_id).history
     assert history.write_authority.project_membership_check is not None
 
-    # Authorized at dispatch...
     assert history.write_authority.project_membership_check(project_id, leaver.user_id)
 
     acting[0] = leaver.user_id
     assert client.post(f"/api/projects/{project_id}/leave", json={}).status_code == 204
 
-    # ...and refused at Apply, which reads membership live under the append lock.
     assert not history.write_authority.project_membership_check(project_id, leaver.user_id)
 
 
@@ -506,7 +485,6 @@ def test_revoking_a_token_mid_run_refuses_nothing_and_fences_nothing(manifest, t
 
     assert client.post("/api/team/credential/revoke", json={}).status_code in {200, 204}
 
-    # Revocation is about a credential, so neither membership nor Apply moves.
     assert store.is_project_member(project_id, alice.user_id)
     history = app.state.catalog.open(project_id).history
     assert history.write_authority.project_membership_check is not None
@@ -519,6 +497,9 @@ def test_the_whole_flow_works_through_a_real_browser_session(manifest, tmp_path)
     The tests above use a trusted principal resolver, which bypasses the team
     JSON/origin middleware entirely — so they cannot see a bodyless mutation
     being refused with 415. A real session can, and did.
+
+    Regression: the first client shipped without a JSON body; refusing a bodyless
+    mutation is what makes JSON-only the CSRF protection.
     """
 
     data_dir = tmp_path / "team"
@@ -545,8 +526,6 @@ def test_the_whole_flow_works_through_a_real_browser_session(manifest, tmp_path)
     assert invited.status_code == 201, invited.text
 
     invitation_id = bob.get("/api/project-invitations").json()[0]["invitation_id"]
-    # Pinned because the first client shipped without it: a bodyless mutation is
-    # refused, which is exactly what makes JSON-only the CSRF protection.
     bodyless = bob.post(f"/api/project-invitations/{invitation_id}/accept")
     assert bodyless.status_code == 415
     assert bodyless.json()["detail"]["code"] == "team_json_required"

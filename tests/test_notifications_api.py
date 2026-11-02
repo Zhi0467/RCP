@@ -182,7 +182,6 @@ def test_desktop_retry_partial_success_ttl_resolution_and_toggle(
     assert all(item["notification_id"] == "current" for item in store.notification_outbox())
     ack_urls = [f"/api/notifications/devices/{device}/items/current" for device in devices]
     assert clients[0].post(ack_urls[0], json={"status": "posted"}).status_code == 200
-    # A native send accepted before a process crash leaves its row unacknowledged.
     now += timedelta(seconds=NOTIFICATION_RETRY_MAX_SECONDS + 1)
     assert clients[0].get(pending_urls[0]).json() == []
     assert clients[1].get(pending_urls[1]).json() == payloads[1]

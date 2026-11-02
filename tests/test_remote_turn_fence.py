@@ -107,8 +107,6 @@ def _started_decoder_pair(tmp_path, runtime_id: str, opener: str = "thread/resum
     return turn, fence
 
 
-# One protocol message per case: every shape each runtime can end a turn with,
-# and the ordinary traffic it must not end one with.
 _COMPLETION_CORPUS = tuple(
     (runtime_id, message)
     for runtime_id, messages in (
@@ -180,7 +178,6 @@ _COMPLETION_CORPUS = tuple(
 @pytest.mark.parametrize(
     "runtime_id,message,opener",
     [(*case, "thread/resume") for case in _COMPLETION_CORPUS]
-    # A forked thread's turn ends where any other app-server turn does.
     + [(*case, "thread/fork") for case in _COMPLETION_CORPUS if "app-server" in case[0]],
     ids=lambda value: str(value)[:44],
 )

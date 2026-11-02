@@ -52,6 +52,7 @@ def _supervise(
     fork_session_id: str | None = None,
     fork_source_cwd: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    """Simulates a link slower than the provider."""
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
     pid_file = stage / "agent.pid"
@@ -101,8 +102,6 @@ def _supervise(
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]
     if reader_delay or reader_pace:
-        # A link slower than the provider: nothing is read until the turn is
-        # over, or every read waits its turn behind the one before.
         process = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -406,7 +405,6 @@ def test_a_finished_turn_snapshots_every_experiment_watcher_output(tmp_path) -> 
     second = '{"observers": [], "stops": ["obs-1"]}'
     workspace.joinpath("experiment-watch-aaaa.json").write_text(first, encoding="utf-8")
     workspace.joinpath("experiment-watch-bbbb.json").write_text(second, encoding="utf-8")
-    # Neither a differently named file nor a directory is part of the set.
     workspace.joinpath("notes.json").write_text("{}", encoding="utf-8")
 
     completed, journal = _supervise(
@@ -496,7 +494,6 @@ def test_a_flood_of_watcher_outputs_is_an_incomplete_turn(tmp_path, bound) -> No
     assert completed.returncode != 0
     outcome = _journal(journal)
     assert outcome["error"]
-    # No partial set is left claiming to be what the pass produced.
     assert outcome["experiment_watch_snapshotted"] is False
     assert outcome["experiment_watch_sha256"] == {}
 

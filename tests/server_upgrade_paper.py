@@ -92,7 +92,6 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
         return paper.save(**arguments)
 
     saved = save(ANCESTOR, paper.create())
-    # This is a second canonical writer, leaving the first writer's draft base.
     with paper.workspace.transaction():
         paper._write_canonical(CANONICAL)
     behind = save(DRAFT, saved)
@@ -150,7 +149,6 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         for version in history:
             files = version["manifest"]
             preserved.update(file.get("text_sha256") for file in files)
-        # The draft becomes the live text; the diverged canonical and ancestor become versions.
         assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
         required = {_sha(CANONICAL.encode())}
         if baseline["ancestor_stored"]:
@@ -176,7 +174,6 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     saved = call("/tree")
     assert saved["saved_revision"] > before["saved_revision"]
     if writer == "legacy":
-        # Only the held legacy paper keeps its saves unpublished.
         assert saved["saved_revision"] > saved["published_revision"]
     assert saved["hold"] == tree["hold"]
     assert (

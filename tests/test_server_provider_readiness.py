@@ -226,6 +226,9 @@ def test_request_plan_is_read_only_and_success_persists_exact_nonsecret_proof(
 def test_missing_native_login_pauses_the_initial_request_with_exact_operator_action(
     tmp_path: Path,
 ) -> None:
+    """The remedy is the product's own sign-in, which any member may run and RCP
+    verifies.
+    """
     store, authorizer = _team_store(tmp_path)
     request = _request(store, authorizer)
     launcher = _FakeLauncher(
@@ -250,8 +253,6 @@ def test_missing_native_login_pauses_the_initial_request_with_exact_operator_act
     )
 
     assert checked.step.state == "operator_action_needed"
-    # No status command and no shell login: the remedy is the product's own
-    # sign-in, which any member may run and which RCP verifies itself.
     assert len(checked.step.actions) == 1
     assert isinstance(checked.step.actions[0], ExternalAction)
     assert checked.step.resume_argv[-4:] == (
@@ -394,7 +395,6 @@ def test_work_like_profile_check_refuses_a_host_that_cannot_sandbox(tmp_path: Pa
     assert checked.step.state == "operator_action_needed"
     assert "bubblewrap" in checked.step.message
 
-    # Discuss never needs the sandbox, so the same readiness is not a fault there.
     chat = _request(store, authorizer, profile="project_chat")
     plan = coordinator.plan("request", chat.request_id)
     checked = coordinator.check(
@@ -721,7 +721,6 @@ def test_cli_returns_operator_action_exit_for_native_login(tmp_path: Path) -> No
     )
 
     assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
-    # The login is repaired from the product, by any member, never by a shell command.
     assert "codex login" not in output.getvalue()
 
 

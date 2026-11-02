@@ -192,7 +192,6 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
 
     planned = _plan(store, stopped=lambda *_: True, read_journal=lambda *_: _journal(events=events))
 
-    # The receipts fixture builds a `seed` task, which has no recorded owner yet.
     assert store.agent_task("first").kind == "seed"
     assert planned[0].reconciliation.action == "wait"
     assert "No recorded-result owner" in planned[0].reconciliation.reason
@@ -227,7 +226,6 @@ def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
     assert store.claim_recorded_finalization("first") is False
     assert store.operation_ids_awaiting_remote_result() == []
 
-    # Settling moved on before an outage stopped it; the release still returns it.
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET phase = 'applying' WHERE operation_id = 'first'")
     store.release_recorded_finalization("first")
@@ -461,7 +459,6 @@ def test_startup_keeps_only_awaiting_turn_checkpoints(tmp_path):
     assert secrets.load("first") is not None
     assert secrets.load("second") is None
     assert not (secrets.root / "unreadable.json").exists()
-    # The ended turn's stage files are cleaned by a later reconciliation pass.
     assert [document["mailbox_id"] for document in manager._orphan_mailboxes] == ["b" * 32]
 
 
@@ -503,12 +500,10 @@ def test_a_waiting_pass_that_never_started_fails_and_can_be_paused(tmp_path, mon
     def local(_host, remote_command):
         return [sys.executable, *shlex.split(remote_command)[1:]]
 
-    # The host's own probe and journal reader, run on this machine.
     monkeypatch.setattr(launcher, "ssh_arguments", local)
     monkeypatch.setattr("rcp.runs.remote_reconciliation.ssh_arguments", local)
     store = _store(tmp_path)
     for operation_id in ("first", "second"):
-        # A standing stage whose launch never wrote its pidfile.
         stage = tmp_path / operation_id
         stage.mkdir(mode=0o700)
         store.mark_agent_task_running(operation_id)

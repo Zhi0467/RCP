@@ -229,7 +229,6 @@ async def test_a_refresh_gives_back_the_slot_the_probe_it_replaced_held(machine,
         waiting = asyncio.create_task(cache.ensure(machine))
         assert await asyncio.to_thread(started.wait, 5)
         cache.invalidate(machine)
-        # The only slot is the one the wedged probe was holding.
         assert await asyncio.wait_for(cache.ensure(machine), 5) == fresh
         assert await asyncio.wait_for(waiting, 5) == fresh
     finally:
@@ -272,6 +271,8 @@ async def test_shutdown_drops_probes_still_queued_for_a_worker():
 
     The lifespan's `finally` holds the instance lock until this returns, and a
     replacement server waits only so long for the old one to go.
+
+    Draining would block on a probe that never returns on its own.
     """
     release = threading.Event()
     running = threading.Semaphore(0)
@@ -295,7 +296,6 @@ async def test_shutdown_drops_probes_still_queued_for_a_worker():
             assert cache.get(candidate).state == "pending"
         for _ in range(TERMINAL_PROBE_WORKERS):
             assert await asyncio.to_thread(running.acquire, True, 5)
-        # Draining would block on a probe that never returns on its own.
         await asyncio.wait_for(cache.close(), timeout=5)
         with counted:
             assert len(started) == TERMINAL_PROBE_WORKERS
@@ -315,7 +315,6 @@ async def test_closed_cache_does_not_start_another_probe(machine):
     ("registered", "answered", "offered"),
     [
         ("rcp", "rcp", True),
-        # An unregistered account has nothing to compare, so nothing is refused.
         ("", "someone-else", True),
         ("rcp", "", True),
         ("rcp", "someone-else", False),

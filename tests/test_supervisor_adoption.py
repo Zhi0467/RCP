@@ -185,7 +185,6 @@ def test_failed_bootstrap_retains_private_events_and_exports_only_failed_message
 
     monkeypatch.setattr(adoption.guest, "STATE", tmp_path)
     monkeypatch.setattr(app_cli, "main", fail)
-    # paired_bootstrap installs observation hooks in these process-local owners.
     monkeypatch.setattr(install, "LinuxInstallMachine", install.LinuxInstallMachine)
     monkeypatch.setattr(releases, "fetch_release", releases.fetch_release)
     original_argv = sys.argv

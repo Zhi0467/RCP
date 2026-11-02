@@ -56,7 +56,6 @@ def test_redeeming_a_code_registers_a_notify_only_phone(manifest, tmp_path) -> N
     client = _listener(store)
     response = client.post("/api/register", json=_registration(code), headers=_ORIGIN)
     assert response.status_code == 200
-    # The response carries no session, token, or cookie: no read access.
     assert response.json() == {"ok": True}
     assert "set-cookie" not in response.headers
     [device] = store.notification_devices()
@@ -106,7 +105,6 @@ def test_listener_resumes_for_a_live_code_and_stops_without_one(
     store.notification_vapid_key()
     store.create_notification_phone_pairing()
     listener = PhoneListener(store, lambda _host: [_PUBLIC_ADDRESS], port=0)
-    # A restart finds the persisted code and serves again.
     listener.resume()
     assert listener.is_running()
     store.create_notification_phone_pairing()

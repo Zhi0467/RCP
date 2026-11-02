@@ -1,3 +1,5 @@
+"""S1 owns this dependency; this slice supplies only a test double."""
+
 from __future__ import annotations
 
 import importlib
@@ -32,7 +34,6 @@ def _sync(request: Request) -> SyncDouble:
     return request.app.state.coordinator
 
 
-# S1 owns this dependency; this isolated slice supplies only a test double.
 if not hasattr(dependencies, "SyncCoordinatorDependency"):
     dependencies.SyncCoordinatorDependency = Annotated[SyncDouble, Depends(_sync)]
 watermarks = importlib.import_module("rcp.api.resource_watermarks")
@@ -240,7 +241,6 @@ def test_batched_heartbeat_is_four_reads_without_payload_work(endpoint, monkeypa
     ]
     beat(endpoint, keys)
     reads = [query for query in queries if query.lstrip().upper().startswith(("SELECT", "WITH"))]
-    # Authorization, counters, deadlines, and running tasks for timed progress.
     assert len(reads) == 4
     assert endpoint.catalog.calls == [
         (endpoint.project, {"graph:main", "graph:branch:b", "chat:c"})
@@ -372,7 +372,6 @@ def test_graph_token_moves_with_canonical_reachability(endpoint, monkeypatch):
             lambda project_id: {"last_completed_at": None, "status": "error", "error": "offline"},
         )
         offline = beat(endpoint, keys)["projects"][0]["resources"]
-    # The snapshot embeds reachability; the Paper read does not.
     assert offline[0]["version"] != healthy[0]["version"]
     assert offline[1]["version"] == healthy[1]["version"]
     assert beat(endpoint, keys)["projects"][0]["resources"] == healthy

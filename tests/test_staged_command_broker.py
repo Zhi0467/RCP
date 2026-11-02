@@ -36,8 +36,7 @@ def test_standalone_wait_reads_only_ready_input_until_eof(monkeypatch) -> None:
 
 
 def test_standalone_wait_handles_signal_received_by_worker_with_stdin_open() -> None:
-    # No sockets or staged credentials: exercise the actual standalone wait with
-    # a signal deliberately delivered to another thread, leaving stdin open.
+    """The signal goes deliberately to another thread with stdin left open."""
     script = """
 import runpy
 import signal
@@ -82,8 +81,9 @@ raise AssertionError('stdin must remain open until the signal exits the broker')
 
 
 def test_broker_exits_cleanly_while_the_backend_keeps_stdin_open(tmp_path: Path) -> None:
-    # The stdin relay still holds stdin's buffer when the provider exits.
-    # Interpreter finalization used to abort there, once per agent turn.
+    """Regression: interpreter finalization used to abort while the stdin relay held
+    stdin's buffer, once per agent turn.
+    """
     staged = stage_command_mailbox(
         local_stage=tmp_path, remote_stage=None, episode_id="e", task_id="t", turn_id="turn"
     )

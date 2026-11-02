@@ -82,6 +82,9 @@ def _field(step, name: str) -> object:
 
 
 def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
+    """The direct route needs a service-account shell; the elevated one starts from the
+    operator's own login.
+    """
     store, _alice, bob, _metadata, _background, coordinator = _team(tmp_path)
     control = _CoordinatorControl(coordinator)
     prepared = prepare_member_remove_command(
@@ -110,8 +113,6 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     assert final.resume_argv[-2] == "--confirm-boundary"
     assert final.resume_argv[-1] == coordinator.plan(bob.user_id).snapshot.boundary_sha256
     assert final.actions[0].argv[:2] == ("/usr/local/bin/rcp", "server")
-    # Two spellings of one removal: the direct route needs a service-account
-    # shell, the elevated one starts from the operator's own login.
     assert final.actions[0].execution is not None
     assert final.actions[0].execution.shell_account == "rcp"
     assert final.actions[1].argv[0] == "sudo"
@@ -120,7 +121,6 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     assert final.resume_execution == final.actions[1].execution
     assert control.advances == 0
     assert store.space_user(bob.user_id).removal_started_at is None
-    # The console names the state it is about to change, so each state is pinned.
     assert _field(final, "removal_state") == "active"
 
 
@@ -152,7 +152,6 @@ def test_confirmed_cli_removes_member_and_preserves_history(tmp_path) -> None:
     assert tombstone.display_name == "Bob"
     assert tombstone.removal_started_at is not None
     assert tombstone.removed_at is not None
-    # Removal deletes only the removed member's private notes.
     assert not Path(str(notes[bob.user_id])).exists()
     assert Path(str(notes[alice.user_id])).is_dir()
 
@@ -178,7 +177,6 @@ def test_preview_reports_the_state_the_member_is_actually_in(tmp_path) -> None:
     prepared.execute(emitter, BytesIO())
     steps = [event.step for event in emitter.events if isinstance(event, ServerStepEvent)]
 
-    # The operator sees the fence that a crash already applied, then its completion.
     assert _field(steps[0], "removal_state") == "access_fenced"
     assert _field(steps[0], "member_name") == "Bob"
     assert _field(steps[-1], "removal_state") == "removed"

@@ -70,6 +70,9 @@ def test_verification_bumps_generation_and_ignores_late_failure(tmp_path):
 
 
 def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
+    """Dropping later migrations' ledger rows keeps the fixture at version 17 as more
+    migrations land.
+    """
     fixture = tmp_path / "version17.sqlite3"
     AppStore(fixture)
     with sqlite3.connect(fixture) as connection:
@@ -79,8 +82,6 @@ def test_migration_18_upgrades_a_copy_of_version_17(tmp_path):
         connection.execute(
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN acknowledged_operation_id"
         )
-        # Later migrations only add columns; dropping their ledger rows too keeps
-        # the fixture at version 17 as more migrations land.
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version > 17")
     copied = tmp_path / "copied.sqlite3"
     shutil.copy2(fixture, copied)
@@ -178,7 +179,6 @@ def test_removed_login_cannot_be_revived_and_restore_keeps_ownership(tmp_path):
 def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
     from rcp.providers import PROVIDER_IDS
 
-    # Captured from the release's schema writer, without current-model rows.
     fixture = Path(__file__).parent / "fixtures/restore_schema/provider-logins-v0.4.35.sqlite3.gz"
     path = tmp_path / "old.sqlite3"
     path.write_bytes(gzip.decompress(fixture.read_bytes()))

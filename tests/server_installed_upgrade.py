@@ -90,6 +90,9 @@ def request(
     cookie: str = "",
     content_type: str = "application/json",
 ):
+    """The server's diagnostic is kept because the bare status hides why a route
+    refused.
+    """
     protocol = str(health()["team_shell_protocol"]["maximum"])
     query = urllib.request.Request(
         f"http://127.0.0.1:{PORT}{path}",
@@ -108,7 +111,6 @@ def request(
     try:
         return urllib.request.urlopen(query, timeout=30)
     except urllib.error.HTTPError as exc:
-        # Keep the server's diagnostic; the bare status hides why a route refused.
         raise AssertionError(f"{method} {path} -> {exc.code}: {exc.read()[:2000]!r}") from exc
 
 
@@ -193,13 +195,15 @@ def select(
 
 
 def operator(*arguments: str, expected: int = 0) -> subprocess.CompletedProcess:
+    """Only event envelopes are persisted, never bootstrap codes, cookies or fixture
+    tokens.
+    """
     result = subprocess.run(
         ["/usr/local/bin/rcp", "server", *arguments, "--machine-readable"],
         text=True,
         capture_output=True,
         timeout=1200,
     )
-    # Persist event envelopes, not bootstrap codes, cookies or fixture tokens.
     log = ROOT / "operator-events.jsonl"
     with log.open("a") as stream:
         stream.write(result.stdout)
@@ -254,7 +258,11 @@ def dry_run() -> dict:
 
 
 def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
-    """Admit an answered question's follow-up through the store's own path."""
+    """Admit an answered question's follow-up through the store's own path.
+
+    Releases before 0.4.28 compared turn scopes and take the scope argument. The task is
+    settled so no service launch or maintenance drain depends on a provider.
+    """
     from rcp.storage import AgentTaskRecord, AppStore
 
     if not hasattr(AppStore, "admit_chat_question_followup"):
@@ -281,8 +289,6 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
         run_truth_scope=[],
     )
     stage = str(data_dir / "run-stage" / operation_id)
-    # Work questions are supported by every release with follow-up admission.
-    # Give this synthetic provider turn a real, stage-only filesystem binding.
     scope = ProjectWriteScope.create(
         project_id=fixture["project_id"],
         execution_machine="server",
@@ -311,8 +317,6 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     store.checkpoint_agent_task(
         operation_id, native_session_id="upgrade-session", stage_host="", stage_root=stage
     )
-    # Seeding runs under each old release and under this checkout; releases
-    # before 0.4.28 compared turn scopes and take this argument.
     old_binding = (
         "continuation_binding" in inspect.signature(store.bind_agent_task_write_scope).parameters
     )
@@ -345,7 +349,6 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     store.answer_question(question.question_id, answer="Compare both.", resolved_by=actor)
     followup = store.admit_chat_question_followup(question.question_id)
     assert followup is not None
-    # Settle it so no service launch or maintenance drain depends on a provider.
     store.complete_agent_task(followup.operation_id, applied_revision=None, result={})
     close = getattr(store, "close", None)
     if close is not None:
@@ -359,7 +362,6 @@ def assert_followup(fixture: dict, followup: dict) -> None:
     path = f"/api/projects/{fixture['project_id']}/tasks/{followup['operation_id']}"
     with request(path, cookie=session(fixture)) as response:
         task = json.load(response)
-    # The seed settled it; an update that re-queued or failed it did not serve it.
     assert task["operation_id"] == followup["operation_id"], task
     assert task["status"] == "succeeded", task
     followup["served_after_update"] = True
@@ -381,7 +383,6 @@ def check_upgraded_state(fixture: dict, current: dict) -> dict:
     run(["systemctl", "start", "rcp.service"])
     wait_health()
     launches = json.loads((ROOT / "state/launches.json").read_text())
-    # Each check must have had its seeded row to judge.
     queued = json.loads((ROOT / "state/consolidation.json").read_text())["queued_operation_id"]
     if queued is not None:
         assert queued in launches["consolidation_queued"], launches
@@ -420,7 +421,11 @@ def backup() -> None:
 
 
 def seed_turn_artifact(data_dir: Path, fixture: dict, label: str) -> dict:
-    """Mirror this interpreter's chat completion; HTTP Keep owns the kept shape."""
+    """Mirror this interpreter's chat completion; HTTP Keep owns the kept shape.
+
+    v0.4.5-v0.4.8 load from the task's recorded stage layout, then Keep copies the bytes
+    and records kept_filename.
+    """
     from rcp.artifacts import descriptor_for
     from rcp.core.models import AuthorizedHuman
     from rcp.storage import AgentTaskRecord, AppStore
@@ -489,8 +494,6 @@ def seed_turn_artifact(data_dir: Path, fixture: dict, label: str) -> dict:
             data=content,
         )
     else:
-        # v0.4.5-v0.4.8 load from the task's recorded stage layout, then Keep
-        # copies the bytes to the state repository and records kept_filename.
         from rcp.runs.chat import _local_chat_artifact_directory
 
         storage = "stage_file"
@@ -561,7 +564,12 @@ def assert_kept_artifact(fixture: dict, artifact: dict) -> None:
 
 
 def seed() -> None:
-    """Runs with the old release's interpreter as its actual service account."""
+    """Runs with the old release's interpreter as its actual service account.
+
+    The cross-root hardlink stays within an excluded canonical file, so the backup stays
+    complete. Releases before 0.4.36 name a login by provider and host, not by key;
+    since 0.4.36 a member defaults to their own login.
+    """
     from rcp.storage import AppStore
     from tests.server_upgrade_scratch import build_scratch_wheel, populate_agent_scratch
     from tests.supervisor_reboot_data import prepare_data
@@ -571,8 +579,6 @@ def seed() -> None:
     (ROOT / "state/enrolled.json").unlink()
     wheel = build_scratch_wheel(ROOT / "state")
     populate_agent_scratch(DATA, Path(fixture["research"]), wheel)
-    # Keep the cross-root hardlink within an excluded canonical file, so it is
-    # realistic live-only content without making the subsequent backup partial.
     os.replace(
         Path(fixture["research"]) / "scratch-package-link",
         Path(fixture["research"]) / ".agent-run.lock",
@@ -590,7 +596,6 @@ def seed() -> None:
     empty_patches = Path(fixture["empty_patches"])
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     store = AppStore(DATA / "rcp.sqlite3")
-    # Releases before 0.4.36 name a login by provider and host, not by key.
     if "key" in inspect.signature(store.mark_provider_login_verified).parameters:
         from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
@@ -602,8 +607,6 @@ def seed() -> None:
     store.mark_provider_login_verified(
         *codex, member_id=fixture["member_id"], detail="Synthetic offline login fixture"
     )
-    # A team member defaults to their own login since 0.4.36. The seeded
-    # Experiment runs on the machine's login, which they choose to share.
     if hasattr(store, "set_provider_login_setting"):
         store.set_provider_login_setting(fixture["member_id"], "codex", "", "shared")
     store.mark_provider_login_signed_out(
@@ -624,14 +627,14 @@ def seed() -> None:
 
 
 def setup() -> None:
-    # This helper executes under the historical wheel, not the checkout's RCP.
+    """Runs under the historical wheel, not the checkout's RCP. The historical installer
+    must supply both entry points; they are never replaced with test launchers.
+    """
     from tests import supervisor_reboot_guest as guest
 
     guest.ROOT = ROOT
     guest.STATE = ROOT / "state"
     guest.setup()
-    # Prove the historical installer supplied both entry points. Do not replace
-    # them with test launchers or silently repair a different wrapper.
     from rcp.server_ops.install import _wrapper_text
     from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 
@@ -649,8 +652,9 @@ def setup() -> None:
 
 
 def prepare_toolchain() -> None:
-    # Do not copy setup-uv's runner-owned binary, inherit its Python/cache, or
-    # trust a runner-writable ancestor. CI installs the documented pinned uv.
+    """CI installs the documented pinned uv rather than trusting setup-uv's runner-owned
+    binary.
+    """
     uv = Path("/usr/local/bin/uv").resolve(strict=True)
     for path in (uv, *uv.parents):
         info = path.stat()
@@ -664,9 +668,13 @@ def prepare_toolchain() -> None:
 
 
 def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
+    """Root-owned fixture paths need service-account traversal. v0.4.19 read its project
+    list only at startup, so the base release is restarted after seeding. The new
+    supervisor is installed independently, not patched in its wheel. The final backup
+    check runs after cleanup checks, because the restart's startup guard keeps its
+    own logs.
+    """
     preflight()
-    # Root-owned fixture/bootstrap paths need service-account traversal. The
-    # historical installed wrappers independently set 077 for operator calls.
     os.umask(0o022)
     prepare_toolchain()
     ROOT.mkdir(mode=0o755)
@@ -740,8 +748,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     selected = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
     old_python = str(Path(selected["release_directory"]) / ".venv/bin/python")
     service([old_python, "-I", str(SCRIPT), "seed"])
-    # The seed registers its project from another process; v0.4.19 read its
-    # project list only at startup, so the base release serves it after a restart.
     run(["systemctl", "restart", "rcp.service"])
     wait_health()
     fixture = json.loads((ROOT / "state/fixture.json").read_text())
@@ -757,13 +763,11 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     if fixture["paper"]["writer"] == "tree":
         from tests.server_upgrade_paper import seed_tree_paper
 
-        # A baseline that already keeps the Paper file tree writes one through its own API.
         fixture["paper"] = seed_tree_paper(request, fixture, cookie)
         write_json(ROOT / "state/fixture.json", fixture, service_owned=True)
     from tests.server_upgrade_state import seed_edited_branch, seed_space_state
 
     fixture["upgrade_state"] = seed_space_state(request, fixture, cookie)
-    # The seed Syncs main and runs an Experiment there; this history must survive.
     fixture["canonical_patches"] = canonical_patches(fixture)
     write_json(ROOT / "state/fixture.json", fixture, service_owned=True)
     destination = Path("/var/backups/rcp-installed-upgrade")
@@ -798,7 +802,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     )
     target = select(candidate)
     operator("supervisor", "update")
-    install_hook()  # The new supervisor is independently installed, not patched in its wheel.
+    install_hook()
     assert_serves(fixture, selected["version_string"])
     confirmation = f"{target['tag']}:{target['manifest_sha256']}"
     select(candidate, observe=True, fail=True)
@@ -816,7 +820,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])
     base_artifact = json.loads((ROOT / "state/base-artifact.json").read_text())
     keep_artifact(fixture, base_artifact)
-    # Written after the last outgoing backup: historical backups rejected its identity.
     run(["systemctl", "stop", "rcp.service"])
     service([old_python, "-I", str(SCRIPT), "seed-question-followup"])
     service([old_python, "-I", str(SCRIPT), "admit-consolidation"])
@@ -824,8 +827,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     wait_health()
     fixture["upgrade_state"]["branch_id"] = seed_edited_branch(request, fixture, session(fixture))
     if tag == "v0.4.36" and fixture["upgrade_state"]["branch_id"] is not None:
-        # The old writer left repeated turns in one workspace. Exercise that
-        # history when the candidate rehearses the newly edited branch.
         run(["systemctl", "stop", "rcp.service"])
         service(
             [
@@ -842,7 +843,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     rehearses = candidate_rehearses()
     select(candidate)
     rehearsal = dry_run() if rehearses else {"verdict": "not advertised"}
-    # A candidate that rehearses also reports backup rejections as warnings.
     rejected = fixture["project_id"] if rehearses else None
     select(candidate, observe=True, reject_project=rejected)
     committed = operator("update", "--confirm-target", confirmation)
@@ -876,7 +876,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         and record["target"]["manifest_sha256"] == target["manifest_sha256"]
         for record in records
     )
-    # The committed update removes every snapshot and the failed attempt's quarantine.
     leftovers = [
         *Path("/home/rcp/rcp-server/update-checkpoints").iterdir(),
         *(path for path in Path("/home/rcp").rglob(".rcp-checkpoint-*")),
@@ -884,8 +883,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     assert leftovers == [], leftovers
     assert not list((DATA / "run-stage").glob("backup-*"))
     assert not list(Path("/etc/rcp/supervisor/logs").glob("*.log"))
-    # After the cleanup checks: its service restart runs the startup guard, which
-    # keeps its own diagnostic logs. Before assert_serves, which opens the project.
     launches = check_upgraded_state(fixture, current)
     from zipfile import ZipFile
 
@@ -919,7 +916,6 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     backup()
     candidate_python = str(Path(current["release_directory"]) / ".venv/bin/python")
     service([candidate_python, "-I", str(SCRIPT), "codex-home-upgrade"])
-    # The previous wheel must still follow the migrated links after rollback.
     service([old_python, "-I", str(SCRIPT), "codex-home-rollback"])
     service([candidate_python, "-I", str(SCRIPT), "seed-candidate-artifact"])
     candidate_artifact = json.loads((ROOT / "state/candidate-artifact.json").read_text())
@@ -972,7 +968,10 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
 
 
 def main() -> None:
-    # Isolated installed interpreters need only the test helpers, never src/rcp.
+    """Isolated installed interpreters need only the test helpers, never src/rcp. A
+    refusal must never reach cleanup of a pre-existing installation, and uploaded
+    artifacts exclude tokens and raw fixture files.
+    """
     if len(sys.argv) in {2, 3} and sys.argv[1] in {
         "setup",
         "seed",
@@ -1034,12 +1033,10 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     arguments = parser.parse_args()
     arguments.output.mkdir(parents=True, exist_ok=True)
-    preflight()  # Refusal must never reach cleanup of a pre-existing installation.
+    preflight()
     try:
         drive(arguments.base, arguments.candidate, arguments.output, arguments.tag)
     finally:
-        # Diagnostics remain on the disposable runner; tokens and raw fixture
-        # files are deliberately excluded from uploaded artifacts.
         if ROOT.exists():
             logs = run(["journalctl", "-u", "rcp.service", "--no-pager"])
             (arguments.output / "systemd.log").write_text(logs.stdout)

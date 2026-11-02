@@ -110,7 +110,7 @@ def test_claude_fork_prepares_new_cwd_without_changing_source(
     source.write_text(transcript)
 
     def interrupt_copy(reader, writer):
-        writer.write(reader.readline())  # A valid prefix must never become the snapshot.
+        writer.write(reader.readline())
         raise OSError("copy interrupted")
 
     with monkeypatch.context() as interrupted:
@@ -188,7 +188,7 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
     launcher.readiness = lambda *_args, **_kwargs: SimpleNamespace(
         installed=True, authenticated=True, binary_path=str(executable), version="2.1.307"
     )
-    with pytest.raises(ValueError):  # The launch contract: a fork never also resumes.
+    with pytest.raises(ValueError):
         await anext(
             launcher.stream(
                 "claude",

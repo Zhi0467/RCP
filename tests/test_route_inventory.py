@@ -1,3 +1,7 @@
+"""The route literal is the structural safety net for route extraction; it records the
+route surface, not ownership, so it stays unchanged when a handler moves.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -13,8 +17,6 @@ from .helpers import create_named_app
 RouteEntry = tuple[tuple[str, ...], str]
 
 
-# This is the structural safety net for route extraction. Keep this literal
-# unchanged when a handler moves: it records the route surface, not ownership.
 _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET", "HEAD"), "/openapi.json"),
     (("GET", "HEAD"), "/docs"),
@@ -376,16 +378,15 @@ def route_app(manifest, tmp_path: Path) -> FastAPI:
 
 
 def test_frozen_route_inventory(route_app: FastAPI) -> None:
+    """FastAPI's built-in routes are plain Starlette Routes while application routes are
+    APIRoutes, so the count makes the split explicit.
+    """
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
     assert len(_FROZEN_ROUTE_INVENTORY) == 317
-    # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    # The count makes the application/generated split explicit. FastAPI's
-    # built-in routes are ordinary Starlette Route objects, while application
-    # routes are APIRoute objects (including those nested in the router).
     assert sum(isinstance(route, APIRoute) for route in routes) == 313
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

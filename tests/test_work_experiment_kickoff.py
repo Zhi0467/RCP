@@ -121,12 +121,10 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(
         episode_id=None, task_id=WORK_TURN, turn_id="turn", authority="broker"
     )
 
-    # A departed member's turn cannot start one.
     monkeypatch.setattr(store, "is_project_member", lambda *_args: False)
     assert handler(_kickoff("departed"), identity).status == "invalid"
     monkeypatch.undo()
 
-    # The agent may shorten an episode, never lengthen it past the node's limit.
     assert handler(_kickoff("too-long", limit=4), identity).status == "invalid"
     started = handler(_kickoff("first", limit=2), identity)
 
@@ -145,7 +143,6 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(
     assert (starter.kind, starter.chat_id) == ("chat", chat_id)
     wait_for_task(store, root.operation_id)
 
-    # The same key replays the same episode; a changed goal under it is refused.
     replayed = handler(_kickoff("first", limit=2), identity)
     assert replayed.status == "ok"
     assert (replayed.result["disposition"], replayed.result["episode_id"]) == (
@@ -157,7 +154,6 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(
     assert handler(_kickoff("first", limit=2), identity).status == "invalid"
     (workspace / "goal.md").write_text("Compare warmup schedules at lr 3e-4.", encoding="utf-8")
 
-    # A Retry of the turn replays its key instead of starting a second episode.
     store.fail_agent_task(WORK_TURN, "The provider stopped.")
     store.create_agent_task(
         AgentTaskRecord(
@@ -195,7 +191,6 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(
         if item.mode == "experiment_loop"
     ] == [episode.episode_id]
 
-    # An Experiment turn cannot start another Experiment.
     loop_execution = AgentTaskExecution(
         operation_id=root.operation_id,
         store=store,
@@ -203,7 +198,6 @@ def test_work_turn_starts_the_experiment_its_human_asked_for(
         experiment_starter=background.experiment_starter,
     )
     assert "episode" not in work_command_handler(loop_execution, None).allowed_verbs
-    # A graph repair only fixes its retained Patch.
     repair = AgentTaskExecution(
         operation_id=WORK_TURN,
         store=store,

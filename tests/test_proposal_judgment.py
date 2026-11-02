@@ -619,8 +619,6 @@ def test_atomic_protected_edge_replacement_approves_and_preserves_old_dependency
     edge_resource = ProposalResource(kind="edge", id=PROTECTED_EDGE_ID)
     assert edge_resource in footprint.dependencies & footprint.effects
     assert PROTECTED_EDGE_ID not in footprint.required_absent_edge_ids
-    # Rule 1 and rule 2 records retain the old required-absence behavior, and
-    # replay leaves their persisted input document and recorded rule untouched.
     operation = patch.ops[0]
     assert isinstance(operation, CreateProposalsOperation)
     for rule in (1, 2):
@@ -678,8 +676,6 @@ def test_review_footprints_separate_shared_reads_from_approval_writes(
             "nodes": [{"id": HYPOTHESIS_ID, "superseded_by": OTHER_HYPOTHESIS_ID}],
         },
     )
-    # Both independent changes read the successor. Reading it cannot accept its
-    # standing or make the other review stale.
     right = footprint(
         "prop/right",
         {
@@ -703,8 +699,6 @@ def test_review_footprints_separate_shared_reads_from_approval_writes(
         ProposalResource(kind="edge", id=f"{HYPOTHESIS_ID}::supersedes::{OTHER_HYPOTHESIS_ID}")
         in left.effects
     )
-    # Removing either connected endpoint writes the incident edge the other
-    # removal reads, even though neither approval edits the other node.
     first = footprint(
         "prop/remove-question",
         {
@@ -746,6 +740,9 @@ def test_rule_two_approval_preserves_historical_standing(
     manifest: Manifest,
     tmp_path,
 ) -> None:
+    """Old multi-intent reviews accept every recorded related node, not merely the
+    written subject.
+    """
     from rcp.core.operations import CreateProposalsOperation, SetStandingOperation
     from rcp.core.validation.proposals import proposal_approval_operations
 
@@ -766,8 +763,6 @@ def test_rule_two_approval_preserves_historical_standing(
             "related_node_ids": [HYPOTHESIS_ID, STATUS_EVIDENCE_ID],
         }
     )
-    # Old multi-intent reviews accept every recorded related node, not merely
-    # the written subject. The shared constructor must retain that exact rule.
     accepted = [
         operation.node_id
         for operation in proposal_approval_operations(state, source)
@@ -870,12 +865,12 @@ def test_connectivity_rechecks_combined_approval_effects(monkeypatch) -> None:
     )
 
     def approval_effects(state, draft, *, validate):
+        """Models a rule whose extra write appears only when both initiating effects
+        occur together, so connectivity must use the complete approval effect.
+        """
         subjects = {node_id for operation in draft.ops for node_id in operation.node_ids}
         dependencies = {resource for resource in (first, second, third) if resource.id in subjects}
         effects = {second} if first.id in subjects else set()
-        # Model a transition rule whose additional write appears only when both
-        # initiating effects occur together. Connectivity must use that complete
-        # approval effect, just as it uses core's ordinary implicit standing.
         if {first.id, second.id} <= subjects:
             effects.add(third)
         return ProposalDependenciesAndEffects(
@@ -947,8 +942,6 @@ def test_repeated_relation_intents_use_their_actual_operation_position(manifest,
         context_patch=patch,
         writer=Writer.from_patch(patch),
     )
-    # Only the first creation lacks a preceding removal. The equal creation
-    # after the removal is a valid replacement at the intent boundary.
     assert [message.code for message in report.messages if message.level == "reject"] == [
         "invalid-agent-proposal-shape",
     ]

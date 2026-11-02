@@ -47,7 +47,6 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
     tasks.stream = _session_resuming_stream(
         kind="node_chat", session_id="native-session-abc", stage_root=str(stage), seen=seen
     )
-    # The human answers in the Experiment's own chat, on the session the episode resumes.
     request = RunRequest(
         provider="codex",
         run_truth_scope=["repo-a"],
@@ -88,7 +87,6 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
         )
         return lambda command: handler(command, identity)
 
-    # A turn that fails resumes nothing it scheduled.
     failed = work_turn("work-failed")
     assert failed(_resume(loop.episode_id, "resume")).status == "ok"
     store.fail_agent_task("work-failed", "The provider stopped.")
@@ -100,7 +98,6 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
     scheduled = reply(_resume(loop.episode_id, "resume"))
     assert scheduled.status == "ok", scheduled.message
     assert (scheduled.result["disposition"], scheduled.result["turns"]) == ("scheduled", 2)
-    # Nothing starts while the turn runs.
     assert store.episode_continuation(loop.episode_id) is None
 
     store.complete_agent_task(WORK_TURN, applied_revision=None, result={"messages": []})
@@ -113,7 +110,6 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
     assert root.native_session_id == "native-session-abc"
     assert seen == [("native-session-abc", str(stage))]
 
-    # Settling again replays the same continuation instead of a second one.
     start_scheduled_experiment_resumes(store, WORK_TURN, tasks.experiment_resumer)
     assert store.episode_continuation(loop.episode_id) == store.episode(continuation.episode_id)
     loops = [

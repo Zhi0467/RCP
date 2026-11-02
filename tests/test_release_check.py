@@ -140,7 +140,6 @@ def test_bounded_invalid_transport(github, monkeypatch, payload):
     github[0]["/latest"] = (200, payload)
     monkeypatch.setattr(limits, "RELEASE_CHECK_MAX_BYTES", 1024)
     if payload == "stall":
-        # Only the stall needs a short deadline; the others must reach the server.
         monkeypatch.setattr(limits, "RELEASE_CHECK_DEADLINE_SECONDS", 0.1)
     assert ReleaseCheck("personal", "0.4.9").check().status == "failed"
     assert github[1] == ["/latest"]
@@ -194,7 +193,6 @@ def test_route_reads_look_up_again_once_past_the_bound(github):
     checker.fresh(bound)
     assert requests == ["/latest"]
 
-    # A stale cache found by several readers at once costs one lookup.
     routes["/latest"] = (200, stable("v0.4.11"))
     _age(checker, bound + 1)
     with ThreadPoolExecutor(4) as pool:
@@ -336,7 +334,6 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
                     assert "503" in status["release_check"]["failure_reason"]
                     assert status["overall"]["tone"] == "good"
                     assert report.source_state == "aligned"
-                    # Refresh looks up again sooner than an ordinary read.
                     _age(checker, limits.RELEASE_CHECK_REFRESH_SECONDS + 1)
                     looked_up = github[1].count("/latest")
                     client.get("/api/server-status")
