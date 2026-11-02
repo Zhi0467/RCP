@@ -95,6 +95,9 @@ def test_outbox_marker_atomicity_and_empty_baseline(tmp_path, monkeypatch):
 
 
 def test_crash_retry_partial_success_and_toggle_off(tmp_path):
+    """A leased row is not due again, so a concurrent pull cannot lease it twice; expiry
+    is checked without a queued item and polling never extends it.
+    """
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "db", "Team")
     member, token = store.enroll_team_member(bootstrap, "Member")
     store.upsert_project(_project("p"))
@@ -113,7 +116,6 @@ def test_crash_retry_partial_success_and_toggle_off(tmp_path):
     first, second = [device["device_id"] for device in devices]
     later = (datetime.fromisoformat(store.now()) + timedelta(seconds=10)).isoformat()
     assert store.begin_notification_attempt(first, "n", later)
-    # A leased row is not due again, so a concurrent pull cannot lease it twice.
     assert not store.begin_notification_attempt(first, "n", later)
     reopened = AppStore(store.path)
     assert reopened.notification_outbox(first)[0]["last_status"] == "pending"
@@ -125,7 +127,6 @@ def test_crash_retry_partial_success_and_toggle_off(tmp_path):
     reopened.set_notification_preferences("p", member.user_id, {"proposal": False})
     assert not reopened.guard_notification_delivery(second, "n")
     assert reopened.notification_outbox(second) == []
-    # Expiry is checked without a queued item, and polling never extends it.
     with store.connection() as connection:
         old = connection.execute(
             "SELECT expires_at FROM team_sessions WHERE session_id=?", (devices[0]["session_id"],)

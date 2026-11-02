@@ -53,7 +53,6 @@ def test_delete_project_route_stops_only_the_previewed_work(manifest, tmp_path) 
 
     client = signed_in_client(app)
 
-    # The task was never shown, so Delete refuses before stopping anything.
     unshown = client.delete(f"/api/projects/{project_id}")
     assert unshown.status_code == 409, unshown.text
     assert app.state.catalog.store.agent_task("active-delete-test").status == "queued"

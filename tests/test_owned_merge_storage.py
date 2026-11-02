@@ -232,7 +232,6 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         )
     launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
-    # This test exercises merge dispatch and Apply; delivery wakes have independent coverage.
     monkeypatch.setattr(harness.app.state.background_tasks, "on_task_settled", None)
     before = harness.store.episode_budget_meter(harness.episode.episode_id).invocations_used
     result = start_owned_branch_merge(
@@ -297,11 +296,10 @@ def test_interrupted_merge_keeps_allocation_and_fences_wrapup(manifest, tmp_path
 
 
 def test_owned_merge_refuses_live_source_writer(manifest, tmp_path):
+    """Admission must fence any graph writer, independent of its role or owning episode."""
     from rcp.core.graph_targets import graph_target_json
 
     harness, task = _owned_merge(manifest, tmp_path)
-    # Give the existing live orchestrator the fork as its target; admission must
-    # fence any graph writer independently of its role or owning episode.
     with harness.store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET graph_target_json=? WHERE operation_id=?",
@@ -506,8 +504,6 @@ def test_human_fork_merge_admits_and_recovers_without_episode_budget(
     store.reserve_branch_merge_invocation(task.operation_id)
     store.fail_agent_task(task.operation_id, "Process restarted", status="interrupted")
     assert store.requeue_owned_merge_task(task.operation_id).episode_id is None
-    # A sibling fork cannot merge into the same parent while this merge enters it,
-    # nor can an unbound episode merge enter main.
     with pytest.raises(ValueError, match="^merge_destination_merging$"):
         store.create_branch_merge_task(member_merge()[2])
     if not parent_branch:

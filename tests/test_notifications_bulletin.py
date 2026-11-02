@@ -51,7 +51,6 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
         key="edit",
         action="edit",
     )
-    # Removing the mention before a pass must not erase its accepted event.
     store.mutate_bulletin_post(
         "project",
         "main",
@@ -67,12 +66,10 @@ def test_mentions_post_edit_recipient_only_and_restart_dedup(tmp_path):
     rows = store.notification_outbox()
     assert {row["device_id"] for row in rows} == {devices[first.user_id], devices[second.user_id]}
     assert len(rows) == 2
-    # Outbox expiry/deletion cannot resurrect already consumed mentions either.
     for row in rows:
         store.drop_notification(row["device_id"], row["notification_id"])
     restarted.run_pass()
     assert store.notification_outbox() == []
-    # A branch channel opens through the ordinary branch route.
     store.mutate_bulletin_post(
         "project",
         "branch:fork-1",

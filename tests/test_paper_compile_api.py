@@ -160,7 +160,6 @@ def test_application_compiles_real_saved_tree_and_drains(manifest, tmp_path, mon
         result = response.json()
         assert result["status"] == "ok", result
         assert client.get(result["pdf_url"]).content == b"%PDF-1.7 saved tree"
-        # A mounted asset route rejects an unknown asset instead of reaching the SPA.
         asset = client.get("/api/paper-assets/typst/missing.wasm")
         assert asset.status_code == 404
         assert asset.headers["content-type"] == "application/json"

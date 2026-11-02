@@ -351,6 +351,9 @@ def test_project_provisioning_requires_a_named_authenticated_team_member(tmp_pat
 
 
 def test_started_and_operator_action_requests_publish_backend_controls(tmp_path) -> None:
+    """Regression: the client is told which shell each command belongs to, since
+    guessing made this panel unusable.
+    """
     _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
     with signed_in_client(app) as client:
         created = client.post("/api/project-provisioning/requests", json=_payload()).json()
@@ -406,8 +409,6 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert action_projection["can_cancel"] is False
     assert action_projection["diagnostic"] == "The write grant is not ready yet."
     assert action_projection["operator_action"] == action.model_dump(mode="json")
-    # The client is told which shell each displayed command belongs to; it has
-    # no other way to know, and guessing is what made this panel unusable.
     projected = action_projection["operator_action"]
     command = next(item for item in projected["actions"] if item["kind"] == "command")
     assert command["execution"] == {"kind": "server_shell", "shell_account": None}

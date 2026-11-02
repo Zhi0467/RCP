@@ -50,10 +50,10 @@ def _request(capability, *, scope=None, write_dirs=()) -> ProviderTurnRequest:
 
 
 def _launch(request: ProviderTurnRequest) -> tuple[list[str], dict[str, object]]:
+    """Member formatters and language servers run commands outside tool rules."""
     turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(request)
     policy = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
     assert turn.environment["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
-    # Member formatters and language servers run commands outside tool rules.
     assert policy["formatter"] is False and policy["lsp"] is False
     (agent, definition), *others = policy["agent"].items()
     assert not others
@@ -62,14 +62,15 @@ def _launch(request: ProviderTurnRequest) -> tuple[list[str], dict[str, object]]
 
 
 def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
+    """OpenCode applies the last matching rule, so grants precede protected storage,
+    then the stage inside it.
+    """
     scope = _scope()
     command, permission = _launch(
         _request("work_auto", scope=scope, write_dirs=[Path(p) for p in scope.repository_roots])
     )
     assert command[:2] == ["sh", "-c"]
     assert "--pure" in command
-    # OpenCode applies the last matching rule: every grant, then protected
-    # storage, then the stage that sits inside it.
     assert list(permission["edit"].items()) == [
         ("*", "deny"),
         ("home/rcp/**", "allow"),
@@ -90,9 +91,9 @@ def test_paper_coach_edits_only_changes_and_has_no_shell():
 
 @pytest.mark.parametrize("capability", ["discuss", "paper_suggest", "work_auto"])
 def test_every_launch_denies_unlisted_tools_first(capability):
+    """Last match wins, so subagents (`task`) and MCP tools fall to the first rule."""
     scope = _scope() if capability == "work_auto" else None
     _, permission = _launch(_request(capability, scope=scope))
-    # Last match wins: subagents (`task`) and MCP tools fall to this first rule.
     assert next(iter(permission.items())) == ("*", "deny")
     assert "task" not in permission
 
@@ -164,9 +165,9 @@ def _lines(*values: dict) -> list[str]:
 
 
 def test_the_reply_is_every_text_part_and_the_exit_report_ends_the_turn():
+    """Probed: a step can finish with `stop` and still be followed by another."""
     turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(_request("discuss"))
     tokens = {"input": 10, "output": 2, "reasoning": 1, "cache": {"read": 5, "write": 0}}
-    # Probed: a step can finish with `stop` and still be followed by another.
     steps = [
         turn.receive_line(line)
         for line in _lines(

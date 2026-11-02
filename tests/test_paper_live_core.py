@@ -353,7 +353,6 @@ def test_raw_and_metadata_do_not_read_unrelated_bodies(paper):
             ],
             "h",
         )
-        # Corrupt unrelated bodies: metadata needs neither, a raw read only its target.
         with store.connection() as conn:
             conn.execute(
                 "UPDATE paper_version_texts SET zbody=x'00' WHERE sha256=?",
@@ -555,7 +554,6 @@ def test_a_failed_compaction_does_not_stop_drain_of_the_other_rooms(paper, monke
     compact, compacted = live._compact_bytes, []
 
     def fail_first(project, file_id, cutoff, revision):
-        # The failure lands while drain already waits on both rooms.
         if not compacted:
             compacted.append(None)
             time.sleep(0.2)
