@@ -20,6 +20,7 @@ from rcp.agents.staged_command_client import BULLETIN_ARTIFACT, BULLETIN_READ, b
 from rcp.agents.write_scope import (
     CompositeWriteScope,
     ProjectWriteScope,
+    RegisteredRepositoryRoot,
     resolve_project_write_scope,
 )
 from rcp.background import AgentTaskExecution
@@ -27,6 +28,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.manager import ReplayHalted
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+from rcp.regular_file_reader import read_local_regular_file
 from rcp.runs.bulletin import handle_bulletin
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.patch_validator import PatchValidationResult
@@ -212,6 +214,9 @@ def prepare_space_projects(
     turn_id = compute_recovery_lineage(
         owner.store, execution.operation_id, continuation=execution.continuation
     )[-1]
+    # Catalog-wide: it loads every project's manifest, so the turn reads it once,
+    # and only when some project can write.
+    inventory: list[RegisteredRepositoryRoot] | None = None
     for project_id in sorted(owner.store.member_project_ids(owner.thread.user_id)):
         try:
             record = owner.store.project(project_id)
@@ -235,6 +240,8 @@ def prepare_space_projects(
                 )
                 found.exclude(project_id, "base_remote", readable=True)
                 continue
+            if inventory is None:
+                inventory = owner.catalog.repository_ownership_inventory()
             truth = write_repositories(service.history.state())
             context = service.assemble_chat(
                 request.model_copy(update={"run_on": machine.alias, "run_truth_scope": truth})
@@ -251,7 +258,7 @@ def prepare_space_projects(
                 repository_pointers=context.repositories,
                 remote_stage=None,
                 app_data_dir=owner.catalog.data_dir,
-                repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+                repository_inventory=inventory,
             )
             found.writers.append(
                 SpaceProjectTurn(
@@ -331,17 +338,14 @@ def bind_space_projects(
 
 
 def read_space_output(path: Path) -> str | None:
-    if path.parent.resolve() != path.parent:
-        raise ValueError("Space output parent changed")
+    """An agent-written stage file: absent, or one bounded regular file never followed."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        data = read_local_regular_file(
+            path.parent, path.name, max_bytes=PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+        )
     except FileNotFoundError:
         return None
-    with os.fdopen(descriptor, encoding="utf-8") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > PATCH_SELF_CHECK_MAX_REQUEST_BYTES:
-            raise ValueError("Space output is not a bounded regular file")
-        return handle.read()
+    return data.decode("utf-8")
 
 
 def exact_stage_directory(stage: Path, *parts: str) -> Path:
