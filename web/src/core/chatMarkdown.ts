@@ -211,6 +211,40 @@ function glossaryDefinitionPlugin(glossaryIndex?: GlossaryIndex) {
   };
 }
 
+// An emoji's glyph runs into a narrow space, so each one gets its own spaced box.
+const EMOJI =
+  /\p{Regional_Indicator}{2}|(?:\p{Emoji_Presentation}|\p{Extended_Pictographic}\uFE0F)(?:\p{Emoji_Modifier}|\uFE0F|[\u{E0020}-\u{E007F}]|\u200D\p{Extended_Pictographic}\uFE0F?\p{Emoji_Modifier}?)*/gu;
+
+function emojiNodes(text: Text): RootContent[] {
+  const children: RootContent[] = [];
+  let cursor = 0;
+  for (const match of text.value.matchAll(EMOJI)) {
+    if (match.index > cursor)
+      children.push({ type: "text", value: text.value.slice(cursor, match.index) });
+    children.push({
+      type: "emphasis",
+      data: { hName: "span", hProperties: { className: ["chat-emoji"] } },
+      children: [{ type: "text", value: match[0] }],
+    });
+    cursor = match.index + match[0].length;
+  }
+  if (!cursor) return [text];
+  if (cursor < text.value.length) children.push({ type: "text", value: text.value.slice(cursor) });
+  return children;
+}
+
+function transformEmoji(node: Parent): void {
+  node.children = node.children.flatMap((child) => {
+    if (child.type === "text") return emojiNodes(child);
+    if (!NON_TEXT_CHILDREN.has(child.type) && isParent(child)) transformEmoji(child);
+    return [child];
+  });
+}
+
+function emojiPlugin() {
+  return transformEmoji;
+}
+
 interface MarkdownLinkContextValue {
   nodeIds: ReadonlySet<string>;
   onOpenNode?: (nodeId: string) => void;
@@ -363,6 +397,7 @@ const MarkdownBody = memo(function MarkdownBody({
       ...ANSWER_SYNTAX_PLUGINS,
       nodeReferencePlugin(new Set(linkedNodes ? Object.keys(linkedNodes) : [])),
       glossaryDefinitionPlugin(glossaryIndex),
+      emojiPlugin,
     ],
     rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
     components: MARKDOWN_COMPONENTS,

@@ -34,6 +34,7 @@ from rcp.providers import ProviderId
 from rcp.service import ChatTranscript, ProjectService, RunRequest
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord
+from rcp.storage.models import AgentTaskRecord
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
@@ -213,6 +214,11 @@ def append_space_message(
     task = owner.store.agent_task(operation_id)
     if task is None:
         raise ValueError("Space message lost its task")
+    if role == "user":
+        # A Resume or Retry continues its turn, so the member's message is recorded
+        # once, under the turn's first attempt.
+        task = _turn_first_attempt(owner.store, task)
+        operation_id = task.operation_id
     record: dict[str, object] = {
         "sessionId": owner.thread_id,
         "privateOwner": owner.thread.user_id,
@@ -241,6 +247,17 @@ def append_space_message(
     if request.handoff_report is not None and role == "user":
         record["handoffReport"] = request.handoff_report.model_dump(mode="json")
     append_space_records(owner, [record], reserve_prompt=True)
+
+
+def _turn_first_attempt(store: AppStore, task: AgentTaskRecord) -> AgentTaskRecord:
+    seen = {task.operation_id}
+    while task.parent_operation_id and task.parent_operation_id not in seen:
+        parent = store.agent_task(task.parent_operation_id)
+        if parent is None:
+            break
+        seen.add(parent.operation_id)
+        task = parent
+    return task
 
 
 async def stream_space_chat_run(
@@ -331,7 +348,7 @@ async def stream_space_chat_run(
     ):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
     turn_outcome = settle_space_turn_outcome(turn.stage, summary)
-    execution.turn_outcome = TurnOutcome.model_validate(turn_outcome.model_dump())
+    execution.turn_outcome = turn_outcome
     answer = "\n\n".join(outcome.answers)
     append_space_message(
         owner,
@@ -873,24 +890,25 @@ def _commit_space_session(turn: _SpaceTurn, session_id: str) -> None:
     )
 
 
-def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]):
-    """The agent's stated outcome, made partial when any project's update did not land."""
+def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]) -> TurnOutcome:
+    """The agent's stated outcome, made partial when any project's update did not land.
+
+    An unwritten outcome is not stated, as in project Work, never a failure.
+    """
     from rcp.runs.space_projects import read_space_output
     from rcp.turn_outcomes import WorkTurnOutcome
 
     stated = read_space_output(stage / "outcome.json")
     try:
-        outcome = WorkTurnOutcome.model_validate_json(stated) if stated is not None else None
+        outcome = (
+            TurnOutcome.model_validate(WorkTurnOutcome.model_validate_json(stated).model_dump())
+            if stated is not None
+            else TurnOutcome(status="not_stated")
+        )
     except ValueError:
         # Project updates have already applied, so a bad outcome file must still
         # settle the turn rather than fail it.
-        outcome = WorkTurnOutcome(
-            status="could_not", reason="The agent wrote an invalid turn outcome."
-        )
-    if outcome is None:
-        outcome = WorkTurnOutcome(
-            status="could_not", reason="The agent did not write its turn outcome."
-        )
+        outcome = TurnOutcome(status="could_not", reason="The agent wrote an invalid turn outcome.")
     failed = [
         f"{item.get('name', project_id)} {item['status']}"
         + (f" ({item['reason']})" if "reason" in item else "")
@@ -900,9 +918,9 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
     if not failed:
         return outcome
     reason = " ".join(("Project graph updates not applied: " + "; ".join(failed)).split())
-    outcome = WorkTurnOutcome(status="partial", reason=reason[:TURN_OUTCOME_REASON_MAX_CHARS])
-    (stage / "outcome.json").write_text(outcome.model_dump_json() + "\n", encoding="utf-8")
-    return outcome
+    partial = WorkTurnOutcome(status="partial", reason=reason[:TURN_OUTCOME_REASON_MAX_CHARS])
+    (stage / "outcome.json").write_text(partial.model_dump_json() + "\n", encoding="utf-8")
+    return TurnOutcome.model_validate(partial.model_dump())
 
 
 def _previous_space_results(

@@ -269,3 +269,12 @@ test("a long run of letters without a slash renders in linear time", () => {
   // The quadratic pattern took minutes at this size; linear matching takes milliseconds.
   assert.ok(performance.now() - started < 5000);
 });
+
+test("each emoji, sequences whole, gets its own spaced box outside code", () => {
+  const rendered = renderToStaticMarkup(MarkdownAnswer({ text: "🎮 It's 23:47 👨‍👩‍👧 🇺🇸 © `🎮`" }));
+  assert.deepEqual(
+    [...rendered.matchAll(/<span class="chat-emoji">([^<]*)<\/span>/g)].map((match) => match[1]),
+    ["🎮", "👨‍👩‍👧", "🇺🇸"],
+  );
+  assert.match(rendered, /<code>🎮<\/code>/);
+});

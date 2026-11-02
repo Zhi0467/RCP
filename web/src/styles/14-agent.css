@@ -307,8 +307,9 @@
 }
 /* A pause, or a stop with no error row, sits in the message column. */
 .agent-thread .node-chat-lines > .chat-task-inline.paused {
+  display: flex;
   margin: 0 auto 24px;
-  max-width: 820px;
+  max-width: var(--thread-column);
 }
 .upcoming-error {
   color: var(--coral);
@@ -317,8 +318,21 @@
 }
 
 /* ---------- Thread lines ---------- */
+/* One reading column, a step wider than a project chat's, shared by every turn,
+   card and the composer; its gutter matches the composer's. */
+.agent-thread {
+  --thread-column: 920px;
+}
 .agent-thread .node-chat-lines {
-  padding-top: 24px;
+  padding: 24px 18px clamp(20px, 4vw, 42px);
+}
+.agent-thread .node-chat-line,
+.agent-thread .node-chat-lines > .question-card,
+.agent-thread .approval-card {
+  max-width: var(--thread-column);
+}
+.agent-thread .chat-composer {
+  width: min(var(--thread-column), calc(100% - 36px));
 }
 .agent-thread .node-chat-lines > * {
   white-space: normal;
@@ -764,8 +778,8 @@
     padding: 18px 16px 12px;
   }
   .agent-thread .chat-composer {
-    margin: 0 8px 8px;
-    width: calc(100% - 16px);
+    margin: 0 16px 8px;
+    width: calc(100% - 32px);
   }
   .approval-card {
     padding: 12px;

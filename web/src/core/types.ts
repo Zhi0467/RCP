@@ -3452,8 +3452,8 @@ export interface SpaceMachine {
   access_hint: string;
   /** The recorded executable per provider. */
   provider_paths: Partial<Record<ProviderId, string>>;
-  /** The provider rows this card renders, in order. */
-  providers: { provider: ProviderId; label: string }[];
+  /** The provider rows this card renders, in order, with each one's declared models. */
+  providers: { provider: ProviderId; label: string; models: ModelChoice[] }[];
   /** Cached readiness only; a provider may be missing. */
   provider_readiness: Partial<Record<ProviderId, ProviderReadiness>>;
   compute_probes: { scheduler: ComputeBackendProbe | null; helper: ComputeBackendProbe | null };

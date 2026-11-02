@@ -325,8 +325,13 @@ def _machine_view(
         "jobs_root": machine.jobs_root,
         "access_hint": machine.access_hint,
         "provider_paths": dict(machine.provider_paths),
+        # Each provider's declared models, so a pick lists them before any probe.
         "providers": [
-            {"provider": profile.id, "label": profile.label}
+            {
+                "provider": profile.id,
+                "label": profile.label,
+                "models": [choice.model_dump(mode="json") for choice in profile.declared],
+            }
             for profile in map(profile_for, PROVIDER_IDS)
         ],
         "provider_readiness": {

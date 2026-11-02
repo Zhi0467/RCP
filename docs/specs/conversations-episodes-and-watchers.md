@@ -71,7 +71,9 @@ client-request rows. Questions, watchers, episodes and notifications never
 carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
 resolves a task row to its project service or Space owner for recovery, Stop,
 Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
-branch and starts no episodes.
+branch and starts no episodes. A Space turn records the member's message at
+launch, once per turn: a Resume or Retry keeps its first attempt's record. A
+reply with no outcome file is not stated, as in project Work.
 
 `handoff` passes a Space request to the same member's project thread, with that
 member's authority. It is not mail. The verb records the request and returns at

@@ -54,6 +54,10 @@ def test_listing_always_offers_the_backend_machine(app) -> None:
     # The Space thread's picker reads this card before any Space turn has run.
     machines = client.get("/api/space/machines").json()["machines"]
     assert [machine["host"] for machine in machines].count("") == 1
+    # A provider that declares its models lists them before any probe has run.
+    backend = next(machine for machine in machines if not machine["host"])
+    declared = {entry["provider"]: entry["models"] for entry in backend["providers"]}
+    assert declared["claude"]
 
 
 def test_repository_machine_cannot_be_deleted(app, manifest) -> None:

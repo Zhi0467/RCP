@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   AgentConfigChip,
   AgentConfigControls,
+  providerModels,
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
 import { loadProjectReadiness, loadSpaceMachines } from "../core/api";
@@ -70,6 +71,7 @@ import type {
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { ApprovalCardView } from "./ApprovalCard";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
+import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
 import {
   browserTimezone,
@@ -149,18 +151,19 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
       const first =
         ready.find((item) => item.authenticated)?.provider ?? machine.providers[0]?.provider;
       if (!first) return null;
-      const models = ready.find((item) => item.provider === first)?.models ?? [];
-      const { model, reasoning = "" } = providerChange(models, first, "");
-      return {
-        source: {
-          provider_readiness: {
-            [machine.machine_id]: machine.provider_readiness as Record<string, ProviderReadiness>,
-          },
-          machines: [],
-          registry: machine.providers,
+      const source = {
+        provider_readiness: {
+          [machine.machine_id]: machine.provider_readiness as Record<string, ProviderReadiness>,
         },
-        value: { provider: first, model, reasoning, run_on: machine.machine_id },
+        machines: [],
+        registry: machine.providers,
       };
+      const { model, reasoning = "" } = providerChange(
+        providerModels(source, machine.machine_id, first),
+        first,
+        "",
+      );
+      return { source, value: { provider: first, model, reasoning, run_on: machine.machine_id } };
     };
     // Without readiness the pick stays away and the backend picks the provider.
     load()
@@ -569,10 +572,30 @@ export function AgentThreadView({
     if (latest) result.push(latest);
     return result;
   }, [latest, messages, turnTasks]);
+  // A Resume or Retry names only its parent; the chain tells which turn it continues.
+  const [lineage, setLineage] = useState<ReadonlyMap<string, string | null>>(() => new Map());
+  let unlinked = latest?.parent_operation_id ?? null;
+  while (unlinked && lineage.has(unlinked)) unlinked = lineage.get(unlinked) ?? null;
+  useEffect(() => {
+    if (!unlinked) return;
+    let current = true;
+    endpointsRef.current.loadTask(unlinked).then(
+      (task) =>
+        current &&
+        setLineage((known) =>
+          new Map(known).set(task.operation_id, task.parent_operation_id ?? null),
+        ),
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [unlinked]);
   const lines = useAgentWindowLines({
     messages: messages ?? NO_MESSAGES,
     tasks,
     pendingTurn: composer.sending,
+    parents: lineage,
   });
   const { shouldStickToBottomRef: followRef, handleChatScroll } = useAgentWindowScroll(
     endpoints.scopeKey,
@@ -1142,7 +1165,7 @@ export function AgentThreadView({
         )}
         {(pausedTask || stoppedTask) && (
           <div className="chat-task-inline paused" role="status">
-            <span>{(pausedTask ?? stoppedTask)!.status_message}</span>
+            <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
             {pausedTask && (
               <button
                 type="button"

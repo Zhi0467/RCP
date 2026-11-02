@@ -3,6 +3,7 @@ import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } fr
 import {
   isActiveTask,
   isNewestOfTurnClass,
+  pausedTaskText,
   taskKindLabel,
   type TaskTranscriptLine,
 } from "../agents/agentTasks";
@@ -501,7 +502,7 @@ function InlinePausedTask({
 }) {
   return (
     <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
-      <span>{task.status_message}</span>
+      <span>{pausedTaskText(task)}</span>
       <button
         type="button"
         className="button compact primary"
