@@ -54,6 +54,16 @@ def _write(path: Path, content: str, *, replace: bool) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def shared_folder_usable(root: Path) -> bool:
+    """`shared` and its notes are real folders, so a grant of `shared` stays in memory."""
+    try:
+        return all(
+            stat.S_ISDIR(path.lstat().st_mode) for path in (root / "shared", root / "shared/notes")
+        )
+    except OSError:
+        return False
+
+
 def prepare_files(root: Path, lessons: list[dict] | None, title_max_chars: int) -> int | None:
     shared = root / "shared"
     notes = shared / "notes"
@@ -61,7 +71,7 @@ def prepare_files(root: Path, lessons: list[dict] | None, title_max_chars: int) 
     if lessons is None:
         try:
             # Never follow a redirected directory or index on ordinary launches.
-            if not all(stat.S_ISDIR(path.lstat().st_mode) for path in (shared, notes)):
+            if not shared_folder_usable(root):
                 return None
             metadata = index.lstat()
             return metadata.st_size if stat.S_ISREG(metadata.st_mode) else None
@@ -171,7 +181,11 @@ def main() -> None:
         if "lessons" in request
         else 0
     )
-    print(json.dumps({"root": str(root), "index_bytes": size}))
+    print(
+        json.dumps(
+            {"root": str(root), "index_bytes": size, "shared_usable": shared_folder_usable(root)}
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from rcp.agents.memory_file_io import (
     memory_root,
     prepare_files,
     safe_component,
+    shared_folder_usable,
 )
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
@@ -80,7 +81,7 @@ def member_memory_root(root: PurePath, user_id: str) -> Path:
 
 def prepare_project_memory(
     store: AppStore, project_id: str, remote_stage: RemoteRunStage | None = None
-) -> tuple[str, int | None]:
+) -> tuple[str | None, int | None]:
     """Migrate once, committing the marker only after the base confirms all writes.
 
     The process owns its data directory; a project lock serializes first launches
@@ -127,16 +128,19 @@ def prepare_project_memory(
                 }
             )
             root, size = Path(result["root"]), result["index_bytes"]
+            usable = result["shared_usable"]
         else:
             root = project_memory_root(store.path.parent, project_id)
             size = prepare_files(root, lessons, MEMORY_MIGRATED_TITLE_MAX_CHARS)
+            usable = shared_folder_usable(root)
         if not migrated:
             with store.connection() as connection:
                 connection.execute(
                     "INSERT INTO memory_migrations VALUES (?,?,?)",
                     (project_id, store.now(), len(lessons or [])),
                 )
-    return str(root / "shared"), size
+    # A redirected `shared` is never named, so no launch can grant it as a write root.
+    return (str(root / "shared") if usable else None), size
 
 
 def read_project_memory_indexes(
