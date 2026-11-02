@@ -276,3 +276,72 @@ def test_thread_watermark_moves_on_turn_status_not_progress(tmp_path: Path) -> N
             (store.now(),),
         )
     assert generation() > started
+
+
+def test_thread_list_reads_a_fixed_number_of_statements_and_writes_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from contextlib import contextmanager
+
+    from rcp.runs.agent_threads import thread_projections
+    from tests.test_storage import _task_record
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_ids = [f"project-{index}" for index in range(6)]
+    for project_id in project_ids:
+        store.upsert_project(_project(project_id))
+    connection = store.connection
+
+    def listing(user_id: str, visible: list[str]) -> tuple[list[dict], list[str]]:
+        statements: list[str] = []
+
+        @contextmanager
+        def traced():
+            with connection() as opened:
+                opened.set_trace_callback(statements.append)
+                yield opened
+
+        monkeypatch.setattr(store, "connection", traced)
+        threads = store.ensure_agent_threads(user_id, visible, default_names=("Pip",))
+        rows = thread_projections(store, threads)
+        monkeypatch.setattr(store, "connection", connection)
+        return rows, statements
+
+    _, created = listing("few", project_ids[:1])
+    assert any("BEGIN IMMEDIATE" in statement for statement in created)
+    threads = {
+        row.project_id: row
+        for row in store.ensure_agent_threads("many", project_ids, default_names=("Pip",))
+    }
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="turn",
+            project_id="project-1",
+            kind="project_chat",
+            request={"chat_id": threads["project-1"].thread_id},
+        )
+    )
+    with store.connection() as opened:
+        opened.execute(
+            "INSERT INTO questions(question_id,project_id,owner_kind,owner_id,key,origin_json,"
+            "argument_hash,question,choices_json,multiple,state,created_at) "
+            "VALUES('q','project-0','chat',?,'key','{}','hash','Question?','[]',0,'pending',?)",
+            (threads["project-0"].thread_id, store.now()),
+        )
+    _, few = listing("few", project_ids[:1])
+    rows, many = listing("many", project_ids)
+    assert len(rows) == len(project_ids) + 1
+    assert len(many) == len(few)
+    assert not any(
+        statement.lstrip().upper().startswith(("BEGIN IMMEDIATE", "INSERT", "UPDATE"))
+        for statement in many
+    )
+    by_project = {row["project_id"]: row for row in rows}
+    assert by_project["project-0"]["live_state"] == "needs_you"
+    assert by_project["project-1"]["live_state"] == "queued"
+    assert by_project["project-1"]["latest_operation_id"] == "turn"
+    assert by_project["project-2"]["live_state"] == "idle"
+    assert by_project["project-2"]["project_name"] == "project-2"
+    assert by_project[None]["project_name"] is None
+    assert all(row["agent_name"] and row["browser_requested"] for row in rows)

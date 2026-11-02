@@ -27,7 +27,12 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
             assert client.put(base + "/browser", json={"browser_requested": False}).json() == {
                 "browser_requested": False
             }
-            transcript = client.get(base + "/transcript")
+            # A project thread's transcript is its project chat's.
+            transcript = client.get(
+                base + "/transcript"
+                if row["kind"] == "space"
+                else f"/api/projects/{row['project_id']}/chats/{row['thread_id']}"
+            )
             assert transcript.status_code == 200
             assert transcript.json()["messages"] == []
 
@@ -393,8 +398,14 @@ def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
     task, artifact = create_saved_artifact(app, store.space_id, kept=False, with_chat=False)
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET kind='space_chat', request_json=? WHERE operation_id=?",
-            (json.dumps({"chat_id": thread["thread_id"]}), task.operation_id),
+            "UPDATE graph_runs SET kind='space_chat', request_json=?, authorized_space_id=?, "
+            "authorized_user_id=?, authorized_display_name='Owner' WHERE operation_id=?",
+            (
+                json.dumps({"chat_id": thread["thread_id"]}),
+                store.space_id,
+                store.local_owner.user_id,
+                task.operation_id,
+            ),
         )
         connection.execute(
             "UPDATE graph_run_receipts SET payload_json=? WHERE operation_id=? "

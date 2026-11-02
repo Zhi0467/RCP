@@ -213,7 +213,7 @@ def episode_questions(
 
 
 def _require_question_owner(store: AppStore, chat_id: str, user_id: str) -> None:
-    owner = store.private_question_owner(chat_id)
+    owner = store.private_chat_owner(chat_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=404, detail="Question not found")
 

@@ -372,6 +372,29 @@ def _reject_history_only_control(record: AgentTaskRecord) -> None:
         )
 
 
+def require_attachment_pair(attachment_set_id: str | None, client_id: str | None) -> None:
+    if bool(attachment_set_id) != bool(client_id):
+        raise ValueError(
+            "Chat attachments require both attachment_set_id and attachment_client_id."
+        )
+
+
+@contextmanager
+def released_unless_started(
+    store: AppStore,
+    attachment_store: ChatAttachmentStore,
+    attachment_batch_id: str | None,
+    operation_id: str,
+) -> Iterator[None]:
+    """A claimed batch returns to its pending set when starting records no task."""
+    try:
+        yield
+    except BaseException:
+        if attachment_batch_id is not None and store.agent_task(operation_id) is None:
+            attachment_store.release(attachment_batch_id, operation_id)
+        raise
+
+
 def start_ordinary_task(
     project_id: str,
     kind: AgentTaskKind,
@@ -447,14 +470,10 @@ def start_ordinary_task(
             if isinstance(request, RunRequest) and request.artifact_edit is not None
             else str(uuid.uuid4())
         )
-        claimed_set: tuple[str, str] | None = None
+        claimed_batch: str | None = None
         if kind in {"node_chat", "project_chat", "paper_coach"}:
             assert isinstance(request, (RunRequest, CoachRequest))
-            supplied = (request.attachment_set_id, request.attachment_client_id)
-            if any(supplied) and not all(supplied):
-                raise ValueError(
-                    "Chat attachments require both attachment_set_id and attachment_client_id."
-                )
+            require_attachment_pair(request.attachment_set_id, request.attachment_client_id)
             if request.attachment_set_id or request.references:
                 attachment_scope_id = (
                     request.attachment_scope_id
@@ -477,7 +496,7 @@ def start_ordinary_task(
                         viewer_id=authorized_by.user_id,
                     ),
                 )
-                claimed_set = (claimed.attachment_batch_id, operation_id)
+                claimed_batch = claimed.attachment_batch_id
                 request = request.model_copy(
                     update={
                         "attachment_set_id": None,
@@ -492,38 +511,36 @@ def start_ordinary_task(
             if isinstance(request, RunRequest) and request.artifact_edit is None
             else None
         )
-        try:
-            # Expiry checks admitted comments under this lock, so the base must
-            # stay readable until the task that protects it is recorded.
-            with store.artifact_lock(comment.artifact_id) if comment is not None else nullcontext():
-                if comment is not None:
-                    try:
-                        store.read_artifact_bytes(comment.artifact_id, comment.base_version)
-                    except (KeyError, OSError, ValueError) as exc:
-                        raise AgentTaskAdmissionConflict(
-                            "The selected artifact version is no longer available. "
-                            "Send the comment again."
-                        ) from exc
-                    # An Undo or another edit since admission makes the
-                    # comment's base stale; the human must select again.
-                    current = store.artifact(comment.artifact_id)
-                    if current is None or current.current_version != comment.base_version:
-                        raise AgentTaskAdmissionConflict(
-                            "This artifact changed to a new version after the parts "
-                            "were selected. Select them again."
-                        )
-                record = background_tasks.start(
-                    project_id,
-                    kind,
-                    request,
-                    operation_id=operation_id,
-                    authorized_by=authorized_by,
-                    graph_target=service.history.graph_target,
-                )
-        except BaseException:
-            if claimed_set is not None and store.agent_task(operation_id) is None:
-                attachment_store.release(*claimed_set)
-            raise
+        # Expiry checks admitted comments under this lock, so the base must
+        # stay readable until the task that protects it is recorded.
+        with (
+            released_unless_started(store, attachment_store, claimed_batch, operation_id),
+            store.artifact_lock(comment.artifact_id) if comment is not None else nullcontext(),
+        ):
+            if comment is not None:
+                try:
+                    store.read_artifact_bytes(comment.artifact_id, comment.base_version)
+                except (KeyError, OSError, ValueError) as exc:
+                    raise AgentTaskAdmissionConflict(
+                        "The selected artifact version is no longer available. "
+                        "Send the comment again."
+                    ) from exc
+                # An Undo or another edit since admission makes the
+                # comment's base stale; the human must select again.
+                current = store.artifact(comment.artifact_id)
+                if current is None or current.current_version != comment.base_version:
+                    raise AgentTaskAdmissionConflict(
+                        "This artifact changed to a new version after the parts "
+                        "were selected. Select them again."
+                    )
+            record = background_tasks.start(
+                project_id,
+                kind,
+                request,
+                operation_id=operation_id,
+                authorized_by=authorized_by,
+                graph_target=service.history.graph_target,
+            )
     except AgentTaskAdmissionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ClientRequestConflict:

@@ -420,9 +420,21 @@ def upload_chat_attachment(
     attachment_store: AttachmentStoreDependency,
 ) -> ChatAttachmentUpload:
     require_registered_project(catalog, project_id)
+    return add_attachment(attachment_store, project_id, chat_id, file, client_id, attachment_set_id)
+
+
+def add_attachment(
+    attachment_store: ChatAttachmentStore,
+    scope_id: str,
+    chat_id: str,
+    file: UploadFile,
+    client_id: str,
+    attachment_set_id: str | None,
+) -> ChatAttachmentUpload:
+    """Stage one upload in a chat's pending set; a project's or the Space's."""
     try:
         return attachment_store.add(
-            project_id=project_id,
+            project_id=scope_id,
             chat_id=chat_id,
             client_id=client_id,
             filename=file.filename or "",
@@ -450,9 +462,23 @@ def remove_chat_attachment(
     attachment_store: AttachmentStoreDependency,
 ) -> dict[str, bool]:
     require_registered_project(catalog, project_id)
+    return remove_attachment(
+        attachment_store, project_id, chat_id, attachment_id, client_id, attachment_set_id
+    )
+
+
+def remove_attachment(
+    attachment_store: ChatAttachmentStore,
+    scope_id: str,
+    chat_id: str,
+    attachment_id: str,
+    client_id: str,
+    attachment_set_id: str,
+) -> dict[str, bool]:
+    """Drop one upload from a chat's pending set; a project's or the Space's."""
     try:
         attachment_store.remove(
-            project_id=project_id,
+            project_id=scope_id,
             chat_id=chat_id,
             client_id=client_id,
             attachment_set_id=attachment_set_id,

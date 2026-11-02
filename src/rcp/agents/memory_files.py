@@ -18,6 +18,7 @@ from rcp.agents.memory_file_io import (
 )
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
+from rcp.storage.agent_threads import bound_thread
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -85,19 +86,10 @@ def member_memory_root(root: PurePath, user_id: str) -> Path:
 
 def task_member_memory_owner(store: AppStore, task: AgentTaskRecord | None) -> str | None:
     """The member whose private notes this turn uses: only that member's own thread turns."""
-    if (
-        task is None
-        or task.kind not in {"space_chat", "project_chat"}
-        or task.episode_id is not None
-    ):
+    if task is None or task.episode_id is not None:
         return None
-    chat_id = task.request.get("chat_id")
-    thread = store.agent_thread(chat_id) if isinstance(chat_id, str) else None
-    if thread is None or (thread.kind == "space") != (task.kind == "space_chat"):
-        return None
-    if thread.kind == "project" and thread.project_id != task.project_id:
-        return None
-    return thread.user_id
+    thread = bound_thread(store, task)
+    return thread.user_id if thread is not None else None
 
 
 def prepare_member_memory(store: AppStore, user_id: str) -> tuple[str | None, int | None]:

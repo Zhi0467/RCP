@@ -39,7 +39,7 @@ from rcp.service import (
     parse_space_records,
 )
 from rcp.storage import AppStore
-from rcp.storage.agent_threads import AgentThreadRecord
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.models import AgentTaskRecord
 from rcp.turn_outcomes import TurnOutcome
 
@@ -404,12 +404,11 @@ def _require_space_binding(
     owner: SpaceThreadOwner, request: RunRequest, execution: AgentTaskExecution
 ) -> None:
     task = owner.store.agent_task(execution.operation_id)
+    thread = bound_thread(owner.store, task) if task is not None else None
     if (
-        task is None
-        or task.kind != "space_chat"
-        or task.project_id != owner.store.space_id
-        or task.authorized_by is None
-        or task.authorized_by.user_id != owner.thread.user_id
+        thread is None
+        or thread.thread_id != owner.thread_id
+        or thread.kind != "space"
         or request.chat_id != owner.thread_id
         or request.mode != "work"
     ):

@@ -141,13 +141,6 @@ def _card_view(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class ApprovalCardStoreMixin(StoreMixinBase):
-    def private_question_owner(self, chat_id: str) -> str | None:
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT user_id FROM agent_threads WHERE thread_id=?", (chat_id,)
-            ).fetchone()
-        return row["user_id"] if row else None
-
     def approval_card(self, question_id: str) -> dict[str, Any] | None:
         return self.approval_cards([question_id]).get(question_id)
 

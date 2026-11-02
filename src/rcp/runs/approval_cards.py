@@ -24,24 +24,19 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
 from rcp.service import ProjectService
-from rcp.storage import AppStore
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.agent_threads import bound_thread
 from rcp.storage.question_models import QuestionOrigin
 from rcp.transport.state import StateUnavailable
 
 
-def private_project_thread_turn(store: AppStore, operation_id: str) -> bool:
-    task = store.agent_task(operation_id)
-    if task is None or task.kind != "project_chat" or task.authorized_by is None:
-        return False
-    with store.connection() as connection:
-        return (
-            connection.execute(
-                """SELECT 1 FROM agent_threads WHERE thread_id=?
-            AND user_id=? AND project_id=? AND kind='project' AND closed_at IS NULL""",
-                (task.request.get("chat_id"), task.authorized_by.user_id, task.project_id),
-            ).fetchone()
-            is not None
-        )
+def approval_card_member(store: AppStore, task: AgentTaskRecord) -> AuthorizedHuman | None:
+    """The member whose own Work turn in their open private project thread may ask a card.
+
+    Work resolves it once with its verbs; the prompt and the ask handler read that value.
+    """
+    thread = bound_thread(store, task) if task.kind == "project_chat" else None
+    return task.authorized_by if thread is not None and thread.closed_at is None else None
 
 
 def approval_card_for_ask(
@@ -49,15 +44,24 @@ def approval_card_for_ask(
     request: AskCommandRequest,
     origin: QuestionOrigin,
     service: ProjectService | None,
+    member: AuthorizedHuman | None,
 ) -> dict[str, Any]:
     """The card a member's own private project thread asks for; any other asker is refused.
 
-    A repeated key keeps the pins it first presented.
+    `member` is the turn's resolved `approval_card_member`. A repeated key keeps the
+    pins it first presented.
     """
     action = request.arguments.action
     assert action is not None
-    member = _thread_member(store, origin)
-    if service is None or member is None or action.project_id != origin.project_id:
+    thread = store.agent_thread(origin.owner_id) if origin.owner_kind == "chat" else None
+    if (
+        service is None
+        or member is None
+        or thread is None
+        or thread.closed_at is not None
+        or thread.user_id != member.user_id
+        or action.project_id != origin.project_id
+    ):
         raise ValueError("approval_requires_own_project_thread")
     previous = next(
         (
@@ -77,17 +81,6 @@ def approval_card_for_ask(
     except KeyError as exc:
         raise ValueError("approval_target_not_found") from exc
     return {"action": action.model_dump(mode="json"), "pinned": pinned}
-
-
-def _thread_member(store: AppStore, origin: QuestionOrigin) -> AuthorizedHuman | None:
-    """The member whose own Work turn in their private project thread is asking."""
-    task = store.agent_task(origin.operation_id)
-    if task is None or task.authorized_by is None or origin.capability != "work_auto":
-        return None
-    owner = store.private_question_owner(origin.owner_id) if origin.owner_kind == "chat" else None
-    if owner != task.authorized_by.user_id:
-        return None
-    return task.authorized_by if private_project_thread_turn(store, origin.operation_id) else None
 
 
 def settle_interrupted_approval_cards(

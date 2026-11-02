@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from rcp.runs.agent_thread_commands import thread_capabilities
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
-from rcp.storage.agent_threads import AgentThreadRecord
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -29,56 +29,131 @@ def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
 
 
 def thread_projection(store: AppStore, thread: AgentThreadRecord) -> dict[str, object]:
-    scope = thread_scope_id(store, thread)
-    project = store.project(thread.project_id) if thread.project_id else None
+    return thread_projections(store, [thread])[0]
+
+
+def thread_projections(
+    store: AppStore, threads: Sequence[AgentThreadRecord]
+) -> list[dict[str, object]]:
+    """Each thread's list row; a fixed number of reads whatever the thread count."""
+    if not threads:
+        return []
+    space_id = store.space_id
+    scopes = [(thread.project_id or space_id, thread.thread_id) for thread in threads]
+    pairs = ",".join("(?,?)" for _ in scopes)
+    keys = [value for pair in scopes for value in pair]
+    ids = ",".join("?" for _ in threads)
+    thread_ids = [thread.thread_id for thread in threads]
+    project_ids = sorted({thread.project_id for thread in threads if thread.project_id})
     # Without ANALYZE the planner prefers graph_runs_finished for MAX(finished_at),
-    # which scans the whole project history; both reads stay on the thread's turns.
+    # which scans the whole project history; both reads stay on each thread's turns.
     turns = (
-        "FROM graph_runs INDEXED BY graph_runs_chat_turn "
-        "WHERE project_id=:scope AND json_extract(request_json, '$.chat_id')=:thread AND visible=1"
+        "FROM graph_runs INDEXED BY graph_runs_chat_turn WHERE project_id=th.scope "
+        "AND json_extract(request_json, '$.chat_id')=th.thread AND visible=1"
     )
     with store.connection() as connection:
-        task = connection.execute(
-            f"SELECT operation_id, status, updated_at, (SELECT MAX(finished_at) {turns}) "
-            f"AS last_finished_at {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1",
-            {"scope": scope, "thread": thread.thread_id},
+        latest = {
+            row["thread"]: row
+            for row in connection.execute(
+                f"WITH th(scope, thread) AS (VALUES {pairs}) "
+                "SELECT th.scope, th.thread, r.operation_id, r.status, r.updated_at, "
+                f"(SELECT MAX(finished_at) {turns}) AS last_finished_at "
+                "FROM th LEFT JOIN graph_runs r ON r.operation_id = "
+                f"(SELECT operation_id {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1)",
+                keys,
+            )
+        }
+        baseline = connection.execute(
+            "SELECT completed_at FROM storage_schema_migrations "
+            "WHERE migration_name = 'chat_reads_and_pins_v1'"
         ).fetchone()
-    finished = task["last_finished_at"] if task else None
-    markers = store.chat_read_markers(scope, thread.user_id)
-    read_through = markers["reads"].get(thread.thread_id, markers["baseline"])
-    state = "idle"
-    if thread.closed_at:
-        state = "closed"
-    elif thread.project_id and store.list_questions(
-        project_id=thread.project_id, owner_kind="chat", owner_id=thread.thread_id, open_only=True
-    ):
-        state = "needs_you"
-    elif task is not None:
-        state = {
-            "queued": "queued",
-            "running": "running",
-            "pausing": "running",
-            "paused": "paused",
-        }.get(task["status"], "idle")
-    return {
-        "thread_id": thread.thread_id,
-        "kind": thread.kind,
-        "project_id": thread.project_id,
-        "project_name": project.name if project else None,
-        "agent_name": store.chat_name(scope, thread.thread_id, ""),
-        "unread": bool(finished and (not read_through or finished > read_through)),
-        # Mark read sends this back: message times precede their turn's finish.
-        "last_finished_at": finished,
-        "last_activity_at": task["updated_at"] if task else None,
-        "live_state": state,
-        # A running turn's member message reaches the transcript only when it settles.
-        "latest_operation_id": task["operation_id"] if task else None,
-        "browser_requested": store.chat_browser_requested(scope, thread.thread_id),
-        # The member's stored pick; null until one is made, when the default applies.
-        "agent": thread.agent,
-        # What this kind's agent can do, from its granted verbs; an empty thread shows it.
-        "capabilities": thread_capabilities(thread.kind),
-    }
+        reads = {
+            (row["project_id"], row["chat_id"], row["user_id"]): row["read_through"]
+            for row in connection.execute(
+                f"SELECT project_id, chat_id, user_id, read_through FROM chat_reads "
+                f"WHERE chat_id IN ({ids})",
+                thread_ids,
+            )
+        }
+        open_questions = {
+            (row["project_id"], row["owner_id"])
+            for row in connection.execute(
+                "SELECT DISTINCT project_id, owner_id FROM questions WHERE owner_kind='chat' "
+                f"AND owner_id IN ({ids}) AND state='pending' AND withdrawn_readonly=0",
+                thread_ids,
+            )
+        }
+        names = {
+            (row["project_id"], row["chat_id"]): row["title"]
+            for row in connection.execute(
+                f"SELECT project_id, chat_id, title FROM chat_display WHERE chat_id IN ({ids})",
+                thread_ids,
+            )
+        }
+        browser = {
+            (row["project_id"], row["chat_id"]): bool(row["browser_requested"])
+            for row in connection.execute(
+                "SELECT project_id, chat_id, browser_requested FROM chat_browser_preferences "
+                f"WHERE chat_id IN ({ids})",
+                thread_ids,
+            )
+        }
+        project_names = {
+            row["project_id"]: row["name"]
+            for row in connection.execute(
+                "SELECT project_id, name FROM projects WHERE retired_at IS NULL "
+                f"AND project_id IN ({','.join('?' for _ in project_ids)})",
+                project_ids,
+            )
+        }
+    rows = []
+    for thread, (scope, thread_id) in zip(threads, scopes, strict=True):
+        task = latest[thread_id]
+        finished = task["last_finished_at"]
+        read_through = reads.get(
+            (scope, thread_id, thread.user_id), baseline["completed_at"] if baseline else None
+        )
+        state = "idle"
+        if thread.closed_at:
+            state = "closed"
+        elif thread.project_id and (scope, thread_id) in open_questions:
+            state = "needs_you"
+        elif task["operation_id"] is not None:
+            state = {
+                "queued": "queued",
+                "running": "running",
+                "pausing": "running",
+                "paused": "paused",
+            }.get(task["status"], "idle")
+        project_name = project_names.get(thread.project_id) if thread.project_id else None
+        if thread.project_id and project_name is None:
+            # An alias or retired id resolves through the store's own rule.
+            project = store.project(thread.project_id)
+            project_name = project.name if project else None
+        name = names.get((scope, thread_id))
+        rows.append(
+            {
+                "thread_id": thread_id,
+                "kind": thread.kind,
+                "project_id": thread.project_id,
+                "project_name": project_name,
+                # A missing title is seeded once, as for any chat.
+                "agent_name": name if name is not None else store.chat_name(scope, thread_id, ""),
+                "unread": bool(finished and (not read_through or finished > read_through)),
+                # Mark read sends this back: message times precede their turn's finish.
+                "last_finished_at": finished,
+                "last_activity_at": task["updated_at"],
+                "live_state": state,
+                # A running turn's member message reaches the transcript only when it settles.
+                "latest_operation_id": task["operation_id"],
+                "browser_requested": browser.get((scope, thread_id), False),
+                # The member's stored pick; null until one is made, when the default applies.
+                "agent": thread.agent,
+                # What this kind's agent can do, from its granted verbs; an empty thread shows it.
+                "capabilities": thread_capabilities(thread.kind),
+            }
+        )
+    return rows
 
 
 def thread_history_seed(service: ProjectService, request: RunRequest) -> str:
@@ -141,15 +216,8 @@ def task_owner(
     from rcp.runs.space_chat import SpaceThreadOwner
 
     if task.kind == "space_chat":
-        chat_id = task.request.get("chat_id")
-        thread = store.agent_thread(chat_id) if isinstance(chat_id, str) else None
-        if (
-            task.project_id != store.space_id
-            or thread is None
-            or thread.kind != "space"
-            or task.authorized_by is None
-            or thread.user_id != task.authorized_by.user_id
-        ):
+        thread = bound_thread(store, task)
+        if thread is None:
             raise ValueError("Space task lost its member-owned thread binding")
         return SpaceThreadOwner(store, catalog, thread.thread_id)
     service = catalog.open_execution(task.project_id)
@@ -320,7 +388,6 @@ async def prepare_project_summary_scope(
     import asyncio
     from pathlib import Path
 
-    from rcp.runs.chat import _local_chat_workspace_for_task
     from rcp.runs.shared import _prepare_hidden_read_scope
     from rcp.transport.run_stage import RemoteRunStage
 
@@ -330,17 +397,10 @@ async def prepare_project_summary_scope(
         if source.stage_host
         else None
     )
-    workspace = (
-        Path(str(remote.workspace))
-        if remote
-        else Path(source.stage_root)
-        if source.kind == "space_chat"
-        else _local_chat_workspace_for_task(execution.store, source)
-    )
     return await _prepare_hidden_read_scope(
         service,
         request,
-        workspace=workspace,
+        workspace=_source_workspace(execution.store, source),
         remote_stage=remote,
         execution=execution,
         capability="session_summary",
@@ -348,6 +408,20 @@ async def prepare_project_summary_scope(
         local_stage=Path(source.stage_root) if remote is None else None,
         execution_host=source.stage_host or "",
     )
+
+
+def _source_workspace(store: AppStore, source: AgentTaskRecord) -> Path:
+    """The old turn's workspace: its remote stage's, its Space stage, or its local chat's."""
+    from pathlib import Path
+
+    from rcp.runs.chat import _local_chat_workspace_for_task
+
+    assert source.stage_root
+    if source.stage_host:
+        return Path(source.stage_root) / "workspace"
+    if source.kind == "space_chat":
+        return Path(source.stage_root)
+    return _local_chat_workspace_for_task(store, source)
 
 
 async def _summarize_thread_session(
@@ -368,7 +442,6 @@ async def _summarize_thread_session(
     from rcp.limits import AGENT_THREAD_COMPACT_MAX_BYTES
     from rcp.providers import classify_terminal_error, profile_for
     from rcp.rcp_home import rcp_temp_dir
-    from rcp.runs.chat import _local_chat_workspace_for_task
     from rcp.runs.provider_process import require_remote_provider_quiescence
     from rcp.storage.models import LoginKey
     from rcp.transport.run_stage import run_stage_partition
@@ -395,13 +468,7 @@ async def _summarize_thread_session(
     scope = await prepare_scope(request, source)
     if scope.enforcement.status != "enforced" or scope.execution_host != host:
         raise _SessionSummaryUnavailable("provider_error")
-    workspace = (
-        Path(source.stage_root) / "workspace"
-        if host
-        else Path(source.stage_root)
-        if source.kind == "space_chat"
-        else _local_chat_workspace_for_task(execution.store, source)
-    )
+    workspace = _source_workspace(execution.store, source)
     if not host and (not workspace.is_dir() or workspace.is_symlink()):
         raise _SessionSummaryUnavailable("session_missing")
     if host:

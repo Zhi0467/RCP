@@ -387,15 +387,13 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
     if lifecycle is not None and lifecycle.allowed_verbs is not None:
-        verbs, artifacts = (
-            lifecycle.allowed_verbs,
-            WORK_TURN_ARTIFACTS,
-        )
+        verbs, artifacts, approval_cards = lifecycle.allowed_verbs, WORK_TURN_ARTIFACTS, False
     else:
         handler = _work_turn_command_handler(turn)
-        verbs, artifacts = (
+        verbs, artifacts, approval_cards = (
             handler.allowed_verbs,
             handler.turn_artifacts,
+            handler.approval_card_member is not None,
         )
     assert verbs is not None
     instructions = []
@@ -436,11 +434,9 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         )
     if "ask" in verbs:
         instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
-        from rcp.runs.approval_cards import approval_card_usage, private_project_thread_turn
+        from rcp.runs.approval_cards import approval_card_usage
 
-        if turn.execution is not None and private_project_thread_turn(
-            turn.execution.store, turn.execution.operation_id
-        ):
+        if approval_cards:
             instructions.append(
                 approval_card_usage(client or turn.patch_inputs.validator_staged.client_command())
             )

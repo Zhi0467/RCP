@@ -498,6 +498,10 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
             "VALUES ('chat',?,'project','project',?)",
             (human.user_id, store.now()),
         )
+    # Work resolves the card grant with its verbs, once per turn handler.
+    handler = work_command_handler(
+        execution, None, service=cast(ProjectService, SimpleNamespace(project_catalog=None))
+    )
     response = handler(request, identity())
     assert response.status == "ok"
     question_id = response.result["question_id"]
