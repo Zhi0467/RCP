@@ -255,7 +255,8 @@ async def stream_space_chat_run(
     )
     turn = await _open_space_turn(owner, request, data_dir, execution, project_git_access)
     # A corrupt transcript raises, so the turn fails visibly instead of running unseeded.
-    prior = read_space_chat_transcript(data_dir, owner.thread.user_id, owner.thread_id)
+    with space_transcript_lock(owner.store, owner.thread_id):
+        prior = read_space_chat_transcript(data_dir, owner.thread.user_id, owner.thread_id)
     seed = await provider_switch_seed(
         launcher,
         request,

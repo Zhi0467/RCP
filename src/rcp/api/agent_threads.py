@@ -49,7 +49,7 @@ from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_threads import task_owner, thread_projection, thread_scope_id
-from rcp.runs.space_chat import SpaceThreadOwner
+from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
 from rcp.service_connections import ConnectionError
@@ -176,9 +176,11 @@ def thread_transcript(
                 raise
     else:
         try:
-            transcript = read_space_chat_transcript(
-                store.path.parent, thread.user_id, thread_id, title=title
-            )
+            # Under the appenders' lock, so a read never sees a half-written record.
+            with space_transcript_lock(store, thread_id):
+                transcript = read_space_chat_transcript(
+                    store.path.parent, thread.user_id, thread_id, title=title
+                )
         except ConnectionError as exc:
             raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
         if transcript is not None:
