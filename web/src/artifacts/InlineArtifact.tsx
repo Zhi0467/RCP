@@ -87,9 +87,8 @@ export function InlineArtifact({
   const state = resource.value;
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
-  const [commentMode, setCommentMode] = useState(false);
-  const commentModeRef = useRef(commentMode);
-  commentModeRef.current = commentMode;
+  // null until the reader presses the toggle; comment mode starts on.
+  const [commentChoice, setCommentChoice] = useState<boolean | null>(null);
   const onVersionChangeRef = useRef(onVersionChange);
   onVersionChangeRef.current = onVersionChange;
   const freshSessionRef = useRef(false);
@@ -134,6 +133,13 @@ export function InlineArtifact({
     setPageError(null);
   }, [currentVersion]);
 
+  const selectable =
+    canComment &&
+    Boolean(state?.can_comment) &&
+    (artifact?.view === "html" || artifact?.view === "image");
+  // Derived, so a refresh that withdraws commenting (another edit reserving the
+  // artifact) also ends comment mode, with no Done left to press.
+  const commentMode = selectable && (commentChoice ?? true);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: onSelectionCancel,
@@ -145,16 +151,6 @@ export function InlineArtifact({
       }),
   });
 
-  const selectable =
-    canComment &&
-    Boolean(state?.can_comment) &&
-    (artifact?.view === "html" || artifact?.view === "image");
-  // A refresh can withdraw commenting, such as another edit reserving the
-  // artifact, and would leave comment mode on with no Done to end it.
-  useEffect(() => {
-    if (selectable || !commentModeRef.current) return;
-    setCommentMode(false);
-  }, [selectable]);
   if (!artifact)
     return (
       <span ref={host} className="chat-inline-artifact">
@@ -228,7 +224,7 @@ export function InlineArtifact({
                 : "Select a part of this artifact to comment on it"
             }
             aria-label={commentMode ? "Done commenting" : "Comment on a part"}
-            onClick={() => setCommentMode(!commentMode)}
+            onClick={() => setCommentChoice(!commentMode)}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>
@@ -283,11 +279,6 @@ export function InlineArtifact({
           <strong className="chat-inline-artifact-error" role="alert">
             {actionError}
           </strong>
-        )}
-        {commentMode && (
-          <span className="chat-inline-artifact-hint" role="status">
-            Drag across a part, or select its text, to comment on it.
-          </span>
         )}
       </span>
     </span>

@@ -1,0 +1,308 @@
+/* Snowbound: an 8-bit cabin in snowy woods. It shares Aqua's element rules
+   and swaps their materials for pixel ones: square corners, notched 2px
+   frames, hard unblurred shadows, and a lit square for selection.
+   Both blocks name the mode so they outrank the base dark palette whatever
+   the import order; the pre-paint script always stamps a mode. */
+:root[data-theme="snowbound"][data-color-mode="light"] {
+  color-scheme: light;
+  --paper: #dfe9f5;
+  --paper-deep: #c9d9ec;
+  --sheet: #fbfcff;
+  --walnut: #17203a;
+  --ink-soft: #4b5878;
+  --oxblood: #b8282c;
+  --oxblood-dark: #8c1a1e;
+  --accent-ink: #ffffff;
+  --teal: #1f6f86;
+  --mustard: #8a6000;
+  --coral: #b8382a;
+  --indigo: #3a4fa0;
+  --plum: #7a3a8a;
+  --forest: #1c6b3c;
+  --moss: #4f6a1c;
+  --slate: #48668c;
+  --rose-paper: #f6dcdc;
+  --red-soft: #f6dcdc;
+  --rule: #8ea4c4;
+  --shadow-rgb: 23 32 58;
+  --px-frame: #17203a;
+  --px-drop: #17203a;
+  --px-raise: #ffffff;
+  --px-field: #eef3fa;
+  --px-select: #ffe9a8;
+  --px-notch:
+    0 -2px 0 0 var(--px-frame), 0 2px 0 0 var(--px-frame), -2px 0 0 0 var(--px-frame),
+    2px 0 0 0 var(--px-frame);
+  --aqua-surface: var(--sheet);
+  --aqua-toolbar: var(--sheet);
+  --aqua-field: var(--px-field);
+  --aqua-canvas: var(--paper-deep);
+  --aqua-selected: var(--px-select);
+  --aqua-selected-border: var(--px-frame);
+  --aqua-raised: var(--px-notch), 4px 4px 0 2px var(--px-drop);
+  --aqua-hover: var(--px-notch), 5px 5px 0 2px var(--px-drop);
+  --aqua-inset: var(--px-notch), inset 2px 2px 0 rgb(var(--shadow-rgb) / 18%);
+  --aqua-highlight: transparent;
+  --aqua-sheen: transparent;
+  --aqua-glow: transparent;
+  --aqua-focus: var(--oxblood);
+  --shadow: 6px 6px 0 var(--px-drop);
+  --segmented-track: var(--px-field);
+  --segmented-track-shadow: var(--px-notch);
+  --segmented-selected: var(--px-select);
+  --segmented-selected-shadow: var(--px-notch);
+}
+
+:root[data-theme="snowbound"][data-color-mode="dark"] {
+  color-scheme: dark;
+  --paper: #0d1733;
+  --paper-deep: #0a1129;
+  --sheet: #1a2850;
+  --walnut: #f2f5ff;
+  --ink-soft: #a9b6d8;
+  --oxblood: #ffb833;
+  --oxblood-dark: #ffd36e;
+  --accent-ink: #1a1206;
+  --teal: #6fd6e8;
+  --mustard: #ffd23f;
+  --coral: #ff7a5c;
+  --indigo: #9fb0ff;
+  --plum: #e09bf0;
+  --forest: #6ee07a;
+  --moss: #b8e05a;
+  --slate: #8fb0e0;
+  --rose-paper: #3a2a40;
+  --red-soft: #3a2a40;
+  --rule: #3a4f86;
+  --shadow-rgb: 0 0 0;
+  --px-frame: #04081a;
+  --px-drop: #04081a;
+  --px-raise: #2b3f72;
+  --px-field: #101c3e;
+  --px-select: #3a3416;
+  --px-notch:
+    0 -2px 0 0 var(--px-frame), 0 2px 0 0 var(--px-frame), -2px 0 0 0 var(--px-frame),
+    2px 0 0 0 var(--px-frame);
+  --aqua-surface: var(--sheet);
+  --aqua-toolbar: var(--sheet);
+  --aqua-field: var(--px-field);
+  --aqua-canvas: var(--paper-deep);
+  --aqua-selected: var(--px-select);
+  --aqua-selected-border: var(--px-frame);
+  --aqua-raised: var(--px-notch), 4px 4px 0 2px var(--px-drop);
+  --aqua-hover: var(--px-notch), 5px 5px 0 2px var(--px-drop);
+  --aqua-inset: var(--px-notch), inset 2px 2px 0 rgb(var(--shadow-rgb) / 18%);
+  --aqua-highlight: transparent;
+  --aqua-sheen: transparent;
+  --aqua-glow: transparent;
+  --aqua-focus: var(--oxblood);
+  --shadow: 6px 6px 0 var(--px-drop);
+  --segmented-track: var(--px-field);
+  --segmented-track-shadow: var(--px-notch);
+  --segmented-selected: var(--px-select);
+  --segmented-selected-shadow: var(--px-notch);
+}
+
+/* The app hard-codes radii in many files and has no radius token, so one
+   theme-wide rule squares them all. The theme's one sanctioned !important.
+   Pseudo-elements are not allowed inside :is(), hence the plain list. */
+:root[data-theme="snowbound"] *,
+:root[data-theme="snowbound"] ::before,
+:root[data-theme="snowbound"] ::after {
+  border-radius: 0 !important;
+}
+
+/* Short titles only: long research text reads slower in a pixel face. */
+:root[data-theme="snowbound"]
+  :is(
+    .space-group-title,
+    .space-runs-header h2,
+    .project-cover > strong,
+    .settings-section > header h2,
+    .settings-rail-label
+  ) {
+  font-family: "Pixelify Sans", var(--ui);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* Flat faces where Aqua paints gradients. */
+:root[data-theme="snowbound"]
+  :is(
+    .button,
+    .icon-button,
+    .dag-tool-button,
+    .dag-lens,
+    .node-window-dock-item,
+    .text-scale-value
+  ) {
+  background-image: none;
+}
+
+:root[data-theme="snowbound"] :is(.button.primary, .icon-button.primary, .draft-sync.active) {
+  background-image: none;
+  box-shadow: var(--aqua-raised);
+  text-shadow: none;
+}
+
+/* Controls rise a pixel on hover and press into their shadow on click. */
+:root[data-theme="snowbound"] :is(.button, .icon-button, .dag-tool-button) {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+:root[data-theme="snowbound"] :is(.button, .icon-button, .dag-tool-button):hover:not(:disabled) {
+  box-shadow: var(--aqua-hover);
+  transform: translate(-1px, -1px);
+}
+
+:root[data-theme="snowbound"] :is(.button, .icon-button, .dag-tool-button):active:not(:disabled) {
+  box-shadow: var(--px-notch);
+  transform: translate(3px, 3px);
+}
+
+:root[data-theme="snowbound"] .project-cover-shell:hover {
+  transform: translate(-1px, -1px);
+}
+
+:root[data-theme="snowbound"] .project-cover-shell:has(.project-cover:active) {
+  transform: translate(3px, 3px);
+}
+
+:root[data-theme="snowbound"] .project-cover-shell:has(.project-cover:active) .project-cover {
+  box-shadow: var(--px-notch);
+}
+
+:root[data-theme="snowbound"] :focus-visible {
+  outline: 2px dashed var(--aqua-focus);
+  outline-offset: 4px;
+}
+
+/* Writing wells light their notched frame in the accent while focused. */
+:root[data-theme="snowbound"] :is(.chat-composer, .bulletin-composer, .bulletin-edit):focus-within {
+  border-color: var(--oxblood);
+  box-shadow:
+    0 -2px 0 0 var(--oxblood),
+    0 2px 0 0 var(--oxblood),
+    -2px 0 0 0 var(--oxblood),
+    2px 0 0 0 var(--oxblood),
+    inset 2px 2px 0 rgb(var(--shadow-rgb) / 18%);
+}
+
+/* Hard shadows where Aqua writes blurred ones inline. */
+:root[data-theme="snowbound"]
+  :is(
+    .project-header,
+    .project-tabs,
+    .node-window-dock,
+    .detail-drawer > header,
+    .chat-dock > header,
+    .paper-toolbar
+  ) {
+  box-shadow: 0 2px 0 var(--px-frame);
+}
+
+:root[data-theme="snowbound"] .project-tabs > button .inbox-count {
+  background: var(--walnut);
+  box-shadow: var(--px-notch);
+  color: var(--px-select);
+}
+
+:root[data-theme="snowbound"]
+  :is(
+    .detail-drawer,
+    .chat-dock,
+    .project-cover-menu,
+    .landing-identity-panel,
+    .agent-row-menu-list
+  ) {
+  box-shadow: var(--px-notch), var(--shadow);
+}
+
+:root[data-theme="snowbound"] .dag-node::before {
+  background: var(--node-accent);
+}
+
+:root[data-theme="snowbound"] .dag-node.is-dragging {
+  box-shadow:
+    var(--px-notch),
+    8px 8px 0 2px var(--px-drop);
+}
+
+:root[data-theme="snowbound"] .conversation-list {
+  box-shadow: inset -2px 0 0 var(--px-frame);
+}
+
+/* The space page scene. Both layers sit at z-index -1 without a new stacking
+   context: behind the page, above the body's paper, and never above the
+   space page's dialogs. */
+:root[data-theme="snowbound"] .landing-shell {
+  background: transparent;
+  position: relative;
+}
+
+:root[data-theme="snowbound"] .landing-shell:not(.agent-mode) {
+  padding-bottom: 176px;
+}
+
+/* The woods band: the 320x56 art at 3x, with the cabin centred at every width. */
+:root[data-theme="snowbound"] .landing-shell::after {
+  background: url("./snowbound-woods-light.svg") calc(50% - 141px) 100% / 960px 168px repeat-x;
+  bottom: 0;
+  content: "";
+  height: 168px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  z-index: -1;
+}
+
+:root[data-theme="snowbound"][data-color-mode="dark"] .landing-shell::after {
+  background-image: url("./snowbound-woods-dark.svg");
+}
+
+/* Behind Pip's chat the band stays on the viewport floor. The chat window
+   keeps the paper the shell no longer paints, so it overlays the band even
+   before a thread opens. */
+:root[data-theme="snowbound"] .landing-shell.agent-mode::after {
+  position: fixed;
+}
+
+:root[data-theme="snowbound"] .space-agent {
+  background: var(--paper);
+}
+
+/* Snowfall: one 96px tile of flakes drifting on its own layer. It moves by
+   transform so the page is never repainted, and loops on a whole tile. */
+:root[data-theme="snowbound"] .landing-shell::before {
+  animation: snowbound-snowfall 72s linear infinite;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' shape-rendering='crispEdges'%3E%3Crect x='6' y='8' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='30' y='4' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='20' y='26' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='40' y='34' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='10' y='40' width='2' height='2' fill='%23ffffff'/%3E%3C/svg%3E")
+    0 0 / 96px 96px;
+  content: "";
+  inset: -384px 0 0 -96px;
+  opacity: 0.8;
+  pointer-events: none;
+  position: fixed;
+  will-change: transform;
+  z-index: -1;
+}
+
+:root[data-theme="snowbound"][data-color-mode="dark"] .landing-shell::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' shape-rendering='crispEdges'%3E%3Crect x='6' y='8' width='2' height='2' fill='%2399aee8'/%3E%3Crect x='30' y='4' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='20' y='26' width='2' height='2' fill='%2399aee8'/%3E%3Crect x='40' y='34' width='2' height='2' fill='%23ffffff'/%3E%3Crect x='10' y='40' width='2' height='2' fill='%2399aee8'/%3E%3C/svg%3E");
+}
+
+@keyframes snowbound-snowfall {
+  to {
+    transform: translate(96px, 384px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="snowbound"] .landing-shell::before {
+    animation: none;
+  }
+}

@@ -1102,11 +1102,11 @@
 .terminal-emulator .xterm .xterm-viewport {
   background-color: var(--sheet);
 }
-:root[data-theme="aqua"] .terminal-session-row {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .terminal-session-row {
   background: var(--aqua-surface);
   box-shadow: var(--aqua-raised);
 }
-:root[data-theme="aqua"] .terminal-session-row.selected {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .terminal-session-row.selected {
   background: var(--aqua-selected);
   box-shadow: var(--aqua-inset);
 }

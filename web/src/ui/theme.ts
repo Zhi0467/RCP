@@ -1,7 +1,7 @@
 export const APPEARANCE_STORAGE_KEY = "rcp:appearance";
 export const LEGACY_THEME_STORAGE_KEY = "rcp:theme";
 
-export type ThemeChoice = "classic" | "aqua";
+export type ThemeChoice = "classic" | "aqua" | "snowbound";
 export type ColorModeChoice = "system" | "light" | "dark";
 export type ResolvedColorMode = "light" | "dark";
 export type ResolvedTheme = `${ThemeChoice}-${ResolvedColorMode}`;
@@ -10,11 +10,11 @@ export interface AppearanceChoice {
   mode: ColorModeChoice;
 }
 
-export const THEME_CHOICES: ThemeChoice[] = ["classic", "aqua"];
+export const THEME_CHOICES: ThemeChoice[] = ["classic", "aqua", "snowbound"];
 export const COLOR_MODE_CHOICES: ColorModeChoice[] = ["system", "light", "dark"];
 
 export function normalizeThemeChoice(value: unknown): ThemeChoice {
-  return value === "classic" ? "classic" : "aqua";
+  return value === "classic" || value === "snowbound" ? value : "aqua";
 }
 
 export function normalizeColorModeChoice(value: unknown): ColorModeChoice {
@@ -52,7 +52,7 @@ export function resolveTheme(theme: ThemeChoice, mode: ResolvedColorMode): Resol
 }
 
 export function themeChoiceLabel(choice: ThemeChoice): string {
-  return choice === "aqua" ? "Aqua" : "Classic";
+  return choice === "aqua" ? "Aqua" : choice === "snowbound" ? "Snowbound" : "Classic";
 }
 
 export function colorModeChoiceLabel(choice: ColorModeChoice): string {
