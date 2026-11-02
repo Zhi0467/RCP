@@ -47,7 +47,6 @@ def test_experiment_retry_checks_remote_pass_before_admission(
     tmp_path, monkeypatch, stopped, switch
 ):
     store = AppStore(tmp_path / "state.sqlite3")
-    # A usable login for the switch target, so only the remote pass can refuse.
     store_test_claude_token(store, "remote")
     episode_id, root = _admit_root(store)
     store.checkpoint_agent_task(root.operation_id, stage_host="remote", stage_root="/stage")

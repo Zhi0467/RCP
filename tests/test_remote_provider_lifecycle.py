@@ -22,14 +22,15 @@ from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 def test_remote_wrapper_waits_for_forked_provider_and_preserves_exit(
     tmp_path: Path, exit_code: int
 ) -> None:
+    """Interactive job control makes setsid a process-group leader, forcing it to fork,
+    without reading login startup files.
+    """
     pid_file = tmp_path / "agent.pid"
     command = AgentLauncher._remote_login_command(
         [sys.executable, "-c", f"print('provider finished'); raise SystemExit({exit_code})"],
         pid_file=str(pid_file),
         cwd=tmp_path,
     )
-    # Interactive job control makes setsid a process-group leader, forcing it
-    # to fork. Exercise that same condition without reading login startup files.
     payload = shlex.split(command)[2]
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-m", "-c", payload],
@@ -40,7 +41,6 @@ def test_remote_wrapper_waits_for_forked_provider_and_preserves_exit(
     )
 
     assert result.returncode == exit_code
-    # The wrapper announces the provider's start before the provider speaks.
     assert result.stdout.split() == [REMOTE_PROVIDER_START_LINE, "provider", "finished"]
     assert int(pid_file.read_text()) > 0
 
@@ -163,6 +163,9 @@ async def test_closing_at_runtime_checkpoint_awaits_remote_and_local_cleanup(
 async def test_preprompt_fallback_requires_remote_exit_confirmation(
     tmp_path, monkeypatch, transported_launcher, confirmed
 ):
+    """The cleanup confirmation races a live SSH process, so absence there is not a pass
+    that never started.
+    """
     from types import SimpleNamespace
 
     from rcp.agents import AgentProcessControl
@@ -211,8 +214,6 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
             remote_pid_file=str(tmp_path / "agent.pid"),
         )
     ]
-    # Only a confirmation taken after the launch exited may read a missing
-    # pidfile as a pass that never started.
     assert confirm_flags[0] is True
     starts = [event.text for event in events if event.event == "remote_process_start"]
     stops = [event.text for event in events if event.event == "remote_process_stop"]
@@ -227,8 +228,6 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
         assert stops == []
         assert actions.count("launch") == 1
         assert not any(event.event == "runtime_fallback" for event in events)
-        # The cleanup confirmation races a live SSH process, so it stays
-        # conservative: absence there is not a pass that never started.
         assert confirm_flags[-1] is False
         assert events[-1].event == "error"
         assert "fallback is blocked" in events[-1].text
@@ -373,8 +372,6 @@ async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
     from rcp.agents import AgentProcessControl
     from rcp.agents import launcher as launcher_module
 
-    # Stand in for the local SSH client: deliver a provider event, then remain
-    # connected until Pause signals it. The remote stop is observed separately.
     monkeypatch.setattr(
         launcher_module, "_supervised_remote_turn_command", lambda command, **kwargs: command
     )
@@ -430,7 +427,10 @@ async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
 async def test_provider_turn_rides_the_master_of_its_own_run(
     tmp_path, monkeypatch, transported_launcher
 ):
-    """The longest call of a run must not inherit a stranger's connection."""
+    """The longest call of a run must not inherit a stranger's connection.
+
+    Cleanup stays on the shared master because the run's own master may already be gone.
+    """
 
     from rcp.agents import launcher as launcher_module
 
@@ -459,9 +459,6 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
     ):
         pass
 
-    # The turn opens the run's own master. Everything after it is cleanup that
-    # has to reach the host precisely when that master may already be gone, so
-    # it deliberately stays on the shared one.
     assert partitions[0] == "test-host:/tmp/rcp-run.op-one"
     assert set(partitions[1:]) <= {None}
 
@@ -473,6 +470,9 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
 def test_shutdown_and_pause_settle_the_right_pass(
     tmp_path, monkeypatch, transported_launcher, delivered
 ):
+    """Host stop and journal reads are independent inputs, so killing the SSH stand-in
+    cannot imply provider death.
+    """
     import hashlib
     from unittest.mock import Mock
 
@@ -499,8 +499,6 @@ def test_shutdown_and_pause_settle_the_right_pass(
     stage.list_workspace_files.return_value = []
     monkeypatch.setattr(shared, "_stage_or_reuse_task_input", lambda *a: "/stage/supervisor.py")
     monkeypatch.setattr(shared, "require_remote_provider_quiescence", lambda *a: None)
-    # A real local process stands in for SSH; host stop and journal reads are
-    # independent inputs, so killing the client cannot imply provider death.
     ready = tmp_path / "client-ready"
     spawn = asyncio.create_subprocess_exec
 

@@ -73,7 +73,6 @@ def test_question_overlay_never_overrides_episode_ending(tmp_path):
     store, episode, root, _, _ = _setup(tmp_path)
     _question(store, episode, root)
     ended = store.end_episode_without_report(episode.episode_id, ending="exhausted")
-    # Even a stale question snapshot cannot win over the persisted ending.
     store.set_episode_questions_withdrawn("project", episode.episode_id, withdrawn=False)
     assert load_episode_health(store, [ended])[episode.episode_id][3] == "reauthorize"
 
@@ -104,7 +103,6 @@ def test_each_question_pushes_once_with_owner_link_and_no_health_duplicate(tmp_p
         DesktopNotification.model_validate(item).reason == "episode_needs_action"
         for item in delivered
     )
-    # A durable creation event survives receipt expiry and restarting the sender.
     for row in store.notification_outbox():
         store.drop_notification(device["device_id"], row["notification_id"])
     restarted = NotificationSender(store, sender.catalog, admission=RuntimeAdmissionGate())

@@ -172,6 +172,9 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
     upgraded installation its own backups. Whole-database validation does not
     catch this, because it compares text with whitespace collapsed while the
     archive manifest hashes the raw text.
+
+    Reconstructs the era every real installation upgrades from; a rename would rewrite
+    dependent tables' references, so the empty table is replaced outright.
     """
 
     database = tmp_path / "upgraded.sqlite3"
@@ -190,10 +193,6 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
         assert not connection.execute("SELECT 1 FROM graph_runs LIMIT 1").fetchall()
     assert "failure_kind" in created, "this test must start from the shape that has the column"
 
-    # Put the database back into the era every real installation upgrades from:
-    # graph_runs without the column, and the ledger without that migration. A
-    # rename would rewrite every dependent table's references, so the empty
-    # table is replaced outright.
     previous = re.sub(r",\s*\n\s*failure_kind TEXT", "", created)
     assert "failure_kind" not in previous
     with AppStore(database).connection() as connection:
@@ -217,8 +216,9 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
 
 
 def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path: Path) -> None:
-    # This exact intermediate schema no longer results from today's migrations.
-    # Keep the database made by the historical binary, not a copy of its digest.
+    """This intermediate schema no longer results from today's migrations, so the
+    historical binary's database is kept.
+    """
     fixture = Path(
         "tests/fixtures/restore_schema/provider-readiness-upgraded-v21-16248cea.sqlite3.gz"
     )
@@ -243,6 +243,9 @@ def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path:
 def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     tmp_path: Path, upgraded_in_place: bool
 ) -> None:
+    """Undoes v46's rebuild and reconstructs the pre-31 artifact-storage boundary, which
+    predates the live Paper schema.
+    """
     database = tmp_path / "artifacts.sqlite3"
     if upgraded_in_place:
         fixture = Path(
@@ -250,7 +253,6 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
         )
         database.write_bytes(gzip.decompress(fixture.read_bytes()))
     store = AppStore(database)
-    # Undo v46's table rebuild before reconstructing the historical v30 schema.
     historical_database = tmp_path / "historical-schema.sqlite3"
     historical_database.write_bytes(
         gzip.decompress(
@@ -269,10 +271,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
         connection.execute("DROP TABLE project_provisioning_requests")
         for (statement,) in statements:
             connection.execute(statement)
-    # Migration 31 only adds this table and its index. Reconstruct its preceding
-    # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
-        # Restore the pre-44 indexes as well as the later additive schema below.
         connection.execute("DROP INDEX episodes_one_live_experiment_target")
         connection.execute(
             "CREATE UNIQUE INDEX episodes_one_live_experiment_control "
@@ -312,7 +311,6 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
             connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE artifact_imports")
         connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
-        # The reconstructed pre-31 boundary predates the additive live Paper schema.
         from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES
 
         for table in (*PAPER_PROJECT_TABLES, *PAPER_SHARED_TABLES):

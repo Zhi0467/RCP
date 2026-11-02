@@ -168,7 +168,7 @@ def test_question_pending_deadline_and_counter_share_callback_transaction(tmp_pa
 
 def test_question_activity_publication_failure_preserves_visible_liveness(caplog):
     def changed(question_id: str, waiting: bool) -> None:
-        # Publication can read liveness: SQLite work does not hold its lock.
+        """Publication can read liveness because SQLite work does not hold its lock."""
         assert activity.is_waiting(question_id) == waiting
         raise sqlite3.OperationalError("database is locked")
 
