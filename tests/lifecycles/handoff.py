@@ -15,26 +15,38 @@ Views name each turn by lineage: ``S0`` for the source Space turn, ``T0`` for
 the delivered project turn and ``W0`` for the Space wake, with ``T1`` and ``W1``
 for their continuations.
 
+The delivered turn carries one attachment that expires 30 minutes after the
+start instant. The handoff builder has no attachment path, so ``start`` writes
+the descriptor into the delivered turn's request, standing in for a member's
+upload. ``expire`` moves the clock past it, after which the turn can no longer
+be retried and a promised transport reattempt stands down. Expiry changes only
+what a final turn offers, so ``expire`` is offered only once the newest
+delivered turn is final; expiring earlier reaches the same states. ``seams`` points the
+``datetime`` that ``rcp.storage.rows`` reads at the explorer clock.
+
 The goal counts restart as allowed: recovering a crashed worker is restart's
 job, and a handoff whose worker died must settle once the backend comes back.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS
-from tests.lifecycles.engine import RESTART, Action, Clock, Goal, Memory, Safety, Step
+from tests.lifecycles.engine import RESTART, START, Action, Clock, Goal, Memory, Safety, Step
 
 _TERMINAL = frozenset({"succeeded", "failed", "interrupted", "paused"})
 _SETTLE_OUTCOMES = ("succeeded", "transport_lost", "other")
 _SOURCE = "source"
+_EXPIRY = START + timedelta(minutes=30)
 
 
 @dataclass
@@ -123,10 +135,21 @@ class Handoff:
     def __init__(self) -> None:
         self.names: Names | None = None
         self.manifest_path: Path | None = None
+        self.clock = Clock()
 
     @contextmanager
     def seams(self) -> Iterator[None]:
-        with mock.patch("rcp.background.seconds_until_automatic_launch", lambda: 0):
+        machine = self
+
+        class ExplorerDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return machine.clock.now.astimezone(tz)
+
+        with (
+            mock.patch("rcp.background.seconds_until_automatic_launch", lambda: 0),
+            mock.patch("rcp.storage.rows.datetime", ExplorerDatetime),
+        ):
             yield
 
     def databases(self, root: Path) -> list[Path]:
@@ -179,6 +202,20 @@ class Handoff:
         self.manifest_path = manifest.path
         world = self.boot(root, clock)
         self._dispatch(world)
+        delivered = world.handoff().target_operation_id
+        attachment = {
+            "attachment_id": "upload",
+            "name": "notes.txt",
+            "media_type": "text/plain",
+            "size": 5,
+            "expires_at": _EXPIRY.isoformat(),
+        }
+        with world.store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET request_json = json_set(request_json, '$.attachments', "
+                "json(?)) WHERE operation_id = ?",
+                (json.dumps([attachment]), delivered),
+            )
         return world
 
     def boot(self, root: Path, clock: Clock) -> World:
@@ -187,6 +224,7 @@ class Handoff:
         assert self.names is not None and self.manifest_path is not None
         app = create_named_app(str(self.manifest_path), data_dir=root / "data")
         world = World(app, clock, self.names)
+        self.clock = clock
         background = world.background
         store = background.store
         store.now = clock.iso
@@ -236,7 +274,7 @@ class Handoff:
             background._retry_decided.update(operation[name] for name in decided)
 
     def actions(self, view) -> list[Action]:
-        _handoff, turns, _busy, timers = view
+        _handoff, turns, _busy, timers, expired = view
         found: list[Action] = []
         for name, status, _kind, _retry, _resume, _receipts, (worker, _decided) in turns:
             if worker and status in {"queued", "running"}:
@@ -249,6 +287,8 @@ class Handoff:
         newest = _newest_delivered(view)
         if newest is not None and newest[3]:
             found.append(Action("retry", (newest[0],), environment=False))
+        if not expired and newest is not None and newest[1] in _TERMINAL:
+            found.append(Action("expire"))
         found.append(Action(RESTART))
         return found
 
@@ -266,6 +306,8 @@ class Handoff:
             world.timers.remove(timer)
             world.clock.advance(timer[2])
             world.background._run_transport_retry(timer[0], attempt=timer[1])
+        elif action.name == "expire":
+            world.clock.advance((_EXPIRY - world.clock.now).total_seconds() + 1)
         elif action.name == "retry":
             world.background.retry(operation[action.args[0]], authorized_by=world.names.member)
         else:
@@ -331,6 +373,7 @@ class Handoff:
             tuple(turns),
             world.space_busy(),
             timers,
+            world.clock.now >= _EXPIRY,
         )
 
     @property
@@ -400,14 +443,18 @@ def owed_retries_are_found(world: World) -> list[str]:
 
 
 def pending_retry_blocks_settlement(world: World) -> list[str]:
-    """A delivered turn with a retry timer pending neither reads settled nor settles the handoff."""
+    """A delivered turn whose armed retry will still run neither reads settled nor settles the handoff.
+
+    A timer whose turn can no longer be retried (its attachments expired) stands
+    down when it fires, so it does not hold the handoff open.
+    """
 
     from rcp.runs.agent_thread_commands import _handoff_turn_settled, _newest_continuation
 
     newest = world.newest_delivered()
     assert newest is not None
     name = world.lineage()[newest.operation_id]
-    if not any(op == newest.operation_id for op, _, _ in world.timers):
+    if not _retry_coming(world, newest):
         return []
     found = []
     with world.store.connection() as connection:
@@ -419,6 +466,13 @@ def pending_retry_blocks_settlement(world: World) -> list[str]:
     return found
 
 
+def _retry_coming(world: World, task) -> bool:
+    """An armed timer for ``task`` whose reattempt is still owed."""
+
+    timed = any(op == task.operation_id for op, _, _ in world.timers)
+    return timed and world.background.transport_retry_owed(task)
+
+
 def final_turn_settles_handoff(world: World) -> list[str]:
     """Once the delivered turn is final with no retry coming, the handoff is settled."""
 
@@ -427,7 +481,7 @@ def final_turn_settles_handoff(world: World) -> list[str]:
     if (
         world.handoff().settled_at is None
         and newest.status in _TERMINAL
-        and not any(op == newest.operation_id for op, _, _ in world.timers)
+        and not _retry_coming(world, newest)
         and not world.retry_pending(newest.operation_id)
     ):
         return [f"handoff unsettled with {world.lineage()[newest.operation_id]} final"]

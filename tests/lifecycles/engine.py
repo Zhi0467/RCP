@@ -272,6 +272,26 @@ def _violations(machine: Machine, world: Any, before: Any | None) -> list[str]:
     return found
 
 
+def witness(machine: Machine, root: Path, saves: Path, trace: Trace) -> set[str]:
+    """The rules that report along ``trace``, each step restored as in ``explore``."""
+
+    explorer = Explorer(machine, root, saves)
+    with machine.seams():
+        clock = Clock()
+        world = machine.start(root, clock)
+        before = machine.view(world)
+        reported = {message.split(":")[0] for message in _violations(machine, world, None)}
+        saved = explorer.save(world, clock, "w0")
+        machine.close(world)
+        for index, action in enumerate(trace, 1):
+            world, clock = explorer.step(saved, action)
+            reported |= {message.split(":")[0] for message in _violations(machine, world, before)}
+            before = machine.view(world)
+            saved = explorer.save(world, clock, f"w{index}")
+            machine.close(world)
+    return reported
+
+
 def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
     """Search every action order of at most ``machine.bound`` steps."""
 
