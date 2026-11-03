@@ -67,7 +67,11 @@ approval cards belong to the member's own project thread, reached through
 `handoff`. The verbs each client receives enforce this; the
 [Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
 owns them. **Why:** questions, watchers, episodes and notifications are keyed
-by project, so they always carry a real project id.
+by project, so they always carry a real project id. Every open
+[approval card](authority-and-proposals.md#private-thread-approval-cards) from
+the member's open project threads also shows in a dock above the Space thread's
+composer, and a tap there acts in its project. The Space prompt points the
+member to that dock.
 
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
@@ -524,9 +528,11 @@ owns idempotency, allowed verbs and acknowledgement. Answers never change author
 Private-thread questions belong only to the thread's member. Their Needs you
 push targets that member; list, answer and dismiss refuse other members. Creation
 and settlement emit no project-wide digest event for a private-thread question. An
-`ask` action creates a single-use approval card in its project thread. The
-[authority spec](authority-and-proposals.md) owns the pinned action and tap
-admission. Ordinary answer and dismiss refuse card questions; card settlement
+`ask` action creates a single-use approval card in its project thread. A
+Proposal the thread's own turn raised needs no ask: its card is derived. The
+[authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
+both kinds, the pinned action and tap admission. A derived Proposal card has no
+answer to deliver; the agent reads the Proposal's status from graph state. Ordinary answer and dismiss refuse card questions; card settlement
 uses the existing answer-delivery path below.
 
 Each bounded ask call retains a random `call_id` across transport rounds.

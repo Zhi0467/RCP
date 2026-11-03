@@ -288,7 +288,28 @@ handoffs. Each records its turn's operation and authorizer as any Work turn
 does. Projections derive
 [`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
 origin operation's thread; nothing new enters a Patch, so replay is unchanged.
-Protected acts wait for the member through a card.
+Protected acts wait for the member through a card. There are two kinds: a
+derived Proposal card and an asked card.
+
+**Proposal cards are derived, never stored.** Each pending Proposal on live main
+whose `created_by_operation_id` names a turn of the member's open project thread
+gets one card (`raising_turn` and `proposal_cards` in
+[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py)). `bound_thread`
+alone decides which thread raised it; receipts never do. The draw writes and
+caches nothing. A card carries Approve, Decline and Later. Later settles nothing
+and never blocks the agent. Approve and Decline call `decide_proposal`, which
+admits like an Inbox decision: a patch-capable member, project membership and
+write admission. A thread check would add no authority, so the route is not tied
+to a thread. It reads live main and decides only a pending, non-stale Proposal,
+fenced at the revision it read. No presented hash is needed: a Proposal's content
+never changes under its id, and staleness is rechecked at that revision. The
+recorded reason is "Approved from an approval card" or "Declined from an approval
+card". A Proposal that another tap or the Inbox decided first, including one that
+moved the graph mid-decide, answers `proposal_not_pending`; any other moved graph
+answers `graph_changed`. A tap starts no agent turn. Graph watchers armed on the
+Proposal fire as after any human Sync.
+Proposals raised by a Space turn, a node chat or an Experiment get no card and stay in the
+Inbox, because no member project thread raised them.
 
 A private project thread may attach a strict action to `ask`. Work resolves
 this grant once with its verbs (`approval_card_member`); the prompt shows the
@@ -311,8 +332,13 @@ not exist or no longer applies (for example `branch_not_found`,
 `truth_scope_unchanged`). Reusing an ask key
 requires the same action and question; it does not refresh the presented pins.
 The agent's usage renders each action kind and its fields from the action models,
-and the meaning of each outcome. The question snapshot shows each card's action
-and its result.
+and the meaning of each outcome. It also says the member already gets a card for
+every Proposal this thread raised, so the agent asks for a Proposal card only
+when the member names one this thread did not raise. Ask refuses a Proposal card
+for one this thread raised with `proposal_card_shown`. Another thread may still
+ask for the same Proposal, so the Space thread's dock can show both cards; deciding either settles
+the other on its next refresh or tap. The question snapshot shows each card's
+action and its result.
 
 Only the thread's member can resolve a card. The tap checks membership, claims
 once, compares the presented hash and live pins, and invokes the existing human
@@ -335,6 +361,19 @@ on an expired card in a live thread returns `expired`; a tap in a closed or
 archived thread returns `409` with that thread refusal. Ordinary answer and
 dismiss endpoints reject card questions with `409 approval_card`; any later tap
 returns `409 card_taken`.
+
+Decline on an asked card that approves a Proposal also rejects it. The card
+settles `declined` first, so the member's answer is recorded before anything
+else; then `decide_proposal` rejects the Proposal. The claim is never held across
+that rejection, because it does not record which button was tapped. The
+rejection reason is always the card's own Decline reason, never the agent's
+approval reason, which would enter append-only history under the member's name.
+The tap reports `rejected: true`, or `rejected: false` with the reason the
+Proposal stays pending; a Proposal already decided elsewhere reports neither.
+The card's stored result keeps that outcome, so a reload or another device still
+shows that the Proposal stayed pending.
+The agent reads the outcome from graph state. Decline on any other card executes
+nothing, including a card that asks to reject a Proposal.
 
 Card creation stores a random UUID4 request id; every result retains it.
 Episode start, branch merge and episode merge pass it to their native request-id

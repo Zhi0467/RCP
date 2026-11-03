@@ -40,6 +40,19 @@ version reloads the thread list and the open thread's transcript, questions,
 and schedules. While the open thread's turn
 runs, only that task is read, every 2 s while the page shows, one read at a time.
 Earlier turns load their task detail once, when their row nears the view.
+
+A request with `agent_cards: true` also gets `agent_cards: {version}`, a digest
+of the epoch, the member, and each `(project_id, graph:main generation)` pair
+for the member's open project threads (not closed, not archived, project not
+retired). The generation is the workspace's in-memory token, so the read opens
+no project. Card fetches key on this version and on the `agent_threads` version,
+so a finished turn brings its new cards and a main commit clears decided ones.
+Graph generations stay out of the `agent_threads` version because that version
+reloads the open thread's transcript, questions and task. A remote project's
+generation moves only when this process publishes or captures it, so a card
+decided on another device can look open until then; its tap answers
+`proposal_not_pending`. A project with no display workspace yet has the token
+`unavailable`, so its cards refresh only on thread events until a tab opens it.
 Task, episode timeline, run-artifact, Bulletin and digest profiles also watch
 project `chats`; the client combines that token with the resource's own version.
 Graph snapshots, history, refs and episode inventories do not watch `chats`, so
@@ -509,12 +522,20 @@ The strict request rejects additional fields.
 card only, and never wakes an owner.
 
 Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
-expires_at, state, result}`, where state is pending, running or expired. Ordinary answer and dismiss
+expires_at, state, result}`, where state is pending, running or expired, and
+`result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss
 return `409 approval_card` for these questions. The owner resolves through
 `POST /api/approval-cards/{question_id}` with
 `{decision: "approve" | "decline", pinned_sha256}`. The response is
 `{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`;
-a second tap returns `409 card_taken`. The
+a second tap returns `409 card_taken`. A declined card that approves a
+Proposal adds `rejected` (and `reason` when false) unless the Proposal was
+already decided. A derived Proposal card decides through
+`POST /api/approval-cards/proposals/{project_id}/{proposal_id:path}` with
+`{decision: "approved" | "rejected"}`; ids contain slashes, so the web encodes
+them. It returns `{proposal_id, status}`, `409 proposal_not_pending` when the
+Proposal is decided, withdrawn or stale, `409 graph_changed`, admission and fence
+refusals, 403, 404, 422 or 503. The
 [authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
 pinning, admission and delivery.
 
@@ -2286,11 +2307,30 @@ from the record of each verb its turns can be granted: the Space handler's verb
 table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
 thread. A test holds every grantable verb to a line.
 
+`GET /api/agent-threads/cards`, with optional `thread_id`, returns
+`{proposal_cards, asked_cards}` for the member's open project threads in their
+projects: not closed, not archived, and never ensured by this read. A named
+thread must be the member's own; a Space thread yields an empty response.
+`proposal_cards` are `ProposalCardView`s (project, thread, the raising turn's
+first attempt and its creation time, the Proposal, `stale`, and attention's
+change lines), newest turn first. `asked_cards` are the threads' pending card
+questions the member can answer, including claimed ones, with `project_name`,
+newest first. State comes from each project's local display snapshot, so no
+remote read happens. A member-wide read skips and logs a project whose state
+cannot be read; for a named thread that failure is 503.
+
 Thread title, read and browser routes under `/api/agent-threads/{id}`
 require ownership; another member gets 404. The transcript route there serves
 only the Space thread. A project thread otherwise uses the ordinary project chat,
 task and question routes. Its Send must be
 `project_chat` Work on main; anything else returns 422.
+
+Chat transcripts and the Space transcript stamp each message's `shown_at`
+(`stamp_shown_at` in `api/chats.py`). A member message shows its turn's first
+attempt's `created_at`, so a Retry keeps the original send time. A reply shows
+its task's `finished_at`. A steer, or a message with no task, has none, and the
+web uses the line's own timestamp. Tasks load in one batch, plus one batch per
+Retry-parent hop.
 
 Space threads upload and remove attachments at
 `POST /api/agent-threads/{thread_id}/attachments` and
