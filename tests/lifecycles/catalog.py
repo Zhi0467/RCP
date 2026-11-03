@@ -11,9 +11,8 @@ every function the scan finds writing one of them must be in ``writers``.
 why it holds no lifecycle. ``UNKNOWN_TABLE`` names every writer of an
 interpolated table that no entry declares, with the tables it reaches.
 
-Two entries go beyond the design's twenty: evidence flags and notification
-delivery hold a status column with transitions, so neither fits
-``NOT_LIFECYCLE``.
+Evidence flags and notification delivery are entries rather than
+``NOT_LIFECYCLE``: each holds a status column with transitions.
 """
 
 from __future__ import annotations

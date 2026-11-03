@@ -119,6 +119,9 @@ npm --prefix web test
 uv run pre-commit run --all-files
 ```
 
+Run one [lifecycle explorer](../tests/lifecycles/__init__.py) with
+`uv run pytest -n0 tests/lifecycles/test_<machine>.py`.
+
 When you delete comments, commit the shrunk comment baselines. Rebuild them
 after a merge brings in new files:
 
