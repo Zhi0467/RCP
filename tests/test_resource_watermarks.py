@@ -425,6 +425,10 @@ def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkey
         )
         if row.kind == "project"
     )
+    body["agent_cards"] = False
+    heartbeat()
+    assert endpoint.catalog.calls == []
+    body["agent_cards"] = True
     first = heartbeat()
     assert first["agent_cards"] != threadless["agent_cards"]
     assert heartbeat() == first
@@ -448,6 +452,28 @@ def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkey
     store.ensure_agent_threads(endpoint.other_member, [idle], default_names=("Pip",))
     endpoint.catalog.projects[idle] = "idle-moved"
     endpoint.catalog.projects[endpoint.forbidden] = "forbidden-moved"
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=True)
+    archived = heartbeat()
+    assert archived["agent_cards"] != committed["agent_cards"]
+    endpoint.catalog.projects[endpoint.project] = "published-3"
+    assert heartbeat()["agent_cards"] == archived["agent_cards"]
+    store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=False)
+    endpoint.catalog.projects[endpoint.project] = "published-2"
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE projects SET retired_at=? WHERE project_id=?",
+            (endpoint.now.isoformat(), endpoint.project),
+        )
+    retired = heartbeat()
+    assert retired["agent_cards"] != committed["agent_cards"]
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE projects SET retired_at=NULL WHERE project_id=?", (endpoint.project,)
+        )
     assert heartbeat()["agent_cards"] == committed["agent_cards"]
 
     store.close_agent_thread(opened.thread_id, reason="test")

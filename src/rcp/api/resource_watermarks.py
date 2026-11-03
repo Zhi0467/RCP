@@ -239,8 +239,13 @@ def resource_watermarks(
                     "SELECT thread.project_id FROM agent_threads AS thread "
                     "JOIN project_members AS member ON member.project_id = thread.project_id "
                     "AND member.user_id = thread.user_id "
+                    "JOIN projects AS project ON project.project_id = thread.project_id "
+                    "AND project.retired_at IS NULL "
+                    "LEFT JOIN chat_display AS display ON display.chat_id = thread.thread_id "
+                    "AND display.project_id = thread.project_id "
                     "WHERE thread.user_id = ? AND thread.kind = 'project' "
-                    "AND thread.closed_at IS NULL ORDER BY thread.project_id",
+                    "AND thread.closed_at IS NULL AND display.archived_at IS NULL "
+                    "ORDER BY thread.project_id",
                     (member.user_id,),
                 )
             ]
