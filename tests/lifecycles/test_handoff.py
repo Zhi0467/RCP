@@ -10,7 +10,7 @@ import pytest
 from tests.lifecycles.engine import RESTART, Action, explore, witness
 from tests.lifecycles.handoff import Handoff
 
-STATES = 144
+STATES = 148
 HANG_SECONDS = 60
 LOST = (Action("settle", ("T0", "transport_lost")), Action("finish", ("T0",)))
 

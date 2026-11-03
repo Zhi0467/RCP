@@ -3034,6 +3034,36 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert retried == []
 
 
+def test_a_turn_retried_before_its_worker_settled_promises_no_reattempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A lost link commits before its worker decides the reattempt, so a human
+    Retry can land in between. The agent task explorer's trace: claim, lose the
+    link, Retry, then the worker's settlement. A promise on the taken-over turn
+    armed a timer that could only stand down, and its receipt made the human's
+    child read as an automatic reattempt, spending one of its own ladder's waits.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    shared = _work_request("launch-retried-first")
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=shared
+    )
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(operation_id),
+    )
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == []
+    assert not store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry")
+
+
 @pytest.mark.parametrize(
     ("exit_payload", "expected"),
     [

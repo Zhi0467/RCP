@@ -2951,12 +2951,21 @@ class BackgroundAgentTasks:
         blame is narrowed to this run, but a network change still ends it for a
         reason it had no part in. A human pressing Retry is the same call, so
         this reuses it rather than growing a second recovery path.
+
+        The failure commits before the worker settles, so a human Retry can
+        continue the turn first. That turn owes nothing: a promise on it would
+        only stand down, and its receipt would count against the human's child.
         """
 
         if self.store.consolidation_run_for_operation(record.operation_id) is not None:
             return
         settled = self.store.agent_task(record.operation_id)
-        if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
+        if (
+            settled is None
+            or settled.failure_kind != "transport_lost"
+            or not settled.can_retry
+            or self.store.agent_task_has_continuation(settled.operation_id)
+        ):
             return
         # A turn only its episode may recover would fail every reattempt.
         if self.store.episode_child_recovery_refusal(settled) is not None:
