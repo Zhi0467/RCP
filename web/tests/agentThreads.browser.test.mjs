@@ -109,10 +109,10 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/agent-space-1440.png` });
 
-    // Upcoming lists both schedules; Cancel deletes one.
-    const upcoming = thread.getByRole("button", { name: "2 upcoming" });
+    // Wakes lists both schedules; Cancel deletes one.
+    const upcoming = thread.getByRole("button", { name: "2 wakes" });
     await upcoming.click();
-    const popover = page.getByRole("dialog", { name: "Upcoming" });
+    const popover = page.getByRole("dialog", { name: "Wakes" });
     assert.equal(await popover.locator(".upcoming-row").count(), 2);
     if (shots) await page.screenshot({ path: `${shots}/agent-upcoming-1440.png` });
     await popover
@@ -1031,14 +1031,14 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     assert.deepEqual(errors, []);
     await page.close();
 
-    // Phone: Upcoming and See details reach the touch target.
+    // Phone: Wakes and See details reach the touch target.
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
     await mockApi(phone, []);
     await phone.goto(`${base}#/agent/moss`);
     const moss = phone.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
     for (const control of [
-      moss.getByRole("button", { name: /upcoming$/ }),
+      moss.getByRole("button", { name: /wakes$/ }),
       moss.getByRole("button", { name: "See details" }),
     ])
       assert.ok((await control.boundingBox()).height >= 44);
@@ -1437,7 +1437,7 @@ test("handoff results read as one row and browser loss shows once on the menu", 
   });
 });
 
-test("Upcoming shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
+test("Wakes shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
   await withFixture(async (browser, base) => {
     const rows = [
       {
@@ -1529,8 +1529,8 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
       const thread = page.getByRole("region", { name: "Pip" });
       // The count is what will run; paused and disabled rows wait for the member.
       const firing = rows.filter((item) => item.state === "active").length;
-      await thread.getByRole("button", { name: `${firing} upcoming` }).click();
-      const popover = page.getByRole("dialog", { name: "Upcoming" });
+      await thread.getByRole("button", { name: `${firing} wakes` }).click();
+      const popover = page.getByRole("dialog", { name: "Wakes" });
       const row = (id) =>
         popover.locator(".upcoming-row").nth(rows.findIndex((item) => item.schedule_id === id));
       // Every row can be cancelled; only a disabled schedule that can still run offers Enable.

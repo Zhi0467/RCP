@@ -452,11 +452,12 @@ the rail is the list, and a chosen thread fills the screen.
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
-board conversations stay in that list. The thread header holds an Upcoming
+board conversations stay in that list. The thread header holds a Wakes
 button, present only when schedules or the thread's live watchers exist, that
 counts the schedules that will run without the member plus those watchers and
-opens a popover of them. A graph watcher names its node by title and can be
-stopped there. The popover is sized to the viewport and
+opens a popover of them. Every row has the same shape: what wakes the agent,
+then when. A watcher names its node by title or its job by log file, says
+which states or event wake the agent, and can be stopped there. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
@@ -480,7 +481,7 @@ thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
 that declares its models lists them before any probe.
 Switching threads shows each thread's last loaded view while it reloads. Each
-Upcoming row shows its note (in full on hover), its time and zone, the next run
+schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
 cannot start shows in the row. Every row has Cancel; an active row has Pause and
 a member-paused row Resume, unless it is a one-shot whose time passed. A row the system disabled says why on hover and has

@@ -93,6 +93,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherWake,
 } from "./agentThreadModel";
 import {
   cancelThreadSchedule,
@@ -108,10 +109,7 @@ import {
   setThreadSchedulePaused,
   loadThreadWatchers,
   stopThreadWatcher,
-  threadProjectPath,
 } from "./agentThreadsApi";
-import { ExternalJobRow } from "../experiments/ExternalJobRow";
-import { graphConditionLabel, isExternalWatcherRecord } from "../experiments/runProjection";
 
 /** A live turn's task is read this often while the page shows; the rest follows the watermark. */
 const LIVE_POLL_MS = 2_000;
@@ -326,11 +324,7 @@ const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, stri
   unschedulable: "Paused because its time can no longer be worked out",
 };
 
-function WatcherLabel({ text }: { text: string }) {
-  return <strong title={text}>{text}</strong>;
-}
-
-function SchedulesPopover({
+function WakesPopover({
   thread,
   schedules,
   watchers,
@@ -367,8 +361,8 @@ function SchedulesPopover({
         ref={trigger}
         className="upcoming-button"
         type="button"
-        title="Upcoming"
-        aria-label={firing ? `${firing} upcoming` : "Upcoming"}
+        title="Wakes"
+        aria-label={firing ? `${firing} wakes` : "Wakes"}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
@@ -376,21 +370,16 @@ function SchedulesPopover({
         {firing > 0 && firing}
       </button>
       {open && (
-        <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
-          <h3>Upcoming</h3>
-          {watchers.map((watcher) =>
-            isExternalWatcherRecord(watcher) ? (
+        <div className="upcoming-popover" role="dialog" aria-label="Wakes" ref={panel}>
+          <h3>Wakes</h3>
+          {watchers.map((watcher) => {
+            const { what, when } = watcherWake(watcher, nodes);
+            return (
               <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
-                <ExternalJobRow apiBase={threadProjectPath(thread)} watcher={watcher} />
-              </div>
-            ) : (
-              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
-                <WatcherLabel
-                  text={graphConditionLabel(
-                    watcher.condition,
-                    nodes?.[watcher.condition.node_id]?.title,
-                  )}
-                />
+                <strong title={what}>{what}</strong>
+                <span className="upcoming-when">
+                  <time>{when}</time>
+                </span>
                 <span className="upcoming-actions">
                   {watcher.can_stop_watching && (
                     <button
@@ -405,8 +394,8 @@ function SchedulesPopover({
                   )}
                 </span>
               </div>
-            ),
-          )}
+            );
+          })}
           {upcoming.map((schedule) => {
             const cancel = () =>
               void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
@@ -504,7 +493,7 @@ function SchedulesPopover({
 
 /**
  * One of the member's agent threads: its transcript with progress, links and
- * approval cards, its Upcoming list, its menu with the agent pick, and one
+ * approval cards, its Wakes list, its menu with the agent pick, and one
  * composer with the mic. Every send is a Work turn as the member.
  */
 /** A transcript as loaded for one thread; another thread's never renders here. */
@@ -1178,7 +1167,7 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
-          <SchedulesPopover
+          <WakesPopover
             thread={thread}
             schedules={schedules}
             watchers={watchers}

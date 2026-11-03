@@ -70,11 +70,21 @@ export function isGraphWatcherRecord(watcher: WatcherRecord): watcher is GraphWa
   return "condition" in watcher;
 }
 
-export function graphConditionLabel(condition: GraphCondition, title?: string | null): string {
-  const node = title || condition.node_id;
+export function graphConditionLabel(condition: GraphCondition): string {
   return "status_in" in condition
-    ? `${node} reaches ${condition.status_in.join(" or ")}`
-    : `Proposal on ${node} is resolved`;
+    ? `${condition.node_id} reaches ${condition.status_in.join(" or ")}`
+    : `Proposal on ${condition.node_id} is resolved`;
+}
+
+const GENERIC_LOG_NAMES = new Set(["log", "stdout", "stderr", "output", "out"]);
+
+/** A bare "log" says nothing; keep its parent folder so rows stay distinguishable. */
+export function jobLabel(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const name = parts.at(-1) ?? "";
+  if (!GENERIC_LOG_NAMES.has(name) || parts.length < 2) return name;
+  const folder = parts.at(-2) ?? "";
+  return `${folder.length > 16 ? `${folder.slice(0, 8)}…` : folder}/${name}`;
 }
 
 export function watcherLastObservedAt(watcher: WatcherRecord): string | null {
