@@ -603,7 +603,13 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
     );
-    await project.getByRole("button", { name: "Comment on this answer" }).click();
+    const projectComment = project.getByRole("button", { name: "Comment on this answer" });
+    assert.equal(
+      await projectComment.evaluate((button) => button.getBoundingClientRect().width),
+      1,
+    );
+    await projectComment.focus();
+    await projectComment.press("Enter");
     const selection = page.getByRole("textbox", { name: "Select answer text" });
     await selection.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
     await page.getByRole("button", { name: "Comment on selection" }).click();
@@ -620,7 +626,9 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       location.hash = "#/agent/space";
     });
     const space = page.getByRole("region", { name: "Pip" });
-    await space.getByRole("button", { name: "Comment on this answer" }).click();
+    const spaceComment = space.getByRole("button", { name: "Comment on this answer" });
+    await spaceComment.focus();
+    await spaceComment.press("Enter");
     await page
       .getByRole("textbox", { name: "Select answer text" })
       .press(process.platform === "darwin" ? "Meta+A" : "Control+A");

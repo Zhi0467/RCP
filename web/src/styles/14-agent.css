@@ -359,6 +359,16 @@
 .agent-thread .node-chat-line.human .node-chat-text {
   white-space: pre-wrap;
 }
+.agent-thread .chat-answer-annotation-button:not(:focus-visible) {
+  clip-path: inset(50%);
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
 .agent-thread .node-chat-line.agent .chat-markdown p {
   margin: 0 0 10px;
 }
