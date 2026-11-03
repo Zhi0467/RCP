@@ -387,7 +387,9 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
     if lifecycle is not None and lifecycle.allowed_verbs is not None:
-        verbs, artifacts, approval_cards = lifecycle.allowed_verbs, WORK_TURN_ARTIFACTS, False
+        verbs, artifacts = lifecycle.allowed_verbs, WORK_TURN_ARTIFACTS
+        handler = getattr(lifecycle, "command_handler", None)
+        approval_cards = getattr(handler, "approval_card_member", None) is not None
     else:
         handler = _work_turn_command_handler(turn)
         verbs, artifacts, approval_cards = (

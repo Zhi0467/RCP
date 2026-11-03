@@ -196,7 +196,9 @@ def approval_card_usage(client: str) -> str:
         "--question <reason> --action '<JSON>'. Do not supply choices or multiple; "
         "RCP creates Approve and Decline controls. Action kind is "
         + "; ".join(_action_usage(model) for model in models)
-        + ". Every action includes this thread's project_id. Only the member's card tap "
+        + ". Every action includes this thread's project_id. A proposal card decides a "
+        "Proposal already pending on main; one this turn's Patch raises is pending only "
+        "after the turn ends, so offer its card on the next turn. Only the member's card tap "
         "executes the action; a plain answer grants no authority. The question snapshot "
         f"shows each card's action and result. Outcomes: {outcomes}"
     )

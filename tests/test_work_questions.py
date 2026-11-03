@@ -548,3 +548,80 @@ def test_history_reads_keep_apply_revoked(tmp_path, monkeypatch, mode, resume):
     assert handler(apply_request, identity()).status == "invalid"
     assert handler(request, identity(task_id="other")).status == "invalid"
     assert calls == [(service, scope, "graph_diff")]
+
+
+@pytest.mark.parametrize("source", ["member", "handoff"])
+def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, source):
+    """The launched turn, with its validator lifecycle, offers cards to the thread's member."""
+    import asyncio
+
+    from rcp.agents.command_mailbox import stage_command_mailbox
+    from rcp.runs.approval_cards import approval_card_usage
+    from rcp.runs.tasks import work
+
+    (tmp_path / "stage").mkdir()
+    store = AppStore(tmp_path / "app.sqlite3")
+    human = AuthorizedHuman(space_id=store.space_id, user_id=str(uuid4()), display_name="M")
+    threads = store.ensure_agent_threads(human.user_id, ["project"], default_names=("Pip",))
+    thread = next(item for item in threads if item.kind == "project")
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=thread.thread_id,
+        message="Merge the branch",
+        mode="work",
+        provider="codex",
+        **({"source": "handoff"} if source == "handoff" else {}),
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="turn",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Running",
+            authorized_by=human,
+            dispatch_authority=resolve_dispatch_authority("project_chat", request),
+            native_session_id="native",
+            stage_root=str(tmp_path / "stage"),
+            write_scope_fingerprint="a" * 64,
+        )
+    )
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    staged = stage_command_mailbox(
+        local_stage=tmp_path / "stage",
+        remote_stage=None,
+        episode_id=None,
+        task_id="turn",
+        turn_id="turn",
+        ask_wait_seconds=30.0,
+    )
+
+    async def render() -> str:
+        lifecycle = work._start_work_validator_mailbox(
+            SimpleNamespace(project_catalog=None),
+            staged,
+            execution=execution,
+            budget=None,
+            run_truth_scope=[],
+            read_scope=None,
+        )
+        try:
+            turn = SimpleNamespace(
+                execution=execution,
+                compute_commands=None,
+                service=None,
+                graph_read_scope=None,
+                patch_inputs=SimpleNamespace(validator_staged=staged),
+                validator_lifecycle=lifecycle,
+            )
+            return _work_execution_instructions(turn, client="rcp-client")
+        finally:
+            await lifecycle.close(primary_error=None)
+
+    try:
+        assert approval_card_usage("rcp-client") in asyncio.run(render())
+    finally:
+        staged.cleanup()
