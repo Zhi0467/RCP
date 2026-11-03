@@ -130,8 +130,8 @@ def test_cursor_tamper_filter_and_scope_mismatch_are_refused(history_query, monk
 def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
     history_query, monkeypatch
 ):
+    """Cross-branch reads still resolve the queried branch's base."""
     service, scope, branch = history_query
-    # Cross-branch reads still resolve the queried branch's base.
     scope = scope.model_copy(update={"target": GraphTargetRef()})
     branch_id = branch.branch_id
     response = handle_graph_history_command(service, scope, request(branch_changes=branch_id))
@@ -151,6 +151,7 @@ def test_branch_changes_uses_branch_base_and_oversized_engine_page_is_refused(
 
 
 def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query, monkeypatch):
+    """Saved pre-change grants retain their project-wide semantics."""
     from .test_history_forks import fork_metadata
 
     service, unrestricted, branch = history_query
@@ -170,7 +171,6 @@ def test_fork_scope_enforces_ancestry_revisions_and_cursor_binding(history_query
         )
     )
     assert GraphReadScope.resolve("project", episode_root).ancestry_ceilings is None
-    # Saved pre-change grants retain their project-wide semantics.
     assert GraphReadScope.model_validate({"project_id": "project", "target": {}}) == (
         GraphReadScope.resolve("project", service.history)
     )

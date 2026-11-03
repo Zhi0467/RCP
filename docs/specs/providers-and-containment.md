@@ -1593,7 +1593,8 @@ cached. Accepted supervised passes instead use
 [remote finalization](#a-remote-turn-outliving-its-connection).
 
 Reattempts use the same native-session recovery as human Retry. Atomic admission
-refuses a second continuation if another path already claimed one. Shutdown waits
+refuses a second continuation if another path already claimed one, and a turn
+already continued when its worker settles promises no reattempt. Shutdown waits
 for admission already in progress, then pauses its child. Refused attempts retain
 remaining waits; startup rearms the durable sequence at its current position.
 A repeat of the preceding failure ends the ladder. Human Retry retires that

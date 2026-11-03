@@ -166,7 +166,6 @@ def test_partitioned_ssh_and_rsync_keep_a_master_of_their_own(
     assert expected in rsync_shell
     assert expected not in shared_argv
     assert expected not in sibling_argv
-    # Same directory, so the one proof of a private 0700 owner still covers it.
     assert all(
         item.startswith(f"ControlPath={control_directory}/")
         for argv in (ssh_argv, shared_argv, sibling_argv)
@@ -183,6 +182,8 @@ def test_control_partition_token_fits_a_unix_socket_path() -> None:
     sun_path: a master binds `<path>.<16 random chars>` and renames it into
     place, so the real budget is sizeof(sun_path) - 1 - 17, and sun_path is
     104 on macOS. %C spends 40 of it before the token is added.
+
+    The widest user id this can be asked for, so no operator is the exception.
     """
 
     master_bind_ceiling = 104 - 1 - 17
@@ -191,7 +192,6 @@ def test_control_partition_token_fits_a_unix_socket_path() -> None:
     token = control_partition_token(long_partition)
 
     assert len(token) == len(control_partition_token("short"))
-    # The widest user id this can be asked for, so no operator is the exception.
     widest = f"/tmp/rcp-ssh-{2**32 - 1}/{token}-{'c' * 40}"
     assert len(widest) <= master_bind_ceiling
 
@@ -199,10 +199,13 @@ def test_control_partition_token_fits_a_unix_socket_path() -> None:
 def test_control_socket_sweep_keeps_every_master_that_still_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The directory is shared by user id, so a live master may not be ours."""
+    """The directory is shared by user id, so a live master may not be ours.
 
-    # Not tmp_path: a socket may only be bound under a short path, which is the
-    # same ceiling the partition token is sized against.
+    Not tmp_path: a socket may only be bound under a short path. The shared path is
+    reused, so OpenSSH heals it and sweeping it could only delete a socket a master just
+    bound.
+    """
+
     control_directory = Path("/tmp") / f"rcp-t{uuid.uuid4().hex[:8]}"
     control_directory.mkdir(mode=0o700)
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: control_directory)
@@ -211,8 +214,6 @@ def test_control_socket_sweep_keeps_every_master_that_still_answers(
     live = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     abandoned = control_directory / "dead"
     dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # The shared path is reused, so OpenSSH heals it on the next connection and
-    # sweeping it could only delete a socket a master just bound.
     reused = control_directory / f"{SHARED_CONTROL_PARTITION}-abc"
     shared = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     unrelated = control_directory / "other"
@@ -317,7 +318,6 @@ def test_each_run_stage_keeps_a_master_of_its_own(monkeypatch: pytest.MonkeyPatc
         paths.append(next(item for item in captured[0] if item.startswith("ControlPath=")))
 
     assert len(set(paths)) == 3
-    # A stage with no root owns no run yet, so it has nothing to isolate.
     assert paths[0].endswith(f"/{SHARED_CONTROL_PARTITION}-%C")
     assert paths[1].endswith(f"/{control_partition_token(stages[1].transport_partition)}-%C")
 

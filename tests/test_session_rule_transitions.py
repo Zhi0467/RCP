@@ -16,9 +16,12 @@ from rcp.runs.chat import (
 from rcp.runs.session_master import record_session_master
 from rcp.runs.tasks.experiment_loop import EXPERIMENT_LOOP_POLICY_VERSION, _experiment_master
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+from rcp.storage import AgentTaskRecord, AppStore
+from tests.helpers import experiment_run_task
 from tests.test_auto_research_children_storage import _identity, _project
 from tests.test_remote_provider_stream_fence import _Stage
+
+EPISODE = "2e8b4d6f-7a1c-4f3e-b5d9-0c2a4e6f8b1d"
 
 
 @pytest.fixture
@@ -30,52 +33,58 @@ def session(tmp_path):
     request = RunRequest(
         chat_scope="project", chat_id="chat", provider="codex", run_on="laptop", message="turn"
     )
-    now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id="episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="experiment",
-            status="queued",
-            invocation_ceiling=4,
-            authorized_by=_identity(store),
-            created_at=now,
-            updated_at=now,
-        )
-    )
 
-    def task(operation_id, *, episode=False, kind="project_chat", launch_kind=None):
+    def task(operation_id, *, episode=False, kind="project_chat", launch_kind=None, repairs=None):
+        if episode:
+            experiment = experiment_run_task(
+                store,
+                operation_id,
+                EPISODE,
+                control_node_id="experiment",
+                ceiling=4,
+                request_fields={"chat_id": "chat"} | ({"message": None} if repairs else {}),
+                native_session_id="session",
+                stage_root=str(stage),
+                authorized_by=_identity(store),
+            )
+            if repairs is None:
+                store.create_experiment_episode_with_invocation(experiment)
+            else:
+                store.create_experiment_graph_repair_task(
+                    repairs,
+                    experiment.model_copy(update={"parent_operation_id": repairs, "attempt": 2}),
+                )
+            store.mark_agent_task_running(operation_id)
+            return AgentTaskExecution(
+                operation_id=operation_id, store=store, control=AgentProcessControl()
+            )
         now = store.now()
         payload = request.model_dump(mode="json")
-        if episode:
-            payload["control_episode_id"] = "episode"
         if launch_kind:
             payload["artifact_edit"] = {"launch_kind": launch_kind}
-        record = AgentTaskRecord(
-            operation_id=operation_id,
-            project_id="project",
-            kind=kind,
-            status="running",
-            request=payload,
-            native_session_id="session",
-            stage_root=str(stage),
-            episode_id="episode" if episode else None,
-            created_at=now,
-            updated_at=now,
-            status_message="fixture",
-            authorized_by=_identity(store),
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id="project",
+                kind=kind,
+                status="running",
+                request=payload,
+                native_session_id="session",
+                stage_root=str(stage),
+                created_at=now,
+                updated_at=now,
+                status_message="fixture",
+                authorized_by=_identity(store),
+            )
         )
-        if episode:
-            store.allocate_episode_invocation("episode", record)
-        else:
-            store.create_agent_task(record)
         return AgentTaskExecution(
             operation_id=operation_id, store=store, control=AgentProcessControl()
         )
 
-    def succeed(execution):
-        store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
+    def succeed(execution, result=None):
+        store.complete_agent_task(
+            execution.operation_id, applied_revision=None, result=result or {}
+        )
 
     return store, stage, request, task, succeed
 
@@ -139,28 +148,26 @@ def test_human_reopens_own_master_after_experiment(session, phase, baseline, rem
 @pytest.mark.parametrize("edit", [None, "discuss", "revoking"])
 def test_experiment_repair_keeps_own_values_and_owner_revocation(session, edit):
     store, stage, request, task, succeed = session
-    # Only a revoking edit replaces the session's instructions; a Discuss edit runs
-    # under the chat master and must not force a reopening.
     revocation = edit == "revoking"
     experiment = task("experiment", episode=True)
     key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=False)
     record_session_master(
         store, experiment.operation_id, "experiment contract", key, {"path": "old"}
     )
-    succeed(experiment)
+    succeed(experiment, {"graph_update": {"status": "rejected", "repairable": True}})
     if edit:
         succeed(task("edit", kind="artifact_edit", launch_kind=edit))
     human = task("human")
     master = prepare(human, request.model_copy(update={"session_id": "session"}), stage)
     assert master.after_report == revocation
     succeed(human)
-    repair = task("repair", episode=True)
+    repair = task("repair", episode=True, repairs=experiment.operation_id)
     master = _experiment_master(
         repair,
         stage,
         None,
         session_id="session",
-        episode_id="episode",
+        episode_id=EPISODE,
         ontology_extensions=False,
         render=None,
     )
@@ -176,7 +183,7 @@ def test_experiment_repair_keeps_own_values_and_owner_revocation(session, edit):
                 "project", "session", stage_host=None, stage_root=str(stage)
             )
 
-        assert pending()  # Recording a launch alone cannot clear revocation.
+        assert pending()
         succeed(repair)
         assert not pending()
 
@@ -198,7 +205,7 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
             provider="codex",
             run_on="laptop",
             session_id=report.session_id,
-            control_episode_id="episode" if episode else None,
+            control_episode_id=report.episode_id if episode else None,
         )
         store.create_agent_task(
             AgentTaskRecord(
@@ -240,7 +247,7 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
         stage,
         None,
         session_id=report.session_id,
-        episode_id="episode",
+        episode_id=report.episode_id,
         ontology_extensions=False,
         render=lambda: "experiment master",
         values={},

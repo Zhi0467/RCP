@@ -15,6 +15,15 @@ from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
 from tests import test_api_questions as api_fixtures
 from tests import test_questions_store as fixtures
+from tests.lifecycles.proposals import (
+    EV,
+    PROPOSAL,
+    api_card,
+    append_agent_patch,
+    approve_action,
+    file_proposal,
+    real_card,
+)
 
 store = fixtures.store
 origin = fixtures.origin
@@ -73,6 +82,7 @@ def test_card_claim_is_single_use_and_survives_restart(store, origin):
 
 
 def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
+    """The episode merge accepted its task before the process stopped."""
     action = {"kind": "merge_episode", "project_id": "project", "episode_id": "episode"}
     question = store.create_or_get_question(
         origin=origin,
@@ -83,7 +93,6 @@ def test_restart_settles_a_committed_action_from_its_receipt(store, origin):
     )
     assert store.claim_approval_card(question.question_id)
     request_id = store.approval_card(question.question_id)["request_id"]
-    # The episode merge accepted its task before the process stopped.
     with store.connection() as connection:
         connection.execute(
             """INSERT INTO episode_merge_request_receipts(project_id,owner_episode_id,
@@ -120,31 +129,6 @@ def test_digest_pins_action_and_has_stable_key_order():
 questions_api = api_fixtures.questions_api
 
 
-def api_card(questions_api, action=None):
-    app, client, store, project_id = questions_api
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT OR IGNORE INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
-            "VALUES (?,?,?,?,?)",
-            ("private", store.local_owner.user_id, "project", project_id, store.now()),
-        )
-    action = action or {
-        "kind": "truth_scope",
-        "project_id": project_id,
-        "alias": "repo-a",
-        "writable": False,
-    }
-    old = api_fixtures._question(store, project_id, owner_id="private", key="old")
-    question = store.create_or_get_question(
-        origin=old.origin,
-        key="card",
-        question="Allow?",
-        choices=["Approve", "Decline"],
-        card={"action": action, "pinned": {"head": "original"}},
-    )
-    return question, store.approval_card(question.question_id)
-
-
 @pytest.mark.parametrize(
     "action",
     [
@@ -154,6 +138,7 @@ def api_card(questions_api, action=None):
     ],
 )
 def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, action):
+    """A closed admission is not the member's answer, so the card stays open for a later tap."""
     from rcp.api import approval_cards
 
     app, client, store, project_id = questions_api
@@ -169,7 +154,6 @@ def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, act
         f"/api/approval-cards/{question.question_id}",
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
     )
-    # A closed admission is not the member's answer: the card stays open for a later tap.
     assert response.status_code == 409
     assert calls == []
     assert store.get_question(question.question_id).state == "pending"
@@ -188,7 +172,7 @@ def test_an_outage_releases_the_card_and_a_failure_keeps_its_reason(questions_ap
     url = f"/api/approval-cards/{question.question_id}"
     body = {"decision": "approve", "pinned_sha256": card["pinned_sha256"]}
 
-    def offline(*args):
+    def offline(*args, **kwargs):
         raise StateUnavailable("base unreachable")
 
     monkeypatch.setattr(approval_cards, "approval_pins", offline)
@@ -201,7 +185,9 @@ def test_an_outage_releases_the_card_and_a_failure_keeps_its_reason(questions_ap
     def rejected(*args):
         raise PatchRejected(report)
 
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
+    )
     monkeypatch.setattr(approval_cards, "_execute", rejected)
     result = client.post(url, json=body).json()
     assert result["outcome"] == "failed"
@@ -244,9 +230,9 @@ def test_snapshot_carries_card_action_and_result_ids(store, origin):
 
 
 def test_restart_settles_a_committed_truth_scope_card(store, origin):
+    """Membership already matches the action because the change committed before the stop."""
     question = make_card(store, origin)
     assert store.claim_approval_card(question.question_id)
-    # Membership already matches the action: the change committed before the stop.
     settle_interrupted_approval_cards(
         store,
         service_for=lambda project_id: _scope_service(["code"]),
@@ -256,10 +242,10 @@ def test_restart_settles_a_committed_truth_scope_card(store, origin):
 
 
 def test_restart_leaves_a_card_this_process_claimed_running(store, origin):
+    """A live tap claimed it after this process started; its own request settles it."""
     started = store.now()
     question = make_card(store, origin)
     assert store.claim_approval_card(question.question_id)
-    # A live tap claimed it after this process started; its own request settles it.
     settle_interrupted_approval_cards(store, service_for=_no_service, claimed_before=started)
     card = store.approval_card(question.question_id)
     assert card is not None and card["result"] is None
@@ -285,7 +271,7 @@ def test_taps_recheck_pins_and_run_only_once(questions_api, monkeypatch, changed
     monkeypatch.setattr(
         approval_cards,
         "approval_pins",
-        lambda *args: {"head": "changed" if changed == "live" else "original"},
+        lambda *args, **kwargs: {"head": "changed" if changed == "live" else "original"},
     )
     monkeypatch.setattr(
         approval_cards, "_execute", lambda *args: calls.append(args) or {"ok": True}
@@ -351,6 +337,7 @@ def test_private_questions_and_cards_only_owner_and_no_plain_resolution(question
 
 
 def test_old_writer_question_is_unchanged_by_card_migration(tmp_path, origin):
+    """Old writer SQL has neither action nor card, and the migration must preserve it."""
     import sqlite3
 
     from rcp.storage.approval_cards import migrate_approval_cards
@@ -359,7 +346,6 @@ def test_old_writer_question_is_unchanged_by_card_migration(tmp_path, origin):
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as connection:
         migrate_questions(connection)
-        # Old writer SQL has neither action nor card; the migration must preserve it.
         connection.execute("""INSERT INTO questions(question_id,project_id,owner_kind,owner_id,key,
             origin_json,argument_hash,question,choices_json,multiple,state,created_at)
             VALUES ('old','project','chat','chat','key','{}','old-hash','Pick?','[]',0,'pending','2020-01-01')""")
@@ -422,6 +408,7 @@ def test_expired_tap_is_single_use(questions_api):
 
 
 def test_card_request_id_is_persisted_uuid4(store, origin):
+    """Episode merge retains its native UUID contract while cards still mint UUID4 keys."""
     from uuid import NAMESPACE_URL, UUID, uuid5
 
     from rcp.api.episode_routes import MergeBranchBody
@@ -438,7 +425,6 @@ def test_card_request_id_is_persisted_uuid4(store, origin):
         assert model(request_id=key).request_id == key
     with pytest.raises(ValidationError):
         MergeBranchBody(request_id=uuid5(NAMESPACE_URL, "card"))
-    # Episode merge retains its native UUID contract; cards still mint UUID4 keys.
     episode_key = uuid5(NAMESPACE_URL, "card")
     assert MergeEpisodeBody(request_id=episode_key).request_id == episode_key
     store.settle_approval_card(question.question_id, {"outcome": "declined"})
@@ -486,7 +472,7 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
     store = execution.store
     action = {"kind": "truth_scope", "project_id": "project", "alias": "repo-a", "writable": False}
     request = ask_request(arguments={"question": "Allow?", "action": action})
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"writable": True})
+    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args, **kwargs: {"writable": True})
     handler = work_command_handler(
         execution, None, service=cast(ProjectService, SimpleNamespace(project_catalog=None))
     )
@@ -498,7 +484,6 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
             "VALUES ('chat',?,'project','project',?)",
             (human.user_id, store.now()),
         )
-    # Work resolves the card grant with its verbs, once per turn handler.
     handler = work_command_handler(
         execution, None, service=cast(ProjectService, SimpleNamespace(project_catalog=None))
     )
@@ -580,8 +565,9 @@ def refuse_transfer(_project):
 
 
 def bounded_admission_lock(monkeypatch):
-    # Keep the real route and fence; bound lock acquisition so a regression fails
-    # instead of leaving pytest stuck inside a non-reentrant lock.
+    """The real route and fence stay; lock acquisition is bounded so a regression fails instead of
+    hanging in a non-reentrant lock.
+    """
     from contextlib import contextmanager
     from threading import Lock
 
@@ -598,31 +584,6 @@ def bounded_admission_lock(monkeypatch):
             lock.release()
 
     monkeypatch.setattr(dependencies, "get_experiment_operation_lock", lambda _: acquire)
-
-
-def real_card(api, action):
-    from pydantic import TypeAdapter
-
-    from rcp.approval_actions import ApprovalAction
-    from rcp.runs.approval_cards import approval_pins
-    from tests.helpers import authorized_human
-
-    app, client, store, project_id = api
-    question, _ = api_card(api, action)
-    pins = approval_pins(
-        app.state.catalog.open(project_id),
-        store,
-        TypeAdapter(ApprovalAction).validate_python(action),
-        authorized_human(app),
-    )
-    import json
-
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE approval_cards SET pinned_json=?,pinned_sha256=? WHERE question_id=?",
-            (json.dumps(pins), card_sha256(action, pins), question.question_id),
-        )
-    return question, store.approval_card(question.question_id)
 
 
 @pytest.mark.parametrize("fenced", [False, True])
@@ -732,8 +693,9 @@ def test_merge_episode_card_rechecks_heads_under_admission(
 
     @contextmanager
     def acquire(project_id):
-        # Advance after the card's optimistic recheck, just as a writer that
-        # already holds admission can do while the merge waits for its lock.
+        """Advances after the card's optimistic recheck, as a writer already holding admission can
+        while the merge waits for its lock.
+        """
         patch = _branch_patch(harness.root.operation_id, "evidence", suffix="-raced")
         if changed_head == "source":
             harness.branch.append(patch, expected_revision=harness.branch.head_ref().revision)
@@ -778,7 +740,9 @@ def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler
         return {}
 
     monkeypatch.setattr(episode_routes, handler, execute)
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
+    )
     response = client.post(
         f"/api/approval-cards/{question.question_id}",
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
@@ -859,7 +823,9 @@ def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
     from rcp.runs import approval_cards
 
     profile = {"provider": "codex", "run_on": "local"}
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"profile": profile})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"profile": profile}
+    )
     readiness = SimpleNamespace(
         installed=installed,
         authenticated=authenticated,
@@ -948,3 +914,65 @@ def test_question_list_reads_do_not_grow_with_answered_history(questions_api, mo
         store.dismiss_question(answered.question_id, resolved_by=human)
     assert len(client.get(url).json()) == 7
     assert statements_per_list() == before
+
+
+_RACED_WRITES = {
+    "reword": [{"op": "update_nodes", "nodes": [{"id": EV, "changes": {"observation": "N."}}]}],
+    "withdraw": [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "r"}]}],
+    "unrelated": [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "ev/unrelated",
+                    "type": "evidence",
+                    "title": "Unrelated",
+                    "observation": "Elsewhere.",
+                    "origin": "analytic",
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("competing", ["second_tap", *_RACED_WRITES])
+def test_a_write_between_pin_check_and_sync_never_decides_unseen_pins(
+    questions_api, monkeypatch, competing
+):
+    """The competing tap or graph write lands after the pin check and before Sync appends."""
+    from rcp.api import approval_cards
+
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    question, card = real_card(questions_api, approve_action(project_id, PROPOSAL))
+    url = f"/api/approval-cards/{question.question_id}"
+    body = {"decision": "approve", "pinned_sha256": card["pinned_sha256"]}
+    second = []
+    run = approval_cards._run
+
+    def interleaved(execute, request_id):
+        if competing == "second_tap":
+            second.append(client.post(url, json=body))
+        else:
+            append_agent_patch(service, _RACED_WRITES[competing])
+        return run(execute, request_id)
+
+    monkeypatch.setattr(approval_cards, "_run", interleaved)
+    first = client.post(url, json=body)
+    status = service.history.state().proposals[PROPOSAL].status
+    if competing == "second_tap":
+        assert second[0].status_code == 409
+        assert second[0].json()["detail"] == {"code": "card_taken"}
+        assert first.json()["outcome"] == "approved", first.text
+        assert status == "approved"
+        return
+    assert first.status_code == 409, first.text
+    assert first.json()["detail"] == {"code": "graph_changed"}
+    assert store.get_question(question.question_id).state == "pending"
+    assert status == ("withdrawn" if competing == "withdraw" else "pending")
+    monkeypatch.setattr(approval_cards, "_run", run)
+    retap = client.post(url, json=body).json()
+    assert retap["outcome"] == ("approved" if competing == "unrelated" else "stale")
+    assert store.get_question(question.question_id).answer == retap["outcome"]

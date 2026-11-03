@@ -37,7 +37,7 @@ def repository_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def repository(repository_template: Path, tmp_path: Path) -> Path:
-    # The template holds no absolute paths, so a copy equals a fresh build.
+    """The template holds no absolute paths, so a copy equals a fresh build."""
     return Path(shutil.copytree(repository_template, tmp_path / "shared checkout", symlinks=True))
 
 
@@ -60,11 +60,11 @@ def test_worktree_lifecycle_without_null_terminated_list_support(
     original_run = subprocess.run
 
     def older_git(arguments, **kwargs):
+        """Git 2.34 prints raw paths; newer Git C-quotes special characters."""
         if "worktree" in arguments and "list" in arguments:
             if "-z" in arguments:
                 return subprocess.CompletedProcess(arguments, 129, "", "error: unknown switch 'z'")
             if legacy_output:
-                # Git 2.34 prints raw paths; newer Git C-quotes special characters.
                 result = original_run([*arguments, "-z"], **kwargs)
                 result.stdout = result.stdout.replace("\0", "\n")
                 return result
@@ -219,11 +219,12 @@ def test_shipped_source_has_same_behavior_without_package_imports(repository: Pa
 def test_remote_worktree_loads_package_resource_without_module_source_path(
     repository: Path, monkeypatch
 ) -> None:
+    """Frozen modules have importable code but no source __file__; the remote command path runs
+    through an owned local pipe.
+    """
     from rcp import conversation_worktrees
     from rcp.transport.state import _remote_script
 
-    # Frozen modules have importable code, but their __file__ is not a source
-    # file. Exercise the actual remote command path through an owned local pipe.
     monkeypatch.setattr(conversation_worktree, "__file__", "/not-a-source-file/worktree.pyc")
     commands = []
 
@@ -290,8 +291,9 @@ def test_bound_common_git_directory_is_checked_before_creation_and_inspection(
 
 
 def test_inspect_allows_only_explicit_integration_continuation_target(repository: Path) -> None:
-    # release predates the binding's start; temporary target checkout is not the
-    # chat branch's ancestry, which must still be verified independently.
+    """release predates the binding's start; the temporary target checkout is not the chat branch's
+    ancestry, which is still verified independently.
+    """
     (repository / "later.txt").write_text("new starting commit\n")
     git(repository, "add", "later.txt")
     git(repository, "commit", "-m", "New start")
@@ -345,12 +347,12 @@ def test_canonicalize_is_read_only_and_only_prospective_path_may_be_missing(
 def test_remote_branch_lookup_uses_local_bare_remote_and_reports_unavailability(
     repository: Path,
 ) -> None:
+    """A stale tracking ref cannot establish that the actual remote has a branch."""
     binding = bind(repository)
     remote = repository.parent / "origin.git"
     remote.mkdir()
     git(remote, "init", "--bare")
     git(repository, "remote", "add", "origin", str(remote))
-    # A stale tracking ref cannot establish that the actual remote has a branch.
     git(repository, "update-ref", f"refs/remotes/origin/{binding['branch']}", binding["branch"])
     assert run("remote_branch", binding=binding) == {
         "remote_branch_exists": False,
@@ -442,6 +444,7 @@ def test_episode_merge_lands_verified_commit_and_retries_cleanup(repository, tar
 
 
 def test_episode_landing_that_drops_target_history_is_unverified(repository):
+    """A provider that resets the target to the source contains the source but drops the target."""
     binding = episode_binding(repository)
     episode_edit(binding)
     (repository / "human.txt").write_text("human\n")
@@ -450,7 +453,6 @@ def test_episode_landing_that_drops_target_history_is_unverified(repository):
     run("commit_leftovers", binding=binding, target_branch="release")
     git(repository, "branch", "-f", "release", "research")
     preview = run("merge_preview", binding=binding, target_branch="release")
-    # A provider that resets the target to the source contains the source but drops the target.
     git(repository, "branch", "-f", "release", preview["source_commit"])
     payload = {"binding": binding, "target_branch": "release", **preview}
     assert run("verify_landing", **{**payload, "target_commit": None})["verified"]
@@ -498,6 +500,7 @@ def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repos
     ],
 )
 def test_episode_target_refusals_preserve_leftovers(repository, monkeypatch, rule, code):
+    """The target is checked out only after validation listed the registrations."""
     binding = episode_binding(repository)
     worktree = episode_edit(binding)
     target = "research"
@@ -510,7 +513,6 @@ def test_episode_target_refusals_preserve_leftovers(repository, monkeypatch, rul
         target = "release"
         git(repository, "worktree", "add", str(other), target)
     elif rule == "late_other":
-        # Checked out only after validation listed the registrations.
         target = "release"
         interrupted = conversation_worktree._interrupted
 

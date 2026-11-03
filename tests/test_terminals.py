@@ -222,9 +222,6 @@ async def remote_machine(manifest, manager, doubles, monkeypatch):
     return setup
 
 
-# --- Launch profile and repository resolution -------------------------------
-
-
 def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest, tmp_path):
     root = Path(manifest.repository_map["repo-a"].path)
     state = root / ".research"
@@ -437,9 +434,6 @@ def test_a_record_path_refuses_an_identifier_that_leaves_its_directory(tmp_path)
             record_path(tmp_path, identifier)
 
 
-# --- Launcher and preflight -------------------------------------------------
-
-
 def test_failed_required_profile_never_launches_a_fallback(monkeypatch):
     commands = []
     stopped = []
@@ -491,8 +485,7 @@ def test_preflight_refuses_a_writable_canonical_directory(tmp_path):
 
 
 def test_preflight_refuses_a_writable_mount_even_when_directory_permissions_deny_write(tmp_path):
-    # Model directory permissions only; the effective-mount check is what is
-    # under test, and this host has no mount privileges.
+    """This host has no mount privileges, so only directory permissions are modeled."""
     permission_probe = 'test() { case "$1" in -w) [[ "$2" == "$PWD" ]];; -e) return 0;; esac; };\n'
     result = _preflight(
         tmp_path,
@@ -506,9 +499,9 @@ def test_preflight_refuses_a_writable_mount_even_when_directory_permissions_deny
 
 
 def test_preflight_refuses_a_service_manager_that_expanded_its_own_variables(tmp_path):
-    # A manager older than 254 rejects `--expand-environment=no`, so a launch
-    # there omits it. If such a manager does expand the command line, every
-    # `$name` it does not know is emptied before bash reads the script.
+    """A manager older than 254 rejects `--expand-environment=no`; if it expands the
+    command line, every unknown `$name` is emptied before bash reads it.
+    """
     expanded = re.sub(r"\$\{?(\w+)\}?", "", launch._SHELL_PREFLIGHT)
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-c", expanded, "rcp-terminal", str(tmp_path)],
@@ -581,13 +574,13 @@ def test_a_timeout_confirming_a_failed_stop_is_reported_not_raised(monkeypatch):
 
 
 def test_collected_unit_cleanup_accepts_explicit_not_found(monkeypatch):
+    """Stopping needs systemctl alone, so launch prerequisites are absent."""
     responses = iter(
         [
             subprocess.CompletedProcess([], 5, "", "Unit not loaded"),
             subprocess.CompletedProcess([], 4, "not-found\n", ""),
         ]
     )
-    # Stopping needs systemctl alone, so the launch prerequisites are absent here.
     monkeypatch.setattr(
         launch.shutil, "which", lambda name: "/bin/systemctl" if name == "systemctl" else None
     )
@@ -632,8 +625,9 @@ def test_cooperative_shell_hangs_up_when_server_pty_closes(tmp_path):
 
 
 def test_cooperative_shell_starts_under_a_parent_that_holds_the_session(tmp_path):
-    # The one-file packaged backend's bootloader stays the session leader and
-    # runs Python as its child, then waits for it, like this parent.
+    """The one-file packaged backend's bootloader stays session leader and waits on its
+    Python child, like this parent.
+    """
     bootloader = "import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:]))"
     command = [launch.sys.executable, "-c", bootloader, *launch.cooperative_command({})]
     process, master = launch.launch(command, None, cwd=tmp_path)
@@ -654,9 +648,6 @@ def test_cooperative_shell_entry_point_works_in_packaged_backend(monkeypatch):
     monkeypatch.setattr(launch.sys, "argv", command[-2:])
     __main__.main()
     assert called == ["shell"]
-
-
-# --- Machine capability -----------------------------------------------------
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin", "macOS", "FreeBSD"])
@@ -737,6 +728,9 @@ async def test_missing_systemd_fails_closed(manifest, manager, monkeypatch):
 async def test_mirrored_launch_failure_never_creates_cooperative_session(
     manifest, manager, doubles, monkeypatch, diagnostic
 ):
+    """The intent is persisted before launch and the double's unit stop succeeds, so the
+    record finishes.
+    """
     commands = []
 
     def fail(command, unit, **kwargs):
@@ -751,8 +745,6 @@ async def test_mirrored_launch_failure_never_creates_cooperative_session(
     assert manager.list("project") == []
     receipt = json.loads(next(manager.directory.glob("*.json")).read_text())
     assert receipt["containment"] == "mirrored"
-    # The intent is persisted before the launch, and this double's unit stop
-    # succeeds, so the record finishes rather than waiting for startup.
     assert receipt["ended_at"]
     assert receipt["termination_reason"] == "launch_failed"
 
@@ -777,6 +769,7 @@ async def test_remote_linux_probe_failure_cannot_launch_cooperative(manifest, ma
 async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment(
     manifest, manager, monkeypatch
 ):
+    """Input echo is disabled so only evaluated output can satisfy the assertions."""
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
     monkeypatch.setenv("RCP_TEST_SECRET", "must-not-inherit")
 
@@ -789,7 +782,6 @@ async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment
     payload = terminal_session_payload(session, {})
     assert payload["containment"] == "cooperative"
     queue = manager.attach("project", session.session_id)
-    # Disable input echo so only evaluated output can satisfy the assertions.
     await manager.write("project", session.session_id, b"stty -echo\n")
     await manager.write(
         "project",
@@ -801,7 +793,6 @@ async def test_cooperative_pty_reports_missing_protection_and_scrubs_environment
         while b"secret=unset job=" not in output:
             output.extend(await queue.get())
     assert f"cwd={session.path} secret=unset".encode() in output
-    # Bash's monitor flag proves the shell has working interactive job control.
     assert b"m" in output.split(b"secret=unset job=")[-1].splitlines()[0]
     process = manager.sessions[session.session_id].process
     await manager.end("project", session.session_id)
@@ -817,9 +808,6 @@ async def test_restart_retires_cooperative_metadata_without_systemd(unstarted, m
     monkeypatch.setattr(launch, "stop_unit", lambda unit: pytest.fail("No cooperative unit exists"))
     await unstarted.start()
     assert read_record(unstarted, "test")["termination_reason"] == "server_restart"
-
-
-# --- Session lifecycle ------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -967,7 +955,6 @@ async def test_input_during_a_sweeps_wait_renews_the_lifetime(manifest, manager,
     expire(manager.sessions[session.session_id])
     await manager._lock.acquire()
     sweeping = asyncio.create_task(manager.sweep())
-    # Let the pass get as far as it can before the lock stops it.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     await manager.write("project", session.session_id, b"still here\n")
@@ -988,11 +975,11 @@ async def test_one_blocked_launch_does_not_stall_another_repository(manifest, ma
     blocking = True
 
     def start(command, unit, **kwargs):
+        """Holds the worker thread the way an unreachable SSH handshake does."""
         nonlocal blocking
         if blocking:
             blocking = False
             started.set()
-            # Hold the worker thread the way an unreachable SSH handshake does.
             released.wait(timeout=10)
         master, slave = os.openpty()
         tty.setraw(slave)
@@ -1007,7 +994,6 @@ async def test_one_blocked_launch_does_not_stall_another_repository(manifest, ma
     try:
         blocked = asyncio.create_task(manager.open(**arguments(manifest)))
         assert await asyncio.to_thread(started.wait, 5)
-        # The first launch still holds its worker thread here.
         await asyncio.wait_for(manager.open(**arguments(manifest, "repo-b")), timeout=5)
         assert [session.repository_id for session in manager.list("project")] == ["repo-b"]
         released.set()
@@ -1022,9 +1008,6 @@ async def test_one_blocked_launch_does_not_stall_another_repository(manifest, ma
         for descriptor in slaves:
             with contextlib.suppress(OSError):
                 os.close(descriptor)
-
-
-# --- Stops: concurrency and failure ------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1057,7 +1040,6 @@ async def test_stale_aliases_are_retired_together(
     for alias in ("repo-a", "repo-b"):
         await manager.open(**arguments(manifest, alias))
     assert len(manager.sessions) == 2
-    # Both aliases stop naming what their shells opened on.
     for alias in ("repo-a", "repo-b"):
         moved = tmp_path / f"moved-{alias}"
         (moved / ".research").mkdir(parents=True)
@@ -1088,7 +1070,6 @@ async def test_expired_sessions_are_classified_before_any_stop(
     )
     await manager.sweep()
     assert manager.list("project") == []
-    # Both shells were decided on before either stop began.
     assert checks_before_each_stop == [2, 2]
 
 
@@ -1101,7 +1082,6 @@ async def test_failed_stop_keeps_metadata_and_can_be_retried(
     monkeypatch.setattr(launch, "stop_unit", unstoppable)
     with pytest.raises(TerminalUnavailable):
         await manager.sweep()
-    # Kept for the retry, and unreachable while its shell may still be running.
     assert manager.sessions[session.session_id].retiring == "idle_timeout"
     with pytest.raises(KeyError):
         manager.get("project", session.session_id)
@@ -1136,8 +1116,6 @@ async def test_one_failed_stop_does_not_starve_other_sessions(
     }
     with pytest.raises(TerminalUnavailable):
         await getattr(manager, operation)()
-    # Retained for the retry, carrying the reason that decided it, and no
-    # longer a session a member can reach or be handed back.
     assert manager.sessions[first.session_id].retiring == decided_by[operation]
     with pytest.raises(KeyError):
         manager.get("project", first.session_id)
@@ -1173,7 +1151,6 @@ async def test_a_retiring_shell_blocks_its_tree_under_a_new_alias(
     retiring. Settings can drop the alias it carries and register the same
     checkout under another; the shell that may still be running is the same.
     """
-    # Not the canonical-state repository, which settings cannot unregister.
     session = await manager.open(**arguments(manifest, "repo-b"))
     expire(manager.sessions[session.session_id])
     monkeypatch.setattr(launch, "stop_unit", unstoppable)
@@ -1183,9 +1160,6 @@ async def test_a_retiring_shell_blocks_its_tree_under_a_new_alias(
     rename_alias(manifest, "repo-b", "repo-b-renamed")
     with pytest.raises(TerminalUnavailable):
         await manager.open(**arguments(manifest, "repo-b-renamed"))
-
-
-# --- Cancelled opens --------------------------------------------------------
 
 
 @pytest.fixture
@@ -1271,6 +1245,9 @@ async def test_a_cancelled_open_whose_stop_fails_leaves_no_reusable_session(
     this PTY, because a cancelled open never registers a reader, so the runtime
     must not be published; and a stop that raises must not leave it in
     `sessions` where neither the sweep nor startup retires it.
+
+    The descriptor and process are given back, or repeated cancellations would spend the
+    server's descriptors.
     """
     opening = asyncio.create_task(manager.open(**arguments(manifest)))
     assert await asyncio.to_thread(delayed_launch.started.wait, 5)
@@ -1280,8 +1257,6 @@ async def test_a_cancelled_open_whose_stop_fails_leaves_no_reusable_session(
     with pytest.raises(asyncio.CancelledError):
         await opening
     assert manager.sessions == {}
-    # The record retains the unit; the descriptor and process are given back,
-    # or repeated cancellations would spend the server's descriptors.
     process, master_fd = delayed_launch.launched[0]
     with pytest.raises(OSError):
         os.fstat(master_fd)
@@ -1345,7 +1320,6 @@ async def test_a_cancel_during_the_membership_end_does_not_end_it_again(
     monkeypatch.setattr(launch, "stop_unit", stop)
 
     def admitted_once(project, member):
-        # Admitted on entry, gone by the time the shell is published.
         membership.checks.append(member)
         return len(membership.checks) == 1
 
@@ -1360,9 +1334,6 @@ async def test_a_cancel_during_the_membership_end_does_not_end_it_again(
     assert len(records) == 1
     assert json.loads(records[0].read_text())["termination_reason"] == "membership_lost"
     assert len(stops) == 1
-
-
-# --- Registrations and one shell per working tree -----------------------------
 
 
 @pytest.mark.asyncio
@@ -1482,7 +1453,6 @@ async def test_a_retained_record_blocks_the_tree_it_resolved(
             declared_machine=repository.machine,
         )
     )
-    # The declaration now names repo-b, but the shell holds repo-a.
     link.unlink()
     link.symlink_to(Path(manifest.repository_map["repo-b"].path).resolve())
     monkeypatch.setattr(launch, "stop_unit", unstoppable)
@@ -1536,9 +1506,6 @@ async def test_a_renamed_alias_cannot_open_over_the_old_alias_blocker(
     rename_alias(manifest, "repo-b", "repo-b-renamed")
     with pytest.raises(TerminalUnavailable):
         await unstarted.open(**arguments(manifest, "repo-b-renamed"))
-
-
-# --- Records: startup reconciliation -----------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1715,7 +1682,6 @@ async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(
     finally:
         release.set()
     assert read_record(unstarted, "wedged")["ended_at"] is None
-    # The retry names the same unit on the same machine, and releases the tree.
     await unstarted.open(**arguments(manifest))
     assert len(stops) == 2
     assert stops[1][:2] == ("worker.invalid", f"{unstarted._unit_prefix}-wedged")
@@ -1790,8 +1756,6 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
     stoppable = True
     with pytest.raises(TerminalUnavailable):
         await unstarted.open(**arguments(manifest))
-    # The stoppable one is confirmed gone and finished; the unreadable one
-    # still speaks for the repository.
     assert read_record(unstarted, "stranded")["ended_at"]
     assert read_record(unstarted, "newer")["ended_at"] is None
 
@@ -1809,9 +1773,6 @@ async def test_a_record_that_cannot_be_reconciled_at_all_blocks_its_repository(
     assert read_record(unstarted, "unreachable")["ended_at"] is None
     with pytest.raises(TerminalUnavailable):
         await unstarted.open(**arguments(manifest))
-
-
-# --- Remote sessions ----------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -1839,19 +1800,19 @@ async def test_an_unconfirmed_remote_unit_blocks_a_second_shell(manager, remote_
 async def test_remote_255_confirms_the_unit_before_retiring(
     manager, remote_machine, doubles, monkeypatch, completed
 ):
+    """The supervisor writes its completion marker before cleanup that can fail, so a
+    finished shell is no evidence the unit went with it.
+    """
     manifest = remote_machine.manifest
     session = await manager.open(**arguments(manifest))
     runtime = manager.sessions[session.session_id]
     queue = manager.attach("project", session.session_id)
     if completed:
-        # Completion can sit behind multiple output chunks when SSH exits.
         monkeypatch.setattr("rcp.terminals.runtime.TERMINAL_IO_CHUNK_BYTES", 5)
         os.write(doubles.slaves[0], b"last output" + EXIT_PREFIX + b"255" + EXIT_SUFFIX)
     runtime.process.returncode = 255
     await manager.sweep()
     assert session.termination_reason == ("shell_exited" if completed else "link_dropped")
-    # The supervisor writes its completion marker before the cleanup that can
-    # fail, so a finished shell is not evidence the unit went with it.
     assert remote_machine.stops
     assert session.ended_at
     assert manager.list("project") == []
@@ -1872,6 +1833,8 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     """Hanging up the SSH PTY asks the remote supervisor to stop its unit, but
     nothing acknowledges that. An unconfirmed stop must leave the intent
     unfinished so the next startup reconciles the unit instead of skipping it.
+
+    Cleanup carries the recorded account so it cannot run as another one.
     """
     manifest = remote_machine.manifest
     if not confirmed:
@@ -1879,7 +1842,6 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     session = await manager.open(**arguments(manifest))
     await manager.end("project", session.session_id)
     if confirmed:
-        # Cleanup carries the recorded account so it cannot run as another one.
         assert remote_machine.stops == [
             (session.execution_host, session.unit, session.declared_account)
         ]

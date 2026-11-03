@@ -127,6 +127,7 @@ def test_parent_waits_for_child_turn_and_its_exact_recovery(tmp_path, task_state
 
 
 def test_parent_report_waits_for_child_and_then_enters_wrapup(tmp_path):
+    """The same guard protects restart of an already-admitted report."""
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
         root.operation_id, native_session_id="root-session", stage_root=str(tmp_path / "root-stage")
@@ -141,7 +142,6 @@ def test_parent_report_waits_for_child_and_then_enters_wrapup(tmp_path):
     reconciler = EpisodeReconciler(store, tasks, logger=logging.getLogger(__name__))
     assert not reconciler.reconcile_auto_research_wrapup(signal, source="test")
     assert store.episode_wrapup(parent.episode_id) is None
-    # The same guard protects restart of an already-admitted report.
     assert reconciler._has_unsettled_visible_episode_task(parent.episode_id)
 
     store.complete_agent_task(child.operation_id, applied_revision=None, result={})
@@ -182,6 +182,9 @@ def test_report_snapshot_detects_child_ending_without_another_turn(tmp_path):
 def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     tmp_path, monkeypatch, entrypoint, report_state, child_completion, poll_before_recovery
 ):
+    """Reproduces the report allocation older versions made before the child settled; startup and
+    the ordinary poll must both wait on recovery.
+    """
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
         root.operation_id, native_session_id="root-session", stage_root=str(tmp_path / "root-stage")
@@ -189,8 +192,6 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     if child_completion == "recovery":
         store.fail_agent_task(child.operation_id, "Recoverable interruption.")
     signal = auto_research_exhaustion_signal(store, parent.episode_id)
-    # Reproduce the durable report allocation made by older versions before the
-    # child settled. Both startup and the ordinary poll must wait on recovery.
     admission = begin_episode_report_wrapup(store, auto_research_wrapup_spec(store, signal))
     assert admission.launchable
     if report_state != "queued":
@@ -245,8 +246,13 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     retained = store.episode_wrapup(parent.episode_id)
     assert retained.receipt_json == admission.wrapup.receipt_json
     assert retained.receipt_sha256 == admission.wrapup.receipt_sha256
-    assert retained.allocation_operation_id == admission.task.operation_id
-    assert store.agent_task(admission.task.operation_id).status == "failed"
+    report = store.agent_task(retained.allocation_operation_id)
+    assert report.status == "failed"
+    if report_state == "queued":
+        assert report.operation_id == admission.task.operation_id
+    else:
+        assert report.parent_operation_id == admission.task.operation_id
+        assert store.agent_task(admission.task.operation_id).status == report_state
     assert store.episode_report(parent.episode_id) is None
     assert ended.report_attempts_used == (0 if report_state == "queued" else 1)
     assert all(

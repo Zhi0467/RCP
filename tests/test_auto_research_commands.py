@@ -2131,6 +2131,7 @@ def test_unknown_worker_control_reissues_only_the_idempotent_pause_or_stop(
 def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
     tmp_path,
 ) -> None:
+    """A malformed durable planned id is unavailable and never reaches reconciliation."""
     store, auto_research, root = _setup_auto_research(tmp_path)
     effects = _Effects(
         store,
@@ -2182,7 +2183,6 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
     assert effects.reconcile_planned_effect_ids == [planned_watcher_id]
     assert effects.planned_watcher_ids == []
 
-    # A malformed durable planned id is unavailable and never reaches reconciliation.
     mismatch_path = tmp_path / "mismatch"
     mismatch_path.mkdir()
     store, auto_research, root = _setup_auto_research(mismatch_path)

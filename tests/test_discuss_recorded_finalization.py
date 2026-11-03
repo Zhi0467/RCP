@@ -96,7 +96,11 @@ async def _run_discuss(service, request, execution, launcher, data_dir: Path) ->
 async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(
     tmp_path, monkeypatch, close_on_pending
 ) -> None:
-    """A pending remote result is not an unanswered turn, and settles nothing."""
+    """A pending remote result is not an unanswered turn, and settles nothing.
+
+    The task is owed a result, not a verdict, so nothing is written. This turn ran locally and
+    retained nothing, since a local provider dies with its launching process.
+    """
 
     service, request, execution = _discuss_app(tmp_path)
 
@@ -135,11 +139,7 @@ async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(
 
     events = [json.loads(frame.removeprefix("data: "))["event"] for frame in frames]
     assert events == ["remote_result_pending"]
-    # No error, no answer, and no reply written: the task is owed a result, not
-    # a verdict about one.
     assert [item for item in _transcript(service, request) if item["role"] == "assistant"] == []
-    # This turn ran locally, so it retained nothing to recover from. A local
-    # provider dies with the process that launched it.
     assert (
         execution.store.agent_task_contract(
             execution.operation_id, discuss_module.DISCUSS_FINALIZATION_CONTEXT_ROLE
@@ -150,6 +150,9 @@ async def test_a_lost_discuss_link_leaves_the_turn_for_its_own_task(
 
 @pytest.mark.asyncio
 async def test_a_recorded_discuss_pass_answers_its_original_chat(tmp_path) -> None:
+    """The recorded session is republished so the chat's next message continues that provider
+    conversation. The recovered prompt carried the dismissal, so later turns stop repeating it.
+    """
     service, request, execution = _discuss_app(tmp_path)
     execution.checkpoint_stage("", str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
@@ -209,20 +212,20 @@ async def test_a_recorded_discuss_pass_answers_its_original_chat(tmp_path) -> No
     assert next(item["text"] for item in events if item["event"] == "answer") == _ANSWER
     replies = [item for item in _transcript(service, request) if item["role"] == "assistant"]
     assert [item["text"] for item in replies] == [_ANSWER]
-    # The session the host recorded is republished, which is how the next
-    # message in this chat continues that provider conversation rather than
-    # starting a fresh one.
     assert [item["session_id"] for item in events if item["event"] == "session"] == [
         "recorded-thread"
     ]
     assert launcher.calls == 0
-    # The recovered prompt carried the dismissal, so later turns stop repeating it.
     assert execution.store.get_question(dismissed.question_id).dismissal_delivered_at is not None
 
 
 @pytest.mark.asyncio
 async def test_recorded_discuss_finalization_can_resume_without_answering_twice(tmp_path) -> None:
-    """A crash after the reply is written must not write a second one."""
+    """A crash after the reply is written must not write a second one.
+
+    A Discuss agent that wrote a patch anyway gets one discard receipt, not one per recovery
+    attempt.
+    """
 
     service, request, execution = _discuss_app(tmp_path)
     execution.checkpoint_stage("", str(tmp_path / "stage"))
@@ -232,8 +235,6 @@ async def test_recorded_discuss_finalization_can_resume_without_answering_twice(
     )
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_pass("", _ANSWER)
-    # A Discuss agent that wrote a patch anyway gets one discard receipt, not
-    # one per recovery attempt.
     (Path(execution.stage_root) / "workspace" / "patch.json").write_text(
         '{"operations": []}', encoding="utf-8"
     )

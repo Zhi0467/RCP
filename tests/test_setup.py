@@ -162,13 +162,12 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing()
 
 def test_shipped_directory_browser_refuses_another_account(tmp_path) -> None:
     def run_here(command, **kwargs):
-        # The shipped command, run on this machine instead of over SSH.
+        """Runs the shipped command locally instead of over SSH."""
         return subprocess.run(["sh", "-c", command[-1]], **kwargs)
 
     me = pwd.getpwuid(os.geteuid()).pw_name
     browse = tmp_path / "browse"
     (browse / "folder").mkdir(parents=True)
-    # A symlinked home comes back real, like the paths checked beside it.
     real_home = tmp_path / "homes" / "real"
     real_home.mkdir(parents=True)
     (tmp_path / "homes" / "link").symlink_to(real_home)
@@ -727,7 +726,6 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     monkeypatch.setattr("rcp.setup._ssh", fake_ssh)
     app = create_app(data_dir=tmp_path / "data")
     app.state.setup.launcher = ReadyLauncher()
-    # The space's card carries the account the host route does not name.
     app.state.background_tasks.store.create_space_machine(
         name="GPU", host="gpu.example", os_account="carol"
     )
@@ -919,8 +917,6 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
     assert "[execution]" not in rendered
     assert "write_path" not in rendered
     assert manifest.agent_profile("seed").provider == "claude"
-    # Setup writes the runtime it chose, and resolves an omitted one the same
-    # way the manifest does rather than leaving the field out.
     assert manifest.agent_profile("seed").runtime == "stream-json"
     assert manifest.agent_profile("project_chat").runtime == "app-server"
     assert manifest.agent_profile("project_chat").reasoning == "xhigh"

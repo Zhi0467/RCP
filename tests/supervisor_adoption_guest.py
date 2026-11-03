@@ -303,7 +303,7 @@ def historical_setup() -> dict:
 
 
 def historical_data() -> dict:
-    # The exact historical release interpreter owns every database write here.
+    """The historical release interpreter owns every database write here."""
     import rcp
     from tests.supervisor_reboot_data import prepare_data
 
@@ -327,7 +327,11 @@ def fixture_release():
 
 
 def paired_bootstrap() -> dict:
-    """Run the app bootstrap CLI; its real subprocess delegates to our marked CLI wrapper."""
+    """Run the app bootstrap CLI; its real subprocess delegates to our marked CLI wrapper.
+
+    Parsed events are kept privately on failure; a truncated line never replaces the
+    original exception or becomes a public diagnostic.
+    """
     from rcp_supervisor import releases
 
     from rcp import __main__ as app_cli
@@ -340,8 +344,6 @@ def paired_bootstrap() -> dict:
             result = super().bootstrap_supervisor(bundle)
             wrapper = Path("/usr/local/bin/rcp-supervisor")
             guest.write_json(guest.STATE / "supervisor-wrapper.json", {"text": wrapper.read_text()})
-            # The real bootstrap delegate invokes this root-owned entry point.
-            # Only the marked fixture replaces release provenance in that child.
             install._install_root_file(
                 wrapper,
                 f'#!/bin/sh\nset -eu\numask 077\nexec {guest.SUPERVISOR_PYTHON} {SCRIPT} supervisor "$@"\n',
@@ -378,9 +380,6 @@ def paired_bootstrap() -> dict:
                     refusal = exc
     finally:
         sys.argv = previous
-        # Preserve parsed events privately even when the CLI exits with failure.
-        # A truncated/non-JSON line must never replace the original exception or
-        # become a public diagnostic that could contain terminal secrets.
         events = []
         for line in stream.getvalue().splitlines():
             try:

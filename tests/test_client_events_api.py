@@ -53,6 +53,7 @@ def test_client_event_logs_one_bounded_warning_line(manifest, tmp_path, caplog) 
 
 
 def test_client_events_are_rate_limited_per_member(manifest, tmp_path, caplog) -> None:
+    """The admitted burst is followed by one line saying the rest of the window is dropped."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     now = [0.0]
@@ -66,7 +67,6 @@ def test_client_events_are_rate_limited_per_member(manifest, tmp_path, caplog) -
     ]
     assert statuses == [204] * limits.CLIENT_EVENT_RATE_MAX_EVENTS + [429] * 5
     records = _client_records(caplog)
-    # The admitted burst, then one line saying the rest of the window is dropped.
     assert len(records) == limits.CLIENT_EVENT_RATE_MAX_EVENTS + 1
     owner = app.state.background_tasks.store.local_owner
     assert records[-1].args == (

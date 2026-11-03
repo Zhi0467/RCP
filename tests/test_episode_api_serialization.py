@@ -64,6 +64,7 @@ def _auto_episode(
     root_status: str = "succeeded",
     ending: str | None = None,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
+    """A continuation resumes the root's session, so the fixture binds one."""
     episode_id = str(
         uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
     )
@@ -118,7 +119,6 @@ def _auto_episode(
         ),
         root,
     )
-    # A continuation resumes the root's session, so the fixture binds one.
     store.checkpoint_agent_task(
         stored_root.operation_id,
         native_session_id=f"{episode_id}-session",
@@ -555,6 +555,9 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
 
 
 def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -> None:
+    """A failed episode is ended and its root bound a session, so it can be continued; the missing
+    report never blocks that.
+    """
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _auto_episode(store, "failed-report", root_status="failed")
@@ -573,15 +576,16 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert response.tasks[0].can_retry is False
     assert response.tasks[0].can_resume is False
     assert not response.can_stop
-    # A failed episode is ended, and its root bound a session, so it can be
-    # continued; the missing report never blocks that offer.
     assert response.can_continue
     assert response.run_section == "actionable"
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
 
 def test_can_continue_is_withheld_only_while_its_branch_merges(tmp_path) -> None:
-    """The offer mirrors admission: an active merge refuses it, a sibling branch does not."""
+    """The offer mirrors admission: an active merge refuses it, a sibling branch does not.
+
+    Live Auto-research on another branch runs beside this one.
+    """
 
     from .test_branch_target_storage import _merge_task
 
@@ -599,7 +603,6 @@ def test_can_continue_is_withheld_only_while_its_branch_merges(tmp_path) -> None
         ).can_continue
 
     assert can_continue()
-    # Live Auto-research on another branch runs beside this one.
     _auto_episode(store, "live", root_status="queued")
     assert can_continue()
     store.create_branch_merge_task(_merge_task(store, ended, "merge"))
@@ -863,6 +866,7 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
     recovering,
     expected,
 ) -> None:
+    """A ready wrap-up keeps its report unless a member deleted it."""
     from types import SimpleNamespace
 
     from rcp.episode_health import _episode_projection
@@ -901,7 +905,6 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
         control_task_id="control",
         recovery=SimpleNamespace(status="pending") if recovering else None,
         report_login_blocked=episode_fields.get("report_login_blocked", False),
-        # A ready wrap-up keeps its report unless a member deleted it.
         has_report=episode_fields.get("wrapup_state") == "ready",
     )
     assert result == expected
@@ -1008,11 +1011,11 @@ def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> No
 
 
 def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(tmp_path) -> None:
+    """The durable row still says signed in, but the token the launch needs is gone."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _auto_episode(store, "tokenless-report")
     _begin_report(store, episode, root, ending="completed", provider="claude")
-    # The durable row still says signed in; the token the launch needs is gone.
     store.mark_provider_login_verified(
         LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
     )
@@ -1087,6 +1090,7 @@ def test_provider_logins_keep_an_account_holding_queued_work(manifest, tmp_path)
 
 
 def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> None:
+    """A live episode stays listed on an archived branch; only an ended one is hidden."""
     from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt
 
     store = AppStore(tmp_path / "app.sqlite")
@@ -1112,7 +1116,6 @@ def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> 
     def summaries(items):
         return {item.episode_id: _branch_summary(item) for item in items}
 
-    # A live episode stays listed on an archived branch; only an ended one is hidden.
     listed = serialize_episodes(store, "project", branch_summaries=summaries)
     assert [item.episode_id for item in listed] == [episode.episode_id]
     with store.connection() as connection:

@@ -39,7 +39,6 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = root_stream
-    # Shut down the real root's runtime before arranging the deferred recovery.
     with signed_in_client(app) as client:
         response = client.post(
             f"/api/projects/{project_id}/episodes",
@@ -173,6 +172,7 @@ def test_watcher_poll_reconciles_deferred_parent_older_than_recent_window(
 def test_startup_reconciles_deferred_parent_older_than_recent_window(
     manifest, tmp_path, monkeypatch, settled_before_restart
 ):
+    """A background poll must not hide a missed startup reconciliation pass."""
     first_app, parent, child = _deferred_parent_outside_recent_window(manifest, tmp_path)
     store = first_app.state.background_tasks.store
     if settled_before_restart:
@@ -181,7 +181,6 @@ def test_startup_reconciles_deferred_parent_older_than_recent_window(
         str(manifest.path), data_dir=tmp_path / "data", acceptance_agent=True
     )
     launches = _capture_report_launches(restarted, monkeypatch)
-    # A background poll must not hide a missed startup reconciliation pass.
     monkeypatch.setattr(WatcherPoller, "start", lambda _self: None)
 
     with signed_in_client(restarted):

@@ -51,7 +51,7 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Single-entry agent tables (v68-73): fresh, immutable fixtures, and in-place upgrades.
+        # Agent tables (v68-73), schedule pending fires (v74): fresh, fixtures, in-place upgrades.
         "06648185128e17b509fb431adbb5cb6b4b2b5e452a9710c3f1b91a863bc026c9",
         "2486a78010708a6af3d6f1d948cd9718bc5ab25a25bd997c6850f0f87005a03c",
         "2a619610a827a8d9f255f8260c809c414a32144557914f4b30a7976046b9c679",
@@ -66,6 +66,17 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "fbf8c94174d36648b588100ba11dc1f5dd521b9fe69e30d339a39546566a4aa0",
         "2b17efd8b903d8f0d05e6047b3ef55e727d31e5f03d1d0bcd6ec1998e2bbdc00",
         "662a2eba962ce2221e5bbf08e078ae49a2e8ad0f1dbb1700967c0556b58fd460",
+        "036d7cc43f55586a4a4f4da2da65bedd2ae2d5e8d081608857f0d12c5326316e",
+        "6c3d225f51706b11d1b00ec5230dfeab0401768706a0a1d96646a7330b2501de",
+        "8645bcda2e87b0f974630935ab73fd89bfd32e511c564222010ef9975297b33c",
+        "ab41bd9be6ec2c5232ef8fc991523282d558068f3bf694481d33705cf1f7196a",
+        "bd1d9e9c35addb0ec9e1a8508b87950be13e78a7a2d5b38fb20a083326887982",
+        "ce0c668f05adfa0aec918a23cf8a4fd8fa3f7701d9f394aa5531a276e8165bf7",
+        "d9b888aca27f108590601c8d31ccb9041c5dd9dbe08c1c0df452560b216722fc",
+        "ddc1e5823979a401606f93af4387c142e46e1df149cd33ffed3ff14fe1af37c9",
+        "e240214ede3551693eb8ac4a6e816b093dc342967bd31cd8a188d0a105506458",
+        "e6fba0ea9a5eae89f7f2fb27545be217a593a5d85cd7257f8ec65c56e8a05ff6",
+        "fbff59b07199e041137af5ed34ac7a8283c1064c89a191a5a922c4e0f55e937a",
         # Evidence flag origins and episode merge requests (v66-67): fresh,
         # immutable fixture upgrades, and the in-place compatibility boundaries.
         "1e2fca8a33014b546fa5ebf0142fee3eea350b3bebd721525b4ebd071ec6bdd2",

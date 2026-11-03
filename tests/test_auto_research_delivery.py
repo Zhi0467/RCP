@@ -358,6 +358,7 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
 def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     tmp_path, monkeypatch, wake_source
 ) -> None:
+    """Root mail waits with the notice instead of spending its own allocation."""
     store = _store(tmp_path)
     clock = _required_timestamp(store.now())
     monkeypatch.setattr(store, "now", lambda: clock.isoformat())
@@ -403,7 +404,6 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     task_ids_before = [task.operation_id for task in store.auto_research_tasks(episode.episode_id)]
 
     assert deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id) is None
-    # Root mail waits with the notice instead of spending its own allocation.
     assert (
         deliver_pending_auto_research_mail(
             tasks, episode_id=episode.episode_id, recipient_task_id=root.operation_id
@@ -489,8 +489,8 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
     attempted_ids = []
 
     def change_prefix(record, watcher_ids, **kwargs):
+        """A newer row sorts after the snapshot prefix and must still refuse the claim."""
         attempted_ids.append(record.operation_id)
-        # A newer row sorts after the snapshot prefix; it must still refuse the claim.
         offset = timedelta(seconds=1 if changed_input.startswith("newer") else -1)
         changed_at = (_required_timestamp(notice.created_at) + offset).isoformat()
         if changed_input.endswith("notice"):
@@ -1326,6 +1326,7 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
 def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     tmp_path, monkeypatch, graph_wake_while_child_runs
 ) -> None:
+    """A root graph-condition wake must not carry the running child's reply."""
     store = _store(tmp_path)
     root_stage = tmp_path / "auto_research-stage"
     child_stage = tmp_path / "child-work-stage"
@@ -1415,7 +1416,6 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     assert store.auto_research_message(message_id).delivered_at is None  # type: ignore[union-attr]
     spent_before_settlement = 0
     if graph_wake_while_child_runs:
-        # A root graph-condition wake must not carry the running child's reply.
         watcher = _arm_completed_graph_condition(store, auto_research, root)
         graph_wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
         assert graph_wake_id is not None
@@ -1579,9 +1579,10 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
     stage.mkdir()
 
     async def stream(_project_id, _kind, request, execution):
+        """Distinct sessions never share a workspace; one shared stage made the two concurrent wakes
+        refuse each other.
+        """
         if execution.continuation == "fresh":
-            # Distinct sessions never share a workspace; one shared stage made
-            # the two concurrent wakes refuse each other.
             own_stage = stage / execution.operation_id
             own_stage.mkdir()
             execution.checkpoint_stage("execution-host", str(own_stage))

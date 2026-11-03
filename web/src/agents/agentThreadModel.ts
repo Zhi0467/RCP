@@ -284,7 +284,6 @@ export interface HandoffReport {
   threadId: string | null;
   projectId: string | null;
   status: string;
-  answer: string | null;
 }
 
 /** The handoff report a wake line carries, or null for any other line.
@@ -308,7 +307,6 @@ export function handoffReport(line: {
           threadId: text("thread_id"),
           projectId: text("project_id"),
           status,
-          answer: text("answer"),
         }
       : null;
   } catch {

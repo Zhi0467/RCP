@@ -536,6 +536,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     resumed_session_id: str,
     accepted: bool,
 ) -> None:
+    """Resume is recovery of invocation one, never another paid Experiment allocation."""
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -641,7 +642,6 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
 
     bound_after = store.experiment_episode(episode_id)
     assert bound_after is not None
-    # Resume is recovery of invocation one, never another paid Experiment allocation.
     assert (
         store.experiment_loop_runtime(
             project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
@@ -674,6 +674,9 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
     manifest,
     tmp_path: Path,
 ) -> None:
+    """The refusal must reach the agent as an answerable correction; raising it from the arming
+    transaction would spend the invocation after the Patch applied.
+    """
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -739,9 +742,6 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
         )
     )
 
-    # The refusal has to reach the agent as a correction it can answer. Raising
-    # it from the arming transaction instead spends the invocation the rule
-    # exists to save, with the graph Patch already applied.
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
     assert any("arms one check twice" in item for item in launcher.diagnostics)
@@ -835,6 +835,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
 
 
 def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path) -> None:
+    """The chat's first turn has no native session for the server to bind."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     stage = tmp_path / "chat-stage"
     (stage / "inputs").mkdir(parents=True)
@@ -851,7 +852,6 @@ def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path)
         store,
         "project-contract-recovery",
         "watcher-wake",
-        # The chat's first turn has no native session for the server to bind.
         request.model_copy(update={"session_id": None}),
         continuation="watcher_wake",
         stage_root=str(stage),
@@ -1054,6 +1054,13 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     monkeypatch,
     browser_requested,
 ) -> None:
+    """One baseline value is stale; the wake compares with its master's values and commits the full
+    baseline only after its handoff. The wake points to its master, sends only its own changed
+    inputs, mentions the browser only if requested, and a later answer without a valid handoff
+    cannot advance the binding. This schema-valid deliverable cannot update an unknown node; the
+    provider keeps it byte-identical through correction, and live validation still rejects it while
+    RCP keeps the valid watchers.
+    """
     acquired = []
 
     def acquire(
@@ -1131,8 +1138,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert set(initial_baseline) == {"ontology", "repositories", "skills"}
     store.complete_agent_task("loop-initial", applied_revision=None, result={})
 
-    # Make one prior baseline value stale. The wake compares with its master's values,
-    # not this baseline, and commits the complete baseline after its handoff succeeds.
     assert episode.provider and episode.execution_machine and episode.chat_id
     store.commit_experiment_episode_turn(
         episode_id=episode.episode_id,
@@ -1175,9 +1180,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     stale_workspace = Path(wake_execution.stage_root) / "workspace"
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
     (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
-    # This schema-valid deliverable cannot update an unknown graph node. The
-    # provider keeps it byte-identical through correction. Live validation still
-    # rejects it while RCP retains the valid watchers.
     launcher.patch_payload = {
         "summary": "Tried to update an unavailable graph node.",
         "ops": [
@@ -1202,8 +1204,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert not [event for event in wake_events if event.event == "error"]
     assert launcher.sessions[:2] == [None, native_session_id]
     wake_contract = launcher.contracts[1]
-    # The wake is inline and points to the exact master the session started from, which
-    # it never repeats, rules block included.
     assert store.agent_task_contract("loop-wake", "experiment_loop_wake") == wake_contract
     master_path = next((initial_stage / "inputs").glob("experiment-master-*.md"))
     master_text = master_path.read_text(encoding="utf-8")
@@ -1213,10 +1213,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert wake_contract.endswith(SECTIONS["master_pointer"].format(path=master_path))
     assert graph_rules(edits=True, ontology_extensions=False) not in wake_contract
     assert graph_rules(edits=True, ontology_extensions=False) in launcher.contracts[0]
-    # Only this turn's own inputs and commands changed from the master; unchanged graph,
-    # research, schema, write roots, repositories, and skills do not travel again.
     changed = _changed_values(wake_contract)
-    # Only an episode that asked for the browser hears about it.
     assert set(changed) == _TURN_VALUES | ({"browser"} if browser_requested else set())
     assert "task-loop-wake-experiment-control-watcher_wake.json" in changed["paths.loop_control"]
     assert "task-loop-wake-experiment-watchers.json" in changed["paths.watcher_state"]
@@ -1228,7 +1225,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
-    # The correction repeats its browser state and replaces only its command client.
     assert set(_changed_values(launcher.contracts[2])) == {"patch.command_client"} | (
         {"browser"} if browser_requested else set()
     )
@@ -1252,8 +1248,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         "granted" if browser_requested else "not_requested"
     )
 
-    # A later provider answer with no valid joint handoff gets its in-session
-    # correction, but it cannot advance the episode binding or context baseline.
     failed_delivered_id = committed.last_watcher_ids[0]
     store.record_watcher_check(
         failed_delivered_id,
@@ -1316,8 +1310,8 @@ def _record_report_attempt(
     stage_root: str,
     concluding_operation_id: str,
 ) -> None:
+    """The hidden report allocation, as a wrap-up admits it on the operational session."""
     now = store.now()
-    # The hidden report allocation, as a wrap-up admits it on the operational session.
     report = AgentTaskRecord(
         operation_id="report-allocation",
         project_id=project_id,
@@ -1351,6 +1345,9 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
     manifest,
     tmp_path: Path,
 ) -> None:
+    """Neither an undelivered launch nor its recovery clears the restriction. The session re-opens
+    its own unchanged start contract until a same-session turn succeeds.
+    """
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1403,7 +1400,6 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
             stream_experiment_loop_task(service, provider, request, data_dir, execution=execution)
         )
 
-    # Neither a launch that never reached the provider nor its recovery clears the restriction.
     undelivered = _UndeliveredLauncher()
     interrupted_wake = wake_request(2)
     await launch(
@@ -1420,7 +1416,6 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
     recovered = store.experiment_episode(episode_id)
     assert recovered is not None and recovered.last_turn_operation_id == "loop-resume-delivered"
     store.complete_agent_task("loop-resume-delivered", applied_revision=None, result={})
-    # The session's own start contract is what it re-opens; the master itself never changes.
     master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
     master_text = master_path.read_text(encoding="utf-8")
     assert master_text == store.agent_task_contract(initial.operation_id, "session_master")
@@ -1432,7 +1427,6 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
         assert prompt.endswith(reopen)
         assert pointer not in prompt
 
-    # Once a same-session turn succeeds, the next one points to the unchanged master.
     await launch("loop-wake-after-report", wake_request(3), launcher, continuation="watcher_wake")
     assert launcher.contracts[2].endswith(pointer)
     assert reopen not in launcher.contracts[2]
@@ -1440,6 +1434,7 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
 
 @pytest.mark.asyncio
 async def test_added_turns_continue_the_ended_session_inline(manifest, tmp_path: Path) -> None:
+    """Only the new turn's own inputs and commands changed from the master."""
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1515,7 +1510,6 @@ async def test_added_turns_continue_the_ended_session_inline(manifest, tmp_path:
     assert store.agent_task_contract("loop-added-turns", "experiment_loop_turn") == prompt
     assert prompt.endswith(SECTIONS["master_pointer"].format(path=master_path))
     assert prompt.index("Try the larger sweep next.") < prompt.index(SECTIONS["context_delta"])
-    # Only the new turn's own inputs and commands changed from the master.
     changed = _changed_values(prompt)
     assert set(changed) == _TURN_VALUES
     assert (
@@ -1530,6 +1524,10 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     manifest,
     tmp_path: Path,
 ) -> None:
+    """`handoff` plus a missing session id is the provider-switch signal for the full
+    provisional-session contract. Prompt staging stays inspectable even if a later check rejects the
+    provisional session.
+    """
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1560,9 +1558,6 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     store.fail_agent_task("loop-before-switch", "Provider session limit reached.")
 
     diagnostics = ("Attempt 1 (failed) failed with: Provider session limit reached.",)
-    # The orchestration layer authorizes and persists the actual provider override. At this seam,
-    # `handoff` plus a missing session id is the provider-switch signal that selects the full
-    # provisional-session contract rather than the compact same-provider Retry contract.
     switch_request = initial_request.model_copy(update={"session_id": None})
     switch_execution = _execution(
         store,
@@ -1602,8 +1597,6 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     assert json.loads(diagnostics_path.read_text(encoding="utf-8")) == {
         "prior_attempt_diagnostics": list(diagnostics)
     }
-    # Binding replacement is owned by the recovery orchestration layer. Prompt staging must remain
-    # inspectable even if a later handoff or binding check rejects the provisional session.
     assert switch_events
 
 
@@ -1664,6 +1657,7 @@ async def test_completed_loop_correction_revalidates_retained_patch_against_live
     repair_mode: str,
     evidence_arrives: bool,
 ) -> None:
+    """The repair keeps the master; only a master under another key needs rules inline."""
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1726,8 +1720,8 @@ async def test_completed_loop_correction_revalidates_retained_patch_against_live
 
     class RetainedPatchLauncher(_LoopLauncher):
         async def stream(self, provider, prompt, **kwargs):
+            """The correction completes without touching either retained file."""
             if self.contracts:
-                # The correction completes without touching either retained file.
                 self.patch_payload = None
                 self.write_handoff = False
                 if len(self.contracts) == 1 and repair_mode == "inline" and evidence_arrives:
@@ -1782,7 +1776,6 @@ async def test_completed_loop_correction_revalidates_retained_patch_against_live
         )
         graph_update = _graph_update_from_events(events)
         assert repair_launcher.sessions == [native_session_id]
-        # The repair keeps the master; only a master under another key needs rules inline.
         rules = _stale_master_graph_rules
         assert rules(repair_execution, native_session_id, ontology_extensions=False) == []
         assert rules(repair_execution, native_session_id, ontology_extensions=True) == [
@@ -2525,6 +2518,7 @@ async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_n
 
 @pytest.mark.asyncio
 async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_path: Path) -> None:
+    """The unstaged path is rejected before graph-state access."""
     store = AppStore(tmp_path / "unstaged-resource.sqlite3")
     project_id = "project-unstaged-resource"
     request = RunRequest(
@@ -2542,7 +2536,7 @@ async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_pat
     guessed.write_text('{"external":[],"graph":[]}', encoding="utf-8")
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
-        service=None,  # The unstaged path is rejected before graph-state access.
+        service=None,
         launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
         request=request,
         execution=execution,
@@ -2578,6 +2572,8 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     Applying it would commit the previous attempt's maintenance under this
     attempt's authorization; conversation scratch belongs to the stable chat,
     not to one turn (`clear_turn_handoff_files`).
+
+    An unchanged Retry survivor is skipped before graph-state access.
     """
 
     store = AppStore(tmp_path / "retry-survivor.sqlite3")
@@ -2613,7 +2609,7 @@ async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path:
     predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()
 
     frames, session_id, paused = await _process_experiment_watcher_maintenance(
-        service=None,  # An unchanged Retry survivor is skipped before graph-state access.
+        service=None,
         launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
         request=request,
         execution=execution,

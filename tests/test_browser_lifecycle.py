@@ -216,6 +216,7 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
 
 
 def test_off_cleanup_spares_a_browser_turned_back_on(tmp_path, monkeypatch):
+    """The off request read its preference before the re-enable committed."""
     from rcp.api.chats import _delete_browser_if_still_off
 
     store = AppStore(tmp_path / "app.sqlite3")
@@ -230,7 +231,6 @@ def test_off_cleanup_spares_a_browser_turned_back_on(tmp_path, monkeypatch):
         chat_id="chat",
     )
     store.set_chat_browser_requested("project", "chat", browser_requested=True)
-    # The off request read its preference before the re-enable committed.
     monkeypatch.setattr(store, "chat_browser_requested", lambda *_args: False)
     monkeypatch.setattr(browser_runtime_seam, "close_browser_owner", lambda *a, **kw: None)
     _delete_browser_if_still_off(store, "project", "chat")
@@ -620,7 +620,7 @@ def test_hidden_scope_reaches_host_and_effective_status_returns_to_grant(
     scope = hidden_scope()
 
     def invoke(payload, **kwargs):
-        # Exercise the same JSON boundary used by the shipped worker.
+        """Exercises the same JSON boundary the shipped worker uses."""
         payload = json.loads(json.dumps(payload))
         assert payload["hidden_read_scope"] == scope.model_dump(mode="json")
         host.request.update(payload)

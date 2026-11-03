@@ -12,6 +12,15 @@ name inventory, not an execution or prose check.
 Not followed: a builder named otherwise whose result reaches a runner only in
 another module, and shell scripts assembled from Python string pieces and run
 outside these runners (for example through `osascript`).
+
+Subprocess adapters' arguments are inspected as argv, never as prose. A literal
+`shutil.which("tool")` names a dependency even when the launch receives the resolved path.
+
+A shell script (an `sh -c` operand or a shipped `.sh` file) contributes the first word of each
+simple command, after `NAME=value` assignments and the script's own `"$@"` wrapper functions,
+and the program after find's `-exec`. Comments, here-documents, case patterns, arithmetic, and
+redirections are dropped; builtins, keywords, and the script's functions are not programs. This
+is a bounded reading, not a shell parser.
 """
 
 from __future__ import annotations
@@ -25,8 +34,6 @@ from pathlib import Path
 from rcp.dependencies import BY_NAME, UBUNTU_BASE_PACKAGES, required
 
 ROOT = Path(__file__).resolve().parents[1]
-# Concrete subprocess adapters, including injected subprocess runners and the
-# account/compute wrappers. Arguments are inspected as argv, never as prose.
 RUNNERS = {
     "run",
     "Popen",
@@ -54,30 +61,16 @@ RUNNERS = {
     "_probe",
     "_target",
     "_target_result",
-    # A compute job's argv is launched by its backend profile.
     "ComputeLaunchRequest",
 }
 SSH_BUILDERS = {"ssh_arguments", "_strict_ssh_arguments"}
-# A literal `shutil.which("tool")` names a program RCP depends on, even when the
-# launch itself receives the resolved path.
 LOOKUPS = {"which"}
-# Functions whose literal return value is an argv, whoever runs it.
 COMMAND_BUILDER = re.compile(r"(?:\w*_)?(?:command|argv)")
-# A shell script (an `sh -c` operand or a shipped `.sh` file) contributes the
-# first word of each simple command, after leading `NAME=value` assignments and
-# the script's own wrapper functions (those that run `"$@"`), and the program
-# after find's `-exec`. Lines, `;`, `&&`, `||`, `|`, `&`, `(`, `)`, and `$(` end
-# commands; a trailing backslash continues one. Comments, here-document bodies,
-# case patterns, `$((...))`, and `2>&1`-style redirections are dropped. A
-# `"$name"` command word is the absolute path the script assigns to `name`.
-# Builtins, keywords, and the script's functions are not programs. This is a
-# bounded reading, not a shell parser.
 SHELL_BUILTINS = {"cd", "echo", "exec", "exit", "export", "set", "trap", "wait"}
 SHELL_BUILTINS |= {":", "break", "command", "continue", "kill", "local", "printf"}
 SHELL_BUILTINS |= {"read", "return", "shift", "umask", "unset"}
 SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until"}
 SHELL_KEYWORDS |= {"case", "esac", "in", "!", "{", "}"}
-# A test's operands and a `for` loop's words are not commands.
 SHELL_NOT_COMMANDS = {"[", "[[", "for"}
 SHELL_SEPARATOR = re.compile(r"&&|\|\||\$\(|[;|&()`]")
 SHELL_FUNCTION = re.compile(r"^[ \t]*([A-Za-z_]\w*)[ \t]*\(\)", re.MULTILINE)
@@ -87,12 +80,8 @@ SHELL_HEREDOC = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
 SHELL_COMMENT = re.compile(r"(^|\s)#.*$", re.MULTILINE)
 SHELL_ARITHMETIC = re.compile(r"\$\(\([^()]*\)\)")
 SHELL_DUPLICATION = re.compile(r"\d*[<>]&(?:\d+|-)?")
-# A case pattern follows `case WORD in` or `;;` and ends at its `)`.
 SHELL_CASE_PATTERN = re.compile(r"(?:\bcase\s+\S+\s+in|;;)\s*(?!\s|esac\b)\(?[^()\n]*\)")
-# Stands in for an interpolated value; a command word containing it is dynamic.
 DYNAMIC = "\0"
-# `_programs` records names only at calls to these or in command builders; a file
-# without either has none.
 LAUNCH_CALL = re.compile(
     r"\b(?:"
     + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS | LOOKUPS)))
@@ -113,7 +102,10 @@ def _name(node: ast.expr) -> str:
 
 
 def _shell_programs(text: str) -> set[str]:
-    """Programs one shell script runs, by the bounded reading above."""
+    """Programs one shell script runs, by the bounded reading above.
+
+    A function that runs its arguments passes its first operand on as a command.
+    """
     lines: list[str] = []
     terminator = None
     for line in text.splitlines():
@@ -133,7 +125,6 @@ def _shell_programs(text: str) -> set[str]:
     for name, path in SHELL_PATH_ASSIGNMENT.findall(text):
         paths[name].add(path)
     commands = [command.split() for command in SHELL_SEPARATOR.split(text.replace("\n", ";"))]
-    # A function that runs its arguments passes its first operand on as a command.
     wrappers = {
         name
         for name in functions
@@ -172,6 +163,9 @@ def _programs(source: str) -> set[str]:
     found: set[str] = set()
 
     def scan(scope: ast.AST, inherited: dict[str, list[ast.expr]]) -> None:
+        """A joined argv appended to another string is that command's arguments; methods own their
+        host while free functions receive it first.
+        """
         bindings = {key: list(values) for key, values in inherited.items()}
         nodes: list[ast.AST] = []
 
@@ -240,6 +234,9 @@ def _programs(source: str) -> set[str]:
             return [node]
 
         def argv(node: ast.expr) -> None:
+            """Skips options, operands, and destination to reach the command without mistaking a
+            literal host for a tool.
+            """
             for value in resolve(node):
                 if isinstance(value, (ast.List, ast.Tuple)) and value.elts:
                     head = value.elts[0]
@@ -254,8 +251,6 @@ def _programs(source: str) -> set[str]:
                                 if Path(candidate.value).name in {"sh", "bash"}:
                                     shell(value.elts[1:])
                                 if Path(candidate.value).name == "ssh":
-                                    # Skip options/operands and destination to reach the
-                                    # command, without mistaking a literal host for a tool.
                                     operands = iter(value.elts[1:])
                                     for operand in operands:
                                         if isinstance(operand, ast.Starred):
@@ -291,7 +286,7 @@ def _programs(source: str) -> set[str]:
                                         break
 
         def shell(operands: list[ast.expr]) -> None:
-            # Only the operand after a literal `-c`-style flag is a script.
+            """Only the operand after a literal `-c`-style flag is a script."""
             for flag, script in zip(operands, operands[1:], strict=False):
                 if not (
                     isinstance(flag, ast.Constant)
@@ -317,6 +312,9 @@ def _programs(source: str) -> set[str]:
                 return
 
         def remote(node: ast.expr) -> None:
+            """A configured shell is dynamic, but its literal fallback still belongs in the
+            inventory.
+            """
             if (
                 isinstance(node, ast.BinOp)
                 and isinstance(node.op, ast.Add)
@@ -344,8 +342,6 @@ def _programs(source: str) -> set[str]:
                         words = words[1:]
                     if words:
                         program = words[0]
-                        # A configured shell is dynamic, but its literal fallback
-                        # still belongs in the external-program inventory.
                         default = re.fullmatch(r"\$\{[A-Za-z_][A-Za-z_0-9]*:-([^${}]+)\}", program)
                         if default:
                             program = default[1]
@@ -367,7 +363,6 @@ def _programs(source: str) -> set[str]:
                         for value in sequence.elts:
                             bind(node.target, value)
 
-        # A joined argv appended to another string is that command's arguments.
         appended = {
             id(node.right)
             for node in nodes
@@ -402,7 +397,6 @@ def _programs(source: str) -> set[str]:
                     and _name(node.func.value) == "shlex"
                     and node.args
                 ):
-                    # A literal argv joined into a shell command string.
                     argv(node.args[0])
                 if (
                     name in LOOKUPS
@@ -415,7 +409,6 @@ def _programs(source: str) -> set[str]:
                     found.add("ssh")
                     remote(node.args[1])
                 if name in {"_ssh", "_ssh_bytes"} and node.args:
-                    # Methods own their host; free functions receive host first.
                     index = 0 if isinstance(node.func, ast.Attribute) or len(node.args) == 1 else 1
                     remote(node.args[index])
             if node is not scope and isinstance(
@@ -428,6 +421,9 @@ def _programs(source: str) -> set[str]:
 
 
 def test_external_dependency_names_match_source(monkeypatch, tmp_path) -> None:
+    """Paper installs its executable by pinned hash, so its argv head is dynamic; the real selector
+    is read and only the download integrity probe is stubbed.
+    """
     locations: dict[str, list[str]] = defaultdict(list)
     for path in sorted((ROOT / "src/rcp").rglob("*.py")):
         source = path.read_text()
@@ -438,8 +434,6 @@ def test_external_dependency_names_match_source(monkeypatch, tmp_path) -> None:
     for path in sorted((ROOT / "src/rcp").rglob("*.sh")):
         for program in _shell_programs(path.read_text()):
             locations[program].append(str(path.relative_to(ROOT)))
-    # Paper installs its executable by pinned hash, so its argv head is dynamic.
-    # Read the real executable selector; stub only the download integrity probe.
     from rcp.paper.engines import EngineStore
 
     monkeypatch.setattr(EngineStore, "_validate", lambda self, engine: tmp_path / engine)

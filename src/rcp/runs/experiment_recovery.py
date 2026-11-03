@@ -40,8 +40,10 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
     new invocations fenced, but that interruption must not strand the turn
     that was already authorized: when its exact RCP-owned session and stage
     are still usable, recover it without spending another invocation.  A
-    concrete continuation problem is persisted so the existing Stop adapter
-    can take its established abandonment path instead.
+    concrete continuation problem, or a recovery the engine refuses, is
+    persisted so the existing Stop adapter can take its established
+    abandonment path instead.  A stage host that cannot be reached is no such
+    problem: the turn stays pending and Stop keeps waiting for a later start.
     """
 
     for previous in tasks.store.stopping_experiment_recovery_candidates():
@@ -96,38 +98,43 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
                         continue
                     if available is not True:
                         problem = "the saved provider workspace is unavailable"
-            if problem is not None:
-                tasks.store.record_experiment_episode_diagnostic(
-                    episode_id=episode.episode_id,
-                    project_id=episode.project_id,
-                    control_node_id=request.control_node_id,
-                    diagnostic=(
-                        "Stop loop cannot finish its already-authorized turn because "
-                        + problem.rstrip(".")
-                        + "."
-                    ),
-                )
-                continue
-            recovered = (
-                tasks.retry(
-                    previous.operation_id,
-                    authorized_by=episode.authorized_by,
-                )
-                if previous.status == "failed"
-                else tasks.resume(previous.operation_id)
-            )
-            tasks.store.record_agent_task_receipt(
-                recovered.operation_id,
-                "experiment_stop_recovery",
-                {
-                    "episode_id": episode.episode_id,
-                    "recovered_operation_id": previous.operation_id,
-                },
-                tier="summary",
-            )
-            tasks.store.record_agent_task_event(
-                recovered.operation_id,
-                "Resuming the already-authorized Experiment turn so its graceful Stop can settle.",
+            if problem is None:
+                try:
+                    recovered = (
+                        tasks.retry(
+                            previous.operation_id,
+                            authorized_by=episode.authorized_by,
+                        )
+                        if previous.status == "failed"
+                        else tasks.resume(previous.operation_id)
+                    )
+                except ValueError as exc:
+                    problem = str(exc) or "its recovery was refused"
+                else:
+                    tasks.store.record_agent_task_receipt(
+                        recovered.operation_id,
+                        "experiment_stop_recovery",
+                        {
+                            "episode_id": episode.episode_id,
+                            "recovered_operation_id": previous.operation_id,
+                        },
+                        tier="summary",
+                    )
+                    tasks.store.record_agent_task_event(
+                        recovered.operation_id,
+                        "Resuming the already-authorized Experiment turn so its graceful Stop "
+                        "can settle.",
+                    )
+                    continue
+            tasks.store.record_experiment_episode_diagnostic(
+                episode_id=episode.episode_id,
+                project_id=episode.project_id,
+                control_node_id=request.control_node_id,
+                diagnostic=(
+                    "Stop loop cannot finish its already-authorized turn because "
+                    + problem.rstrip(".")
+                    + "."
+                ),
             )
         except (KeyError, RuntimeError, ValueError):
             # Startup recovery is best effort. A transaction race or a

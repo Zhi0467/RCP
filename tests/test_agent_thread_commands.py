@@ -27,6 +27,7 @@ def test_thread_command_client_uses_typed_project_and_file_arguments(tmp_path: P
 
 
 def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None:
+    """Claiming fails while the delivered turn has not settled, and a refusal is final."""
     from rcp.service import RunRequest
     from rcp.storage import AppStore
     from tests.helpers import authorized_human
@@ -73,7 +74,7 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
             "request": {"chat_scope": "project", "chat_id": source.thread_id, "mode": "work"},
         }
     )
-    with pytest.raises(ValueError):  # The delivered turn has not settled yet.
+    with pytest.raises(ValueError):
         store.create_agent_task(report, handoff_wake_id=handoff.handoff_id)
     refused = store.create_agent_handoff(
         source_thread_id=source.thread_id,
@@ -83,7 +84,7 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
         message="Please check",
     )
     store.refuse_agent_handoff(refused.handoff_id, "thread_closed")
-    with pytest.raises(ValueError):  # A refusal is final.
+    with pytest.raises(ValueError):
         store.create_agent_task(wrong, handoff_id=refused.handoff_id)
     assert store.agent_task("report") is None and store.agent_task("duplicate") is None
 
@@ -91,6 +92,9 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
 def test_projects_and_handoff_share_cards_and_member_ownership(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
+    """A reused key with other arguments is refused before it can repick. The handoff waits on the
+    running Space turn, whose Stop cancels it with no wake.
+    """
     from contextlib import nullcontext
 
     from rcp.agents.command_mailbox import CommandTurnIdentity
@@ -202,7 +206,6 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
     )
     assert handler(picked, identity).result["state"] == "pending"
     assert store.agent_thread(target_id).agent["provider"] == "claude"
-    # A reused key with other arguments is refused before it can repick.
     (tmp_path / "other.md").write_text("Something else")
     monkeypatch.setattr(
         "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
@@ -222,9 +225,8 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
         lambda *args, **kwargs: {},
     )
     unready = picked.model_copy(update={"idempotency_key": "unready"})
-    assert handler(unready, identity).status == "invalid"  # Not ready there: nothing stored.
+    assert handler(unready, identity).status == "invalid"
     assert len(store.pending_agent_handoffs()) == 2
-    # The handoff waits on the running Space turn; that turn's Stop cancels it, with no wake.
     background = app.state.background_tasks
     assert (
         dispatch_thread_handoffs(
@@ -263,6 +265,10 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
 def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     manifest, tmp_path: Path, monkeypatch, refusal
 ) -> None:
+    """A refused delivery gives up after a bounded wait and a queued turn whose thread closed fails
+    and reports. Stop reports at once, a sign-in failure waits for a retry, and a lost link RCP
+    retries itself is not a settlement.
+    """
     from contextlib import nullcontext
 
     from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
@@ -362,9 +368,9 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert store.agent_task_events("source") == []
         return
     assert drain() == []
-    for thread in (source, target):
+    for thread, provider in ((source, "claude"), (target, "codex")):
         store.set_agent_thread_pick(
-            thread.thread_id, provider="claude", model=None, reasoning=None, run_on=None
+            thread.thread_id, provider=provider, model=None, reasoning=None, run_on=None
         )
     with store.connection() as connection:
         connection.execute(
@@ -372,14 +378,13 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
             (store.now(),),
         )
     if refusal == "deferred":
-        # A delivery the machine keeps refusing gives up after a bounded wait.
         from datetime import datetime, timedelta
 
         from rcp.limits import AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
         from rcp.runs.provider_login import MachineDependenciesMissing
 
         def missing(scope, *args, **kwargs):
-            if scope == project_id:  # The project's machine, not the Space wake.
+            if scope == project_id:
                 raise MachineDependenciesMissing("codex is missing")
 
         monkeypatch.setattr(background, "admit_provider_task", missing)
@@ -398,7 +403,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert turn is not None
     assert turn.request["source"] == "handoff"
     assert turn.request["trigger"] == "human"
-    assert turn.request["provider"] == "claude"  # The target thread's stored pick.
+    assert turn.request["provider"] == "codex"
     transcript = catalog.open_execution(project_id).chat_transcript(target.thread_id)
     assert transcript is not None
     assert [(message.source, message.text) for message in transcript.messages] == [
@@ -406,7 +411,6 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     ]
     monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **kwargs: None)
     if refusal == "closed_queued":
-        # A queued turn whose thread closed never starts; it fails and its handoff reports.
         store.close_agent_thread(target.thread_id, reason="access_lost")
         spawned.clear()
         background.recover_at_startup()
@@ -428,11 +432,10 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
 
     monkeypatch.setattr(chat, "_append_chat_records", counted)
     assert drain() == []
-    assert copies == []  # The request message was copied once, on delivery.
+    assert copies == []
     settled = turn.operation_id
     store.mark_agent_task_running(settled)
     if refusal == "paused":
-        # Stop reports at once instead of holding the handoff until a Resume.
         with store.connection() as connection:
             connection.execute(
                 "UPDATE graph_runs SET status='paused' WHERE operation_id=?", (settled,)
@@ -441,7 +444,6 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert report["status"] == "paused"
         return
     if refusal == "unprojected":
-        # The request message must reach the project transcript before the handoff settles.
         store.complete_agent_task(
             settled, applied_revision=None, result={"turn_outcome": {"status": "done"}}
         )
@@ -458,12 +460,11 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert drain() == []
         noted = len(store.agent_task_events(settled))
         assert drain() == []
-        assert len(store.agent_task_events(settled)) == noted  # Deferral is noted once.
+        assert len(store.agent_task_events(settled)) == noted
         monkeypatch.setattr(chat, "_append_chat_records", append)
         assert len(drain()) == 1
         return
     if refusal == "signed_out":
-        # A sign-in failure waits for a sign-in retry until the thread moves past it.
         store.fail_agent_task(settled, "signed out", failure_kind="provider_auth")
         assert drain() == []
         store.create_agent_task(
@@ -481,9 +482,9 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         )
         report = store.agent_task(drain()[0]).request["handoff_report"]
         assert (report["status"], report["failure_kind"]) == ("failed", "provider_auth")
+        assert report["provider"] == "codex"
         return
     if refusal == "stood_down":
-        # A promised reattempt that stood down without a child leaves the failure final.
         store.fail_agent_task(settled, "link lost", failure_kind="transport_lost")
         store.record_agent_task_receipt(settled, "transport_auto_retry", {"attempt": 1})
         assert drain() == []
@@ -494,11 +495,9 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert (report["status"], report["failure_kind"]) == ("failed", "transport_lost")
         return
     if refusal == "retried":
-        # A lost link RCP retries itself is not a settlement; the retry's result is.
         import threading
 
         store.fail_agent_task(settled, "link lost", failure_kind="transport_lost")
-        # Its worker has not yet recorded the retry decision.
         background._workers[settled] = threading.current_thread()
         assert drain() == []
         background._forget_control(settled)
@@ -517,7 +516,6 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         applied_revision=None,
         result={"messages": ["Looking.", "Checked"], "turn_outcome": {"status": "done"}},
     )
-    # The report waits for the Space thread's own turn and for a member still in the Space.
     space_turn = source_request.model_copy(update={"message": "Busy"})
     store.create_agent_task(
         _task_record(
@@ -551,6 +549,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert (wake.request["source"], wake.request["provider"]) == ("handoff_report", "claude")
     report = wake.request["handoff_report"]
     assert (report["answer"], report["turn_outcome"]["status"]) == ("Checked", "done")
+    assert report["provider"] == "codex"
     assert drain() == []
     with store.connection() as connection:
         assert tuple(
@@ -589,7 +588,7 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
     assert not store.pending_agent_handoffs()
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM agent_schedules").fetchone()[0] == 0
-    assert store.agent_thread(target.thread_id) is not None  # retain project privacy authority
+    assert store.agent_thread(target.thread_id) is not None
 
 
 def test_project_work_thread_exposes_projects_with_open_graph_items(
@@ -713,9 +712,7 @@ def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypat
     from rcp.runs.agent_thread_commands import _THREAD_VERBS, thread_capabilities
     from rcp.runs.tasks.compute_commands import WorkComputeCommands
 
-    # A Space turn's handler grants each table verb, and each record carries its line.
     assert all(verb.capability for verb in _THREAD_VERBS.values())
-    # A project thread's Work turn with every gate open: its grant is the line table's keys.
     task = SimpleNamespace(
         dispatch_authority=SimpleNamespace(task_contract="work_auto"),
         request={"chat_id": "thread"},

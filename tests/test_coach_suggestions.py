@@ -227,6 +227,9 @@ async def test_a_refresh_replaces_every_undecided_card_on_its_file(coach):
 
     class Launcher:
         async def stream(self, _provider, _prompt, **kwargs):
+            """The edit lands inside the first card only, so it goes outdated while the second stays
+            pending.
+            """
             rounds.append(kwargs["session_id"])
             text = saved(live, project).files[0].text or ""
             output = kwargs["write_dirs"][0] / "files" / "paper.md"
@@ -237,7 +240,6 @@ async def test_a_refresh_replaces_every_undecided_card_on_its_file(coach):
                 .replace("line 25\n", "coach 25\n")
             )
             if len(rounds) == 1:
-                # Inside the first card only: it goes outdated, the second stays pending.
                 human_edit(live, "paper-file", text.replace("line 2\n", "human 2\n"), project)
             yield AgentEvent(event="session", session_id="refresh-native")
             yield AgentEvent(event="done")
@@ -256,6 +258,7 @@ async def test_a_refresh_replaces_every_undecided_card_on_its_file(coach):
 
 @pytest.mark.asyncio
 async def test_a_coach_session_keeps_its_folder_and_sessions_never_share_one(coach):
+    """Providers look a resumed session up by its folder, and each session's mailbox owns it."""
     service, _live, data = coach
     folders = []
 
@@ -279,7 +282,6 @@ async def test_a_coach_session_keeps_its_folder_and_sessions_never_share_one(coa
             )
         ]
         assert not [event for event in events if event.event == "error"]
-        # The task runner records the session the provider reported.
         session = next(event.session_id for event in events if event.event == "session")
         execution.store.checkpoint_agent_task(execution.operation_id, native_session_id=session)
         execution.store.complete_agent_task(
@@ -289,7 +291,6 @@ async def test_a_coach_session_keeps_its_folder_and_sessions_never_share_one(coa
     await turn()
     await turn("s1")
     await turn()
-    # Providers look a resumed session up by its folder; each session's mailbox owns it.
     assert folders[0] == folders[1] != folders[2]
     assert folders[0].is_dir()
 
@@ -535,11 +536,12 @@ def detached_coach(coach, monkeypatch, tmp_path):
         return unhidden_read_scope(execution_machine=base_machine, host="base.example")
 
     async def link_lost(*_args, **kwargs):
-        # The provider writes its changes, then the link drops before it exits.
+        """The provider writes its changes, then the link drops before it exits; like a controller
+        crash, the live side never learns the native session.
+        """
         output = kwargs["write_dirs"][0] / "files" / "paper.md"
         output.parent.mkdir()
         output.write_text("Proposed after the drop\n")
-        # Like a controller crash, the live side never learns the native session.
         kwargs["outcome"].remote_result_pending = True
         return
         yield

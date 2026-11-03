@@ -107,7 +107,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     readonly = AppStore.open_read_only_snapshot(path)
     assert readonly.check_storage_schema_migrations() == (
         43,
-        73,
+        74,
         (
             "per_target_experiment_loops_v1",
             "client_requests_v1",
@@ -139,6 +139,7 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             "space_turn_project_bindings_v1",
             "agent_schedules_v1",
             "approval_cards_v1",
+            "agent_schedule_pending_fires_v1",
         ),
     )
     readonly.close()
@@ -149,7 +150,6 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
         )
     upgraded = AppStore(path)
     assert upgraded.episode("live-main") == episode
-    # Migration 65 binds all historical tasks to the machine sign-in.
     assert upgraded.agent_task("live-task") == task.model_copy(update={"login_id": ""})
     assert upgraded.watcher("live-watcher") == watcher
     assert upgraded.episode_budget_meter("live-main") == budget
@@ -182,7 +182,6 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     )
     with pytest.raises(ValueError, match="live parent"):
         upgraded.create_episode(_episode(upgraded, "main-duplicate"))
-    # Live Auto-research identity is the branch: "parent" stays live beside a second one.
     upgraded.create_episode(_episode(upgraded, "second-auto", mode="auto_research"))
     with pytest.raises(ValueError, match="live parent"):
         upgraded.create_episode(

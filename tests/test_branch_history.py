@@ -252,6 +252,7 @@ def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None
 
 
 def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(manifest) -> None:
+    """Replay relies on the committed transition, not live operational lineage."""
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
@@ -346,7 +347,6 @@ def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(man
     assert accepted.transition.pre_head.target == branch.graph_target
     assert history.head_ref() == main_head
     assert "exp/child" not in history.state().nodes
-    # Replay relies on the committed transition, not live operational lineage.
     history.write_authority.agent_authority_resolver = None
     replayed = history.branch(metadata.branch_id).state()
     assert replayed.nodes["exp/child"].status == "completed"
@@ -775,6 +775,7 @@ def test_remote_present_no_change_receipt_is_parsed_and_validated(manifest) -> N
 
 
 def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> None:
+    """Simulates the old writer's branch record, which did not persist parent or creator."""
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(seed_patch())
     metadata = _branch_metadata(history)
@@ -803,7 +804,6 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
     appended, _result = history.append(merge_patch)
     assert appended.transition is not None
 
-    # Simulate the old writer's branch record: parent/creator were not persisted.
     metadata_path = branch.root / "branch.json"
     old_record = branch.branch_metadata().model_dump(
         mode="json", exclude={"parent_head", "created_by"}

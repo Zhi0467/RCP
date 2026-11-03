@@ -85,6 +85,7 @@ def test_first_replay_halt_wins_over_later_structural_failure(history, target, l
 
 
 def test_pending_tail_is_not_published_or_retained(history, tmp_path):
+    """Publication makes the same bytes visible to the shared engine's next inventory."""
     prepared, report, _ = history.validate_candidate(_branch_patch("ev/pending"))
     assert not report.rejected
     prepared = prepared.model_copy(update={"admission": "accepted"})
@@ -97,7 +98,6 @@ def test_pending_tail_is_not_published_or_retained(history, tmp_path):
     assert "ev/pending" in result.state.nodes
     assert history.current_materialization() == canonical
     assert before == {path: path.read_bytes() for path in history.root.rglob("*") if path.is_file()}
-    # Publication makes the same bytes visible to the shared engine's next inventory.
     pending.rename(history.patches_dir / pending.name)
     published = history.current_materialization()
     assert published.state == result.state

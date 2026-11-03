@@ -62,7 +62,7 @@ _ARCHIVE_MERGE_ID = "a" * 64
 
 @pytest.fixture(autouse=True)
 def compatible_state_rsync(monkeypatch):
-    # Negotiation is covered independently; these tests exercise state ownership.
+    """Negotiation is covered independently; these tests exercise state ownership."""
     monkeypatch.setattr(
         state_transfer,
         "get_engine",
@@ -958,12 +958,13 @@ def test_process_heartbeats_keep_contended_and_acquired_holder_alive(tmp_path, m
     arguments = _local_advisory_lock_arguments(path)
 
     def contend() -> None:
+        """Heartbeat writes must continue while the command waits; a distinct second
+        response exposes any heartbeat response left queued.
+        """
         with _process_advisory_lock(arguments, str(path), on_wait=lambda _: waiting.set()) as lease:
             acquired.set()
             assert release.wait(timeout=5)
             lease.assert_owned()
-            # Delay receiving the real response: heartbeat writes must continue
-            # while the command waits, using the same stdin guard only for writes.
             original_next_line = _HolderLines.next_line
 
             def delayed_response(lines, wait):
@@ -978,7 +979,6 @@ def test_process_heartbeats_keep_contended_and_acquired_holder_alive(tmp_path, m
                 )
             assert response == {"ok": True, "commit_status": None}
             lease.assert_owned()
-            # A distinct second response exposes any heartbeat response left queued.
             response = lease._run_owned_command({"op": "nonsense"})
             assert response["ok"] is False
             assert "unsupported lock-holder command" in response["error"]
@@ -2408,6 +2408,7 @@ def test_remote_stage_last_touch_offline_is_retryable(monkeypatch) -> None:
 
 
 def test_remote_stage_artifact_read_refuses_a_fifo_without_blocking(local_remote_stage) -> None:
+    """Releases a reader stuck in open() so a failure cannot hang the suite."""
     stage = local_remote_stage
     (Path(str(stage.root)) / "workspace").mkdir()
     directory = Path(str(stage.prepare_artifact_directory("logical-turn", reuse=False)))
@@ -2419,7 +2420,6 @@ def test_remote_stage_artifact_read_refuses_a_fifo_without_blocking(local_remote
             with pytest.raises(ValueError):
                 pending.result(timeout=30)
         finally:
-            # Release a reader stuck in open() so a failure cannot hang the suite.
             with suppress(OSError):
                 os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
@@ -2460,11 +2460,9 @@ def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage, mo
     stage = local_remote_stage
     workspace = Path(str(stage.root)) / "workspace"
     workspace.mkdir()
-    # Absent: a restore writes it, creating the turn folder.
     assert stage.sync_artifact("earlier", "page.html", "", b"v1")
     tracked = workspace / "turns" / "earlier" / "artifacts" / "page.html"
     assert tracked.read_bytes() == b"v1"
-    # A file that no longer holds the expected digest is the agent's; it is kept.
     tracked.write_bytes(b"agent")
     assert not stage.sync_artifact("earlier", "page.html", sha(b"v1"), b"v2")
     assert stage.sync_artifact("earlier", "page.html", sha(b"agent"), b"v2")
@@ -2473,12 +2471,10 @@ def test_remote_stage_syncs_and_digests_tracked_artifacts(local_remote_stage, mo
     assert stage.artifact_digests(
         [("earlier", "page.html"), ("earlier", "linked.html"), ("gone", "page.html")]
     ) == {("earlier", "page.html"): (sha(b"v2"), 2), ("earlier", "linked.html"): ("irregular", -1)}
-    # An irregular file is replaced only while it is still the one RCP saw.
     assert not stage.sync_artifact("earlier", "linked.html", "", b"never")
     assert stage.sync_artifact("earlier", "linked.html", "irregular", b"restored")
     assert not (tracked.parent / "linked.html").is_symlink()
     assert tracked.read_bytes() == b"v2"
-    # An oversized file reports its size, unhashed.
     monkeypatch.setattr("rcp.transport.run_stage.CHAT_ARTIFACT_MAX_FILE_BYTES", 1)
     assert stage.artifact_digests([("earlier", "page.html")]) == {
         ("earlier", "page.html"): ("oversized:2", 2)
@@ -2494,7 +2490,6 @@ def test_artifact_digest_stops_one_byte_past_a_file_that_grew(tmp_path, monkeypa
     real = os.fstat
 
     def shrunk(fd):
-        # fstat saw the file before it grew past the limit.
         info = real(fd)
         return os.stat_result((info.st_mode, *info[1:6], 3, *info[7:]))
 

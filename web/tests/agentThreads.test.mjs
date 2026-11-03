@@ -70,7 +70,6 @@ test("a handoff wake reads as its report; any other line is not one", () => {
     threadId: "t",
     projectId: "p",
     status: "failed",
-    answer: null,
   });
   assert.equal(handoffReport({ text }), null);
   assert.equal(handoffReport({ text: "Morning check-in", source }), null);

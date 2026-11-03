@@ -174,6 +174,9 @@ def _team_app(tmp_path: Path):
 
 
 def _source_project(app, root: Path) -> str:
+    """Setup defaults to the developer's real transcript roots, so indexing stays in
+    this test.
+    """
     repository = root / "paper"
     repository.mkdir(parents=True)
     subprocess.run([_GIT, "init", str(repository)], check=True, capture_output=True)
@@ -205,7 +208,6 @@ def _source_project(app, root: Path) -> str:
             confirmed=True,
         )
     )
-    # Setup defaults to the developer's real transcript roots; keep indexing in this test.
     roots = {"claude_roots": [str(root / "claude")], "codex_roots": [str(root / "codex")]}
     manifest = repository / ".research" / "manifest.toml"
     document = tomlkit.parse(manifest.read_text(encoding="utf-8"))
@@ -589,7 +591,6 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
                 ).status_code
                 == 200
             )
-            # Only the admitter's projection offers the relay its bind route admits.
             target_path = f"/api/project-transfers/requests/{target_request['request_id']}"
             assert bob_client.get(target_path).json()["can_relay"] is False
             assert team_client.get(target_path).json()["can_relay"] is True

@@ -662,8 +662,8 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """Counts retry admission probes, not unrelated asynchronous startup warming."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    # Count retry admission probes, not unrelated asynchronous startup warming.
     monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: [])
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -734,6 +734,7 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The race is in the stage probe; the fictional host's dependency check is not."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -752,7 +753,6 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
         "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
         missing_remote_stage,
     )
-    # The race is in the stage probe; the fictional host's dependency check is not.
     monkeypatch.setattr(app.state.dependency_checker, "launch_refusal", lambda _host: None)
 
     with signed_in_client(app) as client:
@@ -897,7 +897,7 @@ def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
             paused = client.post(pause_url, json={})
             stopped = client.post(stop_url, json={})
             assert paused.status_code == 202, paused.text
-            assert paused.json()["status"] == "pausing"
+            assert paused.json()["status"] == "paused"
             assert stopped.status_code == 200, stopped.text
             assert stopped.json()["status"] == "stopping"
 
@@ -959,7 +959,7 @@ def test_exact_episode_query_reaches_a_parent_beyond_the_interleaved_list_bound(
 
 
 def test_an_experiment_loop_reads_empty_mail_and_refuses_new_mail(manifest, tmp_path) -> None:
-    # Runs reads every episode with its mail, so a loop's empty inbox is not an error.
+    """Runs reads every episode with its mail, so a loop's empty inbox is not an error."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -991,6 +991,9 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The transport is down for everyone: the route and the background reconcile sweeps bind the
+    helper separately, and patching one name left the sweeps delivering for real.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -1003,13 +1006,6 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
     def delivery_is_temporarily_unavailable(*_args, **_kwargs):
         raise RuntimeError("delivery transport is unavailable")
 
-    # The transport is down for everyone, not only for the route. The route
-    # imported this helper and so holds its own binding, but the reconcile
-    # sweeps that run after task settlement resolve it from its defining
-    # module on background threads. Patching one name left those sweeps
-    # delivering the message for real -- correct behaviour for durable mail,
-    # and exactly why "still pending" would otherwise depend on which thread
-    # reached the record first.
     for binding in (
         "rcp.api.episode_routes.deliver_pending_auto_research_mail",
         "rcp.runs.auto_research_delivery.deliver_pending_auto_research_mail",
@@ -1047,6 +1043,7 @@ def test_episode_mail_is_durable_when_immediate_delivery_fails(
 
 
 def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) -> None:
+    """Reports use the same comment shell and admission checks as other artifacts."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -1103,7 +1100,6 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "rcp-result-view-gesture" not in preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
     assert viewer.status_code == 200
-    # Reports use the same comment shell and admission checks as other artifacts.
     assert "rcp-artifact-context" not in viewer.text
     assert 'id="composer"' in viewer.text
     assert 'id="message"' in viewer.text
@@ -1142,6 +1138,9 @@ def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) ->
 
 
 def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, tmp_path) -> None:
+    """The chain's current member stays listed, even on an archived branch, while its older root
+    need not.
+    """
     from rcp.api.episodes import listed_episodes
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1196,12 +1195,10 @@ def test_episode_list_keeps_every_auto_research_chain_current_member(manifest, t
     )
 
     listed = {episode.episode_id for episode in listed_episodes(store, project_id)}
-    # The chain's current member stays listed; its older root does not need to.
     assert len(listed) == 51
     assert current_id in listed
     assert root_id not in listed
 
-    # A live member stays listed on an archived branch even when its ended root is hidden.
     store.set_branch_archived(project_id, branch_id, archived=True)
     with store.connection() as connection:
         connection.execute(
@@ -1268,6 +1265,7 @@ def test_a_deleted_episode_report_keeps_its_lineage_row(
 def test_episode_report_viewer_returns_gone_when_the_artifact_disappears(
     manifest, tmp_path, monkeypatch
 ):
+    """A Delete lands between the report read and the artifact read."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -1279,7 +1277,6 @@ def test_episode_report_viewer_returns_gone_when_the_artifact_disappears(
         report_html="<h1>Report</h1>",
     )
 
-    # A Delete that lands between the report read and the artifact read.
     monkeypatch.setattr(store, "artifact", lambda _artifact_id: None)
     url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
     with signed_in_client(app) as client:

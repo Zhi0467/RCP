@@ -104,7 +104,7 @@ def test_snapshot_is_not_ready_after_copy_or_sync_failure(tmp_path, monkeypatch,
     document = json.loads((tmp_path / "checkpoint" / "checkpoint.json").read_text())
     assert not document["ready"]
     assert (root / "keep").read_text() == "original"
-    assert document["workspaces"]  # Partial copies remain reachable for retention.
+    assert document["workspaces"]
 
 
 def test_absence_nested_coverage_and_prepared_source_mapping(tmp_path):

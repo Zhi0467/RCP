@@ -55,8 +55,7 @@ def _journal_from_disk(directory: Path) -> dict[str, object]:
 
 
 def _recorded(tmp_path: Path, events: list[dict]):
-    # What the pass exited with is the supervisor's own contract, tested there.
-    # Here the journal is the subject.
+    """The pass's exit status is the supervisor's own contract, tested there."""
     _completed, directory = _supervise(tmp_path, json.dumps({"emit": events, "exit": 0}) + "\n")
     pid_file = str(directory)[: -len(".turn")]
     return recorded_provider_turn(pid_file, _journal_from_disk(directory)), directory
@@ -114,8 +113,6 @@ def test_app_server_recovery_checks_the_original_permission_contract(
             },
         },
     ]
-    # The link's stdin ends after prompt delivery. The actual supervisor keeps
-    # recording the provider, and the real journal reader verifies its bytes.
     inputs = [
         {
             "id": 3,

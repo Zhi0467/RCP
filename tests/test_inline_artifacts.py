@@ -49,6 +49,9 @@ def _descriptor(name: str, media_type: str) -> AgentArtifactDescriptor:
 
 
 def test_a_declared_doctype_leads_the_page_so_it_renders_in_standards_mode() -> None:
+    """A license comment may legally precede the doctype; a page without one keeps the mode its
+    author's browser gives it.
+    """
     document, _ = html_preview_document(PAGE)
     page = _srcdoc(document)
     assert page.startswith("<!DOCTYPE html><meta http-equiv=")
@@ -57,13 +60,11 @@ def test_a_declared_doctype_leads_the_page_so_it_renders_in_standards_mode() -> 
     spaced, _ = html_preview_document(b"\n  <!doctype html><p>x</p>")
     assert _srcdoc(spaced).startswith("<!doctype html>")
 
-    # A license comment may legally precede the doctype.
     commented, _ = html_preview_document(b"<!-- MIT license -->\n<!doctype html><p>x</p>")
     page = _srcdoc(commented)
     assert page.startswith("<!doctype html><meta http-equiv=")
     assert "<!-- MIT license -->" in page
 
-    # A page without a doctype keeps the mode its author's browser gives it.
     bare, _ = html_preview_document(b"<p>x</p><!doctype html>")
     assert _srcdoc(bare).startswith("<meta http-equiv=")
     assert _srcdoc(bare).count("<!doctype html>") == 1
@@ -71,19 +72,18 @@ def test_a_declared_doctype_leads_the_page_so_it_renders_in_standards_mode() -> 
 
 @pytest.mark.parametrize(("theme", "mode"), [("aqua", "dark"), ("classic", "light")])
 def test_inline_html_paints_with_the_reply_theme(theme, mode) -> None:
+    """Every frame in the chain names the same scheme, or the browser paints an opaque backdrop. The
+    theme precedes the page's markup so the page's rules still win.
+    """
     appearance = InlineAppearance(theme, mode)
     document, media_type, csp = artifact_content("game.html", "text/html", PAGE, inline=appearance)
     assert media_type == "text/html"
     page = _srcdoc(str(document))
-    # Every frame in the chain names the same scheme, or the browser paints an
-    # opaque backdrop behind the nested page.
     assert f":root{{color-scheme:{mode}}}" in str(document).split("<iframe")[0]
     assert artifact_theme_css(theme, mode) in page
     for name, value in theme_tokens(theme, mode).items():
         assert f"--rcp-{name}:{value};" in page
-    # The theme precedes the page's own markup, so the page's rules still win.
     assert page.index(artifact_theme_css(theme, mode)) < page.index("<html>")
-    # The opaque sandbox and the page's own policy are unchanged.
     assert 'sandbox="allow-scripts"' in str(document)
     assert "connect-src 'none'" in html.unescape(page)
     assert "allow-same-origin" not in str(document)
@@ -153,14 +153,13 @@ def test_the_inline_shell_has_no_chrome() -> None:
 
 
 def test_the_agent_is_told_to_embed_with_the_tokens_and_bound_rcp_applies() -> None:
+    """Every advertised token is one the frame actually receives."""
     contract = artifact_contract("/stage/turns/op/artifacts")
     assert "![" in contract and "(/stage/turns/op/artifacts/" in contract
     for name in ARTIFACT_THEME_TOKENS:
         assert f"--rcp-{name}" in contract
     assert f"{ARTIFACT_INLINE_HEIGHT_PX}px" in contract
-    # Every advertised token is one the frame actually receives.
     assert set(theme_tokens("aqua", "light")) == set(ARTIFACT_THEME_TOKENS)
-    # Saved artifacts are referenced by the scheme the reply renderer resolves, in each scope.
     for scope, reach in REFERENCE_SCOPES.items():
         contract = artifact_contract("/stage/turns/op/artifacts", references=scope)
         assert f"]({ARTIFACT_REFERENCE_SCHEME}" in contract and reach in contract
@@ -188,6 +187,7 @@ def _stored(app, name: str, data: bytes) -> AgentArtifactDescriptor:
 
 
 def test_stored_routes_serve_the_inline_presentation(manifest, tmp_path: Path) -> None:
+    """An unknown appearance falls back to the app's default instead of failing."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     game = _stored(app, "game.html", PAGE)
@@ -208,7 +208,6 @@ def test_stored_routes_serve_the_inline_presentation(manifest, tmp_path: Path) -
         assert content.status_code == 200
         assert artifact_theme_css("classic", "dark") in _srcdoc(content.text)
 
-        # An unknown appearance falls back to the app's default instead of failing.
         fallback = client.get(
             f"{base}/{game.artifact_id}/content",
             params={"presentation": "inline", "theme": "neon", "color_mode": "dim"},

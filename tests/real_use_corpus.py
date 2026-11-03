@@ -19,6 +19,7 @@ from tests.supervisor_reboot_data import prepare_data
 
 
 def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
+    """The seed's paused task is settled so this corpus can be transferred."""
     state = prepare_data(
         data_dir,
         projects_root,
@@ -38,7 +39,6 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
         user_id=state["member_id"],
         display_name="Qualification researcher",
     )
-    # Settle the seed's paused task so this same corpus can be transferred.
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         store.detach_agent_tasks_for_restore(
@@ -94,7 +94,6 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
     answered = store.answer_question(
         question.question_id, answer="Compare both.", resolved_by=actor
     )
-    # The answer message names its follow-up turn in canonical chat history.
     project_chat_question_answer(service, store, answered)
     followup = store.admit_chat_question_followup(question.question_id)
     assert followup is not None

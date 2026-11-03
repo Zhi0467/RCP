@@ -239,15 +239,17 @@ def test_target_preparation_warns_for_uncapturable_kept_binding(captured, monkey
 def test_real_project_payload_restores_schema_graph_stage_and_attachment(
     captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
+    """An agent run left links in its stage, one inside the stage and one to the host, and uv leaves
+    cache hardlinks and a 0666 lock. Candidate root discovery must work before any old-code prepare
+    and without opening even a read-only AppStore on the stopped installation.
+    """
     request, state, metadata = captured
     data, research = Path(request.data_dir), Path(state["research"])
-    # An agent run left links in its stage: one inside the stage, one to the host.
     stage = Path(state["stage"])
     (stage / "current").symlink_to("retained.txt")
     (stage / "python").symlink_to("/usr/bin/python3")
     (stage / "pytest-0").mkdir(mode=0o700)
-    (stage / "pytest-current").symlink_to("pytest-0")  # pytest's directory link
-    # uv installs agent packages as hardlinks into its cache and leaves a 0666 lock.
+    (stage / "pytest-current").symlink_to("pytest-0")
     (tmp_path / "uv-cache").mkdir(mode=0o700)
     (tmp_path / "uv-cache" / "pylab.py").write_text("from matplotlib.pylab import *\n")
     os.link(tmp_path / "uv-cache" / "pylab.py", stage / "pylab.py")
@@ -272,8 +274,6 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
         assert not list((research / name).iterdir())
     assert not list(Path(state["empty_patches"]).iterdir())
     before = {root: _tree_state(root) for root in (data, research)}
-    # Candidate root discovery must work before any old-code prepare and without
-    # initializing even a read-only AppStore against the stopped installation.
     with monkeypatch.context() as guard:
         guard.setattr(AppStore, "__init__", lambda *args, **kwargs: pytest.fail("live AppStore"))
         guard.setattr(
@@ -307,7 +307,6 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
         assert not (data_payload / "providers").exists()
         assert not (data_payload / "jobs").exists()
         assert not (data_payload / "run-stage").exists()
-        # Corrupting the old selected payload cannot affect the rollback source.
         shutil.rmtree(data_payload)
     with sqlite3.connect(data / "rcp.sqlite3") as connection:
         connection.execute("CREATE TABLE candidate_only (value TEXT)")
@@ -343,6 +342,7 @@ def test_real_project_payload_restores_schema_graph_stage_and_attachment(
 def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
     captured, tmp_path: Path
 ) -> None:
+    """The worker runs in its own process, so it gets the captured layout too."""
     request, state, _metadata = captured
     prepared = prepare(request)
     workspace = Path(__file__).resolve().parents[1]
@@ -353,7 +353,6 @@ def test_candidate_worker_crosses_real_forward_migration_without_touching_live(
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
     head = add_forward_migration(candidate / "rcp" / "storage" / "base.py")
-    # The worker runs in its own process; give it the captured layout too.
     layout = storage_models.DEFAULT_SERVER_LAYOUT
     with (candidate / "rcp" / "storage" / "models.py").open("a", encoding="utf-8") as models:
         models.write(
@@ -446,6 +445,9 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
 
     Keep the literal schema inventory independent of model validation/serialization;
     separately verify the real serialized Proposal shape.
+
+    Stored JSON has no shared object identities between repeated examples. Every defaulted field is
+    omitted independently, and stored operations keep only what their author set.
     """
     examples = json.loads(
         """
@@ -563,7 +565,6 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         ontology=ontology,
         edges={
             "edge": edge,
-            # Materialization resolves this declared action relation to a seam.
             "blocked": dict(
                 edge,
                 id="blocked",
@@ -576,7 +577,6 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         },
     )
     current["proposals"]["proposal"]["ops"] = operations
-    # Stored JSON has no shared object identities between repeated examples.
     current = json.loads(json.dumps(current))
     reachable = set()
     unsafe_defaults = []
@@ -635,8 +635,6 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
 
     check_paths(GraphState.model_validate(deepcopy(current)), current)
     assert covered == reachable, f"Missing populated examples: {reachable - covered}"
-    # Every defaulted field is omitted independently, preserving all other
-    # explicit values. Model-derived defaults are the only expected additions.
     for path, default in upgrades:
         legacy = deepcopy(current)
         expected = deepcopy(current)
@@ -649,8 +647,6 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
         assert legacy == expected, path
         upgrade_graph_projection(legacy)
         assert legacy == expected, path
-    # Stored operations keep only what their author set; a fresh serialization
-    # whose operations omit defaults is already current.
     graph = GraphState.model_validate(current)
     operation = next(op for op in graph.proposals["proposal"].ops if op.op == "create_nodes")
     experiment = next(node for node in operation.nodes if node.type == "experiment")
@@ -665,7 +661,7 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
     preserved = deepcopy(current)
     preserved["coverage"] = coverage
     upgrade_graph_projection(preserved)
-    assert preserved == current  # Includes populated defaults and the stored edge layers.
+    assert preserved == current
     upgrade_graph_projection(preserved)
     assert preserved == current
 
@@ -674,6 +670,9 @@ def test_projection_defaults_have_explicit_recursive_upgrade_examples() -> None:
 def test_upgrade_accepts_only_authenticated_known_projection_changes(
     captured, tmp_path: Path, failure: str | None
 ) -> None:
+    """This reproduces the previous release's projection and proof in disposable worker output only.
+    A graph past the 4 MiB request bound is still an ordinary graph.
+    """
     request, _state, _metadata = captured
     prepared = prepare(request)
     proof_path = Path(prepared["proof_path"])
@@ -688,18 +687,14 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         / ".research/graph.json"
     )
     graph = json.loads(graph_path.read_text())
-    # Reproduce the previous release's projection and authenticated proof. This
-    # changes only disposable worker output, never the captured canonical input.
     graph["coverage"] = {
         "repositories_seen": ["research"],
         "repositories_never_seen": [],
         "sessions_read": ["old-session"],
         "sessions_skipped": [],
         "earliest_timestamp": None,
-        # A graph past the 4 MiB request bound is still an ordinary graph.
         "note": "Historical reading report." + " " * (4 * 1024 * 1024),
     }
-    # It also omitted fields later added with empty defaults.
     for edge in graph["edges"].values():
         edge.pop("expectation")
     experiments = [node for node in graph["nodes"].values() if node["type"] == "experiment"]
@@ -756,6 +751,9 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
 def test_live_check_opens_a_remote_project_only_after_the_release_commits(
     captured, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    """A candidate migration that reroutes a captured local project is refused, and a missing cache
+    is rebuilt for a local project but never opened for a remote one.
+    """
     import rcp.server_ops.deployment as deployment
 
     request, _state, _metadata = captured
@@ -773,7 +771,6 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
     live = create_app(data_dir=data)
     store = live.state.background_tasks.store
     if case == "remote":
-        # The capture classified this project remote; the live row agrees.
         locate = deployment._project_restore_location
         monkeypatch.setattr(deployment, "_project_restore_location", lambda p: (locate(p)[0], None))
     if case != "local":
@@ -801,16 +798,17 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
         )
 
     if case == "changed":
-        # A candidate migration that reroutes a captured local project is refused.
         with pytest.raises(MaintenanceRefused):
             verify()
         return
     assert verify()
-    # A missing cache is rebuilt for a local project, never opened for a remote one.
     assert bool(opened) is (case == "local")
 
 
 def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path: Path) -> None:
+    """Running the lifespan opens its disposable local socket but leaves every ordinary runtime
+    owner asleep until the verified fence release.
+    """
     request, _state, metadata = captured
     prepared = prepare(request)
     boundary = MaintenanceIdentity(str(uuid.uuid4()), "c" * 64)
@@ -833,8 +831,6 @@ def test_explicit_probe_stays_fenced_until_matching_app_proof(captured, tmp_path
             ServerControlPeer(pid=os.getpid(), uid=0, gid=0),
         )
 
-    # Running the lifespan opens its disposable local socket but leaves every
-    # ordinary runtime owner asleep until the verified fence release.
     with signed_in_client(app) as client:
         assert client.get("/api/health").status_code == 503
         assert command("maintenance_status").quiescent
@@ -1001,7 +997,7 @@ def test_release_rehearsal_reads_a_running_database_and_judges_its_copy(captured
     data, research = Path(request.data_dir), Path(state["research"])
 
     def visible(root: Path) -> dict:
-        # A WAL reader opens the sidecars a running server already holds.
+        """A WAL reader opens the sidecars a running server already holds."""
         return {
             name: entry
             for name, entry in _tree_state(root).items()
@@ -1221,6 +1217,7 @@ def test_uncaptured_project_does_not_hide_other_project_proof(
 def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
     captured, monkeypatch, tmp_path, failure, capsys
 ):
+    """A running service already owns this lock, so rehearsal must not acquire it."""
     from rcp.__main__ import instance_lock
     from rcp.server_ops.deployment import UpdateRehearsalRequest, main
 
@@ -1250,7 +1247,6 @@ def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
             if not name.endswith(("-wal", "-shm"))
         }
 
-    # A running service already owns this lock. Rehearsal must not acquire it.
     with instance_lock(data, timeout=0):
         before = {root: visible(root) for root in (data, research)}
         rehearsal = UpdateRehearsalRequest(
@@ -1492,9 +1488,9 @@ def test_rehearsal_refuses_output_inside_a_kept_file_folder(captured, tmp_path):
 
 @pytest.mark.parametrize("live", [True, False])
 def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_path, live):
-    # 0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal
-    # carries the live caches and reads Runs before any project open rebuilds them.
-    # An ended loop on such a cache is only logged, so the log check catches it.
+    """0.4.35 refused the whole Runs list for a cache 0.4.34 wrote. The rehearsal reads Runs from
+    the live caches before any project open rebuilds them, and the log check catches an ended loop.
+    """
     request, state, _ = captured
     seed_experiment_on_old_display_cache(request, state, live=live)
     assert _rehearse(request, tmp_path) == {"version": 1, "status": "ready", "warnings": []}
@@ -1504,8 +1500,10 @@ def test_rehearsal_reads_the_runs_list_from_old_display_caches(captured, tmp_pat
 def test_rehearsal_launches_due_consolidation_through_real_validation(
     captured, monkeypatch, tmp_path, copied
 ):
-    # 0.4.35 queued every nightly consolidation with a request field no model
-    # carries, so each launch failed its roundtrip check and retried forever.
+    """0.4.35 queued nightly consolidation with a request field no model carries, so each launch
+    failed its roundtrip check and retried forever. An omitted project's queued run is left alone,
+    not logged as a failure.
+    """
     from datetime import datetime, timedelta
 
     from rcp.consolidation import ConsolidationPoller
@@ -1528,7 +1526,6 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
             next_due_at=(now + timedelta(hours=1)).isoformat(),
         )
         if copied != "due_later":
-            # Admit the run as the live poller does, but leave it queued.
             poller = ConsolidationPoller(
                 store, app.state.background_tasks, service_for=app.state.catalog.open
             )
@@ -1544,7 +1541,6 @@ def test_rehearsal_launches_due_consolidation_through_real_validation(
     finally:
         store.close()
     if copied == "queued_for_omitted_project":
-        # An omitted project's queued run is left alone, not logged as a failure.
         import rcp.server_ops.application_validation as validation
 
         monkeypatch.setattr(validation, "_captured_project_ids", lambda _overlay: set())
@@ -1600,14 +1596,14 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
 
 def test_rehearsal_preserves_report_workspace_across_linked_records(tmp_path):
     from rcp.server_ops.application_validation import _rebind_local_stage_paths
-    from tests.test_episode_storage import _start_wrapping
+    from tests.test_episode_storage import EPISODE, _start_wrapping
 
     with closing(AppStore(tmp_path / "rcp.sqlite3")) as store:
-        wrapup, task = _start_wrapping(store, "episode")
+        wrapup, task = _start_wrapping(store, EPISODE)
         assert wrapup.stage_root == task.stage_root
         with store.connection() as connection:
             _rebind_local_stage_paths(connection, tmp_path / "known-absent")
-        rebound_wrapup = store.episode_wrapup("episode")
+        rebound_wrapup = store.episode_wrapup(EPISODE)
         rebound_task = store.agent_task(task.operation_id)
         assert rebound_wrapup is not None and rebound_task is not None
         assert rebound_wrapup.stage_root == rebound_task.stage_root

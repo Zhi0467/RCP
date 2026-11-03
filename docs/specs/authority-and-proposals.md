@@ -321,9 +321,13 @@ fence and Experiment lock only when the handler does not acquire them itself.
 A tap settles `stale` only when the presented hash or the live pins no longer
 match, their target is gone, or the merge handler reports changed heads; it
 executes nothing and uses the card up. A mismatched presented hash settles
-`stale` even for Decline. A closed admission, an
+`stale` even for Decline. A Proposal card's Sync appends only at the graph revision its
+live pins were read from, so the append lock rechecks them in the transition
+that decides it; if any write moved the graph in between, nothing is decided.
+That, a closed admission, an
 unavailable writer or base, or a handler `503` releases the claim and returns
-`409` or `503`, so the member can tap again. A refusal settles `failed` with the
+`409` (`graph_changed` for the moved graph) or `503`, so the member can tap
+again and that tap rechecks the pins. A refusal settles `failed` with the
 handler's own reason, including Patch rejection and halted replay. An approved
 result names the `episode_id` or `operation_id` the action created. A card
 expires after `APPROVAL_CARD_TTL_HOURS` or when its thread closes. The first tap

@@ -11,7 +11,6 @@ from .helpers import create_named_app as create_app
 @pytest.mark.parametrize(
     "route,body",
     [
-        # One kind reaches task validation; the other is refused before its 405.
         ("tasks/seed", {}),
         ("tasks/branch_merge", {}),
         ("experiments/missing/run", {}),

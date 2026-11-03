@@ -10,18 +10,17 @@ from pathlib import Path
 
 
 def seed_codex_home(data: Path, member_id: str) -> dict | None:
+    """A synthetic stand-in; the harness never holds a real Codex sign-in."""
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.storage import AppStore
 
     store = AppStore(data / "rcp.sqlite3")
-    # The historical interpreter owns the row shape. Earlier releases have no added logins.
     if not hasattr(store, "add_provider_login"):
         return None
     credentials = ProviderCredentialStore.for_data_dir(data)
     logins = [store.add_provider_login("codex", "", added_by=member_id) for _ in range(2)]
     home = credentials.account_dir("codex", "", logins[0].login_id) / "codex-home"
     home.mkdir(parents=True, mode=0o700)
-    # A synthetic stand-in; the harness never holds a real Codex sign-in.
     credential = json.dumps({"synthetic": str(uuid.uuid4())})
     (home / "auth.json").write_text(credential)
     session_id = str(uuid.uuid4())
@@ -69,7 +68,6 @@ def check_codex_home(data: Path, fixture: dict | None, *, migrated: bool) -> Non
     assert (homes[0] / fixture["rollout"]).samefile(homes[1] / fixture["rollout"])
     assert (homes[0] / "auth.json").read_text() == fixture["credential"]
     if migrated:
-        # The home left the hidden credential namespace; its old path links to it.
         assert homes[0] == credentials.login_home("codex", fixture["login_ids"][0])
         assert Path(fixture["home"]).readlink() == homes[0]
         retained = homes[0].with_name(homes[0].name + "-retained")

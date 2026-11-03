@@ -106,6 +106,10 @@ def resolved_agent_surface(
         parent = store.agent_task(parent_operation_id or "")
         if parent is None:
             raise ValueError("The episode report lost its concluding provider task.")
+        if parent.kind == "episode_report":
+            return resolved_agent_surface(
+                store, kind, request, parent_operation_id=parent.parent_operation_id
+            )
         if parent.kind == "auto_research":
             return resolved_agent_surface(
                 store,

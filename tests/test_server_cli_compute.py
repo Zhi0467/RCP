@@ -26,6 +26,9 @@ PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
 def test_server_compute_probe_runs_through_installed_service_and_stores_result(
     tmp_path, manifest, monkeypatch, ready, route
 ) -> None:
+    """A short private Unix socket path is required even when pytest's temp root is
+    long.
+    """
     import rcp.api.app as app_module
 
     layout = _temporary_layout(tmp_path)
@@ -42,7 +45,6 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
             state_remote=False,
         )
     )
-    # The base machine always offers the helper; a job manager adds the scheduler.
     card = store.create_space_machine(name="laptop", host="", os_account="")
     store.update_space_machine(card.machine_id, job_manager="slurm")
     result = ComputeBackendProbe(
@@ -72,7 +74,6 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
         return result
 
     monkeypatch.setattr(app_module, "probe_compute_backend", probe)
-    # A short private Unix socket path is required even when pytest's temp root is long.
     with TemporaryDirectory(prefix="rcp-compute-", dir="/tmp") as socket_dir:
         os.chown(socket_dir, os.geteuid(), os.getegid())
         metadata = ServerMetadata.create(
@@ -98,7 +99,6 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
 
         monkeypatch.setattr(ServerControlClient, "_exchange", observe_exchange)
         with published_server_metadata(data_dir, metadata), signed_in_client(app):
-            # The CLI must use the running service's existing store.
             monkeypatch.setattr(
                 AppStore, "__init__", lambda *_args, **_kwargs: pytest.fail("second AppStore")
             )

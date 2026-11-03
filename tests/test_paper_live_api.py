@@ -38,6 +38,9 @@ def _ack(socket, doc):
 
 
 def test_two_websocket_clients_converge_and_ack_is_committed(manifest, tmp_path):
+    """Peer acks may still be queued ahead of the replies, so new state syncs are
+    requested after the durable acknowledgements.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     with signed_in_client(app) as client:
         prefix = f"/api/projects/{app.state.default_project_id}/paper"
@@ -56,8 +59,6 @@ def test_two_websocket_clients_converge_and_ack_is_committed(manifest, tmp_path)
             two.send_bytes(create_update_message(right.get_update()))
             _ack(one, left)
             _ack(two, right)
-            # Request new state syncs after the durable acknowledgements; peer acks
-            # may still be queued ahead of the replies.
             from pycrdt import create_sync_message
 
             for _ in range(4):

@@ -47,29 +47,29 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
-    EpisodeRecord,
-    ProjectRecord,
     WatcherContinuation,
     WatcherRecord,
 )
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from tests.lifecycles.agent_task import admitted_launch_task as _admitted_launch_task
+from tests.lifecycles.agent_task import done_stream as _done_stream
+from tests.lifecycles.agent_task import seeded_store as _store
+from tests.lifecycles.agent_task import sse as _sse
+from tests.lifecycles.agent_task import work_request as _work_request
 
-from .episode_report_helpers import stored_report
+from .episode_report_helpers import requeue_report_in_place_as_older_rcp, stored_report
 from .helpers import (
     async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
+    start_experiment_episode,
     wait_for_task,
     wait_until,
-    write_local_test_manifest,
 )
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
-
-
-def _sse(event: AgentEvent) -> str:
-    return f"data: {event.model_dump_json()}\n\n"
+REPORT_EPISODE = "00000000-0000-4000-8000-000000000102"
 
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
@@ -79,21 +79,6 @@ def test_sse_preserves_unicode_line_separators(newline):
     event = AgentEvent(event="answer", text="before\x85middle\u2028more\u2029after")
     frame = encode_sse(event).replace("\n", newline)
     assert background_module._event_from_sse(frame) == event
-
-
-def _store(tmp_path: Path) -> AppStore:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    store.upsert_project(
-        ProjectRecord(
-            project_id="project",
-            locator=str(write_local_test_manifest(tmp_path)),
-            name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
-            added_at=store.now(),
-        )
-    )
-    return store
 
 
 def _auto_start(**updates: object) -> AutoResearchStartRequest:
@@ -224,59 +209,6 @@ def _child_experiment_route(store, parent_id, root_id, child_id, goal):
     )
 
 
-def _work_request(chat_id, *, message="Exercise the admitted launch boundary."):
-    return RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id=chat_id,
-        message=message,
-        mode="work",
-        patch_kind="work",
-    )
-
-
-def _admitted_launch_task(
-    store: AppStore,
-    *,
-    operation_id: str,
-    request: RunRequest | None = None,
-    parent_operation_id: str | None = None,
-    record_updates: dict[str, object] | None = None,
-    continuation_cause: str = "fresh",
-) -> AgentTaskRecord:
-    request = request or _work_request(f"launch-{operation_id}")
-    authority = resolve_dispatch_authority("project_chat", request)
-    assert authority is not None
-    now = store.now()
-    record = AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        kind="project_chat",
-        status="queued",
-        request=request.model_dump(mode="json"),
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
-        attempt=2 if parent_operation_id is not None else 1,
-        parent_operation_id=parent_operation_id,
-        phase="queued",
-        last_activity_at=now,
-        authorized_by=fabricated_authorizer("Researcher"),
-        dispatch_authority=authority,
-    )
-    return store.create_agent_task(
-        record.model_copy(update=record_updates or {}), continuation_cause=continuation_cause
-    )
-
-
-async def _done_stream(_project_id, _kind, _request, _execution):
-    yield _sse(AgentEvent(event="done"))
-
-
 def test_construction_leaves_recovery_undone_until_startup_asks_for_it(
     tmp_path: Path,
 ) -> None:
@@ -342,7 +274,7 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
 
 
 def _v0433_coach_row():
-    # v0.4.33 CoachRequest predates mode, refresh and attachment fields.
+    """v0.4.33 CoachRequest predates mode, refresh and attachment fields."""
     request = CoachRequest(message="Tighten the abstract.", provider="codex", run_on="laptop")
     added = {"mode", "refresh_source_task_id", "refresh_group_ids", "attachment_scope_id"}
     added |= {"attachment_set_id", "attachment_client_id", "attachment_batch_id"}
@@ -356,7 +288,7 @@ def _v0433_coach_row():
 
 
 def _v0429_compute_chat_row():
-    # v0.4.29 froze the turn's compute selection into every RunRequest.
+    """v0.4.29 froze the turn's compute selection into every RunRequest."""
     stored = _work_request("legacy-compute").model_dump(mode="json")
     stored["active_compute_ids"] = ["gpu"]
     profile = {"id": "gpu", "name": "GPU", "kind": "ssh", "ssh_target": "a@gpu", "access_hint": ""}
@@ -365,7 +297,7 @@ def _v0429_compute_chat_row():
 
 
 def _v0417_artifact_edit_row():
-    # v0.4.17 artifact edits predate the nested origin_bound flag.
+    """v0.4.17 artifact edits predate the nested origin_bound flag."""
     edit = {
         "artifact_id": "artifact",
         "base_version": "v1",
@@ -406,13 +338,13 @@ def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row
 
 @pytest.mark.parametrize("rebound", [False, True])
 def test_a_retry_of_an_older_artifact_edit_keeps_its_binding(tmp_path: Path, rebound) -> None:
+    """Retry re-dumps the parsed request, so the child carries origin_bound."""
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
     legacy = _v0417_artifact_edit_row()
     parent = _admitted_launch_task(
         store, operation_id="legacy-row", record_updates=legacy | {"status": "failed"}
     )
-    # Retry re-dumps the parsed request, so the child carries origin_bound.
     retried = RunRequest.model_validate(parent.request).model_dump(mode="json")
     if rebound:
         retried["artifact_edit"]["artifact_id"] = "another-artifact"
@@ -591,6 +523,24 @@ def test_member_pause_before_running_claim_never_dispatches_provider(
     finally:
         release.set()
         tasks.shutdown()
+
+
+def test_pause_settles_a_queued_turn_no_worker_owns(tmp_path: Path) -> None:
+    """A queued turn whose launch is deferred has no worker to observe ``pausing``.
+
+    The agent task explorer's trace is one Pause of the admitted, unlaunched
+    root: it stayed ``pausing`` until a restart interrupted it, and its claim
+    refuses a pausing row, so nothing else could settle it.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="unlaunched")
+
+    paused = tasks.pause(task.operation_id)
+
+    assert paused.status == "paused"
+    assert tasks.launch_admitted(task.operation_id).status == "paused"
 
 
 def test_shutdown_fences_a_launch_that_has_not_claimed_a_worker(
@@ -1275,6 +1225,7 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
 
 
 def test_limited_child_resume_continues_its_saved_session(tmp_path: Path) -> None:
+    """A reached limit of any kind keeps the session, and Resume rechecks it in place."""
     store = _store(tmp_path)
     stage = tmp_path / "limited-work-stage"
     stage.mkdir()
@@ -1302,7 +1253,6 @@ def test_limited_child_resume_continues_its_saved_session(tmp_path: Path) -> Non
 
     outcome = resume_auto_research_child_work(background, episode.episode_id, worker_id)
 
-    # A reached limit of any kind keeps the session: Resume rechecks it in place.
     assert outcome.task is not None
     assert outcome.task.request["session_id"] == "limited-session"
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before
@@ -2197,46 +2147,25 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
 
 
 def _report_allocation(store: AppStore, tmp_path: Path) -> AgentTaskRecord:
-    now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id="report-episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="exp/report",
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=fabricated_authorizer("Researcher"),
-            created_at=now,
-            updated_at=now,
-        )
-    )
     stage = tmp_path / "report-stage"
     stage.mkdir()
-    operational = AgentTaskRecord(
-        operation_id="operational",
-        project_id="project",
-        episode_id="report-episode",
-        kind="node_chat",
-        status="queued",
-        request={
-            "provider": "codex",
-            "model": "",
-            "reasoning": "medium",
-            "run_on": "laptop",
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
-        native_session_id="report-session",
-        stage_root=str(stage),
+    operational = start_experiment_episode(
+        store,
+        "operational",
+        REPORT_EPISODE,
+        control_node_id="exp/report",
+        authorized_by=fabricated_authorizer("Researcher"),
+        request_fields={"model": "", "reasoning": "medium"},
     )
-    store.allocate_episode_invocation("report-episode", operational)
+    store.mark_agent_task_running(operational.operation_id)
+    store.checkpoint_agent_task(
+        operational.operation_id, native_session_id="report-session", stage_root=str(stage)
+    )
     store.complete_agent_task(operational.operation_id, applied_revision=None, result={})
     admission = begin_episode_report_wrapup(
         store,
         EpisodeWrapupSpec(
-            episode_id="report-episode",
+            episode_id=REPORT_EPISODE,
             ending="completed",
             partial=False,
             continuation_operation_id=operational.operation_id,
@@ -2281,7 +2210,7 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
 
     def settled(*_args):
         allocated.append(_report_allocation(store, tmp_path))
-        start_episode_report(tasks, "report-episode")
+        start_episode_report(tasks, REPORT_EPISODE)
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     task = _admitted_launch_task(store, operation_id="shutdown-before-report")
@@ -2293,21 +2222,24 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
         assert not report_started.is_set()
         hidden = store.agent_task(allocated[0].operation_id)
         assert hidden is not None and hidden.status == "queued"
-        episode = store.episode("report-episode")
+        episode = store.episode(REPORT_EPISODE)
         assert episode is not None and episode.wrapup_state == "pending"
         assert episode.wrapup_error is None
         assert store.agent_task_dispatch_was_proven_not_started(hidden.operation_id)
 
         tasks.recover_at_startup()
-        wait_for_task(store, hidden.operation_id, expect="succeeded")
+        retried = store.episode_wrapup(REPORT_EPISODE).allocation_operation_id
+        assert retried is not None and retried != hidden.operation_id
+        wait_for_task(store, retried, expect="succeeded")
+        assert store.agent_task(hidden.operation_id).status == "interrupted"
         assert report_started.is_set()
-        recovered_episode = store.episode("report-episode")
+        recovered_episode = store.episode(REPORT_EPISODE)
         assert recovered_episode is not None and recovered_episode.wrapup_state == "ready"
     finally:
         tasks.shutdown()
 
 
-@pytest.mark.parametrize("prior_status", ["interrupted", "paused"])
+@pytest.mark.parametrize("prior_status", ["interrupted", "paused", "requeued_in_place"])
 def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     tmp_path: Path,
     prior_status: str,
@@ -2334,10 +2266,12 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         {"dispatch_attempt_id": "previous-report-dispatch"},
         tier="diagnostic",
     )
-    if prior_status == "interrupted":
-        store.interrupt_active_agent_tasks()
-    else:
+    if prior_status == "paused":
         store.pause_agent_task(hidden.operation_id, detail="Paused for shutdown")
+    else:
+        store.interrupt_active_agent_tasks()
+    if prior_status == "requeued_in_place":
+        requeue_report_in_place_as_older_rcp(store, REPORT_EPISODE)
     store.record_agent_task_receipt(
         hidden.operation_id,
         "operation_created",
@@ -2381,27 +2315,33 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         ),
     )
     tasks.recover_at_startup()
-    finished = wait_for_task(store, hidden.operation_id, expect="succeeded")
+    retried = store.episode_wrapup(REPORT_EPISODE).allocation_operation_id  # type: ignore[union-attr]
+    assert retried is not None
+    finished = wait_for_task(store, retried, expect="succeeded")
 
-    assert finished.operation_id == hidden.operation_id
-    assert store.episode("report-episode").wrapup_state == "ready"  # type: ignore[union-attr]
-    assert store.episode_report("report-episode") is not None
-    assert store.episode_tasks("report-episode") == [store.agent_task("operational")]
-    assert [task.kind for task in store.episode_tasks("report-episode", include_hidden=True)] == [
+    assert finished.parent_operation_id == hidden.operation_id
+    assert store.agent_task(hidden.operation_id).status == (  # type: ignore[union-attr]
+        "paused" if prior_status == "paused" else "interrupted"
+    )
+    assert store.episode(REPORT_EPISODE).wrapup_state == "ready"  # type: ignore[union-attr]
+    assert store.episode_report(REPORT_EPISODE) is not None
+    assert store.episode_tasks(REPORT_EPISODE) == [store.agent_task("operational")]
+    assert [task.kind for task in store.episode_tasks(REPORT_EPISODE, include_hidden=True)] == [
         "node_chat",
         "episode_report",
+        "episode_report",
     ]
-    receipts = store.agent_task_receipts(hidden.operation_id)
+    receipts = store.agent_task_receipts(finished.operation_id)
     assert sum(item.category == "operation_created" for item in receipts) == 1
     assert not any(item.category == "operation_completed" for item in receipts)
     assert generic_settlements == []
-    assert start_episode_report(tasks, "report-episode") is None
+    assert start_episode_report(tasks, REPORT_EPISODE) is None
     with pytest.raises(ValueError, match="no Retry control"):
-        tasks.retry(hidden.operation_id)
+        tasks.retry(finished.operation_id)
     with pytest.raises(ValueError, match="no Resume control"):
-        tasks.resume(hidden.operation_id)
+        tasks.resume(finished.operation_id)
     with pytest.raises(ValueError, match="no manual Pause control"):
-        tasks.pause(hidden.operation_id)
+        tasks.pause(finished.operation_id)
 
 
 def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
@@ -2433,12 +2373,12 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     )
     tasks.recover_at_startup()
     assert entered.wait(timeout=2)
-    duplicate = start_episode_report(tasks, "report-episode")
-    assert duplicate is not None and duplicate.operation_id == hidden.operation_id
+    duplicate = start_episode_report(tasks, REPORT_EPISODE)
+    assert duplicate is not None and duplicate.parent_operation_id == hidden.operation_id
     release.set()
-    failed = wait_for_task(store, hidden.operation_id, expect="failed")
+    failed = wait_for_task(store, duplicate.operation_id, expect="failed")
 
-    episode = store.episode("report-episode")
+    episode = store.episode(REPORT_EPISODE)
     assert episode is not None
     assert episode.status == "completed"
     assert episode.wrapup_state == "failed"
@@ -2447,18 +2387,18 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     assert store.episode_report(episode.episode_id) is None
     assert not any(
         item.category == "operation_failed"
-        for item in store.agent_task_receipts(hidden.operation_id)
+        for item in store.agent_task_receipts(failed.operation_id)
     )
     assert (
         sum(
             item.category == "operation_created"
-            for item in store.agent_task_receipts(hidden.operation_id)
+            for item in store.agent_task_receipts(failed.operation_id)
         )
         == 1
     )
     assert generic_settlements == []
     with pytest.raises(ValueError, match="no Retry control"):
-        tasks.retry(hidden.operation_id)
+        tasks.retry(failed.operation_id)
 
 
 def test_report_request_decode_never_accepts_an_auto_research_task_shape(tmp_path: Path) -> None:
@@ -2467,7 +2407,7 @@ def test_report_request_decode_never_accepts_an_auto_research_task_shape(tmp_pat
     decoded = BackgroundAgentTasks._request_from_record(hidden)
 
     assert isinstance(decoded, EpisodeReportRunRequest)
-    assert decoded.episode_id == "report-episode"
+    assert decoded.episode_id == REPORT_EPISODE
     assert not hasattr(decoded, "role")
     assert not hasattr(decoded, "campaign_id")
 
@@ -2480,6 +2420,8 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
     authorizer snapshot." That is true and useless. The episode's own human is
     the authority for every turn in it, so a current human cannot stand in --
     but pressing Run starts a fresh episode, and the message must say so.
+
+    The episode is aged back to before the authorizer snapshot was recorded.
     """
 
     store = _store(tmp_path)
@@ -2502,7 +2444,6 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
     )
     wait_for_task(store, root.operation_id, expect="failed")
 
-    # Age the episode back to before the authorizer snapshot was recorded.
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET authorized_space_id = NULL, authorized_user_id = NULL, "
@@ -2644,9 +2585,10 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
         yield  # pragma: no cover
 
     async def recorded_stream(_project_id, _kind, _request, execution, _recorded):
+        """A full trace list must not crowd out the answer."""
         seen.append(execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="recorded-session"))
-        for index in range(32):  # A full trace list must not crowd out the answer.
+        for index in range(32):
             yield _sse(AgentEvent(event="message", text=f"Trace {index}."))
         yield _sse(AgentEvent(event="answer", text="Recovered answer."))
         yield _sse(AgentEvent(event="done"))
@@ -2968,7 +2910,11 @@ def test_transport_retry_depends_on_failure_not_task_kind(
 
 def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) -> None:
     """A link still down after the last wait is not a transient stall, and a
-    loop that never ends would burn an episode's invocations on the network."""
+    loop that never ends would burn an episode's invocations on the network.
+
+    One lineage means one dispatch authority, so every attempt carries the request the human
+    authorized.
+    """
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
@@ -2981,8 +2927,6 @@ def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) ->
         ),
     )
 
-    # One lineage means one dispatch authority, so every attempt carries the
-    # same request the human authorized.
     lineage = _work_request("launch-lineage", message="Exercise the reattempt budget.")
     parent: str | None = None
     for index in range(AGENT_TRANSPORT_RETRY_LIMIT):
@@ -3053,12 +2997,13 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     A human pressing Retry, or any recovery owner, leaves a child on the failed
     task. Firing the timer anyway would run the same turn a second time after
     the first already finished, repeating whatever that turn did.
+
+    A continuation keeps its parent's dispatch authority, which derives from the request, so both
+    attempts share one request.
     """
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
-    # One request for both attempts: a continuation must keep its parent's
-    # dispatch authority, which is derived from the request.
     shared = _work_request("launch-supersession")
     failed = _transport_failed_task(store, operation_id="dropped", request=shared)
     retried: list[str] = []
@@ -3066,7 +3011,6 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
         tasks, "retry", lambda operation_id, **_kwargs: retried.append(operation_id)
     )
 
-    # Nothing has taken it over yet, so the wait still means something.
     assert not tasks._transport_retry_superseded(failed.operation_id)
 
     _admitted_launch_task(
@@ -3079,6 +3023,36 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert tasks._transport_retry_superseded(failed.operation_id)
     assert store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry_superseded")
     assert retried == []
+
+
+def test_a_turn_retried_before_its_worker_settled_promises_no_reattempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A lost link commits before its worker decides the reattempt, so a human
+    Retry can land in between. The agent task explorer's trace: claim, lose the
+    link, Retry, then the worker's settlement. A promise on the taken-over turn
+    armed a timer that could only stand down, and its receipt made the human's
+    child read as an automatic reattempt, spending one of its own ladder's waits.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    shared = _work_request("launch-retried-first")
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=shared
+    )
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(operation_id),
+    )
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == []
+    assert not store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry")
 
 
 @pytest.mark.parametrize(
@@ -3168,6 +3142,9 @@ def test_a_restart_resumes_the_waits_a_refused_reattempt_had_reached(
     If a restart recomputed the position from lineage alone it would hand the
     turn the first, shortest wait again, and restarts could reattempt a turn
     without bound however many the limit says.
+
+    The first wait elapsed and its reattempt was refused, as the timer's own failure path records
+    it.
     """
 
     store = _store(tmp_path)
@@ -3175,8 +3152,6 @@ def test_a_restart_resumes_the_waits_a_refused_reattempt_had_reached(
     failed = _transport_failed_task(store, operation_id="still-down")
     monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
     tasks._auto_retry_transport_loss(failed)
-    # The first wait elapsed and its reattempt was refused, exactly as the
-    # timer's own failure path records it.
     store.record_agent_task_receipt(
         failed.operation_id,
         "transport_auto_retry_failed",
@@ -3206,13 +3181,14 @@ def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(
 
     A human who pressed Retry before the process stopped already has the turn
     running; re-arming would run it a second time.
+
+    A continuation keeps its parent's dispatch authority, which derives from the request, so both
+    attempts share one request.
     """
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
     monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
-    # One request for both attempts: a continuation must keep its parent's
-    # dispatch authority, which is derived from the request.
     shared = _work_request(
         "launch-restart-supersession", message="Exercise the reattempt across a restart."
     )
@@ -3299,6 +3275,9 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
 
 
 def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
+    """The account was repaired after this turn captured its generation, so the stale failure
+    neither fences the login nor parks the task behind sign-in.
+    """
     store = _store(tmp_path)
 
     async def stream(_project, _kind, _request, execution):
@@ -3315,8 +3294,6 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     task = _admitted_launch_task(store, operation_id="late-dead-login")
     tasks.launch_admitted(task.operation_id)
     finished = wait_for_task(store, task.operation_id, expect="failed")
-    # The account was repaired after this turn captured its generation, so the
-    # stale failure neither fences the login nor parks the task behind sign-in.
     assert finished.failure_kind is None
     state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
@@ -3324,10 +3301,12 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
 
 
 def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -> None:
-    """An episode owns watchers and a stage on its machine; a lone turn owns neither."""
+    """An episode owns watchers and a stage on its machine; a lone turn owns neither.
+
+    A second reachable machine makes "may move" a real move, not a no-op.
+    """
 
     store = _store(tmp_path)
-    # A second reachable machine, so "may move" is a real move and not a no-op.
     manifest = tmp_path / "manifest.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
@@ -3399,6 +3378,8 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     reach can fail transiently while the pass itself sits finished and intact on
     the host. Settling that as a failure would discard a completed provider turn
     over a dropped packet.
+
+    The claim is released, so the next sweep can try the host again.
     """
 
     from rcp.transport import StateUnavailable
@@ -3421,7 +3402,6 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     assert task is not None
     assert task.status == "running"
     assert task.phase == "awaiting_remote_result"
-    # The claim is released, so the next sweep can try the host again.
     assert store.claim_recorded_finalization(waiting.operation_id)
     assert store.unresolved_remote_provider_passes("remote", "/stage")
 
@@ -3442,7 +3422,6 @@ def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
     _finished_remote_pass(monkeypatch, waiting)
 
     async def unreadable_deliverable(_project_id, _kind, _request, execution, _pass):
-        # What settlement does when its stage read could not reach the host.
         execution.stage_unreachable = True
         yield _sse(
             AgentEvent(event="error", text="The agent wrote a patch file that could not be read.")
@@ -3488,6 +3467,9 @@ def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
     apart, and answering "wait" to both leaves a decided turn waiting forever
     once that host is decommissioned. Only the read that failed knows, so only
     the read that failed says.
+
+    The host is unreachable by the time anyone could ask, the state that used to suppress the
+    verdict.
     """
 
     from rcp.transport import RemoteRunStage
@@ -3495,12 +3477,9 @@ def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "verdict-then-silence")
     _finished_remote_pass(monkeypatch, waiting)
-    # The host is unreachable by the time anyone could ask, which is exactly the
-    # state that used to suppress the verdict below.
     monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
 
     async def provider_said_it_failed(_project_id, _kind, _request, _execution, _pass):
-        # No stage read failed: the journal itself carries the provider's error.
         yield _sse(AgentEvent(event="error", text="The provider refused the task."))
 
     tasks = BackgroundAgentTasks(store, _done_stream, recorded_stream=provider_said_it_failed)
@@ -3521,7 +3500,7 @@ def test_a_settlement_that_launches_a_pass_which_also_drops_keeps_waiting(
     _finished_remote_pass(monkeypatch, waiting)
 
     async def retry_that_drops(_project_id, _kind, _request, execution, recorded):
-        # An owner that retries consumes the pass it settled before relaunching.
+        """An owner that retries consumes the pass it settled before relaunching."""
         store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
         store.begin_remote_provider_pass(
             execution.operation_id, "remote", "/stage", "/stage/retry.pid", supervised=True
@@ -3564,7 +3543,6 @@ def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
     assert not store.unresolved_remote_provider_passes("remote", "/stage")
     record = store.agent_task(waiting.operation_id)
     assert record is not None and record.phase == "awaiting_remote_result"
-    # Even reached directly, reconciliation has nothing outstanding to act on.
     decision = remote_finalization.reconcile_remote_pass(
         store,
         record,
@@ -3607,7 +3585,11 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
 ) -> None:
     """A readiness probe, previous-pass check, or input transfer that cannot
     reach the host fails the turn with no `provider_exit` to read. The execution
-    carries the probe's own word instead; the error text is never consulted."""
+    carries the probe's own word instead; the error text is never consulted.
+
+    A stage that never opened checkpointed no host, yet the turn was bound to one by its request,
+    and the link lost opening the stage is on it.
+    """
 
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
@@ -3630,8 +3612,6 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     assert kind(stage_unreachable=True) == "transport_lost"
     assert kind(stage_unreachable=False) is None
     assert kind(stage_unreachable=True, host="") is None
-    # A stage that never opened checkpointed no host. The turn was still bound
-    # to one by its request, and the link lost opening the stage is on it.
     assert kind(stage_unreachable=True, host=None) is None
     monkeypatch.setattr(
         background_module, "run_on_host", lambda store, project_id, run_on: "gpu.example.edu"
@@ -3645,16 +3625,17 @@ def test_a_second_recovery_of_one_task_is_refused_inside_admission(
 ) -> None:
     """The window between `_transport_retry_superseded` and `retry` used to admit
     a second child if a human Retry was admitted inside it. The claim now lives
-    in the transaction that inserts the child, for a graph-repair recovery too."""
+    in the transaction that inserts the child, for a graph-repair recovery too.
+
+    A continuation keeps its parent's dispatch authority, so one request is used throughout.
+    """
 
     store = _store(tmp_path)
-    # One request throughout: a continuation must keep its parent's dispatch authority.
     request = _work_request("claimed-once")
     failed = _transport_failed_task(store, operation_id="dropped", request=request)
     human = _admitted_launch_task(
         store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=request
     )
-    # Settled, so the chat overlap guard has nothing left to refuse.
     store.mark_agent_task_running(human.operation_id)
     store.fail_agent_task(human.operation_id, "also failed")
 
@@ -3700,9 +3681,11 @@ def test_shutdown_waits_for_a_reattempt_that_is_already_admitting(
     observed: list[bool] = []
 
     def slow_retry(operation_id, **_kwargs):
+        """Spawns are still open, which lets the child get a worker; a reattempt arriving once
+        shutdown has begun stands down.
+        """
         entered.set()
         assert release.wait(5)
-        # Spawns are still open: this is what lets the child get a worker.
         observed.append(tasks._shutdown_requested)
 
     monkeypatch.setattr(tasks, "retry", slow_retry)
@@ -3723,7 +3706,6 @@ def test_shutdown_waits_for_a_reattempt_that_is_already_admitting(
     assert not reattempt.is_alive() and not stopping.is_alive()
     assert observed == [False] and tasks._shutdown_requested
 
-    # A reattempt that arrives once shutdown has begun stands down instead.
     tasks._run_transport_retry("dropped", attempt=0)
     assert observed == [False]
 

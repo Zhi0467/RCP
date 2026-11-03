@@ -150,6 +150,7 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
 async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     manifest, tmp_path, monkeypatch, commands, rewrite_patch
 ):
+    """One initial turn, bounded Patch corrections, and one watcher correction."""
     data_dir = tmp_path / "experiment-data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -183,6 +184,9 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
 
     class Launcher(_ComputeTurnLauncher):
         async def stream(self, provider, prompt, **kwargs):
+            """The earlier shell handoff stays unchanged, so settlement must detect the newly
+            launched job before accepting this correction.
+            """
             workspace = Path(kwargs["cwd"])
             index = len(self.calls)
             if index == 0:
@@ -223,8 +227,6 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
                     (workspace / "patch.json").write_text(
                         json.dumps({"summary": "Corrected reflection", "ops": []})
                     )
-                # Leave the earlier shell handoff unchanged: settlement must
-                # detect the newly launched job before accepting this correction.
                 assert kwargs["invocation_gate"] is staged.invocation_gate
                 self.calls.append(kwargs)
                 yield AgentEvent(event="session", session_id=self.native_session_id)
@@ -245,7 +247,6 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     expected_corrections = 1 if rewrite_patch else experiment_loop.PATCH_CORRECTION_MAX_ROUNDS
     assert graph_update["status"] == ("none" if rewrite_patch else "rejected")
     assert graph_update["correction_rounds"] == expected_corrections
-    # One initial turn, bounded Patch corrections, and one watcher correction.
     assert len(launcher.calls) == expected_corrections + 2
     assert len(commands.backend.starts) == 1
     watchers = execution.store.watchers(app.state.default_project_id)

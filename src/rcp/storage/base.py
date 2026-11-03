@@ -144,6 +144,7 @@ class AppStoreBase:
         (71, "space_turn_project_bindings_v1"),
         (72, "agent_schedules_v1"),
         (73, "approval_cards_v1"),
+        (74, "agent_schedule_pending_fires_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1022,7 +1023,10 @@ class AppStoreBase:
             name="space_turn_project_bindings_v1",
             migration=migrate_space_turn_project_bindings,
         )
-        from rcp.storage.agent_schedules import migrate_agent_schedules
+        from rcp.storage.agent_schedules import (
+            migrate_agent_schedule_pending_fires,
+            migrate_agent_schedules,
+        )
         from rcp.storage.approval_cards import migrate_approval_cards
 
         self._run_storage_schema_migration(
@@ -1030,6 +1034,12 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=73, name="approval_cards_v1", migration=migrate_approval_cards
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=74,
+            name="agent_schedule_pending_fires_v1",
+            migration=migrate_agent_schedule_pending_fires,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

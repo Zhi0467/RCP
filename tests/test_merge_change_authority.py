@@ -71,10 +71,10 @@ def test_protected_content_is_reviewable_only_after_the_proposed_effect_passes_c
 
 
 def test_atomic_creation_keeps_same_patch_authority_and_advisory_flags_pass():
+    """The incomplete card emits advisory flags, never a rejection."""
     state = GraphState(project_truth_scope=["repo-a"])
     result = _classify(state, *seed_patch().model_dump(mode="json")["ops"])
     assert result.disposition == "admitted"
-    # The incomplete card emits advisory flags, never a rejection.
     result = _classify(
         _state(),
         {
@@ -252,6 +252,7 @@ def test_accepted_ordinary_removal_uses_gate_two_review_form():
 
 
 def test_captured_authority_is_pure_but_cannot_widen_or_replace_live_authority():
+    """The Decision action is derived from the ops, and these ops record no outcome."""
     authorizer = AuthorizedHuman(space_id=str(uuid4()), user_id=str(uuid4()), display_name="Member")
     task = AgentTaskAuthority(
         operation_id="task",
@@ -308,7 +309,6 @@ def test_captured_authority_is_pure_but_cannot_widen_or_replace_live_authority()
         {"profile": "orchestrator"},
         {"run_truth_scope": ["repo-b"]},
         {"task_id": "another-task"},
-        # The Decision action is derived from the ops; these ops record no outcome.
         {"agent_action": "decision_choice"},
     ):
         result = classify(patch.model_copy(update=change), capture)

@@ -19,7 +19,7 @@ from rcp.approval_actions import (
     ProposalAction,
     TruthScopeAction,
 )
-from rcp.core.models import AuthorizedHuman
+from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
@@ -196,7 +196,9 @@ def approval_card_usage(client: str) -> str:
         "--question <reason> --action '<JSON>'. Do not supply choices or multiple; "
         "RCP creates Approve and Decline controls. Action kind is "
         + "; ".join(_action_usage(model) for model in models)
-        + ". Every action includes this thread's project_id. Only the member's card tap "
+        + ". Every action includes this thread's project_id. A proposal card decides a "
+        "Proposal already pending on main; one this turn's Patch raises is pending only "
+        "after the turn ends, so offer its card on the next turn. Only the member's card tap "
         "executes the action; a plain answer grants no authority. The question snapshot "
         f"shows each card's action and result. Outcomes: {outcomes}"
     )
@@ -228,31 +230,40 @@ def approval_card_pins(
 
 
 def approval_pins(
-    service: ProjectService, store: AppStore, action: ApprovalAction, human: AuthorizedHuman
+    service: ProjectService,
+    store: AppStore,
+    action: ApprovalAction,
+    human: AuthorizedHuman,
+    *,
+    state: GraphState | None = None,
 ) -> dict[str, Any]:
-    """Pin content and authority-relevant facts, excluding volatile probe timestamps."""
+    """Pin content and authority-relevant facts, excluding volatile probe timestamps.
+
+    Graph pins read `state` when given, so a caller pairs them with that state's revision.
+    """
     if action.kind == "proposal":
-        return _proposal_pins(service, action)
+        return _proposal_pins(state or service.history.state(), action)
     if action.kind == "truth_scope":
-        return _truth_scope_pins(service, action)
+        return _truth_scope_pins(service, state or service.history.state(), action)
     if action.kind == "auto_research":
         return _auto_research_pins(service, store, action)
     return _merge_pins(service, store, action, human)
 
 
-def _proposal_pins(service: ProjectService, action: ProposalAction) -> dict[str, Any]:
-    state = service.history.state()
+def _proposal_pins(state: GraphState, action: ProposalAction) -> dict[str, Any]:
     proposal = state.proposals.get(action.proposal_id)
     if proposal is None or proposal.status != "pending" or proposal_is_stale(state, proposal):
         raise ValueError("proposal_not_pending_or_stale")
     return {"proposal": proposal.model_dump(mode="json")}
 
 
-def _truth_scope_pins(service: ProjectService, action: TruthScopeAction) -> dict[str, Any]:
+def _truth_scope_pins(
+    service: ProjectService, state: GraphState, action: TruthScopeAction
+) -> dict[str, Any]:
     repository = service.manifest.repository_map.get(action.alias)
     if repository is None:
         raise ValueError("repository_not_found")
-    writable = action.alias in service.history.state().project_truth_scope
+    writable = action.alias in state.project_truth_scope
     if writable == action.writable:
         raise ValueError("truth_scope_unchanged")
     return {"repository": repository.model_dump(mode="json"), "writable": writable}

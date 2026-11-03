@@ -520,6 +520,7 @@ def test_provider_only_machine_does_not_invent_a_checkout_root(tmp_path: Path) -
 def test_legacy_request_without_project_configuration_pauses_before_machine_work(
     tmp_path: Path,
 ) -> None:
+    """A stop silent about its shell renders without one, so every pause must state it."""
     store, request = _store_and_request(tmp_path, configured=False)
     coordinator, credentials, checkouts = _coordinator(store, tmp_path)
     plan = coordinator.plan(request.request_id)
@@ -534,8 +535,6 @@ def test_legacy_request_without_project_configuration_pauses_before_machine_work
     assert result.step.state == "operator_action_needed"
     assert "legacy request" in result.step.message
     assert result.step.resume_argv[-1] == request.request_id
-    # A stop that stays silent about its shell renders without one, so every
-    # pause the coordinator builds has to state it.
     assert result.step.resume_execution is not None
     assert result.step.resume_execution.shell_account is None
     assert credentials.prepare_calls == 0
@@ -662,13 +661,8 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     assert paused is not None and paused.status == "operator_action_needed"
     assert paused.operator_action is not None
     assert "PRIVATE KEY" not in paused.operator_action.model_dump_json()
-    # The stop the human reads is named for their task, not for the machine
-    # check it interrupted, and every command in it survives the store round
-    # trip still naming the shell the human has to type it into.
     assert paused.operator_action.resume_execution is not None
     assert paused.operator_action.resume_execution.shell_account is None
-    # A fresh key has not met the write probe yet, so the stop asks only for
-    # the grant; host trust appears once the probe reports it is missing.
     assert [action.kind for action in paused.operator_action.actions] == ["external"]
 
     credentials.probe_status = "ready"

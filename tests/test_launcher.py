@@ -288,6 +288,9 @@ async def test_campaign_broker_wraps_provider_and_preserves_effective_prompt(
 
 @pytest.mark.asyncio
 async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path: Path) -> None:
+    """The launcher stops a provider group with SIGTERM at its result, while a turn killed outright
+    leaves its socket for the next turn to reclaim.
+    """
     staged = stage_command_mailbox(
         local_stage=tmp_path,
         remote_stage=None,
@@ -320,13 +323,11 @@ async def test_broker_socket_survives_a_stopped_turn_for_the_next_turn(tmp_path:
         return process
 
     try:
-        # The launcher stops a provider group with SIGTERM at its result.
         first = await start_broker()
         first.send_signal(signal.SIGTERM)
         await asyncio.wait_for(first.wait(), timeout=5)
         assert not socket_path.exists()
 
-        # A turn killed outright leaves its socket; the next turn reclaims it.
         dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         dead.bind(str(socket_path))
         dead.close()
@@ -594,12 +595,10 @@ async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
     finishes: bool,
     expected: str | None,
 ) -> None:
-    # Claude does not fail on an effort it does not know. It warns on stderr,
-    # runs at its own default, and exits 0, so a successful turn is the only
-    # place this can be caught. The warning is written before the result so the
-    # test cannot race the stop that the result triggers. A turn that warns and
-    # then fails for its own reasons says why on the error path; the note would
-    # only argue with that, so it is withheld.
+    """Claude warns on stderr for an unknown effort, runs at its default, and exits 0, so only a
+    successful turn catches it. The warning precedes the result to avoid racing the stop; a turn
+    that then fails withholds the note.
+    """
     provider_script = "\n".join(
         (
             *(
@@ -886,7 +885,10 @@ def test_codex_failure_event_surfaces_provider_error() -> None:
 
 
 def test_only_the_final_assistant_message_is_an_answer() -> None:
-    """A chat reply must never be confused with a reasoning or tool trace."""
+    """A chat reply must never be confused with a reasoning or tool trace.
+
+    A partial message still in flight is not the reply yet.
+    """
 
     def codex(payload: dict) -> AgentEvent:
         return _decoded_event("codex", json.dumps(payload))
@@ -900,7 +902,6 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
         trace = codex({"type": "item.completed", "item": {"type": item_type, "text": "noise"}})
         assert trace.event == "message", item_type
 
-    # A partial message still in flight is not the reply yet.
     partial = codex({"type": "item.started", "item": {"type": "agent_message", "text": "Bec"}})
     assert partial.event == "message"
 
@@ -932,6 +933,8 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     """`codex exec resume` has no --sandbox flag and defaults to read-only.
 
     A resumed run still owes RCP a patch file, so the mode travels as config.
+
+    No --cd on resume, because the writable root is the process working directory.
     """
 
     command = _command(
@@ -950,7 +953,6 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     assert 'sandbox_mode="workspace-write"' in command
     assert 'web_search="live"' in command
     assert "sandbox_workspace_write.network_access=true" in command
-    # No --cd on resume: the writable root is the process working directory.
     assert "--cd" not in command
     assert "--add-dir" not in command
     assert command[-2:] == ["019f0000-0000-7000-8000-000000000000", "-"]
@@ -961,6 +963,7 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     [("scratch_patch", "/data/run-stage/operation"), ("discuss", "/data/conversations/chat-1")],
 )
 def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scratch) -> None:
+    """A named profile carries Discuss's read denials into exec and app-server alike."""
     command = _command(
         "codex",
         "write patch.json",
@@ -970,7 +973,6 @@ def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scrat
     )
     assert command[:3] == ["codex", "exec", "--json"]
     if capability == "discuss":
-        # A named profile carries Discuss's read denials into exec and app-server alike.
         assert "--sandbox" not in command
         assert 'default_permissions="rcp_discuss"' in command
         profile = next(item for item in command if item.startswith("permissions={"))
@@ -1069,6 +1071,8 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
     a `deny` policy as no access at all, so denying `.research` revoked those reads and
     the agent could only report a Blocker. Invariant 4 protects canonical state from
     writes, which `read` already does.
+
+    Only the desktop app's own storage is unreadable.
     """
     state_repository = "/project/repo-a"
     scope = _project_write_scope(
@@ -1087,17 +1091,18 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
     )
     permission_profile = next(item for item in command if item.startswith("permissions={"))
 
-    # The staged pointer and the policy governing it, checked against each other.
     assert f"{state_repository}/.research" in scope.protected_write_paths
     assert '".git"="write"' in permission_profile
     assert all(f'"{path}"="read"' in permission_profile for path in scope.protected_write_paths)
-    # Only the desktop app's own storage is unreadable.
     assert permission_profile.count('"deny"') == len(CODEX_READ_DENY_PATHS)
 
 
 def test_codex_is_told_only_about_paths_that_exist() -> None:
     """Codex's Linux sandbox makes a stand-in file for a missing path it must hide or
-    protect. A killed command leaves it behind, and every later sandbox fails to start."""
+    protect. A killed command leaves it behind, and every later sandbox fails to start.
+
+    No relative rule either: it named `.research` inside every writable root.
+    """
     scope = ProjectWriteScope.create(
         project_id="project-1",
         execution_machine="local",
@@ -1138,7 +1143,6 @@ def test_codex_is_told_only_about_paths_that_exist() -> None:
     assert '"/data/rcp.sqlite3*"="deny"' in profile
     assert "/project/repo-b/.research" not in profile
     assert "claude-setup-token" not in profile
-    # No relative rule either: it named `.research` inside every writable root.
     assert '".research"' not in profile
 
 
@@ -1279,6 +1283,7 @@ def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
 
 
 def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
+    """Read context is read-only rules, one set per distinct directory, never --add-dir."""
     command = _command(
         "claude",
         "write patch.json",
@@ -1302,7 +1307,6 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
     allowed_index = command.index("--allowedTools")
     assert command[allowed_index + 1 : allowed_index + 3] == ["WebSearch", "WebFetch"]
     assert "--json-schema" not in command
-    # Read context is read-only rules, one set per distinct directory, never --add-dir.
     assert "--add-dir" not in command
     rules = command[allowed_index + 3 : command.index("--strict-mcp-config")]
     assert rules == [
@@ -1340,6 +1344,7 @@ def test_claude_coach_command_scopes_edits() -> None:
     ids=["new", "resume"],
 )
 def test_claude_work_uses_exact_sandbox_and_tool_allowlists(session_id, write_dirs) -> None:
+    """The account's own skills load, while RCP's settings still bound the turn."""
     stage = "/data/chat-stage"
     scope = _project_write_scope(
         capability="work_auto",
@@ -1361,7 +1366,6 @@ def test_claude_work_uses_exact_sandbox_and_tool_allowlists(session_id, write_di
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     assert "bypassPermissions" not in command
     assert "--allowedTools" not in command
-    # The account's own skills load; RCP's settings below still bound the turn.
     assert command[command.index("--setting-sources") + 1] == "user"
     settings = json.loads(command[command.index("--settings") + 1])
     assert settings == {
@@ -1504,6 +1508,7 @@ def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:
 
 @pytest.mark.parametrize("capability", ["work_auto", "discuss"])
 def test_claude_launch_names_its_tools_without_host_session_tools(capability) -> None:
+    """Tools that outlive the turn, reach another session, or publish never exist."""
     stage = "/data/chat-stage"
     work = capability == "work_auto"
     command = _command(
@@ -1522,7 +1527,6 @@ def test_claude_launch_names_its_tools_without_host_session_tools(capability) ->
 
     tools = set(command[command.index("--tools") + 1].split(","))
     assert {"Bash", "Read", "Edit", "Task", "Skill", "WebFetch", "WebSearch"} <= tools
-    # Tools that outlive the turn, reach another session, or publish never exist.
     assert not {"CronCreate", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "Artifact"} & tools
 
 
@@ -1604,7 +1608,6 @@ def test_remote_provider_pid_wrapper_announces_the_provider_start() -> None:
     )
     child = shlex.split(shlex.split(command)[2])[4]
 
-    # The pid is recorded, the start is announced, then the provider replaces the shell.
     assert child.index("agent.pid") < child.index(REMOTE_PROVIDER_START_LINE)
     assert child.index(REMOTE_PROVIDER_START_LINE) < child.index("exec codex")
 
@@ -1623,6 +1626,9 @@ def test_remote_provider_pid_wrapper_changes_directory_before_exec() -> None:
 
 @pytest.mark.asyncio
 async def test_process_control_terminates_only_its_process_group() -> None:
+    """A just-started provider may be rotating its credential, so the kill waits out the startup
+    hold.
+    """
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-c",
@@ -1633,8 +1639,6 @@ async def test_process_control_terminates_only_its_process_group() -> None:
     control.attach(process)
 
     control.request_pause()
-    # A provider that just started may be rotating its credential; the kill
-    # waits out the startup hold before the signal is sent.
     await asyncio.wait_for(process.wait(), timeout=PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS + 2)
 
     assert process.returncode is not None
@@ -1647,6 +1651,9 @@ async def test_process_control_terminates_only_its_process_group() -> None:
 async def test_member_git_identity_reaches_local_and_remote_provider_turns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str, capability: str
 ) -> None:
+    """Runs the exact remote payload locally without host login dotfiles; a repository without a
+    deploy key is a visible trace, not a refused turn.
+    """
     import os
 
     from rcp.agents.git_access import ProviderGitAccess
@@ -1676,7 +1683,6 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
     monkeypatch.setattr(
         launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
     )
-    # Execute the exact remote payload locally, excluding host login dotfiles.
     monkeypatch.setattr(
         "rcp.agents.launcher.ssh_arguments",
         lambda host, command, **kwargs: ["sh", "-c", shlex.split(command)[2]],
@@ -1710,7 +1716,6 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
         "rcp.agents.checkout_git_access.ssh_arguments",
         lambda host, command, **kwargs: ["sh", "-c", command],
     )
-    # A repository without a deploy key is a visible trace, not a refused turn.
     events = [
         event
         async for event in launcher.stream(

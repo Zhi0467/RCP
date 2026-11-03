@@ -73,7 +73,6 @@ def fake_ssh(tmp_path, monkeypatch):
     )
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
-    # Keep socket-directory setup inside this disposable fixture as well.
     monkeypatch.setattr("rcp.transport.ssh._require_control_directory", lambda: directory)
     return script
 
@@ -319,6 +318,7 @@ def _open_local_stage(tmp_path):
 
 
 def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, monkeypatch):
+    """The once-per-host warning is pinned by test_fallback_warning_once_per_host."""
     tools = tmp_path / "tools"
     tools.mkdir()
     for name, target in (("python3", sys.executable), ("tar", shutil.which("tar"))):
@@ -328,7 +328,6 @@ def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, mon
 
     stage.finalize_inputs()
 
-    # The once-per-host warning is pinned by test_fallback_warning_once_per_host.
     assert state_transfer.diagnostics("fixture")["engine"] == "tar"
     assert (root / "inputs" / "context" / "nested" / "notes.md").read_bytes() == b"inputs\n"
     assert (root / "inputs" / "schema.json").read_bytes() == b"{}\n"
@@ -356,7 +355,6 @@ def test_dropped_stage_input_upload_resends_the_same_snapshot(
         source, destination = argv[-2], argv[-1].split(":", 1)[1].rstrip("/")
         attempts.append((source, destination))
         batch = Path(destination)
-        # A dropped stream leaves a partial batch that the next attempt must replace.
         shutil.copytree(source, batch, dirs_exist_ok=True)
         if len(attempts) <= drops:
             (batch / "schema.json").write_bytes(b"{")

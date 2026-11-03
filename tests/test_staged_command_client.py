@@ -361,6 +361,9 @@ def test_command_protocol_has_strict_file_target_and_action_request_shapes() -> 
 
 @pytest.mark.asyncio
 async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path) -> None:
+    """File contents are RCP's to judge on first admission; the client refuses only
+    paths outside this workspace.
+    """
     workspace = tmp_path / "stage"
     workspace.mkdir()
     nested = workspace / "nested"
@@ -368,8 +371,6 @@ async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path)
     (nested / "task.md").write_text("Nested task.\n", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("Outside task.\n", encoding="utf-8")
-    # File contents are RCP's to judge on first admission (see the dispatcher
-    # tests); the client refuses only paths outside this workspace.
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
@@ -971,6 +972,9 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
     over the validated model stopped matching whenever the agent wrote its
     statuses in any order but alphabetical. Every other mutating verb shares the
     signing path, so they are exercised here together rather than one at a time.
+
+    Regression: the verbs are deliberately not alphabetical, since that ordering used to
+    be refused.
     """
 
     workspace = tmp_path / "stage"
@@ -996,7 +1000,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         seen.append((request.verb, request.arguments.model_dump(mode="json")))
         return CommandResponse(request_id=request.request_id, status="ok")
 
-    # Deliberately not alphabetical: this is the ordering that used to be refused.
     condition = json.dumps({"node_id": "hyp-3", "status_in": ["supported", "refuted"]})
     calls = [
         ("apply", "--key", "k-apply", str(patch)),
@@ -1102,7 +1105,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "reasoning": "high",
     }
     watched = next(arguments for verb, arguments in seen if verb == "watch_graph")
-    # RCP still normalizes for its own use; only the signature stops depending on it.
     assert watched["condition"]["status_in"] == ["refuted", "supported"]
     episode_started = next(
         arguments
@@ -1186,11 +1188,9 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
     )
     assert staged.invocation_gate is not None
 
-    # No broker yet: the command never left this host.
     code, output = await _run_client(staged, "status")
     assert (code, json.loads(output)["result"]) == (2, {"delivery": "not_sent"})
 
-    # No serve loop at all, so nothing ever writes the response file.
     async with staged.invocation_gate.serve_current_session():
         code, output = await _run_client(staged, "status")
 
@@ -1236,7 +1236,6 @@ async def test_keyed_retry_reaches_rcp_after_apply_consumed_its_patch(tmp_path) 
                 staged, "apply", "--key", "k-apply", str(workspace / "patch.json")
             )
             assert code == 0, output
-            # Replaced by bytes RCP would refuse on a first admission: still RCP's call.
             (workspace / "patch.json").write_bytes(b"\xff")
             code, output = await _run_client(
                 staged, "apply", "--key", "k-apply", str(workspace / "patch.json")
@@ -1274,7 +1273,6 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
     mailbox_id = staged.credential.mailbox_id
     recorded: list[tuple[str, str]] = []
     handled = []
-    # A notice the agent could write itself: well formed, but not broker-signed.
     (workspace / f"rcp-command-{mailbox_id}-{'f' * 32}.rejected.json").write_text(
         json.dumps(
             {
@@ -1287,7 +1285,6 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
             }
         )
     )
-    # A request that bypassed the broker, so it carries no valid signature.
     request_id = "e" * 32
     (workspace / f"rcp-command-{mailbox_id}-{request_id}.request.json").write_text(
         json.dumps(
@@ -1301,7 +1298,6 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
     stop = asyncio.Event()
     async with staged.invocation_gate.serve_current_session():
         try:
-            # A malformed message straight to the broker never becomes a request.
             path = staged_command_client._broker_socket_path(staged.invocation_gate.socket_path)
             reader, writer = await asyncio.open_unix_connection(path)
             writer.write(b"not json\n")
@@ -1319,12 +1315,11 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
                 )
             )
             await async_wait_until(lambda: len(recorded) == 2)
-            await asyncio.sleep(0.1)  # a few more polls, so a forged notice would show
+            await asyncio.sleep(0.1)
         finally:
             stop.set()
             await server
     assert answer["result"] == {"delivery": "not_sent"}
-    # Only the broker's refusal and the mailbox's refusal; never the forged notice.
     assert [status for status, _message in recorded] == ["invalid", "invalid"]
     assert not handled
     staged.cleanup()
@@ -1456,7 +1451,10 @@ def _sign(staged, value, domain=b""):
 
 @pytest.mark.asyncio
 async def test_workspace_notices_stay_inert_and_the_mailbox_keeps_serving(tmp_path) -> None:
-    """The agent can write any file here; only a genuine, uncopied notice records."""
+    """The agent can write any file here; only a genuine, uncopied notice records.
+
+    Regression: one replayed notice carries a status that used to crash the reader.
+    """
 
     from rcp import limits
     from rcp.agents import command_mailbox, staged_command_broker
@@ -1481,10 +1479,8 @@ async def test_workspace_notices_stay_inert_and_the_mailbox_keeps_serving(tmp_pa
         str(workspace), mailbox_id, staged.credential.token, "invalid", "genuine"
     )
     genuine = next(workspace.glob("*.rejected.json"))
-    notice_path(1).write_text(genuine.read_text())  # renamed copy
+    notice_path(1).write_text(genuine.read_text())
     notice_path(2).write_text(json.dumps({"mailbox_id": mailbox_id, "credential": "\u2603"}))
-    # Requests the broker legitimately signed, replayed as notices: one shaped
-    # exactly like a notice, one with a status that used to crash the reader.
     for number, status in ((3, "invalid"), (4, [])):
         notice_path(number).write_text(
             json.dumps(
@@ -1500,7 +1496,6 @@ async def test_workspace_notices_stay_inert_and_the_mailbox_keeps_serving(tmp_pa
                 )
             )
         )
-    # More unsigned requests than the recording cap.
     for number in range(limits.COMMAND_REJECTION_NOTICE_MAX_COUNT + 5):
         name = f"rcp-command-{mailbox_id}-{number + 100:032x}.request.json"
         (workspace / name).write_text("{}")
@@ -1616,7 +1611,7 @@ def test_a_timed_out_joiner_leaves_the_real_answer_for_the_next_repeat(
     joined = broker._joined_response
 
     def join_then_let_the_owner_finish(entry, request_id, timeout):
-        response = joined(entry, request_id, timeout)  # times out first
+        response = joined(entry, request_id, timeout)
         finish.set()
         owner.join(2)
         return response
@@ -1624,7 +1619,6 @@ def test_a_timed_out_joiner_leaves_the_real_answer_for_the_next_repeat(
     monkeypatch.setattr(broker, "_joined_response", join_then_let_the_owner_finish)
     assert call(2)["status"] == "unavailable"
     monkeypatch.setattr(broker, "_joined_response", joined)
-    # The owner's answer reached nobody, so the next repeat gets it without resending.
     assert call(3)["result"] == {"n": 1}
     assert sends == [f"{1:032x}"]
 
@@ -1700,7 +1694,6 @@ async def test_mailbox_retries_transport_step_without_repeating_completed_handle
         original = getattr(RunStageMailbox, method)
 
         def flaky(self, *args, step=step, original=original, **kwargs):
-            # Closure writes are separate from the response boundary under test.
             if step != "writing" or args[0].endswith(".response.json"):
                 calls[step] += 1
                 if step == failure_step and calls[step] == 1:
@@ -1724,7 +1717,6 @@ async def test_mailbox_retries_transport_step_without_repeating_completed_handle
             stop=stop,
             poll_seconds=0.001,
             record_transport=lambda status, _message: events.append(status),
-            # Only a checkpointing turn may re-run a handler after a blip.
             checkpoint=lambda: None,
         )
     )
@@ -1786,7 +1778,6 @@ async def test_failing_handler_is_rerun_a_bounded_number_of_times(
     )
     try:
         first, _ = await _run_client(staged, "status")
-        # The loop moved on: a later request is still answered.
         second, output = await _run_client(staged, "status")
         assert first == second == 2
         assert json.loads(output)["status"] == "unavailable"
@@ -1913,7 +1904,6 @@ async def test_suspended_mailbox_restores_completed_response_and_same_credential
         code, output = await caller
         assert code == 0, output
         assert len(effects) == 1
-        # The previously staged client and its unchanged credential still work.
         code, output = await _run_client(staged, *arguments)
         assert code == 0, output
         assert len(effects) == 2
@@ -2093,7 +2083,6 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         "multiple": True,
         "action": None,
     }
-    # A long hold sends thousands of pending rounds: none stays on disk or in the record.
     assert not any(seen[0].request_id in name for name in os.listdir(staged.workspace))
     assert not any(seen[0].request_id in name for name in responses)
     assert any(seen[1].request_id in name for name in os.listdir(staged.workspace))
@@ -2174,10 +2163,8 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
 @pytest.mark.parametrize(
     ("later", "exit_code", "printed"),
     [
-        # Transport or admission failures: the earlier round's card stands.
         ({"status": "unavailable", "result": {"delivery": "unknown"}}, 0, "pending"),
         ({"status": "invalid", "result": {"delivery": "not_sent"}}, 0, "pending"),
-        # RCP's own refusal, such as an ended episode, is the outcome.
         ({"status": "invalid", "message": "question_episode_ended"}, 1, "invalid"),
         (
             {"status": "unavailable", "result": {"delivery": "not_sent", "permanent": True}},
@@ -2404,6 +2391,9 @@ def test_file_client_acknowledges_only_consumed_answer(
 
 @pytest.mark.parametrize("verb", ["status", "validate"])
 def test_a_waiting_inbox_prints_before_the_reply_body(verb) -> None:
+    """The inbox prints first after status, so truncating a long reply cannot cut it
+    off.
+    """
     from rcp.agents.staged_command_client import _display_response
 
     pending = {"notices": 0, "mail": 1}
@@ -2411,7 +2401,6 @@ def test_a_waiting_inbox_prints_before_the_reply_body(verb) -> None:
         {"status": "ok", "message": None, "result": {"long": "x", "inbox_pending": pending}},
         verb,
     )
-    # First after status, so truncating a long reply cannot cut it off.
     assert list(shown)[:2] == ["status", "inbox_pending"]
     assert shown["inbox_pending"] == pending
     assert "inbox_pending" not in shown.get("result", {})
@@ -2647,7 +2636,6 @@ def test_every_advertised_shared_record_usage_parses():
     }
 
     def parse(usage):
-        # Choose one alternative; channel-only admission is covered with a body file.
         usage = usage.replace(" | --channel <channel>", "")
         words = usage.replace("[", "").replace("]", "").split()
         return client._parser().parse_args(

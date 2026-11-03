@@ -48,7 +48,6 @@ def test_open_chat_turns_stay_listed_past_the_recency_limit(tmp_path: Path) -> N
     _chat_turn(store, "superseded-failure", "chat-recovered", "failed", 3)
     _chat_turn(store, "later-success", "chat-recovered", "succeeded", 4)
     _chat_turn(store, "old-success", "chat-done", "succeeded", 5, timedelta(days=1))
-    # A turn that just ended stays listed, so a client that saw it running sees it end.
     _chat_turn(store, "just-finished", "chat-just", "succeeded", 6, timedelta(seconds=5))
     for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
         _chat_turn(store, f"newer-{index}", f"chat-newer-{index}", "succeeded", 10 + index)
@@ -62,14 +61,15 @@ def test_open_chat_turns_stay_listed_past_the_recency_limit(tmp_path: Path) -> N
 def test_the_open_chat_cap_keeps_the_most_recent_open_chats(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Three open chats compete for two places: recency decides, and a just-finished chat never
+    takes a place from one that needs a person.
+    """
     monkeypatch.setattr(agent_task_storage, "AGENT_TASK_LIST_OPEN_CHAT_LIMIT", 2)
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
-    # Three open chats compete for two places; recency decides which stay.
     _chat_turn(store, "oldest-open", "chat-a", "failed", 0)
     _chat_turn(store, "middle-open", "chat-b", "failed", 1)
     _chat_turn(store, "newest-open", "chat-c", "failed", 2)
-    # A chat that just finished never takes a place from one that needs a person.
     _chat_turn(store, "just-finished", "chat-d", "succeeded", 3, timedelta(seconds=5))
     for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
         _chat_turn(store, f"newer-{index}", f"chat-newer-{index}", "succeeded", 10 + index)
@@ -80,6 +80,9 @@ def test_the_open_chat_cap_keeps_the_most_recent_open_chats(
 
 
 def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -> None:
+    """Admission needs a real branch, so the row is written directly; the read projection only
+    filters the stored target.
+    """
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     _chat_turn(store, "old-success", "chat-done", "succeeded", 0, timedelta(days=1))
@@ -90,7 +93,6 @@ def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -
     store.set_chat_archived("project", "chat-archived", "user", archived=True)
     branch = GraphTargetRef(kind="branch", branch_id="branch")
     _chat_turn(store, "branch-success", "chat-branch", "succeeded", 3, timedelta(days=1))
-    # Admission needs a real branch; the read projection only filters the stored target.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = 'branch-success'",
@@ -187,19 +189,20 @@ def test_an_artifact_edit_refreshes_only_a_conversation_its_turns_hold(tmp_path:
 def test_an_orchestrator_turn_stays_listed_and_finishes_its_chain_conversation(
     tmp_path: Path,
 ) -> None:
+    """Admission needs a real episode and branch, so rows are written directly; children and other
+    chats then crowd the orchestrator out of the recency window.
+    """
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     _chat_turn(store, "superseded-orchestrator", "first", "running", 0)
     _chat_turn(store, "running-orchestrator", "second", "running", 1)
     branch = GraphTargetRef(kind="branch", branch_id="chain-root")
-    # Admission needs a real episode and branch; the projections read only these columns.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET kind = 'auto_research', request_json = ?, "
             "graph_target_json = ? WHERE operation_id LIKE '%-orchestrator'",
             ('{"role": "orchestrator"}', branch.model_dump_json()),
         )
-    # Children and other chats crowd the orchestrator out of the recency window.
     for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
         _chat_turn(store, f"newer-{index}", f"chat-newer-{index}", "succeeded", 10 + index)
 
@@ -217,10 +220,10 @@ def test_an_orchestrator_turn_stays_listed_and_finishes_its_chain_conversation(
 
 
 def test_a_paused_rebound_edit_keeps_its_artifact_from_expiry(tmp_path: Path) -> None:
+    """An answer turn rebound to another stage's artifact carries no artifact context."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     _chat_turn(store, "answer", "chat", "paused", 0)
-    # An answer turn rebound to another stage's artifact carries no artifact context.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json = json_set(request_json, "

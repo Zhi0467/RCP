@@ -27,8 +27,8 @@ export function ProjectDock({
           const active = tab.id === activeProjectId;
           const health = sync?.get(tab.id);
           const syncLabel =
-            health && health.status !== "local"
-              ? `${tab.name}: sync ${health.status}${health.last_completed_at ? `; last completed ${health.last_completed_at}` : ""}${health.error ? `; ${health.error}` : ""}`
+            health?.status === "error"
+              ? `${tab.name}: sync error${health.last_completed_at ? `; last completed ${health.last_completed_at}` : ""}${health.error ? `; ${health.error}` : ""}`
               : null;
           return (
             <div className={`project-dock-tab${active ? " active" : ""}`} key={tab.id}>
@@ -45,10 +45,7 @@ export function ProjectDock({
                     role="status"
                     aria-label={syncLabel}
                     title={syncLabel}
-                    style={{
-                      fontSize: 8,
-                      color: health?.status === "error" ? "var(--danger, #b33)" : "currentColor",
-                    }}
+                    style={{ fontSize: 8, color: "var(--danger, #b33)" }}
                   >
                     ●
                   </span>

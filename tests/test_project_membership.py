@@ -258,9 +258,6 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert require_project_membership.__closure__ is None
 
 
-# --- seeding -----------------------------------------------------------------
-
-
 def test_creating_a_project_seats_its_creator_as_the_first_member(manifest, tmp_path) -> None:
     app, client, store, people, _acting = _team_app(tmp_path)
     creator, other = people
@@ -283,7 +280,6 @@ def test_membership_binds_the_durable_user_id_and_never_a_display_name(manifest,
     seated = store.project_members(project_id)
     assert [record.user_id for record in seated] == [creator.user_id]
 
-    # The name is a label; renaming must not disturb the binding.
     store.rename_space_user(creator.user_id, "Renamed entirely")
     assert store.is_project_member(project_id, creator.user_id)
     assert [record.user_id for record in store.project_members(project_id)] == [creator.user_id]
@@ -317,12 +313,8 @@ def test_a_personal_space_project_has_exactly_one_member(manifest, tmp_path) -> 
     assert [record.user_id for record in store.project_members(project_id)] == [owner.user_id]
     assert len(client.get("/api/projects").json()) == 1
 
-    # No display name was ever chosen, and the project is still fully usable.
     assert owner.display_name is None
     assert client.get(f"/api/projects/{project_id}/cached").status_code in {200, 404}
-
-
-# --- backfill ----------------------------------------------------------------
 
 
 def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
@@ -373,16 +365,12 @@ def test_the_backfill_runs_once_and_is_not_reapplied_on_later_starts(manifest, t
     assert owner is not None
     assert first.is_project_member("legacy-project", owner.user_id)
 
-    # Someone leaves. A later start must not silently readmit them.
     with first.connection() as connection:
         connection.execute("DELETE FROM project_members WHERE project_id = 'legacy-project'")
 
     second = AppStore(path)
     assert second.project_members("legacy-project") == []
     assert not second.is_project_member("legacy-project", owner.user_id)
-
-
-# --- what a non-member sees --------------------------------------------------
 
 
 def test_a_non_member_project_is_absent_from_the_project_list(manifest, tmp_path) -> None:
@@ -400,17 +388,17 @@ def test_a_non_member_project_is_absent_from_the_project_list(manifest, tmp_path
 def test_a_non_member_project_is_absent_from_the_cross_project_experiment_board(
     manifest, tmp_path
 ) -> None:
+    """The outsider must not reach the cache-status 503, which would confirm the project
+    exists.
+    """
     app, client, _store, people, acting = _team_app(tmp_path)
     _creator, outsider = people
     project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
-    # Commit a display snapshot, so the board has real cached graph state to leak.
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
     board = client.get("/api/episodes", params={"mode": "experiment_loop"})
     assert board.status_code == 200, board.text
 
-    # The outsider must not even reach the cache-status check that answers 503
-    # for a project they cannot see — that would confirm the project exists.
     acting[0] = outsider.user_id
     outsider_board = client.get("/api/episodes", params={"mode": "experiment_loop"})
     assert outsider_board.status_code == 200, outsider_board.text
@@ -429,7 +417,6 @@ def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_
 
     assert refused.status_code == 404
     assert unknown.status_code == 404
-    # Byte-identical: a non-member learns nothing an unknown id would not tell them.
     assert refused.json() == unknown.json()
 
     for path in (
@@ -494,7 +481,6 @@ def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, 
     assert history.write_authority.project_membership_check(project_id, creator.user_id)
     assert not history.write_authority.project_membership_check(project_id, outsider.user_id)
 
-    # The gate is the live check, not a snapshot taken at dispatch.
     store.seat_project_member(project_id, outsider.user_id)
     assert history.write_authority.project_membership_check(project_id, outsider.user_id)
     with store.connection() as connection:
@@ -510,17 +496,12 @@ def test_require_dispatch_is_unchanged_and_carries_no_membership_argument() -> N
     """require_dispatch sees no user and no project, so it is not where the check goes."""
 
     dispatch = inspect.signature(require_dispatch)
-    # A member-dispatched merge names its branch source, never a user or project.
     assert list(dispatch.parameters) == ["authority", "member_merge_source"]
 
     apply_signature = inspect.signature(require_apply)
     membership = apply_signature.parameters["is_project_member"]
     assert membership.kind is inspect.Parameter.KEYWORD_ONLY
-    # Required, so no caller can reach Apply without deciding the question.
     assert membership.default is inspect.Parameter.empty
-
-
-# --- the gate is structural --------------------------------------------------
 
 
 def test_every_project_scoped_route_is_declared_on_the_membership_router(
@@ -550,9 +531,6 @@ def test_a_project_scoped_route_declared_outside_the_router_fails_the_route_test
         "['GET'] /api/projects/{project_id}/smuggled",
         "['GET'] /api/query-smuggled",
     ]
-
-
-# --- membership is operational, never canonical ------------------------------
 
 
 def test_replay_succeeds_with_no_membership_records_present(manifest, tmp_path) -> None:
@@ -613,7 +591,6 @@ def test_a_team_project_is_never_left_with_no_members(
             seat_member=store.space_users()[0].user_id,
         )
     else:
-        # The server opens the project before anybody has enrolled.
         app = create_app(str(manifest.path), data_dir=data_dir)
         client = signed_in_client(app, base_url="https://team.test")
         project_id = app.state.default_project_id

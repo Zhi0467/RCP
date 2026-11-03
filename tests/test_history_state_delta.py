@@ -114,6 +114,7 @@ def test_memory_accounting_deduplicates_models_and_slotted_dataclasses():
 
 
 def test_semantic_delta_ignores_nested_engine_stamps_but_exact_state_delta_retains_them():
+    """A historical writer's dependency rule remains replay data, not content."""
     from rcp.core.models import Proposal
     from rcp.history.delta import semantic_delta
 
@@ -133,7 +134,6 @@ def test_semantic_delta_ignores_nested_engine_stamps_but_exact_state_delta_retai
             ],
         }
     )
-    # A historical writer's dependency rule remains replay data, not content.
     raw = old.model_dump(mode="json")
     raw["dependency_rule"] = 3
     raw["raised_rev"] = 9

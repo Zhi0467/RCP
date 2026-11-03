@@ -9,9 +9,8 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage import AppStore, EpisodeRecord
 from tests.helpers import signed_in_client
 
-from .helpers import authorized_human, create_named_app
+from .helpers import authorized_human, create_named_app, start_experiment_episode
 from .test_episode_api import create_recoverable_auto_episode
-from .test_episode_storage import _operational_task
 from .test_project_membership import _create_project, _team_app
 from .test_project_transfer_request_api import _source_project
 
@@ -112,16 +111,17 @@ def test_every_episode_state_can_archive_without_changing_retained_work_or_proje
             stage=tmp_path / "retained-stage",
         )
     else:
-        episode = _episode(store, project_id, authorized_human(store), ended=False)
-        episode, _invocation, task = store.allocate_episode_invocation(
-            episode.episode_id,
-            _operational_task(
-                store,
-                "retained-turn",
-                episode_id=episode.episode_id,
-                project_id=project_id,
-            ),
+        episode_id = str(uuid.uuid4())
+        task = start_experiment_episode(
+            store,
+            "retained-turn",
+            episode_id,
+            project_id=project_id,
+            control_node_id=f"exp/{episode_id}",
+            ceiling=2,
         )
+        episode = store.episode(episode_id)
+        assert episode is not None
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET status = ?, ending = ?, wrapup_state = ? WHERE episode_id = ?",

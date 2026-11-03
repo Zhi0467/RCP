@@ -81,12 +81,12 @@ def test_connection_acquire_restores_transaction_and_pragma_state(tmp_path):
 
 
 def test_connection_reopens_replaced_database(tmp_path):
+    """Checkpoints before the external replacement, as restore and transfer must."""
     store = AppStore(tmp_path / "rcp.sqlite3")
     replacement = AppStore(tmp_path / "replacement.sqlite3")
     expected = replacement.space_id
     replacement.close()
     with store.connection() as original:
-        # Checkpoint before the external replacement, as restore/transfer must.
         original.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     replacement.path.replace(store.path)
     assert store.space_id == expected
@@ -113,6 +113,9 @@ def test_connection_rolls_back_exception_and_discards_broken_handle(tmp_path):
 
 
 def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tmp_path):
+    """Apps are retained until cyclic GC, and Thread objects too, since cleanup follows
+    thread-local lifetime.
+    """
     import gc
     import os
     import weakref
@@ -131,13 +134,12 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
     try:
         for index in range(2 * STORAGE_IDLE_CONNECTION_LIMIT):
             store = AppStore(tmp_path / str(index) / "rcp.sqlite3")
-            store.cycle = store  # Match apps retained until cyclic GC.
+            store.cycle = store
             stores.append(store)
             assert fd_count() <= before + 3 * STORAGE_IDLE_CONNECTION_LIMIT + 8
         for retained in stores:
             retained.close()
         idle = fd_count()
-        # Retain Thread objects too: cleanup must follow thread-local lifetime.
         threads = [threading.Thread(target=lambda: store.space_id) for _ in range(80)]
         for thread in threads:
             thread.start()
@@ -154,7 +156,7 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
             assert len(set(executor.map(read_on_own_thread, range(4)))) == 4
         assert fd_count() <= idle + 4
         with store.connection():
-            store.close()  # Active handles close at block exit.
+            store.close()
         assert fd_count() <= idle + 4
         dropped = _TracingAppStore(tmp_path / "dropped.sqlite3")
         dropped_ref = weakref.ref(dropped)
@@ -169,6 +171,7 @@ def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tm
 
 
 def test_new_database_schema_capture_keeps_scratch_out_of_system_temp(tmp_path, monkeypatch):
+    """An agent may be granted system temp, so the capture must never reach it."""
     AppStore(tmp_path / "primed.sqlite3").close()
     monkeypatch.setattr(AppStore, "_baseline_storage_sql", ())
     roots: list[Path] = []
@@ -179,7 +182,6 @@ def test_new_database_schema_capture_keeps_scratch_out_of_system_temp(tmp_path, 
         migrate_artifacts(connection, file_root)
 
     monkeypatch.setattr(storage_base_module, "migrate_artifacts", recording_migrate_artifacts)
-    # An agent may be granted system temp, so the capture must never reach it.
     system_temp = tmp_path / "system-temp"
     system_temp.touch()
     monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
@@ -218,7 +220,6 @@ def test_new_database_matches_raw_migration_schema_and_all_seed_rows(
             schema_capture=None,
             file_root=tmp_path,
         )
-    # Prime the shared DDL, then prove each actual new store skips the chain.
     reference._new_database_schema()
 
     def unexpected_migration(*args, **kwargs):
@@ -311,7 +312,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (73, "approval_cards_v1")
+    assert migrations[-1] == (74, "agent_schedule_pending_fires_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -892,6 +893,9 @@ def test_explicit_team_space_preprovisions_distinct_members_with_duplicate_names
 
 
 def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> None:
+    """Line and paragraph separators still split a name across lines. The inclusive-
+    limit case runs last because it alone changes identity.
+    """
     team = AppStore(tmp_path / "team.sqlite3", space_kind="team")
     member = team.preprovision_team_member()
 
@@ -901,8 +905,6 @@ def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> No
 
     for invalid_name, message in (
         ("line one\nline two", "single line"),
-        # A line separator and a paragraph separator are single characters that
-        # still split the name across lines, so they are rejected like "\n".
         ("line one\u2028line two", "single line"),
         ("line one\u2029line two", "single line"),
         ("x" * (DISPLAY_NAME_MAX_LENGTH + 1), f"at most {DISPLAY_NAME_MAX_LENGTH} characters"),
@@ -920,8 +922,6 @@ def test_space_user_names_reject_blank_without_changing_identity(tmp_path) -> No
         personal.preprovision_team_member("Member")
     assert len(personal.space_users()) == 1
 
-    # The limit is inclusive, so the longest legal name is still accepted. This
-    # runs last because, unlike every rejection above, it does change identity.
     longest_legal = "x" * DISPLAY_NAME_MAX_LENGTH
     assert team.rename_space_user(member.user_id, longest_legal).display_name == longest_legal
 
@@ -3880,7 +3880,6 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
             "INSERT INTO episodes VALUES (?, 'project', ?)",
             [
                 ("branch", '{"kind":"branch","branch_id":"branch"}'),
-                # A legacy continuation on the root's branch belongs to that root.
                 ("continuation", '{"kind":"branch","branch_id":"branch"}'),
                 ("main-owner", '{"kind":"main"}'),
             ],
@@ -3897,7 +3896,6 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
         )
         AppStore._migrate_episode_isolation(connection)
         assert connection.execute("SELECT sum(graph_isolation) FROM episodes").fetchone()[0] == 3
-        # The legacy branch loop's pinned requests agree with its derived episode.
         assert connection.execute(
             "SELECT json_extract(request_json, '$.graph_isolation') FROM graph_runs ORDER BY rowid"
         ).fetchall() == [(1,), (None,)]
@@ -3984,7 +3982,6 @@ def test_all_target_snapshot_retains_only_live_newest_or_recent_episodes(tmp_pat
     expected = {"boundary", "live", "newest", "only-on-node"}
     assert {snapshot.runtime.episode_id for snapshot in snapshots.values()} == expected
     assert set(hydrated) == expected
-    # A direct target read still exposes its own old stopped/completed loop.
     direct = store.experiment_control_projection_snapshots(
         "project",
         ["experiment-node"],

@@ -63,7 +63,7 @@ def test_seatbelt_profile_is_allow_default_with_escaped_path_denies() -> None:
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS only")
 def test_seatbelt_denies_hidden_globs_for_real(tmp_path: Path) -> None:
-    # Regex literals take backslashes verbatim: a doubled escape matches nothing.
+    """Regex literals take backslashes verbatim, so a doubled escape matches nothing."""
     data = tmp_path / "da-ta"
     data.mkdir()
     (data / "rcp.sqlite3-wal").write_text("secret")
@@ -75,6 +75,9 @@ def test_seatbelt_denies_hidden_globs_for_real(tmp_path: Path) -> None:
 
 
 def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path) -> None:
+    """The home is never emptied for a missing literal inside it. The parent is emptied first so a
+    later WAL or copy never appears, and masks inside a bound entry come after it.
+    """
     data = tmp_path / "data"
     (data / "run-stage" / "task").mkdir(parents=True)
     (data / "rcp.sqlite3").touch()
@@ -89,7 +92,6 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
         "hidden_directories": [str(data / "providers"), str(secret), str(tmp_path / "absent")],
         "hidden_files": [str(token), str(tmp_path / "absent-file"), str(data / "tools" / "later")],
         "hidden_globs": [str(data) + "/rcp.sqlite3*"],
-        # The home is never emptied for a missing literal directly inside it.
         "account_home": str(tmp_path),
     }
     argv = bwrap_argv(policy, "exit 23")
@@ -97,14 +99,11 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
     assert argv[:4] == ["bwrap", "--dev-bind", "/", "/"]
     assert argv[-4:] == ["--", "/bin/bash", "-c", "exit 23"]
     mounts = argv[4:-4]
-    # The parent is emptied first, so a WAL or copy created later never appears.
     assert mounts[:2] == ["--tmpfs", str(data)]
     assert ["--symlink", "tools", str(data / "link")] == mounts[2:5]
     assert ["--bind", str(data / "run-stage"), str(data / "run-stage")] == mounts[5:8]
     assert ["--bind", str(data / "tools"), str(data / "tools")] == mounts[8:11]
-    # A literal that does not exist yet is hidden by emptying its existing parent.
     assert ["--tmpfs", str(data / "tools")] == mounts[11:13]
-    # Masks inside a bound entry come after it; hidden or matching entries stay unbound.
     assert mounts[13:] == [
         "--tmpfs",
         os.path.realpath(secret),
@@ -115,22 +114,22 @@ def test_bwrap_hides_future_glob_matches_and_keeps_other_entries(tmp_path: Path)
 
 
 def test_bwrap_hides_each_match_of_a_wildcard_above_the_last_component(tmp_path: Path) -> None:
+    """Only the credential is masked; the rest of the home stays readable."""
     home = Path(os.path.realpath(tmp_path)) / "homes" / "codex" / "login"
     home.mkdir(parents=True)
     (home / "auth.json").touch()
     (home / "config.toml").touch()
     policy = {"hidden_globs": [str(home.parent.parent) + "/*/*/auth.json"]}
     mounts = bwrap_argv(policy, "true")[4:-4]
-    # Only the credential is masked; the rest of the home stays readable.
     assert mounts == ["--ro-bind", "/dev/null", str(home / "auth.json")]
 
 
 def test_missing_credential_parent_is_masked_at_home_only_for_the_daemon(tmp_path: Path) -> None:
+    """A shell never empties the home; the next command rechecks."""
     home = tmp_path / "home"
     (home / "work").mkdir(parents=True)
     policy = {"hidden_files": [str(home / ".codex" / "auth.json")], "account_home": str(home)}
     home = Path(os.path.realpath(home))
-    # A shell never empties the home; the next command rechecks.
     assert "--tmpfs" not in bwrap_argv(policy, "true")
     daemon = bwrap_argv(policy, "true", persistent=True)
     assert daemon[4:6] == ["--tmpfs", str(home)]
@@ -157,6 +156,9 @@ def test_probe_reports_tool_and_namespace_readiness(monkeypatch, available, retu
 def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enforcement(
     tmp_path, monkeypatch, capsys, launch_reasons
 ):
+    """A launch already known to be unhidden runs quietly with a clean environment, but hiding
+    enforced at launch never degrades to an unwrapped shell.
+    """
     from rcp.agents import staged_hidden_read
 
     policy = tmp_path / "policy.json"
@@ -186,13 +188,11 @@ def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enfor
 
     monkeypatch.setattr(os, "execve", execute)
     if launch_reasons:
-        # A launch already known to be unhidden runs quietly with a clean environment.
         with pytest.raises(Executed):
             main(["--policy", str(policy), "-lc", "exit 29"])
         assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
         assert not capsys.readouterr().err
     else:
-        # Hiding that was enforced at launch never degrades to an unwrapped shell.
         assert main(["--policy", str(policy), "-lc", "exit 29"]) == 126
         assert calls == []
         assert capsys.readouterr().err

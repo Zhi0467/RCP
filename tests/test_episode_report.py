@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -16,13 +17,14 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphTargetRef
+from rcp.runs.episodes.isolation import ensure_episode_isolation
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
+from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import official_registry
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
-    EpisodeRecord,
     EpisodeWrapupRecord,
     ExperimentLoopRuntime,
     ProjectRecord,
@@ -30,7 +32,10 @@ from rcp.storage import (
 from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, start_experiment_episode
+
+EPISODE = "3f9a7c2e-5d1b-4a6e-8f0c-9b2d4e6a8c1f"
+NEWER_EPISODE = "6c1e8b3a-2f4d-4b9e-a7c5-1d3f5b7e9a2c"
 
 
 class _ReportLauncher:
@@ -214,10 +219,13 @@ def _setup_report(
     *,
     ending: str = "completed",
     store: AppStore | None = None,
-    episode_id: str = "episode",
+    episode_id: str = EPISODE,
     project_id: str = "project",
     allocation_operation_id: str = "report-allocation",
 ) -> tuple[SimpleNamespace, AppStore, EpisodeReportRunRequest, AgentTaskExecution, Path]:
+    """An Experiment episode whose first turn is admitted and isolated as a real launch, then wraps
+    up into its hidden report allocation.
+    """
     store = store or AppStore(tmp_path / "app.sqlite3")
     store.upsert_project(
         ProjectRecord(
@@ -230,34 +238,13 @@ def _setup_report(
         )
     )
     now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id=episode_id,
-            project_id=project_id,
-            mode="experiment_loop",
-            control_node_id="experiment-node",
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=fabricated_authorizer("Episode owner"),
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    operational = AgentTaskRecord(
-        operation_id=f"{episode_id}-operation",
+    operational = start_experiment_episode(
+        store,
+        f"{episode_id}-operation",
+        episode_id,
         project_id=project_id,
-        episode_id=episode_id,
-        # The generic episode parent is intentionally indifferent to the adapter's visible task
-        # kind. This focused runner fixture uses a plain operational task so it does not have to
-        # construct either mode adapter's authority contract.
-        kind="node_chat",
-        status="queued",
-        request={},
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
+        authorized_by=fabricated_authorizer("Episode owner"),
     )
-    store.allocate_episode_invocation(episode_id, operational)
 
     stage = tmp_path / f"{episode_id}-stage"
     stage.mkdir()
@@ -318,6 +305,20 @@ def _setup_report(
         visible=False,
         authorized_by=store.episode(episode_id).authorized_by,
     )
+    service = SimpleNamespace(
+        manifest=manifest,
+        launcher=SimpleNamespace(provider_binary=store.provider_binary),
+        repository_ownership_inventory=lambda *, project_id: registered_repository_roots(
+            manifest,
+            project_id=project_id,
+        ),
+    )
+    ensure_episode_isolation(
+        cast(ProjectService, service),
+        store,
+        episode_id,
+        RunRequest.model_validate(operational.request),
+    )
     store.begin_episode_wrapup(episode_id, wrapup, hidden)
     execution = AgentTaskExecution(
         operation_id=hidden.operation_id,
@@ -327,14 +328,7 @@ def _setup_report(
         stage_root=str(stage),
     )
     return (
-        SimpleNamespace(
-            manifest=manifest,
-            launcher=SimpleNamespace(provider_binary=store.provider_binary),
-            repository_ownership_inventory=lambda *, project_id: registered_repository_roots(
-                manifest,
-                project_id=project_id,
-            ),
-        ),
+        service,
         store,
         request,
         execution,
@@ -353,7 +347,7 @@ def test_episode_report_request_is_strict() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
         EpisodeReportRunRequest.model_validate(
             {
-                "episode_id": "episode",
+                "episode_id": EPISODE,
                 "provider": "codex",
                 "model": "",
                 "reasoning": "medium",
@@ -391,18 +385,18 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
         item.name in {"graph.json", "research.md", "transcript.json", "repositories.json"}
         for item in stage.joinpath("inputs").rglob("*")
     )
-    wrapup = store.episode_wrapup("episode")
+    wrapup = store.episode_wrapup(EPISODE)
     assert wrapup is not None
     receipt_path = next(stage.joinpath("inputs").glob("episode-report-receipt-*.json"))
     receipt = receipt_path.read_text(encoding="utf-8")
     assert receipt == wrapup.receipt_json
     assert hashlib.sha256(receipt.encode()).hexdigest() == wrapup.receipt_sha256
-    report = store.episode_report("episode")
+    report = store.episode_report(EPISODE)
     assert report is not None
     assert store.read_artifact_bytes(report.artifact_id, report.artifact_version_id).startswith(
         b"<html>"
     )
-    assert [attempt.status for attempt in store.episode_report_attempts("episode")] == ["succeeded"]
+    assert [attempt.status for attempt in store.episode_report_attempts(EPISODE)] == ["succeeded"]
 
 
 @pytest.mark.asyncio
@@ -423,6 +417,7 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     manifest,
     tmp_path,
 ) -> None:
+    """A deleted report keeps its lineage row, so the allocation never runs again."""
     service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
     state = GraphState(
         nodes={
@@ -438,13 +433,13 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     )
 
     def projected() -> dict[str, object]:
-        episode = store.episode("episode")
+        episode = store.episode(EPISODE)
         assert episode is not None
         response = _experiment_control_response(
             state,
             "experiment-node",
             ExperimentLoopRuntime(
-                episode_id="episode",
+                episode_id=EPISODE,
                 invocations_used=1,
                 invocation_ceiling=1,
             ),
@@ -485,18 +480,17 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
         "run_section": "completed",
         "can_open_report": True,
     }
-    assert ready["report_episode_id"] == "episode"
+    assert ready["report_episode_id"] == EPISODE
     assert ready["report_is_current"] is True
 
-    # A deleted report keeps its lineage row, so the allocation never runs again.
-    report = store.episode_report("episode")
+    report = store.episode_report(EPISODE)
     assert report is not None
     store.delete_artifact("project", report.artifact_id)
     launcher = _ReportLauncher([])
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 0
-    assert len(store.episode_report_attempts("episode")) == 1
+    assert len(store.episode_report_attempts(EPISODE)) == 1
     deleted = projected()
     assert deleted["recommendation"] != "open_report" and not deleted["can_open_report"]
 
@@ -517,44 +511,12 @@ async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_i
     )
     assert [event.event for event in events] == ["message", "done"]
 
-    stopped_at = store.now()
     accidental_episode_id = "00000000-0000-4000-8000-000000000002"
-    store.create_episode(
-        EpisodeRecord(
-            episode_id=accidental_episode_id,
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="experiment-node",
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=fabricated_authorizer("Episode owner"),
-            created_at=stopped_at,
-            updated_at=stopped_at,
-        )
-    )
-    store.allocate_episode_invocation(
+    start_experiment_episode(
+        store,
+        "accidental-operation",
         accidental_episode_id,
-        AgentTaskRecord(
-            operation_id="accidental-operation",
-            project_id="project",
-            episode_id=accidental_episode_id,
-            kind="node_chat",
-            status="queued",
-            request={
-                "trigger": "experiment_run",
-                "patch_kind": "experiment_loop",
-                "control_node_id": "experiment-node",
-                "control_revision": 0,
-                "control_episode_id": accidental_episode_id,
-                "control_invocation": 1,
-                "control_invocation_ceiling": 1,
-                "control_decision_bundle": [],
-                "control_completion_criteria": [],
-            },
-            created_at=stopped_at,
-            updated_at=stopped_at,
-            status_message="Queued",
-        ),
+        authorized_by=fabricated_authorizer("Episode owner"),
     )
     store.mark_agent_task_running("accidental-operation")
     store.complete_agent_task("accidental-operation", applied_revision=None, result={})
@@ -570,7 +532,7 @@ async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_i
     assert read_model.episode is not None
     assert read_model.episode.episode.episode_id == accidental_episode_id
     assert read_model.episode.report is None
-    assert read_model.latest_report_episode_id == "episode"
+    assert read_model.latest_report_episode_id == EPISODE
 
     state = GraphState(
         nodes={
@@ -602,7 +564,7 @@ async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_i
     assert response.health == "completed"
     assert response.recommendation == "none"
     assert response.can_open_report is True
-    assert response.report_episode_id == "episode"
+    assert response.report_episode_id == EPISODE
     assert response.report_is_current is False
 
 
@@ -611,6 +573,9 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     manifest,
     tmp_path,
 ) -> None:
+    """Each attempt points to its staged report contract, revokes the operational instructions
+    inline, and names no master; only corrections carry a diagnostic.
+    """
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)
     launcher = _ReportLauncher(["missing", "invalid", "valid"])
 
@@ -618,19 +583,16 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
 
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 3
-    assert [attempt.status for attempt in store.episode_report_attempts("episode")] == [
+    assert [attempt.status for attempt in store.episode_report_attempts(EPISODE)] == [
         "failed",
         "failed",
         "succeeded",
     ]
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.invocations_used == 1
     assert episode.report_attempts_used == 3
     assert episode.wrapup_state == "ready"
-    # Each attempt points to its staged report contract, revokes the operational
-    # instructions inline, and names no master contract; only the corrections carry a
-    # diagnostic.
     for number, prompt in enumerate(launcher.prompts, start=1):
         assert (
             store.agent_task_contract(execution.operation_id, f"episode_report_attempt_{number}")
@@ -663,7 +625,7 @@ async def test_intermediate_provider_error_is_suppressed_and_retried(
 
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 2
-    attempts = store.episode_report_attempts("episode")
+    attempts = store.episode_report_attempts(EPISODE)
     assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
     assert attempts[0].error == expected_error
 
@@ -681,11 +643,11 @@ async def test_changed_provider_session_fails_the_wrapup_without_another_call(
     assert [event.event for event in events] == ["error"]
     assert "changed the frozen native provider session" in events[0].text
     assert launcher.calls == 1
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "failed"
     assert episode.report_attempts_used == 1
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
 
 
 @pytest.mark.asyncio
@@ -699,11 +661,11 @@ async def test_durable_binding_mismatch_is_unlaunchable_and_terminal(manifest, t
     assert [event.event for event in events] == ["error"]
     assert "differs from its durable hidden task" in events[0].text
     assert launcher.calls == 0
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "failed"
     assert episode.report_attempts_used == 0
-    assert store.episode_report_attempts("episode") == []
+    assert store.episode_report_attempts(EPISODE) == []
 
 
 @pytest.mark.asyncio
@@ -720,11 +682,11 @@ async def test_lost_exact_stage_fails_without_fabricating_provider_attempt(
     assert [event.event for event in events] == ["error"]
     assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "failed"
     assert episode.report_attempts_used == 0
-    assert store.episode_report_attempts("episode") == []
+    assert store.episode_report_attempts(EPISODE) == []
 
 
 @pytest.mark.asyncio
@@ -733,7 +695,7 @@ async def test_restart_with_queued_attempt_and_lost_stage_terminalizes(
     tmp_path,
 ) -> None:
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)
-    queued = store.allocate_episode_report_attempt("episode")
+    queued = store.allocate_episode_report_attempt(EPISODE)
     stage.rmdir()
     launcher = _ReportLauncher(["valid"])
 
@@ -742,14 +704,14 @@ async def test_restart_with_queued_attempt_and_lost_stage_terminalizes(
     assert [event.event for event in events] == ["error"]
     assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "failed"
     assert episode.report_attempts_used == 1
     attempt = store.episode_report_attempt(queued.attempt_id)
     assert attempt is not None
     assert attempt.status == "failed"
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
 
 
 @pytest.mark.asyncio
@@ -765,9 +727,9 @@ async def test_setup_loss_between_calls_fails_without_allocating_the_next_attemp
     assert [event.event for event in events] == ["error"]
     assert "unsafe directory" in events[0].text
     assert launcher.calls == 1
-    attempts = store.episode_report_attempts("episode")
+    attempts = store.episode_report_attempts(EPISODE)
     assert [attempt.status for attempt in attempts] == ["failed"]
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "failed"
     assert episode.report_attempts_used == 1
@@ -785,7 +747,7 @@ async def test_three_errors_end_nonblocking_without_retry_controls(manifest, tmp
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.status == "completed"
     assert episode.wrapup_state == "failed"
@@ -795,7 +757,7 @@ async def test_three_errors_end_nonblocking_without_retry_controls(manifest, tmp
     assert hidden.visible is False
     assert hidden.can_resume is False
     assert hidden.can_retry is False
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
 
 
 @pytest.mark.asyncio
@@ -809,16 +771,16 @@ async def test_provider_pause_without_shutdown_is_suppressed_and_retried(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["message", "done"]
-    attempts = store.episode_report_attempts("episode")
+    attempts = store.episode_report_attempts(EPISODE)
     assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
-    episode = store.episode("episode")
+    episode = store.episode(EPISODE)
     assert episode is not None
     assert episode.wrapup_state == "ready"
     assert episode.report_attempts_used == 2
 
 
 @pytest.mark.asyncio
-async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automatically(
+async def test_shutdown_pause_retries_on_a_new_hidden_task_and_resumes_automatically(
     manifest,
     tmp_path,
 ) -> None:
@@ -834,12 +796,12 @@ async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automa
         execution.operation_id,
         detail="Paused for RCP shutdown or reload.",
     )
-    requeued = store.requeue_interrupted_episode_report_allocation("episode")
-    assert requeued.operation_id == execution.operation_id
-    assert requeued.status == "queued"
-    assert requeued.visible is False
+    retried = store.retry_episode_report_allocation(EPISODE)
+    assert retried.operation_id != execution.operation_id
+    assert retried.status == "queued"
+    assert retried.visible is False
     resumed_execution = AgentTaskExecution(
-        operation_id=execution.operation_id,
+        operation_id=retried.operation_id,
         store=store,
         control=AgentProcessControl(),
         stage_host=None,
@@ -856,11 +818,12 @@ async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automa
     )
 
     assert [event.event for event in resumed_events] == ["message", "done"]
-    assert [attempt.status for attempt in store.episode_report_attempts("episode")] == [
+    assert [attempt.status for attempt in store.episode_report_attempts(EPISODE)] == [
         "failed",
         "succeeded",
     ]
-    assert store.episode_report("episode") is not None
+    assert store.episode_report(EPISODE).allocation_operation_id == retried.operation_id
+    assert store.agent_task(execution.operation_id).status == "paused"
 
 
 @pytest.mark.asyncio
@@ -869,7 +832,7 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
     tmp_path,
 ) -> None:
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)
-    attempt = store.allocate_episode_report_attempt("episode")
+    attempt = store.allocate_episode_report_attempt(EPISODE)
     store.mark_episode_report_attempt_running(attempt.attempt_id)
     stage.joinpath("episode-report.html").write_text(
         "<html><body><figure>Recovered report</figure></body></html>",
@@ -881,7 +844,7 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
 
     assert [event.event for event in events] == ["message", "done"]
     assert launcher.calls == 0
-    assert store.episode_report("episode") is not None
+    assert store.episode_report(EPISODE) is not None
 
 
 @pytest.mark.asyncio
@@ -955,7 +918,7 @@ def test_third_report_auth_failure_is_counted_and_parked(manifest, tmp_path):
     assert episode.status == "wrapping_up"
 
 
-def test_parked_report_resumes_same_allocation_after_verify(manifest, tmp_path):
+def test_parked_report_retries_on_a_new_task_after_verify(manifest, tmp_path):
     from rcp.background import BackgroundAgentTasks
     from rcp.runs.episodes.report import start_episode_report
 
@@ -983,14 +946,14 @@ def test_parked_report_resumes_same_allocation_after_verify(manifest, tmp_path):
         LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
     )
     restarted = start_episode_report(tasks, request.episode_id)
-    assert restarted.operation_id == first.operation_id
+    assert restarted.parent_operation_id == first.operation_id
     wait_for_task(store, restarted.operation_id, expect="succeeded")
     assert launcher.calls == 2
     assert store.episode(request.episode_id).wrapup_state == "ready"
     assert store.episode(request.episode_id).report_attempts_used == 2
-    assert store.agent_task(restarted.operation_id).failure_kind is None
+    assert store.agent_task(first.operation_id).failure_kind == "provider_auth"
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count + 1
     assert start_episode_report(tasks, request.episode_id) is None
 
 
@@ -1026,6 +989,25 @@ def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest,
     assert episode.report_attempts_used == 3
 
 
+def test_a_retried_report_runs_under_its_concluding_turns_agent_profile(manifest, tmp_path):
+    from rcp.api.task_requests import resolved_agent_surface
+
+    _service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    store.interrupt_active_agent_tasks()
+    retried = store.retry_episode_report_allocation(request.episode_id)
+
+    surfaces = {
+        operation_id: resolved_agent_surface(
+            store,
+            "episode_report",
+            request,
+            parent_operation_id=store.agent_task(operation_id).parent_operation_id,
+        )
+        for operation_id in (execution.operation_id, retried.operation_id)
+    }
+    assert set(surfaces.values()) == {"node_chat"}
+
+
 @pytest.mark.asyncio
 async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recoverable(
     manifest, tmp_path
@@ -1045,11 +1027,14 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
     store.mark_provider_login_verified(
         LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
     )
-    queued = store.requeue_interrupted_episode_report_allocation(request.episode_id)
-    assert queued.operation_id == execution.operation_id and queued.status == "queued"
+    queued = store.retry_episode_report_allocation(request.episode_id)
+    assert queued.operation_id != execution.operation_id and queued.status == "queued"
+    assert store.agent_task(execution.operation_id).status == "failed"
+    assert store.episode(request.episode_id).report_attempts_used == 0
 
 
 def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
+    """A view that cached the hold refetches and offers Delete."""
     from .episode_report_helpers import stored_report
     from .helpers import create_named_app, signed_in_client
 
@@ -1057,14 +1042,14 @@ def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     _setup_report(manifest, tmp_path, store=store, project_id=project_id)
-    attempt = store.allocate_episode_report_attempt("episode")
+    attempt = store.allocate_episode_report_attempt(EPISODE)
     store.mark_episode_report_attempt_running(attempt.attempt_id)
     html = "<h1>Report</h1>"
     report = stored_report(
         store,
         html=html,
         report_id="report",
-        episode_id="episode",
+        episode_id=EPISODE,
         attempt_id=attempt.attempt_id,
         allocation_operation_id="report-allocation",
         ending="completed",
@@ -1086,7 +1071,6 @@ def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
 
     held = artifacts_generation()
     store.finish_episode_report_ready(attempt.attempt_id, report)
-    # A view that cached the hold refetches and offers Delete.
     assert artifacts_generation() > held
     assert client.delete(url).status_code == 204
 
@@ -1096,7 +1080,7 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
 
     store = AppStore(tmp_path / "app.sqlite3")
     reports = []
-    for episode_id in ("episode", "newer"):
+    for episode_id in (EPISODE, NEWER_EPISODE):
         _setup_report(
             manifest,
             tmp_path,
@@ -1149,10 +1133,10 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
             latest_report_episode_id=snapshot.latest_report_episode_id,
         )
 
-    assert projected().report_episode_id == "newer"
+    assert projected().report_episode_id == NEWER_EPISODE
     store.delete_artifact("project", newer.artifact_id)
     response = projected()
-    assert response.report_episode_id == "episode" and not response.report_is_current
+    assert response.report_episode_id == EPISODE and not response.report_is_current
     assert response.episode.report is None and response.episode.recommendation == "none"
     store.delete_artifact("project", older.artifact_id)
     assert projected().can_open_report is False
@@ -1162,7 +1146,12 @@ def test_report_offer_falls_back_after_delete(manifest, tmp_path) -> None:
 async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     manifest, tmp_path
 ) -> None:
-    """A dropped link leaves the attempt running; the recorded pass then finishes it."""
+    """A dropped link leaves the attempt running; the recorded pass then finishes it.
+
+    Reconciliation settles only a pass whose start was recorded. A failed call publishes nothing and
+    its retry launches; host drops before the retry or during the report read are waited out, the
+    failure counts once, and late usage is still accounted.
+    """
 
     from rcp.runs.remote_finalization import recorded_finalizer
     from rcp.runs.tasks.episode_report import finalize_recorded_episode_report_result
@@ -1183,17 +1172,15 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     launcher = LinkLost([])
     live = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert [event.event for event in live if event.event != "raw"] == ["remote_result_pending"]
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
 
     assert (
         recorded_finalizer(store, execution.operation_id) is finalize_recorded_episode_report_result
     )
     recorded = _recorded_pass("", "Report written.", thread_id="native-session")
-    # Reconciliation only settles a pass whose start was recorded.
     store.begin_remote_provider_pass(
         execution.operation_id, "report-host", "/stage", recorded.pid_file, supervised=True
     )
-    # A call its host recorded as failed publishes nothing; its retry launches.
     failed = dataclasses.replace(
         recorded,
         events=recorded.events.replace(
@@ -1206,8 +1193,6 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     def unreachable(*_args, **_kwargs):
         raise StateUnavailable("ssh exited 255")
 
-    # A host that drops before the retry launches keeps the failed pass open,
-    # so reconciliation settles it again rather than waiting on nothing.
     with pytest.MonkeyPatch.context() as outage:
         outage.setattr(report_module, "_stage_and_verify_receipt", unreachable)
         with pytest.raises(StateUnavailable):
@@ -1223,13 +1208,10 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
             service, launcher, request, tmp_path / "unused", execution, failed
         )
     )
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
     assert launcher.calls == 2
-    # The replayed failure counted once.
-    assert store.current_episode_report_attempt("episode").attempt_number == 2
+    assert store.current_episode_report_attempt(EPISODE).attempt_number == 2
     assert store.unresolved_remote_provider_passes("report-host", "/stage") == []
-
-    # A host that drops while the retained report is read is waited out.
 
     with pytest.MonkeyPatch.context() as outage:
         outage.setattr(report_module, "_read_valid_report", unreachable)
@@ -1239,7 +1221,7 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
                     service, launcher, request, tmp_path / "unused", execution, recorded
                 )
             )
-    assert store.episode_report("episode") is None
+    assert store.episode_report(EPISODE) is None
 
     settled = await _events(
         finalize_recorded_episode_report_result(
@@ -1248,9 +1230,8 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
     )
 
     assert [event.event for event in settled if event.event != "raw"] == ["message", "done"]
-    # Usage the host recorded after the link dropped is still accounted.
     assert any(event.usage for event in settled)
-    assert store.episode_report("episode") is not None
+    assert store.episode_report(EPISODE) is not None
     assert launcher.calls == 2
 
 
@@ -1306,7 +1287,7 @@ async def assert_report_refusal_fallback(
     launcher = _ReportLauncher(
         ["refused", "refused" if fails else "pending" if recorded else "valid"]
     )
-    before = store.episode("episode")
+    before = store.episode(EPISODE)
     graph_target = store.agent_task(execution.operation_id).graph_target
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     if recorded:
@@ -1328,7 +1309,7 @@ async def assert_report_refusal_fallback(
     assert [call["session_id"] for call in launcher.kwargs] == ["native-session", None]
     assert all(Path(call["cwd"]) == stage for call in launcher.kwargs)
     assert str(transcript) in launcher.prompts[1]
-    after = store.episode("episode")
+    after = store.episode(EPISODE)
     assert after.invocations_used == before.invocations_used
     assert after.report_attempts_used == 2
     assert after.wrapup_state == ("failed" if fails else "ready")
@@ -1369,6 +1350,7 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         ["refused", "auth", "valid"] if recovery == "provider_auth" else ["refused", "valid"]
     )
     before = store.episode(request.episode_id)
+    operation_id = execution.operation_id
     if recovery == "queued":
         mark_running = store.mark_episode_report_attempt_running
 
@@ -1396,9 +1378,10 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         store.mark_provider_login_verified(
             LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
         )
-        store.requeue_interrupted_episode_report_allocation(request.episode_id)
+        operation_id = store.retry_episode_report_allocation(request.episode_id).operation_id
+        assert operation_id != execution.operation_id
 
-    restarted = AgentTaskExecution(execution.operation_id, store, AgentProcessControl())
+    restarted = AgentTaskExecution(operation_id, store, AgentProcessControl())
     restarted.stage_host = execution.stage_host
     restarted.stage_root = execution.stage_root
     events = await _events(stream_episode_report_run(service, launcher, request, restarted))
@@ -1411,7 +1394,4 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         3 if recovery == "provider_auth" else 2
     )
     assert store.episode(request.episode_id).invocations_used == before.invocations_used
-    assert (
-        len([r for r in store.agent_task_receipts(execution.operation_id) if r.category == RETRY])
-        == 1
-    )
+    assert len([r for r in store.agent_task_receipts(operation_id) if r.category == RETRY]) == 1

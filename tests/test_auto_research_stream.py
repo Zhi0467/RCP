@@ -1503,6 +1503,9 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     tmp_path,
     monkeypatch,
 ) -> None:
+    """The session start is the master; a continuation carries only current parts and a pointer to
+    it. A recovery on a session an episode report used re-opens the operational master.
+    """
     service = _service(manifest, tmp_path)
     service, store, auto_research, root, _worker = _setup_branch_auto_research(
         service, tmp_path / "store"
@@ -1558,8 +1561,6 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     fresh_prefix = _command_argv(fresh_contract)
     continuation_prefix = _command_argv(continuation_contract)
     assert continuation_prefix != fresh_prefix
-    # The session start is the master; the continuation carries only current parts and a
-    # pointer to the master restored from its durable record.
     assert store.agent_task_contract(root.operation_id, "session_master") == fresh_contract
     master_file = (
         stage / "inputs" / session_master_label("auto_research-orchestrator-master", fresh_contract)
@@ -1603,7 +1604,6 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         session_id="orchestrator-session",
         writer=inspect_recovery,
     )
-    # A recovery on a session an episode report used re-opens the operational master.
     monkeypatch.setattr(store, "episode_report_rebootstrap_pending", lambda *_a, **_k: True)
     retry_events = await _orchestrator_events(
         service, retry_launcher, store, retry, data_dir, continuation="retry"
@@ -1643,6 +1643,9 @@ def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
 
     Changing the binding starts clean; a provider that reported a limit of any
     kind resumes the same session, which rechecks the limit.
+
+    The delivery follows the paid allocation, not the session, so either turn still receives the
+    fact that woke it.
     """
 
     service = _service(manifest, tmp_path)
@@ -1755,8 +1758,6 @@ def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
     assert retried.session_id == resumed
     assert launcher.requested_session_ids == [resumed]
     assert retry.native_session_id == (resumed or "replacement-session")
-    # The delivery follows the paid allocation, not the session, so either
-    # turn still receives the fact that woke it.
     assert staged_notice_ids == [[notice.notice_id]]
 
 
@@ -2572,6 +2573,9 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     manifest,
     tmp_path,
 ) -> None:
+    """Each failing attempt harvests a new answer, and every retry receives the claimed facts plus
+    all answers harvested before the failures.
+    """
     service = _service(manifest, tmp_path)
     service, store, auto_research, root, _worker = _setup_branch_auto_research(
         service, tmp_path / "store"
@@ -2658,7 +2662,6 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         continuation="lifecycle_wake",
     )
     assert events[-1].event == "done"
-    # A second answer arrives mid-turn and this turn harvests it before failing.
     second = record_auto_research_message(
         store,
         episode_id=auto_research.episode_id,
@@ -2693,7 +2696,6 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         wake,
         operation_id="lifecycle-wake-retry",
     )
-    # That retry harvests a third answer and fails too; the next retry gets it as well.
     third = record_auto_research_message(
         store,
         episode_id=auto_research.episode_id,
@@ -2714,7 +2716,6 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     retry = _recovery_task(store, auto_research, retry, operation_id="lifecycle-wake-retry-2")
 
     def recovery_writer(_contract_text, workspace):
-        # The retry gets the claimed facts and answer plus those harvested before the failures.
         lifecycle = parse_auto_research_lifecycle_delivery(
             (workspace / "lifecycle.json").read_text(encoding="utf-8")
         )
@@ -2894,6 +2895,9 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
 async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """The session predates master records, so the retry bootstraps one explicitly; the correction
+    points to it with only validate-only authority.
+    """
     service = _service(manifest, tmp_path)
     stage, service, store, auto_research, _root, worker = _saved_worker(
         tmp_path, status="failed", service=service
@@ -2955,8 +2959,6 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
 
     assert launcher.requested_session_ids == ["worker-session", "worker-session"]
     _assert_fresh_matching_invocation_gates(served_gates, launcher.invocation_gates)
-    # The session predates master records, so the retry bootstraps one explicitly; the
-    # correction then points to it and carries only its own validate-only authority.
     master = store.agent_task_contract(retry.operation_id, "session_master")
     assert master is not None
     master_file = stage / "inputs" / session_master_label("auto_research-worker-master", master)
@@ -3170,6 +3172,9 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
+    """The turn-bound client travels once and `command_prefix` replaces every command prefix. A
+    continuation resends the packages only when one changed.
+    """
     from rcp.agents.auto_research_prompt import (
         auto_research_orchestrator_continuation_contract,
         auto_research_orchestrator_task_contract,
@@ -3220,12 +3225,10 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     assert "/stage/inputs/original.md" in continued
     values = auto_research_prompt_values(group_context=None, **common)
     assert "other_branch_loops" not in values
-    # The turn-bound client travels once; `command_prefix` replaces every command prefix.
     assert values["command_prefix"] == common["command_client"]
     assert "history_client" not in values
     assert package_path in fresh
     assert graph_rules(edits=True, ontology_extensions=False) in fresh
-    # A continuation sends the packages again only when one of them changed.
     master = MasterRef(
         path="/stage/inputs/master.md",
         bootstrap=False,
@@ -3373,6 +3376,9 @@ def test_orchestrator_context_consumes_staged_main_graph_pointer(
 def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """Each launch states the project machines as they are now, so a resumed session learns a
+    machine added between wakes from the launch delta.
+    """
     from rcp.agents.write_scope import ProjectWriteScope
     from rcp.loop_status import LoopOverlap, LoopOverlapCheckout, LoopStarter, LoopStatusRow
     from rcp.providers.browser_grant import BrowserGrant
@@ -3422,7 +3428,6 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
             execution.continuation = "resume"
             overlap = LoopOverlap()
-            # A machine added between wakes: the resumed turn states it.
             service.history.manifest = _with_gpu_machine(manifest)
         binding = store.auto_research_actor_binding(root.operation_id)
         turn = auto_research_stream_module._CanonicalOrchestratorTurn(
@@ -3463,11 +3468,9 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
         assert (
             not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
         )
-        # Each launch states the project machines as they are now.
         assert [item["id"] for item in values["compute"]["active"]] == (
             ["laptop", "gpu"] if index else ["laptop"]
         )
-        # A resumed session learns the added machine from the launch delta.
         assert ("gpu.example" in prompt) == bool(index)
 
 
@@ -3576,7 +3579,11 @@ def _blocker_patch(node_id: str) -> str:
 async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    """A dropped link leaves the turn to its host; the recorded pass then settles it."""
+    """A dropped link leaves the turn to its host; the recorded pass then settles it.
+
+    The launch saw a group sibling while the recorded pass has no live group. An outage before
+    anything publishes is waited out, not spent as a rejection.
+    """
 
     from rcp.runs.remote_finalization import recorded_finalizer
     from rcp.runs.tasks.work_turn_runtime import DeliverableFailure as _WorkPatchFailure
@@ -3601,7 +3608,6 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
         scope = resolve_read_scope(*args)
         return scope.model_copy(update={"paths": {**scope.paths, "sibling:code": "/sibling"}})
 
-    # The launch saw a group sibling; the recorded pass has no live group.
     with monkeypatch.context() as launch:
         launch.setattr(auto_research_stream_module, "resolve_read_scope", with_sibling)
         live = await _events(
@@ -3621,7 +3627,6 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
     launcher = _WorkerLauncher()
     finalize = auto_research_stream_module.finalize_recorded_auto_research_result
     recorded = _recorded_pass(_blocker_patch("blk/recorded"), "Worker finished offline.")
-    # An outage before anything publishes is waited out, not spent as a rejection.
     for target, outage in (
         ("_read_chat_patch", lambda *_args: (_ for _ in ()).throw(StateUnavailable("ssh 255"))),
         (
@@ -3669,7 +3674,10 @@ async def test_a_worker_that_outlives_its_link_settles_from_its_recorded_pass(
 async def test_a_recorded_retry_ignores_its_inherited_patch_after_an_outage(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    """The primary pass of a Retry keeps its freshness baseline when settled again."""
+    """The primary pass of a Retry keeps its freshness baseline when settled again.
+
+    The failed pass cleared its handoffs, then wrote this before it failed.
+    """
 
     from rcp.transport import StateUnavailable
 
@@ -3681,7 +3689,6 @@ async def test_a_recorded_retry_ignores_its_inherited_patch_after_an_outage(
     )
     _record_original_contract(store, worker, stage)
     inherited = _blocker_patch("blk/inherited")
-    # The failed pass cleared its handoffs, then wrote this before it failed.
     store.mark_auto_research_handoffs_cleared(worker.operation_id)
     (stage / "patch.json").write_text(inherited, encoding="utf-8")
     retry = _recovery_task(store, auto_research, worker)
@@ -3742,7 +3749,10 @@ async def test_a_recorded_retry_ignores_its_inherited_patch_after_an_outage(
 async def test_a_recorded_correction_that_failed_keeps_the_primary_answer(
     manifest, tmp_path
 ) -> None:
-    """As live, a failed correction rejects the graph update, not the finished work."""
+    """As live, a failed correction rejects the graph update, not the finished work.
+
+    The primary pass answered and its Patch was sent back for correction.
+    """
 
     from .test_work_agent_io import _recorded_failed_correction
 
@@ -3766,7 +3776,6 @@ async def test_a_recorded_correction_that_failed_keeps_the_primary_answer(
             command_dispatcher=_dispatcher(store),
         )
     )
-    # The primary pass answered and its Patch was sent back for correction.
     for pid_file in ("/stage/primary.pid", "/stage/one.pid"):
         store.begin_remote_provider_pass(
             execution.operation_id, "gpu", "/stage", pid_file, supervised=True
@@ -3877,7 +3886,10 @@ async def test_a_relaunch_serves_a_detached_actor_mailbox_as_its_launch_did(
 def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    """An unreachable host must not cost a detached pass its mailbox owner."""
+    """An unreachable host must not cost a detached pass its mailbox owner.
+
+    The actor binding is not under test; this one was launched locally.
+    """
 
     from rcp.transport import RemoteRunStage
 
@@ -3894,7 +3906,6 @@ def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
         ),
     )
 
-    # The actor binding is not under test; this one was launched locally.
     monkeypatch.setattr(
         auto_research_stream_module,
         "_canonical_worker_turn",

@@ -1,3 +1,5 @@
+"""On Linux, CLOCK_MONOTONIC is the clock that skips sleep."""
+
 from __future__ import annotations
 
 import sys
@@ -8,7 +10,6 @@ from rcp.limits import AUTOMATIC_LAUNCH_AWAKE_SECONDS
 from rcp.machine_sleep import AwakeStreak
 
 MAC = ("darwin", {"CLOCK_MONOTONIC": 1, "CLOCK_UPTIME_RAW": 2})
-# The same name, CLOCK_MONOTONIC, is the clock that skips sleep here.
 LINUX = ("linux", {"CLOCK_BOOTTIME": 1, "CLOCK_MONOTONIC": 2})
 
 
@@ -33,9 +34,11 @@ class _Clocks:
 def test_a_sleep_holds_automatic_launches_until_the_machine_stays_awake(
     platform: str, clock_ids: dict[str, int]
 ) -> None:
+    """With no sleep since process start nothing is held, and another short wake starts the streak
+    over.
+    """
     clocks = _Clocks()
     streak = AwakeStreak(platform, clocks.read, clock_ids)
-    # No sleep since the process started: nothing is held at startup.
     assert streak.seconds_until_automatic_launch() == 0
 
     clocks.asleep(900)
@@ -43,7 +46,6 @@ def test_a_sleep_holds_automatic_launches_until_the_machine_stays_awake(
     assert streak.seconds_until_automatic_launch() == AUTOMATIC_LAUNCH_AWAKE_SECONDS
     clocks.awake(20)
     assert streak.seconds_until_automatic_launch() == AUTOMATIC_LAUNCH_AWAKE_SECONDS - 20
-    # Another short wake starts the streak over.
     clocks.asleep(900)
     clocks.awake(2)
     assert streak.seconds_until_automatic_launch() == AUTOMATIC_LAUNCH_AWAKE_SECONDS

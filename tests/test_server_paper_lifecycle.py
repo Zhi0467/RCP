@@ -132,7 +132,6 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
         await live.drain(record.project_id)
         assert await live.tree(record.project_id) == before
         assert await live.history(record.project_id) == history
-        # Resume recovers the existing outbox and history burst without a new edit.
         await live.resume(record.project_id)
         await live.tick()
         await live.drain(record.project_id)
@@ -192,7 +191,6 @@ def test_released_project_stays_inactive_after_restart(tmp_path, monkeypatch, sa
     monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
 
     async def scenario():
-        # Saved rows may predate the release, but startup must not resume their outbox.
         if saved:
             await live.apply(transfer.project_id, [PaperOp(kind="create", path="held.md")], "human")
         await live.close()

@@ -218,11 +218,11 @@ def test_removed_type_and_fields_remain_readable_during_replay() -> None:
 
 
 def test_removal_requires_prior_deprecation_but_replay_does_not_rejudge_safety() -> None:
+    """Safety is an admission verdict stored with the patch, not a new replay rule."""
     state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     report = validate_patch(state, _set_ontology(2, {}), ValidationContext(["repo"]))
     assert "ontology-removal-without-deprecation" in _codes(report)
 
-    # Safety is an admission verdict stored with the patch, not a new replay rule.
     replay = validate_patch(state, _set_ontology(2, {}), ValidationContext(["repo"], mode="replay"))
     assert "ontology-removal-without-deprecation" not in _codes(replay)
 
@@ -359,6 +359,9 @@ def test_standalone_human_new_node_is_exactly_one_asserted_base_or_custom_node()
 
 
 def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as_seam() -> None:
+    """A custom relation cannot declare "seam" itself, so the layer is derived from the
+    endpoints.
+    """
     state = materialize_patches([_set_ontology(1, _ontology())], ValidationContext(["repo"])).state
     create = _agent(
         2,
@@ -381,11 +384,6 @@ def test_custom_relation_uses_semantic_types_and_materializes_a_crossing_edge_as
         [_set_ontology(1, _ontology()), create], ValidationContext(["repo"])
     )
     edge = applied.state.edges["training_run/baseline::evaluates::hyp/adapts"]
-    # 'evaluates' declares layer "action", but this edge runs from a training_run
-    # (an experiment, action) to a hypothesis (epistemic), so it is a seam. A
-    # custom relation cannot declare "seam" for itself — OntologyRelationDefinition
-    # only accepts epistemic or action — which is why the layer is derived here
-    # from the endpoints rather than copied from the declaration.
     assert edge.layer == "seam"
 
     reversed_edge = _agent(
@@ -554,10 +552,9 @@ def _ambiguity_state() -> GraphState:
 
 
 def test_standalone_ambiguity_resolution_is_replay_only() -> None:
-    # Ambiguities are legacy: replay must keep accepting the standalone patches
-    # already in the log, while admission refuses to write a new one. The two
-    # modes therefore have to disagree about this one operation, and a test that
-    # exercises only one mode cannot tell that the gate exists at all.
+    """Ambiguities are legacy: replay accepts standalone patches already in the log
+    while admission refuses new ones, so both modes are exercised.
+    """
     state = _ambiguity_state()
     patch = _approval(
         2,
@@ -573,9 +570,9 @@ def test_standalone_ambiguity_resolution_is_replay_only() -> None:
 
 
 def test_one_staged_node_patch_may_carry_only_one_review() -> None:
-    # The shape rule is "exactly one edit and at most one review". A second
-    # set_standing is refused even though the edit count is already correct, so
-    # the two halves of that rule are independent.
+    """A second set_standing is refused even with a correct edit count, so the two
+    halves of the rule are independent.
+    """
     state = materialize_patches(
         [
             _set_ontology(1, _ontology()),

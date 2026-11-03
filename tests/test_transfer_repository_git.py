@@ -357,7 +357,6 @@ def test_ssh_transport_executes_the_same_shipped_source_with_streamed_bundle(
         calls.append(host)
         arguments = shlex.split(command)
         assert arguments[:2] == ["python3", "-c"]
-        # The shipped helper resolves its own account home in the child process.
         script = (
             "from pathlib import Path; "
             f"Path.home = classmethod(lambda cls: Path({str(tmp_path)!r})); "

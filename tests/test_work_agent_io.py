@@ -1,3 +1,7 @@
+"""_LAUNCH_ONLY_RECEIPTS are written while a turn is launched and streamed, and by
+nothing else.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -212,7 +216,6 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     request = _request().model_copy(
         update={"message": None, "session_id": "manual-repair-native-session"}
     )
-    # A task is stored with the provider and machine its launch is pinned to.
     request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "work-mailbox-manual-repair-failure")
     stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
@@ -224,7 +227,6 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
         workspace_root=str(stage / "workspace"),
     )
     execution.checkpoint_stage("", str(stage))
-    # A recovery task is created bound to the native session it continues.
     execution.store.checkpoint_agent_task(
         execution.operation_id, native_session_id="manual-repair-native-session"
     )
@@ -534,7 +536,6 @@ async def test_operational_continuation_renders_current_launch_client(
     append_fixture_patch(service, seed_patch())
     request = _request()
     if owner is not loop_module:
-        # A task is stored with the provider and machine its launch is pinned to.
         request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "current-launch-turn")
     previous_stage = tmp_path / "previous-stage"
@@ -575,7 +576,6 @@ async def test_operational_continuation_renders_current_launch_client(
         if owner is loop_module:
             turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
         else:
-            # Work and child Work continue the native session their task is bound to.
             execution.store.checkpoint_agent_task(
                 execution.operation_id, native_session_id="current-launch-session"
             )
@@ -611,7 +611,6 @@ async def test_operational_continuation_renders_current_launch_client(
                 ontology_sha256="0" * 64,
                 wake_episode=SimpleNamespace(last_graph_result="applied", last_watcher_ids=[]),
             )
-            # The master holds the expired command; the continuation must not repeat it.
             monkeypatch.setattr(
                 owner,
                 "_experiment_master",
@@ -636,12 +635,10 @@ async def test_operational_continuation_renders_current_launch_client(
             scope_context = composed.prompt + "\n" + contract
             for path in scope:
                 assert path in scope_context
-            # The current client travels once; the launch command names it by placeholder.
             assert turn.patch_inputs.validator_staged.client_command() in contract
             assert f"{COMMAND_CLIENT} {shlex.join(launch_args)}" in contract
             assert previous_command not in contract
         else:
-            # A Work continuation sends what changed; a master it opens now holds the rest.
             opened = SECTIONS["master_pointer"].split("{path}")[0] not in composed.prompt
             master = launch_contract_path(composed.prompt).read_text() if opened else ""
             for path in scope:
@@ -652,7 +649,6 @@ async def test_operational_continuation_renders_current_launch_client(
         await turn.validator_lifecycle.close()
 
 
-#: Written while a turn is being launched and streamed, and by nothing else.
 _LAUNCH_ONLY_RECEIPTS = frozenset(
     {
         "agent_launch",
@@ -678,6 +674,8 @@ def _durable_state(service, store, root: Path) -> dict[str, object]:
     green. This is the graph, the transcript, the session, the verdict, and the
     receipt categories -- with the ids and paths two independent runs cannot
     share left out.
+
+    A recorded pass launches nothing, so it writes none of the launch receipts.
     """
 
     task = store.agent_task("work-one-result")
@@ -692,8 +690,6 @@ def _durable_state(service, store, root: Path) -> dict[str, object]:
         "phase": task.phase,
         "native_session_id_bound": task.native_session_id is not None,
         "graph_nodes": node_ids,
-        # A recorded pass launches nothing, so it writes none of the receipts a
-        # launch writes. Everything after the provider stopped must match.
         "settlement_receipts": sorted(
             {
                 receipt.category
@@ -775,7 +771,10 @@ run_on = "laptop"
 
 
 def _one_result_app(root: Path):
-    """An app of its own, so two deliveries of one result never share a graph."""
+    """An app of its own, so two deliveries of one result never share a graph.
+
+    A real dispatch leaves this trace, and a second staging validates against it.
+    """
 
     root.mkdir(parents=True, exist_ok=True)
     app = create_named_app(str(_isolated_manifest(root)), data_dir=root / "data")
@@ -788,9 +787,6 @@ def _one_result_app(root: Path):
     )
     store = app.state.background_tasks.store
     execution = _chat_task_execution(app, request, "work-one-result")
-    # A real dispatch leaves this behind, and the stage a second staging attaches
-    # to is validated against it. The fixture builds its execution directly, so
-    # it has to leave the same trace a launch would.
     store.record_agent_task_receipt(
         "work-one-result",
         "operation_created",
@@ -927,7 +923,6 @@ async def _delivered_from_record(
 ) -> tuple[list[dict[str, object]], ScriptedLauncher, object]:
     service, request, execution = _one_result_app(root)
     launcher = ScriptedLauncher([{}], message="")
-    # The launch happened; only the link did not survive it.
     resolved = work_module._resolve_work_execution(service, request, execution)
     primed, _staged = await work_module._stage_work_turn(
         service, resolved, root / "data", execution
@@ -967,7 +962,6 @@ async def test_a_recorded_result_finalizes_the_way_its_live_delivery_would(tmp_p
     )
 
     assert recorded_state == live_state
-    # The comparison is only worth something if the turn actually did something.
     assert live_state["graph_revision"] == 2
     assert live_state["graph_nodes"]
     assert "patch_applied" in live_state["settlement_receipts"]
@@ -1136,7 +1130,10 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
 async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     tmp_path, monkeypatch, deliverable
 ) -> None:
-    """Every automatic correction keeps the task and its completed human reply."""
+    """Every automatic correction keeps the task and its completed human reply.
+
+    The correction continues the pass it corrects, so the pin has to outlive the stream.
+    """
 
     import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
     import rcp.runs.tasks.work_turn_runtime as runtime_module
@@ -1218,7 +1215,6 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         name = deliverable
     (primed.workspace / name).write_text("not valid JSON", encoding="utf-8")
     if deliverable != "patch.json":
-        # Later corrections can disconnect after the graph is already applied.
         (primed.workspace / "patch.json").write_text(
             agent_patch_json(seed_patch()), encoding="utf-8"
         )
@@ -1239,10 +1235,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         await asyncio.to_thread(execution.command_mailbox.settle)
     assert len(correction_calls) == 1
     if deliverable == "experiment-watch":
-        # This correction continues the pass it corrects, and a recovered
-        # journal is held to that session, so the pin has to outlive the stream.
         assert correction_calls[0]["required_session_id"] == "recorded-thread"
-        # The resource's maintenance rules travel as a staged file the prompt names.
         prompt = correction_prompts[0]
         rules = next((primed.local_stage / "inputs").glob("experiment-watcher-rules-*.md"))
         assert str(rules) in prompt
@@ -1263,8 +1256,6 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
     )
 
-    # The host finishes its correction while RCP is disconnected. Its reply is
-    # maintenance prose; only its deliverables may replace the primary output.
     (primed.workspace / name).unlink()
     recorded = _recorded_pass(agent_patch_json(seed_patch()), "I repaired the handoff file.")
     for _attempt in range(2):
@@ -1393,8 +1384,6 @@ def test_recovery_makes_the_stage_hold_exactly_the_watcher_outputs_the_pass_wrot
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
     kept = '{"observers": [{"check_command": "true"}], "stops": []}'
-    # The stage as RCP finds it: one output rewritten, one invented, and the
-    # third -- which the pass did write -- deleted outright.
     workspace.joinpath("experiment-watch-aaaa.json").write_text("{}", encoding="utf-8")
     workspace.joinpath("experiment-watch-cccc.json").write_text("{}", encoding="utf-8")
 
@@ -1633,6 +1622,9 @@ def test_discarded_mailbox_cleanup_removes_only_its_own_stage_files(tmp_path, mo
 def test_detached_mailbox_survives_worker_loop_and_backend_restart(
     tmp_path, monkeypatch, restart, validation_enabled
 ):
+    """The stage is local files, so the remote poll interval only adds waiting. The
+    request is published whole because the mailbox polls every 20 ms.
+    """
     from rcp.agents import AgentEvent, AgentProcessControl
     from rcp.agents.command_protocol import CommandResponse
     from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -1686,7 +1678,6 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
 
     monkeypatch.setattr(runtime, "_stream_agent_events", disconnect)
     monkeypatch.setattr(runtime, "RemoteRunStage", _FilesystemRemoteMailboxStage)
-    # The stage is local files, so the remote poll interval only adds waiting.
     monkeypatch.setattr("rcp.agents.command_mailbox.COMMAND_MAILBOX_REMOTE_POLL_SECONDS", 0.02)
 
     async def launch():
@@ -1754,7 +1745,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
 
         def plan(current_store):
-            # Recovery must reattach before a liveness probe can return "wait".
+            """Recovery must reattach before a liveness probe can return "wait"."""
             assert "first" in manager._detached_mailboxes
             return [
                 WaitingTask(current_store.agent_task("first"), Reconciliation("wait", "live"), None)
@@ -1780,8 +1771,6 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         "arguments": {"patch": "{}"},
     }
     try:
-        # Publish the request whole, as the staged client does: the mailbox polls
-        # every 20 ms and must never read a half-written request.
         partial = workspace / f"{name}.partial"
         partial.write_text(json.dumps(payload))
         partial.replace(workspace / f"{name}.request.json")

@@ -52,7 +52,6 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
     launcher = AgentLauncher(accounts=accounts)
     rows = ProjectService.provider_logins_for(manifest, launcher, "project", viewer_id="viewer")
     codex = {row["login_id"]: row for row in rows if row["provider"] == "codex"}
-    # The session ran on the owner's login, but its next turn resolves afresh.
     assert set(codex) == {""}
     owner_rows = ProjectService.provider_logins_for(
         manifest, launcher, "project", viewer_id="owner"
@@ -84,7 +83,6 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
         }
     }
     store.set_provider_login_setting("other", "codex", "", "shared")
-    # The machine login resolves, but the project's probe said it is signed out.
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
     assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
     store.mark_provider_login_signed_out(
@@ -108,7 +106,6 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, "viewer", refresh=True)
     assert snapshot["provider_readiness"]["laptop"]["codex"]["models"] == [{"id": own.login_id}]
     assert probed == [("codex", own.login_id, True)]
-    # Shared resolves only the signed-out machine sign-in: refused, nothing probed.
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
     assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
     assert len(probed) == 1

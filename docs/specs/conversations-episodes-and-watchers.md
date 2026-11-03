@@ -110,10 +110,11 @@ through admitted launch, which refuses it, and the next pass fails it so its
 handoff reports. Each settled
 handoff admits one Space wake with source `handoff_report`. Its message is
 `render_handoff_report` of a `HandoffReport`: status, refusal reason, failure kind,
-the provider's failure text, the project agent's stated turn outcome, and its
+the provider and model the turn ran on, the provider's failure text, the project agent's stated turn outcome, and its
 last message, each bounded to the handoff limit. The same report is stored on the
-message as `handoff_report` for display. Content is omitted once the member has
-left the project.
+message as `handoff_report` for display. The Space thread shows only the agent and
+status; the reply stays in the project thread that wrote it. Content is omitted
+once the member has left the project.
 
 A thread wakes on a member message from the composer, voice or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
@@ -811,6 +812,10 @@ waiting. A turn that is paused, failed, or interrupted has nothing in flight to
 finish, and nobody resumes a turn they asked to stop: Stop durably abandons its
 recovery, keeps its history, and settles. An Auto-research orchestrator's Stop
 of a child that hit a provider limit therefore frees the Experiment at once.
+A restart that interrupts the turn Stop was waiting on is different: startup
+resumes that turn from its saved session and stage behind the fence, and Stop
+abandons it only once that recovery is refused or cannot run. While the stage
+host is unreachable, Stop keeps waiting for a later start.
 
 Stop and pause do not cancel compute jobs. Stop does not cancel external work,
 delete watcher history, edit Experiment status, create or close an attempt, or
@@ -1042,10 +1047,13 @@ transient locks/outages retry. Existing rows reuse their receipt; warnings are
 once per process, episode and failure kind. At most three provider attempts clear
 the exact output before each run and spend no operational budget.
 
-Startup requeues an interrupted hidden allocation rather than creating another.
-It clears the old scope fingerprint and records a private dispatch-reset fence
-newer than prior attempt receipts. Only that fence authorizes redispatch; old
-attempts remain history.
+Startup, or a verified sign-in, retries a stopped report on a new hidden child
+task, as every other recovery does. The interrupted, paused or sign-in-failed
+task keeps its status. The child takes the wrap-up's allocation, any attempt that
+never called the provider, and the Codex refusal and fresh-session records. The
+retry spends no attempt; a call the stop cut off still counts. A report that an
+older RCP requeued in place launches as it is, under its dispatch-reset fence.
+Old attempts remain history.
 
 Valid `episode-report.html` becomes an Artifact whose lifecycle binds its
 original version in the opaque sandbox. It has no graph, Proposal, watcher

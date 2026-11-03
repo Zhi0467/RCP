@@ -60,6 +60,7 @@ async def test_launch_admits_shared_memory_and_points_to_live_index(
 
 @pytest.mark.asyncio
 async def test_discuss_memory_failure_is_reported_to_chat(manifest, tmp_path, monkeypatch):
+    """Write-root preparation fails after prompt preparation succeeded."""
     from rcp.runs.tasks import discuss
     from rcp.transport.state import StateUnavailable
 
@@ -77,7 +78,6 @@ async def test_discuss_memory_failure_is_reported_to_chat(manifest, tmp_path, mo
     def fail(*args):
         raise StateUnavailable("memory base unavailable")
 
-    # Fail the write-root preparation, after prompt preparation has succeeded.
     monkeypatch.setattr(discuss, "prepare_project_memory", fail)
     frames = [
         frame
@@ -93,6 +93,7 @@ async def test_discuss_memory_failure_is_reported_to_chat(manifest, tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_discuss_excluded_task_has_no_memory_write_root(manifest, tmp_path, monkeypatch):
+    """Memory admission is isolated from the ordinary chat-only stage binding."""
     from rcp.runs.tasks import discuss
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -114,7 +115,6 @@ async def test_discuss_excluded_task_has_no_memory_write_root(manifest, tmp_path
     def refuse(*args):
         raise AssertionError("Excluded task must not prepare memory")
 
-    # Isolate memory admission from the ordinary chat-only stage binding.
     monkeypatch.setattr(discuss, "_prepare_local_chat_workspace", lambda stage, **_: stage)
     monkeypatch.setattr(discuss, "prepare_project_memory", refuse)
     frames = [

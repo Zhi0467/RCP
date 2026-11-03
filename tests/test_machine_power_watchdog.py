@@ -158,6 +158,7 @@ def test_unreadable_activation_does_not_abandon_owned_flag(watchdog):
     "failure", ["stale", "malformed", "dead", "start_changed", "ps_timeout", "pid_changed"]
 )
 def test_invalid_heartbeat_revokes_and_cannot_rearm(watchdog, failure):
+    """The fake ps only recognizes the backend PID for this case."""
     watchdog.heartbeat()
     watchdog.start()
     watchdog.active()
@@ -168,7 +169,6 @@ def test_invalid_heartbeat_revokes_and_cannot_rearm(watchdog, failure):
     elif failure == "start_changed":
         watchdog.write("start", "a different process")
     elif failure == "pid_changed":
-        # The fake ps only recognizes the backend PID for this case.
         path = watchdog.root / "ps"
         path.write_text(f'#!/bin/sh\n[ "$2" = 123 ] || exit 1\nprintf "%s\\n" "{START}"\n')
         watchdog.heartbeat(pid=456)
@@ -184,11 +184,11 @@ def test_invalid_heartbeat_revokes_and_cannot_rearm(watchdog, failure):
     assert watchdog.calls() == ["on", "clear"]
 
 
-# The last case is two ioreg rows that disagree; only a unanimous No is open.
 @pytest.mark.parametrize(
     "lid", ["No", "Yes", "Nope", "timeout", 'No\n  |   "AppleClamshellState" = Yes']
 )
 def test_release_sleeps_only_closed_or_unknown_lid(watchdog, lid):
+    """The last case is two ioreg rows that disagree; only a unanimous No is open."""
     watchdog.write("lid", lid)
     if lid == "timeout":
         path = watchdog.root / "ioreg"
@@ -239,6 +239,9 @@ def test_never_clears_or_adopts_unowned_flag(watchdog, fresh_heartbeat):
 
 
 def test_watchdog_keeps_machine_lock_after_backend_death_until_cleanup(watchdog):
+    """The sandbox denies /bin/ps, so the real PID is probed with the shell builtin; a loaded CI
+    runner can take several seconds to reach the first "on".
+    """
     root = watchdog.root
     gate = root / "allow_clear"
     os.mkfifo(gate)
@@ -250,7 +253,6 @@ def test_watchdog_keeps_machine_lock_after_backend_death_until_cleanup(watchdog)
             'echo clear >> "$FAKE_STATE/calls"\nread release < "$FAKE_STATE/allow_clear"',
         )
     )
-    # The sandbox denies /bin/ps; probe the real PID with the shell builtin.
     (root / "ps").write_text(
         '#!/bin/sh\nkill -0 "$2" 2>/dev/null || exit 1\ncat "$FAKE_STATE/start"\n'
     )
@@ -287,7 +289,6 @@ signal.pause()
     watchdog_pid = None
     released = False
     try:
-        # A loaded CI runner can take several seconds to reach the first "on".
         wait_until(lambda: (root / "ack").exists(), timeout=30)
         ack = dict(line.split("=", 1) for line in (root / "ack").read_text().splitlines())
         watchdog_pid = int(ack["watchdog_pid"])

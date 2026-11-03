@@ -121,7 +121,6 @@ def test_served_device_login_recovers_queued_work_without_polling(
             account_id = status["login_id"]
             assert bool(account_id) == added
             wait_until(lambda: services.provider_sign_ins.sign_in_status(login_id).user_code)
-            # Navigation away and disconnection happen before device completion.
             page = client.get("/")
             assert page.status_code == 200 and '<div id="root"></div>' in page.text
         (binary_dir / "signed-in").touch()

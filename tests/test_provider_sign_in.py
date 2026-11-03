@@ -176,8 +176,6 @@ def test_codex_device_sign_in_shows_the_code_holds_the_gate_and_verifies(
         runner.start_sign_in(LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="other")
     assert duplicate.value.status_code == 409
     assert runner.running_sign_in(LoginKey("codex", "", MACHINE_LOGIN_ID)) is not None
-    # The login rewrites the credential file when it completes; no turn may
-    # start on that file meanwhile.
     gate = runner.launcher.credential_gate._lock_for(LoginKey("codex", "", MACHINE_LOGIN_ID))
     assert not gate.acquire(False), "the credential gate was free during the sign-in"
     assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
@@ -214,7 +212,6 @@ def test_a_denied_device_sign_in_fails_with_the_provider_detail_and_stays_signed
         == "signed_out"
     )
     assert _argv_log(tmp_path) == [["app-server"]]
-    # The account is free for another attempt.
     assert (
         runner.start_sign_in(LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member").attempt_id
         != started.attempt_id
@@ -246,7 +243,6 @@ def test_claude_token_paste_stores_privately_verifies_and_never_leaks(
     assert record is not None and record.verified_at is not None
     assert _argv_log(tmp_path)[-1][0] == "--print", "success was not proven by a request"
 
-    # The token reached the provider only through its environment.
     for argv in _argv_log(tmp_path):
         assert TOKEN not in " ".join(argv)
     assert TOKEN not in caplog.text
@@ -400,7 +396,6 @@ def test_third_provider_device_sign_in_completes_recovery_without_polling(
         starts = list(pool.map(start, range(8)))
     assert len([s for s in starts if s is not None]) == 1
     (tmp_path / "signed-in").write_text("")
-    # No status read or HTTP GET drives completion.
     assert resumed.wait(10)
     assert (
         runner.store.provider_login_state(LoginKey(TestProvider.id, "", MACHINE_LOGIN_ID)).state
@@ -718,14 +713,12 @@ def test_a_member_can_cancel_a_running_device_sign_in(
 
     acknowledged = runner.cancel_sign_in(started.attempt_id)
 
-    # A cancelled attempt's code can never complete, so it is not offered.
     assert acknowledged.user_code is None and acknowledged.verification_url is None
     ended = _status_when(runner, started.attempt_id, lambda status: status.state != "pending")
     assert ended.state == "failed"
     assert ended.user_code is None
     assert ended.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
     state = runner.store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
-    # The account must stop describing an attempt that is over.
     assert state.state == "signed_out"
     assert state.detail == provider_sign_in.SIGN_IN_CANCELED_DETAIL
     assert runner.running_sign_in(LoginKey("codex", "", MACHINE_LOGIN_ID)) is None
@@ -765,7 +758,6 @@ def test_the_device_code_is_read_from_protocol_fields_not_console_prose() -> Non
     )
     assert started.fields == {"user_code": USER_CODE, "verification_url": VERIFICATION_URL}
 
-    # Only the protocol's own completion ends the wait, whatever it says.
     assert not login.receive_line("Successfully logged in").finished
     done = login.receive_line(
         json.dumps(
@@ -849,7 +841,6 @@ def test_claude_reports_a_rejected_setup_token_as_an_authentication_failure() ->
     observed = "Failed to authenticate. API Error: 401 OAuth access token is invalid."
     assert ClaudeProfile().credential_failure(observed)
     assert ClaudeProfile().credential_failure("RCP managed credential is missing")
-    # A dropped connection is worth retrying and must not fence the login.
     assert not ClaudeProfile().credential_failure("error: connection reset by peer")
 
 
@@ -888,10 +879,8 @@ def test_a_sign_in_interrupted_by_a_restart_stops_asking_a_member_to_finish_it(
     assert [state.provider for state in settled] == ["codex"]
     detail = runner.store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).detail
     assert detail == provider_sign_in.SIGN_IN_INTERRUPTED_DETAIL
-    # A second start must not rewrite an account that no longer claims a sign-in.
     assert runner.settle_interrupted_sign_ins() == []
 
-    # An account upgraded mid-attempt carries the previous release's marker.
     runner.store.mark_provider_login_signed_out(
         LoginKey("codex", "", MACHINE_LOGIN_ID),
         member_id="member",
@@ -925,7 +914,10 @@ def test_a_cancellation_names_the_member_who_asked_for_it(
 def test_cancelling_after_the_provider_accepted_the_login_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sign-in being verified is already real; cancelling must not contradict it."""
+    """A sign-in being verified is already real; cancelling must not contradict it.
+
+    The window is narrow, so the test drives the state it leaves behind.
+    """
 
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
     started = runner.start_sign_in(LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member")
@@ -933,7 +925,6 @@ def test_cancelling_after_the_provider_accepted_the_login_is_refused(
     (tmp_path / "signed-in").write_text("")
     _status_when(runner, started.attempt_id, lambda status: status.state == "succeeded")
 
-    # The window itself is narrow, so drive the state the window leaves behind.
     runner._verifying.add(started.attempt_id)
     runner._sign_ins[started.attempt_id] = runner._sign_ins[started.attempt_id].model_copy(
         update={"state": "pending"}
@@ -954,7 +945,6 @@ def test_an_acknowledged_cancellation_never_becomes_a_successful_sign_in(
     (tmp_path / "signed-in").write_text("")
     ended = _status_when(runner, started.attempt_id, lambda status: status.state != "pending")
 
-    # Whichever side won, the account and the operation agree.
     if ended.state == "succeeded":
         assert (
             runner.store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state
@@ -966,7 +956,6 @@ def test_an_acknowledged_cancellation_never_becomes_a_successful_sign_in(
             runner.store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state
             == "signed_out"
         )
-    # Nothing is left behind for the next attempt to trip over.
     assert started.attempt_id not in runner._canceled
     assert started.attempt_id not in runner._verifying
 

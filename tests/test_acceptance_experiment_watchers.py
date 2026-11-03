@@ -212,8 +212,9 @@ def _watcher_spec(record: WatcherRecord) -> tuple[str, str, str]:
 
 
 def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
-    # This hermetic fixture needs repeated short polls after jobs finish at
-    # different instants. Production still reads the durable real clock.
+    """This hermetic fixture needs repeated short polls after jobs finish at different instants;
+    production still reads the durable real clock.
+    """
     del watchers
     app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
 
@@ -277,6 +278,10 @@ def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
     S41 still drives it end to end and does fail when the detached payload
     regresses, but only as a watcher that never completes, a minute later. This
     names the launcher itself, so a break in it reads as a break in it.
+
+    The detached workers sleep before writing, so this waits for their completed contents rather
+    than racing a new, still-empty file. The shipped checker, not a hand-rolled one, must call them
+    complete.
     """
 
     stage = tmp_path / "stage"
@@ -287,11 +292,7 @@ def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
     assert len(specs) == 2
     assert len({spec.check_command for spec in specs}) == 2
 
-    # The workers are detached and sleep before writing, so this is the one
-    # place that legitimately waits on them rather than deciding for them.
     wait_until(
-        # Creation precedes write/close: wait for the completed contents rather
-        # than racing the detached worker while the new file is still empty.
         lambda: all(
             (marker := Path(spec.log_path).with_suffix(".done")).is_file()
             and marker.read_text(encoding="utf-8") == "done\n"
@@ -307,7 +308,6 @@ def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
         assert log_path.read_text(encoding="utf-8") == f"{name}: started\n{name}: completed\n"
         assert log_path.with_suffix(".status").read_text(encoding="utf-8") == "completed\n"
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
-        # The shipped checker, not a hand-rolled one, must call this complete.
         assert run_watcher_check(spec).state == "complete"
 
 
@@ -327,6 +327,10 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
 
     The complementary case, arming while the jobs still run, is S42's own
     opening; only this one needs forcing.
+
+    No poller runs here, so arming alone completed these; the exit code and checked instant tie the
+    status to arming. Completed at arming is still undelivered, which the rest of the journey
+    depends on.
     """
 
     _double_fixture_jobs(monkeypatch, finished=True)
@@ -360,17 +364,10 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
 
         armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
         assert len(armed) == 2
-        # This app never starts a poller, and only a poll writes a shell
-        # watcher's status afterwards, so arming alone completed these.
         assert not app.state.watcher_poller.is_running()
         assert {record.status for record in armed} == {"completed"}
-        # The completion carries arming's own check: its exit code and the
-        # instant it recorded. A later poll would have moved `last_checked_at`
-        # past `completed_at`, so this ties the status to arming itself.
         assert all(record.last_exit_code == 0 for record in armed)
         assert all(record.completed_at == record.last_checked_at for record in armed)
-        # Completed at arming is still undelivered, which is what the rest of
-        # the journey depends on.
         assert all(not record.notified for record in armed)
         assert all(record.notification_operation_id is None for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
@@ -385,11 +382,10 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
 def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The scenario turns on RCP reloading *active* records after a restart and
-    # detecting completion on its first new poll. Real detached jobs finish on
-    # their own clock, so a slow correction turn can complete them before the
-    # restart and quietly retire that path. Hold them mid-run instead, and
-    # release them below once the first process is gone.
+    """The fixture jobs are held mid-run and released only after the first process is gone, so the
+    reopened poller reloads two active records and detects completion on its first poll. Real jobs
+    could finish before the restart and quietly retire that path.
+    """
     _double_fixture_jobs(monkeypatch, finished=False)
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
@@ -423,8 +419,6 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
 
         armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
         assert len(armed) == 2
-        # Held mid-run above, so arming's own check saw them incomplete and this
-        # is the restart-from-active state the scenario promises, not a race.
         assert {record.status for record in armed} == {"active"}
         assert all(not record.notified for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
@@ -440,13 +434,8 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         client.close()
         app.state.background_tasks.shutdown()
 
-    # "Close RCP, let both fixture jobs finish, and reopen it." Both markers
-    # appear together and only now, so the reopened poller reloads two active
-    # records and detects completion on its first ask, and no poll can ever see
-    # a real subset of the group.
     _complete_fixture_job_artifacts(Path(record.log_path) for record in armed)
 
-    # Reopening the same data directory proves the active watcher ledger is durable.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
     _poll_after_due(reopened, armed)
@@ -490,6 +479,9 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
 def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     manifest, tmp_path: Path
 ) -> None:
+    """Readiness settles on persisted rows before delivery runs, so the test waits for a whole
+    delivery pass; otherwise the absence check passes only because nothing was decided yet.
+    """
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     client = signed_in_client(app)
@@ -537,7 +529,6 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         client.close()
         app.state.background_tasks.shutdown()
 
-    # Persist the active watchers across a process-shaped reopen before completion delivery.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
     _poll_after_due(reopened, armed)
@@ -555,10 +546,6 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         )
         _assert_completed_job_artifacts(pending)
         assert all(not record.notified for record in pending)
-        # Readiness settles on the persisted rows, which `_check_records` writes
-        # before delivery runs at all, so it cannot stand in for a delivery
-        # decision. Wait for a whole pass, or the absence below passes for the
-        # uninteresting reason that nothing has been decided yet.
         _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
         control = _wait_for_ready_experiment_control(reopened_client, project_id)
         assert control["paused"] is False

@@ -43,6 +43,9 @@ def _session_resuming_stream(
 def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """The whole chain is published with each member's report, and the branch keeps the root's
+    identity. Child routes moved to the continuation still belong to the branch.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -114,7 +117,6 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert (payload["code_worktree"], payload["graph_isolation"]) == (False, True)
         assert payload["continued_by_episode_id"] is None
         assert payload["can_continue"] is False
-        # The whole chain is published on every member, with each one's report.
         assert [
             (member["episode_id"], member["invocation_ceiling"]) for member in payload["chain"]
         ] == [
@@ -123,7 +125,6 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         ]
         assert payload["chain"][0]["ending"] == "exhausted"
         assert payload["chain"][0]["invocations_used"] == 1
-        # The branch keeps the chain root's identity; the newest member writes to it.
         assert payload["graph_target"] == {"kind": "branch", "branch_id": original.episode_id}
         assert payload["graph_branch"]["branch_id"] == original.episode_id
         assert payload["graph_branch"]["episode_id"] == original.episode_id
@@ -149,9 +150,10 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         continuation_root = wait_for_task(store, continuation_root_id, expect="succeeded")
         assert seen == [(original_root.native_session_id, original_root.stage_root)]
 
-        # A lost response is replayed even while the project cannot take a write.
         def unavailable(state=None):
-            # Only the explicit admission check is refused; state passthrough stays coherent.
+            """A lost response is replayed even while the project cannot take a write; only the
+            explicit admission check is refused.
+            """
             if state is None:
                 raise StateUnavailable("the canonical state is read-only right now")
             return state
@@ -218,14 +220,11 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     assert notices[0].payload["continues_episode_id"] == original.episode_id
     chain = store.episode_chain(original.episode_id)
     assert [member.episode_id for member in chain] == [original.episode_id, continuation_id]
-    # Child routes moved to the continuation still belong to the branch: the
-    # consumers that once required the root's id accept any chain member.
     assert episode_on_branch(store, continuation_id, original.episode_id)
     assert episode_on_branch(store, original.episode_id, original.episode_id)
     assert not episode_on_branch(store, original.episode_id, continuation_id)
     assert not episode_on_branch(store, None, original.episode_id)
 
-    # Bound after joining the chain, retaining only the newest items.
     with store.connection() as connection:
         for index in range(401):
             connection.execute(
@@ -341,14 +340,16 @@ def test_continue_refuses_a_live_or_unbound_episode(manifest, tmp_path) -> None:
 def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
     manifest, tmp_path: Path
 ) -> None:
-    """A repointed execution alias cannot resume the saved session; nothing is chained."""
+    """A repointed execution alias cannot resume the saved session; nothing is chained.
+
+    The binding `bind_session` commits is frozen on a machine the alias no longer names.
+    """
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     loop.start_episode()
     stage = tmp_path / "loop-stage"
     stage.mkdir()
-    # The same binding `bind_session` commits, frozen on a machine the alias no longer names.
     loop.store.commit_experiment_episode_turn(
         episode_id=loop.episode_id,
         project_id=loop.project_id,

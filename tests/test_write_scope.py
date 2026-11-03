@@ -87,6 +87,7 @@ def _resolve_local(
 def test_local_scope_contains_only_exact_admitted_roots_and_protects_research(
     manifest: Manifest, tmp_path: Path
 ) -> None:
+    """Codex is told only about protected paths that exist."""
     scope = _resolve_local(manifest, tmp_path, aliases=["repo-a", "repo-b"])
 
     repo_a = str(Path(manifest.repository_map["repo-a"].path).resolve())
@@ -105,7 +106,6 @@ def test_local_scope_contains_only_exact_admitted_roots_and_protects_research(
     assert {str(Path(repo_a) / ".research"), str(Path(repo_b) / ".research")} <= set(
         scope.protected_write_paths
     )
-    # Codex is told only about protected paths that exist (see the Codex profile).
     assert scope.absent_protected_paths == [
         path for path in scope.protected_write_paths if not os.path.lexists(path)
     ]
@@ -131,7 +131,6 @@ def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
     for name in ("browser", "tools"):
         protected = shared / "app-data" / name
         assert any(protected.is_relative_to(root) for root in scope.protected_write_paths)
-    # Grants are machine settings: changing them keeps an open chat resumable.
     assert scope.fingerprint == _resolve_local(manifest, tmp_path).fingerprint
 
 
@@ -198,8 +197,9 @@ def test_state_research_is_protected_when_state_repository_is_not_admitted(
 def test_a_retained_scope_contract_ignores_which_paths_were_absent(
     manifest: Manifest, tmp_path: Path
 ) -> None:
-    # Episode reports and branch merges retain this JSON as an immutable contract
-    # and re-record it on every re-entry, including ones started by an older release.
+    """Episode reports and branch merges retain this JSON as an immutable contract, re-
+    recorded on every re-entry, including older releases'.
+    """
     resolved = _resolve_local(manifest, tmp_path, aliases=["repo-a", "repo-b"])
     scope = resolved.model_copy(
         update={"absent_protected_paths": resolved.protected_write_paths[:1]}
@@ -306,8 +306,7 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
     assert "repo-c" not in load_manifest(bootstrap).repository_map
     canonical = service.manifest
     if restart:
-        # Keep the execution repositories local while modelling the registered
-        # remote canonical home and the mirror a successful open leaves behind.
+
         def remote_home(text):
             return (
                 text.replace(
@@ -535,7 +534,7 @@ def test_remote_inventory_rejects_valid_manifest_for_different_canonical_home(
         "path": (str(remote.repository_map["repo-a"].path), str(tmp_path / "other-root")),
     }[mismatch]
     mirror.write_text(mirror.read_text().replace(original, replacement))
-    load_manifest(mirror)  # Valid TOML and schema are insufficient ownership proof.
+    load_manifest(mirror)
 
     def no_network(_self):
         raise AssertionError("Repository inventory must not refresh remote projects")
@@ -786,6 +785,9 @@ def test_scope_accepts_the_transport_host_the_staged_context_actually_carries(
 
     `_stage_context_paths` blanks it for a repository on the execution machine,
     so comparing it against the machine's SSH host refused every remote run.
+
+    The host never reaches the sandbox; roots come from the manifest and are
+    canonicalized on the execution machine.
     """
 
     pointer = RepositoryPointer(
@@ -797,8 +799,6 @@ def test_scope_accepts_the_transport_host_the_staged_context_actually_carries(
 
     scope = _resolve_local(manifest, tmp_path, pointers=[pointer])
 
-    # The host never reaches the resulting sandbox: the roots come from the
-    # manifest and are canonicalized on the execution machine itself.
     assert scope.execution_host == ""
     assert scope.repository_roots == [str(Path(manifest.repository_map["repo-a"].path).resolve())]
 
@@ -943,6 +943,9 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
 
 
 def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) -> None:
+    """Each canonicalization call is an SSH exec with a remote stage, so the count is
+    the launch's round-trip budget and must not grow with repositories.
+    """
     remote = _remote_manifest(manifest)
     stage = _RemoteScopeStage(
         overrides={
@@ -959,15 +962,10 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
     assert scope.protected_write_paths == [
         "/declared/repo-a/.research",
         "/srv/repo-a/.research",
-        # The default /tmp grant covers this legacy stage; its inputs stay read-only.
         "/tmp/rcp-run.scope/inputs",
     ]
     assert stage.calls[0][1] is True
     assert all(not writable for _paths, writable in stage.calls[1:])
-    # Every declared canonical-state path is canonicalized in one call. With a
-    # remote stage each call is an SSH exec, so this count is the launch's
-    # round-trip budget and must not grow with the repository count. The fourth
-    # resolves every registered repository's `.research` for the grants.
     assert len(stage.calls) == 4
     assert stage.calls[-1][0] == ["/srv/repo-a/.research", "/declared/repo-a/.research"]
 

@@ -196,6 +196,8 @@ class HandoffReport(BaseModel):
     status: str
     reason: str | None = None
     failure_kind: str | None = None
+    provider: str | None = None
+    model: str | None = None
     error: str | None = None
     turn_outcome: TurnOutcome | None = None
     answer: str | None = None

@@ -70,7 +70,7 @@ def test_resumed_turn_keeps_logical_supplier_scope(store, tmp_path):
 
 
 def test_resumed_wake_turn_keeps_the_wake_as_its_scope(store, tmp_path):
-    # A wake reuses the native session with no parent; it still opens its own turn.
+    """A wake reuses the native session with no parent, yet still opens its own turn."""
     wake, _, _ = _legacy(store, tmp_path, result=False, continuation="watcher_wake")
     task, descriptor, _ = _legacy(store, tmp_path, parent=wake)
     assert _run(store) is None

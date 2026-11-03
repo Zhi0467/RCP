@@ -71,7 +71,6 @@ def test_removal_serializes_with_a_member_write(tmp_path, monkeypatch):
         remove = pool.submit(
             coordinator.advance, bob.user_id, boundary_sha256=preview.boundary_sha256
         )
-        # Removal waits for the member write that holds the lock.
         with pytest.raises(TimeoutError):
             remove.result(timeout=0.2)
         release.set()

@@ -42,7 +42,14 @@ def list_schedules(
 def _view(schedule) -> dict:
     """A waiting note keeps pending_since and why it has not started."""
     return schedule.model_dump(
-        mode="json", exclude={"thread_id", "created_operation_id", "idempotency_key", "created_at"}
+        mode="json",
+        exclude={
+            "thread_id",
+            "created_operation_id",
+            "idempotency_key",
+            "created_at",
+            "pending_fires",
+        },
     )
 
 

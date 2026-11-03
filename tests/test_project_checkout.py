@@ -302,7 +302,6 @@ def test_shipped_helper_creates_and_reuses_only_the_exact_checkout(tmp_path: Pat
         "empty": True,
     }
     assert checkout.is_dir()
-    # Every directory the helper creates is private to the account it runs as.
     for created in (root / PROJECT_ID, root / PROJECT_ID / "repositories", checkout):
         assert stat.S_IMODE(created.stat().st_mode) == 0o700, created
 
@@ -409,10 +408,10 @@ def test_retained_patch_scan_has_one_cumulative_entry_bound(
 def test_manager_clones_verifies_and_recovers_without_renaming(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The shipped helper probes the account's own agent socket."""
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, runner = _manager(tmp_path, origin)
 
-    # The shipped helper probes the account's own agent socket; expect the same.
     home = Path(material.account_home)
     socket = str(agent_socket_path(home)) if agent_status(home) == "running" else None
     monkeypatch.setattr("rcp.ssh_agent.running_agent_socket", lambda: socket)
@@ -1641,7 +1640,6 @@ def test_server_only_first_commit_is_private_and_reused(tmp_path: Path, location
         == result.commit
     )
     assert stat.S_IMODE((path / ".git").stat().st_mode) == 0o700
-    # An interrupted attempt left only the RCP commit unrecorded: reuse it.
     first = dict(
         request_kind="create_team_project",
         project_id=PROJECT_ID,
@@ -1649,7 +1647,6 @@ def test_server_only_first_commit_is_private_and_reused(tmp_path: Path, location
         state_repository=True,
     )
     assert manager.prepare_server_only(machine, **first).commit == result.commit
-    # Any other history is refused instead of adopted.
     _git_command(
         "-c",
         "user.name=Human",

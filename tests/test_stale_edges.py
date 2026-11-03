@@ -11,8 +11,9 @@ from rcp.core.models import Patch
 from rcp.providers.base import ModelChoice
 from rcp.runs.proposal_refresh import proposal_refresh_message
 from tests.helpers import append_fixture_patch, signed_in_client, wait_for_task
+from tests.lifecycles.proposals import EV, HYP, PROPOSAL, append_agent_patch
 from tests.test_api_tasks import _event_frame
-from tests.test_proposal_refresh import EV, HYP, PROPOSAL, _agent_patch, _reword_evidence, filed
+from tests.test_proposal_refresh import _reword_evidence, filed
 
 __all__ = ["filed"]
 
@@ -31,7 +32,7 @@ def _rejudge(service, **changes):
             mode="json", include={"id", "source", "target", "relation", "explanation", "assessment"}
         )
     )
-    _agent_patch(
+    append_agent_patch(
         service,
         [
             {"op": "remove_edges", "edge_ids": [EDGE]},
@@ -54,7 +55,6 @@ def test_an_outcome_edge_is_stale_until_rejudged_after_its_evidence_moves(filed)
     _rejudge(service)
     assert _stale(service) == []
 
-    # A standing judgment on the Evidence is a move too, as for Proposals.
     append_fixture_patch(
         service,
         Patch(
@@ -69,7 +69,7 @@ def test_an_outcome_edge_is_stale_until_rejudged_after_its_evidence_moves(filed)
 
 def test_retired_evidence_marks_no_edge(filed):
     service = filed.state.service
-    _agent_patch(
+    append_agent_patch(
         service,
         [
             {
@@ -86,7 +86,7 @@ def test_retired_evidence_marks_no_edge(filed):
             }
         ],
     )
-    _agent_patch(
+    append_agent_patch(
         service,
         [{"op": "supersede_nodes", "nodes": [{"id": EV, "superseded_by": "ev/replan-rerun"}]}],
     )
@@ -150,8 +150,7 @@ def test_edge_refresh_starts_one_light_work_chat_on_its_evidence(filed, light_ca
     assert context["citing_proposal_ids"] == [PROPOSAL]
     assert light_catalog == ["node_chat"]
 
-    # A response lost after the agent removed the edge still finds its chat.
-    _agent_patch(service, [{"op": "remove_edges", "edge_ids": [EDGE]}])
+    append_agent_patch(service, [{"op": "remove_edges", "edge_ids": [EDGE]}])
     assert client.post(url, json=seen).json() == result
 
 
@@ -197,7 +196,7 @@ def test_one_update_rejudges_the_cause_edge_and_refiles_the_proposal(filed):
     refiled = stale.model_dump(mode="json", include={"title", "card", "ops"}) | {
         "id": f"{PROPOSAL}-refiled"
     }
-    _agent_patch(
+    append_agent_patch(
         service,
         [
             {"op": "remove_edges", "edge_ids": [EDGE]},
@@ -268,7 +267,6 @@ def test_a_merged_reword_lands_stale_unless_the_fork_revised_the_edge(manifest, 
     plan = _plan(history, branch)
     _commit(history, branch, plan, _answers(plan))
 
-    # Merge carries content only: an unchanged edge keeps main's older revision.
     assert project_graph_attention(history.state()).stale_edge_ids == (
         [] if revised else [edge["id"]]
     )

@@ -206,7 +206,7 @@ def test_fetch_publishes_verified_bundle_and_reuses_it(
 
     assert releases.fetch_release(selector, directory) == verified
 
-    assert len(github["requests"]) == count + 2  # Resolve identity and compare manifest only.
+    assert len(github["requests"]) == count + 2
     assert {path.name: path.stat().st_ino for path in directory.iterdir()} == identities
 
 

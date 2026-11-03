@@ -91,7 +91,6 @@ def test_failed_update_restores_the_start_and_its_build(
     build = [args for _, args in module.BUILD_STEPS]
     assert after == [recovery, *build]
     if restore_fails and failed == ["uv", "sync"]:
-        # The restore stops at the same step and lists every remaining command.
         err = capsys.readouterr().err
         assert all(shlex.join(args) in err for args in [recovery, *build])
     with (root / ".rcp-serve.lock").open("a") as lock:

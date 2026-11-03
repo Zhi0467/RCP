@@ -146,11 +146,11 @@ def test_failed_startup_stops_power(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("action", ["install", "uninstall"])
 def test_cancelled_admin_prompt_preserves_status(tmp_path, mac_power, action):
+    """A cross-site HTML form cannot send JSON, so it never reaches the prompt."""
     app = create_app(data_dir=tmp_path / "data")
     with signed_in_client(app, raise_server_exceptions=True) as client:
         assert client.put("/api/machine-power", json={"lid_mode": True}).status_code == 200
         before = client.get("/api/machine-power").json()
-        # A cross-site HTML form cannot send JSON, so it never reaches the prompt.
         form = client.post("/api/machine-power/" + action, data={"x": "1"})
         assert form.status_code == 415
         getattr(mac_power, action).assert_not_called()

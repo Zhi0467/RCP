@@ -26,6 +26,7 @@ from rcp.limits import (
 
 
 def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
+    """Operational variables pass; credential-bearing ones never do."""
     directories, files, globs = hidden_read_defaults(
         home="/home/research",
         app_data_dir="/data",
@@ -92,7 +93,6 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         )
     }
     kept = clean_environment({"env_deny_list": HIDDEN_READ_ENV_DENY_LIST}, environment)
-    # Operational variables pass; credential-bearing ones never do.
     assert set(kept) == set(list(environment)[:10])
 
 
@@ -124,8 +124,9 @@ def test_folder_validation_is_bounded_and_unique(folders, code) -> None:
 
 
 def test_folder_validation_never_resolves_on_this_host(tmp_path: Path) -> None:
-    # Remote meaning comes from the execution host's canonical paths; the
-    # API's host check covers symlinks (test_space_machines_api).
+    """Remote meaning comes from the execution host's canonical paths; the API's host check covers
+    symlinks (test_space_machines_api).
+    """
     protected = tmp_path / "protected"
     protected.mkdir()
     alias = tmp_path / "alias"
@@ -171,8 +172,9 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
 def test_launch_drops_only_a_folder_covering_runtime_executables(
     manifest, tmp_path, monkeypatch, folder
 ):
-    # System roots, plus the host's own python3/bwrap/bash folders. A saved folder
-    # that comes to cover one is dropped; the defaults and other folders stay hidden.
+    """System roots and the host's own python3, bwrap, and bash folders cannot be hidden: a saved
+    folder covering one is dropped, while defaults and other folders stay hidden.
+    """
     private = str(tmp_path / "private")
     scope = _resolve(manifest, tmp_path, monkeypatch, machine_hidden_folders=[folder, private])
     assert folder not in scope.hidden_directories
@@ -194,7 +196,7 @@ def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, m
 def test_entries_missing_on_the_execution_host_are_recorded_absent(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    # Codex is never told about these: its Linux sandbox would make a stand-in.
+    """Codex is never told about these, since its Linux sandbox would make a stand-in."""
     providers = tmp_path / "data/providers/claude"
     providers.mkdir(parents=True)
     scope = _resolve(manifest, tmp_path, monkeypatch)
@@ -209,6 +211,9 @@ def test_entries_missing_on_the_execution_host_are_recorded_absent(
 def test_login_homes_are_readable_only_to_their_provider(
     manifest, tmp_path, monkeypatch, provider
 ) -> None:
+    """Covers a sign-in added after the launch resolved. Codex starts its sandbox helper from inside
+    its own home, and a capped `**` scan keeps Codex's Linux glob warning out of turn errors.
+    """
     import json
     import re
     from uuid import uuid4
@@ -224,7 +229,6 @@ def test_login_homes_are_readable_only_to_their_provider(
         (home / "tmp/arg0-linux").mkdir(parents=True)
         (home / "auth.json").write_text("dummy")
     scope = _resolve(manifest, tmp_path, monkeypatch, provider=provider)
-    # A sign-in added after the launch resolved.
     later = credentials.login_home("codex", str(uuid4()))
     later.mkdir(parents=True)
 
@@ -239,13 +243,11 @@ def test_login_homes_are_readable_only_to_their_provider(
     assert all(hidden(home / "auth.json") for home in (local, remote, later))
     assert hidden(tmp_path / "data/providers/codex/local/logins/id/codex-home/auth.json")
     if provider == "codex":
-        # Codex starts its sandbox helper from inside its own home.
         assert not any(hidden(home / "tmp/arg0-linux") for home in (local, remote, later))
         homes = [item for item in scope.hidden_globs if "/provider-homes/" in item]
         denials = _codex_read_denials(scope)
         assert len(homes) == 2
         assert all(json.dumps(item) + '="deny"' in denials for item in homes)
-        # A capped `**` scan keeps Codex's Linux glob warning out of turn errors.
         import tomllib
 
         assert tomllib.loads("f={" + denials + "}")["f"]["glob_scan_max_depth"] >= 1
@@ -288,6 +290,7 @@ def test_readiness_gaps_are_visible(
 def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
     manifest, tmp_path, monkeypatch, kind, confirmed
 ):
+    """A user folder over a readable key's parent is dropped, never masking the key."""
     path = str(tmp_path / "data/providers/claude/key")
     key = HiddenReadKeyEvidence(
         path=path,
@@ -301,7 +304,6 @@ def test_only_confirmed_keys_hidden_and_exempt_parents_stay_readable(
     assert (str(tmp_path / "data/providers/claude") in scope.hidden_directories) == confirmed
     assert (scope.enforcement.status == "enforced") == confirmed
     if not confirmed:
-        # A user folder over a readable key's parent is dropped, never masking the key.
         covered = _resolve(
             manifest,
             tmp_path,

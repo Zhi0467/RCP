@@ -49,12 +49,9 @@ def test_work_compute_handoff_preserves_the_resolved_execution_instructions(
 
 
 def test_experiment_ballot_fields_match_the_enforcement_allowlist() -> None:
-    # Enforcement admits the ballot fields plus the queued status, and nothing
-    # else. `selected_option` is the field the whole rule exists to withhold.
+    """`selected_option` is the field the whole rule exists to withhold."""
     assert {*PINNED_DECISION_BALLOT_FIELDS, "status"} == _PINNED_DECISION_FIELDS
     assert "selected_option" not in _PINNED_DECISION_FIELDS
-    # The loop may only restate content the Decision card already carries, so its
-    # set cannot name a field outside the editable-content registry.
     assert HUMAN_EDITABLE_NODE_FIELDS["decision"] >= _PINNED_DECISION_FIELDS
 
 
@@ -90,9 +87,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
     assert master.count(skill_path) == 1
     for path in ("/state/graph.json", "/state/research.md", "/state/paper"):
         assert path in master
-    # Discuss and Work share one copy; the editing method is labelled as method, not authority.
     assert master.count(graph_rules(edits=True, ontology_extensions=True)) == 1
-    # Discuss and Work each carry the one shared reply guidance.
     assert master.count(REPLY_STYLE) == 2
 
 
@@ -480,11 +475,9 @@ def test_experiment_contract_preserves_control_paths_and_resolved_commands(
     assert "/stage/inputs/experiment-control.json" in contract
     assert "/stage/inputs/experiment-watchers.json" in contract
     assert execution_instructions in contract
-    # The turn-bound client is stated once; commands name it by placeholder.
     assert contract.count(command_client) == 1
     assert f"{COMMAND_CLIENT} validate /stage/patch.json" in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
-    # A fresh contract states the rules once; only continuations call them a repeat.
     assert REPEATED_RULES_NOTE not in contract
     assert REPLY_STYLE in contract
 
@@ -578,7 +571,6 @@ def test_work_patch_correction_names_its_diagnostics_and_leaves_rules_to_the_mas
     )
 
     assert "/stage/inputs/correction.json" in correction
-    # The rules and the command client live in the session master the correction points to.
     assert graph_rules(edits=True, ontology_extensions=True) not in correction
     with pytest.raises(ValueError):
         PromptFactory.inline_continuation(mode="work_patch_correction", turn_mode="work")
@@ -637,7 +629,6 @@ def test_retry_handoff_contract_preserves_paths() -> None:
     assert "/stage/inputs/task-retry-handoff.json" in contract
     assert "/prior/inputs/task-initial.md" in contract
     assert "/stage/patch.json" in contract
-    # A handoff starts a fresh provider session, so it states the current rules outright.
     assert graph_rules(edits=True, ontology_extensions=False) in contract
     assert REPEATED_RULES_NOTE not in contract
 
@@ -901,7 +892,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         receipt_sha256="c" * 64,
     )
     for builder in builders:
-        # Each builder receives its own required inputs; paths are distinct staged pointers.
         arguments = {
             name: f"/stage/{name}" if name.endswith("_path") else inputs[name]
             for name, parameter in inspect.signature(builder).parameters.items()

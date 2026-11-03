@@ -169,11 +169,9 @@ def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> Non
     assert undelimited.text == "x" * 300
     assert not undelimited.complete
 
-    # An odd bound cuts the last two-byte character in half.
     multibyte = load_repository_source(manifest, "repo-a", "multibyte.log", max_bytes=1001)
     assert multibyte.text == "é" * 500
 
-    # A byte that is invalid rather than merely cut short still fails.
     (root / "binary.log").write_bytes(b"text\xff" * 200)
     with pytest.raises(ValueError, match="UTF-8"):
         load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100)
@@ -194,7 +192,6 @@ def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch
     source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024)
 
     assert source.text == "x" * 1024
-    # Without the stop, filling a 1 KiB budget would read all twenty chunks.
     assert reads <= 2
 
 
@@ -269,6 +266,7 @@ def test_the_shipped_reader_source_windows_the_same_way_as_the_local_call(tmp_pa
 def test_repository_preview_route_windows_an_oversized_file(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """HEAD is the client's preflight, so it must agree with GET about this window."""
     source_path = Path(manifest.repository_map["repo-b"].path) / "trajectory.jsonl"
     oversized = preview_module.REPOSITORY_PREVIEW_MAX_BYTES // 10 + 1000
     source_path.write_text(_numbered_lines(oversized), encoding="utf-8")
@@ -285,8 +283,6 @@ def test_repository_preview_route_windows_an_oversized_file(
     assert 'id="L150" class="line"' in response.text
     assert "line 0149" not in response.text
 
-    # HEAD is the client's preflight, so it must agree with GET about this exact
-    # window: a line past the end of the file has to fail both, not only the GET.
     url = f"/api/projects/{app.state.default_project_id}/repositories/files/preview"
     head = client.head(url, params={"path": str(source_path), "line": 250})
 

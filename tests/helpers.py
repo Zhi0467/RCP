@@ -1,3 +1,11 @@
+"""Shared test helpers.
+
+TASK_SETTLE_TIMEOUT bounds a genuine hang, not the expected duration; the poll
+returns as soon as a task is terminal, so a tight bound only invents failures under a
+busy suite. NON_UUID4 is a constant because a `uuid.uuid1()` call inside
+`parametrize` gives each xdist worker a different test id and fails collection.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -40,19 +48,12 @@ if TYPE_CHECKING:
     import pytest
 
     from rcp.agents.project_repositories import RepositoryReadScope
+    from rcp.config import Manifest
 
 
-# Background tasks run on their own thread, so this bounds a genuine hang rather
-# than the expected duration. The poll returns the moment the task is terminal,
-# so a generous bound costs nothing on success, while a tight one invents
-# failures whenever the full suite is competing for the CPU.
 TASK_SETTLE_TIMEOUT = 60.0
 _TASK_POLL_INTERVAL = 0.01
 
-# A syntactically valid UUID that is deliberately not version 4, for the cases
-# that assert canonical-UUIDv4 rejection. Generating one with `uuid.uuid1()`
-# inside a `parametrize` decorator gives every xdist worker a different test id,
-# which fails collection, so the non-canonical value is a constant.
 NON_UUID4 = "1d2e3f40-a73f-11f1-83be-717957a9b5d0"
 
 _GRAPH_OPERATION_ADAPTER = TypeAdapter(GraphOperation)
@@ -101,9 +102,12 @@ class _UncheckedWriteAuthority(WriteAuthority):
 
 
 def read_scope_of(*aliases: str) -> RepositoryReadScope:
-    """A launch read scope naming only this project's repositories."""
+    """A launch read scope naming only this project's repositories.
 
-    # Local: installed-upgrade seeding imports this module under older releases.
+    Imported locally because installed-upgrade seeding imports this module under older
+    releases.
+    """
+
     from rcp.agents.project_repositories import RepositoryReadScope
 
     return RepositoryReadScope(
@@ -196,6 +200,65 @@ async def sign_in_async_client(client: AsyncClient, app: Any) -> None:
         assert response.status_code == 200, response.text
 
 
+def write_test_manifest(tmp_path: Path) -> Manifest:
+    """Write the two-repository test project under ``tmp_path`` and load it."""
+
+    from rcp.config import load_manifest
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    research = repo_a / ".research"
+    research.mkdir()
+    claude_root = tmp_path / "claude"
+    codex_root = tmp_path / "codex"
+    claude_root.mkdir()
+    codex_root.mkdir()
+    path = research / "manifest.toml"
+    path.write_text(
+        f'''name = "test-paper"
+
+[[machines]]
+alias = "laptop"
+host = ""
+
+[[repositories]]
+alias = "repo-a"
+machine = "laptop"
+path = "{repo_a}"
+
+[[repositories]]
+alias = "repo-b"
+machine = "laptop"
+path = "{repo_b}"
+
+[project]
+truth_scope = ["repo-a", "repo-b"]
+
+[state]
+repository = "repo-a"
+
+[agent]
+default_run_truth_scope = ["repo-a"]
+
+[sources]
+claude_roots = ["{claude_root}"]
+codex_roots = ["{codex_root}"]
+
+[execution]
+run_on = "laptop"
+
+[paper.coach]
+default_provider = "codex"
+default_model = ""
+default_reasoning = "medium"
+''',
+        encoding="utf-8",
+    )
+    return load_manifest(path)
+
+
 def create_named_app(*args: Any, **kwargs: Any):
     """Create a named test app."""
 
@@ -263,8 +326,11 @@ def write_local_test_manifest(directory: Path) -> Path:
 
 
 def store_test_claude_token(store: AppStore, host: str = "") -> None:
-    """Give fake Claude execution an explicit managed credential."""
-    # Imported here: release-update bases import this module with older `rcp`.
+    """Give fake Claude execution an explicit managed credential.
+
+    Imported locally because release-update bases import this module with an older
+    `rcp`.
+    """
     from rcp.storage.models import MACHINE_LOGIN_ID
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
@@ -284,6 +350,65 @@ def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHum
         space_id=str(uuid.uuid4()),
         user_id=str(uuid.uuid4()),
         display_name=display_name,
+    )
+
+
+def experiment_run_task(
+    store: AppStore,
+    operation_id: str,
+    episode_id: str,
+    *,
+    project_id: str = "project",
+    control_node_id: str = "experiment-node",
+    ceiling: int = 1,
+    request_fields: dict[str, Any] | None = None,
+    **fields: Any,
+) -> AgentTaskRecord:
+    """A queued first Experiment-loop turn, shaped as the Run route admits it."""
+
+    from rcp.service import RunRequest
+
+    now = store.now()
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id=f"experiment-{episode_id}",
+        chat_scope="node",
+        node_id=control_node_id,
+        message="Run the bounded experiment.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id=control_node_id,
+        control_revision=0,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=ceiling,
+        control_decision_bundle=[],
+        control_completion_criteria=[],
+    )
+    fields.setdefault("authorized_by", authorized_human(store))
+    return AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        kind="node_chat",
+        status="queued",
+        request={**request.model_dump(mode="json"), **(request_fields or {})},
+        created_at=now,
+        updated_at=now,
+        status_message="Queued",
+        **fields,
+    )
+
+
+def start_experiment_episode(
+    store: AppStore, operation_id: str, episode_id: str, **kwargs: Any
+) -> AgentTaskRecord:
+    """Admit an Experiment episode and its first paid turn through the Run route's store call."""
+
+    return store.create_experiment_episode_with_invocation(
+        experiment_run_task(store, operation_id, episode_id, **kwargs)
     )
 
 
@@ -451,14 +576,15 @@ def wait_for_task_response(
 
 
 def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):
-    """Prepare canonical graph state without impersonating a production agent task."""
+    """Prepare canonical graph state without impersonating a production agent task.
+
+    Mirrors the cache update the production manager performs on guarded admission.
+    """
 
     fixture_history = HistoryManager(
         service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
     )
     appended, result = fixture_history.append(patch, **kwargs)
-    # Mirror the cache update that the production manager would have performed
-    # if this test-only legacy fixture had gone through its guarded admission.
     service.history._remember_accepted_revision(result)
     return appended, result
 
@@ -634,64 +760,33 @@ def isolate_host(
     Returns the provider engines constructed under the patch; the caller shuts
     them down. A module-scoped template build applies this with its own
     `MonkeyPatch`, because the function-scoped autouse fixture has not run yet.
+
+    Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory
+    and Codex home, so no test touches the developer's live state. Provider discovery
+    returns nothing, so an unconfigured provider refuses before any real CLI runs or
+    bills a turn; the `real_provider_discovery` marker opts out. Every engine registers
+    for shutdown at construction, because most test apps never run a lifespan and would
+    leave broker and provider children running. The process-wide lock fence is reset so
+    one teardown cannot abort a later lock wait. The terminal width is pinned to the
+    renderer's 100-column fallback so prose assertions do not depend on the ambient
+    terminal. The deploy-key agent socket is per account; `tests/test_ssh_agent.py`
+    drives the real one with its own home.
     """
 
-    # A provider launch takes an advisory lock under the account's RCP
-    # directory. Left alone, every test would contend on one real file and
-    # leave state in `~/.rcp`, so each test gets its own root.
     monkeypatch.setattr(
         "rcp.agents.credential_gate._DEFAULT_ACCOUNT_LOCK_ROOT", root / "credential-locks"
     )
-    # Keep RCP's own `~/.rcp` temporary files out of the human's home.
     monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: root / "rcp-home")
     monkeypatch.setattr("rcp.transport.remote_transfer_git._rcp_temp_dir", lambda: root)
-    # The SSH control directory is keyed by user account, not by data
-    # directory, so the developer's own RCP keeps its live masters in the same
-    # place a test would sweep. Starting an app runs that sweep, which means the
-    # whole suite reaches it, not one test. Each test gets its own root instead.
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
-    # An added Codex login links its session store to the machine Codex home,
-    # so a test must never resolve that home to the developer's `~/.codex`.
     monkeypatch.setenv("CODEX_HOME", str(root / "machine-codex-home"))
 
-    # Discovery is the seam every unconfigured local provider execution passes
-    # through: readiness runs `--version`, `login status` and `debug models`
-    # through the path it returns, and a turn's own `codex exec` is built from
-    # that same path. No fixture configures a binary, so leaving discovery live
-    # meant a test that dispatched a task prompted the developer's own
-    # authenticated CLI and billed a real provider turn no assertion ever read.
-    # Returning nothing makes readiness `unconfigured`, which refuses the launch
-    # before a command is built.
-    #
-    # Readiness reaches this only for an unconfigured local provider, so an
-    # explicit `binary=` is unaffected; that is how the env-gated live
-    # qualification in `test_server_provider_readiness_live.py` still probes a
-    # real CLI on purpose. A test that needs a configured provider patches
-    # `AgentLauncher.readiness` or replaces `BackgroundAgentTasks.stream`; one
-    # that needs a real child process stages its own stub through
-    # `sys.executable`.
-    #
-    # The `real_provider_discovery` marker opts a test out. It is for the tests
-    # of discovery itself, which replace `PATH` and the OS account home, in this
-    # process and in any subprocess they run, so they reach no installed binary
-    # either.
     if not provider_discovery:
         monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)
 
-    # A lifespan and a compute settings save check compute routes, and a helper
-    # probe starts a real launchd or systemd job. A test of the refresh restores
-    # the real function and stubs the probe itself.
     for owner in ("rcp.api.app", "rcp.api.project_state"):
         monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
 
-    # `shutdown` kills each live provider process group, and the app lifespan
-    # is the only caller. Most tests build their app with a bare `create_app`
-    # or an unentered `TestClient`, so no lifespan ever runs; their workers are
-    # daemon threads, so interpreter exit drops them without unwinding and the
-    # staged broker plus its provider child are reparented and left running,
-    # holding a `~/.rcp/sockets/rcp-command-*.sock` for as long as they live.
-    # Registering at construction covers every engine a test creates, including
-    # the ones reached through `create_app` and server-operation validation.
     engines: list[BackgroundAgentTasks] = []
     construct = BackgroundAgentTasks.__init__
 
@@ -701,27 +796,15 @@ def isolate_host(
 
     monkeypatch.setattr(BackgroundAgentTasks, "__init__", register)
 
-    # An app lifespan teardown sets the process-wide fence; without isolation a
-    # later lock wait in the same worker would abort for no reason.
     monkeypatch.setattr("rcp.transport.state._CANONICAL_LOCK_WAIT_FENCE", threading.Event())
 
-    # `_print_wrapped` takes its width from `shutil.get_terminal_size`, so every
-    # assertion on rendered prose otherwise depends on the ambient terminal. The
-    # same install plan passes at 100 columns and fails at 80, where a phrase a
-    # test searches for straddles a line break. 100 is the renderer's own
-    # fallback, so this pins the value an undetectable terminal already produces.
     monkeypatch.setenv("COLUMNS", "100")
 
-    # Test apps never contact GitHub; transport tests opt in against loopback.
     monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
 
-    # The deploy-key agent lives at one per-account socket. Every app lifespan
-    # would start a real one there, racing other workers and the developer's
-    # own backend; `tests/test_ssh_agent.py` drives it with its own home.
     monkeypatch.setattr("rcp.ssh_agent.rcp_home", lambda: root / "rcp-home")
     monkeypatch.setattr("rcp.api.app.BackendSSHAgent", _InertSSHAgent)
 
-    # App tests never inspect or alter the host machine's real power state.
     from rcp.machine_power import MachinePowerController
 
     def refuse_command(*args, **kwargs):

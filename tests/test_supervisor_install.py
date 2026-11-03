@@ -19,6 +19,9 @@ from tests.supervisor_helpers import make_bundle, refresh_manifest
 def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mask: int
 ) -> None:
+    """Ambient project or uv settings must not bypass hash checking or redirect the
+    isolated environment.
+    """
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
@@ -28,8 +31,6 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
     sentinel.write_text("old release")
     current = tmp_path / "current"
     current.symlink_to(previous, target_is_directory=True)
-    # Ambient project/uv settings must not bypass hash checking or redirect the
-    # isolated environment, even when launched from a development shell.
     monkeypatch.setenv("UV_NO_VERIFY_HASHES", "1")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(previous))
     monkeypatch.setenv("PYTHONPATH", str(previous))
@@ -69,6 +70,9 @@ def test_install_real_wheel_in_isolated_environment_preserves_current_release(
 def test_install_preserves_partial_failure_without_publishing_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Follows the documented operator path: inspect diagnostics, remove only the failed
+    build, retry the same release.
+    """
     bundle = make_bundle(tmp_path / "bundle")
     root = tmp_path / "releases"
     root.mkdir(mode=0o700)
@@ -99,8 +103,6 @@ def test_install_preserves_partial_failure_without_publishing_success(
     assert (target / "install.log").read_bytes() == diagnostic
     assert not (target / "installed.json").exists()
 
-    # The documented operator path inspects diagnostics, removes only this
-    # failed build, then retries the same verified release from scratch.
     shutil.rmtree(target)
     assert install.install_release(bundle, root) == target
     receipt = json.loads((target / "installed.json").read_text())

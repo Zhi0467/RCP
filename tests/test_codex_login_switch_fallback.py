@@ -45,6 +45,7 @@ def _rollout(home: Path, session: str) -> Path:
 async def test_refused_native_turn_records_host_transcript(
     accounts, tmp_path, monkeypatch, runtime, host, fork
 ):
+    """Pre-existing writer-shaped rows have no fallback metadata."""
     from rcp.providers.codex.profile import CodexProfile
 
     home = tmp_path / "machine-codex"
@@ -53,7 +54,6 @@ async def test_refused_native_turn_records_host_transcript(
     transcript = _rollout(home, session)
     key = LoginKey("codex", host, "")
     accounts.store.mark_provider_login_verified(key, member_id="member", detail="ok")
-    # Pre-existing writer-shaped rows have no fallback metadata.
     _task(accounts.store, "refused", key, member=None, session=session)
     execution = AgentTaskExecution("refused", accounts.store, AgentProcessControl())
     execution.runtime_id = runtime
@@ -61,10 +61,11 @@ async def test_refused_native_turn_records_host_transcript(
     real_run = subprocess.run
 
     def remote_run(command, **kwargs):
+        """Runs the shipped discovery script against a disposable host store, with no network or
+        remote placement.
+        """
         assert command[0] == "ssh" and command[-2] == host
         ssh_calls.append(command)
-        # Execute the actual shipped discovery script against a disposable host
-        # store. No network or live remote placement is involved.
         return real_run(shlex.split(command[-1]), **kwargs)
 
     if host:
@@ -131,6 +132,9 @@ async def test_refused_native_turn_records_host_transcript(
 @pytest.mark.parametrize("fork", [False, True])
 @pytest.mark.parametrize("stale_queued_snapshot", [False, True])
 def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued_snapshot):
+    """The old writer persisted a fork source in request_json, which retry must drop. A retry
+    rebound to another machine starts without the unreadable pointer.
+    """
     store = _store(tmp_path)
     session = str(uuid4())
     transcript = _rollout(tmp_path / "codex", session)
@@ -147,8 +151,6 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
         stage_root=str(stage),
     )
     if fork:
-        # The old writer persisted a fork source in request_json. Retry must drop
-        # it even though normal chat admission would carry it until a new session.
         with store.connection() as connection:
             old_request = dict(
                 previous.request,
@@ -174,8 +176,8 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     calls = []
 
     async def stream(_project, _kind, fresh, execution):
+        """A fresh session that fails must not cause another automatic attempt."""
         calls.append((fresh, execution))
-        # A fresh session that fails must not cause another automatic attempt.
         store.record_agent_task_receipt(
             execution.operation_id,
             REFUSAL,
@@ -203,7 +205,6 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     assert fresh_request.message == request.message
     assert fresh_request.run_truth_scope == request.run_truth_scope
     assert json.dumps(str(transcript)) in start_context(execution, "")
-    # A retry rebound to another machine starts without the unreadable pointer.
     assert start_context(execution, "other.invalid") == ""
     retry_refused_resume(tasks, previous)
     retry_refused_resume(tasks, child)
@@ -239,8 +240,8 @@ def test_remote_refusal_locates_transcript_in_login_shell(accounts, monkeypatch)
     calls = []
 
     def run(argv, **_kwargs):
+        """A login shell may print before the answer."""
         calls.append(argv)
-        # A login shell may print before the answer.
         return subprocess.CompletedProcess(argv, 0, 'motd\n"/home/u/.codex/sessions/r.jsonl"\n', "")
 
     monkeypatch.setattr("rcp.runs.codex_resume.subprocess.run", run)

@@ -654,7 +654,6 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     with pytest.raises(ValueError):
         type(bundle).model_validate(invalid)
 
-    # The import storage path retains a cancelled route without fabricating its episode.
     target = AppStore(tmp_path / "imported.sqlite3")
     project = store.project(project_id)
     assert project is not None
@@ -968,6 +967,9 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
 
 
 def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_path):
+    """Admission is intentionally not exercised by transfer, so the historical request
+    is inserted directly.
+    """
     store, project_id, attributions = _store(manifest, tmp_path)
     now = store.now()
     edit = {
@@ -994,7 +996,6 @@ def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_pat
             status_message="Finished",
         )
     )
-    # Insert historical request directly: admission is intentionally not exercised by transfer.
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'edit'",

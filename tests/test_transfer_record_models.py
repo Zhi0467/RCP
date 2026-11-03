@@ -514,7 +514,6 @@ def test_graph_archive_state_transfers_only_in_record_schema_three(tmp_path: Pat
     bundle = {"project_id": PROJECT_ID, "attributions": (), "tasks": (), "watchers": ()}
     with pytest.raises(ValidationError, match="schema version 3"):
         TransferRecordBundle(**bundle, schema_version=2, episodes=(archived,))
-    # Older payloads keep their canonical shape.
     plain = archived.model_copy(update={"graph_archived": False})
     older = TransferRecordBundle(**bundle, schema_version=2, episodes=(plain,))
     assert "graph_archived" not in older.model_dump(mode="json")["episodes"][0]
@@ -564,7 +563,6 @@ def test_branch_names_transfer_with_reservations_and_preserve_older_payloads(
         store._insert_transfer_episodes(connection, records, {})
         exported = store._transfer_episodes(connection, PROJECT_ID, ())
     assert exported == records.episodes
-    # Import backfills the episode's own branch record, which only version 6 carries.
     assert store.project_transfer_record_schema_version(PROJECT_ID) == 6
     backup_path = tmp_path / "backup.sqlite3"
     store.online_snapshot(backup_path)

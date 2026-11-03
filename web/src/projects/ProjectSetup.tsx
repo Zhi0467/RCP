@@ -228,7 +228,6 @@ function PersonalProjectSetup({
   // Agent defaults are chosen before any manifest exists, so there is no
   // per-machine readiness to read yet; ask the registry what this machine has.
   const [providers, setProviders] = useState<ProviderReadiness[]>([]);
-  const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"preflight" | "create" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const spaceMachines = useSpaceMachines();
@@ -363,7 +362,7 @@ function PersonalProjectSetup({
       if (!existingResearchAction || !preview.available_actions.includes(existingResearchAction)) {
         return;
       }
-    } else if (!preview.can_create || !confirmed) {
+    } else if (!preview.can_create) {
       return;
     }
     setBusy("create");
@@ -380,7 +379,6 @@ function PersonalProjectSetup({
       onCreated(created.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
-      setConfirmed(false);
       if (existingResearchAction === "archive_and_create") {
         setExistingResearchOpen(false);
         setPreview(null);
@@ -434,7 +432,6 @@ function PersonalProjectSetup({
     setStep((current) => current - 1);
     setPreview(null);
     setExistingResearchOpen(false);
-    setConfirmed(false);
     setError(null);
   };
 
@@ -459,7 +456,6 @@ function PersonalProjectSetup({
                 if (index < step) {
                   setStep(index);
                   setPreview(null);
-                  setConfirmed(false);
                   setError(null);
                 }
               }}
@@ -536,11 +532,11 @@ function PersonalProjectSetup({
           {step === 2 && (
             <div className="setup-section">
               <SectionHeading eyebrow="Agent roles" title="Choose the agent behind each surface." />
-              <label className="agent-auto-research-default">
-                <span>
-                  Default auto-research ceiling
-                  <small>Operational invocations per newly authorized episode</small>
-                </span>
+              <label
+                className="agent-auto-research-default"
+                title="Operational invocations per newly authorized episode"
+              >
+                <span>Default auto-research ceiling</span>
                 <input
                   type="number"
                   min={1}
@@ -701,7 +697,7 @@ function PersonalProjectSetup({
                 </summary>
                 <pre>{preview.manifest_preview}</pre>
               </details>
-              {preview.existing_research ? (
+              {preview.existing_research && (
                 <button
                   className="existing-research-review"
                   type="button"
@@ -709,20 +705,6 @@ function PersonalProjectSetup({
                 >
                   <ShieldCheck size={16} /> Review existing research choices
                 </button>
-              ) : (
-                <label
-                  className={
-                    preview.can_create ? "final-confirmation" : "final-confirmation disabled"
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    checked={confirmed}
-                    disabled={!preview.can_create}
-                    onChange={(event) => setConfirmed(event.target.checked)}
-                  />
-                  <span>{setupFinalConfirmation(preview)}</span>
-                </label>
               )}
             </div>
           )}
@@ -769,7 +751,8 @@ function PersonalProjectSetup({
               ) : (
                 <button
                   className="button primary"
-                  disabled={!preview.can_create || !confirmed || busy !== null}
+                  disabled={!preview.can_create || busy !== null}
+                  title={setupFinalConfirmation(preview)}
                   onClick={() => void create()}
                 >
                   {busy === "create" ? (

@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
+from rcp.storage import AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer
+from .helpers import fabricated_authorizer, start_experiment_episode
+
+EPISODE = "9a4c6e8b-3d5f-4b1a-8e2c-7f9b1d3a5c6e"
 
 
 def _store_with_episode(tmp_path: Path) -> tuple[AppStore, Path]:
@@ -24,53 +25,28 @@ def _store_with_episode(tmp_path: Path) -> tuple[AppStore, Path]:
             added_at=store.now(),
         )
     )
-    now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id="episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="experiment-node",
-            status="queued",
-            invocation_ceiling=2,
-            authorized_by=fabricated_authorizer("Episode owner"),
-            created_at=now,
-            updated_at=now,
-        )
-    )
     stage = tmp_path / "stage"
     stage.mkdir()
-    operational = AgentTaskRecord(
-        operation_id="operation",
-        project_id="project",
-        episode_id="episode",
-        kind="node_chat",
-        status="succeeded",
-        request={
-            "provider": "codex",
-            "model": "",
-            "reasoning": "medium",
-            "run_on": "laptop",
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Complete",
-        native_session_id="native-session",
-        stage_root=str(stage),
-        dispatch_authority=AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="scratch_patch",
-            scope=AgentDispatchScope(run_truth_scope=[], patch_kind="refresh"),
-        ),
+    start_experiment_episode(
+        store,
+        "operation",
+        EPISODE,
+        ceiling=2,
+        authorized_by=fabricated_authorizer("Episode owner"),
+        request_fields={"model": "", "reasoning": "medium"},
     )
-    store.allocate_episode_invocation("episode", operational)
+    store.mark_agent_task_running("operation")
+    store.checkpoint_agent_task(
+        "operation", native_session_id="native-session", stage_root=str(stage)
+    )
+    store.complete_agent_task("operation", applied_revision=None, result={})
     return store, stage
 
 
 def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) -> None:
     store, stage = _store_with_episode(tmp_path)
     spec = EpisodeWrapupSpec(
-        episode_id="episode",
+        episode_id=EPISODE,
         ending="exhausted",
         partial=True,
         continuation_operation_id="operation",
@@ -95,7 +71,7 @@ def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) ->
     receipt = json.loads(first.wrapup.receipt_json)
     assert receipt == {
         "ending": "exhausted",
-        "episode_id": "episode",
+        "episode_id": EPISODE,
         "mode": "experiment_loop",
         "observations": ["bounded evidence"],
         "partial": True,
@@ -106,6 +82,9 @@ def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) ->
 
 
 def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) -> None:
+    """With no session to resume no report was ever possible, so the episode terminalizes with its
+    own reason and no report error.
+    """
     store, _stage = _store_with_episode(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -116,7 +95,7 @@ def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) ->
     admission = begin_episode_report_wrapup(
         store,
         EpisodeWrapupSpec(
-            episode_id="episode",
+            episode_id=EPISODE,
             ending="failed",
             partial=True,
             continuation_operation_id="operation",
@@ -125,8 +104,6 @@ def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) ->
         ),
     )
 
-    # There is no session to resume, so no report was ever possible. The episode
-    # terminalizes with its own reason and carries no report error.
     assert admission.launchable is False
     assert admission.task is None
     assert admission.wrapup is None
@@ -136,8 +113,8 @@ def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) ->
     assert admission.episode.report_attempts_used == 0
     assert admission.episode.ending_diagnostic == "The operational turn failed."
     assert admission.episode.ended_at is not None
-    assert store.episode_wrapup("episode") is None
-    assert store.episode_report("episode") is None
+    assert store.episode_wrapup(EPISODE) is None
+    assert store.episode_report(EPISODE) is None
 
 
 def test_an_ending_with_no_session_settles_the_same_way_twice(tmp_path: Path) -> None:
@@ -148,7 +125,7 @@ def test_an_ending_with_no_session_settles_the_same_way_twice(tmp_path: Path) ->
             "WHERE operation_id = 'operation'"
         )
     spec = EpisodeWrapupSpec(
-        episode_id="episode",
+        episode_id=EPISODE,
         ending="failed",
         partial=True,
         continuation_operation_id="operation",
@@ -160,7 +137,7 @@ def test_an_ending_with_no_session_settles_the_same_way_twice(tmp_path: Path) ->
     second = begin_episode_report_wrapup(store, spec)
 
     assert first.episode == second.episode
-    assert store.episode_wrapup("episode") is None
+    assert store.episode_wrapup(EPISODE) is None
 
 
 def test_a_broken_binding_that_is_not_an_absence_still_reports_its_error(
@@ -176,7 +153,7 @@ def test_a_broken_binding_that_is_not_an_absence_still_reports_its_error(
     admission = begin_episode_report_wrapup(
         store,
         EpisodeWrapupSpec(
-            episode_id="episode",
+            episode_id=EPISODE,
             ending="completed",
             partial=False,
             continuation_operation_id="operation",
@@ -197,7 +174,7 @@ def test_stop_never_enters_report_wrapup(tmp_path: Path) -> None:
         begin_episode_report_wrapup(
             store,
             EpisodeWrapupSpec(
-                episode_id="episode",
+                episode_id=EPISODE,
                 ending="stopped",
                 partial=True,
                 continuation_operation_id="operation",

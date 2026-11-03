@@ -253,7 +253,6 @@ def _archive_fixture(
     _write_canonical_sources(service, records.tasks[0].operation_id)
     source = service.paper.store
     if saved_paper:
-        # Saved but not yet published when the source is captured.
         live = PaperLive(source, lambda _: service.paper.workspace)
 
         async def save():
@@ -594,7 +593,6 @@ def _archive_fixture(
     }
 
 
-# Local commits without an archived episode is covered by the retry test below.
 @pytest.mark.parametrize(
     ("include_episode_archive", "include_local_commits", "include_pending_branch"),
     [(False, False, False), (True, False, False), (True, True, False), (False, False, True)],
@@ -718,8 +716,6 @@ def test_target_import_cleans_only_imported_sources_if_completion_crashes(
     assert target.project(archive.project_id) is None
 
 
-# Repository install precedes every boundary but `database` in the same way, so
-# local commits run once before it (`database`) and once after it (`project_files`).
 @pytest.mark.parametrize(
     ("boundary", "include_local_commits"),
     [
@@ -744,6 +740,9 @@ def test_target_import_retries_the_same_archive_after_each_committed_boundary(
     boundary: str,
     include_local_commits: bool,
 ) -> None:
+    """Repository install precedes every boundary but `database`, so local commits run
+    once before it and once after it.
+    """
     fixture = _archive_fixture(
         manifest, tmp_path, monkeypatch, include_local_commits=include_local_commits
     )

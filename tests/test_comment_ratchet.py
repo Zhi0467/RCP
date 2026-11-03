@@ -37,9 +37,14 @@ def test_allowed_comments_are_not_counted() -> None:
         "z = 1  # pyright: ignore[reportGeneralTypeIssues]\n"
         "w = 2  # basedpyright: ignore\n"
         "# fmt: off\n"
+        "if x:  # pragma: no cover\n"
     )
 
     assert ratchet.count_comments(source) == 0
+
+
+def test_pragma_counts_unless_it_is_a_coverage_directive() -> None:
+    assert ratchet.count_comments("x = 1  # pragma: the reason this matters\n") == 1
 
 
 def test_shebang_is_allowed_only_on_the_first_line() -> None:

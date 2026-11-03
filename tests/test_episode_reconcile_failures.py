@@ -189,13 +189,15 @@ class _UnclassifiedDefect(Exception):
 
 @pytest.mark.parametrize("defect", [_UnclassifiedDefect("bug"), ValueError("bug"), KeyError("bug")])
 def test_unclassified_defect_retries_are_counted_per_process(tmp_path, monkeypatch, defect):
-    """Three tries per process, as the decision promises; a restart starts over."""
+    """Three tries per process, as the decision promises; a restart starts over.
+
+    A fresh reconciler is a restarted process, so the durable receipts it rereads from the prior
+    process do not count against it.
+    """
 
     store, signal, owner, launch = _ending(tmp_path, monkeypatch)
     monkeypatch.setattr(reconcile, "auto_research_wrapup_spec", Mock(side_effect=defect))
     for _ in range(2):
-        # A fresh reconciler is a restarted process: the durable receipts it
-        # rereads from the prior process do not count against this one.
         restarted = reconcile.EpisodeReconciler(store, Mock(), logger=logging.getLogger(__name__))
         for _ in range(_UNCLASSIFIED_RETRIES - 1):
             assert not restarted.reconcile_auto_research_wrapup(signal, source="poll")
@@ -309,6 +311,9 @@ def _experiment_ending(tmp_path, monkeypatch):
 
 
 def test_experiment_permanent_admission_defect_settles_once(tmp_path, monkeypatch):
+    """A completed ending settles to its own terminal status; the failed report is published through
+    the wrap-up state, never by reopening the episode.
+    """
     store, episode_id, owner, launch = _experiment_ending(tmp_path, monkeypatch)
     monkeypatch.setattr(
         reconcile,
@@ -317,8 +322,6 @@ def test_experiment_permanent_admission_defect_settles_once(tmp_path, monkeypatc
     )
     owner.reconcile_experiment_episode(episode_id, source="poll")
     settled = store.episode(episode_id)
-    # A completed ending settles to its own terminal status; the failed report is
-    # published through the wrap-up state, never by reopening the episode.
     assert settled.status == "completed"
     assert settled.ending == "completed"
     assert settled.wrapup_state == "failed"

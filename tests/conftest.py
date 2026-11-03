@@ -9,15 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from rcp.config import Manifest, load_manifest
+from rcp.config import Manifest
 
-from .helpers import isolate_host
+from .helpers import isolate_host, write_test_manifest
 from .shards import SHARD_ENV, parse_shard, shard_items
 
 
 def _skip_xcrun_git_trampoline() -> None:
-    # macOS /usr/bin/git is an xcrun trampoline costing ~10 ms a call; put the
-    # binary it execs just ahead of /usr/bin so git-heavy tests skip the hop.
+    """macOS /usr/bin/git is an xcrun trampoline costing about 10 ms a call, so git-
+    heavy tests run the binary it execs directly.
+    """
     if sys.platform != "darwin" or shutil.which("git") != "/usr/bin/git":
         return
     found = subprocess.run(["xcrun", "-f", "git"], capture_output=True, text=True, check=False)
@@ -62,55 +63,4 @@ def isolated_host(
 
 @pytest.fixture
 def manifest(tmp_path: Path) -> Manifest:
-    repo_a = tmp_path / "repo-a"
-    repo_b = tmp_path / "repo-b"
-    repo_a.mkdir()
-    repo_b.mkdir()
-    research = repo_a / ".research"
-    research.mkdir()
-    claude_root = tmp_path / "claude"
-    codex_root = tmp_path / "codex"
-    claude_root.mkdir()
-    codex_root.mkdir()
-    path = research / "manifest.toml"
-    path.write_text(
-        f'''name = "test-paper"
-
-[[machines]]
-alias = "laptop"
-host = ""
-
-[[repositories]]
-alias = "repo-a"
-machine = "laptop"
-path = "{repo_a}"
-
-[[repositories]]
-alias = "repo-b"
-machine = "laptop"
-path = "{repo_b}"
-
-[project]
-truth_scope = ["repo-a", "repo-b"]
-
-[state]
-repository = "repo-a"
-
-[agent]
-default_run_truth_scope = ["repo-a"]
-
-[sources]
-claude_roots = ["{claude_root}"]
-codex_roots = ["{codex_root}"]
-
-[execution]
-run_on = "laptop"
-
-[paper.coach]
-default_provider = "codex"
-default_model = ""
-default_reasoning = "medium"
-''',
-        encoding="utf-8",
-    )
-    return load_manifest(path)
+    return write_test_manifest(tmp_path)

@@ -95,6 +95,7 @@ def test_projects_and_handoff_envelopes():
 
 
 def test_space_record_reader_refuses_moved_or_project_records(tmp_path):
+    """A mislabeled or corrupt file is an error, never an empty history."""
     from rcp.service import canonical_space_chat_path, read_space_chat_transcript
 
     record = _record(chatScope="space", privateOwner="user_test", source="voice")
@@ -112,7 +113,6 @@ def test_space_record_reader_refuses_moved_or_project_records(tmp_path):
         )
     from rcp.service_connections import ConnectionError
 
-    # A mislabeled or corrupt file is an error, never an empty history.
     for text in (json.dumps({**record, "chatScope": "project"}), "{"):
         path.write_text(text + "\n")
         with pytest.raises(ConnectionError) as refused:

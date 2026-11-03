@@ -117,9 +117,9 @@ def test_answer_uses_origin_binding_despite_new_chat_settings(tmp_path, monkeypa
 
 @pytest.mark.parametrize("gone", [False, True])
 def test_answer_to_a_commented_turn_is_an_ordinary_turn(tmp_path, gone):
-    # A change the answer turn makes still publishes: every turn end versions
-    # its session's changed artifacts, so the answer needs no comment binding,
-    # and an artifact gone since the comment never refuses it.
+    """Every turn end versions its session's changed artifacts, so the answer needs no comment
+    binding and an artifact gone since the comment never refuses it.
+    """
     from rcp.service import ArtifactContextRequest
     from rcp.storage import Artifact
 
@@ -248,6 +248,10 @@ def _project_chat_question(manifest, tmp_path, *, mode="work"):
 def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer(
     manifest, tmp_path, monkeypatch
 ):
+    """A second settlement still retries admission without reopening publication. Publication is
+    simulated as succeeding before the SQLite marker committed, and the answer projected before
+    admission already names its follow-up's turn.
+    """
     from types import SimpleNamespace
 
     from rcp.runs.chat import (
@@ -263,7 +267,6 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     def unexpected_publication(*args, **kwargs):
         raise AssertionError("already projected answer opened a workspace transaction")
 
-    # A second settlement still retries admission, without reopening publication.
     with monkeypatch.context() as patch:
         patch.setattr(service.history.workspace, "transaction", unexpected_publication)
         with store.connection() as connection:
@@ -277,7 +280,6 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         project_chat_question_answer(service, AppStore(store.path), question)
     store.complete_agent_task("origin", applied_revision=None, result={})
 
-    # Simulate publication succeeding before the SQLite marker was committed.
     with store.connection() as connection:
         connection.execute("UPDATE questions SET answer_projected_revision=0")
     with monkeypatch.context() as patch:
@@ -285,8 +287,6 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         project_chat_question_answer(service, AppStore(store.path), question)
     assert store.get_question(question.question_id).answer_projected_revision == 1
     followup = store.admit_chat_question_followup(question.question_id)
-    # Projected before admission, the answer already names its follow-up's turn,
-    # so the queued follow-up is not shown a second time from its request.
     prompt, answer = service.chat_transcript(chat_id).messages
     assert prompt.operation_id == "origin"
     assert answer.operation_id == followup.operation_id
@@ -312,6 +312,9 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
 
 
 def test_answer_admission_continues_the_origin_session(manifest, tmp_path, monkeypatch):
+    """A first-turn origin request has no session, yet login selection must still see the bound
+    session the follow-up continues.
+    """
     from rcp.background import BackgroundAgentTasks
     from rcp.runs.chat import reconcile_chat_question_answers
 
@@ -325,8 +328,6 @@ def test_answer_admission_continues_the_origin_session(manifest, tmp_path, monke
     )
     fake_launch_admitted(monkeypatch, tasks)
     reconcile_chat_question_answers(AppStore(store.path), tasks, lambda _: service)
-    # A first-turn origin request has no session; login selection must still
-    # see the bound session the follow-up continues.
     assert store.agent_task("origin").request.get("session_id") is None
     assert [request.session_id for request in admitted] == ["origin-session"]
 
@@ -380,10 +381,11 @@ def test_approval_answer_keeps_question_identity_through_followup(
 
 @pytest.mark.parametrize("question_id", [None, "older-question"])
 def test_old_transcript_records_preserve_optional_question_identity(question_id):
+    """The old writer recorded questionId on projected answers and omitted it on ordinary messages;
+    both keep their original meaning.
+    """
     from rcp.service import _chat_message_from_record, _StoredChatRecord
 
-    # The old writer already recorded questionId on projected answers; ordinary
-    # messages omitted it. Both records must retain their original meaning.
     record = _StoredChatRecord.model_validate(
         {
             "sessionId": "chat",
@@ -477,10 +479,10 @@ def test_task_list_batches_question_bindings(tmp_path, monkeypatch, recovery):
 
 
 def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
+    """A continuation may claim an Experiment answer under its own id, so none is guessed."""
     from rcp.runs.chat import project_chat_question_answer
 
     service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
-    # A continuation may claim an Experiment answer under its own id, so none is guessed.
     origin = question.origin.model_copy(update={"owner_kind": "episode"})
     project_chat_question_answer(service, store, question.model_copy(update={"origin": origin}))
     (answer,) = service.chat_transcript(chat_id).messages

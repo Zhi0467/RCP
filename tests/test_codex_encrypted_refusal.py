@@ -104,10 +104,11 @@ def test_app_server_preserves_encrypted_refusal(
 
 
 def _refusal_error(string_error: bool) -> dict[str, object]:
+    """codex 0.165.0 puts the upstream error JSON inside the message string in both exec-json and
+    app-server, whose codexErrorInfo is just "other".
+    """
     if not string_error:
         return {"message": "Transcript rejected", "data": {"code": "invalid_encrypted_content"}}
-    # codex 0.165.0 puts the upstream error JSON inside the message string in
-    # both exec-json and app-server (whose codexErrorInfo is just "other").
     upstream = {
         "type": "error",
         "error": {

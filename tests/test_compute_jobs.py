@@ -501,6 +501,7 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
 
 
 def test_jobs_root_refuses_stage_retention(tmp_path, monkeypatch):
+    """Through SSH the refusal reaches the probe diagnostic as a message, not a traceback."""
     import shlex
     import sys
 
@@ -515,7 +516,6 @@ def test_jobs_root_refuses_stage_retention(tmp_path, monkeypatch):
             operate("resolve", str(root), "")
     assert operate("resolve", "~/.rcp/jobs", "") == str(tmp_path / ".rcp/jobs")
 
-    # Through SSH the refusal reaches the probe diagnostic as a message, not a traceback.
     monkeypatch.setattr(
         "rcp.transport.ssh.ssh_arguments",
         lambda _host, command: [sys.executable, *shlex.split(command)[1:]],
@@ -564,12 +564,12 @@ def test_reconcile_row_failure_does_not_skip_other_jobs(
 
 @pytest.mark.parametrize(
     "error",
-    # A local OSError is row-specific; see test_local_backend_oserror_is_not_a_host_outage.
     [ComputeTransportError("connection dropped"), subprocess.TimeoutExpired("backend status", 10)],
 )
 def test_reconcile_contacts_unreachable_host_once_per_pass(
     launch_environment, tmp_path, manifest, monkeypatch, error
 ):
+    """A local OSError is row-specific; see test_local_backend_oserror_is_not_a_host_outage."""
     store, backend, launch = launch_environment
     records = [launch() for _ in range(4)]
     calls = []

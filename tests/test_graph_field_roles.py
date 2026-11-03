@@ -71,7 +71,9 @@ def test_every_reachable_graph_field_has_one_explicit_semantic_role() -> None:
 
 
 def test_metadata_preserves_existing_owner_policies_and_semantic_exclusions() -> None:
-    # These are the old literals, retained here once as the migration contract.
+    """These old literals are retained once as the migration contract. Derived ownership does not
+    remove semantically meaningful edge layers.
+    """
     assert {
         "related_node_ids",
         "related_edge_ids",
@@ -135,13 +137,13 @@ def test_metadata_preserves_existing_owner_policies_and_semantic_exclusions() ->
     assert graph_field(Proposal.model_fields["resolved_rev"]) == GraphField(
         "engine", proposal_owner="resolution"
     )
-    # Derived ownership does not remove semantically meaningful edge layers.
     assert graph_field(Edge.model_fields["layer"]).role == "content"
 
 
 def test_old_writer_graph_roundtrip_retains_values_without_field_metadata() -> None:
-    # Pre-redesign records explicitly retain their dependency rule and the retired
-    # Evidence label. New annotation metadata is never a persisted field.
+    """Pre-redesign records retain their dependency rule and the retired Evidence label; annotation
+    metadata is never persisted.
+    """
     old_document = {
         "revision": 7,
         "nodes": {

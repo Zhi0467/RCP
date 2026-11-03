@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 def main() -> None:
+    """Only the execed child keeps this open file description locked."""
     mode, directory, *arguments = sys.argv[1:]
     root = Path(directory)
     if mode == "parent":
@@ -31,7 +32,6 @@ def main() -> None:
                 ],
                 pass_fds=(deployment_lock.fileno(),),
             )
-        # Only the execed child now keeps this open file description locked.
         (root / "parent-closed-lock").touch()
         with child:
             child.wait(timeout=30)

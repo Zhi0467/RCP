@@ -6,8 +6,10 @@ from rcp.storage import AppStore
 
 
 def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
-    """Reconstruct older schema eras without retaining the later owner triggers."""
-    # The ledger write first: a read-only store must refuse here, before DDL.
+    """Reconstruct older schema eras without retaining the later owner triggers.
+
+    The ledger write comes first so a read-only store refuses before any DDL.
+    """
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=49")
     for table in (
         "agent_threads",
@@ -107,7 +109,10 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
 def downgrade_artifacts(
     connection: sqlite3.Connection, *, report_html: dict[str, str] | None = None
 ) -> None:
-    """Restore pre-artifact storage before a test replays older migrations."""
+    """Restore pre-artifact storage before a test replays older migrations.
+
+    Migration 46 rebuilt the provisioning table; this restores its pre-46 shape.
+    """
     downgrade_resource_watermarks(connection)
     if not any(
         row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
@@ -155,7 +160,6 @@ def downgrade_artifacts(
     for row in AppStore._legacy_storage_schema_cache:
         if row[0] == "table" and row[1] == "result_views":
             connection.execute(row[3])
-    # Migration 46 rebuilt the provisioning table; restore its pre-46 shape.
     connection.execute("DROP TABLE project_provisioning_requests")
     legacy = sorted(
         (

@@ -388,7 +388,12 @@ Existing databases run ordered migrations and validation.
 `queued` can become `running`; `queued` or `running` can become `pausing`.
 Any active state can become `paused`, `succeeded`, `failed` or `interrupted`.
 Resume/Retry admit child attempts under chain rules, never rewrite parent status.
-Each change checks and updates in one write transaction. A refused single-task
+Restore and project transfer alone also retire `paused` rows to `interrupted`,
+outside the worker gate: the copy has no worker or session left to resume, while
+the gate refuses that move so a late worker failure never erases a member's Pause.
+A worker observes `pausing`. Pause settles a queued turn no worker owns at once,
+since its later claim refuses a pausing row; member removal and project deletion
+settle any unowned active turn the same way. Each change checks and updates in one write transaction. A refused single-task
 transition preserves status, receipts, Patch, notices and cleanup, adding one
 truthful warning. Human pause instead retains its explicit error without a refusal
 event; bulk restart ignores terminal rows. Missing ids raise `KeyError` without

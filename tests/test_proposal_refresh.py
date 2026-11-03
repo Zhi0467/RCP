@@ -7,7 +7,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import ProviderReadiness
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import GatedCard, Patch, Proposal
+from rcp.core.models import GatedCard, Proposal
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.providers.base import ModelChoice
 from rcp.runs.proposal_refresh import proposal_refresh_key
@@ -18,99 +18,19 @@ from tests.helpers import (
     signed_in_client,
     wait_for_task,
 )
+from tests.lifecycles.proposals import EV, HYP, PROPOSAL, append_agent_patch, file_proposal
 from tests.test_api_tasks import _event_frame
-
-HYP = "hyp/replanning-restores-plasticity"
-EV = "ev/replan-ablation"
-PROPOSAL = "prop/activate-replanning"
-
-
-def _agent_patch(service, ops):
-    append_fixture_patch(
-        service,
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Agent change.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=ops,
-        ),
-    )
 
 
 @pytest.fixture
 def filed(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    _agent_patch(
-        service,
-        [
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": EV,
-                        "type": "evidence",
-                        "title": "Replanning ablation",
-                        "observation": "Replanning recovers most plasticity.",
-                        "origin": "analytic",
-                    }
-                ],
-            },
-            {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "id": "edge/replan",
-                        "source": EV,
-                        "target": HYP,
-                        "relation": "supports",
-                        "assessment": {"relevance": "direct", "weight": "moderate"},
-                    }
-                ],
-            },
-        ],
-    )
-    _agent_patch(
-        service,
-        [
-            {
-                "op": "create_proposals",
-                "proposals": [
-                    {
-                        "id": PROPOSAL,
-                        "title": "Activate the replanning hypothesis",
-                        "card": {
-                            "situation_cold": "s",
-                            "why_human_now": "w",
-                            "consequences": "c",
-                            "decision_needed": "d",
-                        },
-                        "ops": [
-                            {
-                                "op": "update_nodes",
-                                "intent": "status_change",
-                                "nodes": [
-                                    {
-                                        "id": HYP,
-                                        "changes": {"status": "active"},
-                                        "cause": {"kind": "evidence_edge", "ref_id": "edge/replan"},
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    )
+    file_proposal(app.state.service)
     return app
 
 
 def _reword_evidence(service):
-    _agent_patch(
+    append_agent_patch(
         service,
         [{"op": "update_nodes", "nodes": [{"id": EV, "changes": {"observation": "Narrower."}}]}],
     )
@@ -128,7 +48,6 @@ def test_rewording_cause_evidence_stales_rule_two_and_newer_proposals(filed):
     assert project_graph_attention(state).stale_proposal_ids == [PROPOSAL]
     merge_review = proposal.model_copy(update={"dependency_rule": 3})
     assert proposal_is_stale(state, merge_review)
-    # Proposals filed before rule 2 stay judged as replay judged them.
     legacy = Proposal.model_validate(proposal.model_dump(mode="json") | {"dependency_rule": 1})
     assert not proposal_is_stale(state, legacy)
 
@@ -143,7 +62,6 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
         yield _event_frame(AgentEvent(event="done"))
 
     filed.state.background_tasks.stream = stream
-    # The light chat takes the lowest effort the model's probed catalog lists.
     catalog = ProviderReadiness(
         provider=service.resolve_agent_profile("node_chat").provider,
         installed=True,
@@ -158,7 +76,6 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert fresh.status_code == 409
     assert fresh.json()["detail"]["code"] == "proposal_not_stale"
 
-    # No client request can claim the refresh key first.
     project_id = filed.state.default_project_id
     preclaim = client.post(
         f"/api/projects/{project_id}/tasks/node_chat",
@@ -181,8 +98,7 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert PROPOSAL in task.request["message"] and EV in task.request["message"]
     assert launches == ["node_chat"]
 
-    # A response lost after the agent withdrew the Proposal still finds its chat.
-    _agent_patch(
+    append_agent_patch(
         service,
         [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "Refiled."}]}],
     )
@@ -193,7 +109,7 @@ def test_cause_evidence_counts_when_its_edge_follows_the_proposal(manifest, tmp_
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    _agent_patch(
+    append_agent_patch(
         service,
         [
             {

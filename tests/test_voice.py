@@ -79,7 +79,6 @@ def test_session_contract_does_not_allocate_a_record(voice_setup, monkeypatch):
         assert delegation["responses"]["model"] == "chosen-model"
         assert delegation["responses"]["parallel_tool_calls"] is False
         assert delegation["responses"]["tools"] == [{**tool, "strict": False} for tool in TOOLS]
-        # Both models get the fixed instructions, then the page's playbook.
         for instructions in (
             payload["session"]["instructions"],
             delegation["responses"]["instructions"],
@@ -198,7 +197,6 @@ def test_purpose_update_checks_only_additions_and_preserves_key(voice_setup, mon
     for purposes in (["transcription", "voice"], ["transcription", "voice"], ["voice"]):
         assert client.put(path, json={"purposes": purposes}).status_code == 200
         assert private.credentials(item["id"])[0]["formats"] == item["formats"]
-    # Adding voice checks the live model and the thinking model the new payer must reach.
     assert probes == ["voice", "voice"]
     assert private.credentials(old["id"])[0]["purposes"] == []
     assert client.put(path, json={"purposes": ["voice", "transcription"]}).status_code == 200
@@ -247,13 +245,11 @@ def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     }
     assert client.get(path).json() == {**models, "confirm": "tap"}
     assert client.put(path, json={"confirm": "none"}).json() == {**models, "confirm": "none"}
-    # Each field saves alone and keeps the other; the idle limit stays in its range.
     saved = client.put(path, json={"idle_minutes": limits.VOICE_IDLE_MINUTES_MAX}).json()
     assert saved == {**models, "confirm": "none", "idle_minutes": limits.VOICE_IDLE_MINUTES_MAX}
     for bad in ({}, {"idle_minutes": limits.VOICE_IDLE_MINUTES_MAX + 1}, {"idle_minutes": 0}):
         assert client.put(path, json=bad).status_code == 422
     models["idle_minutes"] = limits.VOICE_IDLE_MINUTES_MAX
-    # Voice models change only through the checked connection update.
     unchecked = client.put(path, json={"confirm": "tap", "delegation_model": "unchecked"})
     assert unchecked.status_code == 422
     item = connection()
@@ -344,7 +340,6 @@ def test_model_lists_filter_by_purpose_and_hide_retiring_ids(voice_setup, monkey
     mock_transport(monkeypatch, handler)
     openai = {"kind": "openai_compatible", "preset": "openai", "key": KEY}
     response = client.post("/api/service-connections/models", json=openai)
-    # Streaming-only, dated, and pre-delegation ids drop out; newest models come first.
     assert response.json() == {
         "transcription": ["gpt-transcribe", "whisper-1"],
         "delegation": ["gpt-6-sol", "gpt-6-luna"],
@@ -382,7 +377,6 @@ def test_model_list_failure_is_reported_without_the_key(voice_setup, monkeypatch
 
 def test_edit_rechecks_only_changed_models_and_saves_delegation(voice_setup, monkeypatch):
     _, private, client = voice_setup
-    # A dictation-only OpenAI connection still carries the account's thinking model.
     item = connection()
     private.save(item, KEY)
     probes = []
@@ -438,7 +432,6 @@ def test_thinking_model_is_checked_with_the_voice_key_and_refuses_a_concurrent_c
     assert seen == [f"Bearer {KEY}"]
     assert private.credentials(payer["id"])[0]["purposes"] == ["voice"]
 
-    # Another request changes the model, then moves voice, while each check runs.
     race.append(lambda: private.voice_settings(VoiceSettings(delegation_model="gpt-6-luna")))
     response = client.put(path, json={**body, "delegation_model": "gpt-6-nova"})
     assert response.status_code == 409, response.text
@@ -455,7 +448,6 @@ def test_model_only_save_keeps_uses_changed_elsewhere(voice_setup, monkeypatch):
     _, private, client = voice_setup
     stale = enable(private)
     mock_transport(monkeypatch, lambda request: reply({"id": request.url.path.rsplit("/", 1)[1]}))
-    # Another tab moves voice to a second connection while this card is open.
     moved = connection()
     private.save(moved, "moved-test-secret-never-real")
     current = private.update_connection(moved, {**moved, "purposes": ["voice"]})
@@ -485,8 +477,8 @@ def test_edited_key_in_a_voice_model_is_refused_before_the_payer_checks_it(
 
 
 def test_removed_record_routes_and_resume_are_refused(voice_setup):
+    """The built web app's GET fallback turns some of these 404s into 405s."""
     _, _, client = voice_setup
-    # The built web app's GET fallback turns some of these 404s into 405s.
     for method, path in [
         ("get", "/api/voice/sessions"),
         ("put", "/api/voice/sessions/old"),

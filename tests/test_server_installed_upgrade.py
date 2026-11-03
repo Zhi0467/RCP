@@ -21,9 +21,9 @@ from tests import server_installed_upgrade_hook as hook
 def test_permission_probe_observes_creation_modes_without_changing_policy(
     tmp_path, monkeypatch, mask
 ):
+    """The runner is Linux-only; this still exercises real mkdir and umask locally."""
     monkeypatch.setattr(hook, "permission_state", lambda: {"umask": f"{mask:04o}"})
     if sys.platform != "linux":
-        # The runner is Linux-only; still exercise real mkdir/umask locally.
         monkeypatch.setattr(os, "listxattr", lambda _path: [], raising=False)
     previous = os.umask(mask)
     try:
@@ -40,9 +40,9 @@ def test_permission_probe_observes_creation_modes_without_changing_policy(
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux default ACL inheritance")
 def test_permission_probe_distinguishes_default_acl_from_process_mask(tmp_path, monkeypatch):
+    """The xattr is a Linux POSIX ACL: version 2, user::rwx, group::rwx, other::r-x."""
     import struct
 
-    # Linux POSIX ACL xattr: version 2, user::rwx, group::rwx, other::r-x.
     acl = struct.pack("<I", 2) + b"".join(
         struct.pack("<HHI", tag, mode, 0xFFFFFFFF) for tag, mode in ((1, 7), (4, 7), (32, 5))
     )
@@ -82,9 +82,9 @@ def test_installed_drive_refuses_without_disposable_root_opt_in(monkeypatch):
 
 
 def test_installed_fault_observes_real_snapshot_and_exact_restore(tmp_path, monkeypatch):
+    """Regression: the oracle cannot silently accept the reported empty-patches bug."""
     monkeypatch.setattr(hook, "ROOT", tmp_path)
     monkeypatch.setattr(sys, "path", sys.path.copy())
-    # Restore instrumentation after the test; these are the only production hooks.
     monkeypatch.setattr(driver, "followed_release", driver.followed_release)
     monkeypatch.setattr(driver, "prepare_release", driver.prepare_release)
     monkeypatch.setattr(Coordinator, "__init__", Coordinator.__init__)
@@ -130,7 +130,6 @@ def test_installed_fault_observes_real_snapshot_and_exact_restore(tmp_path, monk
     assert (data / "run-stage/real-tools/repo/result.txt").read_text() == "original"
     assert (data / "providers/claude/qualification/setup-token").read_text() == "synthetic"
     assert (research / "patches").is_dir()
-    # The oracle cannot silently accept the reported empty-patches regression.
     (research / "patches").rmdir()
     with pytest.raises(AssertionError, match="rollback changed"):
         coordinator.boundary("rollback_roots_complete")
@@ -199,6 +198,5 @@ def test_added_codex_home_upgrade_preserves_old_writer_store(tmp_path, monkeypat
     assert (home / "sessions").is_dir() and not (home / "sessions").is_symlink()
     assert (home / "state_5.sqlite").is_file()
     check_codex_home(tmp_path, fixture, migrated=True)
-    # Re-running an installed check must preserve both the rollout and retained state.
     check_codex_home(tmp_path, fixture, migrated=True)
     check_codex_home(tmp_path, fixture, migrated=False)

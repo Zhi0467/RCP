@@ -181,9 +181,10 @@ class TestArchiveResearch:
         assert "changed since preflight" in result.stderr
 
     def test_matching_fingerprint_archives(self, tmp_path: Path) -> None:
+        """The fingerprint comes from the shipped module, as the read-only preflight
+        computes it.
+        """
         root = self._research(tmp_path)
-        # Compute the fingerprint with the shipped module itself, the same way the
-        # read-only preflight does before offering the archive.
         from rcp.transport.remote_archive_research import retained_history_fingerprint
 
         fingerprint = retained_history_fingerprint(root)

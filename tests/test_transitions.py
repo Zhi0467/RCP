@@ -904,10 +904,11 @@ def test_retiring_evidence_records_its_lifecycle_event() -> None:
 
 
 def test_earlier_rulesets_replay_with_status_only_lifecycle_events() -> None:
+    """A trace from an earlier ruleset tracked only ``status`` and carries no Evidence
+    ``validity`` event, yet must replay.
+    """
     state, patch = _evidence_retirement_transition()
     assert patch.transition is not None
-    # A trace recorded under an earlier ruleset tracked only ``status``, so it
-    # carries no event for Evidence ``validity`` and must still replay.
     ruleset_tag = "rcp.lifecycle.v2"
     source_patches = [
         _source_patch_for_group(patch, group) for group in patch.transition.initiating_groups
@@ -989,6 +990,9 @@ def test_rule_firing_guard_rejects_before_any_candidate_commits() -> None:
 
 
 def test_trigger_manifest_is_backend_versioned_and_conservative() -> None:
+    """A Decision's options decide how its choice is presented, so an options edit must
+    reach the backend.
+    """
     manifest = transition_trigger_manifest()
 
     assert manifest.ruleset_tag == TRANSITION_RULESET_TAG
@@ -999,14 +1003,10 @@ def test_trigger_manifest_is_backend_versioned_and_conservative() -> None:
         "create_proposals",
         "resolve_proposals",
     }
-    # A Decision's options decide how its recorded choice is presented, so a
-    # staged options edit has to reach the backend rather than being applied to
-    # the previewed graph alone.
     node_update = next(
         trigger for trigger in manifest.triggers if trigger.operation == "update_nodes"
     )
     assert {"status", "selected_option", "options"} <= set(node_update.node_fields)
-    # Retiring Evidence keeps its edges, so the browser must route it too.
     assert {"evidence"} <= set(node_update.node_types)
     assert "validity" in node_update.node_fields
     assert {"supersede_nodes", "merge_nodes"} <= {

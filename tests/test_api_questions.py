@@ -100,6 +100,7 @@ def test_store_validates_answer(questions_api):
 
 
 def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
+    """A failed continuation leaves the card open to retry, and only Stop withdraws cards."""
     from rcp.api import questions
 
     app, client, store, project_id = questions_api
@@ -129,7 +130,6 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
             f"{base}/questions/{question.question_id}/answer", json={"answer": "a", **body}
         )
 
-    # Every card stays open; an earlier answer is held without adding turns.
     assert card(held)["can_answer"] and card(held)["answer_continues"] is None
     assert answer(held).status_code == 200 and continued == []
     assert card(last)["answer_continues"] == "turns"
@@ -137,7 +137,6 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     assert refused.status_code == 409
     assert refused.json()["detail"]["code"] == "question_continuation_required"
     request_id = "6f0c4f5e-2b7a-4bd4-9b0a-2f9f1d2c3e4a"
-    # A continuation that fails to start leaves the card open to try again.
     failures.append("provider signed out")
     assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 409
     assert card(last)["can_answer"] and card(last)["answer_continues"] == "turns"
@@ -145,7 +144,6 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     [(source, kwargs)] = continued
     assert source.episode_id == "first"
     assert (kwargs["invocation_ceiling"], kwargs["request_id"]) == (2, request_id)
-    # While that continuation ends and after it has, a retry replays the answer.
     store.create_episode(
         _episode(store, "second", project_id=project_id).model_copy(
             update={"continues_episode_id": "first"}
@@ -157,7 +155,6 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     assert answer(last, invocation_ceiling=2, request_id=request_id).status_code == 200
     assert len(continued) == 1
 
-    # A lone card answered while its episode ran replays after the episode ends.
     store.create_episode(_episode(store, "solo", project_id=project_id))
     solo = _question(store, project_id, owner_kind="episode", owner_id="solo", key="solo")
     assert answer(solo).status_code == 200
@@ -165,7 +162,6 @@ def test_ended_episode_last_card_answers_with_turns(questions_api, monkeypatch):
     assert answer(solo).status_code == 200
     assert len(continued) == 1
 
-    # Stop alone withdraws cards; a still-ending episode's last card waits.
     store.create_episode(_episode(store, "stopped", project_id=project_id))
     stopped = _question(store, project_id, owner_kind="episode", owner_id="stopped", key="s")
     store.mark_episode_stop_skipped("stopped")
@@ -253,6 +249,7 @@ def test_delivery_failure_retains_answer_and_exact_retry_delivers(questions_api,
 
 
 def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):
+    """Reopening loads the durable alias into the catalog's request-path snapshot."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
@@ -262,7 +259,6 @@ def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):
             "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
             ("legacy-project-url", project_id),
         )
-    # Reopen to load the durable alias into the catalog's request-path snapshot.
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     app.state.reconcile_question_answers = Mock()
     base = "/api/projects/legacy-project-url"

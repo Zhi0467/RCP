@@ -175,7 +175,6 @@ def test_space_composer_removes_a_file_before_sending_the_same_batch(space):
     assert task is not None
     assert len(task.request["attachments"]) == 1
     saved = task.request["attachments"][0]
-    # Admission renews retention; the staged file's other metadata is unchanged.
     assert saved == {**uploaded["attachment"], "expires_at": saved["expires_at"]}
     assert task.request["attachment_batch_id"] == first["attachment_set_id"]
 

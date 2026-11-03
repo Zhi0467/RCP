@@ -284,6 +284,9 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, fork) -
 
 
 def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_path) -> None:
+    """A deferral blocks Finish, so its reason travels out for the caller to report rather than
+    dying in the except branch.
+    """
     store, episode, root = _setup(tmp_path)
     key = "transient-state-unavailable"
     child_id = str(
@@ -336,8 +339,6 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
     command = store.agent_command("transient-spawn-command")
     snapshot = store.auto_research_command_file("transient-spawn-command")
     assert first.deferred == 1 and first.cancelled == 0 and first.reflected == 0
-    # A deferral blocks Finish, so it must never be silent: the reason travels
-    # out for the caller to report rather than dying inside the except branch.
     assert [(item.admission_id, item.child_kind, item.reason) for item in first.deferrals] == [
         (
             child_id,

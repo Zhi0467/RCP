@@ -78,12 +78,13 @@ def test_dispatched_child_reads_and_updates_its_parent_branch_with_child_provena
     manifest: Manifest,
     tmp_path: Path,
 ) -> None:
+    """Uses the orchestrator's attributable branch Apply to create an Experiment deliberately absent
+    from main.
+    """
     main = _service(manifest, tmp_path)
     branch, store, parent, root, _worker = _setup_branch_auto_research(main, tmp_path / "store")
     main_head = main.history.head_ref()
     main_graph = (manifest.research_dir / "graph.json").read_bytes()
-    # Exercise the same attributable branch Apply used by the orchestrator to
-    # create an Experiment that is deliberately absent from main.
     created, failure = _apply_work_patch(
         branch,
         None,

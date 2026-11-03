@@ -21,7 +21,6 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
         group_reads.append(args)
         return group_context.build_group_context(*args, **kwargs)
 
-    # A chat comment is an ordinary turn and keeps the project group's reads.
     monkeypatch.setattr(work, "build_group_context", recorded)
     monkeypatch.setattr(work_staging, "build_group_context", recorded)
     app, request, previous, source, _ = _setup(manifest, tmp_path)
@@ -39,7 +38,6 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
         }
     )
     execution = _chat_task_execution(app, request, "work-edit")
-    # A recovered chat can run on another machine than the artifact's origin.
     launcher = ScriptedLauncher(
         [{"turns/origin/artifacts/chart.html": "<p>updated</p>"}], message="Updated the chart."
     )
@@ -113,12 +111,10 @@ async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_vers
         artifact.artifact_id
     ]
     assert store.read_artifact_bytes(artifact.artifact_id) == b"<p>v2</p>"
-    # The turn that published the version serves it from its own card.
     _, data = _read_agent_artifact_bytes(
         store, app.state.default_project_id, "second", artifact.artifact_id, "download"
     )
     assert data == b"<p>v2</p>"
-    # That card stays commentable, and cites the tracked file in the first turn's folder.
     from rcp.api.tasks import _agent_artifact_response
     from rcp.runs.artifact_edit_admission import _checked_artifact
     from rcp.service import ArtifactContextRequest
@@ -131,7 +127,6 @@ async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_vers
     )
     card = _agent_artifact_response(store, store.agent_task("second"), artifact)
     assert card.turn_folder == "first"
-    # After Undo, the next turn edits what the human sees; an unchanged turn records nothing.
     store.undo_artifact(artifact.artifact_id)
     launcher = ScriptedLauncher([{}], message="Nothing to change.")
     await _turn(app, launcher, later.model_copy(update={"mode": "discuss"}), "third", tmp_path)

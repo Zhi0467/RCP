@@ -702,7 +702,6 @@ def test_only_a_human_pause_may_rename_its_planned_step() -> None:
         exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
     )
 
-    # Nothing else renames a step, and a pause still may not become another one.
     with pytest.raises(ValidationError, match="cannot change planned title"):
         ServerCommandExecution(
             events=(
@@ -1365,9 +1364,7 @@ def test_outer_wizard_skips_a_resume_only_when_the_shell_matches_too() -> None:
         )
         return ran
 
-    # Same argv, same shell: one command, run once.
     assert drive(OPERATOR_SHELL) == [resume]
-    # Same argv, a different shell: two commands, both run.
     assert drive(ExecutionContext(shell_account="rcp")) == [resume, resume]
 
 
@@ -1544,6 +1541,9 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
     `model_copy(update={<literal string keys>})`. A builder that spreads its
     update (`dict(...)`, `{**base, ...}`) passes unread, so a new construction
     style needs this walk taught about it rather than trusted.
+
+    Anchored to this file, since a relative glob yields nothing from elsewhere and a
+    guard that scans no files always passes.
     """
 
     import ast
@@ -1551,9 +1551,6 @@ def test_every_built_stop_states_the_shell_its_resume_command_needs() -> None:
     def carries(keys: set[str]) -> bool:
         return "resume_argv" in keys and "resume_execution" not in keys
 
-    # Anchored to this file, not the process working directory: a relative glob
-    # yields nothing when pytest runs from elsewhere, and a guard that scans no
-    # files passes every time.
     sources = Path(__file__).resolve().parents[1] / "src" / "rcp"
     offenders: list[str] = []
     scanned = 0
@@ -1618,8 +1615,6 @@ def test_the_wizard_says_where_a_command_runs_and_stays_quiet_when_unsaid() -> N
         )
     )
 
-    # A record written before the contract carried an execution context is not
-    # given one by the renderer.
     legacy = render(
         paused.step.model_copy(
             update={

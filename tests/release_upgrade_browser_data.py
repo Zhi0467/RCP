@@ -141,7 +141,6 @@ def main(root: Path) -> None:
             task = store.agent_task(artifact["operation_id"])
             assert task is not None
             chat_id = task.request["chat_id"]
-            # Kept, so the project's saved artifacts list it.
             kept = store.keep_artifact(artifact["artifact_id"])
             store.mark_agent_artifact_kept(
                 artifact["operation_id"], artifact["artifact_id"], kept_at=kept.kept_at

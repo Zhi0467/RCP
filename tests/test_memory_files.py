@@ -15,7 +15,7 @@ from rcp.transport.state import StateUnavailable
 
 
 def old_lesson(store, lesson_id, *, human=False, updated="2026-01-01", text="Use the cache."):
-    # The old writer's persisted schema, independent of the removed command implementation.
+    """The old writer's persisted schema, independent of the removed command implementation."""
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO operational_lessons VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -243,6 +243,9 @@ def test_remote_io_does_not_lock_unrelated_database_writers(tmp_path, monkeypatc
 @pytest.mark.parametrize("entry", ["shared", "shared/notes", "shared/MEMORY.md"])
 @pytest.mark.parametrize("shape", ["symlink", "nonregular"])
 def test_ordinary_launch_reports_unusable_memory(tmp_path, entry, shape):
+    """A redirected folder or index is never named, so no launch grants a write root a file editor
+    could follow out of memory.
+    """
     import shutil
     from types import SimpleNamespace
 
@@ -280,8 +283,6 @@ def test_ordinary_launch_reports_unusable_memory(tmp_path, entry, shape):
     )
     pointer = project_memory_pointer(execution, None)
     assert "unusable" in pointer and "repair" in pointer
-    # A redirected folder or index is never named, so no launch grants a write root
-    # a file editor could follow out of memory. A non-file index cannot be followed.
     if entry.endswith("MEMORY.md") and shape == "nonregular":
         assert shared in pointer
     else:
@@ -291,6 +292,7 @@ def test_ordinary_launch_reports_unusable_memory(tmp_path, entry, shape):
 
 @pytest.mark.parametrize("remote", [False, True])
 def test_project_identity_moves_and_deletes_memory(tmp_path, monkeypatch, remote):
+    """Storage commits without filesystem or SSH work."""
     from uuid import uuid4
 
     from rcp.storage.models import ProjectRecord
@@ -326,7 +328,7 @@ def test_project_identity_moves_and_deletes_memory(tmp_path, monkeypatch, remote
     Path(shared, "MEMORY.md").write_text("edited index")
     canonical = str(uuid4())
     project = store.migrate_project_identity("project", canonical, str(uuid4()))
-    assert root.exists()  # Storage commits without filesystem or SSH work.
+    assert root.exists()
     from rcp.agents.memory_files import finish_project_memory_rename
 
     finish_project_memory_rename(store, project)
@@ -372,7 +374,7 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
     )
 
     def offline(*args, **kwargs):
-        # A second writer can acquire the lock during the SSH attempt.
+        """A second writer can acquire the lock during the SSH attempt."""
         with store.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
         assert store.project("project") is None
@@ -489,6 +491,7 @@ def test_rename_retries_on_next_launch_after_remote_failure(tmp_path, monkeypatc
 
 
 def test_voice_reads_only_the_bounded_shared_index(tmp_path, monkeypatch):
+    """A FIFO left by an agent is refused, never waited on."""
     from rcp import limits
     from rcp.agents.memory_files import read_project_memory_indexes
 
@@ -519,7 +522,6 @@ def test_voice_reads_only_the_bounded_shared_index(tmp_path, monkeypatch):
     reader = threading.Thread(target=read, daemon=True)
     reader.start()
     reader.join(5)
-    # A FIFO left by an agent is refused, never waited on.
     assert not reader.is_alive() and outcome
 
 

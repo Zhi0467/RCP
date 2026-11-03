@@ -63,7 +63,7 @@ shared-contract changes, or integration uncertainty.
   Invariant citations, lint pragmas, and docstrings stay allowed.
 - A bug that a live drive or team rehearsal finds also gets a CI check in the
   same PR: its data shape in the upgrade seed, or its path in a fake-agent
-  journey or the lifecycle explorer.
+  journey or a [lifecycle explorer](tests/lifecycles/__init__.py).
 - Before a push, read `uv run python scripts/quality_delta.py origin/main`. It never gates.
 - Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view

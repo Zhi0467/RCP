@@ -361,10 +361,10 @@ def test_completed_watcher_delivery_groups_do_not_cross_graph_targets(tmp_path: 
 def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
     tmp_path: Path,
 ) -> None:
+    """The queued orchestrator turn is a live writer; the episode's ending is not a condition."""
     store = _store(tmp_path)
     episode, root = _create_auto_episode(store)
 
-    # The queued orchestrator turn is a live writer; the episode's ending is not a condition.
     with pytest.raises(ValueError, match="merge_source_has_live_writer"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-active"))
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
@@ -442,12 +442,12 @@ def _ordinary_branch_chat(store, episode, *, status="succeeded", parent=None, mo
 
 
 def test_ordinary_branch_recovery_settles_and_merge_fences_new_chat(tmp_path):
+    """The paused chat is not writing, but its queued recovery turn is, and it names itself."""
     store = _store(tmp_path)
     episode, root = _create_auto_episode(store)
     previous = store.create_agent_task(_ordinary_branch_chat(store, episode, status="paused"))
     assert previous.episode_id is None
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    # The paused chat is not writing; its queued recovery turn is, and it names itself.
     recovered = store.create_agent_task(
         _ordinary_branch_chat(store, episode, parent=previous, status="queued"),
         continuation_cause="retry",

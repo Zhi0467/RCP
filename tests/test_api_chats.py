@@ -35,7 +35,10 @@ def test_chat_append_and_projection_preserve_unicode_line_separators(manifest, t
 
 
 def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
-    # Cards read an agent's setup from its summary; most agents' turns are not loaded.
+    """Cards read an agent's setup from its summary, since most agents' turns are not loaded.
+    History alone still names the agent for chats without task records, and an origin-bound artifact
+    edit writes history on the artifact's older agent.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     service = app.state.service
@@ -52,7 +55,6 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
         run_on="laptop",
     )
     _append_chat_exchange(service, request, "done", None, None)
-    # History alone still names the agent, for chats without task records.
     summary = next(item for item in service.chat_summaries().items if item.chat_id == chat_id)
     assert summary.agent_setup is not None
     assert (summary.agent_setup.provider, summary.agent_setup.model) == ("codex", "gpt-6-astra")
@@ -60,7 +62,6 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
     from rcp.storage import AgentTaskRecord
     from tests.test_auto_research_children_storage import _identity
 
-    # The human switched agents; the new turn has no history yet.
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -75,7 +76,6 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
             authorized_by=_identity(store),
         )
     )
-    # An origin-bound artifact edit writes history on the artifact's older agent.
     _append_chat_exchange(service, request, "edited", None, None)
     row = next(
         item
@@ -89,7 +89,6 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
         "run_on": "laptop",
         "selected_at": now,
     }
-    # The open chat, which WebMCP reads, names the same agent.
     chat = client.get(f"/api/projects/{project_id}/chats/{chat_id}").json()
     assert chat["agent_setup"] == row["agent_setup"]
 
@@ -136,6 +135,9 @@ def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
 def test_chat_history_is_paginated_from_full_canonical_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """Neither malformed files nor a valid transcript reached through a symlink can enter the
+    canonical list. Task metadata from another target cannot hide the stored canonical name.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     project_id = app.state.default_project_id
@@ -183,8 +185,6 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
             encoding="utf-8",
         )
 
-    # Neither malformed files nor a valid transcript reached through a symlink
-    # can enter the canonical list.
     (chat_dir / "malformed.jsonl").write_text("not json\n", encoding="utf-8")
     outside = tmp_path / "outside.jsonl"
     outside.write_text(
@@ -250,7 +250,6 @@ def test_chat_history_is_paginated_from_full_canonical_transcripts(
 
     from rcp.core.transition_models import GraphTargetRef
 
-    # Task metadata from another target cannot hide the stored canonical name.
     canonical = next(
         row for row in service.chat_summaries(inventory=True).items if row.chat_id == chat_ids[0]
     )
@@ -307,6 +306,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
 
 def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) -> None:
+    """Validation follows storage normalization, not raw request length."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
@@ -327,7 +327,6 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     assert set(client.get(f"{url}/chat-display").json()["archived"]) == {first, second}
     assert archive(first, False).json()["archived"] == [second]
     assert archive("not-a-uuid", True).status_code == 422
-    # A canonical name survives archive changes and cannot be cleared.
     assert rename(second, "  Loss   sweep ").json() == {
         "archived": [second],
         "titles": {second: "Loss sweep"},
@@ -342,9 +341,7 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     assert rename(second, " ").status_code == 422
     assert rename(second, None).status_code == 422
     assert client.post(f"{url}/chats/{second}/title", json={}).status_code == 422
-    # Validation follows storage normalization, not raw request length.
     assert rename(second, " " * 121 + "Loss sweep").status_code == 200
-    # Pins list newest first, and an unpinned chat with no other choice leaves no row.
     assert pin(first, True).json()["pinned"] == [first]
     assert pin(second, True).json()["pinned"] == [second, first]
     assert pin(first, False).json()["pinned"] == [second]
@@ -361,6 +358,7 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
 
 
 def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
+    """09:00-02:00 is 11:00 UTC and 13:00+01:00 is 12:00 UTC, so neither moves the marker."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     url = f"/api/projects/{app.state.default_project_id}"
@@ -375,7 +373,6 @@ def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
     assert client.get(f"{url}/chat-reads").json()["archived"] == [chat_id]
     later = "2026-09-27T12:00:00.000000+00:00"
     assert mark(later).json()["reads"] == {chat_id: later}
-    # 09:00-02:00 is 11:00 UTC and 13:00+01:00 is 12:00 UTC, so neither moves it.
     assert mark("2026-09-27T09:00:00-02:00").json()["reads"] == {chat_id: later}
     assert mark("2026-09-27T13:00:00+01:00").json()["reads"] == {chat_id: later}
     assert mark("2026-09-27T12:30:00Z").json()["reads"] == {
@@ -460,6 +457,9 @@ def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
 def test_reenabling_browser_cancels_deferred_delete_unless_archived(
     manifest, tmp_path, monkeypatch, archived
 ):
+    """Archive waits for the chat's live turn, and project deletion cleanup survives even a stale
+    preference write.
+    """
     from rcp.providers.browser_grant import BrowserOwnerKey
     from rcp.runs import browser_runtime_seam
     from rcp.runs.browser_lifecycle import retry_browser_cleanup
@@ -496,7 +496,6 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
     assert client.put(f"{url}/browser", json={"browser_requested": False}).status_code == 200
     assert store.browser_owners(project_id)[0]["delete_profile"] == 1
     if archived:
-        # Archive waits for the chat's live turn.
         store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
         assert client.post(f"{url}/archive", json={"archived": True}).status_code == 200
     assert client.put(f"{url}/browser", json={"browser_requested": True}).status_code == 200
@@ -506,7 +505,6 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
     if not archived:
         retained = store.browser_owners(project_id)[0]
         assert (retained["close_requested"], retained["delete_profile"]) == (0, 0)
-        # Project deletion cleanup survives even a stale preference write.
         store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
 
         def unreachable(*args, **kwargs):
@@ -528,6 +526,9 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
 def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
     manifest, tmp_path, monkeypatch
 ):
+    """The inventory is one complete snapshot that paging parameters do not slice. The paged
+    per-target list keeps only conversations its transcript route opens.
+    """
     from rcp.core.transition_models import GraphTargetRef
     from rcp.storage import AgentTaskRecord
     from tests.test_auto_research_children_storage import _identity
@@ -579,7 +580,6 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
 
     monkeypatch.setattr(service, "_read_chat_transcript", counted)
     url = f"/api/projects/{project_id}/chats"
-    # The inventory is one complete snapshot; paging parameters do not slice it.
     for _ in range(2):
         page = client.get(
             f"{url}?inventory=true&branch_id={branch.branch_id}&limit=1&offset=2"
@@ -587,15 +587,13 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
         assert page["total"] == len(page["items"]) == 3
     rows = {row["chat_id"]: row for row in page["items"]}
     assert set(rows) == {main_chat, branch_chat, task_chat}
-    assert len(parsed) == 2  # The second request reuses the cached scan.
+    assert len(parsed) == 2
     assert rows[task_chat]["message_count"] == 0
     assert (
         rows[task_chat]["graph_target"] == rows[branch_chat]["graph_target"] == branch.model_dump()
     )
     assert rows[branch_chat]["conversation_kind"] == "chat"
     assert [row["chat_id"] for row in client.get(url).json()["items"]] == [main_chat]
-    # The paged per-target list keeps only conversations its transcript route opens,
-    # even when a task-only conversation sits on the viewed target.
     on_main = [
         ChatSummary.model_validate({**row, "graph_target": {"kind": "main"}})
         for row in store.chat_inventory(project_id)
@@ -608,6 +606,9 @@ def test_inventory_pages_use_retained_cache_and_include_task_only_targets(
 def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     manifest, tmp_path, monkeypatch
 ):
+    """Messaging the ended orchestrator continues the chain, and its opening turn delivers the mail.
+    A turn's live status reaches the transcript even outside the bounded task list.
+    """
     from tests.test_episode_api import create_terminal_auto_episode
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -632,7 +633,6 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             ),
         )
     fake_launch_admitted(monkeypatch, tasks)
-    # Messaging the ended orchestrator continues the chain; its opening turn delivers the mail.
     sent = client.post(
         f"/api/projects/{project_id}/episodes/{root.episode_id}/messages",
         json={"body": "Check the control.", "invocation_ceiling": 1, "request_id": "r1"},
@@ -641,7 +641,6 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     continuation = store.episode(sent.json()["episode_id"])
     assert continuation is not None and continuation.episode_id != root.episode_id
 
-    # An artifact edit replying to the chain is a turn of its conversation.
     edit = root_task.model_copy(
         update={
             "operation_id": "orchestrator-edit",
@@ -666,13 +665,11 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "UPDATE graph_runs SET result_json = ? WHERE operation_id = ?",
             (json.dumps({"messages": ["Relabeled."]}), edit.operation_id),
         )
-    # After the chain ends, an ordinary human turn on its branch joins the same conversation.
     with store.connection() as connection:
         connection.execute(
             "UPDATE episodes SET status = 'completed' WHERE episode_id = ?",
             (continuation.episode_id,),
         )
-    # The human may pick another agent; the card follows it.
     chat_turn = root_task.model_copy(
         update={
             "operation_id": "orchestrator-chat-turn",
@@ -722,7 +719,6 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         ("assistant", None, "Followed up."),
     ]
     assert branch.json()["conversation_kind"] == "auto_research"
-    # A turn's live status reaches the transcript even outside the bounded task list.
     assert [message["agent_status"] for message in branch.json()["messages"]][1][
         "context_tokens"
     ] == 120

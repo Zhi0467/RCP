@@ -38,6 +38,9 @@ def test_vm_preflight_never_uses_a_personal_or_production_host(
 def test_preflight_requires_actual_qemu_kvm_initialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kvm_available: bool
 ) -> None:
+    """A Python access check must neither reject a working QEMU nor admit an unusable
+    accelerator; only the QEMU child proves KVM support.
+    """
     from tests import supervisor_reboot_vm as vm
 
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
@@ -57,8 +60,6 @@ def test_preflight_requires_actual_qemu_kvm_initialization(
             else original_read(path, *args, **kwargs)
         ),
     )
-    # An advisory Python access check must neither reject a working QEMU nor
-    # admit an unusable accelerator. The exact QEMU child proves KVM support.
     monkeypatch.setattr(vm.os, "access", lambda *args, **kwargs: not kvm_available)
     probes = []
 
@@ -214,12 +215,13 @@ def test_reboot_observes_paused_startup_without_waiting_for_cloud_init(
     monkeypatch.setattr(vm.subprocess, "Popen", lambda *args, **kwargs: Process())
 
     def ssh(argv, **kwargs):
+        """A recovery pause can keep cloud-init finalization pending; it is not a reboot
+        gate.
+        """
         reboot = bool(guest.boot_ids)
         if argv == ["cat", "/proc/sys/kernel/random/boot_id"]:
             output = second if reboot else first
         elif argv == ["cloud-init", "status", "--wait"]:
-            # A recovery pause can keep cloud-init finalization pending until
-            # the external controller interrupts again. It is not a reboot gate.
             if reboot:
                 raise subprocess.TimeoutExpired(argv, vm.BOOT_TIMEOUT)
             cloud_init_calls.append(argv)

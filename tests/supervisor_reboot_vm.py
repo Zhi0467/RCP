@@ -358,6 +358,9 @@ class Guest:
         )
 
     def start(self, *, offline: bool = False) -> str:
+        """Later boots pause the startup guard, so waiting for all boot services would
+        deadlock.
+        """
         from tests.helpers import wait_until
 
         if self.process is not None:
@@ -388,8 +391,6 @@ class Guest:
             interval=2,
             detail="The guest did not boot within the qualification deadline.",
         )
-        # Provisioning must finish once. Later boots intentionally pause the
-        # startup guard, so waiting for all boot services would deadlock the drive.
         if not self.boot_ids:
             self.ssh(["cloud-init", "status", "--wait"], timeout=BOOT_TIMEOUT)
         marker = self.ssh(["sudo", "-n", "cat", GUEST_MARKER]).stdout
@@ -427,8 +428,9 @@ class Guest:
         return self.start(offline=offline)
 
     def save_baseline(self) -> None:
-        # Seal fixture files created by Git and the setup tools before snapshotting.
-        # Actual fault power cycles deliberately never request a guest sync.
+        """Fixture files are sealed before snapshotting; fault power cycles never
+        request a guest sync.
+        """
         self.ssh(["sudo", "-n", "sync"])
         self.power_off()
         run(

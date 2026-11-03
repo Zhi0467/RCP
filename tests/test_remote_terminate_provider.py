@@ -19,6 +19,9 @@ def owned_group(tmp_path):
     reapers: list[threading.Thread] = []
 
     def launch(*, ignore_term: bool):
+        """The remote wrapper's parent reaps its child; reproducing that locally keeps
+        killpg from seeing an unreaped test zombie.
+        """
         program = (
             "import os,signal,sys,time\n"
             + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
@@ -36,8 +39,6 @@ def owned_group(tmp_path):
         assert process.stdout.readline().strip() == str(process.pid)
         pid_file = tmp_path / f"{process.pid}.pid"
         pid_file.write_text(str(process.pid))
-        # The remote wrapper's parent reaps its child. Reproduce that ownership
-        # locally so killpg(..., 0) does not keep seeing an unreaped test zombie.
         reaper = threading.Thread(target=process.wait, daemon=True)
         reapers.append(reaper)
         reaper.start()
@@ -152,8 +153,6 @@ def test_launcher_ships_helper_and_passes_runtime_limits_to_owned_local_group(
     assert launcher.AgentProcessControl._terminate_remote("unused-test-host", str(pid_file))
     assert len(shipped) == 1
     assert process.wait(timeout=5) == -signal.SIGTERM
-    # A repeated stop on the same owned pidfile also proves absence, not just
-    # successful signal submission.
     assert remote_terminate_provider.terminate_provider(
         str(pid_file), pid_file_timeout=0, term_timeout=0, kill_timeout=0, poll_interval=0.01
     )
@@ -281,17 +280,19 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
     process was started. A stage that is gone proves nothing: whatever removed
     it could have taken a running pass's pidfile too, and that pass is what this
     guard exists to catch.
+
+    A replaced stage is unknown because the real stage, pidfile and process may still
+    exist; a stage is private to the account, the way `open` makes it and `attach`
+    checks it.
     """
 
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700)
 
-    # Never written, stage intact: the host has answered.
     assert remote_terminate_provider.main(["helper", "--probe", str(stage / "never.pid")]) == (
         remote_terminate_provider.ABSENT
     )
 
-    # Stage gone: unknown, because the removal could have taken a live pass with it.
     assert (
         remote_terminate_provider.main(
             ["helper", "--probe", str(tmp_path / "vanished" / "agent.pid")]
@@ -299,8 +300,6 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
         == remote_terminate_provider.UNKNOWN
     )
 
-    # Stage path swapped for a link to some other directory: unknown for the
-    # same reason. The real stage, pidfile and process may all still exist.
     (tmp_path / "elsewhere").mkdir(mode=0o700)
     (tmp_path / "swapped").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     assert (
@@ -310,9 +309,6 @@ def test_absence_is_conclusive_only_while_the_stage_still_stands(tmp_path):
         == remote_terminate_provider.UNKNOWN
     )
 
-    # An ordinary directory recreated at the path is not the stage either: a
-    # stage is private to the account, the way `open` makes it and `attach`
-    # checks it, and this one is not.
     recreated = tmp_path / "recreated"
     recreated.mkdir()
     os.chmod(recreated, 0o755)

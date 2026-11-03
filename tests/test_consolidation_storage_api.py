@@ -58,13 +58,14 @@ def _failure(store, project_id, *, target="main"):
 
 
 def _report(store, project_id, *, settle=True):
+    """Persists the outcome independently of provider launch; a turn artifact is readable until its
+    stage retention lapses.
+    """
     run = _failure(store, project_id)
-    # Exercise outcome persistence independently of provider launch.
     with store.connection() as conn:
         conn.execute(
             "UPDATE consolidation_runs SET outcome_settled_at=NULL WHERE run_id=?", (run.run_id,)
         )
-    # A turn artifact is readable until its stage retention lapses.
     expires_at = (datetime.fromisoformat(store.now()) + timedelta(days=1)).isoformat()
     store.create_artifact(
         Artifact(
@@ -199,6 +200,7 @@ def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup, on_branc
 
 
 def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
+    """Seven skips after one failure push the oldest night out of the strip."""
     client, store, project = setup
     run = _failure(store, project)
     url = f"/api/projects/{project}/consolidation"
@@ -241,16 +243,15 @@ def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
             skipped=True,
         )
     nights = client.get(url).json()["recent_nights"]
-    # Seven skips after one failure: the oldest night falls out of the strip.
     assert [night["outcome"] for night in nights] == ["skipped"] * 7
     assert run.occurrence_date < nights[0]["occurrence_date"]
     assert nights == sorted(nights, key=lambda night: night["occurrence_date"])
 
 
 def test_open_report_outlives_stale_expiry_metadata(setup):
+    """Stale expiry metadata must never overrule the open Inbox row's retention."""
     _, store, project = setup
     _report(store, project)
-    # Old/stale metadata must never overrule the open Inbox row's retention.
     with store.connection() as conn:
         conn.execute(
             "UPDATE artifacts SET metadata=json_set(metadata, '$.expires_at', ?) WHERE artifact_id='report'",
@@ -321,11 +322,11 @@ def test_report_settlement_serializes_with_version_publication(setup, monkeypatc
 
 @pytest.mark.parametrize("route", ["inbox", "viewer", "unnamed_viewer"])
 def test_keeping_report_closes_inbox_from_either_route(setup, route):
+    """Keep writes no history, so a member without a display name may keep."""
     client, store, project = setup
     run = _report(store, project)
     viewer = route != "inbox"
     if route == "unnamed_viewer":
-        # Keep writes no history, so a member without a display name may keep.
         with store.connection() as connection:
             connection.execute(
                 "UPDATE space_users SET display_name=NULL WHERE user_id=?",
@@ -508,11 +509,11 @@ def test_legacy_project_id_rewrite_moves_consolidation_state(setup):
 
 
 def test_old_writer_migration_preserves_main_coverage_and_runs(tmp_path):
+    """Uses the unchanged historical writer, not the current models or new schema."""
     from rcp.storage.consolidation import migrate_consolidation, migrate_consolidation_targets
     from rcp.storage.evidence_flags import migrate_evidence_flags
     from rcp.storage.resource_versions import _bump, _install
 
-    # Use the unchanged historical writer, not the current models or new schema.
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as conn:
         conn.row_factory = sqlite3.Row

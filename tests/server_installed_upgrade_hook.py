@@ -3,6 +3,9 @@
 Only artifact selection and observation/fault injection are substituted. The
 installed shell wrappers, CLI, runtime, subprocesses and systemd unit run normally.
 This file is never included in either release wheel.
+
+The sitecustomize hook fails closed, since Python would otherwise print and ignore its
+errors. Only the candidate's deployment worker sees the injected backup rejection.
 """
 
 from __future__ import annotations
@@ -32,9 +35,10 @@ def permission_state() -> dict:
 
 
 def service_permissions(releases: Path = Path("/home/rcp/rcp-server/releases")) -> dict:
+    """Default ACLs can override umask even below a 0700 directory, so release-
+    preparation mkdir modes are used.
+    """
     result = permission_state()
-    # Default ACLs can override umask even below a chmod-0700 directory. Use
-    # the same mkdir modes as release preparation, without touching a build.
     with tempfile.TemporaryDirectory(prefix=".permission-probe-", dir=releases) as name:
         private = Path(name)
         directory = private / "directory"
@@ -79,7 +83,6 @@ def reject_backup_inventory(project_id: str) -> None:
         return registration(record, **kwargs)
 
     def reinspect_rejected(receipt):
-        # The outgoing capture may have accepted it; send it back through the reader.
         projects = tuple(
             project.model_copy(update={"status": "uncaptured"})
             if project.project_id == project_id
@@ -93,6 +96,9 @@ def reject_backup_inventory(project_id: str) -> None:
 
 
 def install_hooks() -> None:
+    """Systemd and the probation process use the disposable port; filesystem paths and
+    runtime operations stay real.
+    """
     from rcp_supervisor import driver
     from rcp_supervisor.operations import Coordinator
     from rcp_supervisor.releases import verify_release
@@ -102,6 +108,9 @@ def install_hooks() -> None:
     from tests.server_upgrade_scratch import tree_state
 
     def followed_release(runtime):
+        """A dry run deletes the bundle it fetched, so each attempt gets a copy; plain
+        calls only, since older supervisors run this too.
+        """
         permissions = {
             "coordinator": permission_state(),
             "service_child": runtime.service_json(
@@ -114,8 +123,6 @@ def install_hooks() -> None:
         selection = json.loads((ROOT / "selection.json").read_text())
         bundle = Path(selection["bundle"])
         provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
-        # A dry run deletes the bundle it fetched, so hand each attempt a copy where
-        # the supervisor fetches. Plain calls only: older supervisors run this too.
         bundles = runtime.paths.supervisor / "bundles"
         bundles.mkdir(mode=0o755, exist_ok=True)
         bundles.chmod(0o755)
@@ -131,8 +138,6 @@ def install_hooks() -> None:
             release, release_tag=provenance["tag"], full_commit=provenance["full_commit"]
         )
 
-    # Both systemd and the fenced probation process use the disposable port.
-    # All filesystem paths, ownership checks and runtime operations remain real.
     runtime_initialize = SystemRuntime.__init__
 
     def initialize_runtime(self, paths=DEFAULT_PATHS, **kwargs):
@@ -164,7 +169,6 @@ def install_hooks() -> None:
                 return
             operation = self.store.active()
             if operation is None:
-                # Terminal records are no longer active.
                 return
             oracle = ROOT / f"oracle-{operation['operation_id']}.json"
             if phase in {"snapshot_ready", "rollback_roots_complete"}:
@@ -182,8 +186,6 @@ def install_hooks() -> None:
                     )
             if phase == "candidate_verified" and selection.get("fail"):
                 assert oracle.is_file(), "fault must follow a durable whole-root snapshot"
-                # Prove restoration of additions, edits, removals and empty directories,
-                # in addition to the candidate's actual SQLite/startup mutations.
                 data = self.runtime.paths.data_dir
                 (data / "run-stage/real-tools/repo/result.txt").write_text("candidate mutation\n")
                 (data / "run-stage/real-tools/empty").rmdir()
@@ -198,7 +200,6 @@ def install_hooks() -> None:
 
     prepare_release = driver.prepare_release
 
-    # Every installed supervisor version is wrapped, so forward its own signature.
     def prepare_rejecting_release(*args, **kwargs):
         receipt = prepare_release(*args, **kwargs)
         project_id = json.loads((ROOT / "selection.json").read_text()).get("reject_project")
@@ -211,8 +212,6 @@ def install_hooks() -> None:
     Coordinator.__init__ = initialize
 
 
-# Python normally prints and ignores sitecustomize errors. A missing test hook
-# must instead fail closed before the CLI can choose a public release.
 if __name__ == "sitecustomize":
     try:
         sys.addaudithook(observe_uv_launch)
@@ -222,8 +221,6 @@ if __name__ == "sitecustomize":
         print(f"Installed upgrade instrumentation failed: {exc}", file=sys.stderr)
         os._exit(97)
 
-# Only the candidate's deployment worker sees the injected rejection; its served
-# application and backups read every project normally.
 if __name__ == INJECTION and "rcp.server_ops.deployment" in sys.orig_argv:
     try:
         reject_backup_inventory(

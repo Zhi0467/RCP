@@ -45,6 +45,7 @@ def _question(store, episode, root, *, key="question"):
 
 @pytest.mark.parametrize("ending", ["stop", "exhausted"])
 def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch, ending):
+    """Only Stop withdraws, so an ask racing another ending stays answerable."""
     store, episode, root = _setup_auto_research(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -91,7 +92,6 @@ def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch, ending)
 
     monkeypatch.setattr(store, "create_or_get_question", ending_before_insert)
     raced = request.model_copy(update={"request_id": uuid.uuid4().hex, "idempotency_key": "raced"})
-    # Only Stop withdraws; an ask racing another ending stays answerable.
     assert dispatcher.dispatch(root.operation_id, raced).status == (
         "unavailable" if ending == "stop" else "ok"
     )
@@ -105,6 +105,7 @@ def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch, ending)
 
 
 def test_answer_is_one_mail_one_paid_wake_and_dismissal_waits_for_next_wake(tmp_path):
+    """Preparing a launch never acknowledges its dismissal, so a failed launch can retry."""
     store = _store(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -152,7 +153,6 @@ def test_answer_is_one_mail_one_paid_wake_and_dismissal_waits_for_next_wake(tmp_
     assert records[dismissed.question_id]["state"] == "dismissed"
     assert dismissal_ids == [dismissed.question_id]
     store.record_agent_task_receipt(wake_id, "question_snapshot", {"dismissal_ids": dismissal_ids})
-    # Preparing a launch never acknowledges its dismissal; a failed launch can retry.
     assert store.get_question(dismissed.question_id).dismissal_delivered_at is None
     mark_auto_research_question_snapshot_delivered(store, wake_id)
     assert store.get_question(dismissed.question_id).dismissal_delivered_at is not None
@@ -174,6 +174,7 @@ def test_answer_is_one_mail_one_paid_wake_and_dismissal_waits_for_next_wake(tmp_
 
 
 def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(tmp_path):
+    """A later launch gets fresh data, not the prior turn's snapshot."""
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -257,7 +258,6 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         )
     arguments["token"] = "resumed-turn"
     arguments["browser_grant"] = BrowserGrant()
-    # A later launch gets fresh data, not the prior turn's snapshot.
     contract_path, prompt, _, resumed_values = _orchestrator_prompt(
         service, _execution(store, root, continuation="resume"), turn, **arguments
     )

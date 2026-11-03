@@ -38,7 +38,6 @@ from .test_auto_research_recovery import (
 
 
 def _resume_app(store, background, monkeypatch):
-    # Exercise the same composed episode pass the timer and sign-in share.
     from rcp.api import app as app_module
 
     callback = background.on_task_settled
@@ -54,6 +53,9 @@ def _resume_app(store, background, monkeypatch):
 
 
 def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, monkeypatch):
+    """Claude has no observed signatures, so the recovery is built at its storage
+    boundary.
+    """
     store = _store(tmp_path)
     project = store.project("project")
     store.upsert_project(project.model_copy(update={"locator": str(manifest.path)}))
@@ -99,8 +101,6 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         )
         roots.append(wait_for_task(store, root.operation_id, expect="failed"))
         _wait_for_recovery(store, f"task:root-{project_id}")
-    # Claude has no observed signatures. Construct the already-classified recovery
-    # at its storage boundary so the route's account isolation is tested separately.
     store.schedule_auto_research_task_recovery(
         roots[1].operation_id,
         failure_kind="provider_auth",
@@ -271,7 +271,7 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
     )
 
 
-def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkeypatch):
+def test_verify_retries_parked_report_allocation_once(manifest, tmp_path, monkeypatch):
     from rcp.runs.episodes.report import start_episode_report
     from rcp.runs.tasks.episode_report import stream_episode_report_run
 
@@ -279,7 +279,6 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     from .test_episode_report import _ReportLauncher, _setup_report
 
     service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
-    # The report fixture omits the mode adapter; its admitted visible turn is finished.
     store.complete_agent_task(f"{request.episode_id}-operation", applied_revision=None, result={})
     report_launcher = _ReportLauncher(["auth", "valid"])
 
@@ -300,8 +299,11 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
-    wait_for_task(store, report.operation_id, expect="succeeded")
-    wait_until(lambda: report.operation_id not in background._workers)
+    retried = store.episode_wrapup(request.episode_id).allocation_operation_id
+    assert retried != report.operation_id
+    wait_for_task(store, retried, expect="succeeded")
+    wait_until(lambda: retried not in background._workers)
+    assert store.agent_task(report.operation_id).failure_kind == "provider_auth"
     assert store.episode(request.episode_id).wrapup_state == "ready"
     assert store.episode(request.episode_id).report_attempts_used == 2
     assert report_launcher.calls == 2
@@ -310,7 +312,7 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     assert again.json()["resumed"]["checked"] >= 1
     assert report_launcher.calls == 2
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count + 1
 
 
 @pytest.mark.parametrize("expired", [False, True])
@@ -327,7 +329,6 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     )
 
     async def stream(_project, _kind, _request, execution):
-        # The real launch captures the generation under the credential gate.
         execution.login_generation = store.provider_login_state(
             LoginKey("codex", "", MACHINE_LOGIN_ID)
         ).generation
@@ -414,11 +415,9 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
         store.project("project").model_copy(update={"locator": str(manifest.path)})
     )
     watcher = _arm_completed_graph_condition(store, episode, root)
-    # The alias is gone from the manifest, but the watcher froze the local account.
     stale = watcher.model_copy(
         update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed-alias"})}
     )
-    # Frozen to another account: the verified local login must not touch it.
     elsewhere = watcher.model_copy(
         update={"watcher_id": "elsewhere", "execution_host": "other.example"}
     )

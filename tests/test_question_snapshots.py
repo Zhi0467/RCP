@@ -264,8 +264,7 @@ def test_recovery_snapshot_carries_answers_only_through_the_same_session(
     monkeypatch.setattr(store, "agent_task", records.get)
     monkeypatch.setattr(store, "agent_task_continuation_cause", lambda operation: "resume")
     resolved_scope = current.write_scope_fingerprint
-    current.write_scope_fingerprint = None  # Launch admission has not bound it yet.
+    current.write_scope_fingerprint = None
     result = snapshot(store, "recovery", write_scope_fingerprint=resolved_scope)
     ids = {item["question_id"] for item in json.loads(result.text)["questions"]}
-    # A Work recovery may run with a different scope; a Discuss one still has none.
     assert (item.question_id in ids) == (changed is None or (changed, mode) == ("scope", "work"))

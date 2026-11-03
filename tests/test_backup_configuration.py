@@ -898,8 +898,9 @@ def test_install_reactivation_runs_backup_before_enabling_a_disabled_timer(
 def test_team_address_file_is_its_own_document_beside_server_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # server.toml stays schema 3 and never carries the address, so a pinned older
-    # release keeps starting; the address lives in team.toml with the same ownership.
+    """server.toml stays schema 3 and never carries the address, so a pinned older release keeps
+    starting; the address lives in team.toml.
+    """
     rendered = render_installed_server_config(_installed())
     assert "team" not in tomllib.loads(rendered)
     with pytest.raises(ValueError):

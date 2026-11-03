@@ -1233,6 +1233,13 @@ class BackgroundAgentTasks:
             raise
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
+        """Ask a turn to pause; settle it at once when no worker will observe the ask.
+
+        A queued turn whose launch was deferred or refused has no worker, and the
+        claim a later launch needs refuses a pausing row, so only this call can
+        settle it.
+        """
+
         self._require_startup_effects_open("provider task pause")
         current = self._require_operation(operation_id)
         if current.kind == "episode_report":
@@ -1246,8 +1253,18 @@ class BackgroundAgentTasks:
         if current.phase == "finalizing_recorded_result":
             raise ValueError("This task's recorded result is already being finalized.")
         record = self.store.request_agent_task_pause(operation_id)
+        if current.status == "queued" and not self._worker_owns(operation_id):
+            self.store.pause_agent_task(operation_id)
+            return self._require_operation(operation_id)
         self._signal_agent_task_pause(operation_id)
         return record
+
+    def _worker_owns(self, operation_id: str) -> bool:
+        """Whether a live worker in this process will observe the task's pause."""
+
+        with self._controls_lock:
+            worker = self._workers.get(operation_id)
+        return worker is not None and worker.is_alive()
 
     def _pause_waiting_remote_result(self, record: AgentTaskRecord) -> AgentTaskRecord:
         """Stop a detached remote turn now, or leave it untouched if not provable."""
@@ -1318,9 +1335,7 @@ class BackgroundAgentTasks:
         # A durably queued row normally owns a worker that will observe
         # ``pausing`` before provider dispatch. A crash fixture or recovered
         # admission may have no worker; terminalize only that unowned row.
-        with self._controls_lock:
-            worker = self._workers.get(operation_id)
-        if worker is None or not worker.is_alive():
+        if not self._worker_owns(operation_id):
             with self._remote_result_lock:
                 # A detached turn's mailbox must stop answering for the removed
                 # member before the task stops awaiting its remote result.
@@ -1370,9 +1385,7 @@ class BackgroundAgentTasks:
                 return None
             if not current.pausing:
                 raise
-        with self._controls_lock:
-            worker = self._workers.get(operation_id)
-        if worker is None or not worker.is_alive():
+        if not self._worker_owns(operation_id):
             self.store.pause_agent_task(operation_id, detail="The project is being deleted.")
             return None
         self._signal_agent_task_pause(operation_id)
@@ -2938,12 +2951,21 @@ class BackgroundAgentTasks:
         blame is narrowed to this run, but a network change still ends it for a
         reason it had no part in. A human pressing Retry is the same call, so
         this reuses it rather than growing a second recovery path.
+
+        The failure commits before the worker settles, so a human Retry can
+        continue the turn first. That turn owes nothing: a promise on it would
+        only stand down, and its receipt would count against the human's child.
         """
 
         if self.store.consolidation_run_for_operation(record.operation_id) is not None:
             return
         settled = self.store.agent_task(record.operation_id)
-        if settled is None or settled.failure_kind != "transport_lost" or not settled.can_retry:
+        if (
+            settled is None
+            or settled.failure_kind != "transport_lost"
+            or not settled.can_retry
+            or self.store.agent_task_has_continuation(settled.operation_id)
+        ):
             return
         # A turn only its episode may recover would fail every reattempt.
         if self.store.episode_child_recovery_refusal(settled) is not None:

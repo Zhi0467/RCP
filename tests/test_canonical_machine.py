@@ -73,6 +73,7 @@ def test_runtime_override_cannot_move_an_agent_off_the_base(manifest, tmp_path, 
 
 
 def test_provider_override_does_not_inherit_previous_provider_model(manifest, tmp_path) -> None:
+    """No readiness probe has run, so the catalog is unknown and the model stays empty."""
     stored = manifest.agent_profile("project_chat")
     manifest.agent.project_chat = stored.model_copy(
         update={"provider": "codex", "model": "gpt-5.6-luna"}
@@ -93,7 +94,6 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
         model="claude-opus-4-1",
     )
 
-    # No readiness probe has run, so the catalog is unknown and the model stays empty.
     assert provider_default.provider == "claude"
     assert provider_default.model == ""
     assert explicit.provider == "claude"
@@ -101,6 +101,11 @@ def test_provider_override_does_not_inherit_previous_provider_model(manifest, tm
 
 
 def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) -> None:
+    """The profile's `medium` was chosen with no model; the head rejects it and its advertised
+    default is unlisted, so the first accepted effort is used. Both projections export the manifest
+    model unchanged so a display never pins an unnamed profile, and only the cached probe for the
+    machine's exact executable is read.
+    """
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
@@ -109,6 +114,7 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     probed: list[tuple[str, str, str | None]] = []
 
     def cached_readiness(login: LoginKey, *, binary: str | None = None):
+        """A catalog default the head itself does not list must not be used."""
         probed.append((login.provider, login.host, binary))
         if login.provider == "opencode":
             return ProviderReadiness(
@@ -128,7 +134,6 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
                     id="gpt-5.6-sol",
                     label="GPT-5.6-Sol",
                     reasoning=["low", "high"],
-                    # A catalog default the head itself does not list must not be used.
                     default_reasoning="medium",
                 ),
                 ModelChoice(id="gpt-5.5", label="GPT-5.5", reasoning=["low", "medium", "high"]),
@@ -150,8 +155,6 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     )
 
     assert resolved.model == "gpt-5.6-sol"
-    # The profile's `medium` was chosen with no model; the head rejects it and its
-    # advertised default is not in its own list, so the first accepted effort is used.
     assert resolved.reasoning == "low"
     assert kept_effort.model == "gpt-5.6-sol"
     assert kept_effort.reasoning == "low"
@@ -160,9 +163,6 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert unknown_catalog.model == ""
     assert (no_efforts.model, no_efforts.reasoning) == ("opencode/big-pickle", "")
 
-    # Both projections export the manifest model unchanged beside the model that
-    # runs, so an unnamed profile is never pinned by a display and a readiness
-    # refresh re-exports the current head.
     effective = ProjectService.effective_profiles(manifest, service.launcher)
     assert effective["project_chat"]["model"] == ""
     assert effective["project_chat"]["effective_model"] == "gpt-5.6-sol"
@@ -176,7 +176,6 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
         "paper_coach",
         "orchestrator",
     }
-    # Only the already-cached probe for that machine's exact executable is read.
     assert probed[0] == ("codex", machine.host, None)
 
 

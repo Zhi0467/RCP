@@ -69,8 +69,6 @@ def test_success_replaces_inventory_and_failure_preserves_it(
 
     monkeypatch.setattr(provider_skills, "_run_process_group", fail)
     manager.mark_refreshing("claude", "", "/opt/claude")
-    # A new provider version is what makes the manager probe again; the same
-    # executable at the same version reuses the stored inventory without one.
     stale = manager.refresh(
         "claude", "", "/opt/claude", _ready("claude", "/opt/claude", version="provider 1.2.4")
     )
@@ -104,8 +102,6 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
     def never(*_args, **_kwargs):
         raise AssertionError("the skill probe started the provider for an unchanged inventory")
 
-    # A new process (or a later startup) reads the same executable at the same
-    # version: the stored inventory stands and the provider is not started.
     monkeypatch.setattr(provider_skills, "_run_process_group", never)
     again = ProviderSkillInventoryManager(store)
     again.mark_refreshing("claude", "", "/opt/claude")
@@ -391,7 +387,6 @@ def test_refresh_command_is_owned_by_provider_profile() -> None:
     assert claude.protocol == "jsonl"
     assert "--no-session-persistence" in claude.command
     assert '{"disableAllHooks":true}' in claude.command
-    # The inventory loads the same setting sources as a Work launch.
     work = profile_for("claude").work_like_probe_command("/opt/claude")
     assert (
         claude.command[claude.command.index("--setting-sources") + 1]
@@ -488,7 +483,6 @@ def test_third_provider_owns_skill_messages_over_shared_jsonrpc_transport(tmp_pa
 )
 def test_probe_evidence_distinguishes_success_data_from_error_envelopes(provider, success, error):
     profile = profile_for(provider)
-    # Even a nonzero exit must not turn successful skill/model data into diagnostics.
     for returncode in (0, 1):
         evidence = profile.probe_failure_evidence(
             subprocess.CompletedProcess([], returncode, json.dumps(success), "")
@@ -515,8 +509,9 @@ def test_claude_inventory_preserves_unicode_line_separators():
 
 
 def test_one_shot_probe_keeps_output_a_provider_left_unflushed(tmp_path, monkeypatch):
-    # Like OpenCode's runtime: one non-blocking write, then exit. A pipe keeps
-    # only its buffer's worth; the full inventory must still parse.
+    """Mimics OpenCode's runtime, one non-blocking write then exit; a pipe keeps only
+    its buffer's worth.
+    """
     skills = [{"name": f"skill-{index}", "description": "x" * 2000} for index in range(200)]
     payload = tmp_path / "skills.json"
     payload.write_text(json.dumps(skills))
@@ -567,7 +562,6 @@ def test_one_shot_probe_timeout_kills_the_provider_and_its_children(tmp_path, mo
             command=[sys.executable, str(script), str(report)], protocol="jsonl"
         ),
     )
-    # The probe gets at least the credential startup hold before it is killed.
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"), timeout=0.1)
 
     snapshot = manager.refresh(
@@ -576,7 +570,6 @@ def test_one_shot_probe_timeout_kills_the_provider_and_its_children(tmp_path, mo
 
     assert snapshot.status == "unavailable"
     reported = json.loads(report.read_text())
-    # The output file was already unlinked, so nothing is left to clean up.
     assert reported["links"] == 0
 
     def grandchild_gone() -> bool:

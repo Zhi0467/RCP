@@ -53,6 +53,9 @@ async def test_switched_turn_revokes_only_captured_login_generation(
 async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
     accounts, tmp_path, provider
 ):
+    """Accounting is per operation, so a session moving credentials neither loses usage
+    nor recounts replay.
+    """
     store = accounts.store
     old = _login(accounts, provider)
     current = _login(accounts, provider, machine=True)
@@ -80,8 +83,6 @@ async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
         processed_input_tokens=12,
         generated_tokens=3,
     )
-    # Accounting is per operation, so a session moving credentials neither loses
-    # a new turn's usage nor recounts replay of an already recorded event.
     first = store.record_agent_usage("previous", usage)
     second = store.record_agent_usage("current", usage)
     replay = store.record_agent_usage("current", usage, idempotent=True)
@@ -110,8 +111,6 @@ async def test_personal_session_survives_team_auth_failure_on_next_team_login(
     stage = tmp_path / "stage"
     old, team_a, member, request = switched_session(accounts, stage, provider, "personal_to_team")
     team_b = _login(accounts, provider)
-    # The first continuation really selects team A, then its provider reports
-    # revoked credentials. Failure evidence must not be charged to personal A.
     execution, selected, _, _ = await _launch(accounts, stage, old)
     assert selected == [team_a]
     store = accounts.store

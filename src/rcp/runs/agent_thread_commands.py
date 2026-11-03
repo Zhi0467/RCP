@@ -738,6 +738,8 @@ def _settlement_report(
         status=task.status if task else "refused",
         reason=handoff.refusal_reason,
         failure_kind=task.failure_kind if task else None,
+        provider=_optional_text(task.request.get("provider")) if task else None,
+        model=_optional_text(task.request.get("model")) if task else None,
     )
     # This is an observation of the owner's own task, never an instruction from another agent.
     if task is not None and store.is_project_member(report.project_id, user_id):

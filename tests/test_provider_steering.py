@@ -183,7 +183,6 @@ def test_claude_follow_up_injected_during_a_tool_call_ends_with_the_first_result
     )
     assert [event.text for event in step.events if event.event == "answer"] == ["STEERED"]
     assert step.complete and step.stop_process and step.explicit_terminal
-    # The initial command's own `completed` line lands after its result and is inert.
     assert not _lifecycle(turn, "completed", turn_id).events
     assert not turn.steering_state().can_steer
 
@@ -208,7 +207,6 @@ def test_claude_failing_result_ends_the_invocation_despite_an_accepted_follow_up
         )
     )
     assert [event.event for event in step.events] == ["error"]
-    # The subtype is the only diagnostic this result carries.
     assert step.events[0].text == "error_during_execution"
     assert step.complete and step.stop_process and step.explicit_terminal
     assert not turn.steering_state().can_steer
@@ -420,7 +418,6 @@ async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
         future = control.steer(state.turn_id, message_id, "Steer")
         if behavior == "late-ack":
             await async_wait_until(lambda: message_id in capture.read_text())
-            # The HTTP deadline cancels this waiter, not the still-live process.
             assert not future.done() and not task.done()
             future.cancel()
             duplicate = await asyncio.wrap_future(control.steer(state.turn_id, message_id, "Steer"))
@@ -465,6 +462,7 @@ async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
 async def test_remote_result_requires_observed_process_stop_without_contacting_ssh(
     tmp_path: Path, monkeypatch, stop_confirmed: bool
 ):
+    """Uses a local fixture pipe; no ssh binary or host is contacted."""
     import rcp.agents.launcher as launcher_module
 
     executable, _capture, unwanted = _provider(tmp_path, "claude", "delivered")
@@ -479,8 +477,6 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
             "version": "2.1.260",
         },
     )()
-    # Exercise the remote dispatch path with a local fixture pipe. No ssh binary
-    # or host is contacted; the termination receipt is supplied by the fixture.
     monkeypatch.setattr(launcher, "_remote_login_command", lambda command, **kwargs: command)
     monkeypatch.setattr(launcher_module, "ssh_arguments", lambda host, command, **kwargs: command)
     stops = []

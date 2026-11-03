@@ -120,6 +120,7 @@ def test_history_episode_decoration_maps_lifecycle_and_singular_report(
     monkeypatch,
     tmp_path,
 ) -> None:
+    """The row renders a state name, so the decoration carries the name rather than the status enum."""
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     assert project_id is not None
@@ -182,8 +183,6 @@ def test_history_episode_decoration_maps_lifecycle_and_singular_report(
 
     assert response.status_code == 200
     decorated = {item["episode_id"]: item["episode"] for item in response.json()}
-    # The row renders a state name, so the decoration carries the name rather than
-    # the status enum for a client to capitalize into one.
     assert {
         episode_id: (
             item["mode"],

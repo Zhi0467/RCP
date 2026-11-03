@@ -83,6 +83,9 @@ def _app_branch(manifest, tmp_path, *, include_experiment=False, owner_mode="aut
 def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     manifest, tmp_path, monkeypatch, kind, owner_mode
 ):
+    """Old canonical records had no graphTarget; the task ledger still identifies this branch chat
+    after restart, and no transcript content becomes task input.
+    """
     app, main, episode, root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
     client = signed_in_client(app)
     store = app.state.catalog.store
@@ -150,7 +153,6 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     ]
     assert client.get(transcript_url).status_code == 404
     assert client.get(f"/api/projects/{project_id}/chats").json()["items"] == []
-    # The branch also lists its episode's own conversation; every row stays on the branch.
     branch_items = client.get(
         f"/api/projects/{project_id}/chats", params={"branch_id": branch_id}
     ).json()["items"]
@@ -170,8 +172,6 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     assert rejected.status_code == 422
     assert "another graph target" in rejected.json()["detail"]
 
-    # Old canonical records had no graphTarget. The task ledger still identifies
-    # this branch chat after restart; no transcript content becomes task input.
     path = branch.chat_path(
         chat_id, chat_scope="node" if kind == "node_chat" else "project", node_id=payload["node_id"]
     )
@@ -324,7 +324,6 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
 
     _end_orchestrator(app, root, tmp_path / "stage", seed=seed)
     assert store.child_human_turn_refusal(episode.project_id, episode.episode_id) is None
-    # The conversation lives on the chain's branch, never main.
     off_branch = client.post(url.split("?")[0], json=payload)
     assert off_branch.status_code == 422
     admitted = client.post(url, json=payload)
@@ -459,6 +458,9 @@ def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, mon
 def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
     manifest, tmp_path, monkeypatch, owner_mode
 ):
+    """Models the active orchestrator, not a queued reservation that provider settlement could
+    dispatch into this test's launcher.
+    """
     app, main, branch_episode, root = _app_branch(
         manifest, tmp_path, include_experiment=True, owner_mode=owner_mode
     )
@@ -499,8 +501,6 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         store.complete_agent_task(root.operation_id, applied_revision=None, result={})
         store.mark_episode_stop_skipped(branch_episode.episode_id)
     else:
-        # Model the active orchestrator, not a queued reservation that provider
-        # settlement can dispatch into this test's human-Experiment launcher.
         assert store.mark_agent_task_running(root.operation_id)
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
@@ -535,6 +535,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
 def test_restart_creates_and_launches_a_reserved_experiment_branch(
     manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The process stops after admission commits and before the branch exists."""
     from functools import partial
 
     from rcp.background import BackgroundAgentTasks
@@ -545,7 +546,6 @@ def test_restart_creates_and_launches_a_reserved_experiment_branch(
     append_fixture_patch(service, seed_patch())
     append_fixture_patch(service, _experiment_fixture_patch())
     tasks = app.state.background_tasks
-    # The process stops after admission commits and before the branch exists.
     with (
         patch("rcp.api.experiments.ensure_episode_graph_target", lambda *a, **kw: None),
         patch.object(tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record),
@@ -604,6 +604,7 @@ def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch
 
 
 def test_stop_persists_exact_target_before_display_failure(manifest, tmp_path, monkeypatch):
+    """The accepted Stop is answered even when the display read after it fails."""
     from fastapi import HTTPException
 
     from rcp.api import experiments
@@ -616,7 +617,6 @@ def test_stop_persists_exact_target_before_display_failure(manifest, tmp_path, m
         raise HTTPException(status_code=503, detail="Display generation unavailable")
 
     monkeypatch.setattr(experiments, "get_project_writer", unavailable)
-    # The accepted Stop is answered even when the display read after it fails.
     experiments.stop_bound_experiment_episode(
         project_id, episode, store=store, catalog=app.state.catalog
     )

@@ -585,7 +585,7 @@ def _canonical_report_turn(
         raise ValueError("Episode report execution changed its hidden allocation.")
     if (
         wrapup.concluding_operation_id is None
-        or task.parent_operation_id != wrapup.concluding_operation_id
+        or _concluding_operation_id(execution, task) != wrapup.concluding_operation_id
     ):
         raise ValueError("Episode report execution changed its concluding task lineage.")
     frozen = {
@@ -608,6 +608,24 @@ def _canonical_report_turn(
     if not wrapup.native_session_id or not wrapup.stage_root:
         raise ValueError("Episode report execution has no complete native session and stage.")
     return _CanonicalReportTurn(task=task, request=durable, episode=episode, wrapup=wrapup)
+
+
+def _concluding_operation_id(execution: AgentTaskExecution, task: AgentTaskRecord) -> str | None:
+    """The visible turn a report task continues, through the report tasks it retries."""
+
+    parent_id = task.parent_operation_id
+    seen = {task.operation_id}
+    while parent_id is not None and parent_id not in seen:
+        parent = execution.store.agent_task(parent_id)
+        if (
+            parent is None
+            or parent.kind != "episode_report"
+            or parent.episode_id != task.episode_id
+        ):
+            return parent_id
+        seen.add(parent_id)
+        parent_id = parent.parent_operation_id
+    return None
 
 
 def _open_exact_report_stage(

@@ -28,11 +28,13 @@ def test_old_writer_database_upgrades_without_changing_legacy_rows(tmp_path: Pat
         )
         assert connection.execute("SELECT count(*) FROM agent_threads").fetchone()[0] == 0
         inventory = inspect_transfer_table_inventory(connection)
-    assert store.storage_schema_ledger_head() == 73
+    assert store.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
     assert not inventory.unclassified_tables
     validate_transfer_table_policy(inventory.project_linked_tables)
     store.close()
-    assert AppStore(database).storage_schema_ledger_head() == 73
+    assert (
+        AppStore(database).storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
+    )
 
 
 def test_lazy_thread_creation_seeds_names_and_browser_once(tmp_path: Path) -> None:
@@ -121,7 +123,6 @@ def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_pat
             connection.execute("SELECT state,disabled_reason FROM agent_schedules").fetchone()
         ) == ("disabled", "restore")
         assert connection.execute("SELECT expires_at FROM approval_cards").fetchone()[0] == now
-        # Nothing remains for startup to launch or wake on the restored host.
         assert not connection.execute(
             "SELECT 1 FROM agent_handoffs WHERE target_operation_id IS NULL "
             "OR notified_operation_id IS NULL"

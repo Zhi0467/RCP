@@ -89,6 +89,9 @@ def _engine(boundaries, *, requested_ranges=None, streamed_revisions=None) -> Pr
 
 
 def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path):
+    """Restart catch-up needs no surviving in-memory signal, and a restored history removes the
+    previously projected ready Decision.
+    """
     store = _project_store(tmp_path)
     state = GraphState(revision=1)
     patch = _patch()
@@ -107,7 +110,6 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     next_state = GraphState(revision=2, nodes={"d/one": _decision(status="ready")})
     boundaries.append((state, _patch(2), next_state))
     state = next_state
-    # Restart catch-up needs no surviving in-memory signal.
     DigestProjector(store, None, admission=RuntimeAdmissionGate())._project_history(
         "p", "main", history
     )
@@ -116,7 +118,6 @@ def test_projector_catches_missed_signal_and_rebaselines_changed_prefix(tmp_path
     assert streamed_revisions == [2]
     mark = {"seq": 0, "marked_at": store.now()}
     assert assemble_digest("p", "me", _events(store), mark, 1)["needs_you"]
-    # A restored history removes the previously projected ready Decision.
     state = GraphState(revision=1)
     boundaries[:] = [(GraphState(), patch.model_copy(update={"summary": "Restored"}), state)]
     projector._project_history("p", "main", history)
@@ -176,6 +177,7 @@ def test_slower_projection_cannot_move_checkpoint_backward(tmp_path):
 
 
 def test_mark_checkpoints_main_before_commit_and_restart(manifest, tmp_path):
+    """Nothing projects after commit, so restart must recover it from the durable head."""
     from rcp.digest import read_digest
 
     from .helpers import append_fixture_patch, create_named_app, seed_patch
@@ -186,12 +188,12 @@ def test_mark_checkpoints_main_before_commit_and_restart(manifest, tmp_path):
     app.state.digest_projector.run_pass()
     assert read_digest(store, catalog, project_id, user_id)["count"] == 0
     append_fixture_patch(catalog.open(project_id), seed_patch())
-    # No projection after commit; restart must recover it from the durable head.
     DigestProjector(store, catalog, admission=RuntimeAdmissionGate()).run_pass()
     assert read_digest(store, catalog, project_id, user_id)["changed"]
 
 
 def test_missing_episode_branch_does_not_block_main(manifest, tmp_path):
+    """The periodic lag check also tolerates the missing branch."""
     from rcp.digest import read_digest
 
     from .helpers import append_fixture_patch
@@ -210,7 +212,7 @@ def test_missing_episode_branch_does_not_block_main(manifest, tmp_path):
     projector.run_pass()
     assert read_digest(store, catalog, project_id, user_id)["changed"]
     assert not branch_root.exists()
-    projector.run_pass()  # The periodic lag check also tolerates the missing branch.
+    projector.run_pass()
 
 
 def test_semantic_touches_and_attention_boundaries(tmp_path):
@@ -345,6 +347,7 @@ def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_br
 
 
 def test_branch_reset_drops_replaced_history_but_keeps_operational_attention(tmp_path):
+    """A run's edits are its branch's changes, never main's."""
     store = AppStore(tmp_path / "app.db")
     live = GraphState(nodes={"d/one": _decision()})
     branch = graph_event(store, "p", "branch:b", GraphState(), _patch(), live)
@@ -356,7 +359,6 @@ def test_branch_reset_drops_replaced_history_but_keeps_operational_attention(tmp
     reset = dict(branch, seq=3, kind="reset", payload={})
     mark = {"seq": 0, "marked_at": "now"}
     runs = {"branch:b": "research-b"}
-    # A run's edits are its branch's changes, never main's.
     assert assemble_digest("p", "me", [branch], mark, 1, live, runs=runs)["count"] == 0
     on_branch = assemble_digest("p", "me", [branch], mark, 1, live, runs=runs, target="branch:b")
     assert [group["edits"] for group in on_branch["changed"]] == [1]
@@ -402,6 +404,10 @@ def _event(seq, kind, item_id, target="main", **payload):
 
 
 def test_a_run_surfaces_only_for_what_waits_on_its_branch_never_its_children():
+    """Main shows its own question, report, and the run whose question waits; the run's branch shows
+    its own. A child episode surfaces its run nowhere, and a continuation keeps its root's branch
+    under a new id.
+    """
     run, quiet, other = "branch:run", "branch:quiet", "branch:exp"
     events = [
         _event(1, "episode_attention", "child-1", run, active=True, title="Episode"),
@@ -430,19 +436,13 @@ def test_a_run_surfaces_only_for_what_waits_on_its_branch_never_its_children():
             result["count"],
         )
 
-    # Main: its own question and report, and the run whose question waits.
     assert lines("main") == ([("question", "q-main"), ("auto_research", "run")], ["night"], 3)
-    # The run's branch: its question and its report; a child episode is no line.
     assert lines(run) == ([("question", "q-run")], ["report-run"], 2)
-    # A child episode's needs-action surfaces its run nowhere.
     assert lines(quiet) == ([], [], 0)
-    # The orchestrator itself needing action surfaces the run on main and its branch.
     events.append(_event(12, "episode_attention", "run", run, active=True, title="Episode"))
     assert lines("main")[0] == [("question", "q-main"), ("auto_research", "run")]
     assert lines(run)[0] == [("question", "q-run"), ("auto_research", "run")]
-    # A standalone Experiment's branch shows only that Experiment.
     assert lines(other) == ([("episode", "exp")], [], 1)
-    # A continuation keeps its root's branch under a new id; it is no child.
     events.append(_event(13, "episode_attention", "continuation", quiet, active=True, title="E"))
     assert ("auto_research", "quiet") in lines("main")[0]
 
@@ -467,6 +467,9 @@ def test_an_archived_branch_needs_nothing_on_main_or_itself():
 
 
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
+    """A crash loses the signal but must not silently baseline a newly discovered branch; the cheap
+    branch-head lag check repairs a missed signal.
+    """
     from rcp.digest import read_digest
 
     from .test_branch_chats import _app_branch
@@ -475,7 +478,6 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     app, main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.background_tasks.store
     projector = app.state.digest_projector
-    # The project has a baseline; this newly discovered branch has none yet.
     projector._project_history(episode.project_id, "main", main.history_engine)
     user_id = store.local_owner.user_id
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
@@ -484,21 +486,18 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     branch.append(
         _branch_patch("ev/digest").model_copy(update={"source_operation_id": root.operation_id})
     )
-    # A crash loses the signal, but must not silently baseline the new branch.
     projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
     projector.run_pass()
     branch_id = episode.graph_target.branch_id
     result = read_digest(store, app.state.catalog, episode.project_id, user_id, branch_id)
     assert main.history.current_accepted_revision() == main_revision
     assert [group["edits"] for group in result["changed"]] == [1]
-    # The run's edits never reach main's digest.
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
     store.catch_up_digest(episode.project_id, user_id, result["cursor"])
     projector.run_pass()
     assert (
         read_digest(store, app.state.catalog, episode.project_id, user_id, branch_id)["count"] == 0
     )
-    # A missed branch signal is repaired by the cheap branch-head lag check.
     app.state.catalog.on_accepted_branch_transition = None
     branch.append_batch_from_state(
         lambda _state: [
@@ -513,6 +512,9 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
 
 
 def test_first_pass_baselines_existing_branches_before_main(manifest, tmp_path):
+    """Branch history predating the digest, as on an upgraded project, is baselined first even when
+    a main signal drives the pass.
+    """
     from rcp.digest import read_digest
 
     from .test_branch_chats import _app_branch
@@ -520,12 +522,10 @@ def test_first_pass_baselines_existing_branches_before_main(manifest, tmp_path):
 
     app, main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.background_tasks.store
-    # Branch history that predates the digest, as on an upgraded project.
     main.for_graph_target(episode.graph_target).history.append(
         _branch_patch("ev/old").model_copy(update={"source_operation_id": root.operation_id})
     )
     projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
-    # Even a first pass driven by a main signal baselines every branch first.
     projector.reconcile_project(episode.project_id, targets={"main"})
     user_id = store.local_owner.user_id
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
@@ -536,6 +536,7 @@ def test_first_pass_baselines_existing_branches_before_main(manifest, tmp_path):
 def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     manifest, tmp_path, monkeypatch
 ):
+    """The member's mark lands before the projector's episode pass."""
     import rcp.digest as digest
 
     from .test_branch_chats import _app_branch
@@ -553,7 +554,6 @@ def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
     monkeypatch.setattr(digest, "_episode_attention", attention)
     projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
     projector.reconcile_project(episode.project_id)
-    # The member's mark lands before the projector's episode pass.
     digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
     needs["value"] = True
     projector.run_pass()
@@ -600,9 +600,9 @@ def test_a_standalone_experiment_is_named_by_its_node_on_its_own_branch(
 
 
 def test_viewer_does_not_see_their_own_chat_agent_edits_once_read(tmp_path):
-    # A Work turn the member asked for leaves their digest once their chat read
-    # marker reaches it; one that finished after they left stays news until they
-    # read the chat. A teammate always sees it, under the chat as its latest source.
+    """A Work turn the member asked for leaves their digest once their chat read marker reaches it;
+    one that finished after they left stays news until read. A teammate always sees it.
+    """
     store = _project_store(tmp_path)
     live = GraphState(nodes={"d/one": _decision()})
     event = graph_event(store, "p", "main", GraphState(), _patch(), live)
@@ -629,7 +629,6 @@ def test_viewer_does_not_see_their_own_chat_agent_edits_once_read(tmp_path):
     assert groups("me", {"baseline": "2026-10-08T00:00:00+00:00", "reads": {}}) == ["agent:one"]
     assert groups("teammate", seen) == ["chat:mine"]
 
-    # The store reads exactly the member's own markers and the marker baseline.
     store.mark_chat_read("p", "mine", "me", datetime(2026, 10, 7, 12, 0, 5, tzinfo=UTC))
     store.mark_chat_read("p", "mine", "teammate", datetime(2026, 10, 7, 9, tzinfo=UTC))
     markers = store.chat_read_markers("p", "me")
@@ -674,14 +673,16 @@ def test_deleted_reports_leave_digest_and_count(manifest, tmp_path):
     app.state.digest_projector._project_history(project_id, "main", history.history_engine)
     user_id = store.local_owner.user_id
     assert read_digest(store, app.state.catalog, project_id, user_id)["count"] == 0
-    _setup_report(manifest, tmp_path, store=store, project_id=project_id)
-    attempt = store.allocate_episode_report_attempt("episode")
+    _service, _store, request, _execution, _stage = _setup_report(
+        manifest, tmp_path, store=store, project_id=project_id
+    )
+    attempt = store.allocate_episode_report_attempt(request.episode_id)
     html = "<h1>Report</h1>"
     report = stored_report(
         store,
         html=html,
         report_id="episode-report",
-        episode_id="episode",
+        episode_id=request.episode_id,
         attempt_id=attempt.attempt_id,
         allocation_operation_id="report-allocation",
         ending="completed",

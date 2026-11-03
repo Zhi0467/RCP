@@ -232,6 +232,7 @@ def test_local_artifact_read_preserves_transient_operational_errors(
 
 
 def test_local_artifact_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    """Releases a reader stuck in open() so a failure cannot hang the suite."""
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     fifo = artifacts / "result.csv"
@@ -242,7 +243,6 @@ def test_local_artifact_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> 
             with pytest.raises(ValueError):
                 pending.result(timeout=10)
         finally:
-            # Release a reader stuck in open() so a failure cannot hang the suite.
             with suppress(OSError):
                 os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
@@ -379,14 +379,15 @@ def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:
         )
 
 
-# A box from the viewer before elements were named measured the viewer area, not the
-# image, so it is described but never cropped.
 @pytest.mark.parametrize("current_viewer", [True, False])
 def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
     manifest,
     tmp_path: Path,
     current_viewer: bool,
 ) -> None:
+    """A box from the viewer before elements were named measured the viewer area, not
+    the image, so it is described but never cropped.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     store = app.state.background_tasks.store

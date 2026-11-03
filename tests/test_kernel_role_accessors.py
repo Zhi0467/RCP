@@ -46,11 +46,11 @@ def test_decision_choice_is_a_selection_or_a_decided_status() -> None:
 
 
 def test_human_decision_choice_returns_the_effective_option() -> None:
+    """Repeating the carried option moves only the status."""
     assert (
         checked_human_decision_choice(_decision(), {"selected_option": "deep", "status": "decided"})
         == "deep"
     )
-    # Repeating the carried option moves only the status.
     carried = _decision(selected_option="wide")
     assert checked_human_decision_choice(carried, {"status": "decided"}) == "wide"
     assert checked_human_decision_choice(_decision(), {"status": "revisit"}) is None
@@ -112,6 +112,8 @@ def test_released_attempts_close_only_named_open_attempts() -> None:
 
 
 def test_legacy_pause_detects_a_new_blocker_gating_the_control_node() -> None:
+    """Malformed legacy records never raise."""
+
     def operations(node_type: object, relation: object) -> list[object]:
         return [
             {"op": "create_nodes", "nodes": [{"id": "blk/1", "type": node_type}]},
@@ -124,5 +126,4 @@ def test_legacy_pause_detects_a_new_blocker_gating_the_control_node() -> None:
     assert _ops_pause_for_human(operations("blocker", "blocked_by"), "exp/run")
     assert not _ops_pause_for_human(operations("evidence", "blocked_by"), "exp/run")
     assert not _ops_pause_for_human(operations("blocker", "tests"), "exp/run")
-    # Malformed legacy records never raise.
     assert not _ops_pause_for_human(operations(["blocker"], ["blocked_by"]), "exp/run")

@@ -137,8 +137,9 @@ async def test_an_open_root_compiles_itself_even_when_another_root_includes_it(t
 
 
 def test_synctex_maps_each_files_lines_to_their_first_pdf_mark():
-    # Recorded from pinned Tectonic 0.17 `--synctex` on the two sources beside it.
-    # Page 1 ships while TeX reads two.tex line 1, so its frame carries that line.
+    """Recorded from pinned Tectonic 0.17 `--synctex`; page 1 ships while TeX reads
+    two.tex line 1, so its frame carries that line.
+    """
     fixture = Path(__file__).parent / "fixtures" / "paper_synctex"
     mapping = synctex_map((fixture / "two_file.synctex").read_text(), Path("/TREE"))
     assert set(mapping) == {"main.tex", "sections/two.tex"}
@@ -149,9 +150,9 @@ def test_synctex_maps_each_files_lines_to_their_first_pdf_mark():
 
 
 def test_synctex_marks_are_in_pdf_points():
-    # TeX measures 72.27 points to the inch and PDF 72; the preview scales pages in
-    # PDF points. Half an inch of offset plus a quarter inch counted in units of
-    # two, magnified twice, is two inches: 144 PDF points.
+    """TeX measures 72.27 points to the inch and PDF 72; half an inch plus a quarter
+    inch counted in units of two, magnified twice, is two inches, or 144 PDF points.
+    """
     half_inch = 72.27 * 65536 / 2
     text = (
         "SyncTeX Version:1\nInput:1:/TREE/main.tex\nMagnification:2000\nUnit:2\n"
@@ -163,6 +164,9 @@ def test_synctex_marks_are_in_pdf_points():
 
 @pytest.mark.asyncio
 async def test_new_request_cancels_process_group_and_only_new_pdf_survives(tmp_path):
+    """write_text creates the file before writing it. The child holds the lock for its
+    lifetime, so group cancellation releases it.
+    """
     ready = tmp_path / "ready"
     engines = fake_compiler(
         tmp_path,
@@ -181,7 +185,6 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
     )
     compiler = PaperCompiler(Live(), engines, tmp_path)
     first = asyncio.create_task(compiler.compile("project", "file"))
-    # write_text creates the file before writing it.
     await async_wait_until(lambda: ready.exists() and "," in ready.read_text())
     leader, _child = map(int, ready.read_text().split(","))
     second = await compiler.compile("project", "file", revision=2)
@@ -192,7 +195,6 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
         compiler.pdf("other", second.compile_id)
     with pytest.raises(ProcessLookupError):
         os.kill(leader, 0)
-    # The child held this lock for its whole lifetime; group cancellation releases it.
     with ready.with_suffix(".lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     await compiler.close()
@@ -228,7 +230,6 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
 
 @pytest.mark.asyncio
 async def test_real_pinned_tectonic_compile(tmp_path):
-    # Opt in with a disposable, previously installed RCP engine directory.
     location = os.environ.get("RCP_TEST_PAPER_ENGINE_DATA_DIR")
     if not location:
         pytest.skip("No RCP-owned Tectonic installation supplied")

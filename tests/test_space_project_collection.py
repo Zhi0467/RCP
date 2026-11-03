@@ -46,8 +46,6 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
     assert not (stage / "patch.json").exists()
     assert not (stage / "watch.json").exists()
     assert not project.patch_path.exists()
-    # A post-collection failure retries under a new operation, even if a crash
-    # or provider replay restores the consumed file.
     retry = store.create_agent_task(
         store.agent_task(execution.operation_id).model_copy(
             update={
@@ -150,6 +148,9 @@ def test_space_turn_reads_the_catalog_inventory_once(manifest, tmp_path, monkeyp
 
 
 def test_space_collection_uses_work_apply_guards(manifest, tmp_path, monkeypatch):
+    """A commit point that cannot say whether it published is not a rejection; the Patch
+    stays for the retry.
+    """
     from rcp.runs.space_projects import collect_space_projects
     from rcp.transport.state import BatchPublishFailed
 
@@ -158,14 +159,11 @@ def test_space_collection_uses_work_apply_guards(manifest, tmp_path, monkeypatch
     (project,) = projects
     history = project.service.history
     before = len(history.load_patches())
-    # An empty Patch appends no transition.
     project.patch_path.write_text(agent_patch_json(seed_patch().model_copy(update={"ops": []})))
     results = collect_space_projects(owner, execution, found, stage)
     assert _statuses(results) == {project.project_id: "none"}
     assert len(history.load_patches()) == before
     assert owner.store.agent_task_patch_output(execution.operation_id) is not None
-    # A commit point that cannot say whether it published is not a rejection,
-    # and the Patch stays for the retry that resolves it.
     project.patch_path.write_text(agent_patch_json(seed_patch()))
 
     def unknown(*args, **kwargs):
@@ -192,7 +190,6 @@ def test_space_binding_change_is_a_visible_rejection(manifest, tmp_path, monkeyp
     projects = found.writers
     assert projects == [] and found.excluded[project.project_id]["code"] == "binding_changed"
     project.patch_path.write_text(agent_patch_json(seed_patch()))
-    # A project the member gained mid-turn is reported, not silently discarded.
     late = stage / "projects" / "late-project" / "patch.json"
     late.parent.mkdir(parents=True)
     late.write_text(agent_patch_json(seed_patch()))
@@ -223,7 +220,6 @@ def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, m
         found = prepare_space_projects(
             owner, request, execution, stage, owner.catalog.repository_ownership_inventory()
         )
-    # State readable here keeps a read client; writing goes through handoff.
     (reader,) = found.readers
     assert found.writers == [] and found.excluded[reader.project_id]["code"] == "base_remote"
     assert reader.verbs == reader.read_scope.verbs | {"bulletin"}
@@ -296,7 +292,6 @@ def test_space_limits_derive_lacking_commands_from_grants(manifest, tmp_path):
     _, _, _, stage, found = _space_turn(manifest, tmp_path)
     scope = CompositeWriteScope(stage_root=str(stage))
     section = space_limits_section(frozenset({"handoff", "schedule"}), scope, found)
-    # Granted verbs never show as lacking; lifecycle verbs the turn lacks do.
     assert "`episode`" in section and "`launch`" in section
     assert "`schedule`" not in section and "`bulletin`" not in section
 

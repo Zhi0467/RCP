@@ -527,19 +527,21 @@ def test_remote_stage_sweep_starts_after_health_is_available(
 def test_personal_post_refuses_requests_a_cross_site_page_can_send(
     app, headers, content, refused
 ) -> None:
-    """A page can POST to the loopback port without a preflight only with a simple type."""
+    """A page can POST to the loopback port without a preflight only with a simple type.
+
+    Past the guard routing answers, and the route does not exist.
+    """
 
     response = signed_in_client(app).post("/api/no-such-route", headers=headers, content=content)
     if refused:
         assert response.status_code == 415
         assert response.json()["detail"]["code"] == "personal_simple_request_refused"
     else:
-        # Past the guard, routing answers; the route does not exist.
         assert response.status_code in {404, 405}
 
 
 def test_api_grants_no_cross_origin_reads(app) -> None:
-    # Vite proxies /api in development, so no origin needs CORS.
+    """Vite proxies /api in development, so no origin needs CORS."""
     response = signed_in_client(app).get(
         "/api/projects", headers={"Origin": "http://localhost:5173"}
     )
@@ -821,6 +823,9 @@ def test_project_endpoints(app) -> None:
 def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     app, manifest, tmp_path
 ) -> None:
+    """A degraded graph refuses the patch at append time rather than blocking a conversation turn
+    that might not write one.
+    """
     service = app.state.service
     project_id = app.state.default_project_id
     append_fixture_patch(service, seed_patch())
@@ -872,8 +877,6 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     assert settings.status_code == 409
     assert settings.json()["coherent_revision"] == 2
 
-    # Conversations stay usable: a degraded graph refuses the patch at append
-    # time rather than blocking the turn that might not write one.
     for mode in ("discuss", "work"):
         accepted = _validated_task_request(
             service,
@@ -925,6 +928,7 @@ def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> Non
 def test_remote_display_follows_published_generation_after_interrupted_reconcile(
     app, tmp_path
 ) -> None:
+    """A capture published before display-cache reconciliation must still be visible."""
     project_id = app.state.default_project_id
     client = signed_in_client(app)
     initial = client.get(f"/api/projects/{project_id}").json()
@@ -942,7 +946,6 @@ def test_remote_display_follows_published_generation_after_interrupted_reconcile
     shutil.copytree(app.state.service.history.root, stage, dirs_exist_ok=True)
     workspace._generations.publish(stage)
     assert app.state.catalog.content_generations(project_id, before) != before
-    # A capture published before display-cache reconciliation must still be visible.
     cached = app.state.catalog.cached_snapshot(project_id)
     assert cached is not None
     assert cached["revision"] == 1
@@ -1051,6 +1054,9 @@ def test_slow_project_open_does_not_block_concurrent_task_history(app, monkeypat
     monkeypatch.setattr(app.state.catalog, "_open_service", slow_open_service)
 
     async def drive_concurrently():
+        """The promise is ordering, not latency: task history answers while the project open is
+        still parked.
+        """
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
@@ -1062,9 +1068,6 @@ def test_slow_project_open_does_not_block_concurrent_task_history(app, monkeypat
                     client.get(f"/api/projects/{project_id}/tasks"),
                     timeout=TASK_SETTLE_TIMEOUT,
                 )
-                # The promise is ordering, not latency: task history answered
-                # while the project open was still parked. Timing how fast the
-                # open was entered only measures how loaded the runner is.
                 still_opening = not authoritative.done()
             finally:
                 release.set()
@@ -1093,6 +1096,7 @@ def test_blocking_project_source_read_does_not_stall_health(app, monkeypatch) ->
     monkeypatch.setattr(app.state.service, "index_snapshot", slow_index_snapshot)
 
     async def drive_concurrently():
+        """Ordering, not latency: health answers while the source read is still parked."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
@@ -1102,8 +1106,6 @@ def test_blocking_project_source_read_does_not_stall_health(app, monkeypatch) ->
                 health = await asyncio.wait_for(
                     client.get("/api/health/details"), timeout=TASK_SETTLE_TIMEOUT
                 )
-                # Ordering, not latency: health answered while the source read
-                # was still parked in the patched snapshot call.
                 still_reading = not sources.done()
             finally:
                 release.set()
@@ -1136,6 +1138,7 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
     monkeypatch.setattr(app.state.catalog, "_open_service", slow_open_service)
 
     async def drive_concurrently():
+        """Ordering, not latency: health answers while the shared first open is still parked."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await sign_in_async_client(client, app)
@@ -1146,8 +1149,6 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
                 health = await asyncio.wait_for(
                     client.get("/api/health/details"), timeout=TASK_SETTLE_TIMEOUT
                 )
-                # Ordering, not latency: health answered while the shared first
-                # open was still parked.
                 still_opening = not chats.done()
             finally:
                 release.set()
@@ -1419,6 +1420,7 @@ def test_legacy_direct_human_write_endpoints_are_not_exposed(app) -> None:
 
 
 def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest, tmp_path) -> None:
+    """project-b is a bare record with no manifest, so its page is reported, not rebuilt."""
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = signed_in_client(app)
@@ -1528,7 +1530,6 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     store.fail_agent_task("this-project-cache-reader", "finished for test")
     all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
-    # project-b is a bare record with no manifest: its page is reported, not rebuilt.
     assert all_cleared.json()["project_pages_not_rebuilt"] == ["project-b"]
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
@@ -1965,7 +1966,6 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
         for receipt in completed["debug_receipts"]
         if receipt["category"] == "context_assembled"
     )
-    # Every project repository is readable context.
     assert context_receipt["payload"]["repository_count"] == 2
     assert "source_errors" not in context_receipt["payload"]
     prompt_receipt = next(
@@ -2066,7 +2066,6 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     assert launcher.calls == 2
     assert _applied_revision(frames) == 3
     assert service.history.state().revision == 3
-    # The second launch continues the first native session rather than starting over.
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     correction = launcher.prompts[1]
     assert "set_ontology" not in correction
@@ -2079,7 +2078,6 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     )
     assert "set_ontology" in diagnostic
     assert str(launcher.workspaces[0] / "patch.json") in contract
-    # The correction is the inline prompt itself and points back to the start contract.
     assert contract == correction
     start_path = Path(launcher.prompts[0].splitlines()[1])
     start = launcher.input_snapshots[0][start_path.name]
@@ -2118,7 +2116,11 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
 
 
 def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> None:
-    """Retention: a failure keeps its evidence; a success cleans up after itself."""
+    """Retention: a failure keeps its evidence; a success cleans up after itself.
+
+    The patch is persisted before validation, and rejected drafts never enter canonical history, so
+    the next accepted patch receives the next coherent revision.
+    """
     app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     rejected = agent_patch_json(gated_patch())
@@ -2141,7 +2143,6 @@ def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> 
     failed_stage = failed_launcher.workspaces[0]
     assert failed_stage.is_dir()
     assert (failed_stage / "patch.json").is_file()
-    # The patch is persisted before validation, so the run's work survives.
     assert store.agent_task_patch_output("failed-operation") == rejected
     assert store.agent_task("failed-operation").stage_root == str(failed_stage)
     store.fail_agent_task("failed-operation", _error_texts(failed_frames)[0])
@@ -2159,18 +2160,18 @@ def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> 
         )
     )
 
-    # Rejected agent drafts never enter canonical history, so the next accepted
-    # patch receives the next coherent revision.
     assert _applied_revision(applied_frames) == 3
     assert service.history.state().revision == 3
     assert "rq/transfer-after-shift" in service.history.state().nodes
     assert not applied_launcher.workspaces[0].exists()
     assert store.agent_task("applied-operation").stage_root is None
-    # The failed run's folder is untouched by the successful one.
     assert failed_stage.is_dir()
 
 
 def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> None:
+    """Without the canonical name, two equally plausible candidates are ambiguous and must not be
+    guessed at.
+    """
     patch = agent_patch_json(refresh_patch())
     (tmp_path / "notes.json").write_text('{"kind": "refresh"}', encoding="utf-8")
     (tmp_path / "output.json").write_text(patch, encoding="utf-8")
@@ -2181,8 +2182,6 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
     assert name == "patch.json"
     assert text == patch
 
-    # Without the canonical name, two equally plausible candidates are ambiguous
-    # and must not be guessed at.
     (tmp_path / "patch.json").unlink()
     (tmp_path / "backup.json").write_text(patch, encoding="utf-8")
     with pytest.raises(AgentOutputProblem):
@@ -2262,7 +2261,11 @@ SILENT_DOWNGRADE = (
 def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
     app, tmp_path, degraded: bool
 ) -> None:
-    """A provider that succeeded without honouring the launch must not stay silent."""
+    """A provider that succeeded without honouring the launch must not stay silent.
+
+    The durable original stays on the exit receipt, and the backend, not the browser, decides what
+    each surface shows.
+    """
     store = app.state.background_tasks.store
     execution = _agent_task_execution(store, "degraded-operation")
     outcome = _ProviderOutcome()
@@ -2274,7 +2277,6 @@ def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
     _record_provider_exit(execution, outcome, workspace=tmp_path, remote_stage=None)
 
     expected = SILENT_DOWNGRADE if degraded else None
-    # The durable original stays on the exit receipt...
     receipts = [
         receipt
         for receipt in store.agent_task_receipts("degraded-operation")
@@ -2283,8 +2285,6 @@ def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
     assert len(receipts) == 1
     assert receipts[0].payload.get("degradation") == expected
 
-    # ...and the backend, not the browser, decides what a surface shows. Both the
-    # list a human scans and the detail they open must answer without reading it.
     project_id = store.projects()[0].project_id
     with signed_in_client(app) as client:
         listed = client.get(f"/api/projects/{project_id}/tasks")
@@ -2395,6 +2395,9 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tm
 async def test_remote_stage_is_retained_after_failure_and_after_pause(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """A failed remote run keeps its scratch folder for inspection and for a Resume into the same
+    directory.
+    """
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(
@@ -2508,8 +2511,6 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     ]
 
     assert any("provider failed" in item for item in failed_events)
-    # A failed remote run keeps its scratch folder for inspection and for a
-    # Resume that points the native session back at the same directory.
     assert FakeRemoteStage.instances[0].closed is False
     assert FakeRemoteStage.instances[0].finalized == 3
     assert failed_launcher.calls == 1
@@ -2884,6 +2885,9 @@ def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_pa
 def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     app, manifest, tmp_path, monkeypatch
 ) -> None:
+    """A paused legacy retry made no provider dispatch and has no prepared context or native
+    session; it must not hide attempt 1's useful work.
+    """
     store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     service = app.state.service
@@ -2972,8 +2976,6 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
     assert "patch_retained" not in failed_categories
     assert "patch_correction_requested" not in failed_categories
 
-    # A paused legacy retry made no provider dispatch and has neither prepared
-    # context nor a native session. It must not hide attempt 1's useful work.
     store = app.state.catalog.store
     now = store.now()
     empty_stage = tmp_path / "attempt-2-stage"
@@ -3120,6 +3122,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
 def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
     app, tmp_path, monkeypatch, recovery: str
 ) -> None:
+    """Current schema, validator, and diagnostics reach the session while the master stays a file."""
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3202,12 +3205,9 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
         assert "provider connection dropped" in retry_diagnostics["prior_attempt_diagnostics"][0]
     store = app.state.catalog.store
     prompt = str(launcher.calls[1]["prompt"])
-    # The continuation is sent inline and recorded for the next recovery.
     assert store.agent_task_contract(completed["operation_id"], recovery) == prompt
     assert store.agent_task_contract(completed["operation_id"], "base") is None
     master = launcher.calls[1]["inputs"][launch_contract_path(prompt).name]
-    # Current schema, validator, and diagnostics reach the session: in a master it opens
-    # now, or else inline against the master it holds. The master stays a file.
     bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
     sent = prompt + (master if bootstrap else "")
     assert f"task-{completed['operation_id']}-patch-schema.json" in sent
@@ -3241,18 +3241,18 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
             self.workspaces: list[str] = []
 
         async def stream(self, _provider, _prompt, *, browser_grant=None, **kwargs):
+            """The first attempt writes a patch, then loses its connection before RCP collects it;
+            later launches write nothing.
+            """
             workspace = Path(kwargs["cwd"])
             self.workspaces.append(str(workspace))
             if not self.workspaces[:-1]:
-                # The first attempt writes a patch, then loses its connection
-                # before RCP ever collects it.
                 (workspace / "patch.json").write_text(
                     agent_patch_json(seed_patch()), encoding="utf-8"
                 )
                 yield AgentEvent(event="session", session_id="owned-seed-session")
                 yield AgentEvent(event="error", text="provider connection dropped")
                 return
-            # Every later launch does no work and writes nothing.
             yield AgentEvent(event="session", session_id="owned-seed-session")
             yield AgentEvent(event="done")
 
@@ -3530,6 +3530,9 @@ def test_server_shutdown_pauses_live_background_seed(app) -> None:
 def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     app, manifest, tmp_path
 ) -> None:
+    """A question costs no graph revision even when the agent writes a patch file: the turn carried
+    no human authorization.
+    """
     service = app.state.service
     _record_local_codex_path(app)
     append_fixture_patch(service, seed_patch())
@@ -3588,8 +3591,6 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
         "artifact_omissions": {"discovery_failed": False},
     }
     assert launcher.launch_kwargs[0]["binary"] == "/opt/agents/codex"
-    # A question costs no graph revision, even when the agent writes a patch file:
-    # this turn carried no human authorization and the patch changed nothing anyway.
     assert completed["applied_revision"] is None
     assert service.history.state().revision == 2
     transcript = next((manifest.research_dir / "chat").glob("*.jsonl"))
@@ -3874,7 +3875,6 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
             "mode": "discuss",
-            # Composer edits follow this chat's current session and settings.
             "run_on": "laptop",
             "reasoning": "high",
             "artifact_context": {
@@ -3888,7 +3888,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert asked.status_code == 202
     admitted = admitted_requests[-1]
     assert admitted.mode == "discuss"
-    assert admitted.session_id is None  # The ordinary chat launcher resolves the current session.
+    assert admitted.session_id is None
     assert admitted.reasoning == "high"
     assert admitted.artifact_context is not None
     assert admitted.artifact_context.operation_id == origin.operation_id
@@ -4498,7 +4498,6 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(
     prompt = launcher.prompts[1]
     assert launcher.sessions == [None, session_id]
     assert store.agent_task_contract(turns[0]["operation_id"], "session_master") == start
-    # The follow-up has its own stage; the session's exact master is restored into it.
     assert master_path.parent != start_path.parent
     assert master_path.parent.parent.name == f"paper-{turns[1]['operation_id']}"
     assert master == start
@@ -4663,7 +4662,6 @@ async def test_discuss_answers_without_applying_a_patch(manifest, tmp_path, writ
     assert [event.text for event in events if event.event == "answer"] == [answer]
     assert not _error_texts(frames)
     assert events[-1].event == "done"
-    # Answering a question is not a graph edit.
     assert _applied_revision(frames) is None
     assert service.history.state().revision == revision_before
     transcript = next((manifest.research_dir / "chat").glob("*.jsonl"))
@@ -4715,6 +4713,9 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
 
 @pytest.mark.asyncio
 async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest, tmp_path) -> None:
+    """No project extension was ever defined, so the extension pointer stays out while the base
+    vocabulary ships; none of the ingest machinery appears.
+    """
     app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher([{}], message="Answered.")
     request = RunRequest(
@@ -4734,13 +4735,9 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
     contract = Path(prompt.splitlines()[1]).read_text(encoding="utf-8")
     assert "hyp/replanning-restores-plasticity" in contract
     assert str(manifest.research_dir / "graph.json") in contract
-    # No project extension was ever defined, so the extension pointer and its
-    # authoring rules stay out; the base vocabulary always ships.
     assert "graph.json#ontology" not in contract
     assert prompt.endswith("<message>\nWhat does this claim?\n</message>")
     assert not any(name.endswith("human-request.txt") for name in launcher.input_snapshots[0])
-    # None of the ingest machinery: no evidence slices, no cursors, no coverage
-    # bookkeeping, no multi-agent synthesis contract.
     assert "slice_sha256" not in prompt
     assert "cursor_note" not in prompt
     assert "coverage.sessions_read" not in prompt
@@ -4748,6 +4745,7 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
 
 @pytest.mark.asyncio
 async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) -> None:
+    """The answer still reaches the human; only the graph change is refused."""
     app, service = _seeded_project(manifest, tmp_path)
     revision_before = service.history.state().revision
     patch = Patch(
@@ -4770,7 +4768,6 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
 
     frames = [item async for item in stream_work_run(service, launcher, request, tmp_path / "data")]
 
-    # The answer still reaches the human; only the graph change is refused.
     assert not _error_texts(frames)
     assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
     graph_update = _graph_update(frames)
@@ -4853,7 +4850,6 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     workspace = first.workspaces[0]
     assert workspace.is_dir()
 
-    # Turn two writes no patch at all, in the same folder, and must not inherit one.
     second = ScriptedLauncher([{}], message="Second answer.")
     second.native_session_id = first.native_session_id
     second_request = request.model_copy(
@@ -4896,7 +4892,7 @@ async def test_work_patch_is_applied_to_live_state_without_correction(
 
     class RacingLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
-            # A refresh lands between context assembly and the patch being applied.
+            """A refresh lands between context assembly and the patch being applied."""
             append_fixture_patch(service, refresh_patch("rq/landed-first"))
             async for event in super().stream(
                 provider, prompt, browser_grant=browser_grant, **kwargs
@@ -5004,7 +5000,6 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
     assert not any(path.name == "conversations" for path in launcher.read_dirs[0])
     assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [operation_id]
 
-    # The human works on the graph while the turn is paused.
     append_fixture_patch(service, refresh_patch("rq/landed-while-paused"))
     resumed_response = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/resume", json={}
@@ -5203,7 +5198,6 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         graph_revision=1,
         attempt=2,
     )
-    # A Resume continues a native session RCP already observed on this chat.
     profile = service.resolve_agent_profile("node_chat", run_on="remote-1")
     store.create_agent_task(
         AgentTaskRecord(
@@ -5450,6 +5444,10 @@ def _wait_for_status(
     operation_id: str,
     statuses: set[str],
 ) -> dict[str, object]:
+    """Every caller waits for a status a run rests in, so waiting longer cannot miss one. A
+    two-second budget expired under loaded runners and made real and slow failures look alike.
+    """
+
     def matching_status() -> dict[str, object] | None:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200
@@ -5460,10 +5458,6 @@ def _wait_for_status(
 
     return wait_until(
         matching_status,
-        # Every caller waits for a status a background run rests in, never one
-        # it passes through, so waiting longer cannot miss one. Two seconds was
-        # a budget rather than a deadline: it held locally and expired under a
-        # loaded runner, which made a real failure and a slow one look alike.
         timeout=TASK_SETTLE_TIMEOUT,
         detail=f"background run did not reach {sorted(statuses)}",
     )
@@ -5586,7 +5580,6 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert second_prompt.count(second_message) == 1
     assert str(master_path) in second_prompt
     assert str(workspace / "turns" / second_operation_id / "artifacts") in second_prompt
-    # Only this turn's own command client changed; the master holds every other value.
     second_delta = changed_values(second_prompt)
     assert set(second_delta) == {"patch.command_client"}
     assert second_delta["patch.command_client"] != prompt_values["patch"]["command_client"]
@@ -5631,6 +5624,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
 
 
 def test_chat_in_a_copied_data_directory_retries_in_a_fresh_session(manifest, tmp_path) -> None:
+    """The old directory stays behind, as after a copy, so its saved stage path still exists."""
     app, service = _seeded_project(manifest, tmp_path)
     project_id = app.state.default_project_id
     launcher = ScriptedLauncher([{}], message="Work answered.")
@@ -5652,7 +5646,6 @@ def test_chat_in_a_copied_data_directory_retries_in_a_fresh_session(manifest, tm
     }
     first = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=turn)
     assert _wait_for_run(client, project_id, first.json()["operation_id"])["status"] == "succeeded"
-    # The old directory stays behind, as after a copy; its saved stage path still exists.
     shutil.copytree(data_dirs[0], tmp_path / "new-data")
     data_dirs.append(tmp_path / "new-data")
 
@@ -5663,7 +5656,7 @@ def test_chat_in_a_copied_data_directory_retries_in_a_fresh_session(manifest, tm
     failed = _wait_for_run(client, project_id, second.json()["operation_id"])
     assert failed["status"] == "failed"
     assert launcher.calls == 1
-    launcher.native_session_id = str(uuid.uuid4())  # A fresh provider session has a new id.
+    launcher.native_session_id = str(uuid.uuid4())
     retried = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
     )
@@ -5683,6 +5676,7 @@ def test_chat_in_a_copied_data_directory_retries_in_a_fresh_session(manifest, tm
 def test_work_launch_receipt_names_the_canonical_state_boundary(
     app, manifest, tmp_path, provider: str
 ) -> None:
+    """Claude's Work shell is unbounded, so only its file tools keep canonical state read-only."""
     store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -5714,7 +5708,6 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
     )
     repository_root = str(Path(manifest.repository_map["repo-a"].path).resolve())
-    # Claude's Work shell is unbounded, so only its file tools keep canonical state read-only.
     assert (
         launch["payload"]["canonical_state_boundary"]
         == {"codex": "provider_enforced", "claude": "file_tools_only"}[provider]
@@ -5726,7 +5719,6 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
             "claude": "claude.permission-allowlist.v1",
         }[provider]
     )
-    # Work writes every repository the project's agents can write.
     assert launch["payload"]["canonical_repository_roots"] == [
         repository_root,
         str(Path(manifest.repository_map["repo-b"].path).resolve()),
@@ -5867,6 +5859,9 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
 async def test_exhausted_work_patch_correction_preserves_successful_answer(
     manifest, tmp_path
 ) -> None:
+    """An unchanged candidate still goes through live validation, so correction stays bounded and
+    reports the substantive diagnostic.
+    """
     app, service = _seeded_project(manifest, tmp_path)
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     launcher = ScriptedLauncher([{"patch.json": invalid}], message="The run finished.")
@@ -5885,8 +5880,6 @@ async def test_exhausted_work_patch_correction_preserves_successful_answer(
     assert graph_update["repairable"] is False
     assert launcher.calls == 3
     assert service.history.state().revision == 2
-    # An unchanged candidate still goes through live validation. This one remains
-    # invalid, so correction stays bounded and reports the substantive diagnostic.
     second_correction = next(
         content
         for name, content in launcher.input_snapshots[2].items()
@@ -6530,8 +6523,9 @@ def _work_turn_whose_apply_loses_canonical_state(
 def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    # The turn launched while a group sibling was readable; Apply again must
-    # stamp that recorded scope, not re-resolve one without the group.
+    """The turn launched while a group sibling was readable; Apply again must stamp that recorded
+    scope, not re-resolve one without the group.
+    """
     launch_scope = ChatContext.read_scope.fget
 
     def with_sibling(context: ChatContext) -> RepositoryReadScope:
@@ -6575,6 +6569,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
 def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twice(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """Replaying the landed commit fails, and the outcome must keep that the commit is present."""
     app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
         manifest,
         tmp_path,
@@ -6589,8 +6584,6 @@ def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twi
     landed_revision = service.history.state().revision
     assert "rq/applied-again" in service.history.state().nodes
 
-    # The binding check finds the landed commit; replaying it then fails, and the
-    # outcome must keep what was observed: the commit is present.
     real_load_patches = service.history.load_patches
     real_materialization = service.history.current_materialization
 
@@ -6630,6 +6623,9 @@ def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twi
 def test_apply_again_rechecks_for_a_later_applied_turn_under_the_run_lock(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    """The eligibility check ran before the later turn committed; only the recheck under the run
+    lock can see it.
+    """
     later_patch = agent_patch_json(
         refresh_patch("rq/later-turn").model_copy(update={"kind": "work"})
     )
@@ -6657,8 +6653,6 @@ def test_apply_again_rechecks_for_a_later_applied_turn_under_the_run_lock(
     assert later_task["result"]["graph_update"]["status"] == "applied"
     revision = service.history.state().revision
 
-    # The eligibility check ran before the later turn committed; only the
-    # recheck under the run lock can see it.
     real_later_applied = store.later_chat_turn_may_have_committed
 
     def not_yet(record):
@@ -7228,6 +7222,10 @@ def test_experiment_validation_status_does_not_depend_on_exception_wording(
 
 
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:
+    """The projection ships its own split, so no client has to recognise which sentences a human
+    resolves in the graph. The fixture turn bound no native session, so the episode terminalizes
+    without a report.
+    """
     app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=1))
     project_id = app.state.default_project_id
@@ -7315,8 +7313,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert control["active"] is False
     assert control["paused"] is True
     assert control["ready"] is False
-    # The projection ships its own split, so no client has to recognise which of
-    # these sentences a human resolves in the graph.
     assert control["graph_reasons"] == []
     assert control["operational"]["episode_live"] is True
 
@@ -7335,8 +7331,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert exhausted_parent is not None
     assert exhausted_parent.status == "needs_action"
     assert exhausted_parent.ending == "exhausted"
-    # The fixture turn bound no native session, so no report was ever possible and
-    # the episode terminalizes without one rather than posting a report error.
     assert exhausted_parent.wrapup_state == "not_started"
     assert exhausted_parent.wrapup_error is None
     assert store.episode_wrapup(old_episode) is None
@@ -7374,7 +7368,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     }
 
     new_loop_chat_id = str(uuid.uuid4())
-    # A new human run takes the project's current writable set.
     writable = sorted(service.history.state().project_truth_scope)
 
     async def stream(_project_id, kind, request, _execution):
@@ -7675,6 +7668,9 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     manifest, tmp_path
 ) -> None:
+    """A retained main-graph watcher may predate durable origin tasks, so the current episode root
+    must not be forged as its provenance.
+    """
     app, service = _experiment_project(manifest, tmp_path)
     attempt = {
         "id": "attempt-1",
@@ -7749,8 +7745,6 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     )
     execution.store.create_watchers(
         [
-            # A retained main-graph watcher may predate durable origin tasks; do not
-            # forge the current episode root as provenance for this prior episode.
             WatcherRecord(
                 watcher_id="stopped-prior-episode",
                 project_id=app.state.default_project_id,
@@ -8350,7 +8344,6 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         message.text != "RCP watcher update for the completed fixture."
         for message in transcript.messages
     )
-    # The wake tells the resumed session the machines as they are now.
     wake_contract = Path(wake_launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
     assert "Use /scratch/at-wake" in wake_contract
     persisted = store.watchers(app.state.default_project_id)
@@ -8395,6 +8388,7 @@ def _stuck_experiment_patch() -> Patch:
 
 
 def test_a_human_may_release_an_attempt_without_it_gating_the_loop(app) -> None:
+    """A finished attempt is a record, not something a later release may rewrite."""
     project_id = app.state.default_project_id
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -8427,7 +8421,6 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(app) -> None:
     after = client.get(f"/api/projects/{project_id}").json()["experiment_control"]["exp/stuck"]
     assert after["active"] is False
     assert after["ready"] is True
-    # A finished attempt is a record, not something a later release may rewrite.
     again = client.post(
         f"/api/projects/{project_id}/sync",
         json={
@@ -8458,7 +8451,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
 
     class InspectingLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
-            # A succeeded run reclaims its scratch folder, so read it in place.
+            """A succeeded run reclaims its scratch folder, so the bundle is read in place."""
             bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
             observed["contract"] = _local_task_contract(prompt)
             observed["staged"] = sorted(
@@ -8483,7 +8476,6 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
     completed = _wait_for_run(client, project_id, operation_id)
 
     assert completed["status"] == "succeeded"
-    # The workflow's dependency closure is resolved and recorded with exact versions.
     assert [
         (item["kind"], item["id"], item["version"])
         for item in completed["request"]["resolved_skill_packages"]
@@ -8493,7 +8485,6 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
         .resolve(workflow_ids=["research-graph-audit"])
         .resolved_skill_packages
     ]
-    # The workflow file and every declared dependency are staged together, alone.
     assert observed["staged"] == [
         "skill/evidence-triage/SKILL.md",
         "skill/evidence-triage/references/worked-examples.md",
@@ -8503,10 +8494,8 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
         "skill/graph-audit/references/structures.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]
-    # The contract points at the staged folders; the bodies stay on disk.
     contract = observed["contract"]
     assert f"rcp-skills-{operation_id}" in contract
-    # Nothing about the selection reaches canonical state.
     research_dir = service.manifest.research_dir
     assert not list(research_dir.rglob("*SKILL.md"))
     assert not list(research_dir.rglob("*WORKFLOW.md"))
@@ -8521,7 +8510,6 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_pat
         "provider": "codex",
         "run_on": "laptop",
         "run_truth_scope": ["repo-a"],
-        # What the earlier attempt ran with, before the package was upgraded.
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
 
@@ -8633,7 +8621,10 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
 
 
 def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app, tmp_path) -> None:
-    """A correction settles against its own launch's baseline, as it would live."""
+    """A correction settles against its own launch's baseline, as it would live.
+
+    The primary pass ran, and its correction launched over the Patch it had left.
+    """
 
     import dataclasses
 
@@ -8664,7 +8655,6 @@ def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app
             )
         )
     )
-    # The primary pass ran; its correction launched over the Patch it had left.
     patch_text = agent_patch_json(refresh_patch())
     store.begin_remote_provider_pass(
         execution.operation_id, "host", "/stage", "/stage/primary.pid", supervised=True
@@ -8699,7 +8689,12 @@ def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app
 def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     app, tmp_path, monkeypatch
 ) -> None:
-    """A dropped link leaves the pass to its host; the recorded pass then applies."""
+    """A dropped link leaves the pass to its host; the recorded pass then applies.
+
+    A relaunch serves the recorded pass's Patch checks and graph reads from what the launch saved.
+    Losing the state host while applying is an outage the pass waits out, even when only the
+    commit's acknowledgement was lost.
+    """
 
     from rcp.agents.command_protocol import GraphDiffCommandRequest
     from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
@@ -8733,7 +8728,6 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
         return start(staged, **kwargs)
 
     monkeypatch.setattr(graph_module, "start_work_validator_mailbox", record_the_mailbox)
-    # The launch retains what a recorded pass needs before the provider starts.
     asyncio.run(
         events(
             stream_graph_run(
@@ -8743,7 +8737,6 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     )
     assert recorded_finalizer(store, execution.operation_id) is finalize_recorded_graph_result
 
-    # A relaunch serves that pass's Patch checks and graph reads from what it saved.
     restored = {}
     monkeypatch.setattr(graph_module, "load_work_mailbox_context", lambda _execution: saved)
     monkeypatch.setattr(
@@ -8771,8 +8764,6 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
 
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
-    # Losing the state host while applying is an outage the pass waits out, even
-    # when the commit landed and only its acknowledgement was lost.
     from rcp.transport.state import BatchPublishFailed
 
     append = service.history.append
@@ -8812,11 +8803,12 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
 
 @pytest.mark.parametrize("removed", [False, True])
 def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, removed):
+    """These synthetic homes never had a provider process; process inspection is covered by the home
+    migration tests.
+    """
     from rcp.providers.codex import homes
     from rcp.providers.codex.auth import CodexAuthentication
 
-    # These synthetic homes have never had a provider process; process inspection
-    # itself is covered by the home migration tests.
     monkeypatch.setattr(homes, "_legacy_home_idle", lambda _: True)
     store = app.state.catalog.store
     launcher = app.state.catalog.launcher

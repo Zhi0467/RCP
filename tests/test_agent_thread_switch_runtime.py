@@ -66,7 +66,6 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
             yield AgentEvent(event="answer", text=summary)
         else:
             if provider == "codex":
-                # The fresh session's history is a staged file the prompt points to.
                 (seed_path,) = re.findall(r"`([^`]*thread-history-[0-9a-f]{16}\.md)`", prompt)
                 assert summary in Path(seed_path).read_text() and summary not in prompt
                 assert "earlier display answer" not in prompt
@@ -141,7 +140,6 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
     receipt = store.agent_task_session_resolutions([execution.operation_id])[execution.operation_id]
     assert receipt.payload["reason_code"] == "provider_switch_compacted"
     assert execution.stage_root is not None
-    # The summary lives in one staged history file in this thread's private stage.
     holders = [
         path
         for path in Path(execution.stage_root).rglob("*")
