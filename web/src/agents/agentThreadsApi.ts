@@ -19,7 +19,10 @@ import type {
   ChatMessage,
   ChatTranscript,
   SteerRequest,
+  WatcherRecord,
 } from "../core/types";
+import { MAIN_GRAPH } from "../core/graphTarget.ts";
+import { visibleChatWatchers } from "../experiments/runProjection.ts";
 
 type Request = typeof api;
 type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
@@ -31,7 +34,7 @@ export function threadPath(threadId: string): string {
   return `${THREADS}/${encodeURIComponent(threadId)}`;
 }
 
-function projectPath(thread: ThreadTaskOwner): string {
+export function threadProjectPath(thread: ThreadTaskOwner): string {
   if (thread.kind !== "project" || !thread.project_id)
     throw new Error("This thread has no project.");
   return `/api/projects/${encodeURIComponent(thread.project_id)}`;
@@ -41,7 +44,7 @@ function projectPath(thread: ThreadTaskOwner): string {
 export function threadTasksPath(thread: ThreadTaskOwner): string {
   return thread.kind === "space"
     ? `${threadPath(thread.thread_id)}/tasks`
-    : `${projectPath(thread)}/tasks`;
+    : `${threadProjectPath(thread)}/tasks`;
 }
 
 /** Lists every thread, creating any that are missing. */
@@ -56,7 +59,7 @@ export function loadThreadTranscript(
   return request(
     thread.kind === "space"
       ? `${threadPath(thread.thread_id)}/transcript`
-      : `${projectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}`,
+      : `${threadProjectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}`,
   );
 }
 
@@ -75,7 +78,7 @@ export async function sendThreadTurn(
   if (thread.kind === "space")
     return request(`${threadPath(thread.thread_id)}/turns`, init(turn), { retryIdentity: false });
   const task = await request<AgentTask>(
-    `${projectPath(thread)}/tasks/project_chat`,
+    `${threadProjectPath(thread)}/tasks/project_chat`,
     init({ chat_scope: "project", chat_id: thread.thread_id, mode: "work", ...turn }),
     { retryIdentity: false },
   );
@@ -130,7 +133,9 @@ export async function loadThreadQuestions(
   request: Request = api,
 ): Promise<AgentQuestion[]> {
   if (thread.kind === "space") return [];
-  return request(`${projectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}/questions`);
+  return request(
+    `${threadProjectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}/questions`,
+  );
 }
 
 export function renameThread(
@@ -185,6 +190,26 @@ export function loadThreadSchedules(
   request: Request = api,
 ): Promise<AgentScheduleList> {
   return request(`${threadPath(threadId)}/schedules`);
+}
+
+/** A project thread's live watchers; the Space thread has none. */
+export async function loadThreadWatchers(
+  thread: ThreadTaskOwner,
+  request: Request = api,
+): Promise<WatcherRecord[]> {
+  if (thread.kind !== "project") return [];
+  const watchers: WatcherRecord[] = await request(`${threadProjectPath(thread)}/watchers`);
+  return visibleChatWatchers(watchers, thread.thread_id, null, MAIN_GRAPH);
+}
+
+export function stopThreadWatcher(
+  thread: ThreadTaskOwner,
+  watcherId: string,
+  request: Request = api,
+): Promise<WatcherRecord> {
+  return request(`${threadProjectPath(thread)}/watchers/${encodeURIComponent(watcherId)}/stop`, {
+    method: "POST",
+  });
 }
 
 export function cancelThreadSchedule(

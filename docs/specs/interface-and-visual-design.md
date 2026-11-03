@@ -373,6 +373,8 @@ Code Copy is icon-only and copies the exact text. It has 44px phone targets.
 New chats open at the bottom and follow new content.
 Scrolled-up chats retain their exact session-memory position despite later loads.
 On touch phones, Return inserts a newline. Only Send sends.
+In an empty composer, Up and Down scroll the transcript; once it holds text, or
+the package menu is open, they move the caret or the highlight as before.
 
 `/` or `$` selects packages. Arrow keys highlight a package, Enter chooses it,
 and Escape dismisses the picker. Selections are per turn.
@@ -441,7 +443,9 @@ Agent has a left rail with the member's Space thread first, then each project
 thread. Rows show the agent name,
 the project or Space, and a mark. The Space row always shows the Space icon; a
 project row shows a spinner while live, a needs-you mark, an unread dot, or at
-rest the chat icon. Every row ends with live or the time since it last moved. The rail folds like
+rest the chat icon. Every row ends with live or the time since it last moved,
+which advances each minute; an unread row puts that time in a filled teal badge
+and bolds its name, so unread threads read at a glance. The rail folds like
 the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
 
@@ -449,8 +453,10 @@ Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
 board conversations stay in that list. The thread header holds an Upcoming
-button, present only when schedules exist, that counts the ones that will run
-without the member and opens a popover of them, sized to the viewport and
+button, present only when schedules or the thread's live watchers exist, that
+counts the schedules that will run without the member plus those watchers and
+opens a popover of them. A graph watcher names its node by title and can be
+stopped there. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
