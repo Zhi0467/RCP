@@ -27,9 +27,10 @@ import rcp
 from tests.lifecycles.catalog import ENTRIES, NOT_LIFECYCLE, UNKNOWN_TABLE
 from tests.lifecycles.consolidation import Consolidation
 from tests.lifecycles.handoff import Handoff
+from tests.lifecycles.proposals import Proposals
 from tests.lifecycles.writers import UNKNOWN, scan, scan_source, schema_tables
 
-OWNERS: tuple[Any, ...] = (Handoff(), Consolidation(), *ENTRIES)
+OWNERS: tuple[Any, ...] = (Handoff(), Proposals(), Consolidation(), *ENTRIES)
 PENDING_TABLES = frozenset(
     {
         "graph_runs",
@@ -41,8 +42,6 @@ PENDING_TABLES = frozenset(
         "episode_report_attempts",
         "episode_reports",
         "agent_schedules",
-        "approval_cards",
-        "questions",
     }
 )
 
