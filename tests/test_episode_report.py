@@ -989,6 +989,25 @@ def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest,
     assert episode.report_attempts_used == 3
 
 
+def test_a_retried_report_runs_under_its_concluding_turns_agent_profile(manifest, tmp_path):
+    from rcp.api.task_requests import resolved_agent_surface
+
+    _service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    store.interrupt_active_agent_tasks()
+    retried = store.retry_episode_report_allocation(request.episode_id)
+
+    surfaces = {
+        operation_id: resolved_agent_surface(
+            store,
+            "episode_report",
+            request,
+            parent_operation_id=store.agent_task(operation_id).parent_operation_id,
+        )
+        for operation_id in (execution.operation_id, retried.operation_id)
+    }
+    assert set(surfaces.values()) == {"node_chat"}
+
+
 @pytest.mark.asyncio
 async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recoverable(
     manifest, tmp_path
