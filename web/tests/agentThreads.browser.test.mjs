@@ -106,6 +106,13 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     await thread.locator(".chat-progress").waitFor();
     assert.equal(await thread.locator(".chat-progress li").count(), 4);
     assert.equal(await thread.locator('.chat-markdown a[href^="#/projects/"]').count(), 1);
+    assert.equal(
+      await thread
+        .locator(".node-chat-line.human .node-chat-text")
+        .first()
+        .evaluate((text) => getComputedStyle(text).whiteSpace),
+      "pre-wrap",
+    );
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/agent-space-1440.png` });
 

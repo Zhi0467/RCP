@@ -356,6 +356,9 @@
 .agent-thread .node-chat-lines > * {
   white-space: normal;
 }
+.agent-thread .node-chat-line.human .node-chat-text {
+  white-space: pre-wrap;
+}
 .agent-thread .node-chat-line.agent .chat-markdown p {
   margin: 0 0 10px;
 }
