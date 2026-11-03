@@ -481,11 +481,12 @@ def _dispatch_thread(poller, thread_id: str, schedules, now: datetime) -> None:
             RunRequest.model_validate(task.request),
             authorized_by=task.authorized_by,
         )
+        claimed = store.claim_agent_schedule_wake(schedules, task)
     except (AdmissionRefused, AgentTaskAdmissionConflict, ValueError) as exc:
-        # Signed out, machine offline, or archived: keep the notes and say why.
+        # Signed out, machine offline, archived, or moving: keep the notes and say why.
         store.defer_agent_schedules(schedules, str(exc))
         return
-    if store.claim_agent_schedule_wake(schedules, task):
+    if claimed:
         poller.tasks.launch_admitted(task.operation_id)
 
 

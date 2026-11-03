@@ -322,8 +322,8 @@ occurrence in one transaction before the automatic-launch cooldown check. Wake
 dispatch then runs first in the tick, in its own error boundary, per thread.
 One-shot schedules, and repeats past their bounds, become done. Notes stay pending while the thread's turn is
 active or awaiting Resume. A wake that provider sign-in, machine dependencies, or
-a thread refusal defers keeps its notes pending, records `deferred_reason`, and
-retries each tick. Once eligible, one atomic admission claims all observed notes
+a thread or project refusal defers, at admission or at the claim, keeps its notes
+pending, records `deferred_reason`, and retries each tick. Once eligible, one atomic admission claims all observed notes
 for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
 its missed fire count. The wake runs the thread's saved agent pick, else
 the Space default on a Space thread or the latest turn's agent on a project

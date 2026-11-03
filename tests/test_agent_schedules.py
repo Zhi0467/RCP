@@ -486,7 +486,8 @@ def test_schedule_wake_rechecks_transfer_fence(schedule_store, monkeypatch):
         schedule_store.advance_agent_schedules(datetime.fromisoformat(now)),
     )
     assert launched == []
-    assert schedule_store.agent_schedules()[0].pending_since is not None
+    row = schedule_store.agent_schedules()[0]
+    assert row.pending_since is not None and row.deferred_reason
     with schedule_store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 1
 
