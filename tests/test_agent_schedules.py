@@ -1122,8 +1122,20 @@ def test_wake_interval_gap_and_invalid_combinations_are_refused(schedule_store):
         command(action="pause")
 
 
-def test_a_note_waiting_before_v74_still_wakes(schedule_store):
-    """Migration v74 backfills one fire for a note that waited across the upgrade."""
+@pytest.mark.parametrize(
+    ("columns", "values", "missed"),
+    [
+        ("at_local, state", "'2026-01-15T09:00', 'done'", 0),
+        ("every_minutes, next_fire_at, state", "60, '2026-01-15T12:00:00+00:00', 'active'", 2),
+        ("cron, next_fire_at, state", "'0 * * * *', '2026-01-15T12:00:00+00:00', 'active'", 2),
+    ],
+)
+def test_a_note_waiting_before_v74_wakes_with_the_fires_it_held(
+    schedule_store, columns, values, missed
+):
+    """Migration v74 counts the fires a waiting note's schedule advanced past, as v73 did."""
+    import json
+
     from rcp.runs.agent_schedules import schedule_wake_message
     from rcp.storage.agent_schedules import migrate_agent_schedule_pending_fires
 
@@ -1131,13 +1143,14 @@ def test_a_note_waiting_before_v74_still_wakes(schedule_store):
         connection.execute("ALTER TABLE agent_schedules DROP COLUMN pending_fires")
         connection.execute(
             "INSERT INTO agent_schedules (schedule_id, thread_id, created_operation_id, "
-            "idempotency_key, at_local, timezone, note, state, pending_since, created_at) "
-            "VALUES ('s', 'thread', 'op', 'k', '2026-01-15T09:00', 'UTC', 'Check', 'done', "
-            "'2026-01-15T09:00:00+00:00', '2026-01-15T08:00:00+00:00')"
+            f"idempotency_key, timezone, note, pending_since, created_at, {columns}) "
+            "VALUES ('s', 'thread', 'op', 'k', 'UTC', 'Check', "
+            f"'2026-01-15T09:00:00+00:00', '2026-01-15T08:00:00+00:00', {values})"
         )
         migrate_agent_schedule_pending_fires(connection)
     [schedule] = schedule_store.agent_schedules("thread")
 
-    message = schedule_wake_message([schedule], datetime(2026, 1, 15, 10, tzinfo=UTC))
+    message = schedule_wake_message([schedule], datetime(2026, 1, 15, 12, 30, tzinfo=UTC))
 
-    assert '"missed_fires": 0' in message
+    [note] = json.loads(message[message.index("\n") + 1 :])
+    assert note["missed_fires"] == missed

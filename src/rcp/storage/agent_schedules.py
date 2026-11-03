@@ -148,13 +148,47 @@ def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int 
 def migrate_agent_schedule_pending_fires(connection: sqlite3.Connection) -> None:
     """Count the fires a waiting note holds, so a wake reports only fires within its bounds.
 
-    A note already waiting has no recorded count, so it wakes as one fire.
+    A note already waiting holds the fires its schedule advanced past since it began
+    waiting, which the pre-v74 wake counted from ``pending_since`` at dispatch.
     """
 
     connection.execute(
         "ALTER TABLE agent_schedules ADD COLUMN pending_fires INTEGER CHECK(pending_fires >= 1)"
     )
-    connection.execute("UPDATE agent_schedules SET pending_fires=1 WHERE pending_since IS NOT NULL")
+    rows = connection.execute(
+        "SELECT * FROM agent_schedules WHERE pending_since IS NOT NULL"
+    ).fetchall()
+    connection.executemany(
+        "UPDATE agent_schedules SET pending_fires=? WHERE schedule_id=?",
+        [
+            (_waiting_fires(AgentSchedule.model_validate(dict(row))), row["schedule_id"])
+            for row in rows
+        ],
+    )
+
+
+def _waiting_fires(schedule: AgentSchedule) -> int:
+    """The fires due from ``pending_since`` up to, not including, the next fire.
+
+    A one-shot holds one fire. A schedule with no next fire has ended; its fires run to
+    ``--until``, and without one only the first fire is known.
+    """
+    from rcp.consolidation import cron_occurrence_count
+
+    assert schedule.pending_since is not None
+    due = datetime.fromisoformat(schedule.pending_since)
+    if schedule.next_fire_at is not None:
+        end = datetime.fromisoformat(schedule.next_fire_at) - timedelta(microseconds=1)
+    elif schedule.until_local is not None:
+        end = local_instant(schedule.until_local, schedule.timezone)
+    else:
+        return 1
+    if schedule.at_local is not None or end < due:
+        return 1
+    if schedule.every_minutes is not None:
+        return (end - due) // timedelta(minutes=schedule.every_minutes) + 1
+    assert schedule.cron is not None
+    return max(1, cron_occurrence_count(schedule.cron, schedule.timezone, due, end))
 
 
 def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
