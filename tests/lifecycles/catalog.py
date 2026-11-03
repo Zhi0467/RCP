@@ -1115,9 +1115,6 @@ UNKNOWN_TABLE: dict[str, str] = {
     "rcp.paper.persistence:prune": "prunes paper_updates and paper_doc_states of deleted files",
     "rcp.runs.tasks.work:record_work_graph_failure": "prose that reads as SQL, not a write",
     "rcp.server_ops.provider_update:_pending_steps": "prose that reads as SQL, not a write",
-    "rcp.storage.agent_tasks:AgentTaskStoreMixin.detach_agent_tasks_for_history": (
-        "clears writing_sessions, chat_session_contexts and graph_seen_heads"
-    ),
     "rcp.storage.base:AppStoreBase._rebuild_storage_table": (
         "schema migration copies a table's rows into its rebuilt self"
     ),

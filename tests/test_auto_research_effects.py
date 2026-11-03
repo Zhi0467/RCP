@@ -675,6 +675,7 @@ def test_worker_pause_resignals_pausing_and_accepts_an_already_paused_attempt(
     worker = _create_routed_worker(store, auto_research, root, status="queued")
     signals: list[str] = []
     monkeypatch.setattr(background, "_signal_agent_task_pause", signals.append)
+    monkeypatch.setattr(background, "_worker_owns", lambda _operation_id: True)
 
     first = pause_auto_research_child_work(
         background,
@@ -709,6 +710,7 @@ def test_worker_stop_recovers_the_split_after_durable_route_stop(
     worker = _create_routed_worker(store, auto_research, root, status="queued")
     signals: list[str] = []
     monkeypatch.setattr(background, "_signal_agent_task_pause", signals.append)
+    monkeypatch.setattr(background, "_worker_owns", lambda _operation_id: True)
 
     store.request_auto_research_child_work_stop(worker.operation_id)
     recovered = stop_auto_research_child_work(
@@ -752,6 +754,7 @@ def test_worker_stop_rereads_the_route_before_pausing_its_current_attempt(
         stage_root=str(stage),
     )
     background = BackgroundAgentTasks(store, _successful_stream)
+    monkeypatch.setattr(background, "_worker_owns", lambda _operation_id: True)
     request_stop = store.request_auto_research_child_work_stop
     raced_attempt: AgentTaskRecord | None = None
 

@@ -48,11 +48,15 @@ from rcp.storage import (
     AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
-    ProjectRecord,
     WatcherContinuation,
     WatcherRecord,
 )
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from tests.lifecycles.agent_task import admitted_launch_task as _admitted_launch_task
+from tests.lifecycles.agent_task import done_stream as _done_stream
+from tests.lifecycles.agent_task import seeded_store as _store
+from tests.lifecycles.agent_task import sse as _sse
+from tests.lifecycles.agent_task import work_request as _work_request
 
 from .episode_report_helpers import stored_report
 from .helpers import (
@@ -61,15 +65,10 @@ from .helpers import (
     record_launched_experiment_turn,
     wait_for_task,
     wait_until,
-    write_local_test_manifest,
 )
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
-
-
-def _sse(event: AgentEvent) -> str:
-    return f"data: {event.model_dump_json()}\n\n"
 
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
@@ -79,21 +78,6 @@ def test_sse_preserves_unicode_line_separators(newline):
     event = AgentEvent(event="answer", text="before\x85middle\u2028more\u2029after")
     frame = encode_sse(event).replace("\n", newline)
     assert background_module._event_from_sse(frame) == event
-
-
-def _store(tmp_path: Path) -> AppStore:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    store.upsert_project(
-        ProjectRecord(
-            project_id="project",
-            locator=str(write_local_test_manifest(tmp_path)),
-            name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
-            added_at=store.now(),
-        )
-    )
-    return store
 
 
 def _auto_start(**updates: object) -> AutoResearchStartRequest:
@@ -222,59 +206,6 @@ def _child_experiment_route(store, parent_id, root_id, child_id, goal):
         created_at=now,
         updated_at=now,
     )
-
-
-def _work_request(chat_id, *, message="Exercise the admitted launch boundary."):
-    return RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id=chat_id,
-        message=message,
-        mode="work",
-        patch_kind="work",
-    )
-
-
-def _admitted_launch_task(
-    store: AppStore,
-    *,
-    operation_id: str,
-    request: RunRequest | None = None,
-    parent_operation_id: str | None = None,
-    record_updates: dict[str, object] | None = None,
-    continuation_cause: str = "fresh",
-) -> AgentTaskRecord:
-    request = request or _work_request(f"launch-{operation_id}")
-    authority = resolve_dispatch_authority("project_chat", request)
-    assert authority is not None
-    now = store.now()
-    record = AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        kind="project_chat",
-        status="queued",
-        request=request.model_dump(mode="json"),
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
-        attempt=2 if parent_operation_id is not None else 1,
-        parent_operation_id=parent_operation_id,
-        phase="queued",
-        last_activity_at=now,
-        authorized_by=fabricated_authorizer("Researcher"),
-        dispatch_authority=authority,
-    )
-    return store.create_agent_task(
-        record.model_copy(update=record_updates or {}), continuation_cause=continuation_cause
-    )
-
-
-async def _done_stream(_project_id, _kind, _request, _execution):
-    yield _sse(AgentEvent(event="done"))
 
 
 def test_construction_leaves_recovery_undone_until_startup_asks_for_it(
@@ -591,6 +522,24 @@ def test_member_pause_before_running_claim_never_dispatches_provider(
     finally:
         release.set()
         tasks.shutdown()
+
+
+def test_pause_settles_a_queued_turn_no_worker_owns(tmp_path: Path) -> None:
+    """A queued turn whose launch is deferred has no worker to observe ``pausing``.
+
+    The agent task explorer's trace is one Pause of the admitted, unlaunched
+    root: it stayed ``pausing`` until a restart interrupted it, and its claim
+    refuses a pausing row, so nothing else could settle it.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="unlaunched")
+
+    paused = tasks.pause(task.operation_id)
+
+    assert paused.status == "paused"
+    assert tasks.launch_admitted(task.operation_id).status == "paused"
 
 
 def test_shutdown_fences_a_launch_that_has_not_claimed_a_worker(
@@ -3083,6 +3032,36 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert tasks._transport_retry_superseded(failed.operation_id)
     assert store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry_superseded")
     assert retried == []
+
+
+def test_a_turn_retried_before_its_worker_settled_promises_no_reattempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A lost link commits before its worker decides the reattempt, so a human
+    Retry can land in between. The agent task explorer's trace: claim, lose the
+    link, Retry, then the worker's settlement. A promise on the taken-over turn
+    armed a timer that could only stand down, and its receipt made the human's
+    child read as an automatic reattempt, spending one of its own ladder's waits.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    shared = _work_request("launch-retried-first")
+    failed = _transport_failed_task(store, operation_id="dropped", request=shared)
+    _admitted_launch_task(
+        store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=shared
+    )
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        tasks,
+        "_schedule_transport_retry",
+        lambda operation_id, *, attempt: scheduled.append(operation_id),
+    )
+
+    tasks._auto_retry_transport_loss(failed)
+
+    assert scheduled == []
+    assert not store.agent_task_has_receipt(failed.operation_id, "transport_auto_retry")
 
 
 @pytest.mark.parametrize(
