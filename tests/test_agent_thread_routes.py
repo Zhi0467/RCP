@@ -527,7 +527,7 @@ def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, mon
     with signed_in_client(app) as client:
         thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         task, artifact = _space_turn_artifact(app, str(uuid.uuid4()))
-        own, _ = _space_turn_artifact(app, thread_id)
+        own, own_artifact = _space_turn_artifact(app, thread_id)
         for context in (
             _text_comment(task.operation_id, artifact.artifact_id),
             _text_comment(own.operation_id, "0" * 24),
@@ -537,6 +537,12 @@ def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, mon
                 json={"message": "fix", "artifact_context": context},
             )
             assert response.status_code == 422, response.text
+        empty = {**_text_comment(own.operation_id, own_artifact.artifact_id), "selections": []}
+        response = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={"message": " ", "artifact_context": empty},
+        )
+        assert response.status_code == 422, response.text
 
 
 def test_space_inline_viewer_enables_selection(manifest, tmp_path):
