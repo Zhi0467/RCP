@@ -121,7 +121,10 @@ export function ApprovalCardStack({
         view={card.view}
         decided={card.decided}
         showProject={card.showProject}
-        onDecided={(status) => onDecided(card.view, status)}
+        onDecided={(status) => {
+          focusNext.current = "front";
+          onDecided(card.view, status);
+        }}
         onChanged={onChanged}
         onLater={onLater}
       />
@@ -132,6 +135,7 @@ export function ApprovalCardStack({
         card={card.question.card!}
         projectName={card.projectName}
         onResolved={(result) => {
+          focusNext.current = "front";
           if (result) onResolved(card.question, result);
           onChanged();
         }}
@@ -189,7 +193,7 @@ export function ApprovalCardStack({
   );
 }
 
-type Kept = { after: number } & (
+type Kept = { changes: number } & (
   | { kind: "proposal"; view: ProposalCardView; status: Decision }
   | { kind: "asked"; question: AskedApprovalCardView }
 );
@@ -198,8 +202,8 @@ type Kept = { after: number } & (
  * The member's open cards for one project thread, or for every thread when
  * `threadId` is null. They reload when the open-card version or the thread
  * revision moves, and after each tap. A card decided here keeps its settled line
- * through the refetch its tap starts and drops at the first later fetch that no
- * longer lists it. Only the newest fetch's answer counts.
+ * through the open-card version change its own tap causes, and drops at a fetch
+ * after a later change that no longer lists it. Only the newest fetch's answer counts.
  */
 export function useAgentCards(threadId: string | null, revision: string | null) {
   const version = useAgentCardsVersion();
@@ -207,8 +211,10 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const [loaded, setLoaded] = useState<{ scope: string; list: AgentCardList | null } | null>(null);
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const latest = useRef(0);
+  const versionChanges = useRef(0);
   const refetch = useCallback(async () => {
     const mine = ++latest.current;
+    const changes = versionChanges.current;
     const list = await readAgentCards(scope || undefined);
     if (mine !== latest.current) return;
     setLoaded({ scope, list });
@@ -218,11 +224,15 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         ...(list?.asked_cards ?? []).map(askedCardKey),
       ]);
       const next = new Map(
-        [...known].filter(([key, entry]) => mine <= entry.after || listed.has(key)),
+        [...known].filter(([key, entry]) => changes <= entry.changes + 1 || listed.has(key)),
       );
       return next.size === known.size ? known : next;
     });
   }, [scope]);
+  useEffect(() => {
+    versionChanges.current += 1;
+  }, [version]);
+  useEffect(() => setKept(new Map()), [scope]);
   useEffect(() => {
     void refetch();
   }, [refetch, version, revision]);
@@ -231,7 +241,12 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   }, []);
   const markDecided = useCallback(
     (view: ProposalCardView, status: Decision) =>
-      keep(proposalCardKey(view), { kind: "proposal", view, status, after: latest.current + 1 }),
+      keep(proposalCardKey(view), {
+        kind: "proposal",
+        view,
+        status,
+        changes: versionChanges.current,
+      }),
     [keep],
   );
   const list = loaded?.scope === scope ? loaded.list : null;
@@ -247,7 +262,7 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         answer: outcome,
         card: { ...served.card, result: { outcome, reason, rejected } },
       },
-      after: latest.current + 1,
+      changes: versionChanges.current,
     });
   };
   const entries = list ? [...kept.values()] : [];

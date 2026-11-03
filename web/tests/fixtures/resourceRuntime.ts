@@ -14,13 +14,21 @@ export function activateProject(projectId: string | null): void {
   activeProject = projectId;
   store.setActiveProject(projectId);
 }
-/** The fixture's watermark answer; `agentThreadsVersion` moves the agent-thread watermark. */
+/**
+ * The fixture's watermark answer; `agentThreadsVersion` and `agentCardsVersion` move
+ * the agent-thread and open-card watermarks.
+ */
 const answer = (request: WatermarkRequest): WatermarkResponse => ({
   agent_threads: request.agent_threads
     ? {
         version: String(
           (globalThis as { agentThreadsVersion?: string }).agentThreadsVersion ?? "1",
         ),
+      }
+    : null,
+  agent_cards: request.agent_cards
+    ? {
+        version: String((globalThis as { agentCardsVersion?: string }).agentCardsVersion ?? "1"),
       }
     : null,
   epoch: "fixture",

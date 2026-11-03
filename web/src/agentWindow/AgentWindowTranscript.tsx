@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
-import { askedCardKey, proposalCardKey } from "../agents/ApprovalCardStack";
 import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
 import {
   isActiveTask,
@@ -582,18 +581,19 @@ export function agentWindowEntries(
   const grouped: Array<
     ReturnType<typeof questionTranscript<TaskTranscriptLine>>[number] | AgentWindowCardsEntry
   > = [];
+  const groupsAfterLine = new Map<string, number>();
+  let anchor = "start";
   for (const entry of entries) {
     if (entry.kind !== "card") {
+      if (entry.kind === "line") anchor = entry.line.lineId;
       grouped.push(entry);
       continue;
     }
     let group = grouped.at(-1);
     if (group?.kind !== "cards") {
-      const key =
-        "asked" in entry.card
-          ? askedCardKey(entry.card.asked)
-          : proposalCardKey(entry.card.proposal);
-      group = { kind: "cards", key: `cards:${key}`, asked: [], proposals: [] };
+      const seen = groupsAfterLine.get(anchor) ?? 0;
+      groupsAfterLine.set(anchor, seen + 1);
+      group = { kind: "cards", key: `cards:${anchor}:${seen}`, asked: [], proposals: [] };
       grouped.push(group);
     }
     if ("asked" in entry.card) group.asked.push(entry.card.asked);

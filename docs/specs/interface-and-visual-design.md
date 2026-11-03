@@ -513,9 +513,11 @@ fold move keyboard focus to the new front card or the fold line. Order and fold
 last while the stack is shown; a refetch keeps surviving cards in order, appends
 new ones and drops settled ones, and a reload restores server order. A stack that
 has shown several cards keeps its reserved space as it empties, so the
-transcript does not jump. A tapped card shows its result, including a failure
-reason, until a later fetch no longer lists it; the turn keeps its "sent to
-Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
+transcript does not jump. A decision keeps its stack in place and moves focus
+to the next front card. A tapped card shows its result, including a failure
+reason, through the open-card change its own tap causes; it drops at a fetch
+after a later change that no longer lists it, or when the member leaves the
+thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
 and can still be sent back with Later. A failed card fetch hides the cards and
 leaves the transcript as it is. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, each naming its project. Docked cards

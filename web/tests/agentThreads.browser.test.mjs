@@ -1878,6 +1878,58 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
   });
 });
 
+test("deciding the front card keeps its stack, its result and the focus through the version it bumps", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await mockApi(page, []);
+    await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    const served = {
+      proposals: [
+        proposalCard("proposal/a", "H2 standing → supported"),
+        proposalCard("proposal/b", "Retire the 8k baseline"),
+      ],
+      asked: [],
+    };
+    await serveCards(page, served);
+    let version = 1;
+    await page.route(/\/api\/approval-cards\/proposals\//, async (route) => {
+      const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      served.proposals = served.proposals.filter((view) => view.proposal.id !== id);
+      version += 1;
+      await page.evaluate((next) => (window.agentCardsVersion = next), String(version));
+      return route.fulfill({ json: { proposal_id: id, status: "approved" } });
+    });
+    await page.goto(`${base}#/agent/moss`);
+    const thread = page.getByRole("region", { name: "Moss" });
+    const stack = thread.locator(".approval-stack");
+    await stack.waitFor();
+    await stack.evaluate((node) => (node.dataset.probe = "kept"));
+    await stack.getByRole("button", { name: "Approve" }).click();
+    await thread.locator(".approval-card[data-state='approved']").waitFor();
+    await page.waitForTimeout(3000);
+    assert.equal(await thread.locator(".approval-card[data-state='approved']").count(), 1);
+    assert.equal(await stack.getAttribute("data-probe"), "kept");
+    assert.ok((await focusedCard(page)).includes("Retire"));
+
+    await stack.getByRole("button", { name: "Approve" }).click();
+    await page.waitForFunction(
+      () =>
+        !document.querySelector(".approval-card[data-state='pending']") &&
+        document.querySelectorAll(".approval-card[data-state='approved']").length === 1,
+      null,
+      { timeout: 10000 },
+    );
+    const settled = await thread
+      .locator(".approval-card[data-state='approved']")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+    assert.equal(settled.length, 1);
+    assert.ok(settled[0].includes("Retire"));
+    await page.close();
+  });
+});
+
 test("an out-of-date Proposal card links to the Inbox and a failed card read hides only the cards", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
@@ -2018,7 +2070,7 @@ test("Pip docks every open card above its composer, decides them in place, and h
   });
 });
 
-test("only the newest card read counts, and a decided card stays until a later read drops it", async () => {
+test("only the newest card read counts, and a stale read never revives a decided card", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await mockApi(page, []);
@@ -2067,14 +2119,12 @@ test("only the newest card read counts, and a decided card stays until a later r
 
     const [older, newer] = held;
     newer();
-    await page.waitForFunction(
-      () => document.querySelectorAll(".approval-dock .approval-card").length === 1,
-    );
-    assert.ok((await settledTitles())[0].includes("Retire"));
+    await page.waitForTimeout(150);
+    assert.equal((await settledTitles()).length, 2);
     older();
     await page.waitForTimeout(150);
     assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
-    assert.equal((await settledTitles()).length, 1);
+    assert.equal((await settledTitles()).length, 2);
     await page.close();
   });
 });
