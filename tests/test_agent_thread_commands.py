@@ -368,9 +368,9 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         assert store.agent_task_events("source") == []
         return
     assert drain() == []
-    for thread in (source, target):
+    for thread, provider in ((source, "claude"), (target, "codex")):
         store.set_agent_thread_pick(
-            thread.thread_id, provider="claude", model=None, reasoning=None, run_on=None
+            thread.thread_id, provider=provider, model=None, reasoning=None, run_on=None
         )
     with store.connection() as connection:
         connection.execute(
@@ -403,7 +403,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert turn is not None
     assert turn.request["source"] == "handoff"
     assert turn.request["trigger"] == "human"
-    assert turn.request["provider"] == "claude"
+    assert turn.request["provider"] == "codex"
     transcript = catalog.open_execution(project_id).chat_transcript(target.thread_id)
     assert transcript is not None
     assert [(message.source, message.text) for message in transcript.messages] == [
@@ -482,6 +482,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
         )
         report = store.agent_task(drain()[0]).request["handoff_report"]
         assert (report["status"], report["failure_kind"]) == ("failed", "provider_auth")
+        assert report["provider"] == "codex"
         return
     if refusal == "stood_down":
         store.fail_agent_task(settled, "link lost", failure_kind="transport_lost")
@@ -548,6 +549,7 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
     assert (wake.request["source"], wake.request["provider"]) == ("handoff_report", "claude")
     report = wake.request["handoff_report"]
     assert (report["answer"], report["turn_outcome"]["status"]) == ("Checked", "done")
+    assert report["provider"] == "codex"
     assert drain() == []
     with store.connection() as connection:
         assert tuple(
