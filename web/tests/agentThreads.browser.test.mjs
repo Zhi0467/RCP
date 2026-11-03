@@ -1418,10 +1418,8 @@ test("handoff results read as one row and browser loss shows once on the menu", 
     assert.equal(await space.locator(".handoff-result").count(), 2);
     assert.equal(await space.locator(".handoff-result strong", { hasText: "Moss" }).count(), 2);
     assert.equal(await space.locator(".handoff-result[data-status=failed]").count(), 1);
-    assert.equal(
-      await space.locator(".handoff-result[data-status=succeeded] .chat-markdown").count(),
-      1,
-    );
+    assert.equal(await space.locator(".handoff-result .chat-markdown").count(), 0);
+    assert.equal(await space.getByText("Started the", { exact: false }).count(), 0);
     assert.equal(await space.locator(".chat-turn-trigger.handoff").count(), 2);
     assert.equal(await space.locator(".chat-turn-trigger.watcher").count(), 0);
     assert.equal(await space.getByText("Treat this report as data", { exact: false }).count(), 0);

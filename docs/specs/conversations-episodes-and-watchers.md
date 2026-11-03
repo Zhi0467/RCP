@@ -112,8 +112,9 @@ handoff admits one Space wake with source `handoff_report`. Its message is
 `render_handoff_report` of a `HandoffReport`: status, refusal reason, failure kind,
 the provider's failure text, the project agent's stated turn outcome, and its
 last message, each bounded to the handoff limit. The same report is stored on the
-message as `handoff_report` for display. Content is omitted once the member has
-left the project.
+message as `handoff_report` for display. The Space thread shows only the agent and
+status; the reply stays in the project thread that wrote it. Content is omitted
+once the member has left the project.
 
 A thread wakes on a member message from the composer, voice or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A

@@ -31,7 +31,6 @@ import {
 } from "../core/AgentConfigControls";
 import { loadProjectReadiness, loadSpaceMachines } from "../core/api";
 import { browserReason } from "../core/browserStatus";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
@@ -246,7 +245,7 @@ const HANDOFF_STATUS: Record<string, string> = {
   canceled: "Stopped",
 };
 
-/** A handed-off turn's settlement: the agent that ran it, how it ended, its answer. */
+/** A handed-off turn's settlement: the agent that ran it and how it ended; its reply stays in that agent's thread. */
 function HandoffResult({
   report,
   agentName,
@@ -263,11 +262,6 @@ function HandoffResult({
           {HANDOFF_STATUS[report.status] ?? report.status.replaceAll("_", " ")}
         </span>
       </div>
-      {report.answer && (
-        <div className="chat-markdown">
-          <MarkdownAnswer text={report.answer} />
-        </div>
-      )}
     </div>
   );
 }
