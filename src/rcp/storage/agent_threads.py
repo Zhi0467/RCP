@@ -304,7 +304,8 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 (self.now(), reason, thread_id),
             )
             connection.execute(
-                "UPDATE agent_schedules SET state='disabled',disabled_reason='access_lost' WHERE thread_id=? AND state='active'",
+                "UPDATE agent_schedules SET state='disabled', disabled_reason='access_lost', "
+                "pending_since=NULL, next_fire_at=NULL WHERE thread_id=? AND state='active'",
                 (thread_id,),
             )
 

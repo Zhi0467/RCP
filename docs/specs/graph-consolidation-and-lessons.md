@@ -332,8 +332,10 @@ binding through ordinary current-session resolution,
 including its receipt, also after a restore made that turn history-only, and
 rechecks the ordinary project write fence and session constraints. A claimed wake
 whose thread closed before launch settles failed. A succeeded schedule wake on a
-project thread pushes the owner's `agent_thread` notification. Lost thread access
-disables active schedules; done one-shots keep their pending note.
+project thread pushes the owner's `agent_thread` notification. Lost thread access,
+whether found at dispatch or by closing the thread, disables active schedules and
+drops their next fire and waiting note, so Enable picks the next fire from now;
+done one-shots keep their pending note.
 A schedule whose next occurrence cannot be computed is disabled with reason
 `unschedulable`; it never blocks other schedules or consolidation.
 

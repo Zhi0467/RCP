@@ -961,6 +961,27 @@ def test_every_with_count_retires_after_its_fires(schedule_store):
     assert row.pending_since == first.isoformat()
 
 
+def test_closing_the_thread_drops_next_fires_and_waiting_notes(schedule_store):
+    """Closing disables a repeat as lost access does at dispatch; a done one-shot keeps its note."""
+    for key, cron, at in (("daily", "0 9 * * *", None), ("once", None, "2026-01-01T09:00")):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron=cron,
+            at=at,
+            timezone="UTC",
+            note=key,
+            next_fire_at="2026-01-01T09:00:00+00:00",
+        )
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 10, tzinfo=UTC))
+    schedule_store.close_agent_thread("thread", reason="access_lost")
+    rows = {row.note: row for row in schedule_store.agent_schedules()}
+    daily, once = rows["daily"], rows["once"]
+    assert (daily.state, daily.next_fire_at, daily.pending_since) == ("disabled", None, None)
+    assert (once.state, once.pending_since) == ("done", "2026-01-01T09:00:00+00:00")
+
+
 def test_cron_until_retires_after_its_last_fire_and_from_delays_the_first(schedule_store):
     after = datetime(2026, 1, 1, tzinfo=UTC)
     assert validate_schedule(
