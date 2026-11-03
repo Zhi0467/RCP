@@ -18,8 +18,8 @@ second, drops the engine memory, boots, and calls the machine's ``restart``,
 which runs the startup reconciliation ``api/app.py`` runs for its tables.
 
 Two checks keep the save from drifting from the code. The restore check replays
-the first explored edge of each action name continuously in one backend and
-compares the view with the restored one. The merge check compares the memory of
+the first explored edge of each distinct action (name and arguments) continuously
+in one backend and compares the view with the restored one. The merge check compares the memory of
 two paths that reach one view.
 
 Rules are ``Safety`` (a state), ``Step`` (an edge) and ``Goal`` (liveness: from
@@ -425,7 +425,7 @@ def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
         saved = {start: explorer.save(world, clock, "0")}
         result.memory[start] = saved[start].memory
         machine.close(world)
-        replayed: dict[str, tuple[Trace, Any]] = {}
+        replayed: dict[Action, tuple[Trace, Any]] = {}
         frontier = [start]
         for depth in range(machine.bound):
             following = []
@@ -455,7 +455,7 @@ def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
                             saved[child] = explorer.save(world, clock, str(len(result.depth)))
                     elif result.memory[child] != memory:
                         result.failures.append((path, "merge: equal views hold different memory"))
-                    replayed.setdefault(action.name, (path, child))
+                    replayed.setdefault(action, (path, child))
                     machine.close(world)
                 result.edges[view] = children
             frontier = following

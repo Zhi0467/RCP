@@ -132,9 +132,10 @@ runs in WAL mode, so a file copy of an open database can tear), and keeps
 mean no file list to keep and no file a sibling branch wrote survives; a
 fresh boot means no stale history cache (`HistoryManager` revisions and
 engines).
-- **Restore check:** the first explored edge of each action name is also
-  replayed from `start` on a fresh tree, so every action that touches memory
-  is replayed at least once; the test asserts the view equals the restored
+- **Restore check:** the first explored edge of each distinct action (name
+  and arguments, so each settle outcome counts) is also replayed from `start`
+  on a fresh tree, so every action variant that touches memory is replayed at
+  least once; the test asserts the view equals the restored
   view. A memory field `save_memory` misses then fails CI.
 - **Merge check:** when an edge reaches a view already explored, the engine
   asserts its saved memory (lineage-named, apart from the absolute clock)
@@ -155,9 +156,10 @@ horizon + 1, at least the length of every Safety or Step trace a suspected
 defect or witness needs, and at least the depth of every suspected stuck
 state plus the horizon (a Goal is checked only from depth ≤ bound − horizon).
 **Budget:** ≤ 20 s locally per machine, counting its exploration and its
-witness runs, and a hard ceiling of 60 s on CI
-enforced by the faulthandler hang guard (the handoff test's `HANG_SECONDS`,
-lowered from 300 to 60 and shared by every machine's test). When the minimum does not fit the budget,
+witness runs, and a hard ceiling of 120 s per test enforced by the
+autouse `hang_guard` in `tests/lifecycles/conftest.py`: a timer thread that
+dumps every stack and exits (faulthandler's own timer spun forever in a frame
+walk on a loaded host and hung the shard). When the minimum does not fit the budget,
 the machine first drops member actions that no rule or suspected trace
 needs, then lowers its horizon to 2. If it still does not fit, the bound
 drops below the minimum, each suspected trace it no longer reaches becomes a
@@ -414,7 +416,7 @@ integrator also serializes defect fixes that touch the same product module.
 
 ## Risks
 
-- **CI time.** Each machine is ≤ 20 s locally and capped at 60 s on CI, and
+- **CI time.** Each machine is ≤ 20 s locally and capped at 120 s per test, and
   the suite runs once per Python version (3.11 and 3.12). `tests/shards.py`
   weighs files by size, which underweights these small slow files, so step 1
   counts each `tests/lifecycles/test_*.py` file as the size of the largest

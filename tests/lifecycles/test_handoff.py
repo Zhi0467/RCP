@@ -1,27 +1,13 @@
 from __future__ import annotations
 
-import faulthandler
-from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
-
-import pytest
 
 from tests.lifecycles.engine import RESTART, Action, explore, witness
 from tests.lifecycles.handoff import Handoff
 
 STATES = 144
-HANG_SECONDS = 60
 LOST = (Action("settle", ("T0", "transport_lost")), Action("finish", ("T0",)))
-
-
-@pytest.fixture
-def hang_guard() -> Iterator[None]:
-    """End the run if the exploration hangs, so a stuck action fails its shard."""
-
-    faulthandler.dump_traceback_later(HANG_SECONDS, exit=True)
-    yield
-    faulthandler.cancel_dump_traceback_later()
 
 
 def _root(tmp_path: Path) -> Path:
@@ -30,7 +16,7 @@ def _root(tmp_path: Path) -> Path:
     return root
 
 
-def test_handoff_lifecycle_holds_within_bound(tmp_path: Path, hang_guard) -> None:
+def test_handoff_lifecycle_holds_within_bound(tmp_path: Path) -> None:
     """Every handoff state within four actions keeps agreement, safety and liveness.
 
     Liveness looks three environment steps ahead, so a bound of 4 checks it from
