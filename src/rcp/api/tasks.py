@@ -32,8 +32,19 @@ from rcp.api.dependencies import (
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
-from rcp.artifact_comments import comment_panel, selection_frame_addon, supports_comments
-from rcp.artifact_views import artifact_content, artifact_viewer_document
+from rcp.artifact_comments import (
+    COMMENTABLE_MEDIA_TYPES,
+    comment_panel,
+    selection_frame_addon,
+    supports_comments,
+)
+from rcp.artifact_theme import artifact_color_mode, artifact_theme
+from rcp.artifact_views import (
+    InlineAppearance,
+    ViewerPresentation,
+    artifact_content,
+    artifact_viewer_document,
+)
 from rcp.artifacts import (
     AgentArtifactDescriptor,
     ArtifactView,
@@ -769,6 +780,9 @@ async def content_agent_artifact(
     artifact_id: str,
     request: Request,
     version_id: str | None = None,
+    presentation: ViewerPresentation = "panel",
+    theme: str | None = None,
+    color_mode: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -783,6 +797,11 @@ async def content_agent_artifact(
         artifact_id,
         "open",
     )
+    inline = (
+        InlineAppearance(artifact_theme(theme), artifact_color_mode(color_mode))
+        if presentation == "inline"
+        else None
+    )
     try:
         if version_id is not None:
             data = store.read_artifact_bytes(artifact_id, version_id)
@@ -791,6 +810,7 @@ async def content_agent_artifact(
             descriptor.media_type,
             data,
             frame_addon=selection_frame_addon() if descriptor.media_type == "text/html" else None,
+            inline=inline,
         )
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
@@ -890,6 +910,7 @@ async def view_agent_artifact(
     project_id: str,
     operation_id: str,
     artifact_id: str,
+    presentation: ViewerPresentation = "panel",
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -900,6 +921,7 @@ async def view_agent_artifact(
         artifact_id,
         catalog=catalog,
         store=store,
+        presentation=presentation,
     )
 
 
@@ -911,6 +933,7 @@ async def _artifact_viewer_response(
     catalog: CatalogDependency,
     store: StoreDependency,
     head: bool = False,
+    presentation: ViewerPresentation = "panel",
 ) -> Response:
     if project_id != store.space_id:
         require_registered_project(catalog, project_id)
@@ -955,6 +978,8 @@ async def _artifact_viewer_response(
         state="kept" if descriptor.is_kept() else "temporary",
         panel=panel,
         live_url=live_url,
+        presentation=presentation,
+        selectable=descriptor.media_type in COMMENTABLE_MEDIA_TYPES,
     )
     return Response(
         b"" if head else document,

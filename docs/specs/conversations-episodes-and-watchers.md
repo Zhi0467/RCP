@@ -67,7 +67,11 @@ approval cards belong to the member's own project thread, reached through
 `handoff`. The verbs each client receives enforce this; the
 [Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
 owns them. **Why:** questions, watchers, episodes and notifications are keyed
-by project, so they always carry a real project id.
+by project, so they always carry a real project id. Every open
+[approval card](authority-and-proposals.md#private-thread-approval-cards) from
+the member's open project threads also shows in a dock above the Space thread's
+composer, and a tap there acts in its project. The Space prompt points the
+member to that dock.
 
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
@@ -268,6 +272,14 @@ outcome is achieved, hands off ongoing work through the watcher contract, or
 explains the concrete unavailable prerequisite or new authority needed for
 further useful progress. This does not widen the requested objective or grant
 another invocation.
+
+Work and Space turns carry one fixed note naming where the member acts in the
+app: Settings for sign-ins, machines and repositories, the Inbox, the Research
+and Runs views, and the branch picker. The same note has the agent report a
+failure outside the request, such as an offline machine or a signed-out
+provider, as a temporary tooling problem, without looping on it.
+**Why:** some steps exist only in the app, and an agent that cannot see them
+otherwise guesses or retries.
 
 Every turn settled by ordinary Work (human Work chat and nightly consolidation) writes
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
@@ -524,9 +536,11 @@ owns idempotency, allowed verbs and acknowledgement. Answers never change author
 Private-thread questions belong only to the thread's member. Their Needs you
 push targets that member; list, answer and dismiss refuse other members. Creation
 and settlement emit no project-wide digest event for a private-thread question. An
-`ask` action creates a single-use approval card in its project thread. The
-[authority spec](authority-and-proposals.md) owns the pinned action and tap
-admission. Ordinary answer and dismiss refuse card questions; card settlement
+`ask` action creates a single-use approval card in its project thread. A
+Proposal the thread's own turn raised needs no ask: its card is derived. The
+[authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
+both kinds, the pinned action and tap admission. A derived Proposal card has no
+answer to deliver; the agent reads the Proposal's status from graph state. Ordinary answer and dismiss refuse card questions; card settlement
 uses the existing answer-delivery path below.
 
 Each bounded ask call retains a random `call_id` across transport rounds.
@@ -602,8 +616,9 @@ Discuss/Work and Paper coach admit them; steering and other run kinds refuse the
 and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
-Overshoots clamp to answer text; a visible Comment command provides a keyboard
-text-control alternative. The comment editor stays within the keyboard-adjusted
+Overshoots clamp to answer text; a Comment command after each answer provides a
+keyboard text-control alternative. In agent threads it shows only while keyboard
+focus is on it, because a mouse or touch selection already opens the comment. The comment editor stays within the keyboard-adjusted
 viewport at every width. Multiple editable/removable annotations remain per-chat
 drafts with a count; blank comments block send until completed or removed.
 Sending appends copied text and `comment: <comment>` to the human message, with

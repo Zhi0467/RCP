@@ -373,6 +373,8 @@ Code Copy is icon-only and copies the exact text. It has 44px phone targets.
 New chats open at the bottom and follow new content.
 Scrolled-up chats retain their exact session-memory position despite later loads.
 On touch phones, Return inserts a newline. Only Send sends.
+In an empty composer, Up and Down scroll the transcript; once it holds text, or
+the package menu is open, they move the caret or the highlight as before.
 
 `/` or `$` selects packages. Arrow keys highlight a package, Enter chooses it,
 and Escape dismisses the picker. Selections are per turn.
@@ -441,16 +443,21 @@ Agent has a left rail with the member's Space thread first, then each project
 thread. Rows show the agent name,
 the project or Space, and a mark. The Space row always shows the Space icon; a
 project row shows a spinner while live, a needs-you mark, an unread dot, or at
-rest the chat icon. Every row ends with live or the time since it last moved. The rail folds like
+rest the chat icon. Every row ends with live or the time since it last moved,
+which advances each minute; an unread row puts that time in a filled teal badge
+and bolds its name, so unread threads read at a glance. The rail folds like
 the Agents conversation list and remembers its fold per device. At phone width
 the rail is the list, and a chosen thread fills the screen.
 
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
-board conversations stay in that list. The thread header holds an Upcoming
-button, present only when schedules exist, that counts the ones that will run
-without the member and opens a popover of them, sized to the viewport and
+board conversations stay in that list. The thread header holds a Wakes
+button, present only when schedules or the thread's live watchers exist, that
+counts the schedules that will run without the member plus those watchers and
+opens a popover of them. Every row has the same shape: what wakes the agent,
+then when. A watcher names its node by title or its job by log file, says
+which states or event wake the agent, and can be stopped there. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
@@ -464,7 +471,7 @@ fix on hover; turns carry no browser notice. The composer holds the voice
 button. Once a thread's transcript has loaded empty, a centered welcome lists
 what the agent can do under the header that names it, rendered from the
 capability lines the backend gives each verb the thread kind's turns are
-granted, above three starters. A starter fills the composer without sending, and the first turn removes the welcome.
+granted, above four starters. A starter fills the composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Retry.
 A member's Stop reads Stopped, with Resume and Retry, in the same column, on
 one rounded row shaped like the failed turn's. Send stays off until the stopped
@@ -474,7 +481,7 @@ thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
 that declares its models lists them before any probe.
 Switching threads shows each thread's last loaded view while it reloads. Each
-Upcoming row shows its note (in full on hover), its time and zone, the next run
+schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
 cannot start shows in the row. Every row has Cancel; an active row has Pause and
 a member-paused row Resume, unless it is a one-shot whose time passed. A row the system disabled says why on hover and has
@@ -488,13 +495,44 @@ Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
-accept files and answer comments; they offer no node references, Keep, or
-artifact-selection comments. Both open artifacts in the shared in-app viewer,
+accept files, answer comments, and inline artifact-selection comments, which
+open in comment mode like a project thread's. A Space comment travels with the
+next message as numbered selections on that turn file, and the agent writes a
+revised file in its new turn; there are no versions, Keep, or node references,
+and the opened viewer has no comment panel. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
 bubble. Answer comments join the next message in both.
 Approval cards stay where the agent raised them, before later transcript lines,
-and show the action with Approve and Decline. Their outcome replaces the need
-for a separate member answer bubble. There is no separate Ask or voice launcher.
+and show the action with See details on the left and Later, Decline and Approve
+on the right. Their outcome replaces the need for a separate member answer
+bubble. A derived Proposal card sits with its raising turn, using the same
+ordered fallbacks as an asked card: the turn's lines, then its time position,
+then the end. Running retries and wakes may have no shown line, so a slot after
+a turn's last line would lose their cards. Cards at one position form one stack:
+the front card with two offset edges behind it, and "‹ 1 of N ›" above its right
+edge. Later sends the front card to the back; on the last card it folds the
+stack to "N card(s) waiting", which unfolds on a tap. Later, the arrows and the
+fold move keyboard focus to the new front card or the fold line. Order and fold
+last while the stack is shown; a refetch keeps surviving cards in order, appends
+new ones and drops settled ones, and a reload restores server order. A stack that
+has shown several cards keeps its reserved space as it empties, so the
+transcript does not jump. A decision keeps its stack in place and moves focus
+to the next front card. A tapped card shows its result, including a failure
+reason, through the open-card change its own tap causes; it drops at a fetch
+after a later change that no longer lists it, or when the member leaves the
+thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
+and can still be sent back with Later. A failed card fetch hides the cards and
+leaves the transcript as it is. The Space thread docks one stack above its composer, hidden when empty:
+Proposal cards first, then asked cards, each naming its project. Docked cards
+stay reachable where inline ones would scroll away.
+Transcript lines show their time only on hover or keyboard focus within the
+row, and on touch a tap on the line toggles it, except on a link, control or
+chip, or when it selects text. Nothing else in the row moves. A schedule wake's
+row shows no time because its chip already shows the clock. A quiet divider
+("Today · 19:21", "Yesterday · 08:02", "Mon 2 Nov · 19:21", with the year when
+it differs) precedes the first timed line, a line on a new local day, and a line
+`THREAD_TIME_GAP_MINUTES` or more after the previous one. Cards and
+receipt-only lines are not counted. Times use a 24-hour clock. There is no separate Ask or voice launcher.
 A turn that starts a fresh session shows a quiet chip alongside its first message,
 except for the thread's first turn. Its recorded reason appears only on hover.
 Revision history names an attributed member as "<member>, via <agent name>" when

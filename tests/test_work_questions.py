@@ -556,7 +556,7 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
     import asyncio
 
     from rcp.agents.command_mailbox import stage_command_mailbox
-    from rcp.runs.approval_cards import approval_card_usage
+    from rcp.runs.approval_cards import PROPOSAL_CARD_SHOWN, approval_card_usage
     from rcp.runs.tasks import work
 
     (tmp_path / "stage").mkdir()
@@ -622,6 +622,8 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
             await lifecycle.close(primary_error=None)
 
     try:
-        assert approval_card_usage("rcp-client") in asyncio.run(render())
+        rendered = asyncio.run(render())
+        assert approval_card_usage("rcp-client") in rendered
+        assert PROPOSAL_CARD_SHOWN in rendered
     finally:
         staged.cleanup()

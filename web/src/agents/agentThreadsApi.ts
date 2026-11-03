@@ -2,8 +2,9 @@
 // ordinary project chat, so its transcript, sends, tasks and questions use the
 // chat routes; the Space thread has its own routes with the same shapes.
 
-import { api } from "../core/api.ts";
+import { api, ApiError } from "../core/api.ts";
 import type {
+  AgentCardList,
   AgentQuestion,
   AgentRunConfig,
   AgentSchedule,
@@ -18,8 +19,12 @@ import type {
   ApprovalCardResult,
   ChatMessage,
   ChatTranscript,
+  ProposalCardDecisionResult,
   SteerRequest,
+  WatcherRecord,
 } from "../core/types";
+import { MAIN_GRAPH } from "../core/graphTarget.ts";
+import { visibleChatWatchers } from "../experiments/runProjection.ts";
 
 type Request = typeof api;
 type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
@@ -31,7 +36,7 @@ export function threadPath(threadId: string): string {
   return `${THREADS}/${encodeURIComponent(threadId)}`;
 }
 
-function projectPath(thread: ThreadTaskOwner): string {
+export function threadProjectPath(thread: ThreadTaskOwner): string {
   if (thread.kind !== "project" || !thread.project_id)
     throw new Error("This thread has no project.");
   return `/api/projects/${encodeURIComponent(thread.project_id)}`;
@@ -41,7 +46,7 @@ function projectPath(thread: ThreadTaskOwner): string {
 export function threadTasksPath(thread: ThreadTaskOwner): string {
   return thread.kind === "space"
     ? `${threadPath(thread.thread_id)}/tasks`
-    : `${projectPath(thread)}/tasks`;
+    : `${threadProjectPath(thread)}/tasks`;
 }
 
 /** Lists every thread, creating any that are missing. */
@@ -56,7 +61,7 @@ export function loadThreadTranscript(
   return request(
     thread.kind === "space"
       ? `${threadPath(thread.thread_id)}/transcript`
-      : `${projectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}`,
+      : `${threadProjectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}`,
   );
 }
 
@@ -75,7 +80,7 @@ export async function sendThreadTurn(
   if (thread.kind === "space")
     return request(`${threadPath(thread.thread_id)}/turns`, init(turn), { retryIdentity: false });
   const task = await request<AgentTask>(
-    `${projectPath(thread)}/tasks/project_chat`,
+    `${threadProjectPath(thread)}/tasks/project_chat`,
     init({ chat_scope: "project", chat_id: thread.thread_id, mode: "work", ...turn }),
     { retryIdentity: false },
   );
@@ -130,7 +135,9 @@ export async function loadThreadQuestions(
   request: Request = api,
 ): Promise<AgentQuestion[]> {
   if (thread.kind === "space") return [];
-  return request(`${projectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}/questions`);
+  return request(
+    `${threadProjectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}/questions`,
+  );
 }
 
 export function renameThread(
@@ -185,6 +192,26 @@ export function loadThreadSchedules(
   request: Request = api,
 ): Promise<AgentScheduleList> {
   return request(`${threadPath(threadId)}/schedules`);
+}
+
+/** A project thread's live watchers; the Space thread has none. */
+export async function loadThreadWatchers(
+  thread: ThreadTaskOwner,
+  request: Request = api,
+): Promise<WatcherRecord[]> {
+  if (thread.kind !== "project") return [];
+  const watchers: WatcherRecord[] = await request(`${threadProjectPath(thread)}/watchers`);
+  return visibleChatWatchers(watchers, thread.thread_id, null, MAIN_GRAPH);
+}
+
+export function stopThreadWatcher(
+  thread: ThreadTaskOwner,
+  watcherId: string,
+  request: Request = api,
+): Promise<WatcherRecord> {
+  return request(`${threadProjectPath(thread)}/watchers/${encodeURIComponent(watcherId)}/stop`, {
+    method: "POST",
+  });
 }
 
 export function cancelThreadSchedule(
@@ -249,4 +276,52 @@ export function resolveApprovalCard(
     method: "POST",
     body: JSON.stringify(decision),
   });
+}
+
+/** The member's open cards: one project thread's, or every thread's for Pip's dock. */
+export function loadAgentCards(threadId?: string, request: Request = api): Promise<AgentCardList> {
+  return request(`${THREADS}/cards${threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ""}`);
+}
+
+/** A failed read hides the cards and nothing else. */
+export function readAgentCards(
+  threadId?: string,
+  request: Request = api,
+): Promise<AgentCardList | null> {
+  return loadAgentCards(threadId, request).catch(() => null);
+}
+
+export type ProposalCardOutcome =
+  | { outcome: "decided"; status: ProposalCardDecisionResult["status"] }
+  | { outcome: "gone" }
+  | { outcome: "retry" }
+  | { outcome: "refused"; reason: string };
+
+/**
+ * Decides a Proposal from its card, as the member. A Proposal no longer pending
+ * redraws from a refetch, a moved graph or an unreachable backend asks for another
+ * tap, and any other refusal shows the server's reason.
+ */
+export async function decideProposalCard(
+  projectId: string,
+  proposalId: string,
+  decision: "approved" | "rejected",
+  request: Request = api,
+): Promise<ProposalCardOutcome> {
+  try {
+    const result = await request<ProposalCardDecisionResult>(
+      `/api/approval-cards/proposals/${encodeURIComponent(projectId)}/${encodeURIComponent(proposalId)}`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+    return { outcome: "decided", status: result.status };
+  } catch (failure) {
+    if (
+      !(failure instanceof ApiError) ||
+      failure.status === 503 ||
+      failure.code === "graph_changed"
+    )
+      return { outcome: "retry" };
+    if (failure.code === "proposal_not_pending") return { outcome: "gone" };
+    return { outcome: "refused", reason: failure.message };
+  }
 }

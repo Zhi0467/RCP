@@ -43,11 +43,12 @@ class ContentDouble:
     def __init__(self):
         self.calls = []
         self.generation = "published-1"
+        self.projects: dict[str, str] = {}
 
     def content_generations(self, project_id: str, families: Iterable[str]) -> dict[str, str]:
         names = set(families)
         self.calls.append((project_id, names))
-        return dict.fromkeys(names, self.generation)
+        return dict.fromkeys(names, self.projects.get(project_id, self.generation))
 
     def open(self, *args, **kwargs):
         pytest.fail("watermark opened a service")
@@ -399,6 +400,113 @@ def test_agent_threads_watermark_accepts_web_body(endpoint, monkeypatch):
         endpoint.client.post("/api/resource-watermarks", json=body).json()["agent_threads"]
         != changed["agent_threads"]
     )
+
+
+def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkeypatch):
+    body = {"client_id": "agent-cards", "open": [], "due": []}
+
+    def heartbeat():
+        response = endpoint.client.post("/api/resource-watermarks", json=body)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert heartbeat()["agent_cards"] is None
+    body["agent_cards"] = True
+    body["agent_threads"] = True
+    threadless = heartbeat()
+    assert isinstance(threadless["agent_cards"]["version"], str)
+    assert endpoint.catalog.calls == []
+
+    store = endpoint.store
+    opened = next(
+        row
+        for row in store.ensure_agent_threads(
+            endpoint.member, [endpoint.project], default_names=("Pip",)
+        )
+        if row.kind == "project"
+    )
+    body["agent_cards"] = False
+    heartbeat()
+    assert endpoint.catalog.calls == []
+    body["agent_cards"] = True
+    first = heartbeat()
+    assert first["agent_cards"] != threadless["agent_cards"]
+    assert heartbeat() == first
+
+    endpoint.catalog.projects[endpoint.project] = "published-2"
+    committed = heartbeat()
+    assert committed["agent_cards"] != first["agent_cards"]
+    assert committed["agent_threads"] == first["agent_threads"]
+
+    idle = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO projects(project_id, locator, name, state_location, state_remote, added_at) VALUES(?, ?, 'idle', 'local', 0, ?)",
+            (idle, idle, endpoint.now.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO project_members(project_id, user_id, seated_at) VALUES(?, ?, ?)",
+            (idle, endpoint.member, endpoint.now.isoformat()),
+        )
+    store.ensure_agent_threads(endpoint.member, [endpoint.forbidden], default_names=("Pip",))
+    store.ensure_agent_threads(endpoint.other_member, [idle], default_names=("Pip",))
+    endpoint.catalog.projects[idle] = "idle-moved"
+    endpoint.catalog.projects[endpoint.forbidden] = "forbidden-moved"
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=True)
+    archived = heartbeat()
+    assert archived["agent_cards"] != committed["agent_cards"]
+    endpoint.catalog.projects[endpoint.project] = "published-3"
+    assert heartbeat()["agent_cards"] == archived["agent_cards"]
+    store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=False)
+    endpoint.catalog.projects[endpoint.project] = "published-2"
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE projects SET retired_at=? WHERE project_id=?",
+            (endpoint.now.isoformat(), endpoint.project),
+        )
+    retired = heartbeat()
+    assert retired["agent_cards"] != committed["agent_cards"]
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE projects SET retired_at=NULL WHERE project_id=?", (endpoint.project,)
+        )
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    store.close_agent_thread(opened.thread_id, reason="test")
+    closed = heartbeat()
+    assert closed["agent_cards"] != committed["agent_cards"]
+    store.ensure_agent_threads(endpoint.member, [endpoint.project], default_names=("Pip",))
+    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+
+    monkeypatch.setattr(watermarks, "_PROCESS_EPOCH", "restarted")
+    assert heartbeat()["agent_cards"] != committed["agent_cards"]
+
+
+def test_local_main_commit_moves_agent_cards_not_agent_threads(manifest, tmp_path):
+    from tests.helpers import append_fixture_patch, create_named_app, seed_patch, signed_in_client
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    project = app.state.default_project_id
+    assert client.get(f"/api/projects/{project}").status_code == 200
+    store = app.state.background_tasks.store
+    store.ensure_agent_threads(store.local_owner.user_id, [project], default_names=("Pip",))
+    body = {
+        "client_id": "agent-cards",
+        "open": [],
+        "due": [],
+        "agent_cards": True,
+        "agent_threads": True,
+    }
+    before = client.post("/api/resource-watermarks", json=body).json()
+    append_fixture_patch(app.state.service, seed_patch())
+    after = client.post("/api/resource-watermarks", json=body).json()
+    assert after["agent_cards"] != before["agent_cards"]
+    assert after["agent_threads"] == before["agent_threads"]
 
 
 @pytest.mark.parametrize("kind", ["space", "project"])

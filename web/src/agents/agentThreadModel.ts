@@ -1,5 +1,5 @@
 // Pure presentation rules for the member's agent threads: the rail, a turn's
-// progress line, approval card titles and the Upcoming list.
+// progress line, approval card titles and the Wakes list.
 
 import type {
   AgentSchedule,
@@ -7,7 +7,26 @@ import type {
   AgentThread,
   ApprovalCard,
   ChatMessage,
+  GraphNode,
+  WatcherRecord,
 } from "../core/types";
+import { isExternalWatcherRecord, jobLabel } from "../experiments/runProjection.ts";
+
+/** What a Wakes row waits for and when it fires, named by the node's title when loaded. */
+export function watcherWake(
+  watcher: WatcherRecord,
+  nodes: Record<string, Pick<GraphNode, "title">> | undefined,
+): { what: string; when: string } {
+  if (isExternalWatcherRecord(watcher))
+    return { what: jobLabel(watcher.log_path), when: "When the job ends" };
+  const { condition } = watcher;
+  const what = nodes?.[condition.node_id]?.title || condition.node_id;
+  if (!("status_in" in condition)) return { what, when: "When its Proposal is resolved" };
+  const states = condition.status_in;
+  const listed =
+    states.length > 1 ? `${states.slice(0, -1).join(", ")} or ${states.at(-1)}` : states[0];
+  return { what, when: `When it's ${listed}` };
+}
 
 /** How long ago, as the Agents list shows it: now, 12m, 3h, then a date. */
 export function sinceLabel(timestamp: string | null | undefined, now: number): string {
@@ -118,7 +137,9 @@ export function approvalCardTitle(card: ApprovalCard): string {
   switch (action.kind) {
     case "proposal": {
       const verb = action.decision === "approved" ? "Approve" : "Reject";
-      const title = pinnedText(card, "title");
+      const proposal = card.pinned.proposal as { title?: unknown } | undefined;
+      const title =
+        typeof proposal?.title === "string" && proposal.title.trim() ? proposal.title : null;
       return title ? `${verb} Proposal: ${title}?` : `${verb} this Proposal?`;
     }
     case "truth_scope":
@@ -161,6 +182,23 @@ function localDay(at: Date): string {
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A local time on the 24-hour `HH:MM` clock. */
+export function localClock(at: Date): string {
+  return clock(String(at.getHours()), String(at.getMinutes()));
+}
+
+/** A thread's time divider: today, yesterday, else the weekday and date, with a different year. */
+export function timeDividerLabel(at: Date, now: Date): string {
+  const time = localClock(at);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (localDay(at) === localDay(now)) return `Today · ${time}`;
+  if (localDay(at) === localDay(yesterday)) return `Yesterday · ${time}`;
+  const date = `${WEEKDAYS[at.getDay()]} ${at.getDate()} ${MONTHS[at.getMonth()]}`;
+  const year = at.getFullYear() === now.getFullYear() ? "" : ` ${at.getFullYear()}`;
+  return `${date}${year} · ${time}`;
+}
 
 /** A local `YYYY-MM-DDTHH:MM` as its time today, weekday this week, else its date. */
 function wallLabel(local: string, now: Date): string {

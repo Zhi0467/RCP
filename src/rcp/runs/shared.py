@@ -57,7 +57,8 @@ from rcp.transport.state import (
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
-    from rcp.storage import RunStageLifecycleRecord
+    from rcp.storage import AppStore, RunStageLifecycleRecord
+    from rcp.storage.models import AgentTaskRecord
 
 _STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
 _LOCAL_STAGE_DIRECTORY_FLAGS = (
@@ -1431,3 +1432,26 @@ def _stage_context_paths(
 
 def _sse(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
+
+
+def turn_first_attempt(
+    store: AppStore,
+    task: AgentTaskRecord,
+    tasks: dict[str, AgentTaskRecord] | None = None,
+) -> AgentTaskRecord:
+    """The attempt that started this task's turn, through its Retry and Resume parents.
+
+    Parents come from `tasks` when present; each missing hop is one batch read, added to `tasks`.
+    """
+    known = {} if tasks is None else tasks
+    seen = {task.operation_id}
+    while task.parent_operation_id and task.parent_operation_id not in seen:
+        parent_id = task.parent_operation_id
+        if parent_id not in known:
+            known.update(store.agent_tasks_by_ids([parent_id]))
+        parent = known.get(parent_id)
+        if parent is None:
+            break
+        seen.add(parent_id)
+        task = parent
+    return task

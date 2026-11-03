@@ -76,6 +76,17 @@ export function graphConditionLabel(condition: GraphCondition): string {
     : `Proposal on ${condition.node_id} is resolved`;
 }
 
+const GENERIC_LOG_NAMES = new Set(["log", "stdout", "stderr", "output", "out"]);
+
+/** A bare "log" says nothing; keep its parent folder so rows stay distinguishable. */
+export function jobLabel(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const name = parts.at(-1) ?? "";
+  if (!GENERIC_LOG_NAMES.has(name) || parts.length < 2) return name;
+  const folder = parts.at(-2) ?? "";
+  return `${folder.length > 16 ? `${folder.slice(0, 8)}…` : folder}/${name}`;
+}
+
 export function watcherLastObservedAt(watcher: WatcherRecord): string | null {
   return isGraphWatcherRecord(watcher) ? watcher.last_evaluated_at : watcher.last_checked_at;
 }

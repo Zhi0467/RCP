@@ -59,7 +59,7 @@ import {
 } from "../agentWindow/agentWindowEndpoints";
 import { errorMessage } from "../core/errors";
 import { useLayerDismiss } from "../core/useLayerDismiss";
-import { returnSends } from "../ui/composerKeys";
+import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { AgentRename } from "../chat/AgentRename";
 import { QuestionCard } from "../chat/QuestionCard";
@@ -72,11 +72,19 @@ import type {
   ChatMessage,
   AgentThreadTurnRequest,
   ProjectSnapshot,
+  ProposalCardView,
   SteerRequest,
   ProviderReadiness,
+  WatcherRecord,
 } from "../core/types";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
-import { ApprovalCardView } from "./ApprovalCard";
+import {
+  ApprovalCardStack,
+  askedCardKey,
+  proposalCardKey,
+  useAgentCards,
+  type StackCard,
+} from "./ApprovalCardStack";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -85,6 +93,7 @@ import {
   firingScheduleCount,
   handoffReport,
   latestTurnId,
+  localClock,
   oneShotPassed,
   scheduleInstant,
   scheduleLimits,
@@ -92,6 +101,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherWake,
 } from "./agentThreadModel";
 import {
   cancelThreadSchedule,
@@ -105,12 +115,15 @@ import {
   setThreadAgent,
   setThreadBrowser,
   setThreadSchedulePaused,
+  loadThreadWatchers,
+  stopThreadWatcher,
 } from "./agentThreadsApi";
 
 /** A live turn's task is read this often while the page shows; the rest follows the watermark. */
 const LIVE_POLL_MS = 2_000;
 const NO_QUESTIONS: AgentQuestion[] = [];
 const NO_SCHEDULES: AgentSchedule[] = [];
+const NO_WATCHERS: WatcherRecord[] = [];
 const NO_MESSAGES: ChatMessage[] = [];
 
 /** A turn's detail loads once its row comes this close to the view. */
@@ -319,13 +332,17 @@ const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, stri
   unschedulable: "Paused because its time can no longer be worked out",
 };
 
-function SchedulesPopover({
+function WakesPopover({
   thread,
   schedules,
+  watchers,
+  nodes,
   onChanged,
 }: {
   thread: AgentThread;
   schedules: AgentSchedule[];
+  watchers: WatcherRecord[];
+  nodes: ProjectSnapshot["graph"]["nodes"] | undefined;
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -335,8 +352,8 @@ function SchedulesPopover({
   const close = useCallback(() => setOpen(false), []);
   useLayerDismiss(open, close, [trigger, panel], trigger);
   const upcoming = upcomingSchedules(schedules);
-  if (!upcoming.length) return null;
-  const firing = firingScheduleCount(upcoming);
+  if (!upcoming.length && !watchers.length) return null;
+  const firing = firingScheduleCount(upcoming) + watchers.length;
   const act = async (run: () => Promise<unknown>) => {
     setError(null);
     try {
@@ -352,8 +369,8 @@ function SchedulesPopover({
         ref={trigger}
         className="upcoming-button"
         type="button"
-        title="Upcoming"
-        aria-label={firing ? `${firing} upcoming` : "Upcoming"}
+        title="Wakes"
+        aria-label={firing ? `${firing} wakes` : "Wakes"}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
@@ -361,8 +378,32 @@ function SchedulesPopover({
         {firing > 0 && firing}
       </button>
       {open && (
-        <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
-          <h3>Upcoming</h3>
+        <div className="upcoming-popover" role="dialog" aria-label="Wakes" ref={panel}>
+          <h3>Wakes</h3>
+          {watchers.map((watcher) => {
+            const { what, when } = watcherWake(watcher, nodes);
+            return (
+              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
+                <strong title={what}>{what}</strong>
+                <span className="upcoming-when">
+                  <time>{when}</time>
+                </span>
+                <span className="upcoming-actions">
+                  {watcher.can_stop_watching && (
+                    <button
+                      className="icon-button"
+                      type="button"
+                      aria-label="Stop watching"
+                      title="Stop watching"
+                      onClick={() => void act(() => stopThreadWatcher(thread, watcher.watcher_id))}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </span>
+              </div>
+            );
+          })}
           {upcoming.map((schedule) => {
             const cancel = () =>
               void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
@@ -460,7 +501,7 @@ function SchedulesPopover({
 
 /**
  * One of the member's agent threads: its transcript with progress, links and
- * approval cards, its Upcoming list, its menu with the agent pick, and one
+ * approval cards, its Wakes list, its menu with the agent pick, and one
  * composer with the mic. Every send is a Work turn as the member.
  */
 /** A transcript as loaded for one thread; another thread's never renders here. */
@@ -535,6 +576,10 @@ export function AgentThreadView({
   const questions = view?.questions ?? NO_QUESTIONS;
   const latest = view?.latest ?? null;
   const schedules = scheduleLists.get(thread.thread_id) ?? NO_SCHEDULES;
+  const [watcherLists, setWatcherLists] = useState<ReadonlyMap<string, WatcherRecord[]>>(
+    () => new Map(),
+  );
+  const watchers = watcherLists.get(thread.thread_id) ?? NO_WATCHERS;
   const shownLoadError = loadError?.threadId === thread.thread_id ? loadError.text : null;
   const shownNotice = notice?.threadId === thread.thread_id ? notice.text : null;
   const endpoints = useMemo(
@@ -652,7 +697,7 @@ export function AgentThreadView({
     setSubmitError,
     repositories: snapshot?.repositories ?? [],
   });
-  const artifactContext = thread.project_id ? stagedArtifactContext(comments.annotations) : null;
+  const artifactContext = stagedArtifactContext(comments.annotations);
   const draftSendable = useComposerDraft(draft, (text) =>
     Boolean(assembleChatTurn(text, comments.annotations)),
   );
@@ -725,15 +770,17 @@ export function AgentThreadView({
     if (reloading.current === entry) reloading.current = null;
   }, [refresh]);
 
-  const refreshSchedules = useCallback(async () => {
+  const refreshUpcoming = useCallback(async () => {
     const current = threadRef.current;
-    try {
-      const list = await loadThreadSchedules(current.thread_id);
-      if (threadRef.current.thread_id === current.thread_id)
-        setScheduleLists((known) => new Map(known).set(current.thread_id, list.schedules));
-    } catch {
-      // Upcoming is a side list; the thread stays usable without it.
-    }
+    const [list, watching] = await Promise.allSettled([
+      loadThreadSchedules(current.thread_id),
+      loadThreadWatchers(current),
+    ]);
+    if (threadRef.current.thread_id !== current.thread_id) return;
+    if (list.status === "fulfilled")
+      setScheduleLists((known) => new Map(known).set(current.thread_id, list.value.schedules));
+    if (watching.status === "fulfilled")
+      setWatcherLists((known) => new Map(known).set(current.thread_id, watching.value));
   }, []);
 
   // The watermark reloads the open thread; another thread opens without a rename.
@@ -742,8 +789,8 @@ export function AgentThreadView({
   }, [thread.thread_id]);
   useEffect(() => {
     void reloadOnce();
-    void refreshSchedules();
-  }, [reloadOnce, refreshSchedules, thread.thread_id, revision]);
+    void refreshUpcoming();
+  }, [reloadOnce, refreshUpcoming, thread.thread_id, revision]);
 
   // While a turn runs, only its task is read, one read at a time and never while the
   // page is hidden; its settling reloads the thread for the outcome.
@@ -1016,16 +1063,34 @@ export function AgentThreadView({
     run().catch((failure: unknown) => setNotice({ threadId, text: errorMessage(failure) }));
   };
 
+  const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cardsChanged = () => {
+    void cards.refetch();
+    if (thread.kind === "project") void refresh();
+  };
+  const proposalStackCard = (view: ProposalCardView, showProject: boolean): StackCard => ({
+    kind: "proposal",
+    key: proposalCardKey(view),
+    view,
+    decided: cards.decisionOf(view),
+    showProject,
+  });
+  const askedStackCard = (question: AgentQuestion, projectName: string | null): StackCard => ({
+    kind: "asked",
+    key: askedCardKey(question),
+    question,
+    projectName,
+  });
+  const dockCards =
+    thread.kind === "space"
+      ? [
+          ...cards.proposals.map((view) => proposalStackCard(view, true)),
+          ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
+        ]
+      : [];
+
   const renderQuestion = (question: AgentQuestion) =>
-    question.card ? (
-      <ApprovalCardView
-        key={question.question_id}
-        question={question}
-        card={question.card}
-        projectName={thread.project_name}
-        onResolved={() => void refresh()}
-      />
-    ) : endpoints.questionsApiBase ? (
+    endpoints.questionsApiBase ? (
       <QuestionCard
         key={question.question_id}
         question={question}
@@ -1128,10 +1193,12 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
-          <SchedulesPopover
+          <WakesPopover
             thread={thread}
             schedules={schedules}
-            onChanged={() => void refreshSchedules()}
+            watchers={watchers}
+            nodes={snapshot?.graph?.nodes}
+            onChanged={() => void refreshUpcoming()}
           />
           {/* The context ring sits just left of the menu, as in a project chat. */}
           <AgentStatusStrip tasks={lines.statusTasks} />
@@ -1192,6 +1259,19 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
+          proposalCards={thread.kind === "project" ? cards.proposals : undefined}
+          renderCards={(entry) => (
+            <ApprovalCardStack
+              stackKey={`${thread.thread_id}:${entry.key}`}
+              cards={[
+                ...entry.proposals.map((view) => proposalStackCard(view, true)),
+                ...entry.asked.map((question) => askedStackCard(question, thread.project_name)),
+              ]}
+              onDecided={cards.markDecided}
+              onResolved={cards.markResolved}
+              onChanged={cardsChanged}
+            />
+          )}
           artifacts={artifacts}
           comments={comments}
           endpoints={endpoints}
@@ -1237,11 +1317,7 @@ export function AgentThreadView({
               {line.trigger === "schedule" && line.role === "human" && (
                 <span className="chat-turn-trigger schedule" title={line.text}>
                   <CalendarClock size={11} aria-hidden="true" />
-                  {new Date(line.timestamp).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hourCycle: "h23",
-                  })}
+                  {localClock(new Date(line.timestamp))}
                 </span>
               )}
             </>
@@ -1322,6 +1398,17 @@ export function AgentThreadView({
           </div>
         )}
       </div>
+      {dockCards.length > 0 && (
+        <div className="approval-dock">
+          <ApprovalCardStack
+            stackKey={`${thread.thread_id}:dock`}
+            cards={dockCards}
+            onDecided={cards.markDecided}
+            onResolved={cards.markResolved}
+            onChanged={cardsChanged}
+          />
+        </div>
+      )}
       <ChatComposer
         mode="work"
         composer={attachments}
@@ -1337,6 +1424,7 @@ export function AgentThreadView({
             onChange={(event) => draft.set(event.target.value)}
             onPaste={attachments.paste}
             onKeyDown={(event) => {
+              if (arrowScrollsTranscript(event, linesRef.current)) return;
               if (!returnSends(event) || event.nativeEvent.isComposing) return;
               event.preventDefault();
               submit();

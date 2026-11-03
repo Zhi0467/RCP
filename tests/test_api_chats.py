@@ -773,3 +773,100 @@ def test_archive_waits_for_the_chats_live_turn(manifest, tmp_path, status):
         connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='turn'")
     assert client.post(url, json={"archived": True}).status_code == 200
     assert store.chat_archived(project_id, chat_id)
+
+
+def test_transcript_messages_show_when_their_turn_happened(manifest, tmp_path, monkeypatch):
+    """A member message shows its turn's first attempt; a reply shows when it finished; a steer
+    keeps its own send time. The transcript's tasks load in one batch, not one read per message.
+    """
+    from rcp.background import AgentProcessControl, AgentTaskExecution
+    from rcp.runs.steering import _receipt, _record_steer, _steering_transaction
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    request = RunRequest(chat_id=chat_id, chat_scope="project", message="go")
+    stamps = {
+        "first": "2026-11-01T08:00:00+00:00",
+        "retry": "2026-11-01T08:05:00+00:00",
+        "last": "2026-11-01T08:10:00+00:00",
+        "other_first": "2026-11-01T09:00:00+00:00",
+        "other_last": "2026-11-01T09:05:00+00:00",
+    }
+    for name, created_at in stamps.items():
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=name,
+                project_id=project_id,
+                kind="project_chat",
+                status="succeeded",
+                request=request.model_dump(mode="json"),
+                created_at=created_at,
+                updated_at=created_at,
+                status_message="",
+                authorized_by=_identity(store),
+            )
+        )
+    with store.connection() as connection:
+        for child, parent in (
+            ("retry", "first"),
+            ("last", "retry"),
+            ("other_last", "other_first"),
+        ):
+            connection.execute(
+                "UPDATE graph_runs SET parent_operation_id = ? WHERE operation_id = ?",
+                (parent, child),
+            )
+        for operation_id, finished_at in (
+            ("last", "2026-11-01T08:12:00+00:00"),
+            ("other_last", "2026-11-01T09:07:00+00:00"),
+        ):
+            connection.execute(
+                "UPDATE graph_runs SET finished_at = ? WHERE operation_id = ?",
+                (finished_at, operation_id),
+            )
+    for operation_id in ("last", "other_last"):
+        execution = AgentTaskExecution(operation_id, store, AgentProcessControl())
+        _append_chat_exchange(service, request, "done", None, None, execution=execution)
+    last = store.agent_task("last")
+    assert last is not None
+    with _steering_transaction(service):
+        _record_steer(
+            service,
+            request,
+            last,
+            message_id=str(uuid.uuid4()),
+            text="also this",
+            receipt=_receipt(1, "turn", "refused", "not running"),
+        )
+
+    single_reads = []
+    batches = []
+    original_batch = store.agent_tasks_by_ids
+    monkeypatch.setattr(store, "agent_task", lambda operation_id: single_reads.append(operation_id))
+
+    def counted(ids):
+        batches.append(list(ids))
+        return original_batch(batches[-1])
+
+    monkeypatch.setattr(store, "agent_tasks_by_ids", counted)
+    messages = client.get(f"/api/projects/{project_id}/chats/{chat_id}").json()["messages"]
+    assert [(message["role"], message.get("shown_at")) for message in messages] == [
+        ("user", stamps["first"]),
+        ("assistant", "2026-11-01T08:12:00+00:00"),
+        ("user", stamps["other_first"]),
+        ("assistant", "2026-11-01T09:07:00+00:00"),
+        ("user", None),
+    ]
+    assert messages[4]["steering"] is not None
+    assert single_reads == []
+    assert [set(batch) for batch in batches] == [
+        {"last", "other_last"},
+        {"retry", "other_first"},
+        {"first"},
+    ]

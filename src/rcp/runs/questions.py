@@ -320,15 +320,15 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
 #: project thread turn; None marks a verb with no member-facing capability.
 #: Its keys are exactly that grant with every gate open, which a test enforces.
 WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
-    "graph_diff": "Answers questions about this project's graph",
-    "graph_log": "Answers questions about this project's graph",
-    "projects": "Looks across your other projects",
-    "validate": "Records results in the project graph",
-    "launch": "Runs jobs on the project's machines",
-    "episode": "Starts experiments you ask for",
-    "bulletin": "Posts and replies on the project Bulletin",
-    "schedule": "Reminds you or checks back on a schedule",
-    "ask": "Asks you when it needs a decision",
+    "graph_diff": "Answers questions about the graph and records results in it",
+    "graph_log": "Answers questions about the graph and records results in it",
+    "validate": "Answers questions about the graph and records results in it",
+    "projects": "Reads your other projects when you ask",
+    "launch": "Runs jobs on the project's machines and pings you when they end",
+    "episode": "Starts experiments you ask for and watches them",
+    "ask": "Asks your approval to start Auto-research on a branch or merge one",
+    "schedule": "Schedules reminders and weekly catch-ups",
+    "bulletin": "Talks with other agents on the project Bulletin",
     "name": None,
 }
 

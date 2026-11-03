@@ -440,22 +440,20 @@ def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monke
         assert [message["text"] for message in transcript["messages"]] == ["hello", "new direction"]
 
 
-def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
+def _space_turn_artifact(app, thread_id: str):
+    """A saved HTML artifact rebound as an earlier turn of this Space thread."""
     import json
 
     from tests.test_saved_artifacts_api import create_saved_artifact
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
-    client = signed_in_client(app)
-    thread = client.get("/api/agent-threads").json()["threads"][0]
     task, artifact = create_saved_artifact(app, store.space_id, kept=False, with_chat=False)
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET kind='space_chat', request_json=?, authorized_space_id=?, "
             "authorized_user_id=?, authorized_display_name='Owner' WHERE operation_id=?",
             (
-                json.dumps({"chat_id": thread["thread_id"]}),
+                json.dumps({"chat_id": thread_id}),
                 store.space_id,
                 store.local_owner.user_id,
                 task.operation_id,
@@ -471,6 +469,111 @@ def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
                 task.operation_id,
             ),
         )
+    return task, artifact
+
+
+def _text_comment(operation_id: str, artifact_id: str) -> dict[str, object]:
+    return {
+        "operation_id": operation_id,
+        "artifact_id": artifact_id,
+        "selections": [{"kind": "text", "text": "Saved comparison", "comment": "Bigger"}],
+    }
+
+
+def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, monkeypatch):
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, artifact = _space_turn_artifact(app, thread_id)
+        context = _text_comment(task.operation_id, artifact.artifact_id)
+        response = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={"message": "", "artifact_context": context},
+        )
+        assert response.status_code == 202, response.text
+        stored = store.agent_task(response.json()["operation_id"])
+        assert stored is not None
+        assert stored.request["artifact_context"]["artifact_id"] == artifact.artifact_id
+        assert stored.request["artifact_context"]["selections"][0]["comment"] == "Bigger"
+        assert "Comment 1" in stored.request["message"]
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _artifact_comment_part
+    from rcp.service import RunRequest
+
+    stage = tmp_path / "stage"
+    part = _artifact_comment_part(
+        SimpleNamespace(
+            owner=SimpleNamespace(store=store),
+            request=RunRequest.model_validate(stored.request),
+            stage=stage,
+        )
+    )
+    commented = stage / "turns" / task.operation_id / "artifacts" / artifact.name
+    assert str(commented) in part and '"comment": "Bigger"' in part
+
+
+def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, monkeypatch):
+    import uuid
+
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, artifact = _space_turn_artifact(app, str(uuid.uuid4()))
+        own, own_artifact = _space_turn_artifact(app, thread_id)
+        for context in (
+            _text_comment(task.operation_id, artifact.artifact_id),
+            _text_comment(own.operation_id, "0" * 24),
+        ):
+            response = client.post(
+                f"/api/agent-threads/{thread_id}/turns",
+                json={"message": "fix", "artifact_context": context},
+            )
+            assert response.status_code == 422, response.text
+        empty = {**_text_comment(own.operation_id, own_artifact.artifact_id), "selections": []}
+        response = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={"message": " ", "artifact_context": empty},
+        )
+        assert response.status_code == 422, response.text
+
+
+def test_space_inline_viewer_enables_selection(manifest, tmp_path):
+    import json
+    import re
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, artifact = _space_turn_artifact(app, thread_id)
+        base = (
+            f"/api/agent-threads/{thread_id}/tasks/{task.operation_id}"
+            f"/artifacts/{artifact.artifact_id}"
+        )
+        viewer = client.get(base + "/viewer", params={"presentation": "inline"})
+        assert viewer.status_code == 200, viewer.text
+        config = re.search(r"const inlineConfig=(\{.*?\});", viewer.text)
+        assert config is not None and json.loads(config.group(1))["selectable"] is True
+        content = client.get(
+            base + "/content",
+            params={"presentation": "inline", "theme": "default", "color_mode": "dark"},
+        )
+        assert content.status_code == 200, content.text
+
+
+def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    client = signed_in_client(app)
+    thread = client.get("/api/agent-threads").json()["threads"][0]
+    task, artifact = _space_turn_artifact(app, thread["thread_id"])
     base = (
         f"/api/agent-threads/{thread['thread_id']}/tasks/{task.operation_id}"
         f"/artifacts/{artifact.artifact_id}"
@@ -636,3 +739,53 @@ def test_member_pick_waits_for_sign_in_but_agent_pick_must_run(manifest, tmp_pat
         store_thread_pick(store, catalog, thread, provider="claude")
     store_thread_pick(store, catalog, thread, provider="claude", wait_for_sign_in=True)
     assert store.agent_thread(thread.thread_id).agent["provider"] == "claude"
+
+
+def test_space_transcript_shows_when_each_message_happened(manifest, tmp_path, monkeypatch):
+    """The member message keeps its first attempt's time across a Retry; the reply shows when its
+    attempt finished; a steer keeps its own send time.
+    """
+    import uuid
+
+    from rcp.runs.space_chat import SpaceThreadOwner, append_space_message
+    from rcp.service import RunRequest
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    store = tasks.store
+    fake_launch_admitted(monkeypatch, tasks)
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][0]
+        base = "/api/agent-threads/" + thread["thread_id"]
+        first_id = client.post(base + "/turns", json={"message": "hello"}).json()["operation_id"]
+        store.fail_agent_task(first_id, "try again")
+        retry = client.post(f"{base}/tasks/{first_id}/retry", json={})
+        assert retry.status_code == 202, retry.text
+        retry_id = retry.json()["operation_id"]
+        steer = {
+            "message_id": str(uuid.uuid4()),
+            "attempt": 1,
+            "expected_turn_id": "not-running",
+            "message": "new direction",
+        }
+        assert client.post(f"{base}/tasks/{retry_id}/steer", json=steer).status_code == 200
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET finished_at = ? WHERE operation_id = ?",
+                ("2026-11-01T09:30:00+00:00", retry_id),
+            )
+        retried = store.agent_task(retry_id)
+        first = store.agent_task(first_id)
+        assert retried is not None and first is not None
+        assert retried.parent_operation_id == first_id
+        owner = SpaceThreadOwner(store, app.state.catalog, thread["thread_id"])
+        request = RunRequest.model_validate(retried.request)
+        append_space_message(owner, request, retry_id, role="user", text="hello")
+        append_space_message(owner, request, retry_id, role="assistant", text="hi")
+        messages = client.get(base + "/transcript").json()["messages"]
+        assert [(message["text"], message.get("shown_at")) for message in messages] == [
+            ("hello", first.created_at),
+            ("new direction", None),
+            ("hi", "2026-11-01T09:30:00+00:00"),
+        ]

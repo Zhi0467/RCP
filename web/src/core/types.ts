@@ -3072,6 +3072,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   timestamp: string;
+  /** When the message happened, joined by the transcript readers; display only. */
+  shown_at?: string | null;
   native_session_id: string | null;
   provider: string | null;
   model: string | null;
@@ -4214,6 +4216,8 @@ export interface ApprovalCard {
   pinned_sha256: string;
   expires_at: string;
   state: "pending" | "running" | "expired";
+  /** The settled outcome, once a tap or expiry resolved the card. */
+  result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
 }
 
 export interface ApprovalCardDecision {
@@ -4225,4 +4229,32 @@ export interface ApprovalCardResult {
   outcome: "approved" | "declined" | "stale" | "failed" | "expired";
   result?: unknown;
   reason?: string | null;
+  /** Set on a declined approve-Proposal card: whether its Proposal was then rejected. */
+  rejected?: boolean;
+}
+
+/** A pending Proposal that a turn of the member's own project thread raised, drawn live. */
+export interface ProposalCardView {
+  project_id: string;
+  project_name: string;
+  thread_id: string;
+  /** The first attempt of the raising turn. */
+  turn_id: string;
+  turn_created_at: string;
+  proposal: Proposal;
+  stale: boolean;
+  changes: ProposalActionLine[];
+}
+
+export type AskedApprovalCardView = AgentQuestion & { project_name: string };
+
+/** `GET /api/agent-threads/cards`: open cards, each list newest first. */
+export interface AgentCardList {
+  proposal_cards: ProposalCardView[];
+  asked_cards: AskedApprovalCardView[];
+}
+
+export interface ProposalCardDecisionResult {
+  proposal_id: string;
+  status: "approved" | "rejected";
 }

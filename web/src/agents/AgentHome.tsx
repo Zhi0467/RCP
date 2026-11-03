@@ -7,6 +7,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useMinuteClock } from "../core/useMinuteClock";
 import { isChatListToggleShortcut } from "../chat/chatLayout";
 import { readPref, writePref } from "../core/prefStorage";
 import type { AgentThread } from "../core/types";
@@ -103,7 +104,7 @@ export function AgentHome({
   const rail = threads ? railThreads(threads) : [];
   // A phone opens a thread only when the address names one; a desktop always shows one.
   const open = narrow && !threadId ? null : chosenThread(rail, threadId);
-  const now = Date.now();
+  const now = useMinuteClock();
   const showRail = narrow ? open === null : !folded;
   return (
     <section

@@ -134,6 +134,12 @@
 .thread-row [role="option"] time.live {
   color: var(--slate);
 }
+.thread-row [role="option"].has-unread time:not(.live) {
+  background: var(--teal);
+  color: var(--accent-ink);
+  font-weight: 800;
+  padding: 2px 7px;
+}
 .thread-rail-divider {
   border-top: 1px solid var(--line);
   margin: 4px 6px 10px;
@@ -341,7 +347,9 @@
 }
 .agent-thread .node-chat-line,
 .agent-thread .node-chat-lines > .question-card,
-.agent-thread .approval-card {
+.agent-thread .approval-card,
+.agent-thread .approval-stack,
+.agent-thread .approval-quiet {
   max-width: var(--thread-column);
 }
 .agent-thread .chat-composer {
@@ -349,6 +357,19 @@
 }
 .agent-thread .node-chat-lines > * {
   white-space: normal;
+}
+.agent-thread .node-chat-line.human .node-chat-text {
+  white-space: pre-wrap;
+}
+.agent-thread .chat-answer-annotation-button:not(:focus-visible) {
+  clip-path: inset(50%);
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
 }
 .agent-thread .node-chat-line.agent .chat-markdown p {
   margin: 0 0 10px;
@@ -681,6 +702,137 @@
   font-weight: 500;
 }
 
+.approval-later {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--type-sm);
+  padding: 6px 10px;
+}
+.approval-later:hover {
+  color: var(--ink);
+}
+.approval-details dl.approval-prose > div {
+  display: grid;
+  gap: 2px;
+}
+.approval-details dl.approval-prose dd {
+  font: inherit;
+  text-align: left;
+}
+.approval-changes {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+.approval-changes strong {
+  font-weight: 600;
+  margin-right: 6px;
+}
+.approval-card:not([data-state="pending"]) .question-state {
+  flex: 0 1 auto;
+  max-width: 50%;
+  overflow-wrap: break-word;
+  text-align: right;
+}
+
+/* A stack shows its front card with two offset edges behind it. */
+.approval-stack {
+  margin: 0 auto 24px;
+  max-width: 820px;
+  width: 100%;
+}
+.approval-stack .approval-card,
+.approval-stack .approval-quiet {
+  margin: 0;
+}
+.approval-stack[data-held] .approval-stack-front {
+  padding: 0 12px 12px 0;
+}
+.approval-stack[data-held]:not([data-stacked]) .approval-stack-nav {
+  visibility: hidden;
+}
+.approval-stack[data-stacked] .approval-stack-front > * {
+  box-shadow:
+    6px 6px 0 -1px var(--surface),
+    6px 6px 0 0 color-mix(in srgb, var(--mustard) 45%, transparent),
+    12px 12px 0 -1px var(--surface),
+    12px 12px 0 0 color-mix(in srgb, var(--mustard) 22%, transparent);
+}
+.approval-stack-nav {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+  gap: 6px;
+  justify-content: flex-end;
+  margin: 0 12px 6px 0;
+}
+.approval-stack-nav button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: inherit;
+  display: grid;
+  height: 26px;
+  place-items: center;
+  width: 26px;
+}
+.approval-stack-nav button:hover {
+  color: var(--ink);
+}
+/* A folded stack or an out-of-date card: one quiet line as wide as a card. */
+.approval-quiet {
+  align-items: center;
+  animation: agent-pop-in 0.18s ease-out;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-sizing: border-box;
+  color: var(--muted);
+  display: flex;
+  font: inherit;
+  font-size: var(--type-sm);
+  gap: 8px;
+  margin: 0 auto 24px;
+  max-width: 820px;
+  padding: 10px 14px;
+  text-align: left;
+  width: 100%;
+}
+.approval-quiet > span {
+  flex: 1;
+  min-width: 0;
+}
+.approval-quiet a {
+  color: var(--cobalt);
+  font-weight: 600;
+  text-decoration: none;
+}
+.approval-fold:hover {
+  color: var(--ink);
+}
+/* Pip's dock: the member's open cards, directly above the composer. */
+.approval-dock {
+  margin: 0 auto 10px;
+  max-height: 45vh;
+  overflow-y: auto;
+  width: min(var(--thread-column, 820px), calc(100% - 36px));
+}
+.approval-dock .approval-card,
+.approval-dock .approval-stack,
+.approval-dock .approval-quiet {
+  margin: 0 0 8px;
+  max-width: none;
+}
+.approval-dock .approval-stack .approval-card,
+.approval-dock .approval-stack .approval-quiet {
+  margin: 0;
+}
+
 /* ---------- Composer: one composer with the picker and the mic ---------- */
 .agent-thread .chat-composer {
   position: relative;
@@ -724,6 +876,7 @@
 @media (prefers-reduced-motion: reduce) {
   .upcoming-popover,
   .approval-card,
+  .approval-quiet,
   .thread-welcome,
   .thread-agent-picker .agent-config.compact {
     animation: none;
@@ -807,6 +960,17 @@
   .approval-card {
     padding: 12px;
   }
+  .approval-dock {
+    margin: 0 16px 8px;
+    width: calc(100% - 32px);
+  }
+  .approval-later {
+    min-height: 44px;
+  }
+  .approval-stack-nav button {
+    height: 44px;
+    width: 44px;
+  }
   .approval-card[data-state="pending"] .question-state {
     display: none;
   }
@@ -843,5 +1007,50 @@
   }
   .thread-welcome-prompts .button {
     min-height: 44px;
+  }
+}
+.chat-time-divider {
+  color: var(--faint);
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+  margin: 4px auto 18px;
+  max-width: 820px;
+  text-align: center;
+}
+.node-chat-line:has(> .chat-line-time) {
+  position: relative;
+}
+.chat-line-time {
+  color: var(--muted);
+  font-family: var(--ui);
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+  left: 3px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: calc(100% + 5px);
+  transition: opacity 0.16s ease;
+  user-select: none;
+}
+.node-chat-line.human > .chat-line-time {
+  left: auto;
+  right: 4px;
+}
+@media (hover: hover) {
+  .node-chat-line:hover > .chat-line-time,
+  .node-chat-line:focus-within > .chat-line-time {
+    opacity: 1;
+  }
+}
+@media (hover: none) {
+  .node-chat-line[data-time-shown] > .chat-line-time {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-line-time {
+    transition: none;
   }
 }

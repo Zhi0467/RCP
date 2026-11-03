@@ -196,6 +196,15 @@ class ApprovalCardStoreMixin(StoreMixinBase):
             connection.execute("BEGIN IMMEDIATE")
             _settle(connection, question_id, result, self.now(), resolved_by)
 
+    def record_declined_rejection(self, question_id: str, rejection: dict[str, Any]) -> None:
+        """Add the rejection a Decline then attempted to that declined card's result."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE approval_cards SET result_json=json_patch(result_json, ?) "
+                "WHERE question_id=? AND json_extract(result_json, '$.outcome')='declined'",
+                (json.dumps(rejection), question_id),
+            )
+
     def release_approval_card(self, question_id: str) -> None:
         """Undo a claim whose action could not start; the member may tap again."""
         with self.connection() as connection:

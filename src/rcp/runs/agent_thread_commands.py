@@ -286,7 +286,7 @@ _THREAD_VERBS: dict[str, _ThreadVerb] = {
         ThreadCommandHandler.handoff, _handoff_usages, "Hands work to a project's own agent"
     ),
     "schedule": _ThreadVerb(
-        ThreadCommandHandler.schedule, _schedule_usages, "Reminds you or checks back on a schedule"
+        ThreadCommandHandler.schedule, _schedule_usages, "Schedules reminders and weekly catch-ups"
     ),
 }
 

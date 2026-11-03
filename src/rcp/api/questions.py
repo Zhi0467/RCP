@@ -146,6 +146,20 @@ def _serialize_all(
     ]
 
 
+_SHOWN_RESULT_FIELDS = ("outcome", "rejected", "reason")
+
+
+def _card_response(card: dict[str, Any]) -> dict[str, Any]:
+    """The card without its receipt; a settled one keeps the outcome the member sees."""
+    result = card["result"]
+    return {
+        **{key: value for key, value in card.items() if key != "result"},
+        "result": (
+            {key: result[key] for key in _SHOWN_RESULT_FIELDS if key in result} if result else None
+        ),
+    }
+
+
 def _response(
     store: AppStore,
     question: QuestionRecord,
@@ -169,7 +183,7 @@ def _response(
         operation_id=question.origin.operation_id,
         capability=question.origin.capability,
         state=state,
-        card={key: value for key, value in card.items() if key != "result"} if card else None,
+        card=_card_response(card) if card else None,
         can_answer=_can_answer(question),
         agent_waiting=(
             _can_answer(question) and store.question_activity.is_waiting(question.question_id)

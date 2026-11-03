@@ -901,3 +901,49 @@ test("agent-thread watchers ride the beat with no project open, and only while w
   assert.equal(requests.length, before);
   scheduler.stop();
 });
+
+test("agent-card watchers hear each version change once, and only while watching", async () => {
+  const time = fakeClock();
+  const requests = [];
+  let version = "v1";
+  const scheduler = new RefreshScheduler({
+    store: new ResourceStore(() => time.clock.now()),
+    clientId: "c",
+    openProjects: () => [],
+    activeProjectId: () => null,
+    send: async (request) => {
+      requests.push(request);
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [],
+        unavailable: [],
+        ...(request.agent_cards ? { agent_cards: { version } } : {}),
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.start();
+  const threads = scheduler.watchAgentThreads(() => {});
+  await time.advance(2500);
+  assert.ok(requests.length >= 2 && requests.every((request) => !("agent_cards" in request)));
+  const seen = [];
+  const start = requests.length;
+  const unwatch = scheduler.watchAgentCards((next) => seen.push(next));
+  await time.advance(2500);
+  version = "v2";
+  await time.advance(2500);
+  assert.deepEqual(seen, ["v1", "v2"]);
+  unwatch();
+  const before = requests.length;
+  version = "v3";
+  await time.advance(2500);
+  assert.ok(requests.length > before);
+  assert.ok(requests.slice(before).every((request) => !("agent_cards" in request)));
+  assert.ok(requests.slice(start, before).every((request) => request.agent_cards === true));
+  assert.deepEqual(seen, ["v1", "v2"]);
+  threads();
+  scheduler.stop();
+});

@@ -337,6 +337,8 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             source_checkout: true,
             update_command: null,
           };
+        else if (path === "/api/agent-threads/cards")
+          json = { proposal_cards: [], asked_cards: [] };
         else if (/\/episodes\/[^/]+\/questions$/.test(path)) json = [];
         else if (path.endsWith("/consolidation"))
           json = { schedule: null, inbox: [], can_write: true, recent_nights: [] };

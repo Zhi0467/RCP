@@ -1,5 +1,6 @@
 import { Moon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useMinuteClock } from "../core/useMinuteClock";
 import {
   browserTimeZone,
   CONSOLIDATION_AUTHORIZATION_DAYS,
@@ -48,18 +49,6 @@ function formatNight(occurrenceDate: string, options: Intl.DateTimeFormatOptions
   return new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }).format(
     new Date(`${occurrenceDate}T00:00:00Z`),
   );
-}
-
-/** The current time, refreshed once a minute while `active`. */
-function useMinuteClock(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return now;
 }
 
 function NightStrip({ nights }: { nights: ConsolidationNight[] }) {

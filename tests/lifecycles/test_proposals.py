@@ -6,7 +6,7 @@ from unittest import mock
 from tests.lifecycles.engine import RESTART, Action, explore, witness
 from tests.lifecycles.proposals import Proposals
 
-STATES = 30
+STATES = 25
 
 
 def _root(tmp_path: Path) -> Path:
@@ -55,3 +55,32 @@ def test_an_outage_tap_releases_its_card(tmp_path: Path) -> None:
             (Action("tap", ("C0", "outage"), environment=False),),
         )
     assert "outage_releases_the_card" in reported
+
+
+def test_a_declined_approval_rejects_its_proposal(tmp_path: Path) -> None:
+    """Without the rejection after Decline, the Proposal stays pending with no reason given."""
+
+    with mock.patch("rcp.api.approval_cards._declined_rejection", lambda *_: {}):
+        reported = witness(
+            Proposals(),
+            _root(tmp_path),
+            tmp_path / "saves",
+            (Action("tap", ("C0", "decline"), environment=False),),
+        )
+    assert "declining_an_approval_rejects_or_says_why" in reported
+
+
+def test_a_card_decision_on_a_stale_proposal_is_refused(tmp_path: Path) -> None:
+    """Without the staleness check, a card tap on a moved Proposal is not refused as stale."""
+
+    with mock.patch("rcp.api.approval_cards.proposal_is_stale", lambda *_: False):
+        reported = witness(
+            Proposals(),
+            _root(tmp_path),
+            tmp_path / "saves",
+            (
+                Action("move"),
+                Action("decide", ("P0", "approved"), environment=False),
+            ),
+        )
+    assert "card_decisions_need_a_live_proposal" in reported

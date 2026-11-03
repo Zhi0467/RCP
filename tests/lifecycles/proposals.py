@@ -86,7 +86,7 @@ ProposalStatus = Proposal.model_fields["status"].annotation
 QuestionState = QuestionRecord.model_fields["state"].annotation
 
 
-def append_agent_patch(service, ops) -> None:
+def append_agent_patch(service, ops, *, source_operation_id: str | None = None) -> None:
     """Append an agent Patch as fixture history, without a Work turn's checks."""
 
     from tests.helpers import append_fixture_patch
@@ -99,6 +99,7 @@ def append_agent_patch(service, ops) -> None:
             summary="Agent change.",
             run_truth_scope=["repo-a"],
             repositories_read=["repo-a"],
+            source_operation_id=source_operation_id,
             ops=ops,
         ),
     )
@@ -139,39 +140,40 @@ def file_proposal(service) -> None:
             },
         ],
     )
-    append_agent_patch(
-        service,
-        [
+    append_agent_patch(service, [proposal_filing(PROPOSAL)])
+
+
+def proposal_filing(proposal_id: str) -> dict[str, Any]:
+    """The operation that files one pending Proposal activating the replanning hypothesis."""
+
+    return {
+        "op": "create_proposals",
+        "proposals": [
             {
-                "op": "create_proposals",
-                "proposals": [
+                "id": proposal_id,
+                "title": "Activate the replanning hypothesis",
+                "card": {
+                    "situation_cold": "s",
+                    "why_human_now": "w",
+                    "consequences": "c",
+                    "decision_needed": "d",
+                },
+                "ops": [
                     {
-                        "id": PROPOSAL,
-                        "title": "Activate the replanning hypothesis",
-                        "card": {
-                            "situation_cold": "s",
-                            "why_human_now": "w",
-                            "consequences": "c",
-                            "decision_needed": "d",
-                        },
-                        "ops": [
+                        "op": "update_nodes",
+                        "intent": "status_change",
+                        "nodes": [
                             {
-                                "op": "update_nodes",
-                                "intent": "status_change",
-                                "nodes": [
-                                    {
-                                        "id": HYP,
-                                        "changes": {"status": "active"},
-                                        "cause": {"kind": "evidence_edge", "ref_id": "edge/replan"},
-                                    }
-                                ],
+                                "id": HYP,
+                                "changes": {"status": "active"},
+                                "cause": {"kind": "evidence_edge", "ref_id": "edge/replan"},
                             }
                         ],
                     }
                 ],
             }
         ],
-    )
+    }
 
 
 def api_card(api, action=None):
@@ -259,6 +261,7 @@ class World:
     revision: int = 0
     pinned: dict[str, str] = field(default_factory=dict)
     seen: View | None = None
+    reply: Any = None
 
     @property
     def store(self):
@@ -321,6 +324,7 @@ class Proposals:
     tables = frozenset({"approval_cards", "questions"})
     writers = (
         ApprovalCardStoreMixin.claim_approval_card,
+        ApprovalCardStoreMixin.record_declined_rejection,
         ApprovalCardStoreMixin.release_approval_card,
         ApprovalCardStoreMixin.take_expired_approval_card,
         _settle,
@@ -428,6 +432,11 @@ class Proposals:
         if any(not proposals[name][2] for name in pending):
             found.append(Action("move"))
         found.extend(Action("withdraw", (name,)) for name in pending)
+        for name, row in proposals.items():
+            decisions = ("approved", "rejected") if row[1] == "pending" else ("rejected",)
+            found.extend(
+                Action("decide", (name, decision), environment=False) for decision in decisions
+            )
         if not open_cards and len(view.cards) < len(_CARDS):
             found.append(Action("ask", ("P0",)))
         for name in pending:
@@ -452,6 +461,7 @@ class Proposals:
     def apply(self, world: World, action: Action) -> None:
         world.action = action
         world.seen = None
+        world.reply = None
         world.revision = world.graph().revision
         world.pinned = {
             name: row["pinned_sha256"]
@@ -467,6 +477,8 @@ class Proposals:
             _ask(world, _proposal_id(action.args[0]))
         elif action.name == "sync":
             _sync(world, _proposal_id(action.args[0]), action.args[1])
+        elif action.name == "decide":
+            _decide(world, _proposal_id(action.args[0]), action.args[1])
         elif action.name == "tap":
             _TAPS[action.args[1]](world, action.args[0])
         elif action.name == "sweep":
@@ -682,6 +694,19 @@ def _sync(world: World, proposal_id: str, decision: str) -> None:
         return
 
 
+def _decide(world: World, proposal_id: str, decision: str) -> None:
+    """A member's tap on the derived Proposal card, from a browser that may lag the Inbox."""
+
+    from fastapi import HTTPException
+
+    from rcp.api.approval_cards import decide_proposal
+
+    try:
+        world.reply = decide_proposal(world.request(), world.project_id, proposal_id, decision)
+    except HTTPException as exc:
+        world.reply = exc.detail
+
+
 def _resolve(world: World, name: str, decision: str = "approve") -> None:
     from fastapi import HTTPException
 
@@ -691,7 +716,7 @@ def _resolve(world: World, name: str, decision: str = "approve") -> None:
     request = world.request()
     body = ResolveApprovalBody(decision=decision, pinned_sha256=world.pinned[name])
     try:
-        resolve_approval_card(
+        world.reply = resolve_approval_card(
             world.card_ids()[name],
             body,
             request,
@@ -954,6 +979,47 @@ def _asks(_before, world: World) -> bool:
     return world.action is not None and world.action.name == "ask"
 
 
+def card_decisions_need_a_live_proposal(before, world: World) -> list[str]:
+    """A Proposal card decides a pending, fresh Proposal once; otherwise it is not pending."""
+
+    action = world.action
+    assert action is not None
+    name, decision = action.args
+    proposal = _proposals(before)[name]
+    status = _proposals(_view(world))[name][1]
+    if proposal[1:3] == ("pending", False):
+        return [] if status == decision else [f"{name} is {status} after deciding {decision}"]
+    if status != proposal[1] or world.reply != {"code": "proposal_not_pending"}:
+        return [f"deciding {proposal[1]} {name} moved it to {status}, replying {world.reply}"]
+    return []
+
+
+def _decides(_before, world: World) -> bool:
+    return world.action is not None and world.action.name == "decide"
+
+
+def declining_an_approval_rejects_or_says_why(before, world: World) -> list[str]:
+    """Declining a card that approves a Proposal rejects it, or says why it stays pending."""
+
+    action = world.action
+    assert action is not None
+    card = _cards(_view(world))[action.args[0]]
+    status = _proposals(_view(world))[card[1]][1]
+    reply = world.reply or {}
+    if card[3] != "declined":
+        return [f"{action.args[0]} settled {card[3]} on a decline"]
+    if reply.get("rejected") is True and status == "rejected":
+        return []
+    if reply.get("rejected") is False and reply.get("reason") and status != "rejected":
+        return []
+    return [f"a decline left {card[1]} {status}, replying {reply}"]
+
+
+def _declines(_before, world: World) -> bool:
+    action = world.action
+    return action is not None and action.name == "tap" and action.args[1] == "decline"
+
+
 def cards_end(view) -> bool:
     """Every card settles."""
 
@@ -972,6 +1038,12 @@ RULES = (
         restart_never_reruns, _restarts_a_crash, "code guard at settle_interrupted_approval_cards"
     ),
     Step(cards_pin_a_live_proposal, _asks, "code guard at approval_card_for_ask"),
+    Step(card_decisions_need_a_live_proposal, _decides, "code guard at decide_proposal"),
+    Step(
+        declining_an_approval_rejects_or_says_why,
+        _declines,
+        "conversations spec: approval cards",
+    ),
     Goal(
         cards_end,
         "conversations spec: approval cards",

@@ -13,6 +13,7 @@ import {
   settled,
   mossTranscript,
   card,
+  proposalCard,
   readiness,
   schedules,
   mockApi,
@@ -106,13 +107,28 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     await thread.locator(".chat-progress").waitFor();
     assert.equal(await thread.locator(".chat-progress li").count(), 4);
     assert.equal(await thread.locator('.chat-markdown a[href^="#/projects/"]').count(), 1);
+    assert.ok((await thread.locator(".chat-time-divider").count()) >= 1);
+    const firstLine = thread.locator(".node-chat-line:has(> .chat-line-time)").first();
+    const lineBox = await firstLine.boundingBox();
+    await firstLine.hover();
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector(".chat-line-time")).opacity === "1",
+    );
+    assert.deepEqual(await firstLine.boundingBox(), lineBox, "Showing the time moves nothing");
+    assert.equal(
+      await thread
+        .locator(".node-chat-line.human .node-chat-text")
+        .first()
+        .evaluate((text) => getComputedStyle(text).whiteSpace),
+      "pre-wrap",
+    );
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/agent-space-1440.png` });
 
-    // Upcoming lists both schedules; Cancel deletes one.
-    const upcoming = thread.getByRole("button", { name: "2 upcoming" });
+    // Wakes lists both schedules; Cancel deletes one.
+    const upcoming = thread.getByRole("button", { name: "2 wakes" });
     await upcoming.click();
-    const popover = page.getByRole("dialog", { name: "Upcoming" });
+    const popover = page.getByRole("dialog", { name: "Wakes" });
     assert.equal(await popover.locator(".upcoming-row").count(), 2);
     if (shots) await page.screenshot({ path: `${shots}/agent-upcoming-1440.png` });
     await popover
@@ -184,6 +200,12 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth), 390);
     await phone.waitForTimeout(150);
     if (shots) await phone.screenshot({ path: `${shots}/agent-thread-390.png` });
+    const phoneLine = phoneThread.locator(".node-chat-line", { hasText: "Mark H2 supported" });
+    await phoneLine.locator(".node-chat-text").tap();
+    assert.equal(await phoneLine.getAttribute("data-time-shown"), "");
+    await phone.waitForTimeout(200);
+    if (shots) await phone.screenshot({ path: `${shots}/agent-thread-time-390.png` });
+    assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth), 390);
     const composer = await phoneThread.locator(".chat-composer").boundingBox();
     assert.ok(composer.x >= 0 && composer.x + composer.width <= 390);
     await phoneThread.getByRole("button", { name: "Threads" }).click();
@@ -596,7 +618,13 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
     );
-    await project.getByRole("button", { name: "Comment on this answer" }).click();
+    const projectComment = project.getByRole("button", { name: "Comment on this answer" });
+    assert.equal(
+      await projectComment.evaluate((button) => button.getBoundingClientRect().width),
+      1,
+    );
+    await projectComment.focus();
+    await projectComment.press("Enter");
     const selection = page.getByRole("textbox", { name: "Select answer text" });
     await selection.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
     await page.getByRole("button", { name: "Comment on selection" }).click();
@@ -613,7 +641,9 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       location.hash = "#/agent/space";
     });
     const space = page.getByRole("region", { name: "Pip" });
-    await space.getByRole("button", { name: "Comment on this answer" }).click();
+    const spaceComment = space.getByRole("button", { name: "Comment on this answer" });
+    await spaceComment.focus();
+    await spaceComment.press("Enter");
     await page
       .getByRole("textbox", { name: "Select answer text" })
       .press(process.platform === "darwin" ? "Meta+A" : "Control+A");
@@ -658,7 +688,6 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();
 
     assert.equal(await space.locator('[data-artifact-action="keep"]').count(), 0);
-    assert.equal(await space.getByRole("button", { name: "Comment on a part" }).count(), 0);
     await space
       .locator('input[type="file"]')
       .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
@@ -681,6 +710,93 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await browser?.close();
     await server.close();
   }
+});
+
+test("Pip comments on a part of an inline artifact and sends the selection with the turn", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const writes = [];
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, writes);
+    const artifact = {
+      artifact_id: "report",
+      name: "report.html",
+      media_type: "text/html",
+      view: "html",
+      size_bytes: 42,
+      available: true,
+      unavailable_reason: null,
+      can_open: true,
+      can_download: true,
+      can_keep: false,
+      can_discuss: true,
+    };
+    await page.route("**/api/agent-threads/space/transcript", (route) =>
+      route.fulfill({
+        json: transcript("space", [
+          message("request", "user", "Inspect the report", "op-space", { timestamp: ago(2) }),
+          message(
+            "answer",
+            "assistant",
+            "Ready.\n\n![Report](/workspace/.research/turns/op-space/artifacts/report.html)",
+            "op-space",
+            { timestamp: ago(1) },
+          ),
+        ]),
+      }),
+    );
+    await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
+      route.fulfill({ json: { ...settled("op-space"), result: { artifacts: [artifact] } } }),
+    );
+    await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
+    );
+    await page.goto(`${base}#/agent/space`);
+    const space = page.getByRole("region", { name: "Pip" });
+    const embed = space.locator(".chat-inline-artifact.commenting");
+    await embed.waitFor();
+    assert.equal(
+      await embed.getByRole("button", { name: "Done commenting" }).getAttribute("aria-pressed"),
+      "true",
+    );
+    const frame = embed.locator(".chat-inline-artifact-frame");
+    assert.match(await frame.getAttribute("src"), /\/viewer\?presentation=inline/);
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".chat-inline-artifact-frame")?.contentDocument?.body
+          ?.textContent === "Rendered report",
+    );
+    await page.frame({ url: /\/artifacts\/report\/viewer/ }).evaluate(() =>
+      parent.postMessage(
+        {
+          type: "rcp-artifact-selection",
+          version: 1,
+          selection: { kind: "text", text: "Rendered report", surrounding_text: "" },
+          description: "",
+        },
+        location.origin,
+      ),
+    );
+    const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+    await comment.fill("Tighten this");
+    await comment.press("Enter");
+    await space.getByRole("textbox", { name: "Message" }).fill("Revise it");
+    await space.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector('textarea[aria-label="Message"]').value === "",
+    );
+    const sent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
+    assert.equal(sent.body.artifact_context.artifact_id, "report");
+    assert.equal(sent.body.artifact_context.operation_id, "op-space");
+    assert.deepEqual(
+      sent.body.artifact_context.selections.map((selection) => [selection.text, selection.comment]),
+      [["Rendered report", "Tighten this"]],
+    );
+    assert.equal(sent.body.message.includes("Tighten this"), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    assert.deepEqual(errors, []);
+  });
 });
 
 /** One served fixture per test; `run` gets the browser and the fixture's base URL. */
@@ -1031,14 +1147,14 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     assert.deepEqual(errors, []);
     await page.close();
 
-    // Phone: Upcoming and See details reach the touch target.
+    // Phone: Wakes and See details reach the touch target.
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
     await mockApi(phone, []);
     await phone.goto(`${base}#/agent/moss`);
     const moss = phone.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
     for (const control of [
-      moss.getByRole("button", { name: /upcoming$/ }),
+      moss.getByRole("button", { name: /wakes$/ }),
       moss.getByRole("button", { name: "See details" }),
     ])
       assert.ok((await control.boundingBox()).height >= 44);
@@ -1238,7 +1354,7 @@ test("an empty thread welcomes the member until its first turn, and a starter on
       assert.equal(await welcome.getByRole("heading").count(), 0);
       assert.equal(await welcome.locator("li").count(), capabilities.space.length);
       const starters = welcome.getByRole("button");
-      assert.equal(await starters.count(), 3);
+      assert.equal(await starters.count(), 4);
       // The last starter names the member's first open project.
       assert.ok((await starters.last().textContent()).includes(threads[1].project_name));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
@@ -1437,7 +1553,7 @@ test("handoff results read as one row and browser loss shows once on the menu", 
   });
 });
 
-test("Upcoming shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
+test("Wakes shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
   await withFixture(async (browser, base) => {
     const rows = [
       {
@@ -1529,8 +1645,8 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
       const thread = page.getByRole("region", { name: "Pip" });
       // The count is what will run; paused and disabled rows wait for the member.
       const firing = rows.filter((item) => item.state === "active").length;
-      await thread.getByRole("button", { name: `${firing} upcoming` }).click();
-      const popover = page.getByRole("dialog", { name: "Upcoming" });
+      await thread.getByRole("button", { name: `${firing} wakes` }).click();
+      const popover = page.getByRole("dialog", { name: "Wakes" });
       const row = (id) =>
         popover.locator(".upcoming-row").nth(rows.findIndex((item) => item.schedule_id === id));
       // Every row can be cancelled; only a disabled schedule that can still run offers Enable.
@@ -1683,5 +1799,440 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     assert.equal(hidden, 0);
     assert.equal(moved, 1);
     assert.deepEqual(errors, []);
+  });
+});
+
+/** The cards route as the backend answers it: each thread's own cards, or all for Pip. */
+async function serveCards(page, served) {
+  await page.route(/\/api\/agent-threads\/cards(?:\?.*)?$/, (route) => {
+    const threadId = new URL(route.request().url()).searchParams.get("thread_id");
+    if (served.fail) return route.fulfill({ status: 500, json: { detail: "down" } });
+    return route.fulfill({
+      json: {
+        proposal_cards: served.proposals.filter(
+          (view) => threadId === null || view.thread_id === threadId,
+        ),
+        asked_cards: threadId === null ? served.asked : [],
+      },
+    });
+  });
+}
+
+/** Screenshots use the theme the mockups were judged in. */
+function focusedCard(page) {
+  return page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
+}
+
+async function shoot(page, name) {
+  if (!shots) return;
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "snowbound";
+    document.documentElement.dataset.colorMode = "dark";
+  });
+  await page.waitForTimeout(250);
+  await page.screenshot({ path: `${shots}/${name}.png` });
+}
+
+test("a project thread stacks its Proposal cards in the raising turn and decides them in place", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+        route.fulfill({ json: [] }),
+      );
+      const served = {
+        proposals: [
+          proposalCard("proposal/a", "H2 standing → supported"),
+          proposalCard("proposal/b", "Retire the 8k baseline"),
+          proposalCard("proposal/c", "Merge H3 into H2"),
+        ],
+        asked: [],
+      };
+      await serveCards(page, served);
+      const decisions = [];
+      let answer = () => null;
+      await page.route(/\/api\/approval-cards\/proposals\//, (route) => {
+        const request = route.request();
+        decisions.push({ url: new URL(request.url()).pathname, body: request.postDataJSON() });
+        const refusal = answer();
+        if (refusal) return route.fulfill(refusal);
+        const id = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-1));
+        served.proposals = served.proposals.filter((view) => view.proposal.id !== id);
+        return route.fulfill({
+          json: { proposal_id: id, status: request.postDataJSON().decision },
+        });
+      });
+      await page.goto(`${base}#/agent/moss`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      const stack = thread.locator(".approval-stack");
+      await stack.waitFor();
+      assert.equal(await thread.locator(".approval-stack").count(), 1);
+      assert.equal(await stack.locator(".approval-card").count(), 1);
+      assert.equal(await stack.locator(".approval-stack-nav").count(), 1);
+      assert.ok(
+        await stack.evaluate((node) =>
+          Boolean(
+            node.compareDocumentPosition(
+              [...document.querySelectorAll(".chat-annotatable-answer")].at(-1),
+            ) & Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+        ),
+      );
+      const front = () => stack.locator(".approval-card").getAttribute("aria-label");
+      const first = await front();
+      assert.ok(first.includes("H2 standing"));
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `cards-stack-${width}`);
+
+      await stack.getByRole("button", { name: "Later" }).click();
+      assert.ok((await front()).includes("Retire"));
+      assert.equal(await focusedCard(page), await front());
+      if (width === 390)
+        for (const box of await stack
+          .locator(".approval-stack-nav button")
+          .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height)))
+          assert.ok(box >= 44);
+      await stack.getByRole("button", { name: "Next card" }).click();
+      assert.ok((await front()).includes("Merge"));
+      await stack.getByRole("button", { name: "Previous card" }).click();
+      assert.ok((await front()).includes("Retire"));
+
+      answer = () => ({
+        status: 409,
+        json: { detail: { code: "write_admission", message: "Writes to this project are paused" } },
+      });
+      await stack.getByRole("button", { name: "Approve" }).click();
+      const refusal = stack.getByRole("alert");
+      await refusal.waitFor();
+      assert.equal(await refusal.textContent(), "Writes to this project are paused");
+      assert.equal(await stack.getByRole("button", { name: "Approve" }).isEnabled(), true);
+
+      answer = () => ({ status: 503, json: { detail: "State unavailable" } });
+      await stack.getByRole("button", { name: "Approve" }).click();
+      await page.waitForFunction(() => {
+        const text = document.querySelector(".approval-stack .approval-error")?.textContent;
+        return Boolean(text) && text !== "Writes to this project are paused";
+      });
+      assert.equal(await stack.getByRole("button", { name: "Approve" }).isEnabled(), true);
+
+      answer = () => null;
+      await stack.getByRole("button", { name: "Approve" }).click();
+      await thread.locator(".approval-card[data-state='approved']").waitFor();
+      await shoot(page, `cards-after-decision-${width}`);
+      const reserved = () =>
+        stack.evaluate(async (node) => {
+          await Promise.all(
+            node.getAnimations({ subtree: true }).map((animation) => animation.finished),
+          );
+          const box = node.getBoundingClientRect();
+          const card = node.querySelector(".approval-stack-front > *").getBoundingClientRect();
+          return [card.top - box.top, box.bottom - card.bottom];
+        });
+      const two = await reserved();
+      await stack.getByRole("button", { name: "Decline" }).click();
+      await thread.locator(".approval-card[data-state='rejected']").waitFor();
+      assert.deepEqual(await reserved(), two);
+      assert.deepEqual(
+        decisions.slice(-2).map(({ url, body }) => [url, body.decision]),
+        [
+          ["/api/approval-cards/proposals/p1/proposal%2Fb", "approved"],
+          ["/api/approval-cards/proposals/p1/proposal%2Fc", "rejected"],
+        ],
+      );
+
+      await stack.getByRole("button", { name: "Later" }).click();
+      const fold = thread.locator(".approval-fold");
+      await fold.waitFor();
+      assert.ok(await fold.evaluate((node) => node === document.activeElement));
+      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 0);
+      const card = await thread.locator(".approval-card").first().boundingBox();
+      const line = await fold.boundingBox();
+      assert.ok(Math.abs(line.width - card.width) < 1);
+      await shoot(page, `cards-folded-${width}`);
+      await fold.click();
+      await thread.locator(".approval-card[data-state='pending']").waitFor();
+      assert.equal(await focusedCard(page), await front());
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("deciding the front card keeps its stack, its result and the focus through the version it bumps", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await mockApi(page, []);
+    await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    const served = {
+      proposals: [
+        proposalCard("proposal/a", "H2 standing → supported"),
+        proposalCard("proposal/b", "Retire the 8k baseline"),
+      ],
+      asked: [],
+    };
+    await serveCards(page, served);
+    let version = 1;
+    await page.route(/\/api\/approval-cards\/proposals\//, async (route) => {
+      const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      served.proposals = served.proposals.filter((view) => view.proposal.id !== id);
+      version += 1;
+      await page.evaluate((next) => (window.agentCardsVersion = next), String(version));
+      return route.fulfill({ json: { proposal_id: id, status: "approved" } });
+    });
+    await page.goto(`${base}#/agent/moss`);
+    const thread = page.getByRole("region", { name: "Moss" });
+    const stack = thread.locator(".approval-stack");
+    await stack.waitFor();
+    await stack.evaluate((node) => (node.dataset.probe = "kept"));
+    await stack.getByRole("button", { name: "Approve" }).click();
+    await thread.locator(".approval-card[data-state='approved']").waitFor();
+    await page.waitForTimeout(3000);
+    assert.equal(await thread.locator(".approval-card[data-state='approved']").count(), 1);
+    assert.equal(await stack.getAttribute("data-probe"), "kept");
+    assert.ok((await focusedCard(page)).includes("Retire"));
+
+    await stack.getByRole("button", { name: "Approve" }).click();
+    await page.waitForFunction(
+      () =>
+        !document.querySelector(".approval-card[data-state='pending']") &&
+        document.querySelectorAll(".approval-card[data-state='approved']").length === 1,
+      null,
+      { timeout: 10000 },
+    );
+    const settled = await thread
+      .locator(".approval-card[data-state='approved']")
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+    assert.equal(settled.length, 1);
+    assert.ok(settled[0].includes("Retire"));
+    await page.close();
+  });
+});
+
+test("an out-of-date Proposal card links to the Inbox and a failed card read hides only the cards", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mockApi(page, []);
+    const served = {
+      proposals: [proposalCard("proposal/a", "H2 standing → supported", { stale: true })],
+      asked: [],
+    };
+    await serveCards(page, served);
+    await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await page.goto(`${base}#/agent/moss`);
+    const thread = page.getByRole("region", { name: "Moss" });
+    const stale = thread.locator(".approval-quiet");
+    await stale.waitFor();
+    assert.equal(
+      await stale.getByRole("link").getAttribute("href"),
+      "#/projects/p1?view=attention",
+    );
+    assert.equal(await thread.locator(".approval-stack-nav").count(), 0);
+    assert.equal(await thread.locator(".approval-stack[data-held]").count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await stale.getByRole("button", { name: "Later" }).click();
+    await thread.locator(".approval-fold").waitFor();
+    await page.close();
+
+    const elsewhere = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockApi(elsewhere, []);
+    await serveCards(elsewhere, {
+      proposals: [proposalCard("proposal/a", "H2 standing → supported")],
+      asked: [],
+    });
+    let decides = 0;
+    await elsewhere.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      decides += 1;
+      return route.fulfill({ status: 409, json: { detail: { code: "proposal_not_pending" } } });
+    });
+    await elsewhere.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await elsewhere.goto(`${base}#/agent/moss`);
+    const gone = elsewhere.getByRole("region", { name: "Moss" });
+    await gone.getByRole("button", { name: "Approve" }).click();
+    await gone.locator(".approval-quiet").getByRole("link").waitFor();
+    assert.equal(await gone.getByRole("button", { name: "Approve" }).count(), 0);
+    assert.equal(decides, 1);
+    await elsewhere.close();
+
+    const failing = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockApi(failing, []);
+    const shown = { proposals: [proposalCard("proposal/a", "H2 standing → supported")], asked: [] };
+    await serveCards(failing, shown);
+    await failing.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      shown.fail = true;
+      return route.fulfill({ json: { proposal_id: "proposal/a", status: "approved" } });
+    });
+    await failing.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await failing.goto(`${base}#/agent/moss`);
+    const moss = failing.getByRole("region", { name: "Moss" });
+    await moss.locator(".approval-card").waitFor();
+    const cardsRead = failing.waitForResponse((response) =>
+      new URL(response.url()).pathname.endsWith("/agent-threads/cards"),
+    );
+    await moss.getByRole("button", { name: "Approve" }).click();
+    assert.equal((await cardsRead).status(), 500);
+    await moss.locator(".approval-stack, .approval-quiet, .approval-card").first().waitFor({
+      state: "detached",
+    });
+    assert.ok(await moss.locator(".chat-annotatable-answer").count());
+    assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
+    await failing.close();
+  });
+});
+
+test("Pip docks every open card above its composer, decides them in place, and hides when empty", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      const served = {
+        proposals: [proposalCard("proposal/w", "Warmup ablation is done")],
+        asked: [{ ...card, project_name: "Sparse attention" }],
+      };
+      await serveCards(page, served);
+      await page.route(/\/api\/approval-cards\/proposals\//, (route) => {
+        served.proposals = [];
+        return route.fulfill({ json: { proposal_id: "proposal/w", status: "approved" } });
+      });
+      const reason = "Writes to this project are paused";
+      await page.route("**/api/approval-cards/q1", (route) => {
+        served.asked = [];
+        writes.push({ path: "/api/approval-cards/q1" });
+        return route.fulfill({ json: { outcome: "failed", reason } });
+      });
+      await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+        route.fulfill({ json: [] }),
+      );
+      const warmup = (scope) => scope.locator('.approval-card[aria-label*="Warmup ablation"]');
+
+      await page.goto(`${base}#/agent/moss`);
+      const moss = page.getByRole("region", { name: "Moss" });
+      await warmup(moss).waitFor();
+
+      await page.evaluate(() => {
+        location.hash = "#/agent/space";
+      });
+      const pip = page.getByRole("region", { name: "Pip" });
+      const dock = pip.locator(".approval-dock");
+      await dock.waitFor();
+      assert.equal(await dock.locator(".approval-stack-nav").count(), 1);
+      assert.ok(
+        (await dock.locator(".approval-card").getAttribute("aria-label")).includes("Warmup"),
+      );
+      assert.equal(await dock.locator(".entity-chip.project").count(), 1);
+      const dockBox = await dock.boundingBox();
+      const composer = await pip.locator(".chat-composer").boundingBox();
+      assert.ok(dockBox.y + dockBox.height <= composer.y + 1);
+      assert.ok(dockBox.x >= 0 && dockBox.x + dockBox.width <= width);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `pip-dock-${width}`);
+
+      await dock.getByRole("button", { name: "Approve" }).click();
+      await dock.locator(".approval-card[data-state='approved']").waitFor();
+      await dock.locator(".approval-card[data-state='pending']").waitFor();
+      await dock.getByRole("button", { name: "Approve" }).click();
+      const failed = dock.locator(".approval-card[data-state='failed']");
+      await failed.waitFor();
+      assert.ok((await failed.textContent()).includes(reason));
+      assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
+      assert.ok(writes.some((write) => write.path === "/api/approval-cards/q1"));
+      await shoot(page, `pip-dock-failed-${width}`);
+
+      const mossCards = page.waitForResponse((response) =>
+        new URL(response.url()).search.includes("thread_id=moss"),
+      );
+      await page.evaluate(() => {
+        location.hash = "#/agent/moss";
+      });
+      await moss.locator(".chat-annotatable-answer").first().waitFor();
+      await mossCards;
+      await page.waitForTimeout(100);
+      assert.equal(await warmup(moss).count(), 0);
+      await page.evaluate(() => {
+        location.hash = "#/agent/space";
+      });
+      await pip.locator(".chat-composer").waitFor();
+      await page.waitForTimeout(100);
+      assert.equal(await pip.locator(".approval-dock").count(), 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("only the newest card read counts, and a stale read never revives a decided card", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await mockApi(page, []);
+    let proposals = [
+      proposalCard("proposal/a", "H2 standing → supported"),
+      proposalCard("proposal/b", "Retire the 8k baseline"),
+    ];
+    let holding = false;
+    const held = [];
+    let arrived = () => undefined;
+    await page.route(/\/api\/agent-threads\/cards(?:\?.*)?$/, (route) => {
+      const json = { proposal_cards: proposals, asked_cards: [] };
+      if (!holding) return route.fulfill({ json });
+      held.push(() => route.fulfill({ json }));
+      arrived();
+    });
+    await page.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      proposals = proposals.filter((view) => view.proposal.id !== id);
+      return route.fulfill({ json: { proposal_id: id, status: "approved" } });
+    });
+    const approveFront = async () => {
+      const read = new Promise((resolve) => {
+        arrived = resolve;
+      });
+      await dock
+        .locator(".approval-card[data-state='pending']")
+        .getByRole("button", { name: "Approve" })
+        .click();
+      await read;
+    };
+    await page.goto(`${base}#/agent/space`);
+    const dock = page.getByRole("region", { name: "Pip" }).locator(".approval-dock");
+    await dock.locator(".approval-card[data-state='pending']").waitFor();
+    const settledTitles = () =>
+      dock
+        .locator(".approval-card[data-state='approved']")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+    holding = true;
+
+    await approveFront();
+    assert.equal((await settledTitles()).length, 1);
+    assert.ok((await settledTitles())[0].includes("H2 standing"));
+    await approveFront();
+    assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
+
+    const [older, newer] = held;
+    newer();
+    await page.waitForTimeout(150);
+    assert.equal((await settledTitles()).length, 2);
+    older();
+    await page.waitForTimeout(150);
+    assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
+    assert.equal((await settledTitles()).length, 2);
+    await page.close();
   });
 });

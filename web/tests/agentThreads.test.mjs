@@ -6,6 +6,7 @@ import { createServer } from "vite";
 
 import {
   approvalCardExpired,
+  approvalCardTitle,
   chosenThread,
   firingScheduleCount,
   handoffReport,
@@ -20,15 +21,22 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherWake,
 } from "../src/agents/agentThreadModel.ts";
 import {
+  decideProposalCard,
+  readAgentCards,
   loadThreadQuestions,
   loadThreadTranscript,
+  loadThreadWatchers,
+  stopThreadWatcher,
   sendThreadTurn,
   setThreadAgent,
   setThreadSchedulePaused,
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
+import { ApiError } from "../src/core/api.ts";
+import { MAIN_GRAPH, projectViewHash } from "../src/core/graphTarget.ts";
 
 const thread = (overrides) => ({
   thread_id: "t",
@@ -196,6 +204,64 @@ test("pause and resume post to the schedule's own route", async () => {
   ]);
 });
 
+test("a project thread lists only its own live watchers and stops them by project route", async () => {
+  const watcher = (id, chat_id, status) => ({
+    watcher_id: id,
+    chat_id,
+    status,
+    graph_target: { kind: "main" },
+    continuation: { patch_kind: "work" },
+    condition: { node_id: "exp-1", status_in: ["completed"] },
+  });
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    return path.endsWith("/watchers")
+      ? [
+          watcher("w1", "scout", "active"),
+          watcher("w2", "other", "active"),
+          watcher("w3", "scout", "completed"),
+        ]
+      : {};
+  };
+  const thread = { kind: "project", project_id: "p 1", thread_id: "scout" };
+  const listed = await loadThreadWatchers(thread, request);
+  assert.deepEqual(
+    listed.map((item) => item.watcher_id),
+    ["w1"],
+  );
+  assert.deepEqual(
+    await loadThreadWatchers({ kind: "space", project_id: null, thread_id: "pip" }, request),
+    [],
+  );
+  await stopThreadWatcher(thread, "w/1", request);
+  assert.deepEqual(calls, [
+    "GET /api/projects/p%201/watchers",
+    "POST /api/projects/p%201/watchers/w%2F1/stop",
+  ]);
+});
+
+test("a wake row names what the watcher waits for and when it fires", () => {
+  const graph = {
+    watcher_id: "w1",
+    condition: { node_id: "exp-1", status_in: ["completed", "abandoned", "superseded"] },
+  };
+  assert.deepEqual(watcherWake(graph, { "exp-1": { title: "Fine-tune π0.5" } }), {
+    what: "Fine-tune π0.5",
+    when: "When it's completed, abandoned or superseded",
+  });
+  assert.equal(watcherWake(graph, undefined).what, "exp-1");
+  assert.equal(
+    watcherWake({ watcher_id: "w2", condition: { node_id: "h2", proposal_resolved: true } }, {})
+      .when,
+    "When its Proposal is resolved",
+  );
+  assert.deepEqual(
+    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {}),
+    { what: "s43/log", when: "When the job ends" },
+  );
+});
+
 test("a card is expired by its state or its time", () => {
   const card = { state: "pending", expires_at: "2026-11-01T12:00:00Z" };
   assert.equal(approvalCardExpired(card, Date.parse("2026-11-01T11:00:00Z")), false);
@@ -256,6 +322,12 @@ const renderServer = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
+const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
+  "/src/agents/ApprovalCardStack.tsx",
+);
+const { AskedApprovalCard, ProposalApprovalCard } = await renderServer.ssrLoadModule(
+  "/src/agents/ApprovalCard.tsx",
+);
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
@@ -293,4 +365,172 @@ test("a thread pick leaves the provider's default fields out", async () => {
     },
   );
   assert.deepEqual(sent, { provider: "claude" });
+});
+
+test("the header names the pinned Proposal's title", () => {
+  const card = (pinned, decision = "approved") => ({
+    kind: "proposal",
+    action: { kind: "proposal", project_id: "p", proposal_id: "pr", decision },
+    pinned,
+  });
+  const named = approvalCardTitle(card({ proposal: { title: "H2 standing" } }));
+  assert.ok(named.includes("H2 standing"));
+  assert.ok(
+    approvalCardTitle(card({ proposal: { title: "H2 standing" } }, "rejected")).includes(
+      "H2 standing",
+    ),
+  );
+  assert.ok(!approvalCardTitle(card({})).includes("H2 standing"));
+});
+
+test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {
+  let memory = { order: [], index: 0, folded: false };
+  memory = stackLater(memory, ["a", "b", "c"]);
+  assert.deepEqual(memory.order, ["b", "c", "a"]);
+  assert.equal(memory.folded, false);
+  assert.deepEqual(stackOrder(memory.order, ["a", "b", "c", "d"]), ["b", "c", "a", "d"]);
+  assert.deepEqual(stackOrder(memory.order, ["d", "a", "c"]), ["c", "a", "d"]);
+  assert.deepEqual(stackOrder([], ["x", "y"]), ["x", "y"]);
+  const last = stackLater({ order: ["a", "b"], index: 1, folded: false }, ["a", "b"]);
+  assert.deepEqual(last.order, ["a", "b"]);
+  assert.equal(last.index, 0);
+});
+
+test("Later on the last card folds the stack", () => {
+  const folded = stackLater({ order: ["a", "b"], index: 0, folded: false }, ["b"]);
+  assert.equal(folded.folded, true);
+  assert.deepEqual(folded.order, ["b"]);
+});
+
+const proposalView = (extra = {}) => ({
+  project_id: "p 1",
+  project_name: "Project",
+  thread_id: "t",
+  turn_id: "op",
+  turn_created_at: "2026-11-01T10:00:00Z",
+  proposal: {
+    id: "pr/1",
+    title: "H2 standing",
+    status: "pending",
+    card: { situation_cold: "s", why_human_now: "w", consequences: "c", decision_needed: "d" },
+  },
+  stale: false,
+  changes: [],
+  ...extra,
+});
+
+test("an out-of-date Proposal card offers only the project Inbox", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProposalApprovalCard, {
+      view: proposalView({ stale: true }),
+      decided: null,
+      showProject: false,
+      onDecided: () => undefined,
+      onChanged: () => undefined,
+    }),
+  );
+  const href = projectViewHash("p 1", MAIN_GRAPH, "attention").replaceAll("&", "&amp;");
+  assert.ok(html.includes(`href="${href}"`));
+  assert.doesNotMatch(html, /<button/);
+});
+
+test("an out-of-date Proposal card in a stack can still go to the back", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProposalApprovalCard, {
+      view: proposalView({ stale: true }),
+      decided: null,
+      showProject: false,
+      onDecided: () => undefined,
+      onChanged: () => undefined,
+      onLater: () => undefined,
+    }),
+  );
+  assert.equal(html.match(/<button/g)?.length, 1);
+});
+
+test("a settled asked card reads its stored outcome, including why its Proposal stayed pending", () => {
+  const settled = (result) => {
+    const card = {
+      kind: "proposal",
+      action: { kind: "proposal", project_id: "p", proposal_id: "pr", decision: "approved" },
+      pinned: { proposal: { title: "H2" } },
+      pinned_sha256: "sha",
+      expires_at: "2026-11-02T00:00:00Z",
+      state: "pending",
+      result,
+    };
+    return renderToStaticMarkup(
+      React.createElement(AskedApprovalCard, {
+        question: { question_id: "q", state: "answered", answer: result.outcome, card },
+        card,
+        projectName: null,
+        onResolved: () => undefined,
+      }),
+    );
+  };
+  const reason = "Writes to this project are paused";
+  assert.ok(settled({ outcome: "declined", rejected: false, reason }).includes(reason));
+  assert.ok(settled({ outcome: "failed", reason }).includes(reason));
+  assert.ok(!settled({ outcome: "declined", rejected: true }).includes(reason));
+});
+
+test("a thread reads only its own cards, and a failed read is null", async () => {
+  const paths = [];
+  const list = { proposal_cards: [], asked_cards: [] };
+  assert.deepEqual(
+    await readAgentCards("chat 1", async (path) => {
+      paths.push(path);
+      return list;
+    }),
+    list,
+  );
+  await readAgentCards(undefined, async (path) => {
+    paths.push(path);
+    return list;
+  });
+  assert.deepEqual(paths, [
+    "/api/agent-threads/cards?thread_id=chat%201",
+    "/api/agent-threads/cards",
+  ]);
+  assert.equal(
+    await readAgentCards(undefined, async () => {
+      throw new ApiError("down", 503);
+    }),
+    null,
+  );
+});
+
+test("a Proposal decision posts to its encoded route and sorts refusals", async () => {
+  const calls = [];
+  const answer = (respond) => async (path, init) => {
+    calls.push({ path, body: JSON.parse(init.body), method: init.method });
+    return respond();
+  };
+  assert.deepEqual(
+    await decideProposalCard(
+      "p 1",
+      "pr/1",
+      "approved",
+      answer(() => ({ proposal_id: "pr/1", status: "approved" })),
+    ),
+    { outcome: "decided", status: "approved" },
+  );
+  assert.deepEqual(calls[0], {
+    path: "/api/approval-cards/proposals/p%201/pr%2F1",
+    body: { decision: "approved" },
+    method: "POST",
+  });
+  const refuse = (status, detail) => () => {
+    throw new ApiError(detail?.message ?? "refused", status, detail);
+  };
+  const outcome = (status, detail) =>
+    decideProposalCard("p", "pr", "rejected", answer(refuse(status, detail)));
+  assert.deepEqual(await outcome(409, { code: "proposal_not_pending" }), { outcome: "gone" });
+  assert.deepEqual(await outcome(409, { code: "graph_changed" }), { outcome: "retry" });
+  assert.deepEqual(await outcome(503, undefined), { outcome: "retry" });
+  for (const status of [403, 404, 409, 422]) {
+    const refused = await outcome(status, { code: "not_admitted", message: `why ${status}` });
+    assert.equal(refused.outcome, "refused");
+    assert.equal(refused.reason, `why ${status}`);
+  }
 });

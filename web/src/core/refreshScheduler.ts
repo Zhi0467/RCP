@@ -38,6 +38,8 @@ export interface WatermarkRequest {
   activated?: string;
   /** Asks for the caller's own agent-thread version, which needs no project. */
   agent_threads?: boolean;
+  /** Asks for the version of the member's open approval cards, which needs no project. */
+  agent_cards?: boolean;
 }
 
 export interface WatermarkResponse {
@@ -52,6 +54,8 @@ export interface WatermarkResponse {
   unavailable: string[];
   /** Set when the request asked for it; null otherwise. */
   agent_threads?: { version: string } | null;
+  /** Set when the request asked for it; null otherwise. */
+  agent_cards?: { version: string } | null;
 }
 
 export interface RefreshHealth {
@@ -104,6 +108,10 @@ export class RefreshScheduler {
   private readonly visibility: RefreshVisibility;
   private readonly listeners = new Set<() => void>();
   private readonly agentThreadWatchers = new Set<(version: string | null) => void>();
+  private readonly agentCardWatchers = new Map<
+    (version: string | null) => void,
+    string | null | undefined
+  >();
   private timer: unknown = null;
   private retryTimer: unknown = null;
   private inFlight: AbortController | null = null;
@@ -166,6 +174,13 @@ export class RefreshScheduler {
     return () => this.agentThreadWatchers.delete(watcher);
   };
 
+  /** Reports the member's agent-card version whenever it differs from the last one reported. */
+  watchAgentCards = (watcher: (version: string | null) => void): (() => void) => {
+    this.agentCardWatchers.set(watcher, undefined);
+    this.now();
+    return () => this.agentCardWatchers.delete(watcher);
+  };
+
   // Subscribers re-render the whole app shell, so an unchanged beat publishes nothing.
   private setHealth(next: RefreshHealth): void {
     if (next.failing === this.health.failing && sameSync(next.sync, this.health.sync)) return;
@@ -208,7 +223,8 @@ export class RefreshScheduler {
     const { store } = this.options;
     const open = this.options.openProjects();
     const agentThreads = this.agentThreadWatchers.size > 0;
-    if (open.length === 0 && !agentThreads) {
+    const agentCards = this.agentCardWatchers.size > 0;
+    if (open.length === 0 && !agentThreads && !agentCards) {
       this.schedule(REFRESH_BEAT_MS);
       return;
     }
@@ -228,6 +244,7 @@ export class RefreshScheduler {
       due,
       ...(activated ? { activated } : {}),
       ...(agentThreads ? { agent_threads: true } : {}),
+      ...(agentCards ? { agent_cards: true } : {}),
     };
     const controller = new AbortController();
     const observations = new Map(
@@ -268,6 +285,14 @@ export class RefreshScheduler {
       if (agentThreads) {
         const version = response.agent_threads?.version ?? null;
         for (const watcher of [...this.agentThreadWatchers]) watcher(version);
+      }
+      if (agentCards) {
+        const version = response.agent_cards?.version ?? null;
+        for (const [watcher, seen] of [...this.agentCardWatchers]) {
+          if (seen === version || !this.agentCardWatchers.has(watcher)) continue;
+          this.agentCardWatchers.set(watcher, version);
+          watcher(version);
+        }
       }
     } catch (error) {
       if (this.inFlight !== controller) return;
