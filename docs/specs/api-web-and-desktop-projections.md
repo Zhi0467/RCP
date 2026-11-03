@@ -2343,10 +2343,12 @@ and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
-`{message, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?}`.
-The attachment fields must be supplied together; the message remains nonempty.
-It returns 202 with
-`{operation_id}`, 404 for a project or unowned thread, or 409 when admission
+`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, artifact_context?}`.
+The attachment fields must be supplied together. A turn needs a nonempty message
+or an `artifact_context`: a comment on an artifact one of this thread's own turns
+produced. It returns 202 with
+`{operation_id}`, 404 for a project or unowned thread or a comment on another
+thread's task, 422 for an invalid or empty artifact comment, or 409 when admission
 refuses, such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.

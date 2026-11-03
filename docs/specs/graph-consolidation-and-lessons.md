@@ -257,8 +257,8 @@ newest first within each group. Only after writes complete does the backend
 record `memory_migrations`; an unreachable base defers completion. Legacy lesson
 and command receipt tables remain read-only migration sources. Settings and
 WebMCP no longer expose lessons; agents maintain memory through file edits.
-Project identity migration commits before the catalog moves the entire memory
-folder, including member notes. The existing alias record and old migration marker
+Project identity migration commits before the catalog moves the project's memory
+folder. Member folders are not per project and stay put. The existing alias record and old migration marker
 retain an unfinished move; the next launch retries it before creating the new root.
 The marker moves only after filesystem success. A missing source makes retry safe
 after a lost SSH response; an occupied destination with a remaining source refuses

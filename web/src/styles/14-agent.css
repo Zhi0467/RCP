@@ -452,7 +452,7 @@
   margin-bottom: 8px;
   padding: 4px 8px;
 }
-/* A handed-off turn's settlement: who ran it and how it ended, then its answer. */
+/* A handed-off turn's settlement: who ran it and how it ended. */
 .handoff-result {
   display: grid;
   gap: 6px;

@@ -354,8 +354,9 @@ The candidate inventories captured local roots and rechecks failed backup
 inventories. Unreadable projects are named and excluded from copying and live
 proof. Identity, ownership, path, migration and proof failures on proven
 projects still cause refusal. Capacity is estimated per filesystem. Actual copy
-errors determine success. There is no fixed ceiling on scientific-history size,
-entry count or time.
+errors determine success. There is no fixed ceiling on scientific-history size.
+An inventory above `BACKUP_INVENTORY_MAX_ENTRIES` entries fails visibly, and the
+supervisor bounds the rehearsal with `UPDATE_REHEARSAL_TIMEOUT_SECONDS`.
 
 After the service is proven stopped, root snapshots the entire data directory
 and all registered local canonical roots. The snapshot collapses nesting and
@@ -691,7 +692,8 @@ uncaptured.
 File reads use complete typed chat boundaries and bounded stable reads without
 canonical publication or remote refresh locks. Healthy projects remain usable
 during churn elsewhere. Entries bind the size and digest and stream without a
-scientific-history size ceiling. Capacity failure remains explicit. Atomic
+scientific-history size ceiling; the inventory entry bound above still applies.
+Capacity failure remains explicit. Atomic
 encrypted publication and full readback produce immutable receipts with safe,
 bounded diagnostics.
 

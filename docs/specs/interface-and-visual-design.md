@@ -158,7 +158,7 @@ Records that no question reaches stay explicit.
 Research flow places types in the order defined by the
 [Research projection](api-web-and-desktop-projections.md#research).
 
-Runs has no page title. Needs Action and In progress are unfolded lists that mix
+Runs has no page title. Needs action and In progress are unfolded lists that mix
 modes in reverse chronological order. Only runs stopped pending human action belong
 in Needs Action. Completed has folded groups for Experiment loop, then Auto-research.
 The owning Experiment or Auto-research name leads each card.
@@ -303,7 +303,7 @@ Discuss is plum. Work is forest. Shift+Tab toggles an idle focused composer.
 Each turn retains its mode. The Agents header has a title, a picker for provider,
 model, and effort, a context ring, an active-watcher count toggle when watchers
 exist, and one menu. The menu holds Rename, Archive,
-New session, Branch this chat, and repository scope.
+New session, and Branch this chat. The worktree repository choice sits in Chat Options.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
 
@@ -490,7 +490,7 @@ backend's reason. Row actions are icons. A wake shows its trigger: Handoff and
 Watcher as text chips, and a schedule as a calendar chip with its fire time,
 the note on hover, leading its message. Until a wake has text, only the live row
 shows it. A handoff result is one row with its Handoff
-chip, the agent that ran it, and how it ended, with its answer below.
+chip, the agent that ran it, and how it ended; the answer stays in that agent's thread.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
