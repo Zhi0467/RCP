@@ -145,6 +145,14 @@ def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int 
     return following_fire, left, fired
 
 
+def migrate_agent_schedule_pending_fires(connection: sqlite3.Connection) -> None:
+    """Count the fires a waiting note holds, so a wake reports only fires within its bounds."""
+
+    connection.execute(
+        "ALTER TABLE agent_schedules ADD COLUMN pending_fires INTEGER CHECK(pending_fires >= 1)"
+    )
+
+
 def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE IF NOT EXISTS agent_schedules (
         schedule_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL,
@@ -155,7 +163,7 @@ def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
         disabled_reason TEXT, next_fire_at TEXT, pending_since TEXT,
         last_fired_at TEXT, created_at TEXT NOT NULL, deferred_reason TEXT,
         every_minutes INTEGER CHECK(every_minutes >= 1), start_local TEXT, until_local TEXT,
-        fires_left INTEGER CHECK(fires_left >= 0), pending_fires INTEGER CHECK(pending_fires >= 1),
+        fires_left INTEGER CHECK(fires_left >= 0),
         UNIQUE(created_operation_id, idempotency_key),
         CHECK ((cron IS NOT NULL) + (every_minutes IS NOT NULL) + (at_local IS NOT NULL) = 1)
     )""")

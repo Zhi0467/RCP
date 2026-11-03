@@ -331,6 +331,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "space_turn_project_bindings_v1",
         "agent_schedules_v1",
         "approval_cards_v1",
+        "agent_schedule_pending_fires_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

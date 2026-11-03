@@ -8,9 +8,6 @@ new code path that changes a lifecycle fails here until someone lists it.
 Every other written table is in the catalog's ``NOT_LIFECYCLE`` with a reason,
 and every writer of an interpolated table is declared by an owner or listed in
 ``UNKNOWN_TABLE``. A listed exception that no longer holds fails too.
-
-``PENDING_TABLES`` holds the tables of explorers that have not landed yet; the
-last build step empties and deletes it.
 """
 
 from __future__ import annotations
@@ -30,6 +27,7 @@ from tests.lifecycles.consolidation import Consolidation
 from tests.lifecycles.episode import Episode
 from tests.lifecycles.handoff import Handoff
 from tests.lifecycles.proposals import Proposals
+from tests.lifecycles.schedules import Schedules
 from tests.lifecycles.writers import UNKNOWN, scan, scan_source, schema_tables
 
 OWNERS: tuple[Any, ...] = (
@@ -38,12 +36,8 @@ OWNERS: tuple[Any, ...] = (
     Episode(),
     Proposals(),
     Consolidation(),
+    Schedules(),
     *ENTRIES,
-)
-PENDING_TABLES = frozenset(
-    {
-        "agent_schedules",
-    }
 )
 
 
@@ -101,8 +95,6 @@ def test_each_table_has_one_place() -> None:
             places[table].append(owner.name)
     for table in NOT_LIFECYCLE:
         places[table].append("NOT_LIFECYCLE")
-    for table in PENDING_TABLES:
-        places[table].append("pending")
     assert {table: names for table, names in places.items() if len(names) > 1} == {}
 
 
@@ -118,7 +110,7 @@ def test_every_writer_of_an_owned_table_is_listed(written: dict[str, set[str]]) 
 
 def test_every_written_table_has_a_place(written: dict[str, set[str]]) -> None:
     owned = {table for owner in OWNERS for table in owner.tables}
-    placed = owned | set(NOT_LIFECYCLE) | PENDING_TABLES
+    placed = owned | set(NOT_LIFECYCLE)
     assert sorted(set(written) - placed - {UNKNOWN}) == []
     assert sorted(set(NOT_LIFECYCLE) - set(written)) == []
 
