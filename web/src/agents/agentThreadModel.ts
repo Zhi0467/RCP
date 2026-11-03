@@ -118,7 +118,9 @@ export function approvalCardTitle(card: ApprovalCard): string {
   switch (action.kind) {
     case "proposal": {
       const verb = action.decision === "approved" ? "Approve" : "Reject";
-      const title = pinnedText(card, "title");
+      const proposal = card.pinned.proposal as { title?: unknown } | undefined;
+      const title =
+        typeof proposal?.title === "string" && proposal.title.trim() ? proposal.title : null;
       return title ? `${verb} Proposal: ${title}?` : `${verb} this Proposal?`;
     }
     case "truth_scope":

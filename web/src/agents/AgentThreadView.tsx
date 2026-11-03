@@ -72,12 +72,19 @@ import type {
   ChatMessage,
   AgentThreadTurnRequest,
   ProjectSnapshot,
+  ProposalCardView,
   SteerRequest,
   ProviderReadiness,
   WatcherRecord,
 } from "../core/types";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
-import { ApprovalCardView } from "./ApprovalCard";
+import {
+  ApprovalCardStack,
+  askedCardKey,
+  proposalCardKey,
+  useAgentCards,
+  type StackCard,
+} from "./ApprovalCardStack";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -1066,16 +1073,34 @@ export function AgentThreadView({
     run().catch((failure: unknown) => setNotice({ threadId, text: errorMessage(failure) }));
   };
 
+  const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cardsChanged = () => {
+    void cards.refetch();
+    if (thread.kind === "project") void refresh();
+  };
+  const proposalStackCard = (view: ProposalCardView, showProject: boolean): StackCard => ({
+    kind: "proposal",
+    key: proposalCardKey(view),
+    view,
+    decided: cards.decisionOf(view),
+    showProject,
+  });
+  const askedStackCard = (question: AgentQuestion, projectName: string | null): StackCard => ({
+    kind: "asked",
+    key: askedCardKey(question),
+    question,
+    projectName,
+  });
+  const dockCards =
+    thread.kind === "space"
+      ? [
+          ...cards.proposals.map((view) => proposalStackCard(view, true)),
+          ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
+        ]
+      : [];
+
   const renderQuestion = (question: AgentQuestion) =>
-    question.card ? (
-      <ApprovalCardView
-        key={question.question_id}
-        question={question}
-        card={question.card}
-        projectName={thread.project_name}
-        onResolved={() => void refresh()}
-      />
-    ) : endpoints.questionsApiBase ? (
+    endpoints.questionsApiBase ? (
       <QuestionCard
         key={question.question_id}
         question={question}
@@ -1244,6 +1269,18 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
+          proposalCards={thread.kind === "project" ? cards.proposals : undefined}
+          renderCards={(entry) => (
+            <ApprovalCardStack
+              stackKey={`${thread.thread_id}:${entry.key}`}
+              cards={[
+                ...entry.proposals.map((view) => proposalStackCard(view, true)),
+                ...entry.asked.map((question) => askedStackCard(question, thread.project_name)),
+              ]}
+              onDecided={cards.markDecided}
+              onChanged={cardsChanged}
+            />
+          )}
           artifacts={artifacts}
           comments={comments}
           endpoints={endpoints}
@@ -1374,6 +1411,16 @@ export function AgentThreadView({
           </div>
         )}
       </div>
+      {dockCards.length > 0 && (
+        <div className="approval-dock">
+          <ApprovalCardStack
+            stackKey={`${thread.thread_id}:dock`}
+            cards={dockCards}
+            onDecided={cards.markDecided}
+            onChanged={cardsChanged}
+          />
+        </div>
+      )}
       <ChatComposer
         mode="work"
         composer={attachments}
