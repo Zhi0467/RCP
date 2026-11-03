@@ -283,7 +283,7 @@
   "src/rcp/sources/indexer.py": {"comment": 9},
   "src/rcp/sources/preflight.py": {"comment": 1},
   "src/rcp/ssh_agent.py": {"comment": 9},
-  "src/rcp/storage/agent_schedules.py": {"comment": 6},
+  "src/rcp/storage/agent_schedules.py": {"comment": 5},
   "src/rcp/storage/agent_tasks.py": {"comment": 89},
   "src/rcp/storage/agent_threads.py": {"comment": 3},
   "src/rcp/storage/approval_cards.py": {"comment": 1},

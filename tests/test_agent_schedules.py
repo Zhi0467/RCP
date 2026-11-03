@@ -962,6 +962,38 @@ def test_every_with_count_retires_after_its_fires(schedule_store):
     assert row.pending_since == first.isoformat()
 
 
+@pytest.mark.parametrize("bound", ["count", "until"])
+def test_a_wake_reports_only_the_fires_within_its_bounds(schedule_store, bound):
+    """Fifteen minutes late, a schedule bounded to two fires reports two, not fifteen.
+
+    This is the schedule lifecycle explorer's one-tick trace.
+    """
+    import json
+    from datetime import timedelta
+
+    from rcp.runs.agent_schedules import handle_schedule, schedule_wake_message
+
+    now = datetime.fromisoformat(schedule_store.now())
+    start = (now + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    limit = (
+        {"count": 2}
+        if bound == "count"
+        else {"until": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M")}
+    )
+    _added(
+        handle_schedule(
+            schedule_store,
+            "origin",
+            command(action="add", every="1m", start=start, timezone="UTC", note="Ping", **limit),
+        )
+    )
+    later = now + timedelta(minutes=15)
+    pending = schedule_store.advance_agent_schedules(later)
+    notes = json.loads(schedule_wake_message(pending, later).split("\n", 1)[1])
+    assert [note["missed_fires"] for note in notes] == [1]
+    assert pending[0].state == "done"
+
+
 def test_closing_the_thread_drops_next_fires_and_waiting_notes(schedule_store):
     """Closing disables a repeat as lost access does at dispatch; a done one-shot keeps its note."""
     for key, cron, at in (("daily", "0 9 * * *", None), ("once", None, "2026-01-01T09:00")):

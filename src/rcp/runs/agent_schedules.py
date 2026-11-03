@@ -382,18 +382,11 @@ def handle_schedule(store, operation_id: str, command):
 
 
 def schedule_wake_message(schedules, now: datetime) -> str:
-    """Each note says when it was due and the local time now, in its own zone."""
-    from rcp.consolidation import cron_occurrence_count
-
+    """Each note's due time and now, in its own zone, and the missed fires the advance counted."""
     notes = []
     for schedule in schedules:
         due = datetime.fromisoformat(schedule.pending_since)
-        if schedule.cron:
-            count = cron_occurrence_count(schedule.cron, schedule.timezone, due, now)
-        elif schedule.every_minutes:
-            count = (now - due) // timedelta(minutes=schedule.every_minutes) + 1
-        else:
-            count = 1
+        assert schedule.pending_fires is not None
         zone = ZoneInfo(schedule.timezone)
         notes.append(
             {
@@ -402,7 +395,7 @@ def schedule_wake_message(schedules, now: datetime) -> str:
                 "timezone": schedule.timezone,
                 "due_at": due.astimezone(zone).isoformat(timespec="minutes"),
                 "now": now.astimezone(zone).isoformat(timespec="minutes"),
-                "missed_fires": count - 1,
+                "missed_fires": schedule.pending_fires - 1,
             }
         )
     return "Scheduled member requests (combined after downtime or a busy turn):\n" + json.dumps(

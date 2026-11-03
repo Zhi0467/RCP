@@ -325,7 +325,7 @@ active or awaiting Resume. A wake that provider sign-in, machine dependencies, o
 a thread or project refusal defers, at admission or at the claim, keeps its notes
 pending, records `deferred_reason`, and retries each tick. Once eligible, one atomic admission claims all observed notes
 for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
-its missed fire count. The wake runs the thread's saved agent pick, else
+its missed fire count, which counts only fires within `--until` and `--count`. The wake runs the thread's saved agent pick, else
 the Space default on a Space thread or the latest turn's agent on a project
 thread. Admission retains the thread's latest native session, scratch, and member
 binding through ordinary current-session resolution,
