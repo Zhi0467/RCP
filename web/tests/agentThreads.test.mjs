@@ -303,7 +303,9 @@ const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/Age
 const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );
-const { ProposalApprovalCard } = await renderServer.ssrLoadModule("/src/agents/ApprovalCard.tsx");
+const { AskedApprovalCard, ProposalApprovalCard } = await renderServer.ssrLoadModule(
+  "/src/agents/ApprovalCard.tsx",
+);
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
@@ -410,7 +412,47 @@ test("an out-of-date Proposal card offers only the project Inbox", () => {
   assert.doesNotMatch(html, /<button/);
 });
 
-test("a failed card fetch hides the cards; a thread reads only its own", async () => {
+test("an out-of-date Proposal card in a stack can still go to the back", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProposalApprovalCard, {
+      view: proposalView({ stale: true }),
+      decided: null,
+      showProject: false,
+      onDecided: () => undefined,
+      onChanged: () => undefined,
+      onLater: () => undefined,
+    }),
+  );
+  assert.equal(html.match(/<button/g)?.length, 1);
+});
+
+test("a settled asked card reads its stored outcome, including why its Proposal stayed pending", () => {
+  const settled = (result) => {
+    const card = {
+      kind: "proposal",
+      action: { kind: "proposal", project_id: "p", proposal_id: "pr", decision: "approved" },
+      pinned: { proposal: { title: "H2" } },
+      pinned_sha256: "sha",
+      expires_at: "2026-11-02T00:00:00Z",
+      state: "pending",
+      result,
+    };
+    return renderToStaticMarkup(
+      React.createElement(AskedApprovalCard, {
+        question: { question_id: "q", state: "answered", answer: result.outcome, card },
+        card,
+        projectName: null,
+        onResolved: () => undefined,
+      }),
+    );
+  };
+  const reason = "Writes to this project are paused";
+  assert.ok(settled({ outcome: "declined", rejected: false, reason }).includes(reason));
+  assert.ok(settled({ outcome: "failed", reason }).includes(reason));
+  assert.ok(!settled({ outcome: "declined", rejected: true }).includes(reason));
+});
+
+test("a thread reads only its own cards, and a failed read is null", async () => {
   const paths = [];
   const list = { proposal_cards: [], asked_cards: [] };
   assert.deepEqual(

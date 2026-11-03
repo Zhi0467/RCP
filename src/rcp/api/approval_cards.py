@@ -398,7 +398,10 @@ def resolve_approval_card(
             and action["kind"] == "proposal"
             and action["decision"] == "approved"
         ):
-            result = {**result, **_declined_rejection(request, card)}
+            rejection = _declined_rejection(request, card)
+            if rejection:
+                store.record_declined_rejection(question_id, rejection)
+            result = {**result, **rejection}
     finally:
         try:
             request.app.state.reconcile_question_answers(question.origin.project_id)

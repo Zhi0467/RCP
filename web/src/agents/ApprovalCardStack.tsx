@@ -3,6 +3,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type {
   AgentCardList,
   AgentQuestion,
+  ApprovalCardResult,
   AskedApprovalCardView,
   ProposalCardView,
 } from "../core/types";
@@ -22,8 +23,11 @@ export type StackCard =
     }
   | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null };
 
-/** Where a stack stands: its card order, the front card, and whether Later folded it. */
-export type StackMemory = { order: string[]; index: number; folded: boolean };
+/**
+ * Where a stack stands: its card order, the front card, whether Later folded it,
+ * and whether it ever held more than one card, so its space stays put as it empties.
+ */
+export type StackMemory = { order: string[]; index: number; folded: boolean; held?: boolean };
 
 export function proposalCardKey(view: ProposalCardView): string {
   return `proposal:${view.project_id}:${view.proposal.id}`;
@@ -44,13 +48,13 @@ export function stackOrder(previous: readonly string[], keys: readonly string[])
 /** Later sends the front card to the back; on the last card it folds the stack. */
 export function stackLater(memory: StackMemory, keys: readonly string[]): StackMemory {
   const order = stackOrder(memory.order, keys);
-  if (order.length <= 1) return { order, index: 0, folded: true };
+  if (order.length <= 1) return { ...memory, order, index: 0, folded: true };
   const index = Math.min(memory.index, order.length - 1);
   const next = [...order.slice(0, index), ...order.slice(index + 1), order[index]];
-  return { order: next, index: index >= next.length - 1 ? 0 : index, folded: false };
+  return { ...memory, order: next, index: index >= next.length - 1 ? 0 : index, folded: false };
 }
 
-/** Each stack's place, per stack key, for this page's life; a reload restores server order. */
+/** Each rendered stack's place, per stack key; a reload restores server order. */
 const memories = new Map<string, StackMemory>();
 const FRESH: StackMemory = { order: [], index: 0, folded: false };
 
@@ -72,14 +76,19 @@ export function ApprovalCardStack({
   stackKey,
   cards,
   onDecided,
+  onResolved,
   onChanged,
 }: {
   stackKey: string;
   cards: StackCard[];
   onDecided: (view: ProposalCardView, status: Decision) => void;
+  onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
   onChanged: () => void;
 }) {
   const [, redraw] = useReducer((count: number) => count + 1, 0);
+  const frontRef = useRef<HTMLDivElement>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const focusNext = useRef<"front" | "fold" | null>(null);
   const open = cards.filter(cardIsOpen);
   const settled = cards.filter((card) => !cardIsOpen(card));
   const keys = open.map((card) => card.key);
@@ -87,12 +96,21 @@ export function ApprovalCardStack({
   const order = stackOrder(memory.order, keys);
   const index = Math.min(memory.index, Math.max(order.length - 1, 0));
   const folded = memory.folded && order.length > 0;
-  const shown: StackMemory = { order, index, folded };
+  const held = Boolean(memory.held) || order.length > 1;
+  const shown: StackMemory = { order, index, folded, held };
   useEffect(() => {
-    memories.set(stackKey, { order, index, folded });
+    memories.set(stackKey, { order, index, folded, held });
   });
-  const remember = (next: StackMemory) => {
+  useEffect(() => () => void memories.delete(stackKey), [stackKey]);
+  useEffect(() => {
+    const target =
+      focusNext.current === "fold" ? foldRef.current : frontRef.current?.firstElementChild;
+    if (focusNext.current && target instanceof HTMLElement) target.focus();
+    focusNext.current = null;
+  });
+  const remember = (next: StackMemory, focus: "front" | "fold") => {
     memories.set(stackKey, next);
+    focusNext.current = focus;
     redraw();
   };
   const front = open.find((card) => card.key === order[index]);
@@ -113,22 +131,30 @@ export function ApprovalCardStack({
         question={card.question}
         card={card.question.card!}
         projectName={card.projectName}
-        onResolved={onChanged}
+        onResolved={(result) => {
+          if (result) onResolved(card.question, result);
+          onChanged();
+        }}
         onLater={onLater}
       />
     );
+  const later = () => {
+    const next = stackLater(shown, keys);
+    remember(next, next.folded ? "fold" : "front");
+  };
   const step = (by: number) =>
-    remember({ ...shown, index: (index + by + order.length) % order.length });
+    remember({ ...shown, index: (index + by + order.length) % order.length }, "front");
   return (
     <>
       {settled.map((card) => render(card))}
       {front &&
         (folded ? (
           <button
+            ref={foldRef}
             className="approval-quiet approval-fold"
             type="button"
             aria-expanded={false}
-            onClick={() => remember({ ...shown, folded: false })}
+            onClick={() => remember({ ...shown, folded: false }, "front")}
           >
             <span>
               {order.length} {order.length === 1 ? "card" : "cards"} waiting
@@ -136,13 +162,17 @@ export function ApprovalCardStack({
             <ChevronDown size={14} aria-hidden="true" />
           </button>
         ) : (
-          <div className="approval-stack" data-stacked={order.length > 1 ? "" : undefined}>
-            {order.length > 1 && (
+          <div
+            className="approval-stack"
+            data-stacked={order.length > 1 ? "" : undefined}
+            data-held={held ? "" : undefined}
+          >
+            {held && (
               <div className="approval-stack-nav">
                 <button type="button" aria-label="Previous card" onClick={() => step(-1)}>
                   <ChevronLeft size={14} aria-hidden="true" />
                 </button>
-                <span>
+                <span aria-live="polite">
                   {index + 1} of {order.length}
                 </span>
                 <button type="button" aria-label="Next card" onClick={() => step(1)}>
@@ -150,8 +180,8 @@ export function ApprovalCardStack({
                 </button>
               </div>
             )}
-            <div className="approval-stack-front">
-              {render(front, () => remember(stackLater(shown, keys)))}
+            <div className="approval-stack-front" ref={frontRef}>
+              {render(front, later)}
             </div>
           </div>
         ))}
@@ -159,56 +189,97 @@ export function ApprovalCardStack({
   );
 }
 
-type Decided = { view: ProposalCardView; status: Decision; fetchesLeft: number };
+type Kept = { after: number } & (
+  | { kind: "proposal"; view: ProposalCardView; status: Decision }
+  | { kind: "asked"; question: AskedApprovalCardView }
+);
 
 /**
  * The member's open cards for one project thread, or for every thread when
  * `threadId` is null. They reload when the open-card version or the thread
- * revision moves, and after each tap. A decided Proposal card shows its outcome
- * through the refetch its tap starts and drops at the one after.
+ * revision moves, and after each tap. A card decided here keeps its settled line
+ * through the refetch its tap starts and drops at the first later fetch that no
+ * longer lists it. Only the newest fetch's answer counts.
  */
 export function useAgentCards(threadId: string | null, revision: string | null) {
   const version = useAgentCardsVersion();
   const scope = threadId ?? "";
   const [loaded, setLoaded] = useState<{ scope: string; list: AgentCardList | null } | null>(null);
-  const [decided, setDecided] = useState<ReadonlyMap<string, Decided>>(() => new Map());
+  const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const latest = useRef(0);
   const refetch = useCallback(async () => {
     const mine = ++latest.current;
     const list = await readAgentCards(scope || undefined);
     if (mine !== latest.current) return;
     setLoaded({ scope, list });
-    setDecided((known) => {
-      if (!known.size) return known;
-      const next = new Map<string, Decided>();
-      for (const [key, entry] of known)
-        if (entry.fetchesLeft > 1) next.set(key, { ...entry, fetchesLeft: entry.fetchesLeft - 1 });
-      return next;
+    setKept((known) => {
+      const listed = new Set([
+        ...(list?.proposal_cards ?? []).map(proposalCardKey),
+        ...(list?.asked_cards ?? []).map(askedCardKey),
+      ]);
+      const next = new Map(
+        [...known].filter(([key, entry]) => mine <= entry.after || listed.has(key)),
+      );
+      return next.size === known.size ? known : next;
     });
   }, [scope]);
   useEffect(() => {
     void refetch();
   }, [refetch, version, revision]);
-  const markDecided = useCallback((view: ProposalCardView, status: Decision) => {
-    setDecided((known) =>
-      new Map(known).set(proposalCardKey(view), { view, status, fetchesLeft: 2 }),
-    );
+  const keep = useCallback((key: string, entry: Kept) => {
+    setKept((known) => new Map(known).set(key, entry));
   }, []);
+  const markDecided = useCallback(
+    (view: ProposalCardView, status: Decision) =>
+      keep(proposalCardKey(view), { kind: "proposal", view, status, after: latest.current + 1 }),
+    [keep],
+  );
   const list = loaded?.scope === scope ? loaded.list : null;
+  const markResolved = (question: AgentQuestion, result: ApprovalCardResult) => {
+    const served = list?.asked_cards.find((item) => item.question_id === question.question_id);
+    if (!served?.card) return;
+    const { outcome, reason, rejected } = result;
+    keep(askedCardKey(served), {
+      kind: "asked",
+      question: {
+        ...served,
+        state: "answered",
+        answer: outcome,
+        card: { ...served.card, result: { outcome, reason, rejected } },
+      },
+      after: latest.current + 1,
+    });
+  };
+  const entries = list ? [...kept.values()] : [];
   const served = list?.proposal_cards ?? [];
   const servedKeys = new Set(served.map(proposalCardKey));
   const proposals = [
     ...served,
-    ...[...decided.values()]
-      .map((entry) => entry.view)
-      .filter(
-        (view) =>
-          !servedKeys.has(proposalCardKey(view)) &&
-          (threadId === null || view.thread_id === threadId),
-      ),
+    ...entries.flatMap((entry) =>
+      entry.kind === "proposal" &&
+      !servedKeys.has(proposalCardKey(entry.view)) &&
+      (threadId === null || entry.view.thread_id === threadId)
+        ? [entry.view]
+        : [],
+    ),
   ];
-  const asked: AskedApprovalCardView[] = list?.asked_cards ?? [];
-  const decisionOf = (view: ProposalCardView): Decision | null =>
-    decided.get(proposalCardKey(view))?.status ?? null;
-  return { proposals, asked, decisionOf, markDecided, refetch };
+  const servedAsked = list?.asked_cards ?? [];
+  const askedKeys = new Set(servedAsked.map(askedCardKey));
+  const keptAsked = (key: string) => {
+    const entry = kept.get(key);
+    return entry?.kind === "asked" ? entry.question : undefined;
+  };
+  const asked: AskedApprovalCardView[] = [
+    ...servedAsked.map((question) => keptAsked(askedCardKey(question)) ?? question),
+    ...entries.flatMap((entry) =>
+      entry.kind === "asked" && !askedKeys.has(askedCardKey(entry.question))
+        ? [entry.question]
+        : [],
+    ),
+  ];
+  const decisionOf = (view: ProposalCardView): Decision | null => {
+    const entry = kept.get(proposalCardKey(view));
+    return entry?.kind === "proposal" ? entry.status : null;
+  };
+  return { proposals, asked, decisionOf, markDecided, markResolved, refetch };
 }

@@ -4216,6 +4216,8 @@ export interface ApprovalCard {
   pinned_sha256: string;
   expires_at: string;
   state: "pending" | "running" | "expired";
+  /** The settled outcome, once a tap or expiry resolved the card. */
+  result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
 }
 
 export interface ApprovalCardDecision {

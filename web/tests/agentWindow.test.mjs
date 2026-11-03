@@ -481,6 +481,23 @@ test("cards at different turns form separate entries", () => {
   assert.equal(new Set(stacks.map((entry) => entry.key)).size, stacks.length);
 });
 
+test("a card group keeps its key when an earlier group of the same turn empties", () => {
+  const lines = [
+    line("request", "human", "op1", "00"),
+    line("first", "agent", "op1", "10"),
+    line("second", "agent", "op1", "20"),
+  ];
+  const early = card();
+  const late = card({ question_id: "q2", created_at: "2026-11-01T10:00:15Z" });
+  const stackKeys = (questions) =>
+    agentWindowEntries(lines, questions)
+      .filter((entry) => entry.kind === "cards")
+      .map((entry) => entry.key);
+  const both = stackKeys([early, late]);
+  assert.equal(new Set(both).size, 2);
+  assert.deepEqual(stackKeys([late]), [both[1]]);
+});
+
 test("without renderCards each asked card renders through renderQuestion and Proposal cards add nothing", () => {
   const props = (extra) => ({
     transcript: [line("request", "human", "op1", "00"), line("answer", "agent", "op1", "30")],

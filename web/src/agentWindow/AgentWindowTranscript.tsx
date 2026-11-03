@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
+import { askedCardKey, proposalCardKey } from "../agents/ApprovalCardStack";
 import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
 import {
   isActiveTask,
@@ -578,7 +579,6 @@ export function agentWindowEntries(
     }
     entries.splice(index, 0, card);
   }
-  const keys = new Set<string>();
   const grouped: Array<
     ReturnType<typeof questionTranscript<TaskTranscriptLine>>[number] | AgentWindowCardsEntry
   > = [];
@@ -589,10 +589,11 @@ export function agentWindowEntries(
     }
     let group = grouped.at(-1);
     if (group?.kind !== "cards") {
-      let key = `cards:${entry.turnId}`;
-      for (let n = 2; keys.has(key); n += 1) key = `cards:${entry.turnId}:${n}`;
-      keys.add(key);
-      group = { kind: "cards", key, asked: [], proposals: [] };
+      const key =
+        "asked" in entry.card
+          ? askedCardKey(entry.card.asked)
+          : proposalCardKey(entry.card.proposal);
+      group = { kind: "cards", key: `cards:${key}`, asked: [], proposals: [] };
       grouped.push(group);
     }
     if ("asked" in entry.card) group.asked.push(entry.card.asked);

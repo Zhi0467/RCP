@@ -1279,6 +1279,7 @@ export function AgentThreadView({
                 ...entry.asked.map((question) => askedStackCard(question, thread.project_name)),
               ]}
               onDecided={cards.markDecided}
+              onResolved={cards.markResolved}
               onChanged={cardsChanged}
             />
           )}
@@ -1414,6 +1415,7 @@ export function AgentThreadView({
             stackKey={`${thread.thread_id}:dock`}
             cards={dockCards}
             onDecided={cards.markDecided}
+            onResolved={cards.markResolved}
             onChanged={cardsChanged}
           />
         </div>

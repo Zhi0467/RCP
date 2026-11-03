@@ -1245,17 +1245,29 @@ def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatc
     assert result["outcome"] == "declined"
     assert store.get_question(question.question_id).answer == "declined"
     status = service.history.state().proposals[PROPOSAL].status
+    stored = store.approval_card(question.question_id)["result"]
+    listed = client.get(
+        f"/api/projects/{project_id}/chats/{question.origin.owner_id}/questions"
+    ).json()
+    shown = next(item for item in listed if item["question_id"] == question.question_id)
+    assert shown["card"]["result"] == {
+        key: stored[key] for key in ("outcome", "rejected", "reason") if key in stored
+    }
     if before == "none":
         assert result["rejected"] is True
         assert status == "rejected"
+        assert stored["rejected"] is True
         return
     if before == "inbox":
         assert "rejected" not in result
         assert status == "approved"
+        assert "rejected" not in stored
         return
     assert result["rejected"] is False
     assert result["reason"]
     assert status == "pending"
+    assert stored["rejected"] is False
+    assert stored["reason"] == result["reason"]
 
 
 def test_declining_a_reject_card_runs_nothing(questions_api, monkeypatch):

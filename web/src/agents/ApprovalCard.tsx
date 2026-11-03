@@ -16,6 +16,7 @@ import type {
   AgentQuestion,
   ApprovalCard,
   ApprovalCardKind,
+  ApprovalCardResult,
   ProposalCardView,
 } from "../core/types";
 import { approvalCardDetails, approvalCardTitle } from "./agentThreadModel";
@@ -31,8 +32,15 @@ const ICONS: Record<ApprovalCardKind, LucideIcon> = {
 
 type Busy = "approve" | "decline" | null;
 
-/** What a declined approve-Proposal card reported when its Proposal stayed pending. */
-const pendingAfterDecline = new Map<string, string>();
+type SettledResult = NonNullable<ApprovalCard["result"]>;
+
+function settledLabel(result: SettledResult): string {
+  if (result.outcome === "failed")
+    return [result.outcome, result.reason].filter(Boolean).join(": ");
+  if (result.outcome === "declined" && result.rejected === false)
+    return `${result.outcome} · Proposal still pending: ${result.reason ?? ""}`;
+  return result.outcome;
+}
 
 /**
  * One approval card as the member sees it: open with its buttons, or settled to one
@@ -71,6 +79,7 @@ export function ApprovalCardShell({
   return (
     <section
       className={`approval-card${open ? " open" : ""}`}
+      tabIndex={-1}
       data-state={state}
       aria-label={title}
     >
@@ -146,7 +155,7 @@ export function AskedApprovalCard({
   question: AgentQuestion;
   card: ApprovalCard;
   projectName: string | null;
-  onResolved: () => void;
+  onResolved: (result: ApprovalCardResult | null) => void;
   onLater?: () => void;
 }) {
   const [busy, setBusy] = useState<Busy>(null);
@@ -155,41 +164,36 @@ export function AskedApprovalCard({
   // The server settles expiry; a device clock never decides it.
   const expired = !answered && card.state === "expired";
   const pending = !answered && !expired;
-  const state = answered ? (question.answer ?? "answered") : expired ? "expired" : "pending";
-  const stillPending = pendingAfterDecline.get(question.question_id);
+  const answer = answered && card.result ? settledLabel(card.result) : (question.answer ?? "");
+  const state = answered
+    ? (card.result?.outcome ?? question.answer?.split(":")[0] ?? "answered")
+    : expired
+      ? "expired"
+      : "pending";
   const decide = async (decision: "approve" | "decline") => {
     setBusy(decision);
     setError(null);
+    let result: ApprovalCardResult | null = null;
     try {
-      const result = await resolveApprovalCard(question.question_id, {
+      result = await resolveApprovalCard(question.question_id, {
         decision,
         pinned_sha256: card.pinned_sha256,
       });
-      if (result.outcome === "failed" || result.outcome === "stale")
-        setError(result.reason ?? null);
-      if (result.outcome === "declined" && result.rejected === false)
-        pendingAfterDecline.set(question.question_id, result.reason ?? "");
     } catch (failure) {
       // Another tap took the card; its outcome arrives with the refresh.
       if (!(failure instanceof ApiError && failure.code === "card_taken"))
         setError(errorMessage(failure));
     } finally {
       setBusy(null);
-      onResolved();
+      onResolved(result);
     }
   };
   return (
     <ApprovalCardShell
       icon={ICONS[card.kind]}
       title={approvalCardTitle(card)}
-      state={state.split(":")[0]}
-      stateLabel={
-        pending
-          ? "Needs you"
-          : answered
-            ? `${question.answer ?? ""}${stillPending !== undefined ? ` · Proposal still pending: ${stillPending}` : ""}`
-            : "Expired"
-      }
+      state={state}
+      stateLabel={pending ? "Needs you" : answered ? answer : "Expired"}
       project={projectName ? { id: card.action.project_id, name: projectName } : null}
       details={
         <>
@@ -245,9 +249,14 @@ export function ProposalApprovalCard({
   const title = `Approve Proposal: ${view.proposal.title}?`;
   if (view.stale && !decided)
     return (
-      <div className="approval-quiet" role="status" title={title}>
+      <div className="approval-quiet" role="status" title={title} tabIndex={-1}>
         <span>Out of date</span>
         <a href={projectViewHash(view.project_id, MAIN_GRAPH, "attention")}>Open Inbox</a>
+        {onLater && (
+          <button className="approval-later" type="button" onClick={onLater}>
+            Later
+          </button>
+        )}
       </div>
     );
   const decide = async (decision: "approve" | "decline") => {

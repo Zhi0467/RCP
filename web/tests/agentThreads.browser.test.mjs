@@ -1718,6 +1718,10 @@ async function serveCards(page, served) {
 }
 
 /** Screenshots use the theme the mockups were judged in. */
+function focusedCard(page) {
+  return page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
+}
+
 async function shoot(page, name) {
   if (!shots) return;
   await page.evaluate(() => {
@@ -1786,6 +1790,12 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
 
       await stack.getByRole("button", { name: "Later" }).click();
       assert.ok((await front()).includes("Retire"));
+      assert.equal(await focusedCard(page), await front());
+      if (width === 390)
+        for (const box of await stack
+          .locator(".approval-stack-nav button")
+          .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height)))
+          assert.ok(box >= 44);
       await stack.getByRole("button", { name: "Next card" }).click();
       assert.ok((await front()).includes("Merge"));
       await stack.getByRole("button", { name: "Previous card" }).click();
@@ -1812,8 +1822,20 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
       answer = () => null;
       await stack.getByRole("button", { name: "Approve" }).click();
       await thread.locator(".approval-card[data-state='approved']").waitFor();
+      await shoot(page, `cards-after-decision-${width}`);
+      const reserved = () =>
+        stack.evaluate(async (node) => {
+          await Promise.all(
+            node.getAnimations({ subtree: true }).map((animation) => animation.finished),
+          );
+          const box = node.getBoundingClientRect();
+          const card = node.querySelector(".approval-stack-front > *").getBoundingClientRect();
+          return [card.top - box.top, box.bottom - card.bottom];
+        });
+      const two = await reserved();
       await stack.getByRole("button", { name: "Decline" }).click();
       await thread.locator(".approval-card[data-state='rejected']").waitFor();
+      assert.deepEqual(await reserved(), two);
       assert.deepEqual(
         decisions.slice(-2).map(({ url, body }) => [url, body.decision]),
         [
@@ -1825,6 +1847,7 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
       await stack.getByRole("button", { name: "Later" }).click();
       const fold = thread.locator(".approval-fold");
       await fold.waitFor();
+      assert.ok(await fold.evaluate((node) => node === document.activeElement));
       assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 0);
       const card = await thread.locator(".approval-card").first().boundingBox();
       const line = await fold.boundingBox();
@@ -1832,6 +1855,7 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
       await shoot(page, `cards-folded-${width}`);
       await fold.click();
       await thread.locator(".approval-card[data-state='pending']").waitFor();
+      assert.equal(await focusedCard(page), await front());
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       assert.deepEqual(errors, []);
       await page.close();
@@ -1848,6 +1872,9 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
       asked: [],
     };
     await serveCards(page, served);
+    await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
     await page.goto(`${base}#/agent/moss`);
     const thread = page.getByRole("region", { name: "Moss" });
     const stale = thread.locator(".approval-quiet");
@@ -1856,25 +1883,36 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
       await stale.getByRole("link").getAttribute("href"),
       "#/projects/p1?view=attention",
     );
-    assert.equal(await stale.getByRole("button").count(), 0);
+    assert.equal(await thread.locator(".approval-stack-nav").count(), 0);
+    assert.equal(await thread.locator(".approval-stack[data-held]").count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await stale.getByRole("button", { name: "Later" }).click();
+    await thread.locator(".approval-fold").waitFor();
     await page.close();
 
     const failing = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockApi(failing, []);
-    await serveCards(failing, { proposals: [], asked: [], fail: true });
+    const shown = { proposals: [proposalCard("proposal/a", "H2 standing → supported")], asked: [] };
+    await serveCards(failing, shown);
+    await failing.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      shown.fail = true;
+      return route.fulfill({ json: { proposal_id: "proposal/a", status: "approved" } });
+    });
     await failing.route("**/api/projects/p1/chats/moss/questions", (route) =>
       route.fulfill({ json: [] }),
     );
+    await failing.goto(`${base}#/agent/moss`);
+    const moss = failing.getByRole("region", { name: "Moss" });
+    await moss.locator(".approval-card").waitFor();
     const cardsRead = failing.waitForResponse((response) =>
       new URL(response.url()).pathname.endsWith("/agent-threads/cards"),
     );
-    await failing.goto(`${base}#/agent/moss`);
-    const moss = failing.getByRole("region", { name: "Moss" });
-    await moss.locator(".chat-annotatable-answer").first().waitFor();
+    await moss.getByRole("button", { name: "Approve" }).click();
     assert.equal((await cardsRead).status(), 500);
-    await failing.waitForTimeout(100);
-    assert.equal(await moss.locator(".approval-stack, .approval-quiet, .approval-card").count(), 0);
+    await moss.locator(".approval-stack, .approval-quiet, .approval-card").first().waitFor({
+      state: "detached",
+    });
+    assert.ok(await moss.locator(".chat-annotatable-answer").count());
     assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
     await failing.close();
   });
@@ -1899,10 +1937,11 @@ test("Pip docks every open card above its composer, decides them in place, and h
         served.proposals = [];
         return route.fulfill({ json: { proposal_id: "proposal/w", status: "approved" } });
       });
+      const reason = "Writes to this project are paused";
       await page.route("**/api/approval-cards/q1", (route) => {
         served.asked = [];
         writes.push({ path: "/api/approval-cards/q1" });
-        return route.fulfill({ json: { outcome: "approved" } });
+        return route.fulfill({ json: { outcome: "failed", reason } });
       });
       await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
         route.fulfill({ json: [] }),
@@ -1935,8 +1974,12 @@ test("Pip docks every open card above its composer, decides them in place, and h
       await dock.locator(".approval-card[data-state='approved']").waitFor();
       await dock.locator(".approval-card[data-state='pending']").waitFor();
       await dock.getByRole("button", { name: "Approve" }).click();
-      await dock.waitFor({ state: "detached" });
+      const failed = dock.locator(".approval-card[data-state='failed']");
+      await failed.waitFor();
+      assert.ok((await failed.textContent()).includes(reason));
+      assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
       assert.ok(writes.some((write) => write.path === "/api/approval-cards/q1"));
+      await shoot(page, `pip-dock-failed-${width}`);
 
       const mossCards = page.waitForResponse((response) =>
         new URL(response.url()).search.includes("thread_id=moss"),
@@ -1948,8 +1991,75 @@ test("Pip docks every open card above its composer, decides them in place, and h
       await mossCards;
       await page.waitForTimeout(100);
       assert.equal(await warmup(moss).count(), 0);
+      await page.evaluate(() => {
+        location.hash = "#/agent/space";
+      });
+      await pip.locator(".chat-composer").waitFor();
+      await page.waitForTimeout(100);
+      assert.equal(await pip.locator(".approval-dock").count(), 0);
       assert.deepEqual(errors, []);
       await page.close();
     }
+  });
+});
+
+test("only the newest card read counts, and a decided card stays until a later read drops it", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await mockApi(page, []);
+    let proposals = [
+      proposalCard("proposal/a", "H2 standing → supported"),
+      proposalCard("proposal/b", "Retire the 8k baseline"),
+    ];
+    let holding = false;
+    const held = [];
+    let arrived = () => undefined;
+    await page.route(/\/api\/agent-threads\/cards(?:\?.*)?$/, (route) => {
+      const json = { proposal_cards: proposals, asked_cards: [] };
+      if (!holding) return route.fulfill({ json });
+      held.push(() => route.fulfill({ json }));
+      arrived();
+    });
+    await page.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      proposals = proposals.filter((view) => view.proposal.id !== id);
+      return route.fulfill({ json: { proposal_id: id, status: "approved" } });
+    });
+    const approveFront = async () => {
+      const read = new Promise((resolve) => {
+        arrived = resolve;
+      });
+      await dock
+        .locator(".approval-card[data-state='pending']")
+        .getByRole("button", { name: "Approve" })
+        .click();
+      await read;
+    };
+    await page.goto(`${base}#/agent/space`);
+    const dock = page.getByRole("region", { name: "Pip" }).locator(".approval-dock");
+    await dock.locator(".approval-card[data-state='pending']").waitFor();
+    const settledTitles = () =>
+      dock
+        .locator(".approval-card[data-state='approved']")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
+    holding = true;
+
+    await approveFront();
+    assert.equal((await settledTitles()).length, 1);
+    assert.ok((await settledTitles())[0].includes("H2 standing"));
+    await approveFront();
+    assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
+
+    const [older, newer] = held;
+    newer();
+    await page.waitForFunction(
+      () => document.querySelectorAll(".approval-dock .approval-card").length === 1,
+    );
+    assert.ok((await settledTitles())[0].includes("Retire"));
+    older();
+    await page.waitForTimeout(150);
+    assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
+    assert.equal((await settledTitles()).length, 1);
+    await page.close();
   });
 });

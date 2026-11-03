@@ -735,8 +735,11 @@
 .approval-stack .approval-quiet {
   margin: 0;
 }
-.approval-stack[data-stacked] .approval-stack-front {
+.approval-stack[data-held] .approval-stack-front {
   padding: 0 12px 12px 0;
+}
+.approval-stack[data-held]:not([data-stacked]) .approval-stack-nav {
+  visibility: hidden;
 }
 .approval-stack[data-stacked] .approval-stack-front > * {
   box-shadow:
@@ -950,6 +953,10 @@
   }
   .approval-later {
     min-height: 44px;
+  }
+  .approval-stack-nav button {
+    height: 44px;
+    width: 44px;
   }
   .approval-card[data-state="pending"] .question-state {
     display: none;
