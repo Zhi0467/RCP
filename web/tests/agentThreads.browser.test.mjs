@@ -144,11 +144,14 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.equal(await rail.isVisible(), true);
 
     // A project thread shows its card; Approve sends the pinned hash it showed.
+    const read = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/read",
+    );
     await options.nth(1).click();
     const mossThread = page.getByRole("region", { name: "Moss" });
     const approve = mossThread.getByRole("button", { name: "Approve" });
     await approve.waitFor();
-    assert.ok(writes.some((write) => write.path === "/api/agent-threads/moss/read"));
+    await read;
     await mossThread.getByRole("button", { name: "See details" }).click();
     assert.equal(await mossThread.locator(".approval-details dd").count(), 2);
     await mossThread.getByRole("button", { name: "See details" }).click();
