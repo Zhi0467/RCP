@@ -15,6 +15,7 @@ from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
 from tests import test_api_questions as api_fixtures
 from tests import test_questions_store as fixtures
+from tests.lifecycles.proposals import api_card, real_card
 
 store = fixtures.store
 origin = fixtures.origin
@@ -118,31 +119,6 @@ def test_digest_pins_action_and_has_stable_key_order():
 
 
 questions_api = api_fixtures.questions_api
-
-
-def api_card(questions_api, action=None):
-    app, client, store, project_id = questions_api
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT OR IGNORE INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
-            "VALUES (?,?,?,?,?)",
-            ("private", store.local_owner.user_id, "project", project_id, store.now()),
-        )
-    action = action or {
-        "kind": "truth_scope",
-        "project_id": project_id,
-        "alias": "repo-a",
-        "writable": False,
-    }
-    old = api_fixtures._question(store, project_id, owner_id="private", key="old")
-    question = store.create_or_get_question(
-        origin=old.origin,
-        key="card",
-        question="Allow?",
-        choices=["Approve", "Decline"],
-        card={"action": action, "pinned": {"head": "original"}},
-    )
-    return question, store.approval_card(question.question_id)
 
 
 @pytest.mark.parametrize(
@@ -598,31 +574,6 @@ def bounded_admission_lock(monkeypatch):
             lock.release()
 
     monkeypatch.setattr(dependencies, "get_experiment_operation_lock", lambda _: acquire)
-
-
-def real_card(api, action):
-    from pydantic import TypeAdapter
-
-    from rcp.approval_actions import ApprovalAction
-    from rcp.runs.approval_cards import approval_pins
-    from tests.helpers import authorized_human
-
-    app, client, store, project_id = api
-    question, _ = api_card(api, action)
-    pins = approval_pins(
-        app.state.catalog.open(project_id),
-        store,
-        TypeAdapter(ApprovalAction).validate_python(action),
-        authorized_human(app),
-    )
-    import json
-
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE approval_cards SET pinned_json=?,pinned_sha256=? WHERE question_id=?",
-            (json.dumps(pins), card_sha256(action, pins), question.question_id),
-        )
-    return question, store.approval_card(question.question_id)
 
 
 @pytest.mark.parametrize("fenced", [False, True])
