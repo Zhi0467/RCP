@@ -897,7 +897,7 @@ def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
             paused = client.post(pause_url, json={})
             stopped = client.post(stop_url, json={})
             assert paused.status_code == 202, paused.text
-            assert paused.json()["status"] == "pausing"
+            assert paused.json()["status"] == "paused"
             assert stopped.status_code == 200, stopped.text
             assert stopped.json()["status"] == "stopping"
 

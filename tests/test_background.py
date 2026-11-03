@@ -524,6 +524,24 @@ def test_member_pause_before_running_claim_never_dispatches_provider(
         tasks.shutdown()
 
 
+def test_pause_settles_a_queued_turn_no_worker_owns(tmp_path: Path) -> None:
+    """A queued turn whose launch is deferred has no worker to observe ``pausing``.
+
+    The agent task explorer's trace is one Pause of the admitted, unlaunched
+    root: it stayed ``pausing`` until a restart interrupted it, and its claim
+    refuses a pausing row, so nothing else could settle it.
+    """
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="unlaunched")
+
+    paused = tasks.pause(task.operation_id)
+
+    assert paused.status == "paused"
+    assert tasks.launch_admitted(task.operation_id).status == "paused"
+
+
 def test_shutdown_fences_a_launch_that_has_not_claimed_a_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
