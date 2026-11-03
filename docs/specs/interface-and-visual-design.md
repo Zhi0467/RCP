@@ -471,7 +471,7 @@ fix on hover; turns carry no browser notice. The composer holds the voice
 button. Once a thread's transcript has loaded empty, a centered welcome lists
 what the agent can do under the header that names it, rendered from the
 capability lines the backend gives each verb the thread kind's turns are
-granted, above three starters. A starter fills the composer without sending, and the first turn removes the welcome.
+granted, above four starters. A starter fills the composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Retry.
 A member's Stop reads Stopped, with Resume and Retry, in the same column, on
 one rounded row shaped like the failed turn's. Send stays off until the stopped

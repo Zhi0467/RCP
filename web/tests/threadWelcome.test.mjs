@@ -22,8 +22,8 @@ test("each thread kind welcomes with its own capabilities and starters", () => {
   // The lines are the backend's capabilities for the thread, verbatim.
   assert.deepEqual(pip.lines, space.capabilities);
   assert.deepEqual(puck.lines, project.capabilities);
-  assert.equal(pip.prompts.length, 3);
-  assert.equal(puck.prompts.length, 3);
+  assert.equal(pip.prompts.length, 4);
+  assert.equal(puck.prompts.length, 4);
   assert.notDeepEqual(pip.prompts, puck.prompts);
 });
 

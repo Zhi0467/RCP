@@ -1253,7 +1253,7 @@ test("an empty thread welcomes the member until its first turn, and a starter on
       assert.equal(await welcome.getByRole("heading").count(), 0);
       assert.equal(await welcome.locator("li").count(), capabilities.space.length);
       const starters = welcome.getByRole("button");
-      assert.equal(await starters.count(), 3);
+      assert.equal(await starters.count(), 4);
       // The last starter names the member's first open project.
       assert.ok((await starters.last().textContent()).includes(threads[1].project_name));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);

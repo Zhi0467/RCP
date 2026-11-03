@@ -9,7 +9,7 @@ export type ThreadWelcome = {
 };
 
 /**
- * The welcome for a thread with no messages yet. Pip's third starter names the
+ * The welcome for a thread with no messages yet. Pip's last starter names the
  * member's first project, or offers to set one up when there is none.
  */
 export function threadWelcome(
@@ -22,7 +22,8 @@ export function threadWelcome(
       lines,
       prompts: [
         "What changed in my projects this week?",
-        "Remind me tomorrow at 9 to review results",
+        "What's waiting on my approval?",
+        "Check in with me every Monday at 9",
         firstProjectName
           ? `Start an experiment in ${firstProjectName}`
           : "Help me set up a project",
@@ -31,9 +32,10 @@ export function threadWelcome(
   return {
     lines,
     prompts: [
-      "Summarize this project's open questions",
-      "What should we try next?",
-      "Prepare an experiment for the main hypothesis",
+      "What's waiting on my approval?",
+      "Start an experiment on the main hypothesis",
+      "Start Auto-research on a branch",
+      "Check in with me every Monday at 9",
     ],
   };
 }
