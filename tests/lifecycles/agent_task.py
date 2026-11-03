@@ -19,8 +19,11 @@ runs ``recover_at_startup``, the only startup call ``api/app.py`` makes for
 these tables.
 
 The one root turn ``A0`` carries an attachment that expires 30 minutes after
-the start instant; ``expire`` moves the clock past it. Its children are named
-by depth, ``A1``, ``A2``; a second child of one parent would get a letter.
+the start instant; ``expire`` moves the clock past it. Expiry changes only
+whether the newest turn offers Resume or Retry and whether a timer stands
+down, so ``expire`` is offered only while one of those is pending. Children
+are named by depth, ``A1``, ``A2``; a second child of one parent would get a
+letter.
 Member actions act on the newest turn only: Pause, Resume, Retry, and a
 sign-in that verifies the machine login and releases parked work through
 ``resume_provider_account``. A refusal the product raises as ``ValueError``
@@ -28,7 +31,14 @@ sign-in that verifies the machine login and releases parked work through
 (``request_member_removal_pause``) and project deletion
 (``stop_for_project_deletion``) are left out under the budget rule: no rule
 or suspected trace needs them, they write only through Pause's writers, and
-with them the bound of 4 took 18 s before any witness ran.
+with them the bound of 4 took 18 s before any witness ran. A Pause the fixed
+code leaves pausing needs a claim first, at depth 2, and a bound of 5 does
+not fit, so the horizon is 2 and a bound of 4 checks the goal from there.
+
+Restore, transfer, branch merge recovery and episode reports also rewrite
+task status outside the transition table (``paused`` to ``interrupted``,
+``interrupted`` to ``queued`` or ``failed``), but they belong to catalog
+machines and the episode explorer, so no action here reaches them.
 """
 
 from __future__ import annotations
@@ -256,7 +266,7 @@ class World:
 class AgentTask:
     name = "agent_task"
     bound = 4
-    horizon = 3
+    horizon = 2
     covers = {AgentTaskStatus: ("tasks", 1)}
     tables = frozenset({"graph_runs", "graph_run_receipts"})
     writers = (
@@ -448,6 +458,12 @@ class AgentTask:
         return world
 
     def close(self, world: World) -> None:
+        """Drop the engine's stand-in workers, so a later engine shutdown pauses nothing."""
+
+        background = world.background
+        with background._controls_lock:
+            background._controls.clear()
+            background._workers.clear()
         world.store.close()
 
     def save_memory(self, world: World) -> Memory:
@@ -456,7 +472,6 @@ class AgentTask:
         engine = (
             tuple(sorted((names[op], attempt, delay) for op, attempt, delay in world.timers)),
             frozenset(names[op] for op in background._workers),
-            frozenset(names[op] for op in background._retry_decided),
             frozenset(
                 names[op]
                 for op, control in background._controls.items()
@@ -468,18 +483,16 @@ class AgentTask:
     def restore_memory(self, world: World, memory: Memory) -> None:
         if memory.engine is None:
             return
-        timers, workers, decided, paused = memory.engine
+        timers, workers, paused = memory.engine
         operation = {name: op for op, name in world.lineage().items()}
         world.timers = [(operation[name], attempt, delay) for name, attempt, delay in timers]
         background = world.background
         for name in workers:
             _register(background, operation[name], paused=name in paused)
-        with background._controls_lock:
-            background._retry_decided.update(operation[name] for name in decided)
 
     def actions(self, view: View) -> list[Action]:
         found: list[Action] = []
-        for name, status, *_rest, (worker, _decided, _paused) in view.tasks:
+        for name, status, *_rest, (worker, _paused) in view.tasks:
             if not worker and status == "queued":
                 found.append(Action("claim", (name,)))
             elif worker and status == "queued":
@@ -501,7 +514,7 @@ class AgentTask:
             found.append(Action("retry", (name,), environment=False))
         if not view.signed_in:
             found.append(Action("sign_in", environment=False))
-        if not view.expired and status not in ACTIVE_AGENT_TASK_STATUSES:
+        if not view.expired and (can_retry or can_resume or view.timers):
             found.append(Action("expire"))
         found.append(Action(RESTART))
         return found
@@ -552,7 +565,6 @@ class AgentTask:
             control = background._controls.get(operation_id)
             worker = (
                 operation_id in background._workers,
-                operation_id in background._retry_decided,
                 control is not None and control.pause_requested.is_set(),
             )
             tasks.append(
