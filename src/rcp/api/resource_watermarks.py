@@ -134,6 +134,7 @@ class WatermarkRequest(BaseModel):
     due: list[str]
     activated: str | None = None
     agent_threads: bool = False
+    agent_cards: bool = False
 
     @model_validator(mode="after")
     def unique_projects(self) -> Self:
@@ -164,12 +165,17 @@ class AgentThreadsVersion(BaseModel):
     version: str
 
 
+class AgentCardsVersion(BaseModel):
+    version: str
+
+
 class WatermarkResponse(BaseModel):
     epoch: str
     as_of: str
     projects: list[ProjectWatermarks]
     unavailable: list[str]
     agent_threads: AgentThreadsVersion | None = None
+    agent_cards: AgentCardsVersion | None = None
 
 
 @router.post("/api/resource-watermarks")
@@ -226,6 +232,21 @@ def resource_watermarks(
                     ).encode()
                 ).hexdigest()
             )
+        card_projects = (
+            [
+                row[0]
+                for row in connection.execute(
+                    "SELECT thread.project_id FROM agent_threads AS thread "
+                    "JOIN project_members AS member ON member.project_id = thread.project_id "
+                    "AND member.user_id = thread.user_id "
+                    "WHERE thread.user_id = ? AND thread.kind = 'project' "
+                    "AND thread.closed_at IS NULL ORDER BY thread.project_id",
+                    (member.user_id,),
+                )
+            ]
+            if body.agent_cards
+            else None
+        )
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -304,6 +325,30 @@ def resource_watermarks(
             if timed
             else set()
         )
+    agent_cards = (
+        AgentCardsVersion(
+            version=hashlib.sha256(
+                json.dumps(
+                    [
+                        epoch,
+                        member.user_id,
+                        "agent_cards",
+                        [
+                            [
+                                project_id,
+                                catalog.content_generations(project_id, {"graph:main"})[
+                                    "graph:main"
+                                ],
+                            ]
+                            for project_id in card_projects
+                        ],
+                    ]
+                ).encode()
+            ).hexdigest()
+        )
+        if card_projects is not None
+        else None
+    )
     generations = {row["id"]: row["generation"] for row in counters}
     boundaries = {row["id"]: (row["elapsed"], row["upcoming"]) for row in deadlines}
     open_ids = {aliases[item.project_id] for item in body.open if item.project_id in aliases}
@@ -368,6 +413,7 @@ def resource_watermarks(
     return WatermarkResponse(
         epoch=epoch,
         agent_threads=agent_threads,
+        agent_cards=agent_cards,
         as_of=as_of.isoformat(),
         projects=[
             ProjectWatermarks(

@@ -66,3 +66,11 @@ export function useAgentThreads(enabled = true) {
   }, []);
   return { threads, revision, error, reload, patch };
 }
+
+/** The member's open-card version from the refresh beat; null until known. */
+export function useAgentCardsVersion(): string | null {
+  const { scheduler } = useRefreshRuntime();
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => scheduler.watchAgentCards(setVersion), [scheduler]);
+  return version;
+}
