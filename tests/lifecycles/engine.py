@@ -25,18 +25,30 @@ two paths that reach one view.
 Rules are ``Safety`` (a state), ``Step`` (an edge) and ``Goal`` (liveness: from
 every state at depth at most bound minus horizon, some run of ``allowed``
 actions within the horizon reaches it). Each rule's docstring states it.
+
+``Exploration.gaps`` checks the checks. Every value of each ``covers`` status
+type appears in some view or sits in ``unreached_values`` with a reason. Every
+declared writer runs inside an action (never while seeding or booting) or sits
+in ``unreached_writers`` with a reason; calls are counted with
+``sys.monitoring``, which exists only from Python 3.12, so the 3.11 run skips
+this one check and the 3.12 run of the same CI enforces it. Every Safety and
+Step rule applied somewhere, and every Goal was checked from a state that had
+not reached it. A listed exception that no longer holds is a gap too.
 """
 
 from __future__ import annotations
 
+import inspect
 import shutil
 import sqlite3
-from collections.abc import Callable, Iterable
-from contextlib import AbstractContextManager, closing
+import sys
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
 
 START = datetime(2026, 1, 15, 12, tzinfo=UTC)
 RESTART = "restart"
@@ -130,6 +142,11 @@ class Machine(Protocol):
     bound: int
     horizon: int
     rules: tuple[Rule, ...]
+    covers: Mapping[Any, tuple[str, int | None]]
+    tables: frozenset[str]
+    writers: tuple[Callable[..., Any], ...]
+    unreached_values: Mapping[str, str]
+    unreached_writers: Mapping[Callable[..., Any], str]
 
     def seams(self) -> AbstractContextManager[None]: ...
     def start(self, root: Path, clock: Clock) -> Any: ...
@@ -163,10 +180,46 @@ class Exploration:
     traces: dict[Any, Trace] = field(default_factory=dict)
     memory: dict[Any, Memory] = field(default_factory=dict)
     failures: list[tuple[Trace, str]] = field(default_factory=list)
+    applied: Counter[str] = field(default_factory=Counter)
+    calls: Counter[Callable[..., Any]] | None = None
 
     @property
     def states(self) -> int:
         return len(self.depth)
+
+    def gaps(self) -> list[str]:
+        """Coverage the exploration lacks, and listed exceptions that no longer hold."""
+
+        machine = self.machine
+        found: list[str] = []
+        for status, (name, column) in machine.covers.items():
+            seen = set()
+            for view in self.depth:
+                value = getattr(view, name)
+                seen.update([value] if column is None else (row[column] for row in value))
+            for value in get_args(status):
+                if value not in seen and value not in machine.unreached_values:
+                    found.append(f"status {value!r} is never reached")
+                if value in seen and value in machine.unreached_values:
+                    found.append(f"status {value!r} is reached but listed as unreached")
+        if self.calls is not None:
+            for writer in machine.writers:
+                called = self.calls[writer] > 0
+                if not called and writer not in machine.unreached_writers:
+                    found.append(f"writer {writer.__qualname__} never runs")
+                if called and writer in machine.unreached_writers:
+                    found.append(f"writer {writer.__qualname__} runs but is listed as unreached")
+        for rule in machine.rules:
+            if isinstance(rule, Goal):
+                if not self._goal_checked(rule):
+                    found.append(f"goal {rule.name} is never checked from an unreached state")
+            elif self.applied[rule.name] == 0:
+                found.append(f"rule {rule.name} never applies")
+        return found
+
+    def _goal_checked(self, goal: Goal) -> bool:
+        limit = self.machine.bound - self.machine.horizon
+        return any(depth <= limit and not goal.reached(view) for view, depth in self.depth.items())
 
     def stuck(self) -> list[tuple[Trace, str]]:
         """States within a goal's horizon from which no allowed run reaches it."""
@@ -195,10 +248,13 @@ class Exploration:
 class Explorer:
     """Runs one machine over a working tree, saving states under ``saves``."""
 
-    def __init__(self, machine: Machine, root: Path, saves: Path) -> None:
+    def __init__(
+        self, machine: Machine, root: Path, saves: Path, calls: _Calls | None = None
+    ) -> None:
         self.machine = machine
         self.root = root
         self.saves = saves
+        self.calls = calls
 
     def save(self, world: Any, clock: Clock, name: str) -> Saved:
         databases = list(self.machine.databases(self.root))
@@ -230,7 +286,8 @@ class Explorer:
         world = machine.boot(self.root, clock)
         if restart:
             machine.restore_memory(world, Memory(None, saved.memory.environment))
-            machine.restart(world)
+            with self._counted():
+                machine.restart(world)
         else:
             machine.restore_memory(world, saved.memory)
         return world, clock
@@ -239,8 +296,12 @@ class Explorer:
         if action.name == RESTART:
             return self.restore(saved, restart=True)
         world, clock = self.restore(saved)
-        self.machine.apply(world, action)
+        with self._counted():
+            self.machine.apply(world, action)
         return world, clock
+
+    def _counted(self) -> AbstractContextManager[None]:
+        return self.calls.counted() if self.calls is not None else _nothing()
 
     def replay(self, start: Saved, trace: Trace) -> Any:
         """Run ``trace`` from the start state in one backend, rebooting only on restart."""
@@ -262,14 +323,68 @@ class Explorer:
         return view
 
 
-def _violations(machine: Machine, world: Any, before: Any | None) -> list[str]:
+def _violations(
+    machine: Machine, world: Any, before: Any | None, applied: Counter[str] | None = None
+) -> list[str]:
     found: list[str] = []
     for rule in machine.rules:
         if isinstance(rule, Safety) and rule.applies(world):
             found.extend(f"{rule.name}: {message}" for message in rule.check(world))
         elif isinstance(rule, Step) and before is not None and rule.applies(before, world):
             found.extend(f"{rule.name}: {message}" for message in rule.check(before, world))
+        else:
+            continue
+        if applied is not None:
+            applied[rule.name] += 1
     return found
+
+
+class _Calls:
+    """Counts calls to each writer while ``counting`` is set (Python 3.12+)."""
+
+    _TOOL = 5
+
+    def __init__(self, writers: Iterable[Callable[..., Any]]) -> None:
+        self.writers = {inspect.unwrap(writer).__code__: writer for writer in writers}
+        self.counts: Counter[Callable[..., Any]] = Counter()
+        self.counting = False
+
+    def _start(self, code: Any, _offset: int) -> None:
+        if self.counting:
+            self.counts[self.writers[code]] += 1
+
+    @contextmanager
+    def watching(self) -> Iterator[None]:
+        monitoring = sys.monitoring
+        start = monitoring.events.PY_START
+        monitoring.use_tool_id(self._TOOL, "lifecycle explorers")
+        monitoring.register_callback(self._TOOL, start, self._start)
+        for code in self.writers:
+            monitoring.set_local_events(self._TOOL, code, start)
+        try:
+            yield
+        finally:
+            for code in self.writers:
+                monitoring.set_local_events(self._TOOL, code, 0)
+            monitoring.register_callback(self._TOOL, start, None)
+            monitoring.free_tool_id(self._TOOL)
+
+    @contextmanager
+    def counted(self) -> Iterator[None]:
+        self.counting = True
+        try:
+            yield
+        finally:
+            self.counting = False
+
+
+@contextmanager
+def _nothing() -> Iterator[None]:
+    yield
+
+
+def _watched(calls: _Calls | None) -> AbstractContextManager[None]:
+    return calls.watching() if calls is not None else _nothing()
 
 
 def witness(machine: Machine, root: Path, saves: Path, trace: Trace) -> set[str]:
@@ -296,14 +411,17 @@ def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
     """Search every action order of at most ``machine.bound`` steps."""
 
     result = Exploration(machine)
-    explorer = Explorer(machine, root, saves)
-    with machine.seams():
+    calls = _Calls(machine.writers) if hasattr(sys, "monitoring") else None
+    explorer = Explorer(machine, root, saves, calls)
+    with machine.seams(), _watched(calls):
         clock = Clock()
         world = machine.start(root, clock)
         start = machine.view(world)
         result.depth[start] = 0
         result.traces[start] = ()
-        result.failures.extend(((), message) for message in _violations(machine, world, None))
+        result.failures.extend(
+            ((), message) for message in _violations(machine, world, None, result.applied)
+        )
         saved = {start: explorer.save(world, clock, "0")}
         result.memory[start] = saved[start].memory
         machine.close(world)
@@ -325,7 +443,8 @@ def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
                     memory = machine.save_memory(world)
                     children.append((action, child))
                     result.failures.extend(
-                        (path, message) for message in _violations(machine, world, view)
+                        (path, message)
+                        for message in _violations(machine, world, view, result.applied)
                     )
                     if child not in result.depth:
                         result.depth[child] = depth + 1
@@ -343,4 +462,5 @@ def explore(machine: Machine, root: Path, saves: Path) -> Exploration:
         for trace, view in replayed.values():
             if explorer.replay(saved[start], trace) != view:
                 result.failures.append((trace, "restore: replay reaches a different view"))
+    result.calls = calls.counts if calls is not None else None
     return result

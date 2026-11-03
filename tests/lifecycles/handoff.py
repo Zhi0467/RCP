@@ -37,16 +37,30 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from unittest import mock
 
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS
+from rcp.runs.agent_thread_commands import _settle_delivered_handoffs
+from rcp.server_ops.members import _remove_member_agent_data
+from rcp.storage.agent_threads import AgentThreadStoreMixin, claim_handoff_turn
+from rcp.storage.models import AgentTaskStatus
+from rcp.storage.projects import ProjectStoreMixin
+from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from tests.lifecycles.engine import RESTART, START, Action, Clock, Goal, Memory, Safety, Step
 
 _TERMINAL = frozenset({"succeeded", "failed", "interrupted", "paused"})
 _SETTLE_OUTCOMES = ("succeeded", "transport_lost", "other")
 _SOURCE = "source"
 _EXPIRY = START + timedelta(minutes=30)
+
+
+class View(NamedTuple):
+    handoff: tuple
+    turns: tuple
+    space_busy: bool
+    timers: tuple
+    expired: bool
 
 
 @dataclass
@@ -131,6 +145,39 @@ class Handoff:
     name = "handoff"
     bound = 4
     horizon = 3
+    covers = {AgentTaskStatus: ("turns", 1)}
+    tables = frozenset({"agent_handoffs"})
+    writers = (
+        AgentThreadStoreMixin.create_agent_handoff,
+        claim_handoff_turn,
+        _settle_delivered_handoffs,
+        AgentThreadStoreMixin.refuse_agent_handoff,
+        AgentThreadStoreMixin.defer_agent_handoff_delivery,
+        AgentThreadStoreMixin.mark_agent_handoff_message_projected,
+        _remove_member_agent_data,
+        ProjectStoreMixin.delete_project_records,
+        RestoreDetachmentStoreMixin.detach_restored_lifecycle,
+    )
+    unreached_values = {
+        "running": "settle marks the turn running and commits its verdict in one action",
+        "pausing": "the handoff model has no Pause; the agent task explorer covers it",
+        "paused": "the handoff model has no Pause; the agent task explorer covers it",
+    }
+    unreached_writers = {
+        AgentThreadStoreMixin.create_agent_handoff: "start seeds the one handoff",
+        AgentThreadStoreMixin.refuse_agent_handoff: "delivery never fails in this model",
+        AgentThreadStoreMixin.defer_agent_handoff_delivery: (
+            "admission never raises a transient error in this model"
+        ),
+        AgentThreadStoreMixin.mark_agent_handoff_message_projected: (
+            "message projection runs in project_handoff_messages, which no action calls"
+        ),
+        _remove_member_agent_data: "member removal is the agent task explorer's action",
+        ProjectStoreMixin.delete_project_records: (
+            "project deletion is the agent task explorer's action"
+        ),
+        RestoreDetachmentStoreMixin.detach_restored_lifecycle: "restore is a catalog machine",
+    }
 
     def __init__(self) -> None:
         self.names: Names | None = None
@@ -362,7 +409,7 @@ class Handoff:
                 )
             )
         timers = tuple(sorted((names[op], attempt, delay) for op, attempt, delay in world.timers))
-        return (
+        return View(
             (
                 handoff.target_operation_id is not None,
                 handoff.settled_at is not None,
@@ -416,7 +463,7 @@ def _finish(world: World, operation_id: str) -> None:
 
 
 def _newest_delivered(view):
-    delivered = [turn for turn in view[1] if turn[0].startswith("T")]
+    delivered = [turn for turn in view.turns if turn[0].startswith("T")]
     return max(delivered, key=lambda turn: int(turn[0][1:])) if delivered else None
 
 
@@ -509,20 +556,20 @@ def one_delivery_and_one_wake(world: World) -> list[str]:
 def wake_waits_for_idle_space(before, world: World) -> list[str]:
     """The Space is woken only while its thread is idle."""
 
-    if world.handoff().notified_operation_id and before[2]:
+    if world.handoff().notified_operation_id and before.space_busy:
         return ["Space woken while its thread was busy"]
     return []
 
 
 def _not_yet_woken(before, _world: World) -> bool:
-    return not before[0][2]
+    return not before.handoff[2]
 
 
 def handoff_settles(view) -> bool:
     """The handoff settled, or its newest delivered turn offers the member Retry."""
 
     newest = _newest_delivered(view)
-    return view[0][1] or (newest is not None and newest[3])
+    return view.handoff[1] or (newest is not None and newest[3])
 
 
 RULES = (

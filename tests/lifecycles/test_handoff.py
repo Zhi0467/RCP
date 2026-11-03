@@ -45,6 +45,7 @@ def test_handoff_lifecycle_holds_within_bound(tmp_path: Path, hang_guard) -> Non
     result = explore(Handoff(), _root(tmp_path), tmp_path / "saves")
     assert result.failures == []
     assert result.stuck() == []
+    assert result.gaps() == []
     assert result.states == STATES
 
 
