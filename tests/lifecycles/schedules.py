@@ -43,6 +43,8 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
 from unittest import mock
 
+import pytest
+
 from rcp.consolidation import ConsolidationPoller
 from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIVE
 from rcp.runs.agent_schedules import _dispatch_thread
@@ -56,6 +58,7 @@ from rcp.storage.agent_schedules import (
 from rcp.storage.agent_threads import AgentThreadStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
+from tests.helpers import fake_launch_admitted
 from tests.lifecycles.engine import RESTART, Action, Clock, Memory, Safety, Step
 
 THREAD = "thread"
@@ -252,14 +255,13 @@ class Schedules:
         tasks.admit_provider_task = lambda *args, **kwargs: None
         tasks._schedule_remote_reconciliation = lambda **kwargs: None
 
-        def launch_admitted(operation_id: str):
+        def launch(operation_id: str):
             record = store.agent_task(operation_id)
             if record is not None and record.status == "queued":
-                tasks._launchable_request(record)
                 world.workers.add(operation_id)
             return store.agent_task(operation_id)
 
-        tasks.launch_admitted = launch_admitted
+        fake_launch_admitted(pytest.MonkeyPatch(), tasks, launch)
         return world
 
     def close(self, world: World) -> None:

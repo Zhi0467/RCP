@@ -74,6 +74,7 @@ from rcp.storage.consolidation import (
 )
 from rcp.storage.models import AgentTaskStatus
 from rcp.storage.notifications import NotificationStoreMixin
+from tests.helpers import fake_launch_admitted
 from tests.lifecycles.engine import RESTART, Action, Clock, Goal, Memory, Safety, Step
 
 _NIGHT = time(2)
@@ -594,13 +595,12 @@ def _poll_without_launch(world: World) -> None:
     def unavailable(_operation_id: str):
         raise OSError("provider admission unavailable")
 
-    background = world.runtime.app.state.background_tasks
-    launch = background.launch_admitted
-    background.launch_admitted = unavailable
+    patches = pytest.MonkeyPatch()
+    fake_launch_admitted(patches, world.runtime.app.state.background_tasks, unavailable)
     try:
         world.poller.poll_once()
     finally:
-        background.launch_admitted = launch
+        patches.undo()
 
 
 def _send(world: World) -> None:
