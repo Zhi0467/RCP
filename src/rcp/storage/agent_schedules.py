@@ -171,7 +171,8 @@ def _waiting_fires(schedule: AgentSchedule) -> int:
     """The fires due from ``pending_since`` up to, not including, the next fire.
 
     A one-shot holds one fire. A schedule with no next fire has ended; its fires run to
-    ``--until``, and without one only the first fire is known.
+    ``--until`` unless ``--count`` ended it first, and otherwise only the first fire is
+    known, since v73 kept no original count.
     """
     from rcp.consolidation import cron_occurrence_count
 
@@ -179,7 +180,7 @@ def _waiting_fires(schedule: AgentSchedule) -> int:
     due = datetime.fromisoformat(schedule.pending_since)
     if schedule.next_fire_at is not None:
         end = datetime.fromisoformat(schedule.next_fire_at) - timedelta(microseconds=1)
-    elif schedule.until_local is not None:
+    elif schedule.until_local is not None and schedule.fires_left != 0:
         end = local_instant(schedule.until_local, schedule.timezone)
     else:
         return 1

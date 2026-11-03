@@ -1128,6 +1128,12 @@ def test_wake_interval_gap_and_invalid_combinations_are_refused(schedule_store):
         ("at_local, state", "'2026-01-15T09:00', 'done'", 0),
         ("every_minutes, next_fire_at, state", "60, '2026-01-15T12:00:00+00:00', 'active'", 2),
         ("cron, next_fire_at, state", "'0 * * * *', '2026-01-15T12:00:00+00:00', 'active'", 2),
+        ("every_minutes, until_local, state", "60, '2026-01-15T11:00', 'done'", 2),
+        (
+            "every_minutes, until_local, fires_left, state",
+            "1, '2026-01-16T09:00', 0, 'done'",
+            0,
+        ),
     ],
 )
 def test_a_note_waiting_before_v74_wakes_with_the_fires_it_held(
