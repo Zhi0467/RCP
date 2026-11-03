@@ -53,7 +53,13 @@ def _execute(
     identity_access: IdentityAccess,
     pinned: dict[str, Any],
     service: ProjectService,
+    pinned_revision: int,
 ):
+    """Run the action through its human handler.
+
+    A Proposal Sync appends only at `pinned_revision`, the graph the pins were read from,
+    so its append lock rechecks the pins; a moved graph releases the card.
+    """
     from rcp.api.episode_routes import (
         MergeBranchBody,
         _merge_episode_branch,
@@ -67,21 +73,26 @@ def _execute(
 
     project_id = action.project_id
     if action.kind == "proposal":
-        return sync_graph(
-            project_id,
-            GraphSyncRequest.model_validate(
-                {
-                    "base_revision": service.history.state().revision,
-                    "proposals": [action.model_dump(exclude={"kind", "project_id"})],
-                }
-            ),
-            request,
-            catalog=catalog,
-            store=store,
-            identity_access=identity_access,
-            project_display_cache=get_project_display_cache(request),
-            watcher_delivery=get_watcher_delivery(request),
-        )
+        try:
+            return sync_graph(
+                project_id,
+                GraphSyncRequest.model_validate(
+                    {
+                        "base_revision": pinned_revision,
+                        "proposals": [action.model_dump(exclude={"kind", "project_id"})],
+                    }
+                ),
+                request,
+                catalog=catalog,
+                store=store,
+                identity_access=identity_access,
+                project_display_cache=get_project_display_cache(request),
+                watcher_delivery=get_watcher_delivery(request),
+            )
+        except HTTPException as exc:
+            if exc.status_code == 409 and service.history.state().revision != pinned_revision:
+                raise _NotNow(409, {"code": "graph_changed"}) from exc
+            raise
     if action.kind == "truth_scope":
         return set_repository_writable(
             project_id,
@@ -164,6 +175,7 @@ def _resolve(
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
         try:
+            pinned_revision = service.history.state().revision
             pinned = approval_pins(service, store, action, human)
         except (KeyError, ValueError):
             # The pinned target no longer exists or no longer applies.
@@ -182,6 +194,7 @@ def _resolve(
                 identity_access,
                 pinned,
                 service,
+                pinned_revision,
             ),
             card["request_id"],
         )
@@ -212,6 +225,8 @@ def _run(execute: Callable[[], object], request_id: str) -> dict[str, Any]:
     """Map the human handler's outcome; an outage leaves the card for another tap."""
     try:
         response = execute()
+    except _NotNow:
+        raise
     except HTTPException as exc:
         if exc.detail == {"code": "merge_heads_changed"}:
             return {"outcome": "stale"}

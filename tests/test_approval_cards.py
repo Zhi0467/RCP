@@ -15,7 +15,15 @@ from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
 from tests import test_api_questions as api_fixtures
 from tests import test_questions_store as fixtures
-from tests.lifecycles.proposals import api_card, real_card
+from tests.lifecycles.proposals import (
+    EV,
+    PROPOSAL,
+    api_card,
+    append_agent_patch,
+    approve_action,
+    file_proposal,
+    real_card,
+)
 
 store = fixtures.store
 origin = fixtures.origin
@@ -900,3 +908,65 @@ def test_question_list_reads_do_not_grow_with_answered_history(questions_api, mo
         store.dismiss_question(answered.question_id, resolved_by=human)
     assert len(client.get(url).json()) == 7
     assert statements_per_list() == before
+
+
+_RACED_WRITES = {
+    "reword": [{"op": "update_nodes", "nodes": [{"id": EV, "changes": {"observation": "N."}}]}],
+    "withdraw": [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "r"}]}],
+    "unrelated": [
+        {
+            "op": "create_nodes",
+            "nodes": [
+                {
+                    "id": "ev/unrelated",
+                    "type": "evidence",
+                    "title": "Unrelated",
+                    "observation": "Elsewhere.",
+                    "origin": "analytic",
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize("competing", ["second_tap", *_RACED_WRITES])
+def test_a_write_between_pin_check_and_sync_never_decides_unseen_pins(
+    questions_api, monkeypatch, competing
+):
+    """The competing tap or graph write lands after the pin check and before Sync appends."""
+    from rcp.api import approval_cards
+
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    question, card = real_card(questions_api, approve_action(project_id, PROPOSAL))
+    url = f"/api/approval-cards/{question.question_id}"
+    body = {"decision": "approve", "pinned_sha256": card["pinned_sha256"]}
+    second = []
+    run = approval_cards._run
+
+    def interleaved(execute, request_id):
+        if competing == "second_tap":
+            second.append(client.post(url, json=body))
+        else:
+            append_agent_patch(service, _RACED_WRITES[competing])
+        return run(execute, request_id)
+
+    monkeypatch.setattr(approval_cards, "_run", interleaved)
+    first = client.post(url, json=body)
+    status = service.history.state().proposals[PROPOSAL].status
+    if competing == "second_tap":
+        assert second[0].status_code == 409
+        assert second[0].json()["detail"] == {"code": "card_taken"}
+        assert first.json()["outcome"] == "approved", first.text
+        assert status == "approved"
+        return
+    assert first.status_code == 409, first.text
+    assert first.json()["detail"] == {"code": "graph_changed"}
+    assert store.get_question(question.question_id).state == "pending"
+    assert status == ("withdrawn" if competing == "withdraw" else "pending")
+    monkeypatch.setattr(approval_cards, "_run", run)
+    retap = client.post(url, json=body).json()
+    assert retap["outcome"] == ("approved" if competing == "unrelated" else "stale")
+    assert store.get_question(question.question_id).answer == retap["outcome"]

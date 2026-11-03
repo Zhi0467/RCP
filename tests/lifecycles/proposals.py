@@ -42,8 +42,10 @@ Budget cuts: a decline, the outage and crashed taps, the Sync rejection and
 closed thread offers only sweeps; elsewhere they add only edges whose rules
 the fresh case already exercises. Refiling, refresh and the old-hash tap are
 left out: no rule reads them, and a refiled Proposal's card would need three
-steps. Each action is atomic, so the card tap's suspected check-then-sync race
-stays out of reach.
+steps. Each action is atomic, so a write inside one tap, between its pin check
+and its Sync, is out of reach here;
+``test_a_write_between_pin_check_and_sync_never_decides_unseen_pins`` in
+``tests/test_approval_cards.py`` interleaves it.
 """
 
 from __future__ import annotations
