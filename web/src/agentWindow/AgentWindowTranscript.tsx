@@ -199,7 +199,7 @@ export function AgentWindowTranscript({
               <CompactionDivider compactions={compaction.compactions} />
             )}
             {divider && (
-              <div className="chat-time-divider" role="separator">
+              <div className="chat-time-divider">
                 <time dateTime={divider.toISOString()}>{timeDividerLabel(divider, now)}</time>
               </div>
             )}
@@ -426,7 +426,7 @@ export function AgentWindowTranscript({
                   )}
                 </div>
               )}
-              {shownAt && (
+              {shownAt && line.trigger !== "schedule" && (
                 <time className="chat-line-time" dateTime={shownAt.toISOString()}>
                   {localClock(shownAt)}
                 </time>

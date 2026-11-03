@@ -316,12 +316,13 @@ test("a tap shows the time unless it lands on a control or selects text", () => 
   assert.equal(lineTapShowsTime(plain, selecting), false);
 });
 
-test("the transcript renders each divider once and a time on every timed line", () => {
+test("the transcript renders each divider once and a time on every timed line but a wake", () => {
   const markup = renderToStaticMarkup(
     React.createElement(AgentWindowTranscript, {
       transcript: [
         timed("first", at(2026, 10, 2, 9, 0)),
         timed("soon", at(2026, 10, 2, 9, 5)),
+        timed("wake", at(2026, 10, 2, 9, 7), { trigger: "schedule" }),
         timed("running", null, { role: "agent", text: "", running: true }),
       ],
       tasks: [],

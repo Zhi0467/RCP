@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import uuid
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -645,6 +646,11 @@ def stamp_shown_at(
 
     A steer, or a message with no task, keeps no time here; the web shows its own timestamp.
     """
+    frontier = _missing_parents(tasks.values(), tasks)
+    while frontier:
+        parents = store.agent_tasks_by_ids(frontier)
+        tasks.update(parents)
+        frontier = _missing_parents(parents.values(), tasks)
     for message in messages:
         task = tasks.get(message.operation_id) if message.operation_id is not None else None
         if task is None or message.steering is not None:
@@ -653,6 +659,16 @@ def stamp_shown_at(
             message.shown_at = task.finished_at
         else:
             message.shown_at = turn_first_attempt(store, task, tasks).created_at
+
+
+def _missing_parents(
+    children: Iterable[AgentTaskRecord], tasks: dict[str, AgentTaskRecord]
+) -> set[str]:
+    return {
+        child.parent_operation_id
+        for child in children
+        if child.parent_operation_id and child.parent_operation_id not in tasks
+    }
 
 
 def _artifact_comments(store: AppStore, request: dict[str, object]) -> ChatArtifactComments | None:

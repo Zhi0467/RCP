@@ -874,6 +874,7 @@
   position: absolute;
   top: calc(100% + 5px);
   transition: opacity 0.16s ease;
+  user-select: none;
 }
 .node-chat-line.human > .chat-line-time {
   left: auto;

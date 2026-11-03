@@ -795,6 +795,8 @@ def test_transcript_messages_show_when_their_turn_happened(manifest, tmp_path, m
         "first": "2026-11-01T08:00:00+00:00",
         "retry": "2026-11-01T08:05:00+00:00",
         "last": "2026-11-01T08:10:00+00:00",
+        "other_first": "2026-11-01T09:00:00+00:00",
+        "other_last": "2026-11-01T09:05:00+00:00",
     }
     for name, created_at in stamps.items():
         store.create_agent_task(
@@ -811,17 +813,26 @@ def test_transcript_messages_show_when_their_turn_happened(manifest, tmp_path, m
             )
         )
     with store.connection() as connection:
-        for child, parent in (("retry", "first"), ("last", "retry")):
+        for child, parent in (
+            ("retry", "first"),
+            ("last", "retry"),
+            ("other_last", "other_first"),
+        ):
             connection.execute(
                 "UPDATE graph_runs SET parent_operation_id = ? WHERE operation_id = ?",
                 (parent, child),
             )
-        connection.execute(
-            "UPDATE graph_runs SET finished_at = ? WHERE operation_id = 'last'",
-            ("2026-11-01T08:12:00+00:00",),
-        )
-    execution = AgentTaskExecution("last", store, AgentProcessControl())
-    _append_chat_exchange(service, request, "done", None, None, execution=execution)
+        for operation_id, finished_at in (
+            ("last", "2026-11-01T08:12:00+00:00"),
+            ("other_last", "2026-11-01T09:07:00+00:00"),
+        ):
+            connection.execute(
+                "UPDATE graph_runs SET finished_at = ? WHERE operation_id = ?",
+                (finished_at, operation_id),
+            )
+    for operation_id in ("last", "other_last"):
+        execution = AgentTaskExecution(operation_id, store, AgentProcessControl())
+        _append_chat_exchange(service, request, "done", None, None, execution=execution)
     last = store.agent_task("last")
     assert last is not None
     with _steering_transaction(service):
@@ -848,8 +859,14 @@ def test_transcript_messages_show_when_their_turn_happened(manifest, tmp_path, m
     assert [(message["role"], message.get("shown_at")) for message in messages] == [
         ("user", stamps["first"]),
         ("assistant", "2026-11-01T08:12:00+00:00"),
+        ("user", stamps["other_first"]),
+        ("assistant", "2026-11-01T09:07:00+00:00"),
         ("user", None),
     ]
-    assert messages[2]["steering"] is not None
+    assert messages[4]["steering"] is not None
     assert single_reads == []
-    assert set(batches[0]) == {"last"}
+    assert [set(batch) for batch in batches] == [
+        {"last", "other_last"},
+        {"retry", "other_first"},
+        {"first"},
+    ]
