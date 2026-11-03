@@ -832,6 +832,41 @@
 .approval-dock .approval-stack .approval-quiet {
   margin: 0;
 }
+.approval-dock > .approval-card:not([data-state="pending"], [data-state="failed"]) {
+  animation:
+    agent-pop-in 0.18s ease-out,
+    approval-dock-leave 0.3s ease-in 2.5s forwards;
+  overflow: hidden;
+}
+.approval-dock:not(
+  :has(
+    > .approval-stack,
+    > .approval-fold,
+    > .approval-card[data-state="pending"],
+    > .approval-card[data-state="failed"]
+  )
+) {
+  animation: approval-dock-settle 0.3s ease-in 2.5s forwards;
+}
+@keyframes approval-dock-leave {
+  from {
+    max-height: 240px;
+  }
+  to {
+    border-width: 0;
+    margin-bottom: 0;
+    max-height: 0;
+    opacity: 0;
+    padding-bottom: 0;
+    padding-top: 0;
+    visibility: hidden;
+  }
+}
+@keyframes approval-dock-settle {
+  to {
+    margin-bottom: 0;
+  }
+}
 
 /* ---------- Composer: one composer with the picker and the mic ---------- */
 .agent-thread .chat-composer {
@@ -880,6 +915,9 @@
   .thread-welcome,
   .thread-agent-picker .agent-config.compact {
     animation: none;
+  }
+  .approval-dock > .approval-card:not([data-state="pending"], [data-state="failed"]) {
+    animation: approval-dock-leave 0.01s 2.5s forwards;
   }
 }
 

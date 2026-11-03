@@ -2158,6 +2158,8 @@ test("Pip docks every open card above its composer, decides them in place, and h
       assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
       assert.ok(writes.some((write) => write.path === "/api/approval-cards/q1"));
       await shoot(page, `pip-dock-failed-${width}`);
+      await dock.locator(".approval-card[data-state='approved']").waitFor({ state: "hidden" });
+      assert.ok(await failed.isVisible());
 
       const mossCards = page.waitForResponse((response) =>
         new URL(response.url()).search.includes("thread_id=moss"),
