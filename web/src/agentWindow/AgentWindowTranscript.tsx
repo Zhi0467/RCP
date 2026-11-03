@@ -17,6 +17,7 @@ import type {
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
+  ProposalCardView,
   TurnOutcome,
 } from "../core/types";
 import type { GlossaryIndex } from "../graph/glossary";
@@ -48,6 +49,10 @@ interface Props {
   continuedTaskIds: Set<string>;
   latestGraphReceiptLineIds: Set<string>;
   renderQuestion?: (question: AgentQuestion) => ReactNode;
+  /** Cards that the owner derives itself; placed by their raising turn. */
+  proposalCards?: ProposalCardView[];
+  /** Shows each position's cards as one unit; without it each asked card uses `renderQuestion`. */
+  renderCards?: (entry: AgentWindowCardsEntry) => ReactNode;
   lineLead?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
   lineClassName?: (line: TaskTranscriptLine) => string;
   humanLead?: (line: TaskTranscriptLine) => ReactNode;
@@ -80,6 +85,7 @@ interface Props {
 }
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 const NO_ERRORS = new Map<string, string>();
+const NO_PROPOSAL_CARDS: ProposalCardView[] = [];
 
 /** Shared turn bodies; owners supply their questions, progress, and controls. */
 export function AgentWindowTranscript({
@@ -93,6 +99,8 @@ export function AgentWindowTranscript({
   continuedTaskIds,
   latestGraphReceiptLineIds,
   renderQuestion,
+  proposalCards = NO_PROPOSAL_CARDS,
+  renderCards,
   lineLead,
   lineClassName,
   humanLead,
@@ -142,7 +150,7 @@ export function AgentWindowTranscript({
     const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [transcript]);
-  const entries = agentWindowEntries(transcript, questions);
+  const entries = agentWindowEntries(transcript, questions, proposalCards);
   const dividers = timeDividers(entries);
   const now = new Date();
   const toggleTime = (lineId: string, target: EventTarget) => {
@@ -157,6 +165,14 @@ export function AgentWindowTranscript({
   return (
     <>
       {entries.map((entry) => {
+        if (entry.kind === "cards")
+          return renderCards ? (
+            <Fragment key={entry.key}>{renderCards(entry)}</Fragment>
+          ) : (
+            entry.asked.map((question) => (
+              <Fragment key={question.question_id}>{renderQuestion?.(question)}</Fragment>
+            ))
+          );
         if (entry.kind === "question")
           return (
             <Fragment key={entry.question.question_id}>{renderQuestion?.(entry.question)}</Fragment>
@@ -490,20 +506,55 @@ export function lineTapShowsTime(
   return !selection || selection.isCollapsed || !selection.toString();
 }
 
+/** The cards that share one transcript position; an owner may show them as one stack. */
+export type AgentWindowCardsEntry = {
+  kind: "cards";
+  key: string;
+  asked: AgentQuestion[];
+  proposals: ProposalCardView[];
+};
+
+type PlacedCard = {
+  kind: "card";
+  turnId: string;
+  at: string;
+  card: { asked: AgentQuestion } | { proposal: ProposalCardView };
+};
+
 /** Cards remain inside their owning turn, even when settlement stamps both messages together. */
-export function agentWindowEntries(lines: TaskTranscriptLine[], questions: AgentQuestion[]) {
-  const cards = questions.filter((question) => question.card);
-  const cardIds = new Set(cards.map((question) => question.question_id));
+export function agentWindowEntries(
+  lines: TaskTranscriptLine[],
+  questions: AgentQuestion[],
+  proposalCards: ProposalCardView[] = [],
+) {
+  const asked = questions.filter((question) => question.card);
+  const cardIds = new Set(asked.map((question) => question.question_id));
   const visible = lines.filter(
     (line) => !(line.role === "human" && line.questionId && cardIds.has(line.questionId)),
   );
-  const entries = questionTranscript(
+  const entries: Array<
+    ReturnType<typeof questionTranscript<TaskTranscriptLine>>[number] | PlacedCard
+  > = questionTranscript(
     visible,
     questions.filter((question) => !question.card),
   );
-  for (const question of [...cards].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
+  const cards: PlacedCard[] = [
+    ...asked.map((question) => ({
+      kind: "card" as const,
+      turnId: question.operation_id,
+      at: question.created_at,
+      card: { asked: question },
+    })),
+    ...proposalCards.map((proposal) => ({
+      kind: "card" as const,
+      turnId: proposal.turn_id,
+      at: proposal.turn_created_at,
+      card: { proposal },
+    })),
+  ];
+  for (const card of cards.sort((a, b) => a.at.localeCompare(b.at))) {
     const ownerLines = entries.flatMap((entry, index) =>
-      entry.kind === "line" && entry.line.taskId === question.operation_id ? [index] : [],
+      entry.kind === "line" && entry.line.taskId === card.turnId ? [index] : [],
     );
     const answers = ownerLines.filter((index) => {
       const entry = entries[index];
@@ -511,32 +562,43 @@ export function agentWindowEntries(lines: TaskTranscriptLine[], questions: Agent
     });
     const laterAnswer = answers.find((index) => {
       const entry = entries[index];
-      return (
-        entry.kind === "line" && Date.parse(entry.line.timestamp) >= Date.parse(question.created_at)
-      );
+      return entry.kind === "line" && Date.parse(entry.line.timestamp) >= Date.parse(card.at);
     });
     // Reconstructed task answers carry the launch time rather than their completion time.
     let index = laterAnswer ?? answers[0] ?? (ownerLines.length ? ownerLines.at(-1)! + 1 : -1);
     if (index < 0)
       index = entries.findIndex(
-        (entry) =>
-          entry.kind === "line" &&
-          Date.parse(entry.line.timestamp) > Date.parse(question.created_at),
+        (entry) => entry.kind === "line" && Date.parse(entry.line.timestamp) > Date.parse(card.at),
       );
     if (index < 0) index = entries.length;
-    while (index < entries.length && entries[index].kind === "question") {
+    while (index < entries.length) {
       const entry = entries[index];
-      if (
-        entry.kind !== "question" ||
-        entry.question.operation_id !== question.operation_id ||
-        entry.question.created_at > question.created_at
-      )
-        break;
+      if (entry.kind !== "card" || entry.turnId !== card.turnId || entry.at > card.at) break;
       index += 1;
     }
-    entries.splice(index, 0, { kind: "question", question });
+    entries.splice(index, 0, card);
   }
-  return entries;
+  const keys = new Set<string>();
+  const grouped: Array<
+    ReturnType<typeof questionTranscript<TaskTranscriptLine>>[number] | AgentWindowCardsEntry
+  > = [];
+  for (const entry of entries) {
+    if (entry.kind !== "card") {
+      grouped.push(entry);
+      continue;
+    }
+    let group = grouped.at(-1);
+    if (group?.kind !== "cards") {
+      let key = `cards:${entry.turnId}`;
+      for (let n = 2; keys.has(key); n += 1) key = `cards:${entry.turnId}:${n}`;
+      keys.add(key);
+      group = { kind: "cards", key, asked: [], proposals: [] };
+      grouped.push(group);
+    }
+    if ("asked" in entry.card) group.asked.push(entry.card.asked);
+    else group.proposals.push(entry.card.proposal);
+  }
+  return grouped;
 }
 function InlineTaskProgress({ task }: { task: AgentTask | null }) {
   const label = task

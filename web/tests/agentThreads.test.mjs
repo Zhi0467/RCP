@@ -6,6 +6,7 @@ import { createServer } from "vite";
 
 import {
   approvalCardExpired,
+  approvalCardTitle,
   chosenThread,
   firingScheduleCount,
   handoffReport,
@@ -22,6 +23,8 @@ import {
   upcomingSchedules,
 } from "../src/agents/agentThreadModel.ts";
 import {
+  decideProposalCard,
+  readAgentCards,
   loadThreadQuestions,
   loadThreadTranscript,
   loadThreadWatchers,
@@ -31,6 +34,8 @@ import {
   setThreadSchedulePaused,
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
+import { ApiError } from "../src/core/api.ts";
+import { MAIN_GRAPH, projectViewHash } from "../src/core/graphTarget.ts";
 
 const thread = (overrides) => ({
   thread_id: "t",
@@ -295,6 +300,10 @@ const renderServer = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
+const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
+  "/src/agents/ApprovalCardStack.tsx",
+);
+const { ProposalApprovalCard } = await renderServer.ssrLoadModule("/src/agents/ApprovalCard.tsx");
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
@@ -332,4 +341,132 @@ test("a thread pick leaves the provider's default fields out", async () => {
     },
   );
   assert.deepEqual(sent, { provider: "claude" });
+});
+
+test("the header names the pinned Proposal's title", () => {
+  const card = (pinned, decision = "approved") => ({
+    kind: "proposal",
+    action: { kind: "proposal", project_id: "p", proposal_id: "pr", decision },
+    pinned,
+  });
+  const named = approvalCardTitle(card({ proposal: { title: "H2 standing" } }));
+  assert.ok(named.includes("H2 standing"));
+  assert.ok(
+    approvalCardTitle(card({ proposal: { title: "H2 standing" } }, "rejected")).includes(
+      "H2 standing",
+    ),
+  );
+  assert.ok(!approvalCardTitle(card({})).includes("H2 standing"));
+});
+
+test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {
+  let memory = { order: [], index: 0, folded: false };
+  memory = stackLater(memory, ["a", "b", "c"]);
+  assert.deepEqual(memory.order, ["b", "c", "a"]);
+  assert.equal(memory.folded, false);
+  assert.deepEqual(stackOrder(memory.order, ["a", "b", "c", "d"]), ["b", "c", "a", "d"]);
+  assert.deepEqual(stackOrder(memory.order, ["d", "a", "c"]), ["c", "a", "d"]);
+  assert.deepEqual(stackOrder([], ["x", "y"]), ["x", "y"]);
+  const last = stackLater({ order: ["a", "b"], index: 1, folded: false }, ["a", "b"]);
+  assert.deepEqual(last.order, ["a", "b"]);
+  assert.equal(last.index, 0);
+});
+
+test("Later on the last card folds the stack", () => {
+  const folded = stackLater({ order: ["a", "b"], index: 0, folded: false }, ["b"]);
+  assert.equal(folded.folded, true);
+  assert.deepEqual(folded.order, ["b"]);
+});
+
+const proposalView = (extra = {}) => ({
+  project_id: "p 1",
+  project_name: "Project",
+  thread_id: "t",
+  turn_id: "op",
+  turn_created_at: "2026-11-01T10:00:00Z",
+  proposal: {
+    id: "pr/1",
+    title: "H2 standing",
+    status: "pending",
+    card: { situation_cold: "s", why_human_now: "w", consequences: "c", decision_needed: "d" },
+  },
+  stale: false,
+  changes: [],
+  ...extra,
+});
+
+test("an out-of-date Proposal card offers only the project Inbox", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProposalApprovalCard, {
+      view: proposalView({ stale: true }),
+      decided: null,
+      showProject: false,
+      onDecided: () => undefined,
+      onChanged: () => undefined,
+    }),
+  );
+  const href = projectViewHash("p 1", MAIN_GRAPH, "attention").replaceAll("&", "&amp;");
+  assert.ok(html.includes(`href="${href}"`));
+  assert.doesNotMatch(html, /<button/);
+});
+
+test("a failed card fetch hides the cards; a thread reads only its own", async () => {
+  const paths = [];
+  const list = { proposal_cards: [], asked_cards: [] };
+  assert.deepEqual(
+    await readAgentCards("chat 1", async (path) => {
+      paths.push(path);
+      return list;
+    }),
+    list,
+  );
+  await readAgentCards(undefined, async (path) => {
+    paths.push(path);
+    return list;
+  });
+  assert.deepEqual(paths, [
+    "/api/agent-threads/cards?thread_id=chat%201",
+    "/api/agent-threads/cards",
+  ]);
+  assert.equal(
+    await readAgentCards(undefined, async () => {
+      throw new ApiError("down", 503);
+    }),
+    null,
+  );
+});
+
+test("a Proposal decision posts to its encoded route and sorts refusals", async () => {
+  const calls = [];
+  const answer = (respond) => async (path, init) => {
+    calls.push({ path, body: JSON.parse(init.body), method: init.method });
+    return respond();
+  };
+  assert.deepEqual(
+    await decideProposalCard(
+      "p 1",
+      "pr/1",
+      "approved",
+      answer(() => ({ proposal_id: "pr/1", status: "approved" })),
+    ),
+    { outcome: "decided", status: "approved" },
+  );
+  assert.deepEqual(calls[0], {
+    path: "/api/approval-cards/proposals/p%201/pr%2F1",
+    body: { decision: "approved" },
+    method: "POST",
+  });
+  const refuse = (status, detail) => () => {
+    throw new ApiError(detail?.message ?? "refused", status, detail);
+  };
+  const outcome = (status, detail) =>
+    decideProposalCard("p", "pr", "rejected", answer(refuse(status, detail)));
+  assert.deepEqual(await outcome(409, { code: "proposal_not_pending" }), { outcome: "gone" });
+  assert.deepEqual(await outcome(409, { code: "graph_changed" }), { outcome: "retry" });
+  assert.deepEqual(await outcome(503, undefined), { outcome: "retry" });
+  for (const status of [403, 404, 409, 422]) {
+    const refused = await outcome(status, { code: "not_admitted", message: `why ${status}` });
+    assert.equal(refused.outcome, "refused");
+    assert.equal(refused.reason, `why ${status}`);
+  }
 });

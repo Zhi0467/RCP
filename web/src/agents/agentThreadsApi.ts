@@ -2,8 +2,9 @@
 // ordinary project chat, so its transcript, sends, tasks and questions use the
 // chat routes; the Space thread has its own routes with the same shapes.
 
-import { api } from "../core/api.ts";
+import { api, ApiError } from "../core/api.ts";
 import type {
+  AgentCardList,
   AgentQuestion,
   AgentRunConfig,
   AgentSchedule,
@@ -18,6 +19,7 @@ import type {
   ApprovalCardResult,
   ChatMessage,
   ChatTranscript,
+  ProposalCardDecisionResult,
   SteerRequest,
   WatcherRecord,
 } from "../core/types";
@@ -274,4 +276,52 @@ export function resolveApprovalCard(
     method: "POST",
     body: JSON.stringify(decision),
   });
+}
+
+/** The member's open cards: one project thread's, or every thread's for Pip's dock. */
+export function loadAgentCards(threadId?: string, request: Request = api): Promise<AgentCardList> {
+  return request(`${THREADS}/cards${threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ""}`);
+}
+
+/** A failed read hides the cards and nothing else. */
+export function readAgentCards(
+  threadId?: string,
+  request: Request = api,
+): Promise<AgentCardList | null> {
+  return loadAgentCards(threadId, request).catch(() => null);
+}
+
+export type ProposalCardOutcome =
+  | { outcome: "decided"; status: ProposalCardDecisionResult["status"] }
+  | { outcome: "gone" }
+  | { outcome: "retry" }
+  | { outcome: "refused"; reason: string };
+
+/**
+ * Decides a Proposal from its card, as the member. A Proposal no longer pending
+ * redraws from a refetch, a moved graph or an unreachable backend asks for another
+ * tap, and any other refusal shows the server's reason.
+ */
+export async function decideProposalCard(
+  projectId: string,
+  proposalId: string,
+  decision: "approved" | "rejected",
+  request: Request = api,
+): Promise<ProposalCardOutcome> {
+  try {
+    const result = await request<ProposalCardDecisionResult>(
+      `/api/approval-cards/proposals/${encodeURIComponent(projectId)}/${encodeURIComponent(proposalId)}`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+    return { outcome: "decided", status: result.status };
+  } catch (failure) {
+    if (
+      !(failure instanceof ApiError) ||
+      failure.status === 503 ||
+      failure.code === "graph_changed"
+    )
+      return { outcome: "retry" };
+    if (failure.code === "proposal_not_pending") return { outcome: "gone" };
+    return { outcome: "refused", reason: failure.message };
+  }
 }

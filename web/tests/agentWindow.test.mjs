@@ -41,8 +41,35 @@ const card = (extra = {}) => ({
   card: { state: "pending" },
   ...extra,
 });
+const proposalCard = (id, turnId, extra = {}) => ({
+  project_id: "p",
+  project_name: "Project",
+  thread_id: "chat",
+  turn_id: turnId,
+  turn_created_at: "2026-11-01T10:00:00Z",
+  proposal: { id, title: id, status: "pending" },
+  stale: false,
+  changes: [],
+  ...extra,
+});
 const keys = (entries) =>
-  entries.map((entry) => (entry.kind === "line" ? entry.line.lineId : entry.question.question_id));
+  entries.flatMap((entry) =>
+    entry.kind === "line"
+      ? [entry.line.lineId]
+      : entry.kind === "question"
+        ? [entry.question.question_id]
+        : [
+            ...entry.proposals.map((card) => card.proposal.id),
+            ...entry.asked.map((question) => question.question_id),
+          ],
+  );
+const groups = (entries) =>
+  entries
+    .filter((entry) => entry.kind === "cards")
+    .map((entry) => [
+      ...entry.proposals.map((card) => card.proposal.id),
+      ...entry.asked.map((question) => question.question_id),
+    ]);
 
 test("approval stays after its request and before its answer when both records use settlement time", () => {
   const lines = [
@@ -382,4 +409,120 @@ test("reconstructed replies show when they finished and nothing while running", 
     }).shownAt,
     "s",
   );
+});
+
+test("Proposal cards sit in their raising turn before its answer, grouped with that turn's asked cards", () => {
+  const lines = [
+    line("request", "human", "op1", "00"),
+    line("answer", "agent", "op1", "30"),
+    line("later", "human", "op2", "40"),
+  ];
+  const entries = agentWindowEntries(lines, [card()], [proposalCard("pr-1", "op1")]);
+  assert.deepEqual(keys(entries), ["request", "pr-1", "q1", "answer", "later"]);
+  assert.deepEqual(groups(entries), [["pr-1", "q1"]]);
+});
+
+test("a Proposal card of a running retry follows its first attempt's lines", () => {
+  const lines = [
+    line("request", "human", "op1", "00"),
+    line("retry-live", "agent", "op1-retry", "10", { running: true }),
+    line("other", "human", "op2", "40"),
+  ];
+  assert.deepEqual(keys(agentWindowEntries(lines, [], [proposalCard("pr-1", "op1")])), [
+    "request",
+    "pr-1",
+    "retry-live",
+    "other",
+  ]);
+});
+
+test("a Proposal card of a turn with no lines takes its time position, else the end", () => {
+  const lines = [line("early", "human", "op0", "00"), line("late", "human", "op2", "40")];
+  assert.deepEqual(
+    keys(
+      agentWindowEntries(
+        lines,
+        [],
+        [proposalCard("pr-1", "gone", { turn_created_at: "2026-11-01T10:00:20Z" })],
+      ),
+    ),
+    ["early", "pr-1", "late"],
+  );
+  assert.deepEqual(
+    keys(
+      agentWindowEntries(
+        lines,
+        [],
+        [proposalCard("pr-2", "gone", { turn_created_at: "2026-11-01T10:01:00Z" })],
+      ),
+    ),
+    ["early", "late", "pr-2"],
+  );
+});
+
+test("cards at different turns form separate entries", () => {
+  const lines = [
+    line("a", "human", "op1", "00"),
+    line("a-answer", "agent", "op1", "10"),
+    line("b", "human", "op2", "20"),
+    line("b-answer", "agent", "op2", "30"),
+  ];
+  const entries = agentWindowEntries(
+    lines,
+    [],
+    [
+      proposalCard("pr-1", "op1"),
+      proposalCard("pr-2", "op1"),
+      proposalCard("pr-3", "op2", { turn_created_at: "2026-11-01T10:00:20Z" }),
+    ],
+  );
+  assert.deepEqual(groups(entries), [["pr-1", "pr-2"], ["pr-3"]]);
+  const stacks = entries.filter((entry) => entry.kind === "cards");
+  assert.equal(new Set(stacks.map((entry) => entry.key)).size, stacks.length);
+});
+
+test("without renderCards each asked card renders through renderQuestion and Proposal cards add nothing", () => {
+  const props = (extra) => ({
+    transcript: [line("request", "human", "op1", "00"), line("answer", "agent", "op1", "30")],
+    tasks: [],
+    questions: [card(), card({ question_id: "q2", created_at: "2026-11-01T10:00:06Z" })],
+    endpoints: projectAgentWindowEndpoints("p", "chat"),
+    artifacts: { renderArtifacts: () => null, repositoryFileErrors: new Map() },
+    comments: {},
+    compactionByLine: new Map(),
+    continuedTaskIds: new Set(),
+    latestGraphReceiptLineIds: new Set(),
+    readOnly: true,
+    renderQuestion: (question) =>
+      React.createElement("i", { "data-question": question.question_id }),
+    ...extra,
+  });
+  const plain = renderToStaticMarkup(React.createElement(AgentWindowTranscript, props({})));
+  assert.match(plain, /<i data-question="q1"><\/i><i data-question="q2"><\/i>/);
+  assert.equal(
+    renderToStaticMarkup(
+      React.createElement(
+        AgentWindowTranscript,
+        props({ proposalCards: [proposalCard("pr-1", "op1")] }),
+      ),
+    ),
+    plain,
+  );
+  const stacked = renderToStaticMarkup(
+    React.createElement(
+      AgentWindowTranscript,
+      props({
+        proposalCards: [proposalCard("pr-1", "op1")],
+        renderCards: (entry) =>
+          React.createElement("b", {
+            "data-stack": [
+              ...entry.proposals.map((item) => item.proposal.id),
+              ...entry.asked.map((item) => item.question_id),
+            ].join(","),
+          }),
+      }),
+    ),
+  );
+  assert.match(stacked, /<b data-stack="pr-1,q1,q2"><\/b>/);
+  assert.doesNotMatch(stacked, /data-question/);
 });
