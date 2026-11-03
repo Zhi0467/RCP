@@ -1222,7 +1222,7 @@ def _decline(client, question, card):
     )
 
 
-@pytest.mark.parametrize("before", ["none", "inbox", "fenced"])
+@pytest.mark.parametrize("before", ["none", "inbox", "fenced", "stale"])
 def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatch, before):
     app, client, store, project_id = questions_api
     service = app.state.catalog.open(project_id)
@@ -1241,6 +1241,8 @@ def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatc
         assert inbox.status_code == 200, inbox.text
     if before == "fenced":
         monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transfer)
+    if before == "stale":
+        append_agent_patch(service, _RACED_WRITES["reword"])
     result = _decline(client, question, card).json()
     assert result["outcome"] == "declined"
     assert store.get_question(question.question_id).answer == "declined"

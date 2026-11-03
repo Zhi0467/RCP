@@ -246,8 +246,9 @@ export function ProposalApprovalCard({
 }) {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gone, setGone] = useState(false);
   const title = `Approve Proposal: ${view.proposal.title}?`;
-  if (view.stale && !decided)
+  if ((view.stale || gone) && !decided)
     return (
       <div className="approval-quiet" role="status" title={title} tabIndex={-1}>
         <span>Out of date</span>
@@ -269,6 +270,7 @@ export function ProposalApprovalCard({
     );
     setBusy(null);
     if (result.outcome === "decided") onDecided(result.status);
+    else if (result.outcome === "gone") setGone(true);
     else if (result.outcome === "retry") setError("Try again");
     else if (result.outcome === "refused") setError(result.reason);
     onChanged();

@@ -2043,6 +2043,28 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     await thread.locator(".approval-fold").waitFor();
     await page.close();
 
+    const elsewhere = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await mockApi(elsewhere, []);
+    await serveCards(elsewhere, {
+      proposals: [proposalCard("proposal/a", "H2 standing → supported")],
+      asked: [],
+    });
+    let decides = 0;
+    await elsewhere.route(/\/api\/approval-cards\/proposals\//, (route) => {
+      decides += 1;
+      return route.fulfill({ status: 409, json: { detail: { code: "proposal_not_pending" } } });
+    });
+    await elsewhere.route("**/api/projects/p1/chats/moss/questions", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await elsewhere.goto(`${base}#/agent/moss`);
+    const gone = elsewhere.getByRole("region", { name: "Moss" });
+    await gone.getByRole("button", { name: "Approve" }).click();
+    await gone.locator(".approval-quiet").getByRole("link").waitFor();
+    assert.equal(await gone.getByRole("button", { name: "Approve" }).count(), 0);
+    assert.equal(decides, 1);
+    await elsewhere.close();
+
     const failing = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await mockApi(failing, []);
     const shown = { proposals: [proposalCard("proposal/a", "H2 standing → supported")], asked: [] };
