@@ -727,7 +727,7 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v2"
+SPACE_MASTER_POLICY = "space-master-v3"
 
 
 def render_space_prompt(
@@ -782,7 +782,7 @@ def _with_master_values(fixed: str, values: dict[str, object]) -> str:
 def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
     """The Space contract that holds for a whole native session, without its values."""
     from rcp.agents.artifact_contract import artifact_contract
-    from rcp.agents.prompts import write_scope_section
+    from rcp.agents.prompts import APP_PLACES, write_scope_section
     from rcp.runs.agent_thread_commands import space_command_usages
     from rcp.turn_outcomes import work_turn_outcome_contract
 
@@ -798,6 +798,7 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
         space_limits_section(allowed_verbs, turn.scope, turn.found),
         write_scope_section(turn.scope),
         space_clients_section(turn.found, stage),
+        APP_PLACES,
         f"Patch JSON schema: `{_stage_space_patch_schema(stage)}`.",
         work_turn_outcome_contract(str(stage / "outcome.json")),
         artifact_contract(

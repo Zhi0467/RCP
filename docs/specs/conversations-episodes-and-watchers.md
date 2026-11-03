@@ -269,6 +269,14 @@ explains the concrete unavailable prerequisite or new authority needed for
 further useful progress. This does not widen the requested objective or grant
 another invocation.
 
+Work and Space turns carry one fixed note naming where the member acts in the
+app: Settings for sign-ins, machines and repositories, the Inbox, the Research
+and Runs views, and the branch picker. The same note has the agent report a
+failure outside the request, such as an offline machine or a signed-out
+provider, as a temporary tooling problem, without looping on it.
+**Why:** some steps exist only in the app, and an agent that cannot see them
+otherwise guesses or retries.
+
 Every turn settled by ordinary Work (human Work chat and nightly consolidation) writes
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
 `could_not`; `reason` is optional for `done`, and required and non-blank otherwise.

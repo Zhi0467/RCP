@@ -9,6 +9,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
+from rcp.agents.prompts import APP_PLACES
 from rcp.background import AgentTaskExecution
 from rcp.runs.space_chat import (
     SPACE_MASTER_POLICY,
@@ -312,6 +313,7 @@ def test_space_runtime_real_storage_and_partial_apply(
         inputs = Path(execution.stage_root) / "inputs"
         first_master = next(inputs.glob(f"{SPACE_MASTER_POLICY}-*.md"))
         assert str(first_master) in prompts[0] and len(prompts[1]) < 4000
+        assert APP_PLACES in first_master.read_text()
         if project_count == 0:
             (restaged,) = inputs.glob("space-master-next-*.md")
             assert str(restaged) in prompts[1]
