@@ -1596,14 +1596,14 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
 
 def test_rehearsal_preserves_report_workspace_across_linked_records(tmp_path):
     from rcp.server_ops.application_validation import _rebind_local_stage_paths
-    from tests.test_episode_storage import _start_wrapping
+    from tests.test_episode_storage import EPISODE, _start_wrapping
 
     with closing(AppStore(tmp_path / "rcp.sqlite3")) as store:
-        wrapup, task = _start_wrapping(store, "episode")
+        wrapup, task = _start_wrapping(store, EPISODE)
         assert wrapup.stage_root == task.stage_root
         with store.connection() as connection:
             _rebind_local_stage_paths(connection, tmp_path / "known-absent")
-        rebound_wrapup = store.episode_wrapup("episode")
+        rebound_wrapup = store.episode_wrapup(EPISODE)
         rebound_task = store.agent_task(task.operation_id)
         assert rebound_wrapup is not None and rebound_task is not None
         assert rebound_wrapup.stage_root == rebound_task.stage_root

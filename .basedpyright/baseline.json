@@ -6958,22 +6958,6 @@
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
-                    "startColumn": 27,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 21,
-                    "endColumn": 39,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
                     "startColumn": 20,
                     "endColumn": 30,
                     "lineCount": 1

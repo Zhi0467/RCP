@@ -33,7 +33,6 @@ from rcp.storage.models import (
     EpisodeArchiveState,
     EpisodeBudgetMeter,
     EpisodeEnding,
-    EpisodeInvocationCeilingReached,
     EpisodeInvocationRecord,
     EpisodeLoopMetadataSnapshot,
     EpisodeNotRunning,
@@ -1017,89 +1016,6 @@ class EpisodeStoreMixin(StoreMixinBase):
         ).fetchone()
         assert updated is not None
         return self._episode_record(updated)
-
-    def allocate_episode_invocation(
-        self,
-        episode_id: str,
-        task: AgentTaskRecord,
-        *,
-        continuation_cause: str = "fresh",
-    ) -> tuple[EpisodeRecord, EpisodeInvocationRecord, AgentTaskRecord]:
-        """Atomically spend one operational invocation and create its visible task."""
-
-        if task.kind == "episode_report" or not task.visible:
-            raise ValueError("an operational episode invocation requires a visible non-report task")
-        if task.episode_id != episode_id:
-            raise ValueError("an episode invocation task must name its exact parent episode")
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT * FROM episode_invocations WHERE operation_id = ?",
-                (task.operation_id,),
-            ).fetchone()
-            if existing is not None:
-                if existing["episode_id"] != episode_id:
-                    raise ValueError("this operation is already allocated to another episode")
-                if (
-                    connection.execute(
-                        "SELECT 1 FROM graph_runs WHERE operation_id = ?", (task.operation_id,)
-                    ).fetchone()
-                    is None
-                ):
-                    raise RuntimeError("the episode invocation lost its task")
-                invocation = self._episode_invocation_record(existing)
-            else:
-                row = connection.execute(
-                    "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
-                ).fetchone()
-                if row is None:
-                    raise KeyError(episode_id)
-                episode = self._episode_record(row)
-                if episode.mode == "auto_research":
-                    raise ValueError(
-                        "Auto-research turns must use the atomic mode adapter admission."
-                    )
-                if episode.status not in {"queued", "running"}:
-                    raise EpisodeNotRunning("the episode is not admitting operational work")
-                if episode.invocations_used >= episode.invocation_ceiling:
-                    raise EpisodeInvocationCeilingReached(
-                        "the episode has spent its operational invocation ceiling"
-                    )
-                if task.project_id != episode.project_id:
-                    raise ValueError("the episode task belongs to a different project")
-                self._insert_agent_task(
-                    connection,
-                    task,
-                    continuation_cause=continuation_cause,
-                )
-                invocation_number = episode.invocations_used + 1
-                connection.execute(
-                    """
-                    INSERT INTO episode_invocations (
-                        episode_id, operation_id, invocation_number, created_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (episode_id, task.operation_id, invocation_number, task.created_at),
-                )
-                connection.execute(
-                    """
-                    UPDATE episodes
-                    SET root_operation_id = COALESCE(root_operation_id, ?),
-                        status = 'running', invocations_used = ?, updated_at = ?
-                    WHERE episode_id = ?
-                    """,
-                    (task.operation_id, invocation_number, self.now(), episode_id),
-                )
-                invocation = EpisodeInvocationRecord(
-                    episode_id=episode_id,
-                    operation_id=task.operation_id,
-                    invocation_number=invocation_number,
-                    created_at=task.created_at,
-                )
-        stored_episode = self.episode(episode_id)
-        stored_task = self.agent_task(task.operation_id)
-        assert stored_episode is not None and stored_task is not None
-        return stored_episode, invocation, stored_task
 
     def episode_invocations(
         self, episode_id: str, *, newest: int | None = None

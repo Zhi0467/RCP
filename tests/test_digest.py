@@ -673,14 +673,16 @@ def test_deleted_reports_leave_digest_and_count(manifest, tmp_path):
     app.state.digest_projector._project_history(project_id, "main", history.history_engine)
     user_id = store.local_owner.user_id
     assert read_digest(store, app.state.catalog, project_id, user_id)["count"] == 0
-    _setup_report(manifest, tmp_path, store=store, project_id=project_id)
-    attempt = store.allocate_episode_report_attempt("episode")
+    _service, _store, request, _execution, _stage = _setup_report(
+        manifest, tmp_path, store=store, project_id=project_id
+    )
+    attempt = store.allocate_episode_report_attempt(request.episode_id)
     html = "<h1>Report</h1>"
     report = stored_report(
         store,
         html=html,
         report_id="episode-report",
-        episode_id="episode",
+        episode_id=request.episode_id,
         attempt_id=attempt.attempt_id,
         allocation_operation_id="report-allocation",
         ending="completed",

@@ -7,6 +7,7 @@ import pytest
 
 from rcp.storage import AppStore, EpisodeArchiveState, EpisodeRecord
 
+from .helpers import start_experiment_episode
 from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
 from .test_auto_research_children_storage import (
     _admission,
@@ -16,7 +17,7 @@ from .test_auto_research_children_storage import (
     _work_pair,
 )
 from .test_campaign_storage import _project
-from .test_episode_storage import _authorizer, _episode, _operational_task, _start_wrapping
+from .test_episode_storage import EPISODE, _authorizer, _episode, _start_wrapping
 from .test_server_member_removal_storage import _authorized, _claimed_team
 
 
@@ -40,42 +41,39 @@ def test_archive_is_reversible_persisted_and_does_not_change_episode_history(
     tmp_path, ending
 ) -> None:
     store, user_id = _store(tmp_path)
-    store.create_episode(_episode(store, "episode"))
-    store.allocate_episode_invocation(
-        "episode", _operational_task(store, "turn", episode_id="episode")
-    )
+    start_experiment_episode(store, "turn", EPISODE)
     store.fail_agent_task("turn", "Retained failure diagnostic")
-    _end(store, "episode", ending)
+    _end(store, EPISODE, ending)
     before = (
-        store.episode("episode"),
-        store.episode_tasks("episode"),
-        store.episode_wrapup("episode"),
-        store.episode_invocations("episode"),
+        store.episode(EPISODE),
+        store.episode_tasks(EPISODE),
+        store.episode_wrapup(EPISODE),
+        store.episode_invocations(EPISODE),
     )
 
-    assert store.episode_archive_states("project")["episode"] == EpisodeArchiveState(
+    assert store.episode_archive_states("project")[EPISODE] == EpisodeArchiveState(
         archived=False, can_archive=True
     )
-    assert store.set_episode_archived("project", "episode", user_id, archived=True).archived
+    assert store.set_episode_archived("project", EPISODE, user_id, archived=True).archived
     with store.connection() as connection:
         first_archive = tuple(connection.execute("SELECT * FROM episode_archives").fetchone())
-    store.set_episode_archived("project", "episode", user_id, archived=True)
+    store.set_episode_archived("project", EPISODE, user_id, archived=True)
     reopened = AppStore(store.path)
     with reopened.connection() as connection:
         assert (
             tuple(connection.execute("SELECT * FROM episode_archives").fetchone()) == first_archive
         )
-    assert reopened.episode_archive_states("project")["episode"].archived
-    assert [episode.episode_id for episode in reopened.archived_episodes("project")] == ["episode"]
+    assert reopened.episode_archive_states("project")[EPISODE].archived
+    assert [episode.episode_id for episode in reopened.archived_episodes("project")] == [EPISODE]
     assert (
-        reopened.episode("episode"),
-        reopened.episode_tasks("episode"),
-        reopened.episode_wrapup("episode"),
-        reopened.episode_invocations("episode"),
+        reopened.episode(EPISODE),
+        reopened.episode_tasks(EPISODE),
+        reopened.episode_wrapup(EPISODE),
+        reopened.episode_invocations(EPISODE),
     ) == before
     for _ in range(2):
         assert not reopened.set_episode_archived(
-            "project", "episode", user_id, archived=False
+            "project", EPISODE, user_id, archived=False
         ).archived
     assert reopened.archived_episodes("project") == []
 
@@ -121,43 +119,40 @@ def test_unended_or_recoverable_episode_can_be_archived_without_changing_work(
     tmp_path, task_status
 ) -> None:
     store, user_id = _store(tmp_path)
-    store.create_episode(_episode(store, "episode"))
-    store.allocate_episode_invocation(
-        "episode", _operational_task(store, "turn", episode_id="episode")
-    )
+    start_experiment_episode(store, "turn", EPISODE)
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status = ?", (task_status,))
-    before = (store.episode("episode"), store.episode_tasks("episode"))
-    assert store.episode_archive_states("project")["episode"].can_archive
-    assert store.set_episode_archived("project", "episode", user_id, archived=True).archived
-    assert (store.episode("episode"), store.episode_tasks("episode")) == before
+    before = (store.episode(EPISODE), store.episode_tasks(EPISODE))
+    assert store.episode_archive_states("project")[EPISODE].can_archive
+    assert store.set_episode_archived("project", EPISODE, user_id, archived=True).archived
+    assert (store.episode(EPISODE), store.episode_tasks(EPISODE)) == before
     assert store.archived_episodes("project") == [before[0]]
-    assert not store.set_episode_archived("project", "episode", user_id, archived=False).archived
-    assert (store.episode("episode"), store.episode_tasks("episode")) == before
+    assert not store.set_episode_archived("project", EPISODE, user_id, archived=False).archived
+    assert (store.episode(EPISODE), store.episode_tasks(EPISODE)) == before
 
 
 def test_archive_preserves_pending_report_and_remains_archived_after_report_failure(
     tmp_path,
 ) -> None:
     store, user_id = _store(tmp_path)
-    _start_wrapping(store, "episode")
-    store.complete_agent_task("episode-operation", applied_revision=None, result={})
-    attempt = store.allocate_episode_report_attempt("episode")
+    _start_wrapping(store, EPISODE)
+    store.complete_agent_task(f"{EPISODE}-operation", applied_revision=None, result={})
+    attempt = store.allocate_episode_report_attempt(EPISODE)
     before = (
-        store.episode("episode"),
-        store.episode_wrapup("episode"),
-        store.episode_report_attempts("episode"),
-        store.episode_tasks("episode", include_hidden=True),
+        store.episode(EPISODE),
+        store.episode_wrapup(EPISODE),
+        store.episode_report_attempts(EPISODE),
+        store.episode_tasks(EPISODE, include_hidden=True),
     )
-    store.set_episode_archived("project", "episode", user_id, archived=True)
+    store.set_episode_archived("project", EPISODE, user_id, archived=True)
     assert (
-        store.episode("episode"),
-        store.episode_wrapup("episode"),
-        store.episode_report_attempts("episode"),
-        store.episode_tasks("episode", include_hidden=True),
+        store.episode(EPISODE),
+        store.episode_wrapup(EPISODE),
+        store.episode_report_attempts(EPISODE),
+        store.episode_tasks(EPISODE, include_hidden=True),
     ) == before
     store.finish_episode_report_error(attempt.attempt_id, "No report")
-    assert store.episode_archive_states("project")["episode"].archived
+    assert store.episode_archive_states("project")[EPISODE].archived
 
 
 def test_archive_mutation_checks_project_and_member_under_the_write_lock(tmp_path) -> None:

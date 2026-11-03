@@ -47,7 +47,6 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
-    EpisodeRecord,
     WatcherContinuation,
     WatcherRecord,
 )
@@ -63,12 +62,14 @@ from .helpers import (
     async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
+    start_experiment_episode,
     wait_for_task,
     wait_until,
 )
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
+REPORT_EPISODE = "00000000-0000-4000-8000-000000000102"
 
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
@@ -2146,46 +2147,25 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
 
 
 def _report_allocation(store: AppStore, tmp_path: Path) -> AgentTaskRecord:
-    now = store.now()
-    store.create_episode(
-        EpisodeRecord(
-            episode_id="report-episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="exp/report",
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=fabricated_authorizer("Researcher"),
-            created_at=now,
-            updated_at=now,
-        )
-    )
     stage = tmp_path / "report-stage"
     stage.mkdir()
-    operational = AgentTaskRecord(
-        operation_id="operational",
-        project_id="project",
-        episode_id="report-episode",
-        kind="node_chat",
-        status="queued",
-        request={
-            "provider": "codex",
-            "model": "",
-            "reasoning": "medium",
-            "run_on": "laptop",
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Queued",
-        native_session_id="report-session",
-        stage_root=str(stage),
+    operational = start_experiment_episode(
+        store,
+        "operational",
+        REPORT_EPISODE,
+        control_node_id="exp/report",
+        authorized_by=fabricated_authorizer("Researcher"),
+        request_fields={"model": "", "reasoning": "medium"},
     )
-    store.allocate_episode_invocation("report-episode", operational)
+    store.mark_agent_task_running(operational.operation_id)
+    store.checkpoint_agent_task(
+        operational.operation_id, native_session_id="report-session", stage_root=str(stage)
+    )
     store.complete_agent_task(operational.operation_id, applied_revision=None, result={})
     admission = begin_episode_report_wrapup(
         store,
         EpisodeWrapupSpec(
-            episode_id="report-episode",
+            episode_id=REPORT_EPISODE,
             ending="completed",
             partial=False,
             continuation_operation_id=operational.operation_id,
@@ -2230,7 +2210,7 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
 
     def settled(*_args):
         allocated.append(_report_allocation(store, tmp_path))
-        start_episode_report(tasks, "report-episode")
+        start_episode_report(tasks, REPORT_EPISODE)
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     task = _admitted_launch_task(store, operation_id="shutdown-before-report")
@@ -2242,18 +2222,18 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
         assert not report_started.is_set()
         hidden = store.agent_task(allocated[0].operation_id)
         assert hidden is not None and hidden.status == "queued"
-        episode = store.episode("report-episode")
+        episode = store.episode(REPORT_EPISODE)
         assert episode is not None and episode.wrapup_state == "pending"
         assert episode.wrapup_error is None
         assert store.agent_task_dispatch_was_proven_not_started(hidden.operation_id)
 
         tasks.recover_at_startup()
-        retried = store.episode_wrapup("report-episode").allocation_operation_id
+        retried = store.episode_wrapup(REPORT_EPISODE).allocation_operation_id
         assert retried is not None and retried != hidden.operation_id
         wait_for_task(store, retried, expect="succeeded")
         assert store.agent_task(hidden.operation_id).status == "interrupted"
         assert report_started.is_set()
-        recovered_episode = store.episode("report-episode")
+        recovered_episode = store.episode(REPORT_EPISODE)
         assert recovered_episode is not None and recovered_episode.wrapup_state == "ready"
     finally:
         tasks.shutdown()
@@ -2291,7 +2271,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     else:
         store.interrupt_active_agent_tasks()
     if prior_status == "requeued_in_place":
-        requeue_report_in_place_as_older_rcp(store, "report-episode")
+        requeue_report_in_place_as_older_rcp(store, REPORT_EPISODE)
     store.record_agent_task_receipt(
         hidden.operation_id,
         "operation_created",
@@ -2335,7 +2315,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         ),
     )
     tasks.recover_at_startup()
-    retried = store.episode_wrapup("report-episode").allocation_operation_id  # type: ignore[union-attr]
+    retried = store.episode_wrapup(REPORT_EPISODE).allocation_operation_id  # type: ignore[union-attr]
     assert retried is not None
     finished = wait_for_task(store, retried, expect="succeeded")
 
@@ -2343,10 +2323,10 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     assert store.agent_task(hidden.operation_id).status == (  # type: ignore[union-attr]
         "paused" if prior_status == "paused" else "interrupted"
     )
-    assert store.episode("report-episode").wrapup_state == "ready"  # type: ignore[union-attr]
-    assert store.episode_report("report-episode") is not None
-    assert store.episode_tasks("report-episode") == [store.agent_task("operational")]
-    assert [task.kind for task in store.episode_tasks("report-episode", include_hidden=True)] == [
+    assert store.episode(REPORT_EPISODE).wrapup_state == "ready"  # type: ignore[union-attr]
+    assert store.episode_report(REPORT_EPISODE) is not None
+    assert store.episode_tasks(REPORT_EPISODE) == [store.agent_task("operational")]
+    assert [task.kind for task in store.episode_tasks(REPORT_EPISODE, include_hidden=True)] == [
         "node_chat",
         "episode_report",
         "episode_report",
@@ -2355,7 +2335,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     assert sum(item.category == "operation_created" for item in receipts) == 1
     assert not any(item.category == "operation_completed" for item in receipts)
     assert generic_settlements == []
-    assert start_episode_report(tasks, "report-episode") is None
+    assert start_episode_report(tasks, REPORT_EPISODE) is None
     with pytest.raises(ValueError, match="no Retry control"):
         tasks.retry(finished.operation_id)
     with pytest.raises(ValueError, match="no Resume control"):
@@ -2393,12 +2373,12 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     )
     tasks.recover_at_startup()
     assert entered.wait(timeout=2)
-    duplicate = start_episode_report(tasks, "report-episode")
+    duplicate = start_episode_report(tasks, REPORT_EPISODE)
     assert duplicate is not None and duplicate.parent_operation_id == hidden.operation_id
     release.set()
     failed = wait_for_task(store, duplicate.operation_id, expect="failed")
 
-    episode = store.episode("report-episode")
+    episode = store.episode(REPORT_EPISODE)
     assert episode is not None
     assert episode.status == "completed"
     assert episode.wrapup_state == "failed"
@@ -2427,7 +2407,7 @@ def test_report_request_decode_never_accepts_an_auto_research_task_shape(tmp_pat
     decoded = BackgroundAgentTasks._request_from_record(hidden)
 
     assert isinstance(decoded, EpisodeReportRunRequest)
-    assert decoded.episode_id == "report-episode"
+    assert decoded.episode_id == REPORT_EPISODE
     assert not hasattr(decoded, "role")
     assert not hasattr(decoded, "campaign_id")
 

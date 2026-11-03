@@ -656,7 +656,6 @@ _UNMODELED = {
     EpisodeStoreMixin._insert_episode: "start seeds the one episode",
     ExperimentStoreMixin.create_experiment_episode_with_invocation: "start seeds the one episode",
     WatcherStoreMixin._insert_watcher: "start arms the one observer",
-    EpisodeStoreMixin.allocate_episode_invocation: "no caller in src/rcp",
     EpisodeStoreMixin.end_episode_without_report: (
         "an ending with no provider session; the model's episode is bound to one"
     ),

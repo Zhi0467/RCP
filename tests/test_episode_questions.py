@@ -5,7 +5,8 @@ import pytest
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionOrigin
 
-from .test_episode_storage import _authorizer, _episode, _operational_task, _wrapup
+from .helpers import start_experiment_episode
+from .test_episode_storage import EPISODE, _authorizer, _episode, _wrapup
 
 
 def _question(store, episode, *, key="question", state="pending"):
@@ -40,18 +41,19 @@ def _question(store, episode, *, key="question", state="pending"):
 )
 def test_only_stop_endings_withdraw_questions(tmp_path, path, withdrawn):
     store = AppStore(tmp_path / "app.sqlite3")
-    episode = store.create_episode(_episode(store, "episode"))
+    if path == "wrapup":
+        start_experiment_episode(store, "operation", EPISODE)
+        episode = store.episode(EPISODE)
+    else:
+        episode = store.create_episode(_episode(store, EPISODE))
     question = _question(store, episode)
     if path == "fence":
-        store.fence_episode_ending("episode", "exhausted")
+        store.fence_episode_ending(EPISODE, "exhausted")
     elif path == "wrapup":
-        store.allocate_episode_invocation(
-            "episode", _operational_task(store, "operation", episode_id="episode")
-        )
-        wrapup, task = _wrapup(store, "episode", "operation", "report")
-        store.begin_episode_wrapup("episode", wrapup, task)
+        wrapup, task = _wrapup(store, EPISODE, "operation", "report")
+        store.begin_episode_wrapup(EPISODE, wrapup, task)
     elif path == "stop_skipped":
-        store.mark_episode_stop_skipped("episode")
+        store.mark_episode_stop_skipped(EPISODE)
     else:
         with store.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
