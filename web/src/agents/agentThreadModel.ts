@@ -1,5 +1,5 @@
 // Pure presentation rules for the member's agent threads: the rail, a turn's
-// progress line, approval card titles and the Upcoming list.
+// progress line, approval card titles and the Wakes list.
 
 import type {
   AgentSchedule,
@@ -7,7 +7,26 @@ import type {
   AgentThread,
   ApprovalCard,
   ChatMessage,
+  GraphNode,
+  WatcherRecord,
 } from "../core/types";
+import { isExternalWatcherRecord, jobLabel } from "../experiments/runProjection.ts";
+
+/** What a Wakes row waits for and when it fires, named by the node's title when loaded. */
+export function watcherWake(
+  watcher: WatcherRecord,
+  nodes: Record<string, Pick<GraphNode, "title">> | undefined,
+): { what: string; when: string } {
+  if (isExternalWatcherRecord(watcher))
+    return { what: jobLabel(watcher.log_path), when: "When the job ends" };
+  const { condition } = watcher;
+  const what = nodes?.[condition.node_id]?.title || condition.node_id;
+  if (!("status_in" in condition)) return { what, when: "When its Proposal is resolved" };
+  const states = condition.status_in;
+  const listed =
+    states.length > 1 ? `${states.slice(0, -1).join(", ")} or ${states.at(-1)}` : states[0];
+  return { what, when: `When it's ${listed}` };
+}
 
 /** How long ago, as the Agents list shows it: now, 12m, 3h, then a date. */
 export function sinceLabel(timestamp: string | null | undefined, now: number): string {

@@ -147,6 +147,17 @@ REPLY_STYLE = """Writing the reply:
 - Use a figure when it makes the result clearer than prose, and link it from the reply.
   A short result needs no figure."""
 
+APP_PLACES = """Where the member acts in the RCP app:
+- Some steps only the member can take in the app. When one blocks the work, name its place:
+  provider sign-ins and machines under Space Settings -> Machines, on the machine's card; a
+  project's repositories, machines and agent defaults in that project's Settings; waiting
+  Proposals and questions in the project's Inbox; the graph drawn as a map in the project's
+  Research view; Experiment and Auto-research runs, their logs and Stop in the project's Runs
+  view; branches in the branch picker of the project's top bar.
+- When a command or tool fails for a reason outside the request, such as an offline machine, a
+  signed-out provider or an unreachable RCP, tell the member it is a temporary tooling problem,
+  quote its message, and do not loop on it."""
+
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
@@ -1572,6 +1583,8 @@ Operational authority:
 {execution_rules}
 
 {REPLY_STYLE}
+
+{APP_PLACES}
 
 {artifact_contract(artifact_path)}
 

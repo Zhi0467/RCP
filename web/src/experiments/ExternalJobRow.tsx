@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { cancelWatcher } from "../core/api";
 import type { ExternalWatcherRecord } from "../core/types";
+import { jobLabel } from "./runProjection";
 
 export function ExternalJobRow({
   apiBase,
@@ -86,17 +87,6 @@ const WATCHER_STATE_LABELS: Record<string, string> = {
   completed: "Finished",
   stopped: "Stopped",
 };
-
-const GENERIC_LOG_NAMES = new Set(["log", "stdout", "stderr", "output", "out"]);
-
-/** A bare "log" says nothing; keep its parent folder so rows stay distinguishable. */
-function jobLabel(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  const name = parts.at(-1) ?? "";
-  if (!GENERIC_LOG_NAMES.has(name) || parts.length < 2) return name;
-  const folder = parts.at(-2) ?? "";
-  return `${folder.length > 16 ? `${folder.slice(0, 8)}…` : folder}/${name}`;
-}
 
 function shortPath(path: string): string {
   const parts = path.split("/").filter(Boolean);

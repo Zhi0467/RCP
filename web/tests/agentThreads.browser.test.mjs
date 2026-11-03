@@ -115,13 +115,20 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
       () => getComputedStyle(document.querySelector(".chat-line-time")).opacity === "1",
     );
     assert.deepEqual(await firstLine.boundingBox(), lineBox, "Showing the time moves nothing");
+    assert.equal(
+      await thread
+        .locator(".node-chat-line.human .node-chat-text")
+        .first()
+        .evaluate((text) => getComputedStyle(text).whiteSpace),
+      "pre-wrap",
+    );
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/agent-space-1440.png` });
 
-    // Upcoming lists both schedules; Cancel deletes one.
-    const upcoming = thread.getByRole("button", { name: "2 upcoming" });
+    // Wakes lists both schedules; Cancel deletes one.
+    const upcoming = thread.getByRole("button", { name: "2 wakes" });
     await upcoming.click();
-    const popover = page.getByRole("dialog", { name: "Upcoming" });
+    const popover = page.getByRole("dialog", { name: "Wakes" });
     assert.equal(await popover.locator(".upcoming-row").count(), 2);
     if (shots) await page.screenshot({ path: `${shots}/agent-upcoming-1440.png` });
     await popover
@@ -611,7 +618,13 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
     );
-    await project.getByRole("button", { name: "Comment on this answer" }).click();
+    const projectComment = project.getByRole("button", { name: "Comment on this answer" });
+    assert.equal(
+      await projectComment.evaluate((button) => button.getBoundingClientRect().width),
+      1,
+    );
+    await projectComment.focus();
+    await projectComment.press("Enter");
     const selection = page.getByRole("textbox", { name: "Select answer text" });
     await selection.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
     await page.getByRole("button", { name: "Comment on selection" }).click();
@@ -628,7 +641,9 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       location.hash = "#/agent/space";
     });
     const space = page.getByRole("region", { name: "Pip" });
-    await space.getByRole("button", { name: "Comment on this answer" }).click();
+    const spaceComment = space.getByRole("button", { name: "Comment on this answer" });
+    await spaceComment.focus();
+    await spaceComment.press("Enter");
     await page
       .getByRole("textbox", { name: "Select answer text" })
       .press(process.platform === "darwin" ? "Meta+A" : "Control+A");
@@ -1046,14 +1061,14 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     assert.deepEqual(errors, []);
     await page.close();
 
-    // Phone: Upcoming and See details reach the touch target.
+    // Phone: Wakes and See details reach the touch target.
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
     await mockApi(phone, []);
     await phone.goto(`${base}#/agent/moss`);
     const moss = phone.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
     for (const control of [
-      moss.getByRole("button", { name: /upcoming$/ }),
+      moss.getByRole("button", { name: /wakes$/ }),
       moss.getByRole("button", { name: "See details" }),
     ])
       assert.ok((await control.boundingBox()).height >= 44);
@@ -1253,7 +1268,7 @@ test("an empty thread welcomes the member until its first turn, and a starter on
       assert.equal(await welcome.getByRole("heading").count(), 0);
       assert.equal(await welcome.locator("li").count(), capabilities.space.length);
       const starters = welcome.getByRole("button");
-      assert.equal(await starters.count(), 3);
+      assert.equal(await starters.count(), 4);
       // The last starter names the member's first open project.
       assert.ok((await starters.last().textContent()).includes(threads[1].project_name));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
@@ -1452,7 +1467,7 @@ test("handoff results read as one row and browser loss shows once on the menu", 
   });
 });
 
-test("Upcoming shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
+test("Wakes shows each schedule's zone, next run and waiting state, with Cancel on every row", async () => {
   await withFixture(async (browser, base) => {
     const rows = [
       {
@@ -1544,8 +1559,8 @@ test("Upcoming shows each schedule's zone, next run and waiting state, with Canc
       const thread = page.getByRole("region", { name: "Pip" });
       // The count is what will run; paused and disabled rows wait for the member.
       const firing = rows.filter((item) => item.state === "active").length;
-      await thread.getByRole("button", { name: `${firing} upcoming` }).click();
-      const popover = page.getByRole("dialog", { name: "Upcoming" });
+      await thread.getByRole("button", { name: `${firing} wakes` }).click();
+      const popover = page.getByRole("dialog", { name: "Wakes" });
       const row = (id) =>
         popover.locator(".upcoming-row").nth(rows.findIndex((item) => item.schedule_id === id));
       // Every row can be cancelled; only a disabled schedule that can still run offers Enable.

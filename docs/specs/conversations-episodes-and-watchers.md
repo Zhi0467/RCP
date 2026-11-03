@@ -273,6 +273,14 @@ explains the concrete unavailable prerequisite or new authority needed for
 further useful progress. This does not widen the requested objective or grant
 another invocation.
 
+Work and Space turns carry one fixed note naming where the member acts in the
+app: Settings for sign-ins, machines and repositories, the Inbox, the Research
+and Runs views, and the branch picker. The same note has the agent report a
+failure outside the request, such as an offline machine or a signed-out
+provider, as a temporary tooling problem, without looping on it.
+**Why:** some steps exist only in the app, and an agent that cannot see them
+otherwise guesses or retries.
+
 Every turn settled by ordinary Work (human Work chat and nightly consolidation) writes
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
 `could_not`; `reason` is optional for `done`, and required and non-blank otherwise.
@@ -608,8 +616,9 @@ Discuss/Work and Paper coach admit them; steering and other run kinds refuse the
 and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
-Overshoots clamp to answer text; a visible Comment command provides a keyboard
-text-control alternative. The comment editor stays within the keyboard-adjusted
+Overshoots clamp to answer text; a Comment command after each answer provides a
+keyboard text-control alternative. In agent threads it shows only while keyboard
+focus is on it, because a mouse or touch selection already opens the comment. The comment editor stays within the keyboard-adjusted
 viewport at every width. Multiple editable/removable annotations remain per-chat
 drafts with a count; blank comments block send until completed or removed.
 Sending appends copied text and `comment: <comment>` to the human message, with

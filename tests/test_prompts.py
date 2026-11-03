@@ -15,6 +15,7 @@ from rcp.agents.experiment_loop_prompt import (
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import (
+    APP_PLACES,
     COMMAND_CLIENT,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
@@ -284,6 +285,7 @@ def test_work_contract_preserves_inputs_outputs_and_command_client() -> None:
     assert "/stage/patch.json" in contract
     assert command_client in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
+    assert APP_PLACES in contract
 
 
 @pytest.mark.asyncio

@@ -67,7 +67,7 @@ export const threads = [
 /** What the backend renders for each thread kind from its granted verbs. */
 export const capabilities = {
   space: ["Answers questions about any project's graph", "Hands work to a project's own agent"],
-  project: ["Answers questions about this project's graph", "Records results in the project graph"],
+  project: ["Answers questions about the graph and records results in it"],
 };
 
 export const message = (id, role, text, operation, extra = {}) => ({

@@ -21,6 +21,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherWake,
 } from "../src/agents/agentThreadModel.ts";
 import {
   decideProposalCard,
@@ -238,6 +239,27 @@ test("a project thread lists only its own live watchers and stops them by projec
     "GET /api/projects/p%201/watchers",
     "POST /api/projects/p%201/watchers/w%2F1/stop",
   ]);
+});
+
+test("a wake row names what the watcher waits for and when it fires", () => {
+  const graph = {
+    watcher_id: "w1",
+    condition: { node_id: "exp-1", status_in: ["completed", "abandoned", "superseded"] },
+  };
+  assert.deepEqual(watcherWake(graph, { "exp-1": { title: "Fine-tune π0.5" } }), {
+    what: "Fine-tune π0.5",
+    when: "When it's completed, abandoned or superseded",
+  });
+  assert.equal(watcherWake(graph, undefined).what, "exp-1");
+  assert.equal(
+    watcherWake({ watcher_id: "w2", condition: { node_id: "h2", proposal_resolved: true } }, {})
+      .when,
+    "When its Proposal is resolved",
+  );
+  assert.deepEqual(
+    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {}),
+    { what: "s43/log", when: "When the job ends" },
+  );
 });
 
 test("a card is expired by its state or its time", () => {
