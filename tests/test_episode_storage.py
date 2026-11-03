@@ -25,6 +25,7 @@ from rcp.storage import (
 )
 from rcp.storage.episodes import _legacy_experiment_lifecycle, compact_episode_receipt
 
+from .episode_report_helpers import requeue_report_in_place_as_older_rcp
 from .storage_helpers import downgrade_artifacts
 
 
@@ -854,38 +855,56 @@ def test_wrapup_and_current_attempt_are_restart_idempotent(tmp_path) -> None:
     assert restarted.allocate_episode_report_attempt("episode") == attempt
 
 
-def test_restart_requeues_only_the_same_hidden_report_allocation(tmp_path) -> None:
+def test_restart_retries_an_interrupted_report_on_a_new_hidden_task(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
-    _, allocation = _start_wrapping(store, "episode")
+    wrapup, allocation = _start_wrapping(store, "episode")
     first = store.allocate_episode_report_attempt("episode")
     store.mark_episode_report_attempt_running(first.attempt_id)
     store.interrupt_active_agent_tasks()
 
-    requeued = store.requeue_interrupted_episode_report_allocation("episode")
+    retried = store.retry_episode_report_allocation("episode")
 
-    assert requeued.operation_id == allocation.operation_id
-    assert requeued.status == "queued"
-    assert requeued.visible is False
-    assert requeued.can_retry is False
+    assert retried.operation_id != allocation.operation_id
+    assert (retried.status, retried.visible, retried.can_retry) == ("queued", False, False)
+    assert retried.parent_operation_id == allocation.operation_id
+    assert retried.attempt == allocation.attempt + 1
+    assert store.agent_task(allocation.operation_id).status == "interrupted"
+    assert store.episode_wrapup("episode").allocation_operation_id == retried.operation_id
     assert store.episode_report_attempt(first.attempt_id).status == "failed"
     assert store.current_episode_report_attempt("episode") is None
-    assert store.requeue_interrupted_episode_report_allocation("episode") == requeued
+    assert store.retry_episode_report_allocation("episode") == retried
+    assert store.begin_episode_wrapup("episode", wrapup, allocation)[2] == retried
     second = store.allocate_episode_report_attempt("episode")
     assert second.attempt_number == 2
-    assert second.allocation_operation_id == allocation.operation_id
-    assert (
-        len(
-            [
-                task
-                for task in store.agent_tasks("project", include_hidden=True)
-                if task.kind == "episode_report"
-            ]
-        )
-        == 1
-    )
+    assert second.allocation_operation_id == retried.operation_id
+    assert store.episode("episode").report_attempts_used == 2
 
 
-def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -> None:
+def test_report_retry_carries_its_uncalled_attempt_and_fresh_session_facts(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _, allocation = _start_wrapping(store, "episode")
+    queued = store.allocate_episode_report_attempt("episode")
+    refusal = {"reason": "login_switch", "native_session_id": "native-session"}
+    fresh = {"reason": "login_switch", "attempt": 1, "attempt_id": queued.attempt_id}
+    store.record_agent_task_receipt(allocation.operation_id, "codex_resume_refused", refusal)
+    store.record_agent_task_receipt(allocation.operation_id, "codex_fresh_session_retry", fresh)
+    store.interrupt_active_agent_tasks()
+
+    retried = store.retry_episode_report_allocation("episode")
+
+    current = store.current_episode_report_attempt("episode")
+    assert current is not None and current.attempt_id == queued.attempt_id
+    assert current.allocation_operation_id == retried.operation_id
+    assert store.episode("episode").report_attempts_used == 1
+    carried = {
+        receipt.category: receipt.payload
+        for receipt in store.agent_task_receipts(retried.operation_id)
+        if receipt.category.startswith("codex_")
+    }
+    assert carried == {"codex_resume_refused": refusal, "codex_fresh_session_retry": fresh}
+
+
+def test_restart_retries_a_shutdown_paused_report_on_a_new_hidden_task(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _, allocation = _start_wrapping(store, "episode")
     first = store.allocate_episode_report_attempt("episode")
@@ -912,22 +931,39 @@ def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -
     )
     store.pause_agent_task(allocation.operation_id, detail="Paused for shutdown")
 
-    requeued = store.requeue_interrupted_episode_report_allocation("episode")
+    retried = store.retry_episode_report_allocation("episode")
 
-    assert requeued.operation_id == allocation.operation_id
-    assert requeued.status == "queued"
-    assert requeued.visible is False
-    assert requeued.write_scope_fingerprint is None
-    assert store.agent_task_dispatch_was_proven_not_started(allocation.operation_id)
-    assert any(
-        item.category == "operation_dispatch_reset"
-        for item in store.agent_task_receipts(allocation.operation_id)
-    )
+    assert retried.operation_id != allocation.operation_id
+    assert retried.status == "queued"
+    assert retried.write_scope_fingerprint is None
+    assert store.agent_task_dispatch_was_proven_not_started(retried.operation_id)
+    assert store.agent_task(allocation.operation_id).status == "paused"
+    assert allocation.operation_id not in {
+        task.operation_id
+        for task in store.unsettled_graph_target_tasks("project", GraphTargetRef())
+    }
     assert store.episode_report_attempt(first.attempt_id).status == "failed"
     assert store.episode("episode").report_attempts_used == 1
     second = store.allocate_episode_report_attempt("episode")
     assert second.attempt_number == 2
-    assert second.allocation_operation_id == allocation.operation_id
+    assert second.allocation_operation_id == retried.operation_id
+
+
+def test_a_report_an_older_rcp_requeued_in_place_launches_as_it_is(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _, allocation = _start_wrapping(store, "episode")
+    first = store.allocate_episode_report_attempt("episode")
+    store.mark_episode_report_attempt_running(first.attempt_id)
+    store.interrupt_active_agent_tasks()
+    requeue_report_in_place_as_older_rcp(store, "episode")
+
+    current = store.retry_episode_report_allocation("episode")
+
+    assert (current.operation_id, current.status) == (allocation.operation_id, "queued")
+    assert store.agent_task_dispatch_was_proven_not_started(current.operation_id)
+    assert store.episode_report_attempt(first.attempt_id).status == "failed"
+    second = store.allocate_episode_report_attempt("episode")
+    assert (second.attempt_number, second.allocation_operation_id) == (2, allocation.operation_id)
 
 
 def test_restart_during_third_report_attempt_terminalizes_without_stranding(tmp_path) -> None:
@@ -941,7 +977,7 @@ def test_restart_during_third_report_attempt_terminalizes_without_stranding(tmp_
     store.mark_episode_report_attempt_running(third.attempt_id)
     store.interrupt_active_agent_tasks()
 
-    terminal_task = store.requeue_interrupted_episode_report_allocation("episode")
+    terminal_task = store.retry_episode_report_allocation("episode")
 
     episode = store.episode("episode")
     assert episode is not None

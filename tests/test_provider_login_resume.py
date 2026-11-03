@@ -271,7 +271,7 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
     )
 
 
-def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkeypatch):
+def test_verify_retries_parked_report_allocation_once(manifest, tmp_path, monkeypatch):
     from rcp.runs.episodes.report import start_episode_report
     from rcp.runs.tasks.episode_report import stream_episode_report_run
 
@@ -299,8 +299,11 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
-    wait_for_task(store, report.operation_id, expect="succeeded")
-    wait_until(lambda: report.operation_id not in background._workers)
+    retried = store.episode_wrapup(request.episode_id).allocation_operation_id
+    assert retried != report.operation_id
+    wait_for_task(store, retried, expect="succeeded")
+    wait_until(lambda: retried not in background._workers)
+    assert store.agent_task(report.operation_id).failure_kind == "provider_auth"
     assert store.episode(request.episode_id).wrapup_state == "ready"
     assert store.episode(request.episode_id).report_attempts_used == 2
     assert report_launcher.calls == 2
@@ -309,7 +312,7 @@ def test_verify_resumes_parked_report_allocation_once(manifest, tmp_path, monkey
     assert again.json()["resumed"]["checked"] >= 1
     assert report_launcher.calls == 2
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count + 1
 
 
 @pytest.mark.parametrize("expired", [False, True])

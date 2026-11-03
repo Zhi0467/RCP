@@ -1517,13 +1517,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT run.project_id, run.episode_id
                 FROM graph_runs AS run
                 WHERE run.operation_id = ? AND run.episode_id = ?
-                  AND run.visible = 1 AND run.kind != 'episode_report'
+                  AND (
+                    (run.visible = 1 AND run.kind != 'episode_report')
+                    OR (run.visible = 0 AND run.kind = 'episode_report')
+                  )
                 """,
                 (record.parent_operation_id, record.episode_id),
             ).fetchone()
             if parent is None or parent["project_id"] != record.project_id:
                 raise ValueError(
-                    "An episode report allocation must continue its exact concluding task."
+                    "An episode report allocation must continue its exact concluding task "
+                    "or the report task it retries."
                 )
             return
 

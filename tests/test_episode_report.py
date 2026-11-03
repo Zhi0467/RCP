@@ -818,7 +818,7 @@ async def test_provider_pause_without_shutdown_is_suppressed_and_retried(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automatically(
+async def test_shutdown_pause_retries_on_a_new_hidden_task_and_resumes_automatically(
     manifest,
     tmp_path,
 ) -> None:
@@ -834,12 +834,12 @@ async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automa
         execution.operation_id,
         detail="Paused for RCP shutdown or reload.",
     )
-    requeued = store.requeue_interrupted_episode_report_allocation("episode")
-    assert requeued.operation_id == execution.operation_id
-    assert requeued.status == "queued"
-    assert requeued.visible is False
+    retried = store.retry_episode_report_allocation("episode")
+    assert retried.operation_id != execution.operation_id
+    assert retried.status == "queued"
+    assert retried.visible is False
     resumed_execution = AgentTaskExecution(
-        operation_id=execution.operation_id,
+        operation_id=retried.operation_id,
         store=store,
         control=AgentProcessControl(),
         stage_host=None,
@@ -860,7 +860,8 @@ async def test_shutdown_pause_requeues_same_hidden_allocation_and_resumes_automa
         "failed",
         "succeeded",
     ]
-    assert store.episode_report("episode") is not None
+    assert store.episode_report("episode").allocation_operation_id == retried.operation_id
+    assert store.agent_task(execution.operation_id).status == "paused"
 
 
 @pytest.mark.asyncio
@@ -955,7 +956,7 @@ def test_third_report_auth_failure_is_counted_and_parked(manifest, tmp_path):
     assert episode.status == "wrapping_up"
 
 
-def test_parked_report_resumes_same_allocation_after_verify(manifest, tmp_path):
+def test_parked_report_retries_on_a_new_task_after_verify(manifest, tmp_path):
     from rcp.background import BackgroundAgentTasks
     from rcp.runs.episodes.report import start_episode_report
 
@@ -983,14 +984,14 @@ def test_parked_report_resumes_same_allocation_after_verify(manifest, tmp_path):
         LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
     )
     restarted = start_episode_report(tasks, request.episode_id)
-    assert restarted.operation_id == first.operation_id
+    assert restarted.parent_operation_id == first.operation_id
     wait_for_task(store, restarted.operation_id, expect="succeeded")
     assert launcher.calls == 2
     assert store.episode(request.episode_id).wrapup_state == "ready"
     assert store.episode(request.episode_id).report_attempts_used == 2
-    assert store.agent_task(restarted.operation_id).failure_kind is None
+    assert store.agent_task(first.operation_id).failure_kind == "provider_auth"
     with store.connection() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count + 1
     assert start_episode_report(tasks, request.episode_id) is None
 
 
@@ -1045,8 +1046,10 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
     store.mark_provider_login_verified(
         LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
     )
-    queued = store.requeue_interrupted_episode_report_allocation(request.episode_id)
-    assert queued.operation_id == execution.operation_id and queued.status == "queued"
+    queued = store.retry_episode_report_allocation(request.episode_id)
+    assert queued.operation_id != execution.operation_id and queued.status == "queued"
+    assert store.agent_task(execution.operation_id).status == "failed"
+    assert store.episode(request.episode_id).report_attempts_used == 0
 
 
 def test_report_delete_waits_for_publication(manifest, tmp_path) -> None:
@@ -1366,6 +1369,7 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         ["refused", "auth", "valid"] if recovery == "provider_auth" else ["refused", "valid"]
     )
     before = store.episode(request.episode_id)
+    operation_id = execution.operation_id
     if recovery == "queued":
         mark_running = store.mark_episode_report_attempt_running
 
@@ -1393,9 +1397,10 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         store.mark_provider_login_verified(
             LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
         )
-        store.requeue_interrupted_episode_report_allocation(request.episode_id)
+        operation_id = store.retry_episode_report_allocation(request.episode_id).operation_id
+        assert operation_id != execution.operation_id
 
-    restarted = AgentTaskExecution(execution.operation_id, store, AgentProcessControl())
+    restarted = AgentTaskExecution(operation_id, store, AgentProcessControl())
     restarted.stage_host = execution.stage_host
     restarted.stage_root = execution.stage_root
     events = await _events(stream_episode_report_run(service, launcher, request, restarted))
@@ -1408,7 +1413,4 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         3 if recovery == "provider_auth" else 2
     )
     assert store.episode(request.episode_id).invocations_used == before.invocations_used
-    assert (
-        len([r for r in store.agent_task_receipts(execution.operation_id) if r.category == RETRY])
-        == 1
-    )
+    assert len([r for r in store.agent_task_receipts(operation_id) if r.category == RETRY]) == 1

@@ -246,8 +246,13 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     retained = store.episode_wrapup(parent.episode_id)
     assert retained.receipt_json == admission.wrapup.receipt_json
     assert retained.receipt_sha256 == admission.wrapup.receipt_sha256
-    assert retained.allocation_operation_id == admission.task.operation_id
-    assert store.agent_task(admission.task.operation_id).status == "failed"
+    report = store.agent_task(retained.allocation_operation_id)
+    assert report.status == "failed"
+    if report_state == "queued":
+        assert report.operation_id == admission.task.operation_id
+    else:
+        assert report.parent_operation_id == admission.task.operation_id
+        assert store.agent_task(admission.task.operation_id).status == report_state
     assert store.episode_report(parent.episode_id) is None
     assert ended.report_attempts_used == (0 if report_state == "queued" else 1)
     assert all(

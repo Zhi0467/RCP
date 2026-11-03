@@ -1046,10 +1046,13 @@ transient locks/outages retry. Existing rows reuse their receipt; warnings are
 once per process, episode and failure kind. At most three provider attempts clear
 the exact output before each run and spend no operational budget.
 
-Startup requeues an interrupted hidden allocation rather than creating another.
-It clears the old scope fingerprint and records a private dispatch-reset fence
-newer than prior attempt receipts. Only that fence authorizes redispatch; old
-attempts remain history.
+Startup, or a verified sign-in, retries a stopped report on a new hidden child
+task, as every other recovery does. The interrupted, paused or sign-in-failed
+task keeps its status. The child takes the wrap-up's allocation, any attempt that
+never called the provider, and the Codex refusal and fresh-session records. The
+retry spends no attempt; a call the stop cut off still counts. A report that an
+older RCP requeued in place launches as it is, under its dispatch-reset fence.
+Old attempts remain history.
 
 Valid `episode-report.html` becomes an Artifact whose lifecycle binds its
 original version in the opaque sandbox. It has no graph, Proposal, watcher

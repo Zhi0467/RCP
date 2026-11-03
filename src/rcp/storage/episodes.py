@@ -1552,11 +1552,18 @@ class EpisodeStoreMixin(StoreMixinBase):
             ).fetchone()
         return self._episode_report_attempt_record(row) if row is not None else None
 
-    def requeue_interrupted_episode_report_allocation(
+    def retry_episode_report_allocation(
         self,
         episode_id: str,
     ) -> AgentTaskRecord:
-        """Requeue the same hidden allocation after interruption or verified sign-in."""
+        """Admit the next hidden report task after interruption or verified sign-in.
+
+        The stopped task keeps its status, as every recovery leaves its parent.
+        Its child takes the wrap-up's allocation, any report attempt that never
+        called the provider, and the Codex fresh-session receipts that the report
+        runner reads from its own task. A queued allocation, including one an
+        older RCP requeued in place, is returned as it is.
+        """
 
         now = self.now()
         with self.connection() as connection:
@@ -1680,33 +1687,54 @@ class EpisodeStoreMixin(StoreMixinBase):
                     """,
                     (diagnostic, now, now, current["attempt_id"]),
                 )
-            self._require_session_launch_available(
-                connection,
-                self._agent_task_record(task_row).model_copy(update={"status": "queued"}),
+            previous = self._agent_task_record(task_row)
+            retry = AgentTaskRecord(
+                operation_id=str(uuid.uuid4()),
+                project_id=previous.project_id,
+                episode_id=episode_id,
+                graph_target=previous.graph_target,
+                kind="episode_report",
+                status="queued",
+                request=previous.request,
+                created_at=now,
+                updated_at=now,
+                status_message="Wrapping up visualization and report",
+                attempt=previous.attempt + 1,
+                parent_operation_id=previous.operation_id,
+                runtime_id=previous.runtime_id,
+                native_session_id=previous.native_session_id,
+                stage_host=previous.stage_host,
+                stage_root=previous.stage_root,
+                phase="queued",
+                authorized_by=previous.authorized_by,
+                visible=False,
             )
+            store = cast("AppStore", self)
+            store._insert_agent_task(connection, retry, continuation_cause="episode_report")
+            for receipt in connection.execute(
+                """
+                SELECT category, payload_json, tier, created_at FROM graph_run_receipts
+                WHERE operation_id = ?
+                  AND category IN ('codex_resume_refused', 'codex_fresh_session_retry')
+                ORDER BY receipt_id
+                """,
+                (operation_id,),
+            ).fetchall():
+                store._insert_agent_task_receipt(
+                    connection,
+                    retry.operation_id,
+                    receipt["category"],
+                    receipt["payload_json"],
+                    tier=receipt["tier"],
+                    created_at=receipt["created_at"],
+                )
             connection.execute(
                 """
-                UPDATE graph_runs
-                SET status = 'queued', status_message = 'Wrapping up visualization and report',
-                    error = NULL, failure_kind = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
-                    last_activity_at = NULL, phase = 'queued', write_scope_fingerprint = NULL
-                WHERE operation_id = ? AND status = ?
+                UPDATE episode_report_attempts
+                SET allocation_operation_id = ?, updated_at = ?
+                WHERE episode_id = ? AND status = 'queued'
                 """,
-                (now, operation_id, prior_status),
-            )
-            self._insert_agent_task_receipt(
-                connection,
-                operation_id,
-                "operation_dispatch_reset",
-                self._bounded_receipt_payload(
-                    {
-                        "status": "queued",
-                        "reason": "episode_report_restart",
-                        "previous_status": prior_status,
-                    }
-                ),
-                tier="summary",
-                created_at=now,
+                (retry.operation_id, now, episode_id),
             )
             connection.execute(
                 """
@@ -1719,12 +1747,13 @@ class EpisodeStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 UPDATE episode_wrapups
-                SET state = 'pending', diagnostic = NULL, updated_at = ?, finished_at = NULL
+                SET allocation_operation_id = ?, state = 'pending', diagnostic = NULL,
+                    updated_at = ?, finished_at = NULL
                 WHERE episode_id = ?
                 """,
-                (now, episode_id),
+                (retry.operation_id, now, episode_id),
             )
-        task = self.agent_task(operation_id)
+        task = self.agent_task(retry.operation_id)
         assert task is not None
         return task
 
@@ -2516,7 +2545,6 @@ class EpisodeStoreMixin(StoreMixinBase):
             "ending",
             "partial",
             "concluding_operation_id",
-            "allocation_operation_id",
             "provider",
             "run_on",
             "execution_host",

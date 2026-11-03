@@ -58,7 +58,7 @@ from tests.lifecycles.agent_task import seeded_store as _store
 from tests.lifecycles.agent_task import sse as _sse
 from tests.lifecycles.agent_task import work_request as _work_request
 
-from .episode_report_helpers import stored_report
+from .episode_report_helpers import requeue_report_in_place_as_older_rcp, stored_report
 from .helpers import (
     async_wait_until,
     fabricated_authorizer,
@@ -2248,7 +2248,10 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
         assert store.agent_task_dispatch_was_proven_not_started(hidden.operation_id)
 
         tasks.recover_at_startup()
-        wait_for_task(store, hidden.operation_id, expect="succeeded")
+        retried = store.episode_wrapup("report-episode").allocation_operation_id
+        assert retried is not None and retried != hidden.operation_id
+        wait_for_task(store, retried, expect="succeeded")
+        assert store.agent_task(hidden.operation_id).status == "interrupted"
         assert report_started.is_set()
         recovered_episode = store.episode("report-episode")
         assert recovered_episode is not None and recovered_episode.wrapup_state == "ready"
@@ -2256,7 +2259,7 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
         tasks.shutdown()
 
 
-@pytest.mark.parametrize("prior_status", ["interrupted", "paused"])
+@pytest.mark.parametrize("prior_status", ["interrupted", "paused", "requeued_in_place"])
 def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     tmp_path: Path,
     prior_status: str,
@@ -2283,10 +2286,12 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         {"dispatch_attempt_id": "previous-report-dispatch"},
         tier="diagnostic",
     )
-    if prior_status == "interrupted":
-        store.interrupt_active_agent_tasks()
-    else:
+    if prior_status == "paused":
         store.pause_agent_task(hidden.operation_id, detail="Paused for shutdown")
+    else:
+        store.interrupt_active_agent_tasks()
+    if prior_status == "requeued_in_place":
+        requeue_report_in_place_as_older_rcp(store, "report-episode")
     store.record_agent_task_receipt(
         hidden.operation_id,
         "operation_created",
@@ -2330,27 +2335,33 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         ),
     )
     tasks.recover_at_startup()
-    finished = wait_for_task(store, hidden.operation_id, expect="succeeded")
+    retried = store.episode_wrapup("report-episode").allocation_operation_id  # type: ignore[union-attr]
+    assert retried is not None
+    finished = wait_for_task(store, retried, expect="succeeded")
 
-    assert finished.operation_id == hidden.operation_id
+    assert finished.parent_operation_id == hidden.operation_id
+    assert store.agent_task(hidden.operation_id).status == (  # type: ignore[union-attr]
+        "paused" if prior_status == "paused" else "interrupted"
+    )
     assert store.episode("report-episode").wrapup_state == "ready"  # type: ignore[union-attr]
     assert store.episode_report("report-episode") is not None
     assert store.episode_tasks("report-episode") == [store.agent_task("operational")]
     assert [task.kind for task in store.episode_tasks("report-episode", include_hidden=True)] == [
         "node_chat",
         "episode_report",
+        "episode_report",
     ]
-    receipts = store.agent_task_receipts(hidden.operation_id)
+    receipts = store.agent_task_receipts(finished.operation_id)
     assert sum(item.category == "operation_created" for item in receipts) == 1
     assert not any(item.category == "operation_completed" for item in receipts)
     assert generic_settlements == []
     assert start_episode_report(tasks, "report-episode") is None
     with pytest.raises(ValueError, match="no Retry control"):
-        tasks.retry(hidden.operation_id)
+        tasks.retry(finished.operation_id)
     with pytest.raises(ValueError, match="no Resume control"):
-        tasks.resume(hidden.operation_id)
+        tasks.resume(finished.operation_id)
     with pytest.raises(ValueError, match="no manual Pause control"):
-        tasks.pause(hidden.operation_id)
+        tasks.pause(finished.operation_id)
 
 
 def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
@@ -2383,9 +2394,9 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     tasks.recover_at_startup()
     assert entered.wait(timeout=2)
     duplicate = start_episode_report(tasks, "report-episode")
-    assert duplicate is not None and duplicate.operation_id == hidden.operation_id
+    assert duplicate is not None and duplicate.parent_operation_id == hidden.operation_id
     release.set()
-    failed = wait_for_task(store, hidden.operation_id, expect="failed")
+    failed = wait_for_task(store, duplicate.operation_id, expect="failed")
 
     episode = store.episode("report-episode")
     assert episode is not None
@@ -2396,18 +2407,18 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     assert store.episode_report(episode.episode_id) is None
     assert not any(
         item.category == "operation_failed"
-        for item in store.agent_task_receipts(hidden.operation_id)
+        for item in store.agent_task_receipts(failed.operation_id)
     )
     assert (
         sum(
             item.category == "operation_created"
-            for item in store.agent_task_receipts(hidden.operation_id)
+            for item in store.agent_task_receipts(failed.operation_id)
         )
         == 1
     )
     assert generic_settlements == []
     with pytest.raises(ValueError, match="no Retry control"):
-        tasks.retry(hidden.operation_id)
+        tasks.retry(failed.operation_id)
 
 
 def test_report_request_decode_never_accepts_an_auto_research_task_shape(tmp_path: Path) -> None:
