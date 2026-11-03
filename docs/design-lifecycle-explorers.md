@@ -140,15 +140,21 @@ engines).
   asserts its saved memory (lineage-named, apart from the absolute clock)
   equals the stored one. Memory that matters but is left out of the view then fails CI instead
   of silently merging two different states.
-- A faster live mode (database backup into a running store) is added only if
-  step 1's measurement misses the budget, as a recorded change to this design.
+- **Measured in step 1:** a handoff edge costs about 0.1 s, almost all of it
+  booting the app: each store open spends 22 ms re-entering WAL mode (a
+  file-system cost, the same with a read-only `PRAGMA journal_mode`) and
+  project registration about 35 ms. Handoff runs 150 edges in about 16 s
+  locally. A live mode (database backup into a running store) would skip the
+  boot but reintroduce the stale-cache risk the fresh boot removes, so the
+  budget below is raised instead; live mode stays the lever if depth is ever
+  worth that risk.
 
 **Bounds.** Step 1 measures the cost per edge on handoff and records each
 machine's state count as it is built. **Minimum bound:** at least
 horizon + 1, at least the length of every Safety or Step trace a suspected
 defect or witness needs, and at least the depth of every suspected stuck
 state plus the horizon (a Goal is checked only from depth ≤ bound − horizon).
-**Budget:** ≤ 10 s locally per machine, counting its exploration and its
+**Budget:** ≤ 20 s locally per machine, counting its exploration and its
 witness runs, and a hard ceiling of 60 s on CI
 enforced by the faulthandler hang guard (the handoff test's `HANG_SECONDS`,
 lowered from 300 to 60 and shared by every machine's test). When the minimum does not fit the budget,
@@ -408,7 +414,7 @@ integrator also serializes defect fixes that touch the same product module.
 
 ## Risks
 
-- **CI time.** Each machine is ≤ 10 s locally and capped at 60 s on CI, and
+- **CI time.** Each machine is ≤ 20 s locally and capped at 60 s on CI, and
   the suite runs once per Python version (3.11 and 3.12). `tests/shards.py`
   weighs files by size, which underweights these small slow files, so step 1
   counts each `tests/lifecycles/test_*.py` file as the size of the largest

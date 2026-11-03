@@ -6,7 +6,8 @@ sees the same files it would without sharding. Files go largest first to the
 lightest shard. A file's size in bytes predicts its run time far better than its
 test count, whose split left one shard almost twice as long on CI. Every shard
 computes the same assignment from the same checkout and collection, so each test
-runs in exactly one shard.
+runs in exactly one shard. Lifecycle explorers are small files that each run
+for many seconds, so each counts as large as the largest file.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 SHARD_ENV = "RCP_TEST_SHARD"
+EXPLORER_PREFIX = "tests/lifecycles/test_"
 
 
 def parse_shard(spec: str) -> tuple[int, int]:
@@ -30,6 +32,10 @@ def shard_items(
     """Return the items this shard keeps and the ones it deselects."""
 
     sizes = {item.nodeid.split("::", 1)[0]: item.path.stat().st_size for item in items}
+    largest = max(sizes.values(), default=0)
+    for path in sizes:
+        if path.startswith(EXPLORER_PREFIX):
+            sizes[path] = largest
     loads = [0] * count
     owner: dict[str, int] = {}
     for path, size in sorted(sizes.items(), key=lambda entry: (-entry[1], entry[0])):
