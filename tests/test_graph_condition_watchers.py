@@ -424,6 +424,43 @@ def test_watch_json_validation_is_all_or_none_across_external_and_graph(store) -
     assert len(store.watchers("project")) == 2
 
 
+def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watchers(
+    store,
+) -> None:
+    spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
+    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+
+    def active_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+        return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
+
+    def arm(origin: str, chat_id: str = "chat") -> list[str]:
+        binding = _binding().model_copy(update={"origin_operation_id": origin, "chat_id": chat_id})
+        armed = arm_watchers(
+            store,
+            [spec],
+            binding,
+            graph_conditions=[condition],
+            state=_state(),
+            watcher_ids=[f"{origin}-{chat_id}-0", f"{origin}-{chat_id}-1"],
+            check_runner=active_check,
+        )
+        return [record.watcher_id for record in armed]
+
+    first = arm("turn-1")
+    assert arm("turn-2") == first
+    assert arm("turn-2") == first
+    assert len(store.watchers("project")) == 2
+
+    other_chat = arm("turn-3", chat_id="other")
+    assert set(other_chat).isdisjoint(first)
+    assert len(store.watchers("project")) == 4
+
+    store.stop_watchers("project", first)
+    rearmed = arm("turn-4")
+    assert set(rearmed).isdisjoint(first)
+    assert len(store.watchers("project", chat_id="chat")) == 4
+
+
 def test_supplied_watcher_ids_follow_external_then_graph_order(store) -> None:
     spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])

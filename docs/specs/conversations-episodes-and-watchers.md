@@ -847,7 +847,9 @@ ceiling and may claim retained compatible completion as its invocation one, and
 Conversation, Experiment, and Auto-research child Work watcher targets are
 separate exact resources, not a client-chosen mode field.
 
-- A conversation `watch.json` wakes that same conversation.
+- A conversation `watch.json` wakes that same conversation. A later turn that
+  re-arms a check or graph condition the conversation already watches, live and
+  undelivered at the same target, reuses that watcher instead of adding another.
 - An Experiment watcher resource is keyed by project, exact graph target,
   Experiment node, and compatible episode, and wakes that bounded episode.
 - A child Work watcher retains the parent episode and child route worker id and
