@@ -48,7 +48,11 @@ from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIV
 from rcp.runs.agent_schedules import _dispatch_thread
 from rcp.server_ops.members import _remove_member_agent_data
 from rcp.storage import AppStore
-from rcp.storage.agent_schedules import AgentSchedule, AgentSchedulesStoreMixin
+from rcp.storage.agent_schedules import (
+    AgentSchedule,
+    AgentSchedulesStoreMixin,
+    migrate_agent_schedule_pending_fires,
+)
 from rcp.storage.agent_threads import AgentThreadStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
@@ -195,6 +199,9 @@ class Schedules:
         ),
         AgentSchedulesStoreMixin.cancel_agent_schedule: (
             "Cancel is not modeled, as the module docstring says"
+        ),
+        migrate_agent_schedule_pending_fires: (
+            "a migration runs when a store opens, never inside an action"
         ),
         _remove_member_agent_data: (
             "member removal deletes the member's schedules in one statement; no state follows"

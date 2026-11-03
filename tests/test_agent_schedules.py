@@ -1120,3 +1120,24 @@ def test_wake_interval_gap_and_invalid_combinations_are_refused(schedule_store):
             command(action="add", note="Ping", **arguments)
     with pytest.raises(ValidationError):
         command(action="pause")
+
+
+def test_a_note_waiting_before_v74_still_wakes(schedule_store):
+    """Migration v74 backfills one fire for a note that waited across the upgrade."""
+    from rcp.runs.agent_schedules import schedule_wake_message
+    from rcp.storage.agent_schedules import migrate_agent_schedule_pending_fires
+
+    with schedule_store.connection() as connection:
+        connection.execute("ALTER TABLE agent_schedules DROP COLUMN pending_fires")
+        connection.execute(
+            "INSERT INTO agent_schedules (schedule_id, thread_id, created_operation_id, "
+            "idempotency_key, at_local, timezone, note, state, pending_since, created_at) "
+            "VALUES ('s', 'thread', 'op', 'k', '2026-01-15T09:00', 'UTC', 'Check', 'done', "
+            "'2026-01-15T09:00:00+00:00', '2026-01-15T08:00:00+00:00')"
+        )
+        migrate_agent_schedule_pending_fires(connection)
+    [schedule] = schedule_store.agent_schedules("thread")
+
+    message = schedule_wake_message([schedule], datetime(2026, 1, 15, 10, tzinfo=UTC))
+
+    assert '"missed_fires": 0' in message

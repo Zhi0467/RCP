@@ -146,11 +146,15 @@ def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int 
 
 
 def migrate_agent_schedule_pending_fires(connection: sqlite3.Connection) -> None:
-    """Count the fires a waiting note holds, so a wake reports only fires within its bounds."""
+    """Count the fires a waiting note holds, so a wake reports only fires within its bounds.
+
+    A note already waiting has no recorded count, so it wakes as one fire.
+    """
 
     connection.execute(
         "ALTER TABLE agent_schedules ADD COLUMN pending_fires INTEGER CHECK(pending_fires >= 1)"
     )
+    connection.execute("UPDATE agent_schedules SET pending_fires=1 WHERE pending_since IS NOT NULL")
 
 
 def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
