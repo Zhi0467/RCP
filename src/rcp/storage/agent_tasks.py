@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -2508,6 +2508,31 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 (operation_id,),
             ).fetchone()
         return self._agent_task_record(row) if row else None
+
+    def agent_tasks_by_ids(self, operation_ids: Iterable[str]) -> dict[str, AgentTaskRecord]:
+        """Read a set of tasks in one query; unknown ids are absent."""
+        ids = list(dict.fromkeys(operation_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join("(?)" for _ in ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                WITH requested(operation_id) AS (VALUES {placeholders})
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs JOIN requested USING (operation_id)
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                ids,
+            ).fetchall()
+        return {row["operation_id"]: self._agent_task_record(row) for row in rows}
 
     def agent_task_continuation_session_id(
         self,

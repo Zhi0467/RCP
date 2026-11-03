@@ -11,9 +11,12 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 after(() => server.close());
-const { agentWindowEntries, AgentWindowTranscript } = await server.ssrLoadModule(
-  "/src/agentWindow/AgentWindowTranscript.tsx",
+const { agentWindowEntries, AgentWindowTranscript, lineTapShowsTime, timeDividers } =
+  await server.ssrLoadModule("/src/agentWindow/AgentWindowTranscript.tsx");
+const { localClock, timeDividerLabel } = await server.ssrLoadModule(
+  "/src/agents/agentThreadModel.ts",
 );
+const { reconstructTaskTranscript } = await server.ssrLoadModule("/src/agents/agentTasks.ts");
 const { projectAgentWindowEndpoints, spaceAgentWindowEndpoints } = await server.ssrLoadModule(
   "/src/agentWindow/agentWindowEndpoints.ts",
 );
@@ -237,4 +240,145 @@ test("project task adapters preserve encoded routes and control idempotency", as
   } finally {
     globalThis.fetch = original;
   }
+});
+
+const at = (...parts) => new Date(...parts).toISOString();
+const timed = (id, shownAt, extra = {}) => ({
+  lineId: id,
+  role: "human",
+  taskId: id,
+  timestamp: "2026-11-01T00:00:00Z",
+  shownAt,
+  text: id,
+  ...extra,
+});
+const dividerIds = (lines, questions = []) => [
+  ...timeDividers(agentWindowEntries(lines, questions)).keys(),
+];
+
+test("a divider opens the thread, then marks a 30 minute gap but not 29", () => {
+  const lines = [
+    timed("first", at(2026, 10, 2, 9, 0)),
+    timed("after-29", at(2026, 10, 2, 9, 29)),
+    timed("after-30", at(2026, 10, 2, 9, 59)),
+  ];
+  assert.deepEqual(dividerIds(lines), ["first", "after-30"]);
+});
+
+test("a divider marks a new local day even after a short gap", () => {
+  const lines = [timed("late", at(2026, 10, 2, 23, 50)), timed("early", at(2026, 10, 3, 0, 5))];
+  assert.deepEqual(dividerIds(lines), ["late", "early"]);
+});
+
+test("receipt-only lines, running replies and cards are not counted for dividers", () => {
+  const graphUpdate = { status: "applied", proposal_ids: [], change_summary: [] };
+  const lines = [
+    timed("receipt", at(2026, 10, 2, 8, 0), { role: "agent", text: "", graphUpdate }),
+    timed("first", at(2026, 10, 2, 9, 0)),
+    timed("running", null, { role: "agent", text: "", running: true }),
+    timed("receipt-later", at(2026, 10, 2, 9, 40), { role: "agent", text: "", graphUpdate }),
+    timed("next", at(2026, 10, 2, 9, 20)),
+  ];
+  const question = card({ operation_id: "first", created_at: at(2026, 10, 2, 11, 0) });
+  assert.deepEqual(dividerIds(lines, [question]), ["first"]);
+});
+
+test("a line without its own shown time falls back to its timestamp", () => {
+  const lines = [
+    timed("first", at(2026, 10, 2, 9, 0)),
+    { ...timed("pending", undefined), timestamp: at(2026, 10, 2, 10, 0) },
+  ];
+  assert.deepEqual(dividerIds(lines), ["first", "pending"]);
+});
+
+test("divider labels name today, yesterday, a weekday date, and the year when it differs", () => {
+  const now = new Date(2026, 10, 2, 20, 0);
+  assert.equal(timeDividerLabel(new Date(2026, 10, 2, 19, 21), now), "Today · 19:21");
+  assert.equal(timeDividerLabel(new Date(2026, 10, 1, 8, 2), now), "Yesterday · 08:02");
+  assert.equal(timeDividerLabel(new Date(2026, 9, 26, 19, 21), now), "Mon 26 Oct · 19:21");
+  assert.equal(timeDividerLabel(new Date(2025, 10, 2, 19, 21), now), "Sun 2 Nov 2025 · 19:21");
+  assert.equal(
+    timeDividerLabel(new Date(2026, 0, 31, 7, 5), new Date(2026, 1, 1, 0, 1)),
+    "Yesterday · 07:05",
+  );
+  assert.equal(localClock(new Date(2026, 10, 2, 0, 7)), "00:07");
+});
+
+test("a tap shows the time unless it lands on a control or selects text", () => {
+  const target = (matches) => ({ closest: (selector) => (matches(selector) ? {} : null) });
+  const plain = target(() => false);
+  const onLink = target((selector) => selector.includes("a,") || selector.startsWith("a"));
+  const collapsed = { isCollapsed: true, toString: () => "" };
+  const selecting = { isCollapsed: false, toString: () => "some words" };
+  assert.equal(lineTapShowsTime(plain, collapsed), true);
+  assert.equal(lineTapShowsTime(plain, null), true);
+  assert.equal(lineTapShowsTime(onLink, collapsed), false);
+  assert.equal(lineTapShowsTime(plain, selecting), false);
+});
+
+test("the transcript renders each divider once and a time on every timed line", () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(AgentWindowTranscript, {
+      transcript: [
+        timed("first", at(2026, 10, 2, 9, 0)),
+        timed("soon", at(2026, 10, 2, 9, 5)),
+        timed("running", null, { role: "agent", text: "", running: true }),
+      ],
+      tasks: [],
+      questions: [],
+      endpoints: projectAgentWindowEndpoints("p", "chat"),
+      artifacts: { renderArtifacts: () => null },
+      comments: {},
+      compactionByLine: new Map(),
+      continuedTaskIds: new Set(),
+      latestGraphReceiptLineIds: new Set(),
+    }),
+  );
+  assert.equal(markup.match(/class="chat-time-divider"/g)?.length, 1);
+  assert.equal(markup.match(/<time class="chat-line-time"/g)?.length, 2);
+  assert.ok(markup.indexOf("chat-time-divider") < markup.indexOf('data-task-id="first"'));
+});
+
+test("reconstructed replies show when they finished and nothing while running", () => {
+  const task = (extra) => ({
+    operation_id: "op",
+    created_at: "2026-11-02T09:00:00Z",
+    request: { message: "go", mode: "work" },
+    result: { messages: ["done"] },
+    active: false,
+    ...extra,
+  });
+  const shown = (lines) => lines.map((item) => [item.role, item.shownAt]);
+  assert.deepEqual(
+    shown(reconstructTaskTranscript([task({ finished_at: "2026-11-02T09:04:00Z" })])),
+    [
+      ["human", "2026-11-02T09:00:00Z"],
+      ["agent", "2026-11-02T09:04:00Z"],
+    ],
+  );
+  assert.deepEqual(shown(reconstructTaskTranscript([task({ finished_at: null })])), [
+    ["human", "2026-11-02T09:00:00Z"],
+    ["agent", null],
+  ]);
+  assert.deepEqual(
+    shown(reconstructTaskTranscript([task({ result: null, error: "boom", finished_at: null })])),
+    [
+      ["human", "2026-11-02T09:00:00Z"],
+      ["error", "2026-11-02T09:00:00Z"],
+    ],
+  );
+  assert.equal(
+    chatMessageTranscriptLine({ message_id: "m", role: "user", timestamp: "t", text: "x" }).shownAt,
+    "t",
+  );
+  assert.equal(
+    chatMessageTranscriptLine({
+      message_id: "m",
+      role: "user",
+      timestamp: "t",
+      shown_at: "s",
+      text: "x",
+    }).shownAt,
+    "s",
+  );
 });

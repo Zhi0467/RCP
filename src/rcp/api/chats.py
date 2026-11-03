@@ -42,6 +42,7 @@ from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
 from rcp.projects import ProjectCatalog
 from rcp.runs.browser_lifecycle import close_chat_browser_owners
 from rcp.runs.chat_admission import require_chat_graph_target
+from rcp.runs.shared import turn_first_attempt
 from rcp.service import (
     ArtifactContextRequest,
     ChatAgentSetup,
@@ -54,7 +55,7 @@ from rcp.service import (
     ChatTranscript,
     RunRequest,
 )
-from rcp.storage import AgentTaskAdmissionConflict, AppStore
+from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -617,16 +618,41 @@ def chat(
             ),
         }
     )
+    # An old turn can fall outside the bounded task list the chat polls.
+    tasks = transcript_tasks(store, transcript.messages)
     for message in transcript.messages:
         if message.operation_id is not None:
             message.browser_status = store.browser_turn_status(message.operation_id).public()
-            # An old turn can fall outside the bounded task list the chat polls.
-            task = store.agent_task(message.operation_id)
+            task = tasks.get(message.operation_id)
             if message.role == "assistant":
                 message.agent_status = task.agent_status if task is not None else None
             elif task is not None and message.steering is None:
                 message.artifact_comments = _artifact_comments(store, task.request)
+    stamp_shown_at(store, transcript.messages, tasks)
     return transcript
+
+
+def transcript_tasks(store: AppStore, messages: list[ChatMessage]) -> dict[str, AgentTaskRecord]:
+    return store.agent_tasks_by_ids(
+        message.operation_id for message in messages if message.operation_id is not None
+    )
+
+
+def stamp_shown_at(
+    store: AppStore, messages: list[ChatMessage], tasks: dict[str, AgentTaskRecord]
+) -> None:
+    """Show a member message at its turn's first attempt and a reply at its task's finish.
+
+    A steer, or a message with no task, keeps no time here; the web shows its own timestamp.
+    """
+    for message in messages:
+        task = tasks.get(message.operation_id) if message.operation_id is not None else None
+        if task is None or message.steering is not None:
+            continue
+        if message.role == "assistant":
+            message.shown_at = task.finished_at
+        else:
+            message.shown_at = turn_first_attempt(store, task, tasks).created_at
 
 
 def _artifact_comments(store: AppStore, request: dict[str, object]) -> ChatArtifactComments | None:

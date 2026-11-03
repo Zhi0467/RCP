@@ -34,6 +34,8 @@ from rcp.api.chats import (
     remove_attachment,
     rename_chat,
     set_chat_browser,
+    stamp_shown_at,
+    transcript_tasks,
 )
 from rcp.api.dependencies import project_write_admission
 from rcp.api.tasks import (
@@ -198,6 +200,7 @@ def thread_transcript(
     except ConnectionError as exc:
         raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
     if transcript is not None:
+        stamp_shown_at(store, transcript.messages, transcript_tasks(store, transcript.messages))
         return transcript
     return ChatTranscript(
         chat_id=thread_id,

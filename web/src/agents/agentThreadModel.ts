@@ -161,6 +161,23 @@ function localDay(at: Date): string {
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A local time on the 24-hour `HH:MM` clock. */
+export function localClock(at: Date): string {
+  return clock(String(at.getHours()), String(at.getMinutes()));
+}
+
+/** A thread's time divider: today, yesterday, else the weekday and date, with a different year. */
+export function timeDividerLabel(at: Date, now: Date): string {
+  const time = localClock(at);
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (localDay(at) === localDay(now)) return `Today · ${time}`;
+  if (localDay(at) === localDay(yesterday)) return `Yesterday · ${time}`;
+  const date = `${WEEKDAYS[at.getDay()]} ${at.getDate()} ${MONTHS[at.getMonth()]}`;
+  const year = at.getFullYear() === now.getFullYear() ? "" : ` ${at.getFullYear()}`;
+  return `${date}${year} · ${time}`;
+}
 
 /** A local `YYYY-MM-DDTHH:MM` as its time today, weekday this week, else its date. */
 function wallLabel(local: string, now: Date): string {

@@ -86,6 +86,7 @@ import {
   firingScheduleCount,
   handoffReport,
   latestTurnId,
+  localClock,
   oneShotPassed,
   scheduleInstant,
   scheduleLimits,
@@ -1289,11 +1290,7 @@ export function AgentThreadView({
               {line.trigger === "schedule" && line.role === "human" && (
                 <span className="chat-turn-trigger schedule" title={line.text}>
                   <CalendarClock size={11} aria-hidden="true" />
-                  {new Date(line.timestamp).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    hourCycle: "h23",
-                  })}
+                  {localClock(new Date(line.timestamp))}
                 </span>
               )}
             </>

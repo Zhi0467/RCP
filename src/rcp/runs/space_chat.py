@@ -40,7 +40,6 @@ from rcp.service import (
 )
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
-from rcp.storage.models import AgentTaskRecord
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
@@ -241,9 +240,11 @@ def append_space_message(
     if task is None:
         raise ValueError("Space message lost its task")
     if role == "user":
+        from rcp.runs.shared import turn_first_attempt
+
         # A Resume or Retry continues its turn, so the member's message is recorded
         # once, under the turn's first attempt.
-        task = _turn_first_attempt(owner.store, task)
+        task = turn_first_attempt(owner.store, task)
         operation_id = task.operation_id
     record: dict[str, object] = {
         "sessionId": owner.thread_id,
@@ -275,17 +276,6 @@ def append_space_message(
     append_space_records(
         owner.store, owner.catalog.data_dir, owner.thread, [record], reserve_prompt=True
     )
-
-
-def _turn_first_attempt(store: AppStore, task: AgentTaskRecord) -> AgentTaskRecord:
-    seen = {task.operation_id}
-    while task.parent_operation_id and task.parent_operation_id not in seen:
-        parent = store.agent_task(task.parent_operation_id)
-        if parent is None:
-            break
-        seen.add(parent.operation_id)
-        task = parent
-    return task
 
 
 async def stream_space_chat_run(
