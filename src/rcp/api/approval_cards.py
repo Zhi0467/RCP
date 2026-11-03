@@ -297,18 +297,10 @@ def decide_proposal(
     try:
         with ExitStack() as admission:
             service = _admit(admission, action, request, store, catalog)
-            try:
-                state = service.history.state()
-            except (StateUnavailable, ReplayHalted, OSError) as exc:
-                raise _NotNow(503, str(exc)) from exc
-            proposal = state.proposals.get(proposal_id)
-            if proposal is None:
-                raise _NotNow(404, "Proposal not found")
-            if proposal.status != "pending" or proposal_is_stale(state, proposal):
-                raise _NotNow(409, {"code": "proposal_not_pending"})
+            revision = _decidable_revision(service, proposal_id)
             try:
                 synced = _sync_proposal(
-                    action, request, store, catalog, identity_access, service, state.revision
+                    action, request, store, catalog, identity_access, service, revision
                 )
             except StateUnavailable as exc:
                 raise _NotNow(503, str(exc)) from exc
@@ -323,6 +315,20 @@ def decide_proposal(
     except _NotNow as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return {"proposal_id": proposal_id, "status": synced["proposals"][proposal_id]["status"]}
+
+
+def _decidable_revision(service: ProjectService, proposal_id: str) -> int:
+    """The revision a card decision appends at, once the Proposal is pending and fresh there."""
+    try:
+        state = service.history.state()
+    except (StateUnavailable, ReplayHalted, OSError) as exc:
+        raise _NotNow(503, str(exc)) from exc
+    proposal = state.proposals.get(proposal_id)
+    if proposal is None:
+        raise _NotNow(404, "Proposal not found")
+    if proposal.status != "pending" or proposal_is_stale(state, proposal):
+        raise _NotNow(409, {"code": "proposal_not_pending"})
+    return state.revision
 
 
 def _still_pending(service: ProjectService, proposal_id: str) -> bool:

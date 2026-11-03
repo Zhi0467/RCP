@@ -7,7 +7,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import (
     APIRouter,
@@ -82,7 +82,7 @@ from rcp.service import (
     read_space_chat_transcript,
 )
 from rcp.service_connections import ConnectionError
-from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_threads import (
     AgentThreadRecord,
     private_artifact_owner,
@@ -187,22 +187,31 @@ def agent_thread_cards(
             logger.warning("Cards skipped project %s: %s", project_id, exc)
         else:
             drawn.extend(proposal_cards(store, project, state, threads))
-        for thread in threads:
-            pending = [
-                question
-                for question in store.list_questions(
-                    project_id=project_id, owner_kind="chat", owner_id=thread.thread_id
-                )
-                if question.state == "pending"
-            ]
-            asked.extend(
-                {**row.model_dump(mode="json"), "project_name": project.name}
-                for row in _serialize_all(store, pending)
-                if row.card is not None and row.can_answer
-            )
+        asked.extend(_asked_cards(store, project, threads))
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     asked.sort(key=lambda row: row["created_at"], reverse=True)
     return {"proposal_cards": drawn, "asked_cards": asked}
+
+
+def _asked_cards(
+    store: AppStore, project: ProjectRecord, threads: list[AgentThreadRecord]
+) -> list[dict[str, Any]]:
+    """The answerable pending card questions of these threads, naming their project."""
+    asked = []
+    for thread in threads:
+        pending = [
+            question
+            for question in store.list_questions(
+                project_id=project.project_id, owner_kind="chat", owner_id=thread.thread_id
+            )
+            if question.state == "pending"
+        ]
+        asked.extend(
+            {**row.model_dump(mode="json"), "project_name": project.name}
+            for row in _serialize_all(store, pending)
+            if row.card is not None and row.can_answer
+        )
+    return asked
 
 
 class SpaceReference(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self, get_args
@@ -178,6 +179,41 @@ class WatermarkResponse(BaseModel):
     agent_cards: AgentCardsVersion | None = None
 
 
+def _card_projects(connection: sqlite3.Connection, user_id: str) -> list[str]:
+    """Projects of the member's shown project threads: open, not archived, not retired."""
+    return [
+        row[0]
+        for row in connection.execute(
+            "SELECT thread.project_id FROM agent_threads AS thread "
+            "JOIN project_members AS member ON member.project_id = thread.project_id "
+            "AND member.user_id = thread.user_id "
+            "JOIN projects AS project ON project.project_id = thread.project_id "
+            "AND project.retired_at IS NULL "
+            "LEFT JOIN chat_display AS display ON display.chat_id = thread.thread_id "
+            "AND display.project_id = thread.project_id "
+            "WHERE thread.user_id = ? AND thread.kind = 'project' "
+            "AND thread.closed_at IS NULL AND display.archived_at IS NULL "
+            "ORDER BY thread.project_id",
+            (user_id,),
+        )
+    ]
+
+
+def _agent_cards_version(
+    catalog: ProjectCatalog, epoch: str, user_id: str, project_ids: list[str]
+) -> AgentCardsVersion:
+    """Moves when any of these projects' main graph commits; reads only in-memory tokens."""
+    generations = [
+        [project_id, catalog.content_generations(project_id, {"graph:main"})["graph:main"]]
+        for project_id in project_ids
+    ]
+    return AgentCardsVersion(
+        version=hashlib.sha256(
+            json.dumps([epoch, user_id, "agent_cards", generations]).encode()
+        ).hexdigest()
+    )
+
+
 @router.post("/api/resource-watermarks")
 def resource_watermarks(
     body: WatermarkRequest,
@@ -232,26 +268,7 @@ def resource_watermarks(
                     ).encode()
                 ).hexdigest()
             )
-        card_projects = (
-            [
-                row[0]
-                for row in connection.execute(
-                    "SELECT thread.project_id FROM agent_threads AS thread "
-                    "JOIN project_members AS member ON member.project_id = thread.project_id "
-                    "AND member.user_id = thread.user_id "
-                    "JOIN projects AS project ON project.project_id = thread.project_id "
-                    "AND project.retired_at IS NULL "
-                    "LEFT JOIN chat_display AS display ON display.chat_id = thread.thread_id "
-                    "AND display.project_id = thread.project_id "
-                    "WHERE thread.user_id = ? AND thread.kind = 'project' "
-                    "AND thread.closed_at IS NULL AND display.archived_at IS NULL "
-                    "ORDER BY thread.project_id",
-                    (member.user_id,),
-                )
-            ]
-            if body.agent_cards
-            else None
-        )
+        card_projects = _card_projects(connection, member.user_id) if body.agent_cards else None
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -331,26 +348,7 @@ def resource_watermarks(
             else set()
         )
     agent_cards = (
-        AgentCardsVersion(
-            version=hashlib.sha256(
-                json.dumps(
-                    [
-                        epoch,
-                        member.user_id,
-                        "agent_cards",
-                        [
-                            [
-                                project_id,
-                                catalog.content_generations(project_id, {"graph:main"})[
-                                    "graph:main"
-                                ],
-                            ]
-                            for project_id in card_projects
-                        ],
-                    ]
-                ).encode()
-            ).hexdigest()
-        )
+        _agent_cards_version(catalog, epoch, member.user_id, card_projects)
         if card_projects is not None
         else None
     )
