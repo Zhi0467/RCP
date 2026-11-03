@@ -134,6 +134,12 @@
 .thread-row [role="option"] time.live {
   color: var(--slate);
 }
+.thread-row [role="option"].has-unread time:not(.live) {
+  background: var(--teal);
+  color: var(--accent-ink);
+  font-weight: 800;
+  padding: 2px 7px;
+}
 .thread-rail-divider {
   border-top: 1px solid var(--line);
   margin: 4px 6px 10px;

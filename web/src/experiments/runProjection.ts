@@ -70,10 +70,11 @@ export function isGraphWatcherRecord(watcher: WatcherRecord): watcher is GraphWa
   return "condition" in watcher;
 }
 
-export function graphConditionLabel(condition: GraphCondition): string {
+export function graphConditionLabel(condition: GraphCondition, title?: string | null): string {
+  const node = title || condition.node_id;
   return "status_in" in condition
-    ? `${condition.node_id} reaches ${condition.status_in.join(" or ")}`
-    : `Proposal on ${condition.node_id} is resolved`;
+    ? `${node} reaches ${condition.status_in.join(" or ")}`
+    : `Proposal on ${node} is resolved`;
 }
 
 export function watcherLastObservedAt(watcher: WatcherRecord): string | null {

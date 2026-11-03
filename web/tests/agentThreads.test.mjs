@@ -24,6 +24,8 @@ import {
 import {
   loadThreadQuestions,
   loadThreadTranscript,
+  loadThreadWatchers,
+  stopThreadWatcher,
   sendThreadTurn,
   setThreadAgent,
   setThreadSchedulePaused,
@@ -193,6 +195,43 @@ test("pause and resume post to the schedule's own route", async () => {
   assert.deepEqual(calls, [
     "POST /api/agent-threads/t%201/schedules/s%2F1/pause",
     "POST /api/agent-threads/t%201/schedules/s%2F1/resume",
+  ]);
+});
+
+test("a project thread lists only its own live watchers and stops them by project route", async () => {
+  const watcher = (id, chat_id, status) => ({
+    watcher_id: id,
+    chat_id,
+    status,
+    graph_target: { kind: "main" },
+    continuation: { patch_kind: "work" },
+    condition: { node_id: "exp-1", status_in: ["completed"] },
+  });
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    return path.endsWith("/watchers")
+      ? [
+          watcher("w1", "scout", "active"),
+          watcher("w2", "other", "active"),
+          watcher("w3", "scout", "completed"),
+        ]
+      : {};
+  };
+  const thread = { kind: "project", project_id: "p 1", thread_id: "scout" };
+  const listed = await loadThreadWatchers(thread, request);
+  assert.deepEqual(
+    listed.map((item) => item.watcher_id),
+    ["w1"],
+  );
+  assert.deepEqual(
+    await loadThreadWatchers({ kind: "space", project_id: null, thread_id: "pip" }, request),
+    [],
+  );
+  await stopThreadWatcher(thread, "w/1", request);
+  assert.deepEqual(calls, [
+    "GET /api/projects/p%201/watchers",
+    "POST /api/projects/p%201/watchers/w%2F1/stop",
   ]);
 });
 

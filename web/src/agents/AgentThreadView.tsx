@@ -59,7 +59,7 @@ import {
 } from "../agentWindow/agentWindowEndpoints";
 import { errorMessage } from "../core/errors";
 import { useLayerDismiss } from "../core/useLayerDismiss";
-import { returnSends } from "../ui/composerKeys";
+import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { AgentRename } from "../chat/AgentRename";
 import { QuestionCard } from "../chat/QuestionCard";
@@ -74,6 +74,7 @@ import type {
   ProjectSnapshot,
   SteerRequest,
   ProviderReadiness,
+  WatcherRecord,
 } from "../core/types";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { ApprovalCardView } from "./ApprovalCard";
@@ -105,12 +106,18 @@ import {
   setThreadAgent,
   setThreadBrowser,
   setThreadSchedulePaused,
+  loadThreadWatchers,
+  stopThreadWatcher,
+  threadProjectPath,
 } from "./agentThreadsApi";
+import { ExternalJobRow } from "../experiments/ExternalJobRow";
+import { graphConditionLabel, isExternalWatcherRecord } from "../experiments/runProjection";
 
 /** A live turn's task is read this often while the page shows; the rest follows the watermark. */
 const LIVE_POLL_MS = 2_000;
 const NO_QUESTIONS: AgentQuestion[] = [];
 const NO_SCHEDULES: AgentSchedule[] = [];
+const NO_WATCHERS: WatcherRecord[] = [];
 const NO_MESSAGES: ChatMessage[] = [];
 
 /** A turn's detail loads once its row comes this close to the view. */
@@ -319,13 +326,21 @@ const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, stri
   unschedulable: "Paused because its time can no longer be worked out",
 };
 
+function WatcherLabel({ text }: { text: string }) {
+  return <strong title={text}>{text}</strong>;
+}
+
 function SchedulesPopover({
   thread,
   schedules,
+  watchers,
+  nodes,
   onChanged,
 }: {
   thread: AgentThread;
   schedules: AgentSchedule[];
+  watchers: WatcherRecord[];
+  nodes: ProjectSnapshot["graph"]["nodes"] | undefined;
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -335,8 +350,8 @@ function SchedulesPopover({
   const close = useCallback(() => setOpen(false), []);
   useLayerDismiss(open, close, [trigger, panel], trigger);
   const upcoming = upcomingSchedules(schedules);
-  if (!upcoming.length) return null;
-  const firing = firingScheduleCount(upcoming);
+  if (!upcoming.length && !watchers.length) return null;
+  const firing = firingScheduleCount(upcoming) + watchers.length;
   const act = async (run: () => Promise<unknown>) => {
     setError(null);
     try {
@@ -363,6 +378,35 @@ function SchedulesPopover({
       {open && (
         <div className="upcoming-popover" role="dialog" aria-label="Upcoming" ref={panel}>
           <h3>Upcoming</h3>
+          {watchers.map((watcher) =>
+            isExternalWatcherRecord(watcher) ? (
+              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
+                <ExternalJobRow apiBase={threadProjectPath(thread)} watcher={watcher} />
+              </div>
+            ) : (
+              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
+                <WatcherLabel
+                  text={graphConditionLabel(
+                    watcher.condition,
+                    nodes?.[watcher.condition.node_id]?.title,
+                  )}
+                />
+                <span className="upcoming-actions">
+                  {watcher.can_stop_watching && (
+                    <button
+                      className="icon-button"
+                      type="button"
+                      aria-label="Stop watching"
+                      title="Stop watching"
+                      onClick={() => void act(() => stopThreadWatcher(thread, watcher.watcher_id))}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </span>
+              </div>
+            ),
+          )}
           {upcoming.map((schedule) => {
             const cancel = () =>
               void act(() => cancelThreadSchedule(thread.thread_id, schedule.schedule_id));
@@ -535,6 +579,10 @@ export function AgentThreadView({
   const questions = view?.questions ?? NO_QUESTIONS;
   const latest = view?.latest ?? null;
   const schedules = scheduleLists.get(thread.thread_id) ?? NO_SCHEDULES;
+  const [watcherLists, setWatcherLists] = useState<ReadonlyMap<string, WatcherRecord[]>>(
+    () => new Map(),
+  );
+  const watchers = watcherLists.get(thread.thread_id) ?? NO_WATCHERS;
   const shownLoadError = loadError?.threadId === thread.thread_id ? loadError.text : null;
   const shownNotice = notice?.threadId === thread.thread_id ? notice.text : null;
   const endpoints = useMemo(
@@ -725,15 +773,17 @@ export function AgentThreadView({
     if (reloading.current === entry) reloading.current = null;
   }, [refresh]);
 
-  const refreshSchedules = useCallback(async () => {
+  const refreshUpcoming = useCallback(async () => {
     const current = threadRef.current;
-    try {
-      const list = await loadThreadSchedules(current.thread_id);
-      if (threadRef.current.thread_id === current.thread_id)
-        setScheduleLists((known) => new Map(known).set(current.thread_id, list.schedules));
-    } catch {
-      // Upcoming is a side list; the thread stays usable without it.
-    }
+    const [list, watching] = await Promise.allSettled([
+      loadThreadSchedules(current.thread_id),
+      loadThreadWatchers(current),
+    ]);
+    if (threadRef.current.thread_id !== current.thread_id) return;
+    if (list.status === "fulfilled")
+      setScheduleLists((known) => new Map(known).set(current.thread_id, list.value.schedules));
+    if (watching.status === "fulfilled")
+      setWatcherLists((known) => new Map(known).set(current.thread_id, watching.value));
   }, []);
 
   // The watermark reloads the open thread; another thread opens without a rename.
@@ -742,8 +792,8 @@ export function AgentThreadView({
   }, [thread.thread_id]);
   useEffect(() => {
     void reloadOnce();
-    void refreshSchedules();
-  }, [reloadOnce, refreshSchedules, thread.thread_id, revision]);
+    void refreshUpcoming();
+  }, [reloadOnce, refreshUpcoming, thread.thread_id, revision]);
 
   // While a turn runs, only its task is read, one read at a time and never while the
   // page is hidden; its settling reloads the thread for the outcome.
@@ -1131,7 +1181,9 @@ export function AgentThreadView({
           <SchedulesPopover
             thread={thread}
             schedules={schedules}
-            onChanged={() => void refreshSchedules()}
+            watchers={watchers}
+            nodes={snapshot?.graph?.nodes}
+            onChanged={() => void refreshUpcoming()}
           />
           {/* The context ring sits just left of the menu, as in a project chat. */}
           <AgentStatusStrip tasks={lines.statusTasks} />
@@ -1337,6 +1389,7 @@ export function AgentThreadView({
             onChange={(event) => draft.set(event.target.value)}
             onPaste={attachments.paste}
             onKeyDown={(event) => {
+              if (arrowScrollsTranscript(event, linesRef.current)) return;
               if (!returnSends(event) || event.nativeEvent.isComposing) return;
               event.preventDefault();
               submit();

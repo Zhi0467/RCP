@@ -56,7 +56,7 @@ import {
   type ConversationTurnSubmission,
   type StartConversationTask,
 } from "./chatWorkspace";
-import { returnSends } from "../ui/composerKeys";
+import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
 import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "./answerComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
@@ -1474,6 +1474,7 @@ export function NodeChat({
               onPaste={composer.paste}
               onKeyDown={(event) => {
                 if (skills.handleKeyDown(event)) return;
+                if (arrowScrollsTranscript(event, chatLinesRef.current)) return;
                 if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
                   if (presentation !== "workspace") {
                     event.preventDefault();
