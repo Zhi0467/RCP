@@ -126,6 +126,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "603edb06d9c27877b590051726eaf206ffda9451",
         "ade956b6679b7a8b761ad4093f60f37e076154f7be270fab6dc49ac06dd94370",
     ),
+    "pre-schedule-pending-fires-v39-a83fbf5": (
+        "a83fbf50ce8858724101138044cf14207c636e6e",
+        "172b17851606cf10728a8ef9b95d7fbf63d2edf26ccdab4ed44909db9ba56ff1",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

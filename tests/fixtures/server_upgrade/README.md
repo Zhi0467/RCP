@@ -181,3 +181,9 @@ by the exact boundary source from `pre-member-provider-logins-v36-f78a922`.
 `pre-memory-files-v38-603edb0` retains the migration-67 shape before file-backed
 memory (storage migration 68). It upgrades through migrations 68-73. It is built
 by the exact base source `603edb06` from `pre-merge-effects-v37-607f2cc`.
+
+`pre-schedule-pending-fires-v39-a83fbf5` retains the last shape before agent
+schedules gained pending fires (storage migration 74), ending at migration 73
+after file-backed memory, agent threads, handoffs, schedules, and approval
+cards. It is built by the exact base source `a83fbf50` from
+`pre-memory-files-v38-603edb0`.
