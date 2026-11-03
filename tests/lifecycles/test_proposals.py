@@ -46,7 +46,7 @@ def test_proposal_lifecycle_holds_within_bound(tmp_path: Path, hang_guard) -> No
 
 
 def test_a_restart_settles_a_committed_tap_as_approved(tmp_path: Path) -> None:
-    """Without 84241be2a, a restart fails a card whose Proposal the tap already approved."""
+    """Without the graph receipt of 5f8c37898, a restart fails a card whose tap already approved."""
 
     with mock.patch("rcp.runs.approval_cards.committed_receipt", lambda *_: None):
         reported = witness(

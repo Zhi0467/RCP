@@ -244,7 +244,7 @@ class View(NamedTuple):
 
 
 class _Crash(Exception):
-    """The process stopped between a committed action and its card settling."""
+    """The tapping process stopped before its card settled."""
 
 
 @dataclass
@@ -433,11 +433,11 @@ class Proposals:
             found.extend(
                 Action("sync", (name, decision), environment=False) for decision in decisions
             )
-        fresh = [row for row in open_cards if proposals[row[1]][1:3] == ("pending", False)]
+        fresh = {row[0] for row in open_cards if proposals[row[1]][1:3] == ("pending", False)}
         for name, _proposal, claimed, outcome, _question, _past in view.cards:
             taps: tuple[str, ...] = ()
             if outcome is None:
-                taps = ("approve", *(_FRESH_TAPS if any(row[0] == name for row in fresh) else ()))
+                taps = ("approve", *(_FRESH_TAPS if name in fresh else ()))
             elif outcome == "expired" and not claimed:
                 taps = ("approve",)
             found.extend(Action("tap", (name, tap), environment=False) for tap in taps)
@@ -449,6 +449,7 @@ class Proposals:
 
     def apply(self, world: World, action: Action) -> None:
         world.action = action
+        world.seen = None
         world.revision = world.graph().revision
         world.pinned = {
             name: row["pinned_sha256"]
@@ -478,6 +479,7 @@ class Proposals:
 
     def restart(self, world: World) -> None:
         world.action = Action(RESTART)
+        world.seen = None
         world.revision = world.graph().revision
         store = world.store
         settle_interrupted_approval_cards(
@@ -487,48 +489,60 @@ class Proposals:
         world.app.state.reconcile_question_answers()
 
     def view(self, world: World) -> View:
-        from rcp.core.validation.proposals import proposal_is_stale
-
-        state = world.graph()
-        proposals = tuple(
-            sorted(
-                (
-                    _PROPOSALS[proposal.id],
-                    proposal.status,
-                    proposal.status == "pending" and proposal_is_stale(state, proposal),
-                    proposal.resolved_by,
-                )
-                for proposal in state.proposals.values()
-            )
-        )
-        cards = []
-        for name, question_id in sorted(world.card_ids().items()):
-            question = world.store.get_question(question_id)
-            row = _card_row(world, question_id)
-            assert question is not None and row is not None
-            action = json.loads(row["action_json"])
-            result = json.loads(row["result_json"]) if row["result_json"] else None
-            cards.append(
-                (
-                    name,
-                    _PROPOSALS[action["proposal_id"]],
-                    row["running_since"] is not None,
-                    result["outcome"] if result else None,
-                    question.state,
-                    world.clock.iso() >= row["expires_at"],
-                )
-            )
-        thread = world.store.agent_thread(_THREAD)
-        return View(
-            proposals,
-            state.nodes[HYP].status,
-            tuple(cards),
-            thread is not None and thread.closed_at is not None,
-        )
+        return _view(world)
 
     @property
     def rules(self):
         return RULES
+
+
+def _view(world: World) -> View:
+    """The world's view, read once per state: the rules read it after the action too."""
+
+    if world.seen is None:
+        world.seen = _read_view(world)
+    return world.seen
+
+
+def _read_view(world: World) -> View:
+    from rcp.core.validation.proposals import proposal_is_stale
+
+    state = world.graph()
+    proposals = tuple(
+        sorted(
+            (
+                _PROPOSALS[proposal.id],
+                proposal.status,
+                proposal.status == "pending" and proposal_is_stale(state, proposal),
+                proposal.resolved_by,
+            )
+            for proposal in state.proposals.values()
+        )
+    )
+    cards = []
+    for name, question_id in sorted(world.card_ids().items()):
+        question = world.store.get_question(question_id)
+        row = _card_row(world, question_id)
+        assert question is not None and row is not None
+        action = json.loads(row["action_json"])
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        cards.append(
+            (
+                name,
+                _PROPOSALS[action["proposal_id"]],
+                row["running_since"] is not None,
+                result["outcome"] if result else None,
+                question.state,
+                world.clock.iso() >= row["expires_at"],
+            )
+        )
+    thread = world.store.agent_thread(_THREAD)
+    return View(
+        proposals,
+        state.nodes[HYP].status,
+        tuple(cards),
+        thread is not None and thread.closed_at is not None,
+    )
 
 
 def _card_row(world: World, question_id: str):
@@ -745,14 +759,6 @@ def _cards(view) -> dict[str, tuple]:
     return {row[0]: row for row in view.cards}
 
 
-def _after(world: World) -> View:
-    """The world's view; rules run after the action, so it is read once per state."""
-
-    if world.seen is None:
-        world.seen = Proposals.view(Proposals(), world)
-    return world.seen
-
-
 def cards_answer_their_question(world: World) -> list[str]:
     """A settled card's question is answered with its outcome; an open card's stays pending."""
 
@@ -778,7 +784,7 @@ def only_humans_resolve(before, world: World) -> list[str]:
     action = world.action
     assert action is not None
     found = []
-    for name, row in _proposals(_after(world)).items():
+    for name, row in _proposals(_view(world)).items():
         previous = _proposals(before).get(name)
         if previous is None or previous[1] == row[1]:
             continue
@@ -791,14 +797,14 @@ def only_humans_resolve(before, world: World) -> list[str]:
 
 
 def _status_moved(before, world: World) -> bool:
-    after = _proposals(_after(world))
+    after = _proposals(_view(world))
     return any(after[name][1] != row[1] for name, row in _proposals(before).items())
 
 
 def status_changes_only_from_pending(before, world: World) -> list[str]:
     """A Proposal's status changes only while it is pending."""
 
-    after = _proposals(_after(world))
+    after = _proposals(_view(world))
     return [
         f"{name} moved from {row[1]} to {after[name][1]}"
         for name, row in _proposals(before).items()
@@ -828,7 +834,7 @@ def stale_approval_applies_nothing(before, world: World) -> list[str]:
     assert action is not None
     name = _approved_proposal(before, action)
     assert name is not None
-    view = _after(world)
+    view = _view(world)
     found = []
     if view.hypothesis != before.hypothesis:
         found.append(f"stale {name} changed the hypothesis to {view.hypothesis}")
@@ -848,7 +854,7 @@ def _approves_stale(before, world: World) -> bool:
 def cards_are_single_use(before, world: World) -> list[str]:
     """A settled card keeps its outcome and its question's answer."""
 
-    after = _cards(_after(world))
+    after = _cards(_view(world))
     return [
         f"{name} moved from {row[3]}/{row[4]} to {after[name][3]}/{after[name][4]}"
         for name, row in _cards(before).items()
@@ -866,7 +872,7 @@ def stale_only_when_pins_change(before, world: World) -> list[str]:
     action = world.action
     assert action is not None
     name = action.args[0]
-    card = _cards(_after(world))[name]
+    card = _cards(_view(world))[name]
     proposal = _proposals(before)[card[1]]
     moved = proposal[1] != "pending" or proposal[2]
     if (card[3] == "stale") != moved:
@@ -889,7 +895,7 @@ def outage_releases_the_card(before, world: World) -> list[str]:
     action = world.action
     assert action is not None
     name = action.args[0]
-    card = _cards(_after(world))[name]
+    card = _cards(_view(world))[name]
     found = []
     if card[2] or card[3] is not None or card[4] != "pending":
         found.append(f"{name} is {card} after an outage")
@@ -909,7 +915,7 @@ def restart_never_reruns(before, world: World) -> list[str]:
     found = []
     if world.graph().revision != world.revision:
         found.append("restart changed the graph")
-    after = _cards(_after(world))
+    after = _cards(_view(world))
     proposals = _proposals(before)
     for name, row in _cards(before).items():
         if not _crashed(row):
@@ -932,7 +938,7 @@ def cards_pin_a_live_proposal(before, world: World) -> list[str]:
 
     action = world.action
     assert action is not None
-    created = set(_cards(_after(world))) - set(_cards(before))
+    created = set(_cards(_view(world))) - set(_cards(before))
     target = action.args[0]
     proposal = _proposals(before)[target]
     return [
