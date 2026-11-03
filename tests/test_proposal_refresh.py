@@ -7,7 +7,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import ProviderReadiness
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import GatedCard, Patch, Proposal
+from rcp.core.models import GatedCard, Proposal
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.providers.base import ModelChoice
 from rcp.runs.proposal_refresh import proposal_refresh_key
@@ -18,99 +18,19 @@ from tests.helpers import (
     signed_in_client,
     wait_for_task,
 )
+from tests.lifecycles.proposals import EV, HYP, PROPOSAL, append_agent_patch, file_proposal
 from tests.test_api_tasks import _event_frame
-
-HYP = "hyp/replanning-restores-plasticity"
-EV = "ev/replan-ablation"
-PROPOSAL = "prop/activate-replanning"
-
-
-def _agent_patch(service, ops):
-    append_fixture_patch(
-        service,
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Agent change.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=ops,
-        ),
-    )
 
 
 @pytest.fixture
 def filed(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    _agent_patch(
-        service,
-        [
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": EV,
-                        "type": "evidence",
-                        "title": "Replanning ablation",
-                        "observation": "Replanning recovers most plasticity.",
-                        "origin": "analytic",
-                    }
-                ],
-            },
-            {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "id": "edge/replan",
-                        "source": EV,
-                        "target": HYP,
-                        "relation": "supports",
-                        "assessment": {"relevance": "direct", "weight": "moderate"},
-                    }
-                ],
-            },
-        ],
-    )
-    _agent_patch(
-        service,
-        [
-            {
-                "op": "create_proposals",
-                "proposals": [
-                    {
-                        "id": PROPOSAL,
-                        "title": "Activate the replanning hypothesis",
-                        "card": {
-                            "situation_cold": "s",
-                            "why_human_now": "w",
-                            "consequences": "c",
-                            "decision_needed": "d",
-                        },
-                        "ops": [
-                            {
-                                "op": "update_nodes",
-                                "intent": "status_change",
-                                "nodes": [
-                                    {
-                                        "id": HYP,
-                                        "changes": {"status": "active"},
-                                        "cause": {"kind": "evidence_edge", "ref_id": "edge/replan"},
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ],
-            }
-        ],
-    )
+    file_proposal(app.state.service)
     return app
 
 
 def _reword_evidence(service):
-    _agent_patch(
+    append_agent_patch(
         service,
         [{"op": "update_nodes", "nodes": [{"id": EV, "changes": {"observation": "Narrower."}}]}],
     )
@@ -178,7 +98,7 @@ def test_refresh_starts_one_light_work_chat_only_when_stale(filed):
     assert PROPOSAL in task.request["message"] and EV in task.request["message"]
     assert launches == ["node_chat"]
 
-    _agent_patch(
+    append_agent_patch(
         service,
         [{"op": "withdraw_proposals", "proposals": [{"id": PROPOSAL, "reason": "Refiled."}]}],
     )
@@ -189,7 +109,7 @@ def test_cause_evidence_counts_when_its_edge_follows_the_proposal(manifest, tmp_
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    _agent_patch(
+    append_agent_patch(
         service,
         [
             {
