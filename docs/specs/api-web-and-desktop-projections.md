@@ -2347,9 +2347,9 @@ A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
 The attachment fields must be supplied together. A turn needs a nonempty message
 or an `artifact_context`: a comment on an artifact one of this thread's own turns
 produced. It returns 202 with
-`{operation_id}`, 404 for a project or unowned thread or a comment on another
-thread's task, 422 for an invalid or empty artifact comment, or 409 when admission
-refuses, such as a busy thread. It needs a patch-capable identity. Admission
+`{operation_id}`, 404 for a project or unowned thread, 422 for an invalid or empty
+artifact comment or one on another thread's task, or 409 when admission refuses,
+such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.
 Its task reads and controls are `GET /api/agent-threads/{thread_id}/tasks/{operation_id}`
