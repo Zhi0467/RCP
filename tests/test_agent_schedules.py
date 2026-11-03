@@ -6,6 +6,7 @@ import pytest
 
 from rcp.consolidation import next_occurrence
 from rcp.runs.agent_schedules import validate_schedule
+from tests.lifecycles.schedules import build_schedule_store, schedule_command
 
 
 def test_cron_grammar_and_dst():
@@ -58,51 +59,13 @@ def admitted_provider(monkeypatch):
 
 @pytest.fixture
 def schedule_store(tmp_path):
-    from rcp.core.models import AuthorizedHuman
-    from rcp.service import RunRequest, resolve_dispatch_authority
-    from rcp.storage import AppStore
-    from tests.test_storage import _project, _task_record
-
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
-    owner = store.local_owner
-    assert owner is not None
-    store.seat_project_member("project", owner.user_id, seated_by=owner.user_id)
-    request = RunRequest(chat_id="thread", chat_scope="project", mode="work", message="Check daily")
-    task = _task_record(
-        store.now(),
-        operation_id="origin",
-        kind="project_chat",
-        status="succeeded",
-        request=request.model_dump(mode="json"),
-        authorized_by=AuthorizedHuman(
-            space_id=store.space_id, user_id=owner.user_id, display_name="Test Member"
-        ),
-        dispatch_authority=resolve_dispatch_authority("project_chat", request),
-    )
-    store.create_agent_task(task)
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO agent_threads (thread_id,user_id,kind,project_id,created_at) VALUES (?,?,'project','project',?)",
-            ("thread", owner.user_id, store.now()),
-        )
+    store = build_schedule_store(tmp_path / "state.sqlite3")
     yield store
     store.close()
 
 
 def command(key="daily", **arguments):
-    from rcp.agents.command_protocol import ScheduleCommandRequest
-
-    return ScheduleCommandRequest.model_validate(
-        dict(
-            mailbox_id="b" * 32,
-            credential="c" * 64,
-            request_id="a" * 32,
-            verb="schedule",
-            idempotency_key=key,
-            arguments=arguments,
-        )
-    )
+    return schedule_command(key, **arguments)
 
 
 def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_store):
