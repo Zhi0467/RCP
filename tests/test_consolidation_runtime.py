@@ -20,54 +20,19 @@ from rcp.history.queries import StepRecord
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.storage import AgentTaskAdmissionConflict
 from rcp.storage.artifact_models import Artifact
+from tests.lifecycles.consolidation import consolidation_runtime
 
 from .helpers import (
     append_fixture_patch,
-    authorized_human,
-    create_named_app,
     fake_launch_admitted,
     refresh_patch,
-    seed_patch,
     signed_in_client,
 )
 
 
 @pytest.fixture
 def runtime(manifest, tmp_path, monkeypatch):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    now = datetime.fromisoformat(store.now())
-    schedule = store.put_consolidation_schedule(
-        app.state.default_project_id,
-        local_time="02:00",
-        timezone="UTC",
-        authorized_by=authorized_human(app),
-        next_due_at=(now - timedelta(days=3)).isoformat(),
-    )
-    dispatched = []
-
-    def dispatch(operation_id):
-        if store.mark_agent_task_running(operation_id):
-            store.record_agent_task_receipt(operation_id, "agent_launch", {})
-            dispatched.append(operation_id)
-        return store.agent_task(operation_id)
-
-    fake_launch_admitted(monkeypatch, app.state.background_tasks, dispatch)
-    monkeypatch.setattr("rcp.consolidation.seconds_until_automatic_launch", lambda: 0)
-    poller = ConsolidationPoller(
-        store, app.state.background_tasks, service_for=app.state.catalog.open
-    )
-    return SimpleNamespace(
-        app=app,
-        store=store,
-        service=service,
-        poller=poller,
-        schedule=schedule,
-        dispatched=dispatched,
-        now=now,
-    )
+    return consolidation_runtime(manifest.path, tmp_path / "data", monkeypatch)
 
 
 def test_a_run_queued_by_0_4_35_drops_its_request_target_and_launches(runtime, monkeypatch):
