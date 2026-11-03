@@ -56,6 +56,41 @@ class ResolveApprovalBody(BaseModel):
     pinned_sha256: str
 
 
+def _sync_proposal(
+    action: ProposalAction,
+    request: Request,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    identity_access: IdentityAccess,
+    service: ProjectService,
+    pinned_revision: int,
+) -> dict[str, Any]:
+    """Decide the Proposal through the Inbox Sync, appending only at `pinned_revision`."""
+    from rcp.api.sync import sync_graph
+    from rcp.service import GraphSyncRequest
+
+    try:
+        return sync_graph(
+            action.project_id,
+            GraphSyncRequest.model_validate(
+                {
+                    "base_revision": pinned_revision,
+                    "proposals": [action.model_dump(exclude={"kind", "project_id"})],
+                }
+            ),
+            request,
+            catalog=catalog,
+            store=store,
+            identity_access=identity_access,
+            project_display_cache=get_project_display_cache(request),
+            watcher_delivery=get_watcher_delivery(request),
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409 and service.history.state().revision != pinned_revision:
+            raise _NotNow(409, {"code": "graph_changed"}) from exc
+        raise
+
+
 def _execute(
     action: ApprovalAction,
     request_id: str,
@@ -80,31 +115,12 @@ def _execute(
     )
     from rcp.api.episodes import StartEpisodeBody
     from rcp.api.project_state import RepositoryWritableRequest, set_repository_writable
-    from rcp.api.sync import sync_graph
-    from rcp.service import GraphSyncRequest
 
     project_id = action.project_id
     if action.kind == "proposal":
-        try:
-            return sync_graph(
-                project_id,
-                GraphSyncRequest.model_validate(
-                    {
-                        "base_revision": pinned_revision,
-                        "proposals": [action.model_dump(exclude={"kind", "project_id"})],
-                    }
-                ),
-                request,
-                catalog=catalog,
-                store=store,
-                identity_access=identity_access,
-                project_display_cache=get_project_display_cache(request),
-                watcher_delivery=get_watcher_delivery(request),
-            )
-        except HTTPException as exc:
-            if exc.status_code == 409 and service.history.state().revision != pinned_revision:
-                raise _NotNow(409, {"code": "graph_changed"}) from exc
-            raise
+        return _sync_proposal(
+            action, request, store, catalog, identity_access, service, pinned_revision
+        )
     if action.kind == "truth_scope":
         return set_repository_writable(
             project_id,
@@ -290,25 +306,27 @@ def decide_proposal(
             if proposal.status != "pending" or proposal_is_stale(state, proposal):
                 raise _NotNow(409, {"code": "proposal_not_pending"})
             try:
-                _execute(
-                    action,
-                    "",
-                    request,
-                    store,
-                    catalog,
-                    identity_access,
-                    {},
-                    service,
-                    state.revision,
+                synced = _sync_proposal(
+                    action, request, store, catalog, identity_access, service, state.revision
                 )
             except StateUnavailable as exc:
                 raise _NotNow(503, str(exc)) from exc
             except (PatchRejected, ReplayHalted) as exc:
                 raise _NotNow(422, str(exc)) from exc
-            decided = service.history.state().proposals[proposal_id]
+            except _NotNow as exc:
+                if exc.detail == {"code": "graph_changed"} and not _still_pending(
+                    service, proposal_id
+                ):
+                    raise _NotNow(409, {"code": "proposal_not_pending"}) from exc
+                raise
     except _NotNow as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return {"proposal_id": proposal_id, "status": decided.status}
+    return {"proposal_id": proposal_id, "status": synced["proposals"][proposal_id]["status"]}
+
+
+def _still_pending(service: ProjectService, proposal_id: str) -> bool:
+    proposal = service.history.state().proposals.get(proposal_id)
+    return proposal is not None and proposal.status == "pending"
 
 
 @router.post("/api/approval-cards/proposals/{project_id}/{proposal_id:path}")
@@ -324,6 +342,8 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
     try:
         decide_proposal(request, action["project_id"], action["proposal_id"], "rejected")
     except HTTPException as exc:
+        if exc.detail == {"code": "proposal_not_pending"}:
+            return {}
         return {"rejected": False, "reason": _reason(exc.detail)}
     return {"rejected": True}
 
@@ -372,14 +392,16 @@ def resolve_approval_card(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     store.settle_approval_card(question_id, result, resolved_by=human)
     action = card["action"]
-    if (
-        result["outcome"] == "declined"
-        and action["kind"] == "proposal"
-        and action["decision"] == "approved"
-    ):
-        result = {**result, **_declined_rejection(request, card)}
     try:
-        request.app.state.reconcile_question_answers(question.origin.project_id)
-    except Exception:
-        logger.exception("Approval card %s settled; immediate delivery failed", question_id)
+        if (
+            result["outcome"] == "declined"
+            and action["kind"] == "proposal"
+            and action["decision"] == "approved"
+        ):
+            result = {**result, **_declined_rejection(request, card)}
+    finally:
+        try:
+            request.app.state.reconcile_question_answers(question.origin.project_id)
+        except Exception:
+            logger.exception("Approval card %s settled; immediate delivery failed", question_id)
     return result

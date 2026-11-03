@@ -71,7 +71,7 @@ def test_a_declined_approval_rejects_its_proposal(tmp_path: Path) -> None:
 
 
 def test_a_card_decision_on_a_stale_proposal_is_refused(tmp_path: Path) -> None:
-    """Without the staleness check, a card tap approves a Proposal whose cause moved."""
+    """Without the staleness check, a card tap on a moved Proposal is not refused as stale."""
 
     with mock.patch("rcp.api.approval_cards.proposal_is_stale", lambda *_: False):
         reported = witness(

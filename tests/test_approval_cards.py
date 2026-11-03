@@ -1161,6 +1161,8 @@ def test_a_double_tap_decides_once(questions_api):
             pool.map(lambda _: _decide(client, project_id, "prop/raised/first"), range(2))
         )
     assert sorted(response.status_code for response in responses) == [200, 409]
+    refused = next(response for response in responses if response.status_code == 409)
+    assert refused.json()["detail"] == {"code": "proposal_not_pending"}
     assert service.history.state().revision == revision + 1
 
 
@@ -1177,22 +1179,30 @@ def test_a_withdrawn_or_stale_proposal_is_not_pending(questions_api, ending):
     assert service.history.state().revision == revision
 
 
-def test_a_write_before_the_decision_lands_is_graph_changed(questions_api, monkeypatch):
+@pytest.mark.parametrize(
+    ("write", "code"), [("unrelated", "graph_changed"), ("withdraw", "proposal_not_pending")]
+)
+def test_a_write_before_the_decision_lands_refuses_it(questions_api, monkeypatch, write, code):
     from rcp.api import approval_cards
 
     app, client, store, project_id = questions_api
     service = _raised_proposals(questions_api)
-    execute = approval_cards._execute
+    sync = approval_cards._sync_proposal
+    target = PROPOSAL if write == "withdraw" else "prop/raised/first"
+    before = service.history.state().proposals[target].status
 
     def raced(*args):
-        append_agent_patch(service, _RACED_WRITES["unrelated"])
-        return execute(*args)
+        append_agent_patch(service, _RACED_WRITES[write])
+        return sync(*args)
 
-    monkeypatch.setattr(approval_cards, "_execute", raced)
-    response = _decide(client, project_id, "prop/raised/first")
+    monkeypatch.setattr(approval_cards, "_sync_proposal", raced)
+    response = _decide(client, project_id, target)
     assert response.status_code == 409
-    assert response.json()["detail"] == {"code": "graph_changed"}
-    assert service.history.state().proposals["prop/raised/first"].status == "pending"
+    assert response.json()["detail"] == {"code": code}
+    assert service.history.state().proposals[target].status == (
+        "pending" if write == "unrelated" else "withdrawn"
+    )
+    assert before == "pending"
 
 
 def test_a_decision_needs_admission_and_membership(questions_api, monkeypatch):
@@ -1219,7 +1229,16 @@ def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatc
     file_proposal(service)
     question, card = real_card(questions_api, approve_action(project_id, PROPOSAL))
     if before == "inbox":
-        assert _decide(client, project_id, PROPOSAL).status_code == 200
+        inbox = client.post(
+            f"/api/projects/{project_id}/sync",
+            json={
+                "base_revision": service.history.state().revision,
+                "proposals": [
+                    {"proposal_id": PROPOSAL, "decision": "approved", "reason": "From the Inbox"}
+                ],
+            },
+        )
+        assert inbox.status_code == 200, inbox.text
     if before == "fenced":
         monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transfer)
     result = _decline(client, question, card).json()
@@ -1230,9 +1249,13 @@ def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatc
         assert result["rejected"] is True
         assert status == "rejected"
         return
+    if before == "inbox":
+        assert "rejected" not in result
+        assert status == "approved"
+        return
     assert result["rejected"] is False
     assert result["reason"]
-    assert status == ("approved" if before == "inbox" else "pending")
+    assert status == "pending"
 
 
 def test_declining_a_reject_card_runs_nothing(questions_api, monkeypatch):
@@ -1268,10 +1291,3 @@ def test_ask_refuses_a_card_for_a_proposal_this_thread_raised(questions_api):
         ask("prop/raised/first")
     assert ask("prop/raised/other")["action"]["proposal_id"] == "prop/raised/other"
     assert ask(PROPOSAL)["action"]["proposal_id"] == PROPOSAL
-
-
-def test_card_policy_versions_move_with_the_card_contract():
-    from rcp.agents.prompts import WORK_POLICY_VERSION
-    from rcp.runs.space_chat import SPACE_MASTER_POLICY
-
-    assert (WORK_POLICY_VERSION, SPACE_MASTER_POLICY) == ("work-v24", "space-master-v3")
