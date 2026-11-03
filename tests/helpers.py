@@ -353,6 +353,65 @@ def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHum
     )
 
 
+def experiment_run_task(
+    store: AppStore,
+    operation_id: str,
+    episode_id: str,
+    *,
+    project_id: str = "project",
+    control_node_id: str = "experiment-node",
+    ceiling: int = 1,
+    request_fields: dict[str, Any] | None = None,
+    **fields: Any,
+) -> AgentTaskRecord:
+    """A queued first Experiment-loop turn, shaped as the Run route admits it."""
+
+    from rcp.service import RunRequest
+
+    now = store.now()
+    request = RunRequest(
+        provider="codex",
+        run_on="laptop",
+        chat_id=f"experiment-{episode_id}",
+        chat_scope="node",
+        node_id=control_node_id,
+        message="Run the bounded experiment.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id=control_node_id,
+        control_revision=0,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=ceiling,
+        control_decision_bundle=[],
+        control_completion_criteria=[],
+    )
+    fields.setdefault("authorized_by", authorized_human(store))
+    return AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        kind="node_chat",
+        status="queued",
+        request={**request.model_dump(mode="json"), **(request_fields or {})},
+        created_at=now,
+        updated_at=now,
+        status_message="Queued",
+        **fields,
+    )
+
+
+def start_experiment_episode(
+    store: AppStore, operation_id: str, episode_id: str, **kwargs: Any
+) -> AgentTaskRecord:
+    """Admit an Experiment episode and its first paid turn through the Run route's store call."""
+
+    return store.create_experiment_episode_with_invocation(
+        experiment_run_task(store, operation_id, episode_id, **kwargs)
+    )
+
+
 def fake_launch_admitted(
     monkeypatch: pytest.MonkeyPatch,
     tasks: BackgroundAgentTasks,

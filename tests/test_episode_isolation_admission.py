@@ -549,14 +549,22 @@ def test_reservation_fences_graph_mutations_without_task(manifest, tmp_path):
 
 
 def test_merge_waits_for_live_binding_turn(manifest, tmp_path):
-    from .test_episode_storage import _operational_task
+    from rcp.core.models import EpisodeMergeAttempt
 
-    store, owner, attempt = _merge_owner(manifest, tmp_path)
-    store.allocate_episode_invocation("owner", _operational_task(store, "turn", episode_id="owner"))
+    from .helpers import start_experiment_episode
+
+    store = _store(manifest, tmp_path)
+    owner_id = str(uuid.uuid4())
+    turn = start_experiment_episode(store, "turn", owner_id)
+    store.create_episode_isolation("project", EpisodeIsolation(owner_episode_id=owner_id))
+    store.set_episode_isolation_status(
+        "project", owner_id, expected_status="creating", status="ready"
+    )
+    attempt = EpisodeMergeAttempt(attempt_id="merge-one", authorized_by=turn.authorized_by)
     with pytest.raises(ValueError) as error:
-        store.reserve_episode_merge("project", "owner", attempt)
+        store.reserve_episode_merge("project", owner_id, attempt)
     assert error.value.args == ("episode_binding_live_turns",)
-    assert store.episode_isolation_state("project", "owner").merge_reservation is None
+    assert store.episode_isolation_state("project", owner_id).merge_reservation is None
 
 
 def test_existing_merge_task_blocks_owner_reservation(manifest, tmp_path, monkeypatch):

@@ -311,7 +311,7 @@ class AgentTask:
         EpisodeStoreMixin.fail_episode_report_allocation_unlaunchable,
         EpisodeStoreMixin.finish_episode_report_ready,
         EpisodeStoreMixin.mark_episode_report_attempt_running,
-        EpisodeStoreMixin.requeue_interrupted_episode_report_allocation,
+        EpisodeStoreMixin.retry_episode_report_allocation,
         _migrate_campaign_episodes,
         ProjectStoreMixin.delete_project_records,
         ProjectStoreMixin.migrate_legacy_project_data,
@@ -374,9 +374,7 @@ class AgentTask:
         ),
         EpisodeStoreMixin.finish_episode_report_ready: "driven by the episode explorer",
         EpisodeStoreMixin.mark_episode_report_attempt_running: "driven by the episode explorer",
-        EpisodeStoreMixin.requeue_interrupted_episode_report_allocation: (
-            "driven by the episode explorer"
-        ),
+        EpisodeStoreMixin.retry_episode_report_allocation: "driven by the episode explorer",
         ProjectStoreMixin.delete_project_records: "the project deletion catalog machine",
         ProviderLoginStoreMixin.assign_provider_login: (
             "the provider launcher assigns logins; scripted streams skip it"

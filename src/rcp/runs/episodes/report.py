@@ -29,7 +29,7 @@ def start_episode_report(
     tasks: BackgroundAgentTasks,
     episode_id: str,
 ) -> AgentTaskRecord | None:
-    """Launch or restart the one durable hidden allocation for an episode."""
+    """Launch the episode's current hidden report task, retrying a stopped one."""
 
     if seconds_until_automatic_launch() > 0:
         # A report launched in a short wake loses its link and can spend its
@@ -65,7 +65,7 @@ def start_episode_report(
             )
         except AdmissionRefused:
             return None
-    task = store.requeue_interrupted_episode_report_allocation(episode_id)
+    task = store.retry_episode_report_allocation(episode_id)
     if task.status != "queued":
         return None
     if episode.mode == "auto_research" and store.auto_research_report_has_later_child_work(

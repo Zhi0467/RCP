@@ -7,7 +7,7 @@ from rcp.storage.experiments import ExperimentStoreMixin
 from tests.lifecycles.engine import Action, explore, witness
 from tests.lifecycles.episode import Episode
 
-STATES = 33
+STATES = 36
 
 
 def _root(tmp_path: Path) -> Path:

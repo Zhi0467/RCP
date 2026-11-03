@@ -27,7 +27,7 @@ Actions and the product calls they make:
   app's ``after_task_settled`` and so reconciles the episode. The verdict and
   the ``finally`` block are one action: splitting them doubles the space past
   the budget, and the agent task explorer owns that race.
-- ``report P0 start|ready|error``: the report stream's
+- ``report P<n> start|ready|error``: the report stream's
   ``allocate_episode_report_attempt`` and ``mark_episode_report_attempt_running``,
   then ``finish_episode_report_ready`` or ``record_episode_report_attempt_error``;
   the task's last call ends its worker.
@@ -51,7 +51,8 @@ no rule reads it. Bound 3 with horizon 2 is the minimum that checks the goal
 from the wrap-up the exit reaches at depth 1.
 
 Views name each turn by lineage: ``R`` for the root's chain, ``K`` for the
-wake's, ``P0`` for the hidden report task. Coverage reads only this machine's
+wake's, ``P0`` for the hidden report task and ``P1`` for the task a restart
+retries it on. Coverage reads only this machine's
 own status types; ``AgentTaskStatus`` belongs to the agent task explorer, and
 report attempt statuses share values with the episode's, which a flat
 ``unreached_values`` cannot tell apart.
@@ -655,7 +656,6 @@ _UNMODELED = {
     EpisodeStoreMixin._insert_episode: "start seeds the one episode",
     ExperimentStoreMixin.create_experiment_episode_with_invocation: "start seeds the one episode",
     WatcherStoreMixin._insert_watcher: "start arms the one observer",
-    EpisodeStoreMixin.allocate_episode_invocation: "no caller in src/rcp",
     EpisodeStoreMixin.end_episode_without_report: (
         "an ending with no provider session; the model's episode is bound to one"
     ),
@@ -731,7 +731,10 @@ class World:
         return episode
 
     def lineage(self) -> dict[str, str]:
-        """Each task's positional name: ``R`` the root, ``K`` then ``L`` wakes, ``P`` the report."""
+        """Each task's positional name: ``R`` the root, ``K`` then ``L`` wakes, ``P`` the report.
+
+        A report task's digit counts the report tasks it retries.
+        """
 
         with self.store.connection() as connection:
             rows = connection.execute(
@@ -746,7 +749,10 @@ class World:
         names: dict[str, str] = {}
         for operation_id in parents:
             if kinds[operation_id] == "episode_report":
-                names[operation_id] = "P0"
+                depth, cursor = 0, parents[operation_id]
+                while kinds.get(cursor) == "episode_report":
+                    depth, cursor = depth + 1, parents[cursor]
+                names[operation_id] = f"P{depth}"
                 continue
             depth, cursor = 0, operation_id
             while parents.get(cursor) is not None:
@@ -795,7 +801,7 @@ class Episode:
         EpisodeStoreMixin.begin_episode_wrapup,
         EpisodeStoreMixin.finish_episode_report_ready,
         EpisodeStoreMixin.mark_episode_report_attempt_running,
-        EpisodeStoreMixin.requeue_interrupted_episode_report_allocation,
+        EpisodeStoreMixin.retry_episode_report_allocation,
         ExperimentStoreMixin._claim_experiment_watchers,
         ExperimentStoreMixin._commit_experiment_episode_turn,
         ExperimentStoreMixin._settle_experiment_loop_stop,
