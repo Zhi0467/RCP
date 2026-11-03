@@ -19,15 +19,71 @@ from rcp.approval_actions import (
     ProposalAction,
     TruthScopeAction,
 )
-from rcp.core.models import AuthorizedHuman, GraphState
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.attention import project_graph_attention
+from rcp.core.models import AuthorizedHuman, GraphState, Proposal
+from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
+from rcp.runs.shared import turn_first_attempt
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.agent_threads import bound_thread
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
+from rcp.storage.models import ProjectRecord
 from rcp.storage.question_models import QuestionOrigin
 from rcp.transport.state import StateUnavailable
+
+PROPOSAL_CARD_SHOWN = "proposal_card_shown"
+
+
+class ProposalCardView(BaseModel):
+    """A pending Proposal a turn of the member's own project thread raised, drawn live."""
+
+    project_id: str
+    project_name: str
+    thread_id: str
+    turn_id: str
+    turn_created_at: str
+    proposal: dict[str, Any]
+    stale: bool
+    changes: list[ProposalActionLine]
+
+
+def raising_turn(
+    store: AppStore, proposal: Proposal
+) -> tuple[AgentTaskRecord, AgentThreadRecord] | None:
+    """The task that raised a Proposal and the member thread it is a turn of, if any."""
+    operation_id = proposal.created_by_operation_id
+    task = store.agent_task(operation_id) if operation_id else None
+    thread = bound_thread(store, task) if task is not None else None
+    return (task, thread) if task is not None and thread is not None else None
+
+
+def proposal_cards(
+    store: AppStore, project: ProjectRecord, state: GraphState, threads: list[AgentThreadRecord]
+) -> list[ProposalCardView]:
+    """Cards for the pending Proposals that turns of `threads` raised; writes nothing."""
+    attention = project_graph_attention(state)
+    wanted = {thread.thread_id for thread in threads}
+    cards = []
+    for proposal_id in attention.pending_proposal_ids:
+        proposal = state.proposals[proposal_id]
+        raised = raising_turn(store, proposal)
+        if raised is None or raised[1].thread_id not in wanted:
+            continue
+        turn = turn_first_attempt(store, raised[0])
+        cards.append(
+            ProposalCardView(
+                project_id=project.project_id,
+                project_name=project.name,
+                thread_id=raised[1].thread_id,
+                turn_id=turn.operation_id,
+                turn_created_at=turn.created_at,
+                proposal=proposal.model_dump(mode="json"),
+                stale=proposal_id in attention.stale_proposal_ids,
+                changes=attention.proposal_actions.get(proposal_id, []),
+            )
+        )
+    return cards
 
 
 def approval_card_member(store: AppStore, task: AgentTaskRecord) -> AuthorizedHuman | None:
@@ -74,6 +130,11 @@ def approval_card_for_ask(
         None,
     )
     existing = store.approval_card(previous.question_id) if previous else None
+    if existing is None and action.kind == "proposal":
+        proposal = service.history.state().proposals.get(action.proposal_id)
+        raised = raising_turn(store, proposal) if proposal is not None else None
+        if raised is not None and raised[1].thread_id == thread.thread_id:
+            raise ValueError(PROPOSAL_CARD_SHOWN)
     try:
         pinned = (
             existing["pinned"] if existing else approval_card_pins(service, store, action, member)
@@ -167,7 +228,9 @@ def approved_receipt(response: object) -> dict[str, Any]:
 APPROVAL_OUTCOMES: dict[ApprovalOutcome, str] = {
     "approved": "RCP ran the action as the member; result names any episode_id or "
     "operation_id it created.",
-    "declined": "the member said no; do not ask again unless they change their mind.",
+    "declined": "the member said no; do not ask again unless they change their mind. "
+    "Declining a card that approves a Proposal also tries to reject that Proposal; read "
+    "its status from graph state.",
     "stale": "the pinned facts changed before the tap; recheck and ask again with a new key.",
     "expired": "nobody tapped in time or the thread closed; ask again with a new key if "
     "it still matters.",
@@ -196,9 +259,11 @@ def approval_card_usage(client: str) -> str:
         "--question <reason> --action '<JSON>'. Do not supply choices or multiple; "
         "RCP creates Approve and Decline controls. Action kind is "
         + "; ".join(_action_usage(model) for model in models)
-        + ". Every action includes this thread's project_id. A proposal card decides a "
-        "Proposal already pending on main; one this turn's Patch raises is pending only "
-        "after the turn ends, so offer its card on the next turn. Only the member's card tap "
+        + ". Every action includes this thread's project_id. The member already gets a card "
+        "for every Proposal this thread's turns raise once it is pending on main, so never "
+        "ask for one; that ask is refused with "
+        f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
+        "Proposal this thread did not raise. Only the member's card tap "
         "executes the action; a plain answer grants no authority. The question snapshot "
         f"shows each card's action and result. Outcomes: {outcomes}"
     )

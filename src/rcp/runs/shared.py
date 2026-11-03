@@ -57,7 +57,7 @@ from rcp.transport.state import (
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
-    from rcp.storage import RunStageLifecycleRecord
+    from rcp.storage import AgentTaskRecord, AppStore, RunStageLifecycleRecord
 
 _STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
 _LOCAL_STAGE_DIRECTORY_FLAGS = (
@@ -1431,3 +1431,15 @@ def _stage_context_paths(
 
 def _sse(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
+
+
+def turn_first_attempt(store: AppStore, task: AgentTaskRecord) -> AgentTaskRecord:
+    """The first attempt of the turn `task` retries, walking parents until none is known."""
+    seen = {task.operation_id}
+    while task.parent_operation_id and task.parent_operation_id not in seen:
+        parent = store.agent_task(task.parent_operation_id)
+        if parent is None:
+            break
+        seen.add(parent.operation_id)
+        task = parent
+    return task

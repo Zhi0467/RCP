@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Literal, Self
@@ -36,6 +38,7 @@ from rcp.api.chats import (
     set_chat_browser,
 )
 from rcp.api.dependencies import project_write_admission
+from rcp.api.questions import _serialize_all
 from rcp.api.tasks import (
     BackgroundTasksDependency,
     RetryAgentTaskRequest,
@@ -51,6 +54,7 @@ from rcp.api.tasks import (
 from rcp.attachments import ChatAttachmentUpload
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
+from rcp.history import ReplayHalted
 from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
@@ -61,6 +65,7 @@ from rcp.runs.agent_threads import (
     thread_projections,
     thread_scope_id,
 )
+from rcp.runs.approval_cards import ProposalCardView, proposal_cards
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
@@ -72,8 +77,10 @@ from rcp.storage.agent_threads import (
     thread_binds_task,
 )
 from rcp.storage.chat_names import ChatNameError
+from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def owned_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
@@ -113,6 +120,77 @@ def agent_threads(request: Request, *, store: StoreDependency, identity_access: 
     rows.sort(key=lambda row: str(row["last_activity_at"] or ""), reverse=True)
     rows.sort(key=lambda row: row["kind"] != "space")
     return {"threads": rows}
+
+
+def _card_threads(store: AppStore, user_id: str, thread_id: str | None) -> list[AgentThreadRecord]:
+    """The member's open, shown project threads, or the one named, that carry cards."""
+    if thread_id is not None:
+        threads = [owned_thread(store, thread_id, user_id)]
+    else:
+        projects = store.member_project_ids(user_id)
+        threads = [
+            thread for thread in store.agent_threads(user_id) if thread.project_id in projects
+        ]
+    return [
+        thread
+        for thread in threads
+        if thread.kind == "project"
+        and thread.project_id is not None
+        and thread.closed_at is None
+        and not store.chat_archived(thread.project_id, thread.thread_id)
+    ]
+
+
+@router.get("/api/agent-threads/cards")
+def agent_thread_cards(
+    request: Request,
+    thread_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+):
+    """Open approval cards of the member's project threads: Proposal cards drawn from each
+    project's local display snapshot, and asked cards from the question list.
+
+    A member-wide read skips a project whose snapshot cannot be read; a named thread's
+    unreadable project is a 503.
+    """
+    user_id = identity_access.acting_user(request).user_id
+    by_project: dict[str, list[AgentThreadRecord]] = defaultdict(list)
+    for thread in _card_threads(store, user_id, thread_id):
+        assert thread.project_id is not None
+        by_project[thread.project_id].append(thread)
+    drawn: list[ProposalCardView] = []
+    asked = []
+    for project_id, threads in by_project.items():
+        project = store.project(project_id)
+        if project is None:
+            continue
+        try:
+            state = catalog.open_display(project_id).history.state()
+        except (StateUnavailable, ReplayHalted, OSError, KeyError) as exc:
+            if thread_id is not None:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            logger.warning("Cards skipped project %s: %s", project_id, exc)
+        else:
+            drawn.extend(proposal_cards(store, project, state, threads))
+        for thread in threads:
+            pending = [
+                question
+                for question in store.list_questions(
+                    project_id=project_id, owner_kind="chat", owner_id=thread.thread_id
+                )
+                if question.state == "pending"
+            ]
+            asked.extend(
+                {**row.model_dump(mode="json"), "project_name": project.name}
+                for row in _serialize_all(store, pending)
+                if row.card is not None and row.can_answer
+            )
+    drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
+    asked.sort(key=lambda row: row["created_at"], reverse=True)
+    return {"proposal_cards": drawn, "asked_cards": asked}
 
 
 class SpaceReference(BaseModel):

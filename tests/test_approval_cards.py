@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from typing import cast
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -976,3 +977,301 @@ def test_a_write_between_pin_check_and_sync_never_decides_unseen_pins(
     retap = client.post(url, json=body).json()
     assert retap["outcome"] == ("approved" if competing == "unrelated" else "stale")
     assert store.get_question(question.question_id).answer == retap["outcome"]
+
+
+def _thread_turn(store, project_id, operation_id, *, human, thread_id="private", parent=None):
+    """A finished Work turn of the private thread, authorized by `human`."""
+    from rcp.service import RunRequest, resolve_dispatch_authority
+    from rcp.storage import AgentTaskRecord
+
+    request = RunRequest(
+        chat_scope="project",
+        chat_id=thread_id,
+        message="File it.",
+        mode="work",
+        provider="codex",
+        run_truth_scope=["repo-a"],
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request=request.model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Done",
+            authorized_by=human,
+            dispatch_authority=resolve_dispatch_authority("project_chat", request),
+            parent_operation_id=parent,
+        )
+    )
+
+
+def _raised_proposals(questions_api):
+    """Proposals on main: two from the member's thread turns, one from another member's turn
+    in the same chat, one decided, and the fixture's own.
+    """
+    from tests.helpers import authorized_human
+    from tests.lifecycles.proposals import proposal_filing
+
+    app, client, store, project_id = questions_api
+    api_card(questions_api)
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    member = authorized_human(app)
+    other = AuthorizedHuman(space_id=store.space_id, user_id=str(uuid4()), display_name="Other")
+    _thread_turn(store, project_id, "turn-a", human=member)
+    _thread_turn(store, project_id, "turn-a-retry", human=member, parent="turn-a")
+    _thread_turn(store, project_id, "turn-other", human=other)
+    _thread_turn(store, project_id, "turn-b", human=member)
+    raised = {
+        "prop/raised/first": "turn-a",
+        "prop/raised/retried": "turn-a-retry",
+        "prop/raised/other": "turn-other",
+        "prop/raised/decided": "turn-b",
+        "prop/raised/later": "turn-b",
+    }
+    for proposal_id, operation_id in raised.items():
+        append_agent_patch(
+            service, [proposal_filing(proposal_id)], source_operation_id=operation_id
+        )
+    decide = client.post(
+        f"/api/approval-cards/proposals/{project_id}/prop%2Fraised%2Fdecided",
+        json={"decision": "rejected"},
+    )
+    assert decide.status_code == 200, decide.text
+    return service
+
+
+def test_thread_cards_are_this_threads_pending_proposals(questions_api):
+    app, client, store, project_id = questions_api
+    _raised_proposals(questions_api)
+    body = client.get("/api/agent-threads/cards", params={"thread_id": "private"}).json()
+    cards = body["proposal_cards"]
+    ids = [card["proposal"]["id"] for card in cards]
+    assert ids[0] == "prop/raised/later"
+    assert set(ids[1:]) == {"prop/raised/retried", "prop/raised/first"}
+    turns = {card["proposal"]["id"]: card["turn_id"] for card in cards}
+    assert turns["prop/raised/retried"] == turns["prop/raised/first"] == "turn-a"
+    card = cards[0]
+    assert (card["project_id"], card["thread_id"], card["stale"]) == (project_id, "private", False)
+    assert card["project_name"] == store.project(project_id).name
+    assert card["turn_created_at"] == store.agent_task("turn-b").created_at
+    assert card["changes"]
+    assert client.get("/api/agent-threads/cards").json()["proposal_cards"] == cards
+
+
+def test_space_closed_and_archived_threads_have_no_cards(questions_api):
+    app, client, store, project_id = questions_api
+    _raised_proposals(questions_api)
+    space = next(
+        thread
+        for thread in store.ensure_agent_threads(
+            store.local_owner.user_id, [], default_names=("Pip",)
+        )
+        if thread.kind == "space"
+    )
+    empty = {"proposal_cards": [], "asked_cards": []}
+    assert client.get(f"/api/agent-threads/cards?thread_id={space.thread_id}").json() == empty
+    store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=True)
+    assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty
+    assert client.get("/api/agent-threads/cards").json() == empty
+    store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=False)
+    store.close_agent_thread("private", reason="access_lost")
+    assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty
+    assert client.get("/api/agent-threads/cards").json()["proposal_cards"] == []
+
+
+def test_member_cards_skip_an_unreadable_project_and_list_open_asked_cards(
+    questions_api, monkeypatch
+):
+    from rcp.transport.state import StateUnavailable
+
+    app, client, store, project_id = questions_api
+    _raised_proposals(questions_api)
+    open_card, _ = api_card(questions_api)
+    origin = open_card.origin
+
+    def asked(key):
+        return store.create_or_get_question(
+            origin=origin,
+            key=key,
+            question="Allow?",
+            choices=["Approve", "Decline"],
+            card={
+                "action": {"kind": "merge_branch", "project_id": project_id, "branch_id": key},
+                "pinned": {},
+            },
+        )
+
+    claimed, expired, declined = asked("claimed"), asked("expired"), asked("declined")
+    assert store.claim_approval_card(claimed.question_id)
+    store.settle_approval_card(declined.question_id, {"outcome": "declined"})
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET expires_at=? WHERE question_id=?",
+            (store.now(), expired.question_id),
+        )
+
+    def unreadable(_project_id):
+        raise StateUnavailable("offline")
+
+    monkeypatch.setattr(app.state.catalog, "open_display", unreadable)
+    assert client.get("/api/agent-threads/cards?thread_id=private").status_code == 503
+    body = client.get("/api/agent-threads/cards").json()
+    assert body["proposal_cards"] == []
+    assert [row["question_id"] for row in body["asked_cards"]] == [
+        claimed.question_id,
+        open_card.question_id,
+    ]
+    assert {row["project_name"] for row in body["asked_cards"]} == {store.project(project_id).name}
+    assert body["asked_cards"][0]["card"]["state"] == "running"
+
+
+def _decide(client, project_id, proposal_id, decision="approved"):
+    from urllib.parse import quote
+
+    return client.post(
+        f"/api/approval-cards/proposals/{project_id}/{quote(proposal_id, safe='')}",
+        json={"decision": decision},
+    )
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+def test_a_proposal_card_decides_once(questions_api, decision):
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    response = _decide(client, project_id, "prop/raised/first", decision)
+    assert response.json() == {"proposal_id": "prop/raised/first", "status": decision}
+    proposal = service.history.state().proposals["prop/raised/first"]
+    assert (proposal.status, proposal.resolved_by) == (decision, "human")
+    again = _decide(client, project_id, "prop/raised/first", decision)
+    assert again.status_code == 409
+    assert again.json()["detail"] == {"code": "proposal_not_pending"}
+
+
+def test_a_double_tap_decides_once(questions_api):
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    revision = service.history.state().revision
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(
+            pool.map(lambda _: _decide(client, project_id, "prop/raised/first"), range(2))
+        )
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert service.history.state().revision == revision + 1
+
+
+@pytest.mark.parametrize("ending", ["withdraw", "stale"])
+def test_a_withdrawn_or_stale_proposal_is_not_pending(questions_api, ending):
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    write = _RACED_WRITES["withdraw"] if ending == "withdraw" else _RACED_WRITES["reword"]
+    append_agent_patch(service, write)
+    revision = service.history.state().revision
+    response = _decide(client, project_id, PROPOSAL)
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"code": "proposal_not_pending"}
+    assert service.history.state().revision == revision
+
+
+def test_a_write_before_the_decision_lands_is_graph_changed(questions_api, monkeypatch):
+    from rcp.api import approval_cards
+
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    execute = approval_cards._execute
+
+    def raced(*args):
+        append_agent_patch(service, _RACED_WRITES["unrelated"])
+        return execute(*args)
+
+    monkeypatch.setattr(approval_cards, "_execute", raced)
+    response = _decide(client, project_id, "prop/raised/first")
+    assert response.status_code == 409
+    assert response.json()["detail"] == {"code": "graph_changed"}
+    assert service.history.state().proposals["prop/raised/first"].status == "pending"
+
+
+def test_a_decision_needs_admission_and_membership(questions_api, monkeypatch):
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transfer)
+    assert _decide(client, project_id, "prop/raised/first").status_code == 409
+    monkeypatch.setattr(store, "is_project_member", lambda *_: False)
+    assert _decide(client, project_id, "prop/raised/first").status_code == 404
+    assert service.history.state().proposals["prop/raised/first"].status == "pending"
+
+
+def _decline(client, question, card):
+    return client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": "decline", "pinned_sha256": card["pinned_sha256"]},
+    )
+
+
+@pytest.mark.parametrize("before", ["none", "inbox", "fenced"])
+def test_declining_an_approve_card_rejects_or_says_why(questions_api, monkeypatch, before):
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    question, card = real_card(questions_api, approve_action(project_id, PROPOSAL))
+    if before == "inbox":
+        assert _decide(client, project_id, PROPOSAL).status_code == 200
+    if before == "fenced":
+        monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_transfer)
+    result = _decline(client, question, card).json()
+    assert result["outcome"] == "declined"
+    assert store.get_question(question.question_id).answer == "declined"
+    status = service.history.state().proposals[PROPOSAL].status
+    if before == "none":
+        assert result["rejected"] is True
+        assert status == "rejected"
+        return
+    assert result["rejected"] is False
+    assert result["reason"]
+    assert status == ("approved" if before == "inbox" else "pending")
+
+
+def test_declining_a_reject_card_runs_nothing(questions_api, monkeypatch):
+    from rcp.api import approval_cards
+
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    action = {**approve_action(project_id, PROPOSAL), "decision": "rejected"}
+    question, card = real_card(questions_api, action)
+    monkeypatch.setattr(approval_cards, "decide_proposal", lambda *_: pytest.fail("decided"))
+    assert _decline(client, question, card).json() == {"outcome": "declined"}
+    assert service.history.state().proposals[PROPOSAL].status == "pending"
+
+
+def test_ask_refuses_a_card_for_a_proposal_this_thread_raised(questions_api):
+    from rcp.runs.approval_cards import approval_card_for_ask
+    from tests.helpers import authorized_human
+    from tests.test_ask_protocol import ask_request
+
+    app, client, store, project_id = questions_api
+    service = _raised_proposals(questions_api)
+    question, _ = api_card(questions_api)
+    member = authorized_human(app)
+
+    def ask(proposal_id):
+        request = ask_request(
+            arguments={"question": "Approve?", "action": approve_action(project_id, proposal_id)}
+        )
+        return approval_card_for_ask(store, request, question.origin, service, member)
+
+    with pytest.raises(ValueError, match="proposal_card_shown"):
+        ask("prop/raised/first")
+    assert ask("prop/raised/other")["action"]["proposal_id"] == "prop/raised/other"
+    assert ask(PROPOSAL)["action"]["proposal_id"] == PROPOSAL
+
+
+def test_card_policy_versions_move_with_the_card_contract():
+    from rcp.agents.prompts import WORK_POLICY_VERSION
+    from rcp.runs.space_chat import SPACE_MASTER_POLICY
+
+    assert (WORK_POLICY_VERSION, SPACE_MASTER_POLICY) == ("work-v24", "space-master-v3")
