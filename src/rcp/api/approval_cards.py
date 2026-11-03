@@ -351,7 +351,8 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
     except HTTPException as exc:
         if exc.detail != {"code": "proposal_not_pending"}:
             return {"rejected": False, "reason": _reason(exc.detail)}
-        if _still_pending(get_catalog(request).open(action["project_id"]), action["proposal_id"]):
+        catalog = get_catalog(request)
+        if _still_pending(catalog.open(action["project_id"]), action["proposal_id"]):
             return {
                 "rejected": False,
                 "reason": "The Proposal is out of date; decide it in the Inbox.",
