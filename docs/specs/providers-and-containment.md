@@ -1875,8 +1875,9 @@ from the same resolved verbs the handler enforces.
 The prompt renders one write boundary from the composite scope. The provider
 receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without
 local write projects retains the local account's default secret and private
-transcript protections. A union over `HIDDEN_READ_PATH_MAX_COUNT` refuses with
-`too_many_hidden_folders`.
+transcript protections. A project whose policy would take the union over
+`HIDDEN_READ_PATH_MAX_COUNT` is left out with `policy_conflict`; its
+`space_project_not_admitted` receipt carries `too_many_hidden_folders`.
 
 Collection reads `patch.json` and `watch.json` at the stage top level and in
 each `projects/<id>` folder, plus the top-level `outcome.json` for the turn

@@ -7,6 +7,7 @@ import type {
   AskedApprovalCardView,
   ProposalCardView,
 } from "../core/types";
+import { retryBackoffMs } from "../core/resourceStore";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
 import { readAgentCards } from "./agentThreadsApi";
 import { useAgentCardsVersion } from "./useAgentThreads";
@@ -204,6 +205,7 @@ type Kept = { changes: number } & (
  * revision moves, and after each tap. A card decided here keeps its settled line
  * through the open-card version change its own tap causes, and drops at a fetch
  * after a later change that no longer lists it. Only the newest fetch's answer counts.
+ * A failed read hides the cards and backs off before reading again.
  */
 export function useAgentCards(threadId: string | null, revision: string | null) {
   const version = useAgentCardsVersion();
@@ -212,11 +214,22 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const latest = useRef(0);
   const versionChanges = useRef(0);
+  const failures = useRef(0);
+  const retry = useRef<number | undefined>(undefined);
+  const [retryTick, setRetryTick] = useState(0);
   const refetch = useCallback(async () => {
+    window.clearTimeout(retry.current);
     const mine = ++latest.current;
     const changes = versionChanges.current;
     const list = await readAgentCards(scope || undefined);
     if (mine !== latest.current) return;
+    failures.current = list ? 0 : failures.current + 1;
+    if (!list) {
+      retry.current = window.setTimeout(
+        () => setRetryTick((tick) => tick + 1),
+        retryBackoffMs(failures.current),
+      );
+    }
     setLoaded({ scope, list });
     setKept((known) => {
       const listed = new Set([
@@ -239,7 +252,8 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   useEffect(() => setKept(new Map()), [scope]);
   useEffect(() => {
     void refetch();
-  }, [refetch, revision]);
+  }, [refetch, revision, retryTick]);
+  useEffect(() => () => window.clearTimeout(retry.current), []);
   const keep = useCallback((key: string, entry: Kept) => {
     setKept((known) => new Map(known).set(key, entry));
   }, []);

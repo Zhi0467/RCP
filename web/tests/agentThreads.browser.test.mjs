@@ -2089,6 +2089,9 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     });
     assert.ok(await moss.locator(".chat-annotatable-answer").count());
     assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
+    shown.fail = false;
+    shown.proposals = [proposalCard("proposal/b", "H3 standing → refuted")];
+    await moss.locator('.approval-card[aria-label*="H3 standing"]').waitFor({ timeout: 10_000 });
     await failing.close();
   });
 });
@@ -2155,6 +2158,8 @@ test("Pip docks every open card above its composer, decides them in place, and h
       assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 0);
       assert.ok(writes.some((write) => write.path === "/api/approval-cards/q1"));
       await shoot(page, `pip-dock-failed-${width}`);
+      await dock.locator(".approval-card[data-state='approved']").waitFor({ state: "hidden" });
+      assert.ok(await failed.isVisible());
 
       const mossCards = page.waitForResponse((response) =>
         new URL(response.url()).search.includes("thread_id=moss"),
