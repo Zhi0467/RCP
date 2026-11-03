@@ -41,6 +41,7 @@ class AgentSchedule(BaseModel):
     start_local: str | None = None
     until_local: str | None = None
     fires_left: int | None = None
+    pending_fires: int | None = None
 
 
 def local_instant(local: str, timezone: str) -> datetime:
@@ -109,12 +110,16 @@ def resume_fire(schedule: AgentSchedule, now: datetime) -> datetime | None:
     return fire if within_limits(schedule, fire, schedule.fires_left) else None
 
 
-def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int | None]:
-    """The fire following a due one, and the fires left; None retires the schedule."""
+def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int | None, int]:
+    """The fire following a due one, the fires left, and the fires due by `now`.
+
+    None retires the schedule. Fires missed during downtime count against --count,
+    and only fires within --until and --count are due; one combined wake reports them.
+    """
     from rcp.consolidation import cron_occurrence_count
 
     if schedule.at_local is not None:
-        return None, schedule.fires_left
+        return None, schedule.fires_left, 1
     assert schedule.next_fire_at is not None
     due = datetime.fromisoformat(schedule.next_fire_at)
     following = repeat_fire(
@@ -124,16 +129,20 @@ def after_fire(schedule: AgentSchedule, now: datetime) -> tuple[str | None, int 
         after=now,
         anchor=due if schedule.every_minutes is not None else None,
     )
+    end = now
+    if schedule.until_local is not None:
+        end = min(now, local_instant(schedule.until_local, schedule.timezone))
+    if schedule.every_minutes is not None:
+        fired = (end - due) // timedelta(minutes=schedule.every_minutes) + 1
+    else:
+        assert schedule.cron is not None
+        fired = cron_occurrence_count(schedule.cron, schedule.timezone, due, end)
     left = schedule.fires_left
     if left is not None:
-        # Fires missed during downtime count; one combined wake reports them.
-        if schedule.every_minutes is not None:
-            fired = (following - due) // timedelta(minutes=schedule.every_minutes)
-        else:
-            assert schedule.cron is not None
-            fired = cron_occurrence_count(schedule.cron, schedule.timezone, due, now)
-        left = max(left - fired, 0)
-    return (following.isoformat() if within_limits(schedule, following, left) else None), left
+        fired = min(fired, left)
+        left -= fired
+    following_fire = following.isoformat() if within_limits(schedule, following, left) else None
+    return following_fire, left, fired
 
 
 def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
@@ -146,7 +155,7 @@ def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
         disabled_reason TEXT, next_fire_at TEXT, pending_since TEXT,
         last_fired_at TEXT, created_at TEXT NOT NULL, deferred_reason TEXT,
         every_minutes INTEGER CHECK(every_minutes >= 1), start_local TEXT, until_local TEXT,
-        fires_left INTEGER CHECK(fires_left >= 0),
+        fires_left INTEGER CHECK(fires_left >= 0), pending_fires INTEGER CHECK(pending_fires >= 1),
         UNIQUE(created_operation_id, idempotency_key),
         CHECK ((cron IS NOT NULL) + (every_minutes IS NOT NULL) + (at_local IS NOT NULL) = 1)
     )""")
@@ -321,6 +330,7 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
             )
 
     def advance_agent_schedules(self, now: datetime) -> list[AgentSchedule]:
+        """Fold each due fire into the schedule's waiting note, counting the fires it holds."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
@@ -329,12 +339,16 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
             ).fetchall()
             for row in rows:
                 schedule = AgentSchedule.model_validate(dict(row))
-                following, fires_left = after_fire(schedule, now)
+                following, fires_left, fired = after_fire(schedule, now)
                 connection.execute(
                     "UPDATE agent_schedules SET pending_since=COALESCE(pending_since, ?), "
+                    "pending_fires=CASE WHEN pending_since IS NULL THEN ? "
+                    "ELSE pending_fires + ? END, "
                     "next_fire_at=?, fires_left=?, state=? WHERE schedule_id=?",
                     (
                         schedule.next_fire_at,
+                        fired,
+                        fired,
                         following,
                         fires_left,
                         "active" if following else "done",

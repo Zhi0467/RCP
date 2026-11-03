@@ -6,6 +6,7 @@ import pytest
 
 from rcp.consolidation import next_occurrence
 from rcp.runs.agent_schedules import validate_schedule
+from tests.lifecycles.schedules import build_schedule_store, schedule_command
 
 
 def test_cron_grammar_and_dst():
@@ -58,51 +59,13 @@ def admitted_provider(monkeypatch):
 
 @pytest.fixture
 def schedule_store(tmp_path):
-    from rcp.core.models import AuthorizedHuman
-    from rcp.service import RunRequest, resolve_dispatch_authority
-    from rcp.storage import AppStore
-    from tests.test_storage import _project, _task_record
-
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
-    owner = store.local_owner
-    assert owner is not None
-    store.seat_project_member("project", owner.user_id, seated_by=owner.user_id)
-    request = RunRequest(chat_id="thread", chat_scope="project", mode="work", message="Check daily")
-    task = _task_record(
-        store.now(),
-        operation_id="origin",
-        kind="project_chat",
-        status="succeeded",
-        request=request.model_dump(mode="json"),
-        authorized_by=AuthorizedHuman(
-            space_id=store.space_id, user_id=owner.user_id, display_name="Test Member"
-        ),
-        dispatch_authority=resolve_dispatch_authority("project_chat", request),
-    )
-    store.create_agent_task(task)
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO agent_threads (thread_id,user_id,kind,project_id,created_at) VALUES (?,?,'project','project',?)",
-            ("thread", owner.user_id, store.now()),
-        )
+    store = build_schedule_store(tmp_path / "state.sqlite3")
     yield store
     store.close()
 
 
 def command(key="daily", **arguments):
-    from rcp.agents.command_protocol import ScheduleCommandRequest
-
-    return ScheduleCommandRequest.model_validate(
-        dict(
-            mailbox_id="b" * 32,
-            credential="c" * 64,
-            request_id="a" * 32,
-            verb="schedule",
-            idempotency_key=key,
-            arguments=arguments,
-        )
-    )
+    return schedule_command(key, **arguments)
 
 
 def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_store):
@@ -486,7 +449,8 @@ def test_schedule_wake_rechecks_transfer_fence(schedule_store, monkeypatch):
         schedule_store.advance_agent_schedules(datetime.fromisoformat(now)),
     )
     assert launched == []
-    assert schedule_store.agent_schedules()[0].pending_since is not None
+    row = schedule_store.agent_schedules()[0]
+    assert row.pending_since is not None and row.deferred_reason
     with schedule_store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 1
 
@@ -959,6 +923,59 @@ def test_every_with_count_retires_after_its_fires(schedule_store):
     row = schedule_store.agent_schedules("thread")[0]
     assert (row.state, row.fires_left, row.next_fire_at) == ("done", 0, None)
     assert row.pending_since == first.isoformat()
+
+
+@pytest.mark.parametrize("bound", ["count", "until"])
+def test_a_wake_reports_only_the_fires_within_its_bounds(schedule_store, bound):
+    """Fifteen minutes late, a schedule bounded to two fires reports two, not fifteen.
+
+    This is the schedule lifecycle explorer's one-tick trace.
+    """
+    import json
+    from datetime import timedelta
+
+    from rcp.runs.agent_schedules import handle_schedule, schedule_wake_message
+
+    now = datetime.fromisoformat(schedule_store.now())
+    start = (now + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    limit = (
+        {"count": 2}
+        if bound == "count"
+        else {"until": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M")}
+    )
+    _added(
+        handle_schedule(
+            schedule_store,
+            "origin",
+            command(action="add", every="1m", start=start, timezone="UTC", note="Ping", **limit),
+        )
+    )
+    later = now + timedelta(minutes=15)
+    pending = schedule_store.advance_agent_schedules(later)
+    notes = json.loads(schedule_wake_message(pending, later).split("\n", 1)[1])
+    assert [note["missed_fires"] for note in notes] == [1]
+    assert pending[0].state == "done"
+
+
+def test_closing_the_thread_drops_next_fires_and_waiting_notes(schedule_store):
+    """Closing disables a repeat as lost access does at dispatch; a done one-shot keeps its note."""
+    for key, cron, at in (("daily", "0 9 * * *", None), ("once", None, "2026-01-01T09:00")):
+        schedule_store.add_agent_schedule(
+            thread_id="thread",
+            operation_id="origin",
+            key=key,
+            cron=cron,
+            at=at,
+            timezone="UTC",
+            note=key,
+            next_fire_at="2026-01-01T09:00:00+00:00",
+        )
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 10, tzinfo=UTC))
+    schedule_store.close_agent_thread("thread", reason="access_lost")
+    rows = {row.note: row for row in schedule_store.agent_schedules()}
+    daily, once = rows["daily"], rows["once"]
+    assert (daily.state, daily.next_fire_at, daily.pending_since) == ("disabled", None, None)
+    assert (once.state, once.pending_since) == ("done", "2026-01-01T09:00:00+00:00")
 
 
 def test_cron_until_retires_after_its_last_fire_and_from_delays_the_first(schedule_store):
