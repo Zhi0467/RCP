@@ -175,8 +175,9 @@ def _resolve(
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
         try:
-            pinned_revision = service.history.state().revision
-            pinned = approval_pins(service, store, action, human)
+            state = service.history.state()
+            pinned_revision = state.revision
+            pinned = approval_pins(service, store, action, human, state=state)
         except (KeyError, ValueError):
             # The pinned target no longer exists or no longer applies.
             return {"outcome": "stale"}

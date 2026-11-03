@@ -172,7 +172,7 @@ def test_an_outage_releases_the_card_and_a_failure_keeps_its_reason(questions_ap
     url = f"/api/approval-cards/{question.question_id}"
     body = {"decision": "approve", "pinned_sha256": card["pinned_sha256"]}
 
-    def offline(*args):
+    def offline(*args, **kwargs):
         raise StateUnavailable("base unreachable")
 
     monkeypatch.setattr(approval_cards, "approval_pins", offline)
@@ -185,7 +185,9 @@ def test_an_outage_releases_the_card_and_a_failure_keeps_its_reason(questions_ap
     def rejected(*args):
         raise PatchRejected(report)
 
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
+    )
     monkeypatch.setattr(approval_cards, "_execute", rejected)
     result = client.post(url, json=body).json()
     assert result["outcome"] == "failed"
@@ -269,7 +271,7 @@ def test_taps_recheck_pins_and_run_only_once(questions_api, monkeypatch, changed
     monkeypatch.setattr(
         approval_cards,
         "approval_pins",
-        lambda *args: {"head": "changed" if changed == "live" else "original"},
+        lambda *args, **kwargs: {"head": "changed" if changed == "live" else "original"},
     )
     monkeypatch.setattr(
         approval_cards, "_execute", lambda *args: calls.append(args) or {"ok": True}
@@ -470,7 +472,7 @@ def test_ask_action_requires_private_owner_and_persists_exact_action(tmp_path, m
     store = execution.store
     action = {"kind": "truth_scope", "project_id": "project", "alias": "repo-a", "writable": False}
     request = ask_request(arguments={"question": "Allow?", "action": action})
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"writable": True})
+    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args, **kwargs: {"writable": True})
     handler = work_command_handler(
         execution, None, service=cast(ProjectService, SimpleNamespace(project_catalog=None))
     )
@@ -738,7 +740,9 @@ def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler
         return {}
 
     monkeypatch.setattr(episode_routes, handler, execute)
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"head": "original"})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
+    )
     response = client.post(
         f"/api/approval-cards/{question.question_id}",
         json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
@@ -819,7 +823,9 @@ def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
     from rcp.runs import approval_cards
 
     profile = {"provider": "codex", "run_on": "local"}
-    monkeypatch.setattr(approval_cards, "approval_pins", lambda *args: {"profile": profile})
+    monkeypatch.setattr(
+        approval_cards, "approval_pins", lambda *args, **kwargs: {"profile": profile}
+    )
     readiness = SimpleNamespace(
         installed=installed,
         authenticated=authenticated,

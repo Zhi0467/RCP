@@ -710,7 +710,7 @@ def _decline(world: World, name: str) -> None:
 def _outage(world: World, name: str) -> None:
     from rcp.transport.state import StateUnavailable
 
-    def offline(*_args):
+    def offline(*_args, **_kwargs):
         raise StateUnavailable("base unreachable")
 
     with mock.patch("rcp.api.approval_cards.approval_pins", offline):
