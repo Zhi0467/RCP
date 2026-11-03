@@ -1916,6 +1916,18 @@ export interface ProposalActionLine {
   before?: string | null;
 }
 
+/** A pending Proposal a turn of the member's own project thread raised, drawn live. */
+export interface ProposalCardView {
+  project_id: string;
+  project_name: string;
+  thread_id: string;
+  turn_id: string;
+  turn_created_at: string;
+  proposal: Proposal;
+  stale: boolean;
+  changes: ProposalActionLine[];
+}
+
 export interface ProjectCounts {
   pending_proposals: number;
   decisions_awaiting_choice: number;

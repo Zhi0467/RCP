@@ -717,7 +717,7 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v2"
+SPACE_MASTER_POLICY = "space-master-v3"
 
 
 def render_space_prompt(
@@ -987,7 +987,9 @@ def space_limits_section(
         "naming the project, the node ids and exactly what to run or change. The project "
         "thread runs what its commands allow and raises an approval card for what needs "
         "the member. Its answer comes back here when the handoff settles; relay it. Only "
-        "the member's own tap on an approval card is theirs."
+        "the member's own tap on an approval card is theirs. Every open card from the "
+        "member's project threads also shows in the dock above this thread's composer; "
+        "point the member there. This thread cannot raise cards itself."
     )
     return "What this turn routes elsewhere:\n" + "\n".join(f"- {line}" for line in lines)
 

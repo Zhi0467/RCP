@@ -22,9 +22,10 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
-from rcp.approval_actions import ApprovalAction, MergeEpisodeBody
+from rcp.approval_actions import ApprovalAction, MergeEpisodeBody, ProposalAction
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
+from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.projects import ProjectCatalog
 from rcp.runs.approval_cards import approval_pins, approved_receipt
@@ -36,6 +37,17 @@ from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+_DECISION_REASONS = {
+    "approved": "Approved from an approval card",
+    "rejected": "Declined from an approval card",
+}
+
+
+class DecideProposalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    decision: Literal["approved", "rejected"]
 
 
 class ResolveApprovalBody(BaseModel):
@@ -244,6 +256,78 @@ def _run(execute: Callable[[], object], request_id: str) -> dict[str, Any]:
     return {"outcome": "approved", "result": approved_receipt(response)}
 
 
+def decide_proposal(
+    request: Request, project_id: str, proposal_id: str, decision: Literal["approved", "rejected"]
+) -> dict[str, Any]:
+    """Decide one pending, fresh main Proposal as the member, at the revision it was read.
+
+    Authority is the patch-capable member, project membership and write admission,
+    the same as an Inbox decision. A Proposal's content never changes under its id
+    and staleness is rechecked at the fenced revision, so no presented hash is needed.
+    Raises `HTTPException` with the refusal.
+    """
+    store, catalog = get_store(request), get_catalog(request)
+    identity_access = get_identity_access(request)
+    identity_access.require_patch_capable_identity(request)
+    project_id = require_project_membership(project_id, request)
+    action = ProposalAction(
+        kind="proposal",
+        project_id=project_id,
+        proposal_id=proposal_id,
+        decision=decision,
+        reason=_DECISION_REASONS[decision],
+    )
+    try:
+        with ExitStack() as admission:
+            service = _admit(admission, action, request, store, catalog)
+            try:
+                state = service.history.state()
+            except (StateUnavailable, ReplayHalted, OSError) as exc:
+                raise _NotNow(503, str(exc)) from exc
+            proposal = state.proposals.get(proposal_id)
+            if proposal is None:
+                raise _NotNow(404, "Proposal not found")
+            if proposal.status != "pending" or proposal_is_stale(state, proposal):
+                raise _NotNow(409, {"code": "proposal_not_pending"})
+            try:
+                _execute(
+                    action,
+                    "",
+                    request,
+                    store,
+                    catalog,
+                    identity_access,
+                    {},
+                    service,
+                    state.revision,
+                )
+            except StateUnavailable as exc:
+                raise _NotNow(503, str(exc)) from exc
+            except (PatchRejected, ReplayHalted) as exc:
+                raise _NotNow(422, str(exc)) from exc
+            decided = service.history.state().proposals[proposal_id]
+    except _NotNow as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return {"proposal_id": proposal_id, "status": decided.status}
+
+
+@router.post("/api/approval-cards/proposals/{project_id}/{proposal_id:path}")
+def decide_proposal_card(
+    project_id: str, proposal_id: str, body: DecideProposalBody, request: Request
+) -> dict[str, Any]:
+    return decide_proposal(request, project_id, proposal_id, body.decision)
+
+
+def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any]:
+    """Reject the Proposal a declined approve card named, or say why it stays pending."""
+    action = card["action"]
+    try:
+        decide_proposal(request, action["project_id"], action["proposal_id"], "rejected")
+    except HTTPException as exc:
+        return {"rejected": False, "reason": _reason(exc.detail)}
+    return {"rejected": True}
+
+
 def _owned_card(
     store: AppStore, question_id: str, request: Request, human: AuthorizedHuman
 ) -> tuple[QuestionRecord, dict[str, Any]]:
@@ -287,6 +371,13 @@ def resolve_approval_card(
         store.release_approval_card(question_id)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     store.settle_approval_card(question_id, result, resolved_by=human)
+    action = card["action"]
+    if (
+        result["outcome"] == "declined"
+        and action["kind"] == "proposal"
+        and action["decision"] == "approved"
+    ):
+        result = {**result, **_declined_rejection(request, card)}
     try:
         request.app.state.reconcile_question_answers(question.origin.project_id)
     except Exception:
