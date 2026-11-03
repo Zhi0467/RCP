@@ -229,13 +229,17 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
       return next.size === known.size ? known : next;
     });
   }, [scope]);
+  const shownVersion = useRef(version);
   useEffect(() => {
     versionChanges.current += 1;
-  }, [version]);
+    const moved = shownVersion.current !== null && shownVersion.current !== version;
+    shownVersion.current = version;
+    if (moved) void refetch();
+  }, [refetch, version]);
   useEffect(() => setKept(new Map()), [scope]);
   useEffect(() => {
     void refetch();
-  }, [refetch, version, revision]);
+  }, [refetch, revision]);
   const keep = useCallback((key: string, entry: Kept) => {
     setKept((known) => new Map(known).set(key, entry));
   }, []);

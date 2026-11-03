@@ -30,6 +30,7 @@ from rcp.api.chats import (
     ChatTitleBody,
     IdentityDependency,
     StoreDependency,
+    _artifact_comments,
     _delete_browser_if_still_off,
     add_attachment,
     mark_chat_read,
@@ -45,6 +46,7 @@ from rcp.api.tasks import (
     BackgroundTasksDependency,
     RetryAgentTaskRequest,
     SteerAgentTaskRequest,
+    _agent_artifact_descriptor,
     _agent_task_response,
     _artifact_viewer_response,
     _reject_history_only_control,
@@ -53,6 +55,8 @@ from rcp.api.tasks import (
     released_unless_started,
     require_attachment_pair,
 )
+from rcp.artifact_comments import COMMENTABLE_MEDIA_TYPES, supports_comments
+from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentUpload
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
@@ -68,9 +72,15 @@ from rcp.runs.agent_threads import (
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, proposal_cards
+from rcp.runs.artifact_edit_admission import artifact_comment_message
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
-from rcp.service import ChatTranscript, RunRequest, read_space_chat_transcript
+from rcp.service import (
+    ArtifactContextRequest,
+    ChatTranscript,
+    RunRequest,
+    read_space_chat_transcript,
+)
 from rcp.service_connections import ConnectionError
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import (
@@ -278,7 +288,12 @@ def thread_transcript(
     except ConnectionError as exc:
         raise HTTPException(exc.status, {"code": exc.code, "message": exc.message}) from None
     if transcript is not None:
-        stamp_shown_at(store, transcript.messages, transcript_tasks(store, transcript.messages))
+        tasks = transcript_tasks(store, transcript.messages)
+        for message in transcript.messages:
+            task = tasks.get(message.operation_id or "")
+            if message.role == "user" and task is not None and message.steering is None:
+                message.artifact_comments = _artifact_comments(store, task.request)
+        stamp_shown_at(store, transcript.messages, tasks)
         return transcript
     return ChatTranscript(
         chat_id=thread_id,
@@ -440,18 +455,48 @@ def remove_space_attachment(
 class SpaceTurnBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    message: str = Field(min_length=1)
+    message: str = ""
     provider: ProviderId | None = None
     model: str | None = None
     reasoning: str | None = None
     timezone: str | None = None
     attachment_set_id: str | None = Field(default=None, min_length=1)
     attachment_client_id: str | None = Field(default=None, min_length=1)
+    artifact_context: ArtifactContextRequest | None = None
 
     @model_validator(mode="after")
     def validate_attachment_pair(self) -> Self:
         require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
         return self
+
+    @model_validator(mode="after")
+    def validate_message(self) -> Self:
+        if not self.message and self.artifact_context is None:
+            raise ValueError("A Space turn needs a message or an artifact comment")
+        return self
+
+
+def _space_artifact_comment(
+    store: AppStore, thread: AgentThreadRecord, body: SpaceTurnBody
+) -> tuple[ArtifactContextRequest | None, str]:
+    """Admit comments on an artifact one of this thread's own turns produced."""
+    context = body.artifact_context
+    if context is None:
+        return None, body.message
+    try:
+        if context.source != "task":
+            raise ValueError("A Space comment names a turn's artifact.")
+        task = _space_task(store, thread, context.operation_id)
+        descriptor = _agent_artifact_descriptor(task, context.artifact_id)
+        if not supports_comments(descriptor.media_type):
+            raise ValueError("The artifact type does not support comments.")
+        if context.selections and descriptor.media_type not in COMMENTABLE_MEDIA_TYPES:
+            raise ValueError("This artifact supports a comment without selections.")
+        message = artifact_comment_message(body.message, context)
+    except (HTTPException, ValueError) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        raise HTTPException(status_code=422, detail=detail) from exc
+    return context, message
 
 
 def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -> AgentTaskRecord:
@@ -481,6 +526,7 @@ def space_turn(
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_space_thread(store, thread_id, authorized.user_id)
+    artifact_context, message = _space_artifact_comment(store, thread, body)
     try:
         with store.client_request_admission(
             store.space_id,
@@ -496,8 +542,9 @@ def space_turn(
                     "chat_id": thread_id,
                     "chat_scope": "project",
                     "mode": "work",
-                    "message": body.message,
+                    "message": message,
                     "timezone": body.timezone,
+                    "artifact_context": artifact_context,
                     "browser_requested": store.chat_browser_requested(store.space_id, thread_id),
                 }
             )
@@ -682,6 +729,9 @@ async def space_artifact(
     artifact_id: str,
     action: Literal["content", "download", "viewer"],
     request: Request,
+    presentation: ViewerPresentation = "panel",
+    theme: str | None = None,
+    color_mode: str | None = None,
     *,
     store: StoreDependency,
     catalog: CatalogDependency,
@@ -698,9 +748,21 @@ async def space_artifact(
             catalog=catalog,
             store=store,
             head=request.method == "HEAD",
+            presentation=presentation,
         )
-    reader = content_agent_artifact if action == "content" else download_agent_artifact
-    return await reader(
+    if action == "content":
+        return await content_agent_artifact(
+            store.space_id,
+            operation_id,
+            artifact_id,
+            request,
+            presentation=presentation,
+            theme=theme,
+            color_mode=color_mode,
+            catalog=catalog,
+            store=store,
+        )
+    return await download_agent_artifact(
         store.space_id,
         operation_id,
         artifact_id,

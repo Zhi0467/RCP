@@ -129,7 +129,7 @@ test("project and Space endpoints keep capabilities and encoded owner routes sep
   assert.equal(space.artifactState, null);
   assert.equal(space.openArtifactPanel, null);
   assert.equal(space.canKeep, false);
-  assert.equal(space.canCommentArtifacts, false);
+  assert.equal(space.canCommentArtifacts, true);
   assert.equal(project.canKeep, true);
   assert.equal(project.canCommentArtifacts, true);
 });

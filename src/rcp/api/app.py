@@ -34,6 +34,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.agent_schedules import router as agent_schedules_router
 from rcp.api.agent_threads import router as agent_threads_router
+from rcp.api.approval_cards import membership_router as approval_cards_membership_router
 from rcp.api.approval_cards import router as approval_cards_router
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
@@ -2791,6 +2792,7 @@ def create_app(
     app.include_router(agent_threads_router)
     app.include_router(questions_router)
     app.include_router(approval_cards_router)
+    app.include_router(approval_cards_membership_router)
     app.include_router(agent_schedules_router)
     app.include_router(consolidation_router)
     app.include_router(proposal_refresh_router)

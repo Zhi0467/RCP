@@ -2,6 +2,7 @@
   "routes": [
     {"method": "POST", "path": "/api/resource-watermarks", "json": {"client_id": "polled-routes", "open": [{"project_id": "{project_id}", "current_ref": "main", "resources": []}], "due": ["{project_id}"], "agent_threads": true, "agent_cards": true}},
     {"method": "GET", "path": "/api/agent-threads"},
+    {"method": "GET", "path": "/api/agent-threads/cards"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/transcript"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/tasks/{operation_id}"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/schedules"},
@@ -23,6 +24,7 @@
     {"method": "GET", "path": "/api/team/devices/pairings/{pairing_id}", "space": "team"}
   ],
   "allowlist": [
+    {"method": "GET", "path": "/api/agent-threads/cards", "reason": "Derives Proposal cards from each member project's live main through open_display, which refreshes remote state."},
     {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}", "reason": "Opens the project through open_display, which refreshes remote state."},
     {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_alias}/browser", "reason": "Opens the project through open_display, then probes the machine's browser like the Space machine route."},
     {"method": "GET", "path": "/api/space/machines/{machine_id}/browser", "reason": "Probes browser readiness on every call: a login shell, launchctl and node here, SSH on a remote machine."},

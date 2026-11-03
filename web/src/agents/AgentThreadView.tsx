@@ -697,7 +697,7 @@ export function AgentThreadView({
     setSubmitError,
     repositories: snapshot?.repositories ?? [],
   });
-  const artifactContext = thread.project_id ? stagedArtifactContext(comments.annotations) : null;
+  const artifactContext = stagedArtifactContext(comments.annotations);
   const draftSendable = useComposerDraft(draft, (text) =>
     Boolean(assembleChatTurn(text, comments.annotations)),
   );

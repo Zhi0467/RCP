@@ -36,6 +36,7 @@ from rcp.storage.question_models import QuestionRecord
 from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
+membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
 logger = logging.getLogger(__name__)
 
 
@@ -329,7 +330,7 @@ def _still_pending(service: ProjectService, proposal_id: str) -> bool:
     return proposal is not None and proposal.status == "pending"
 
 
-@router.post("/api/approval-cards/proposals/{project_id}/{proposal_id:path}")
+@membership_router.post("/api/approval-cards/proposals/{project_id}/{proposal_id:path}")
 def decide_proposal_card(
     project_id: str, proposal_id: str, body: DecideProposalBody, request: Request
 ) -> dict[str, Any]:
@@ -391,12 +392,12 @@ def resolve_approval_card(
         store.release_approval_card(question_id)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     store.settle_approval_card(question_id, result, resolved_by=human)
-    action = card["action"]
     try:
+        action = TypeAdapter(ApprovalAction).validate_python(card["action"])
         if (
             result["outcome"] == "declined"
-            and action["kind"] == "proposal"
-            and action["decision"] == "approved"
+            and isinstance(action, ProposalAction)
+            and action.decision == "approved"
         ):
             rejection = _declined_rejection(request, card)
             if rejection:

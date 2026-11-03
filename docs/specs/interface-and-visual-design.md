@@ -495,8 +495,11 @@ Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
-accept files and answer comments; they offer no node references, Keep, or
-artifact-selection comments. Both open artifacts in the shared in-app viewer,
+accept files, answer comments, and inline artifact-selection comments, which
+open in comment mode like a project thread's. A Space comment travels with the
+next message as numbered selections on that turn file, and the agent writes a
+revised file in its new turn; there are no versions, Keep, or node references,
+and the opened viewer has no comment panel. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
 bubble. Answer comments join the next message in both.
 Approval cards stay where the agent raised them, before later transcript lines,

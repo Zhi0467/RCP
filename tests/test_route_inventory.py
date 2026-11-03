@@ -92,6 +92,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("PUT",), "/api/voice/settings"),
     (("POST",), "/api/voice/sessions"),
     (("GET",), "/api/agent-threads"),
+    (("GET",), "/api/agent-threads/cards"),
     (("GET",), "/api/agent-threads/{thread_id}/references"),
     (("GET",), "/api/agent-threads/{thread_id}/transcript"),
     (("POST",), "/api/agent-threads/{thread_id}/title"),
@@ -118,6 +119,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/agent-threads/{thread_id}/schedules/{schedule_id}/pause"),
     (("POST",), "/api/agent-threads/{thread_id}/schedules/{schedule_id}/resume"),
     (("POST",), "/api/approval-cards/{question_id}"),
+    (("POST",), "/api/approval-cards/proposals/{project_id}/{proposal_id:path}"),
     (("GET",), "/api/projects/{project_id}/client-requests/{key}"),
     (("POST",), "/api/projects"),
     (("POST",), "/api/project-setup/preflight"),
@@ -385,8 +387,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 317
+    assert len(_FROZEN_ROUTE_INVENTORY) == 319
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 313
+    assert sum(isinstance(route, APIRoute) for route in routes) == 315
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

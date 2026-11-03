@@ -324,6 +324,7 @@ class Proposals:
     tables = frozenset({"approval_cards", "questions"})
     writers = (
         ApprovalCardStoreMixin.claim_approval_card,
+        ApprovalCardStoreMixin.record_declined_rejection,
         ApprovalCardStoreMixin.release_approval_card,
         ApprovalCardStoreMixin.take_expired_approval_card,
         _settle,

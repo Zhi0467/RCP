@@ -101,7 +101,7 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
     artifactUrl: url,
     artifactState: null,
     canKeep: false,
-    canCommentArtifacts: false,
+    canCommentArtifacts: true,
     openArtifactPanel: null,
     openArtifact: async (operation, artifact) => {
       openSpaceArtifact({

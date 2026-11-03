@@ -688,7 +688,6 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();
 
     assert.equal(await space.locator('[data-artifact-action="keep"]').count(), 0);
-    assert.equal(await space.getByRole("button", { name: "Comment on a part" }).count(), 0);
     await space
       .locator('input[type="file"]')
       .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
@@ -711,6 +710,93 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await browser?.close();
     await server.close();
   }
+});
+
+test("Pip comments on a part of an inline artifact and sends the selection with the turn", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const writes = [];
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, writes);
+    const artifact = {
+      artifact_id: "report",
+      name: "report.html",
+      media_type: "text/html",
+      view: "html",
+      size_bytes: 42,
+      available: true,
+      unavailable_reason: null,
+      can_open: true,
+      can_download: true,
+      can_keep: false,
+      can_discuss: true,
+    };
+    await page.route("**/api/agent-threads/space/transcript", (route) =>
+      route.fulfill({
+        json: transcript("space", [
+          message("request", "user", "Inspect the report", "op-space", { timestamp: ago(2) }),
+          message(
+            "answer",
+            "assistant",
+            "Ready.\n\n![Report](/workspace/.research/turns/op-space/artifacts/report.html)",
+            "op-space",
+            { timestamp: ago(1) },
+          ),
+        ]),
+      }),
+    );
+    await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
+      route.fulfill({ json: { ...settled("op-space"), result: { artifacts: [artifact] } } }),
+    );
+    await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
+    );
+    await page.goto(`${base}#/agent/space`);
+    const space = page.getByRole("region", { name: "Pip" });
+    const embed = space.locator(".chat-inline-artifact.commenting");
+    await embed.waitFor();
+    assert.equal(
+      await embed.getByRole("button", { name: "Done commenting" }).getAttribute("aria-pressed"),
+      "true",
+    );
+    const frame = embed.locator(".chat-inline-artifact-frame");
+    assert.match(await frame.getAttribute("src"), /\/viewer\?presentation=inline/);
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".chat-inline-artifact-frame")?.contentDocument?.body
+          ?.textContent === "Rendered report",
+    );
+    await page.frame({ url: /\/artifacts\/report\/viewer/ }).evaluate(() =>
+      parent.postMessage(
+        {
+          type: "rcp-artifact-selection",
+          version: 1,
+          selection: { kind: "text", text: "Rendered report", surrounding_text: "" },
+          description: "",
+        },
+        location.origin,
+      ),
+    );
+    const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+    await comment.fill("Tighten this");
+    await comment.press("Enter");
+    await space.getByRole("textbox", { name: "Message" }).fill("Revise it");
+    await space.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector('textarea[aria-label="Message"]').value === "",
+    );
+    const sent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
+    assert.equal(sent.body.artifact_context.artifact_id, "report");
+    assert.equal(sent.body.artifact_context.operation_id, "op-space");
+    assert.deepEqual(
+      sent.body.artifact_context.selections.map((selection) => [selection.text, selection.comment]),
+      [["Rendered report", "Tighten this"]],
+    );
+    assert.equal(sent.body.message.includes("Tighten this"), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    assert.deepEqual(errors, []);
+  });
 });
 
 /** One served fixture per test; `run` gets the browser and the fixture's base URL. */

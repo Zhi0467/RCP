@@ -159,13 +159,18 @@ def artifact_contract(
 - Artifacts from earlier turns of this session stay in their own turn folders under the workspace's `turns` directory. Changing one in place, under the same name, makes its next version; whether to change one in place or write a new file is your judgement: in place when the request corrects or enriches it, a new file in this turn's directory when asked for something different alongside it.
 - HTML must be self-contained. Ordinary HTTP(S) reference links are allowed; external scripts, images, fonts, fetches, and other resource loads are blocked in the preview.
 
-{inline_contract(artifact_path)}
+{inline_contract(artifact_path, references)}
 
 {live_contract(allow_episode=allow_episode)}"""
 
 
-def inline_contract(artifact_path: str) -> str:
-    """How a reply shows an artifact in place, from the tokens and limits RCP applies."""
+def inline_contract(artifact_path: str, references: ReferenceScope = "project") -> str:
+    """How a reply shows an artifact in place, from the tokens and limits RCP applies.
+
+    A Space reply's artifacts have no Keep, so its readers only expand and comment.
+    """
+
+    reader_actions = "expand it, keep it," if references == "project" else "expand it,"
 
     tokens = ", ".join(
         f"`--rcp-{name}` ({purpose})" for name, purpose in ARTIFACT_THEME_TOKENS.items()
@@ -173,7 +178,7 @@ def inline_contract(artifact_path: str) -> str:
     return "\n".join(
         [
             "Artifacts inside the reply:",
-            f"- To show a viewable artifact where it belongs in the reply, embed it with Markdown image syntax and its absolute path: `![Short title]({artifact_path}/name.html)`. RCP renders it there, running and interactive: HTML runs its scripts, images and SVG draw, Markdown and text render. The reader can play with it in place, expand it, keep it, and comment on it to ask for an edit. Write the file first; an embedded file that does not exist shows nothing. An artifact you do not embed is shown as a card below the reply, and an ordinary link opens it in the viewer instead.",
+            f"- To show a viewable artifact where it belongs in the reply, embed it with Markdown image syntax and its absolute path: `![Short title]({artifact_path}/name.html)`. RCP renders it there, running and interactive: HTML runs its scripts, images and SVG draw, Markdown and text render. The reader can play with it in place, {reader_actions} and comment on it to ask for an edit. Write the file first; an embedded file that does not exist shows nothing. An artifact you do not embed is shown as a card below the reply, and an ordinary link opens it in the viewer instead.",
             "- Use an embedded HTML page whenever interaction helps the reader: a figure to hover or filter, a parameter to drag, a diagram to explore, a simulation or a game. Use SVG or an image for a figure that only needs to be looked at. Keep prose in the reply itself, not in the page.",
             "- Embed only what the reader will use. A reply that prose answers needs no artifact; one page per idea is enough, and a reply rarely needs more than two. Draw from the project's real data when it exists, and label anything simulated or illustrative as such.",
             f"- The page shows in a frame {ARTIFACT_INLINE_HEIGHT_PX}px tall at the reply's width; content taller than the frame scrolls inside it. Fit what the reader needs first into that height, and scale a canvas to the frame's width and height.",

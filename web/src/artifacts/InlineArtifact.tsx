@@ -133,7 +133,7 @@ export function InlineArtifact({
 
   const selectable =
     canComment &&
-    Boolean(state?.can_comment) &&
+    (profile === null || Boolean(state?.can_comment)) &&
     (artifact?.view === "html" || artifact?.view === "image");
   // Derived, so a refresh that withdraws commenting (another edit reserving the
   // artifact) also ends comment mode, with no Done left to press.
