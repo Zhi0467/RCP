@@ -356,6 +356,7 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     text: str
     timestamp: str
+    shown_at: str | None = Field(default=None, exclude_if=lambda value: value is None)
     native_session_id: str | None = None
     provider: str | None = None
     model: str | None = None

@@ -636,3 +636,53 @@ def test_member_pick_waits_for_sign_in_but_agent_pick_must_run(manifest, tmp_pat
         store_thread_pick(store, catalog, thread, provider="claude")
     store_thread_pick(store, catalog, thread, provider="claude", wait_for_sign_in=True)
     assert store.agent_thread(thread.thread_id).agent["provider"] == "claude"
+
+
+def test_space_transcript_shows_when_each_message_happened(manifest, tmp_path, monkeypatch):
+    """The member message keeps its first attempt's time across a Retry; the reply shows when its
+    attempt finished; a steer keeps its own send time.
+    """
+    import uuid
+
+    from rcp.runs.space_chat import SpaceThreadOwner, append_space_message
+    from rcp.service import RunRequest
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    store = tasks.store
+    fake_launch_admitted(monkeypatch, tasks)
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][0]
+        base = "/api/agent-threads/" + thread["thread_id"]
+        first_id = client.post(base + "/turns", json={"message": "hello"}).json()["operation_id"]
+        store.fail_agent_task(first_id, "try again")
+        retry = client.post(f"{base}/tasks/{first_id}/retry", json={})
+        assert retry.status_code == 202, retry.text
+        retry_id = retry.json()["operation_id"]
+        steer = {
+            "message_id": str(uuid.uuid4()),
+            "attempt": 1,
+            "expected_turn_id": "not-running",
+            "message": "new direction",
+        }
+        assert client.post(f"{base}/tasks/{retry_id}/steer", json=steer).status_code == 200
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET finished_at = ? WHERE operation_id = ?",
+                ("2026-11-01T09:30:00+00:00", retry_id),
+            )
+        retried = store.agent_task(retry_id)
+        first = store.agent_task(first_id)
+        assert retried is not None and first is not None
+        assert retried.parent_operation_id == first_id
+        owner = SpaceThreadOwner(store, app.state.catalog, thread["thread_id"])
+        request = RunRequest.model_validate(retried.request)
+        append_space_message(owner, request, retry_id, role="user", text="hello")
+        append_space_message(owner, request, retry_id, role="assistant", text="hi")
+        messages = client.get(base + "/transcript").json()["messages"]
+        assert [(message["text"], message.get("shown_at")) for message in messages] == [
+            ("hello", first.created_at),
+            ("new direction", None),
+            ("hi", "2026-11-01T09:30:00+00:00"),
+        ]

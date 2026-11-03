@@ -3072,6 +3072,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   timestamp: string;
+  /** When the message happened, joined by the transcript readers; display only. */
+  shown_at?: string | null;
   native_session_id: string | null;
   provider: string | null;
   model: string | null;

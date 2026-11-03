@@ -26,6 +26,8 @@ export interface TaskTranscriptLine {
   text: string;
   taskId: string;
   timestamp: string;
+  /** When the line happened; absent means its timestamp, null a reply still running. */
+  shownAt?: string | null;
   artifacts?: AgentArtifactDescriptor[];
   artifactOmissions?: ArtifactOmissions;
   artifactEditOutcomes?: ArtifactEditOutcome[];
@@ -219,6 +221,7 @@ export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptL
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
     timestamp: message.timestamp,
+    shownAt: message.shown_at ?? message.timestamp,
     mode: message.mode,
     trigger: message.trigger,
     graphUpdate: message.graph_update,
@@ -319,6 +322,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text: message,
         taskId: task.operation_id,
         timestamp: task.created_at,
+        shownAt: task.created_at,
         mode,
         trigger,
         ...(attachments.length ? { attachments } : {}),
@@ -339,6 +343,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text,
         taskId: task.operation_id,
         timestamp: task.created_at,
+        shownAt: task.finished_at ?? null,
         mode,
         trigger,
         ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
@@ -364,6 +369,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text: "",
         taskId: task.operation_id,
         timestamp: task.created_at,
+        shownAt: task.finished_at ?? null,
         mode,
         trigger,
         ...(artifacts.length ? { artifacts } : {}),
@@ -384,6 +390,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
           : task.error,
         taskId: task.operation_id,
         timestamp: task.created_at,
+        shownAt: task.finished_at ?? task.created_at,
         trigger,
       });
     } else if (task.awaiting_human) {
@@ -393,6 +400,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         text: task.status_message,
         taskId: task.operation_id,
         timestamp: task.created_at,
+        shownAt: task.finished_at ?? task.created_at,
         trigger,
       });
     }

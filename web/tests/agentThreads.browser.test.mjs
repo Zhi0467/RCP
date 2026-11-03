@@ -106,6 +106,14 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     await thread.locator(".chat-progress").waitFor();
     assert.equal(await thread.locator(".chat-progress li").count(), 4);
     assert.equal(await thread.locator('.chat-markdown a[href^="#/projects/"]').count(), 1);
+    assert.ok((await thread.locator(".chat-time-divider").count()) >= 1);
+    const firstLine = thread.locator(".node-chat-line:has(> .chat-line-time)").first();
+    const lineBox = await firstLine.boundingBox();
+    await firstLine.hover();
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector(".chat-line-time")).opacity === "1",
+    );
+    assert.deepEqual(await firstLine.boundingBox(), lineBox, "Showing the time moves nothing");
     await page.waitForTimeout(150);
     if (shots) await page.screenshot({ path: `${shots}/agent-space-1440.png` });
 
@@ -184,6 +192,12 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth), 390);
     await phone.waitForTimeout(150);
     if (shots) await phone.screenshot({ path: `${shots}/agent-thread-390.png` });
+    const phoneLine = phoneThread.locator(".node-chat-line", { hasText: "Mark H2 supported" });
+    await phoneLine.locator(".node-chat-text").tap();
+    assert.equal(await phoneLine.getAttribute("data-time-shown"), "");
+    await phone.waitForTimeout(200);
+    if (shots) await phone.screenshot({ path: `${shots}/agent-thread-time-390.png` });
+    assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth), 390);
     const composer = await phoneThread.locator(".chat-composer").boundingBox();
     assert.ok(composer.x >= 0 && composer.x + composer.width <= 390);
     await phoneThread.getByRole("button", { name: "Threads" }).click();

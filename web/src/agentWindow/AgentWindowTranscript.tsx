@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
+import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
 import {
   isActiveTask,
   isNewestOfTurnClass,
@@ -19,7 +20,7 @@ import type {
   TurnOutcome,
 } from "../core/types";
 import type { GlossaryIndex } from "../graph/glossary";
-import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD } from "../core/uiConstants";
+import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { ReferenceChip } from "../core/ReferenceChip";
 import { sourceReference } from "../core/projectReferences";
@@ -123,6 +124,7 @@ export function AgentWindowTranscript({
     () => new Set(),
   );
   const [expiryClock, setExpiryClock] = useState(() => Date.now());
+  const [timeShownIds, setTimeShownIds] = useState<Set<string>>(() => new Set());
   const relatedActive = relatedTasks.some(isActiveTask);
   const taskById = useMemo(
     () => new Map(relatedTasks.map((task) => [task.operation_id, task])),
@@ -140,9 +142,21 @@ export function AgentWindowTranscript({
     const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [transcript]);
+  const entries = agentWindowEntries(transcript, questions);
+  const dividers = timeDividers(entries);
+  const now = new Date();
+  const toggleTime = (lineId: string, target: EventTarget) => {
+    if (!(target instanceof Element) || !lineTapShowsTime(target, window.getSelection())) return;
+    setTimeShownIds((current) => {
+      const next = new Set(current);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  };
   return (
     <>
-      {agentWindowEntries(transcript, questions).map((entry) => {
+      {entries.map((entry) => {
         if (entry.kind === "question")
           return (
             <Fragment key={entry.question.question_id}>{renderQuestion?.(entry.question)}</Fragment>
@@ -177,15 +191,24 @@ export function AgentWindowTranscript({
           : null;
         const compaction = compactionByLine.get(line.lineId);
         const ownBody = line.role === "agent" ? agentBody?.(line) : undefined;
+        const divider = dividers.get(line.lineId);
+        const shownAt = lineTime(line);
         return (
           <Fragment key={line.lineId}>
             {compaction?.placement === "before" && (
               <CompactionDivider compactions={compaction.compactions} />
             )}
+            {divider && (
+              <div className="chat-time-divider" role="separator">
+                <time dateTime={divider.toISOString()}>{timeDividerLabel(divider, now)}</time>
+              </div>
+            )}
             <div
               className={`node-chat-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
               data-source={line.source ?? undefined}
               data-task-id={line.taskId}
+              data-time-shown={timeShownIds.has(line.lineId) ? "" : undefined}
+              onClick={shownAt ? (event) => toggleTime(line.lineId, event.target) : undefined}
             >
               {lineLead?.(line, task)}
               {browserNotices && (
@@ -403,6 +426,11 @@ export function AgentWindowTranscript({
                   )}
                 </div>
               )}
+              {shownAt && (
+                <time className="chat-line-time" dateTime={shownAt.toISOString()}>
+                  {localClock(shownAt)}
+                </time>
+              )}
             </div>
             {compaction?.placement === "after" && (
               <CompactionDivider compactions={compaction.compactions} />
@@ -419,6 +447,47 @@ function watcherChip(line: TaskTranscriptLine): ReactNode {
   return line.trigger === "watcher" ? (
     <span className="chat-turn-trigger watcher">Watcher</span>
   ) : null;
+}
+
+/** When a line happened; a line with no shown time of its own uses its timestamp. */
+function lineTime(line: TaskTranscriptLine): Date | null {
+  const value = line.shownAt === undefined ? line.timestamp : line.shownAt;
+  const at = value ? new Date(value) : null;
+  return at && Number.isFinite(at.getTime()) ? at : null;
+}
+
+/** The lines that open a new day or follow a quiet gap, with the time each divider shows.
+ *  Cards, receipt-only lines and lines with no time are not counted. */
+export function timeDividers(entries: ReturnType<typeof agentWindowEntries>): Map<string, Date> {
+  const dividers = new Map<string, Date>();
+  let previous: Date | null = null;
+  for (const entry of entries) {
+    if (entry.kind !== "line") continue;
+    const line = entry.line;
+    if (line.role === "agent" && !line.text && line.graphUpdate) continue;
+    const at = lineTime(line);
+    if (!at) continue;
+    if (
+      !previous ||
+      at.toDateString() !== previous.toDateString() ||
+      at.getTime() - previous.getTime() >= THREAD_TIME_GAP_MINUTES * 60_000
+    )
+      dividers.set(line.lineId, at);
+    previous = at;
+  }
+  return dividers;
+}
+
+const TAP_IGNORED =
+  'a, button, input, textarea, select, summary, label, [role="button"], [class*="chip"], .chat-input-reference';
+
+/** A tap on a line shows its time, unless it lands on a link, control or chip, or selects text. */
+export function lineTapShowsTime(
+  target: Pick<Element, "closest">,
+  selection: Pick<Selection, "isCollapsed" | "toString"> | null,
+): boolean {
+  if (target.closest(TAP_IGNORED)) return false;
+  return !selection || selection.isCollapsed || !selection.toString();
 }
 
 /** Cards remain inside their owning turn, even when settlement stamps both messages together. */
