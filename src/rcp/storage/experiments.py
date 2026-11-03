@@ -2875,12 +2875,13 @@ class ExperimentStoreMixin(StoreMixinBase):
     ) -> bool:
         """Terminalize this episode's observers once its authorized turn is no longer live.
 
-        Stop waits only for a turn that is queued, running, or pausing. A turn that
-        already paused, failed, or was interrupted has nothing in flight to finish,
-        and nobody resumes a turn they asked to stop, so Stop abandons its recovery
-        (history stays inspectable) and settles. A claimed watcher keeps its
-        notification provenance, but becomes stopped once the task it woke has
-        finished successfully.
+        Stop waits only for a turn that is queued, running, or pausing, or one a
+        restart interrupted while Stop waited on it that startup recovery has not
+        ruled on yet. Any other turn that already paused, failed, or was
+        interrupted has nothing in flight to finish, and nobody resumes a turn they
+        asked to stop, so Stop abandons its recovery (history stays inspectable)
+        and settles. A claimed watcher keeps its notification provenance, but
+        becomes stopped once the task it woke has finished successfully.
         """
 
         requested = self._experiment_episode_row(connection, episode_id)
@@ -2895,7 +2896,15 @@ class ExperimentStoreMixin(StoreMixinBase):
             connection, project_id, control_node_id, episode_id
         )
         if unresolved:
-            if any(row["status"] not in {"paused", "failed", "interrupted"} for row in unresolved):
+            pending = {
+                str(row["operation_id"])
+                for row in self._stopping_experiment_recovery_rows(connection, episode_id)
+            }
+            if any(
+                row["status"] not in {"paused", "failed", "interrupted"}
+                or str(row["operation_id"]) in pending
+                for row in unresolved
+            ):
                 return False
             now = self.now()
             for row in unresolved:
@@ -3031,8 +3040,17 @@ class ExperimentStoreMixin(StoreMixinBase):
         """
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
+            rows = self._stopping_experiment_recovery_rows(connection)
+        return [self._agent_task_record(row) for row in rows]
+
+    @staticmethod
+    def _stopping_experiment_recovery_rows(
+        connection: sqlite3.Connection, episode_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        """Each unresolved leaf a restart interrupted behind its Stop, optionally for one episode."""
+
+        return connection.execute(
+            """
                 SELECT task.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
@@ -3068,11 +3086,12 @@ class ExperimentStoreMixin(StoreMixinBase):
                       WHERE receipt.operation_id = task.operation_id
                         AND receipt.category = 'experiment_recovery_abandoned'
                   )
+                  AND (? IS NULL OR episode.episode_id = ?)
                 ORDER BY episode.created_at, episode.episode_id,
                          task.created_at, task.operation_id
-                """
-            ).fetchall()
-        return [self._agent_task_record(row) for row in rows]
+                """,
+            (episode_id, episode_id),
+        ).fetchall()
 
     @staticmethod
     def _experiment_episode_for_stop(

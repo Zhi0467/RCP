@@ -811,6 +811,10 @@ waiting. A turn that is paused, failed, or interrupted has nothing in flight to
 finish, and nobody resumes a turn they asked to stop: Stop durably abandons its
 recovery, keeps its history, and settles. An Auto-research orchestrator's Stop
 of a child that hit a provider limit therefore frees the Experiment at once.
+A restart that interrupts the turn Stop was waiting on is different: startup
+resumes that turn from its saved session and stage behind the fence, and Stop
+abandons it only once that recovery is refused or cannot run. While the stage
+host is unreachable, Stop keeps waiting for a later start.
 
 Stop and pause do not cancel compute jobs. Stop does not cancel external work,
 delete watcher history, edit Experiment status, create or close an attempt, or

@@ -336,6 +336,77 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     }
 
 
+def test_a_stage_host_outage_at_restart_keeps_the_stopped_turn_for_a_later_recovery(
+    loop, tmp_path, monkeypatch
+) -> None:
+    """The episode explorer's trace: Stop while the turn runs, then restart with the host down.
+
+    An unreachable stage is no verdict on the saved session, so startup leaves the
+    turn for the next start; Stop must not abandon it in the same pass.
+    """
+    loop.start_episode(status="running")
+    loop.store.checkpoint_agent_task(
+        "loop-root", native_session_id="remote-session", stage_root="/scratch/stage"
+    )
+    with loop.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_host = 'gpu-host' WHERE operation_id = 'loop-root'"
+        )
+    loop.record_context_candidate("loop-root")
+    loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
+
+    def unreachable(_stage, _path):
+        raise ConnectionError("stage host unreachable")
+
+    monkeypatch.setattr("rcp.transport.RemoteRunStage.directory_exists", unreachable)
+
+    async def stream(*_args):
+        raise AssertionError("an unreachable stage must not relaunch")
+        yield
+
+    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
+
+    assert not loop.store.agent_task_has_receipt("loop-root", "experiment_recovery_abandoned")
+    assert loop.store.episode(loop.episode_id).stop_settled_at is None  # type: ignore[union-attr]
+    assert [task.operation_id for task in loop.store.stopping_experiment_recovery_candidates()] == [
+        "loop-root"
+    ]
+
+
+def test_a_refused_recovery_at_restart_lets_stop_abandon_the_turn(
+    loop, tmp_path, monkeypatch
+) -> None:
+    """Only an unreachable host keeps Stop waiting; a refusal is a verdict and Stop settles."""
+    loop.start_episode(status="running")
+    stage = tmp_path / "refused-stage"
+    stage.mkdir()
+    loop.store.checkpoint_agent_task(
+        "loop-root", native_session_id="refused-session", stage_root=str(stage)
+    )
+    loop.record_context_candidate("loop-root")
+    loop.store.request_experiment_loop_stop(
+        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("the recovery was refused")
+
+    monkeypatch.setattr(BackgroundAgentTasks, "resume", refuse)
+
+    async def stream(*_args):
+        raise AssertionError("a refused recovery must not relaunch")
+        yield
+
+    BackgroundAgentTasks(loop.store, stream).recover_at_startup()
+
+    assert loop.store.agent_task_has_receipt("loop-root", "experiment_recovery_abandoned")
+    assert loop.store.episode(loop.episode_id).status == "stopped"  # type: ignore[union-attr]
+    state = loop.store.experiment_episode(loop.episode_id)
+    assert state is not None and state.session_diagnostic is not None
+
+
 def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, tmp_path) -> None:
     """A settled stop leaves no unnotified completion, so this is an ordinary fresh Run, not a
     reauthorization.
