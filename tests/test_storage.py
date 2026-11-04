@@ -312,7 +312,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (74, "agent_schedule_pending_fires_v1")
+    assert migrations[-1] == (75, "agent_thread_queue_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -2233,6 +2233,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "approval_cards": 0,
         "questions": 1,
         "agent_handoffs": 0,
+        "agent_thread_queue": 0,
         "agent_schedules": 0,
         "space_turn_project_bindings": 0,
         "agent_threads": 0,

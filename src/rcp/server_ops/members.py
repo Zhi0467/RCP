@@ -448,6 +448,7 @@ def _remove_member_agent_data(store: AppStore, member_id: str) -> None:
             "DELETE FROM agent_handoffs WHERE target_operation_id IS NULL AND source_thread_id IN (SELECT thread_id FROM agent_threads WHERE user_id=?)",
             (member_id,),
         )
+        connection.execute("DELETE FROM agent_thread_queue WHERE user_id=?", (member_id,))
         connection.execute(
             "UPDATE agent_threads SET closed_at=coalesce(closed_at,?),closed_reason='access_lost' WHERE user_id=?",
             (store.now(), member_id),

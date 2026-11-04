@@ -347,6 +347,125 @@ def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
         assert str(seed) in launcher.prompts[0] and b"prior-private-answer" in seed.read_bytes()
 
 
+def test_queued_message_with_a_file_starts_as_the_members_turn_after_the_running_one(
+    manifest, tmp_path
+):
+    """A removed message never starts, and its files can be sent again."""
+    import asyncio
+    import threading
+    import uuid
+    from typing import cast
+
+    from rcp.agents import AgentLauncher
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+    from rcp.runs.tasks.work import stream_work_run
+    from tests.helpers import (
+        append_fixture_patch,
+        seed_patch,
+        wait_for_task,
+        wait_for_task_response,
+        wait_until,
+    )
+    from tests.test_chat_prompt_protocol import _RecordingLauncher
+
+    class HeldLauncher(_RecordingLauncher):
+        def __init__(self) -> None:
+            super().__init__("queue-session")
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        async def stream(self, _provider, prompt, **kwargs):
+            if not self.prompts:
+                self.started.set()
+                while not self.release.is_set():
+                    await asyncio.sleep(0.01)
+            async for event in super().stream(_provider, prompt, **kwargs):
+                yield event
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    append_fixture_patch(service, seed_patch())
+    launcher = HeldLauncher()
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, cast(AgentLauncher, launcher), request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][1]
+        project_id, thread_id = thread["project_id"], thread["thread_id"]
+        base = f"/api/agent-threads/{thread_id}/queue"
+
+        def upload(content: bytes) -> dict[str, str]:
+            client_id = str(uuid.uuid4())
+            response = client.post(
+                f"/api/projects/{project_id}/chats/{thread_id}/attachments",
+                files={"file": ("notes.txt", content, "text/plain")},
+                data={"client_id": client_id},
+            )
+            assert response.status_code == 200, response.text
+            return {
+                "attachment_set_id": response.json()["attachment_set_id"],
+                "attachment_client_id": client_id,
+            }
+
+        def queue(message: str, files: dict[str, str]):
+            response = client.post(
+                base,
+                json={"message": message, **files},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            assert response.status_code == 202, response.text
+            return response.json()
+
+        running = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": thread_id,
+                "chat_scope": "project",
+                "message": "Start",
+                "mode": "work",
+            },
+        )
+        assert running.status_code == 202, running.text
+        assert launcher.started.wait(10)
+        queued = queue("Queued follow-up", upload(b"queued-file-marker"))
+        assert queued["operation_id"] is None
+        dropped_files = upload(b"dropped-file-marker")
+        dropped = queue("Never mind", dropped_files)
+        assert client.delete(f"{base}/{dropped['queue_id']}").status_code == 200
+        resent = queue("Never mind", dropped_files)
+        assert client.delete(f"{base}/{resent['queue_id']}").status_code == 200
+        launcher.release.set()
+        first = wait_for_task_response(client, project_id, running.json()["operation_id"])
+        assert first["status"] == "succeeded", first
+        operation_id = wait_until(
+            lambda: (row := store.agent_thread_queue_item(queued["queue_id"])) and row.operation_id
+        )
+        assert operation_id == queued_turn_operation_id(queued["queue_id"])
+        turn = wait_for_task(app, operation_id, expect="succeeded")
+        assert turn.request["message"] == "Queued follow-up"
+        assert turn.request["trigger"] == "human" and "source" not in turn.request
+        assert turn.authorized_by is not None
+        assert turn.authorized_by.user_id == store.private_chat_owner(thread_id)
+        assert "Queued follow-up" in launcher.prompts[1]
+        assert turn.stage_root is not None
+        (staged,) = [
+            path
+            for path in Path(turn.stage_root).rglob("*")
+            if path.is_file() and path.read_bytes() == b"queued-file-marker"
+        ]
+        assert str(staged) in launcher.prompts[1]
+        assert len(launcher.prompts) == 2
+        for removed in (dropped, resent):
+            assert store.agent_task(queued_turn_operation_id(removed["queue_id"])) is None
+        assert client.get(base).json()["items"] == []
+
+
 def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
     """The row names the turn before its member message reaches the transcript."""
     import uuid
@@ -789,3 +908,136 @@ def test_space_transcript_shows_when_each_message_happened(manifest, tmp_path, m
             ("new direction", None),
             ("hi", "2026-11-01T09:30:00+00:00"),
         ]
+
+
+def _busy_thread_turn(store, actor, thread, operation_id="busy", **fields):
+    from rcp.service import RunRequest
+    from tests.test_storage import _task_record
+
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            **{
+                "operation_id": operation_id,
+                "project_id": thread["project_id"],
+                "kind": "project_chat",
+                "status": "running",
+                "authorized_by": actor,
+                "request": RunRequest(
+                    chat_scope="project", chat_id=thread["thread_id"], mode="work"
+                ).model_dump(mode="json"),
+                **fields,
+            },
+        )
+    )
+
+
+def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_path, monkeypatch):
+    import uuid
+
+    from rcp.limits import AGENT_THREAD_QUEUE_MAX_CHARS, AGENT_THREAD_QUEUE_MAX_ITEMS
+    from tests.helpers import authorized_human, fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    store = tasks.store
+    fake_launch_admitted(monkeypatch, tasks)
+    with signed_in_client(app) as client:
+        space, thread = client.get("/api/agent-threads").json()["threads"]
+        base = f"/api/agent-threads/{thread['thread_id']}/queue"
+        actor = authorized_human(store)
+
+        def post(message, key=None, url=base):
+            return client.post(
+                url,
+                json={"message": message},
+                headers={"Idempotency-Key": key or str(uuid.uuid4())},
+            )
+
+        _busy_thread_turn(store, actor, thread)
+        space_queue = f"/api/agent-threads/{space['thread_id']}/queue"
+        assert client.get(space_queue).status_code == 404
+        assert post("x", url=space_queue).status_code == 404
+        assert client.post(base, json={"message": "No key"}).status_code == 422
+        assert post("").status_code == 422
+        assert post("x" * (AGENT_THREAD_QUEUE_MAX_CHARS + 1)).status_code == 422
+        key = str(uuid.uuid4())
+        queued = post("Then check the logs", key)
+        assert queued.status_code == 202, queued.text
+        assert queued.json()["operation_id"] is None
+        assert post("Then check the logs", key).json() == queued.json()
+        assert post("Another message", key).status_code == 422
+        listed = client.get(base).json()["items"]
+        assert [(item["kind"], item["queue_id"]) for item in listed] == [
+            ("message", queued.json()["queue_id"])
+        ]
+        extra = [post(f"More {index}") for index in range(1, AGENT_THREAD_QUEUE_MAX_ITEMS)]
+        assert all(response.status_code == 202 for response in extra)
+        assert post("One too many").status_code == 409
+        for response in extra:
+            removed = client.delete(f"{base}/{response.json()['queue_id']}")
+            assert removed.status_code == 200, removed.text
+        assert client.delete(f"{base}/{extra[0].json()['queue_id']}").status_code == 404
+        store.complete_agent_task("busy", applied_revision=None, result={})
+        later = post("Now go")
+        assert later.status_code == 202, later.text
+        first = store.agent_thread_queue_item(queued.json()["queue_id"])
+        assert first is not None and first.operation_id is not None
+        assert later.json()["operation_id"] is None
+        assert client.delete(f"{base}/{queued.json()['queue_id']}").status_code == 409
+        store.fail_agent_task(first.operation_id, "stopped")
+        store.set_chat_archived(
+            thread["project_id"], thread["thread_id"], actor.user_id, archived=True
+        )
+        assert post("Archived").status_code == 409
+
+
+def test_queue_lists_ready_handoffs_by_readiness_with_the_space_agent_name(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.helpers import authorized_human
+    from tests.test_storage import _task_record
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        space, thread = client.get("/api/agent-threads").json()["threads"]
+        actor = authorized_human(store)
+        _busy_thread_turn(store, actor, thread)
+
+        def handoff(operation_id: str) -> None:
+            store.create_agent_task(
+                _task_record(
+                    store.now(),
+                    operation_id=operation_id,
+                    project_id=store.space_id,
+                    kind="space_chat",
+                    status="running",
+                    authorized_by=actor,
+                    request=RunRequest(
+                        chat_scope="project", chat_id=space["thread_id"], mode="work"
+                    ).model_dump(mode="json"),
+                )
+            )
+            store.create_agent_handoff(
+                source_thread_id=space["thread_id"],
+                source_operation_id=operation_id,
+                idempotency_key="key",
+                target_thread_id=thread["thread_id"],
+                message=f"From {operation_id}",
+            )
+
+        handoff("done-source")
+        queued = store.queue_agent_thread_message(
+            queue_id="queued",
+            thread_id=thread["thread_id"],
+            user_id=actor.user_id,
+            idempotency_key="key",
+            message="Mine",
+        )
+        store.complete_agent_task("done-source", applied_revision=None, result={})
+        handoff("running-source")
+        items = client.get(f"/api/agent-threads/{thread['thread_id']}/queue").json()["items"]
+        assert [item["kind"] for item in items] == ["message", "handoff"]
+        assert items[0]["queue_id"] == queued.queue_id
+        assert items[1]["message"] == "From done-source"
+        assert items[1]["source_agent_name"] == space["agent_name"]
