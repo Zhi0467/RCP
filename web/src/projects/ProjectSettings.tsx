@@ -28,7 +28,7 @@ import { ProjectConsolidation } from "./ProjectConsolidation";
 import { AddMachineTile, MachineTile, type MachineSignal } from "./MachineTile";
 import { AddProjectMachine } from "./AddProjectMachine";
 import { useSpaceMachines } from "./useSpaceMachines";
-import { machineHostLabel, spaceMachineForProject } from "./spaceMachines";
+import { machineHostLabel, spaceMachineById } from "./spaceMachines";
 import { EMPTY_SKILL_SELECTION } from "../core/skillPickerModel";
 import { AgentConfigControls, profileRunConfig } from "../core/AgentConfigControls";
 import { AgentUsageWidgets } from "../agents/AgentUsageWidgets";
@@ -119,8 +119,8 @@ function profilesFrom(
         id === "orchestrator"
           ? (project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
           : project.agent_profiles[id];
-      const settings = { ...profileRunConfig(storedProfile), runtime: storedProfile.runtime };
-      return [id, { ...settings, run_on: base }];
+      const { run_on: _runOn, ...settings } = profileRunConfig(storedProfile, base);
+      return [id, { ...settings, runtime: storedProfile.runtime }];
     }),
   ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
@@ -294,20 +294,8 @@ export function ProjectSettings({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- current fingerprints every staged field
   }, [dirty, current, project.id, actorId]);
-  const machineByAlias = Object.fromEntries(
-    project.machines.map((machine) => [machine.alias, machine]),
-  );
-  // Aliases that reach the same machine account, such as a laptop and its
-  // remote that both became the team server on a move, share one tile and card.
-  const machineGroups: { key: string; machines: typeof project.machines }[] = [];
-  for (const machine of project.machines) {
-    const group = machineGroups.find(
-      ({ machines: [first] }) =>
-        first.host === machine.host && first.os_account === machine.os_account,
-    );
-    if (group) group.machines.push(machine);
-    else machineGroups.push({ key: machine.alias, machines: [machine] });
-  }
+  const cardFor = (machineId: string) =>
+    spaceMachines.machines ? spaceMachineById(spaceMachines.machines, machineId) : null;
   const providerCatalog = Object.values(project.providers).sort((left, right) =>
     (left.label || left.provider).localeCompare(right.label || right.provider),
   );
@@ -434,13 +422,11 @@ export function ProjectSettings({
 
   // What a tile shows at a glance: each provider, the jobs route, and grants.
   const machineSignals = (machine: (typeof project.machines)[number]): MachineSignal[] => {
-    const record = spaceMachines.machines
-      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
-      : null;
+    const record = cardFor(machine.machine_id);
     const signals: MachineSignal[] = providerCatalog.map((provider) => {
       const recorded = record?.provider_paths[provider.provider] ?? "";
       const state = providerPathPresentation(
-        project.provider_readiness[machine.alias]?.[provider.provider],
+        project.provider_readiness[machine.machine_id]?.[provider.provider],
         recorded,
         recorded,
       );
@@ -448,7 +434,7 @@ export function ProjectSettings({
     });
     // Slurm is checked on its machine; the helper launches only on the base.
     const slurm = machine.compute?.job_manager === "slurm";
-    if (slurm || machine.alias === baseMachine(project)) {
+    if (slurm || machine.machine_id === baseMachine(project)) {
       const probe = machine.compute_probes?.[slurm ? "scheduler" : "helper"];
       signals.push({
         label: slurm ? "Slurm" : "Jobs",
@@ -531,7 +517,7 @@ export function ProjectSettings({
           </header>
           <div className="settings-repositories">
             {project.repositories.map((repository) => {
-              const machine = machineByAlias[repository.machine];
+              const card = cardFor(repository.machine);
               const canonical = repository.alias === project.state_repository;
               const selected = canonical || project.project_truth_scope.includes(repository.alias);
               return (
@@ -553,11 +539,15 @@ export function ProjectSettings({
                   <span className="settings-repository-copy">
                     <strong>{repository.alias}</strong>
                     <span className="settings-repository-path">
-                      {machine?.host ? `${machine.host}:${repository.path}` : repository.path}
+                      {card?.host ? `${card.host}:${repository.path}` : repository.path}
                     </span>
                   </span>
                   <span className="settings-repository-meta">
-                    <Server size={12} /> {machine?.host ? repository.machine : "local"}
+                    {card && (
+                      <>
+                        <Server size={12} /> {card.name}
+                      </>
+                    )}
                     {canonical && <em>canonical state</em>}
                     {repository.source === "server_only" && <em>server only, not backed up</em>}
                     {repository.can_connect && spaceKind === "team" && (
@@ -582,13 +572,7 @@ export function ProjectSettings({
             key={project.id}
             project={project}
             spaceKind={spaceKind}
-            baseMachineId={
-              spaceMachines.machines
-                ? (spaceMachineForProject(spaceMachines.machines, project.id, {
-                    alias: baseMachine(project),
-                  })?.machine_id ?? null)
-                : null
-            }
+            baseMachineId={baseMachine(project) || null}
             disabled={writesDisabled}
             connectAlias={connectAlias}
             onCloseConnect={() => setConnectAlias(null)}
@@ -626,25 +610,27 @@ export function ProjectSettings({
             </button>
           </header>
           <div className="machine-tiles" role="group" aria-label="Machines">
-            {machineGroups.map(({ key, machines }) => (
-              <MachineTile
-                key={key}
-                name={machines.map((machine) => machine.alias).join(", ")}
-                hostLabel={machineHostLabel(machines[0].host, spaceKind)}
-                account={machines[0].os_account}
-                base={machines.some((machine) => machine.alias === baseMachine(project))}
-                signals={[
-                  ...new Map(
-                    machines.flatMap(machineSignals).map((signal) => [signal.label, signal]),
-                  ).values(),
-                ]}
-                selected={openMachine === key}
-                onSelect={() => {
-                  setAddingMachine(false);
-                  setOpenMachine((current) => (current === key ? null : key));
-                }}
-              />
-            ))}
+            {project.machines.map((machine) => {
+              const card = cardFor(machine.machine_id);
+              return (
+                <MachineTile
+                  key={machine.machine_id}
+                  machineId={machine.machine_id}
+                  name={card?.name ?? ""}
+                  hostLabel={card ? machineHostLabel(card.host, spaceKind) : ""}
+                  account={card?.os_account ?? ""}
+                  base={machine.machine_id === baseMachine(project)}
+                  signals={machineSignals(machine)}
+                  selected={openMachine === machine.machine_id}
+                  onSelect={() => {
+                    setAddingMachine(false);
+                    setOpenMachine((current) =>
+                      current === machine.machine_id ? null : machine.machine_id,
+                    );
+                  }}
+                />
+              );
+            })}
             <AddMachineTile
               label="Add machine"
               selected={addingMachine}
@@ -656,30 +642,29 @@ export function ProjectSettings({
             />
           </div>
           <div className="provider-machine-list">
-            {machineGroups
-              .filter((group) => group.key === openMachine)
-              .map(({ key, machines: group }) => {
-                const record = spaceMachines.machines
-                  ? spaceMachineForProject(spaceMachines.machines, project.id, group[0])
-                  : null;
-                const removable = group.every((machine) => machine.removable);
+            {project.machines
+              .filter((machine) => machine.machine_id === openMachine)
+              .map((machine) => {
+                const record = cardFor(machine.machine_id);
                 return (
                   <MachineCard
-                    key={`${project.id}:${record?.machine_id ?? key}`}
-                    title={record?.name ?? group.map((item) => item.alias).join(", ")}
-                    hostLabel={machineHostLabel(group[0].host, spaceKind)}
-                    osAccount={group[0].os_account}
+                    key={`${project.id}:${machine.machine_id}`}
+                    title={record?.name ?? ""}
+                    hostLabel={record ? machineHostLabel(record.host, spaceKind) : ""}
+                    osAccount={record?.os_account ?? ""}
                     record={record}
+                    accountRequired={spaceKind === "team"}
                     writesDisabled={writesDisabled}
                     onRecordChange={spaceMachines.replace}
                     onRemoveFromProject={
-                      removable
+                      machine.removable
                         ? async () => {
-                            for (const machine of group) {
-                              const saved = await removeProjectMachine(project.id, machine.alias);
-                              if (!requestIsCurrent()) return;
-                              onSaved(saved, { provider: false });
-                            }
+                            const saved = await removeProjectMachine(
+                              project.id,
+                              machine.machine_id,
+                            );
+                            if (!requestIsCurrent()) return;
+                            onSaved(saved, { provider: false });
                             void spaceMachines.reload();
                             setOpenMachine(null);
                           }
@@ -694,18 +679,17 @@ export function ProjectSettings({
             <AddProjectMachine
               projectId={project.id}
               spaceKind={spaceKind}
-              takenAliases={project.machines.map((machine) => machine.alias)}
               onClose={() => setAddingMachine(false)}
               machines={spaceMachines.machines ?? []}
               writesDisabled={writesDisabled}
               onCreated={spaceMachines.replace}
-              onAdded={(saved, alias) => {
+              onAdded={(saved, machineId) => {
                 if (!requestIsCurrent()) return;
                 onSaved(saved, { provider: false });
                 void spaceMachines.reload();
                 void onRefreshReadiness().catch(() => {});
                 setAddingMachine(false);
-                setOpenMachine(alias);
+                setOpenMachine(machineId);
               }}
             />
           )}
@@ -788,12 +772,11 @@ export function ProjectSettings({
                 </header>
                 <AgentConfigControls
                   project={project}
-                  value={profiles[id]}
-                  // The exported head describes the saved provider on the saved
-                  // machine; a draft that moved either shows blank until saved.
+                  value={{ ...profiles[id], run_on: baseMachine(project) }}
+                  // The exported head describes the saved provider; a draft that
+                  // moved it shows blank until saved.
                   effectiveModel={
-                    profiles[id].provider === project.agent_profiles[id]?.provider &&
-                    profiles[id].run_on === project.agent_profiles[id]?.run_on
+                    profiles[id].provider === project.agent_profiles[id]?.provider
                       ? project.agent_profiles[id]?.effective_model
                       : ""
                   }
@@ -812,7 +795,7 @@ export function ProjectSettings({
                       setStatus(null);
                     },
                   }}
-                  onChange={(value) => {
+                  onChange={({ run_on: _runOn, ...value }) => {
                     setProfiles((currentProfiles) => ({
                       ...currentProfiles,
                       [id]: { ...currentProfiles[id], ...value },

@@ -1,5 +1,4 @@
 import {
-  Check,
   FolderPlus,
   KeyRound,
   LoaderCircle,
@@ -26,6 +25,7 @@ import { ArmedDeleteButton } from "../ui/ArmedDeleteButton";
 import {
   createPathEditor,
   createMachineWriteQueue,
+  machineEditRequest,
   type MachineSave,
   type WritablePathEdit,
 } from "./spaceMachines";
@@ -59,6 +59,8 @@ interface Props {
   onRemoveFromProject?: () => Promise<void>;
   /** The space page's "Sign-ins" fold for this machine's host. */
   signIns?: ReactNode;
+  /** Team spaces record each machine's account; a blank one is filled from the server's login. */
+  accountRequired?: boolean;
 }
 
 /** Runs one card's requests in order; a later answer never lands under an earlier one. */
@@ -75,8 +77,10 @@ export function MachineCard({
   onDelete,
   onRemoveFromProject,
   signIns,
+  accountRequired = false,
 }: Props) {
   const [busy, setBusy] = useState<"delete" | "unlink" | null>(null);
+  const [editing, setEditing] = useState(false);
   // Every write on this card queues here, so no earlier answer lands after a newer one.
   const writes = useRef(createMachineWriteQueue(updateSpaceMachine)).current;
   const save = writes.save;
@@ -97,48 +101,71 @@ export function MachineCard({
       className="provider-machine machine-card"
       data-machine-card={record?.machine_id ?? title}
     >
-      <header>
-        {record ? (
-          <MachineName
-            record={record}
-            writesDisabled={writesDisabled}
-            save={save}
-            onRenamed={onRecordChange}
-          />
-        ) : (
-          <strong>{title}</strong>
-        )}
-        <span>
-          {hostLabel}
-          {osAccount ? ` · ${osAccount}` : ""}
-        </span>
-        {onRemoveFromProject && (
-          <button
-            type="button"
-            data-machine-action="remove-from-project"
-            aria-label="Remove from project"
-            title="Remove from project"
-            {...failedProps(failure, "unlink")}
-            className={`icon-button${failure?.key === "unlink" ? " failed" : ""}`}
-            disabled={writesDisabled || busy !== null}
-            onClick={() => void act("unlink", onRemoveFromProject)}
-          >
-            {busy === "unlink" ? <LoaderCircle className="spin" size={14} /> : <Unlink size={14} />}
-          </button>
-        )}
-        {/* Delete also detaches the machine from every project, so it arms first. */}
-        {onDelete && (
-          <ArmedDeleteButton
-            data-machine-action="delete"
-            label={`Remove ${title}`}
-            className="icon-button"
-            busy={busy === "delete"}
-            disabled={writesDisabled || busy !== null}
-            failure={failure?.key === "delete" ? failure.message : null}
-            onConfirm={() => void act("delete", onDelete)}
-          />
-        )}
-      </header>
+      {record && editing ? (
+        <MachineFields
+          kind="edit"
+          initial={{ name: record.name, host: record.host, os_account: record.os_account }}
+          hostFixedLabel={record.host ? null : hostLabel}
+          accountRequired={accountRequired}
+          writesDisabled={writesDisabled}
+          submit={(draft) => save(record.machine_id, machineEditRequest(record, draft))}
+          onSaved={(machine) => {
+            onRecordChange(machine);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <header>
+          <strong>{record?.name ?? title}</strong>
+          {record && (
+            <button
+              className="icon-button"
+              type="button"
+              data-machine-action="edit"
+              aria-label={`Edit ${record.name}`}
+              disabled={writesDisabled}
+              onClick={() => setEditing(true)}
+            >
+              <Pencil size={14} />
+            </button>
+          )}
+          <span>
+            {hostLabel}
+            {osAccount ? ` · ${osAccount}` : ""}
+          </span>
+          {onRemoveFromProject && (
+            <button
+              type="button"
+              data-machine-action="remove-from-project"
+              aria-label="Remove from project"
+              title="Remove from project"
+              {...failedProps(failure, "unlink")}
+              className={`icon-button${failure?.key === "unlink" ? " failed" : ""}`}
+              disabled={writesDisabled || busy !== null}
+              onClick={() => void act("unlink", onRemoveFromProject)}
+            >
+              {busy === "unlink" ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <Unlink size={14} />
+              )}
+            </button>
+          )}
+          {/* Delete also detaches the machine from every project, so it arms first. */}
+          {onDelete && (
+            <ArmedDeleteButton
+              data-machine-action="delete"
+              label={`Remove ${title}`}
+              className="icon-button"
+              busy={busy === "delete"}
+              disabled={writesDisabled || busy !== null}
+              failure={failure?.key === "delete" ? failure.message : null}
+              onConfirm={() => void act("delete", onDelete)}
+            />
+          )}
+        </header>
+      )}
       {record && (
         <>
           {record.projects.length > 0 && (
@@ -753,88 +780,6 @@ function hiddenReadReason(reason: string): string {
   return reasons[reason] ?? reason;
 }
 
-/** A machine card's name, renamed in place. */
-function MachineName({
-  record,
-  writesDisabled,
-  save: saveMachine,
-  onRenamed,
-}: {
-  record: SpaceMachine;
-  writesDisabled: boolean;
-  save: MachineSave;
-  onRenamed: (machine: SpaceMachine) => void;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (draft === null) {
-    return (
-      <>
-        <strong>{record.name}</strong>
-        <button
-          className="icon-button"
-          type="button"
-          data-machine-action="rename"
-          aria-label={`Rename ${record.name}`}
-          disabled={writesDisabled}
-          onClick={() => setDraft(record.name)}
-        >
-          <Pencil size={14} />
-        </button>
-      </>
-    );
-  }
-  const name = draft.trim();
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      onRenamed(await saveMachine(record.machine_id, { name }));
-      setDraft(null);
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <span className="machine-name-edit">
-      <input
-        value={draft}
-        maxLength={80}
-        aria-label="Machine name"
-        autoFocus
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && name) void save();
-          if (event.key === "Escape") setDraft(null);
-        }}
-      />
-      <button
-        className="icon-button"
-        type="button"
-        data-machine-action="save-name"
-        aria-label="Save name"
-        disabled={writesDisabled || saving || !name}
-        onClick={() => void save()}
-      >
-        {saving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}
-      </button>
-      <button
-        className="icon-button"
-        type="button"
-        aria-label="Cancel rename"
-        disabled={saving}
-        onClick={() => setDraft(null)}
-      >
-        <X size={14} />
-      </button>
-      {error && <em role="alert">{error}</em>}
-    </span>
-  );
-}
-
 const LOGIN_FAILURES: Record<MachineLoginFailureCode, { label: string; icon: typeof KeyRound }> = {
   authentication_failed: { label: "SSH login refused", icon: KeyRound },
   host_key_unknown: { label: "Unknown host key", icon: ShieldQuestion },
@@ -875,28 +820,68 @@ export function NewMachineForm({
   create?: (request: SpaceMachineCreateRequest) => Promise<SpaceMachine>;
   trust?: (host: string, fingerprint: string) => Promise<unknown>;
 }) {
-  const [draft, setDraft] = useState<SpaceMachineCreateRequest>({
-    name: "",
-    host: "",
-    os_account: "",
-  });
+  return (
+    <MachineFields
+      kind="create"
+      initial={EMPTY_MACHINE}
+      accountRequired={accountRequired}
+      writesDisabled={writesDisabled}
+      submit={create}
+      trust={trust}
+      onSaved={onCreated}
+      onCancel={onCancel}
+    />
+  );
+}
+
+const EMPTY_MACHINE: SpaceMachineCreateRequest = { name: "", host: "", os_account: "" };
+
+/**
+ * A machine card's Name, SSH host and Account, shared by Add machine and the
+ * card's edit. Submit is offered once a field differs from `initial`.
+ */
+function MachineFields({
+  kind,
+  initial,
+  hostFixedLabel = null,
+  accountRequired,
+  writesDisabled,
+  submit: send,
+  trust = trustMachineHostKey,
+  onSaved,
+  onCancel,
+}: {
+  kind: "create" | "edit";
+  initial: SpaceMachineCreateRequest;
+  /** Set for the backend's own card, whose host cannot change. */
+  hostFixedLabel?: string | null;
+  accountRequired: boolean;
+  writesDisabled: boolean;
+  submit: (draft: SpaceMachineCreateRequest) => Promise<SpaceMachine>;
+  trust?: (host: string, fingerprint: string) => Promise<unknown>;
+  onSaved: (machine: SpaceMachine) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<SpaceMachineCreateRequest>(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failure, setFailure] = useState<ReturnType<typeof loginFailure>>(null);
-  const valid = draft.name.trim() !== "" && draft.host.trim() !== "";
+  const trimmed: SpaceMachineCreateRequest = {
+    name: draft.name.trim(),
+    host: draft.host.trim(),
+    os_account: draft.os_account.trim(),
+  };
+  const valid =
+    trimmed.name !== "" &&
+    (hostFixedLabel !== null || trimmed.host !== "") &&
+    Object.keys(machineEditRequest(initial, trimmed)).length > 0;
   const submit = async (before?: () => Promise<unknown>) => {
     setSaving(true);
     setError(null);
     try {
       await before?.();
       setFailure(null);
-      onCreated(
-        await create({
-          name: draft.name.trim(),
-          host: draft.host.trim(),
-          os_account: draft.os_account.trim(),
-        }),
-      );
+      onSaved(await send(trimmed));
     } catch (caught) {
       const login = loginFailure(caught);
       if (login) setFailure(login);
@@ -907,16 +892,22 @@ export function NewMachineForm({
   };
   const shown = failure ? LOGIN_FAILURES[failure.code] : null;
   const FailureIcon = shown?.icon;
-  // Trust is the host-key recovery; any other failure turns Create into one retry.
+  // Trust is the host-key recovery; any other failure turns the submit into one retry.
   const retrying = failure !== null && failure.code !== "host_key_unknown";
   return (
-    <div className="new-machine-form" data-new-machine-form="" data-login-failure={failure?.code}>
+    <div
+      className="new-machine-form"
+      data-new-machine-form={kind === "create" ? "" : undefined}
+      data-machine-edit-form={kind === "edit" ? "" : undefined}
+      data-login-failure={failure?.code}
+    >
       <label>
         <span>Name</span>
         <input
           value={draft.name}
           maxLength={80}
           placeholder="GPU server"
+          autoFocus={kind === "edit"}
           onChange={(event) => setDraft({ ...draft, name: event.target.value })}
         />
       </label>
@@ -924,7 +915,8 @@ export function NewMachineForm({
         <span>SSH host</span>
         <input
           value={draft.host}
-          placeholder="gpu.example.edu"
+          placeholder={hostFixedLabel ?? "gpu.example.edu"}
+          disabled={hostFixedLabel !== null}
           aria-invalid={failure ? true : undefined}
           onChange={(event) => {
             setFailure(null);
@@ -951,7 +943,7 @@ export function NewMachineForm({
             disabled={writesDisabled || saving}
             onClick={() => {
               const { fingerprint } = failure;
-              void submit(() => trust(draft.host.trim(), fingerprint!));
+              void submit(() => trust(trimmed.host, fingerprint!));
             }}
           >
             Trust
@@ -962,7 +954,7 @@ export function NewMachineForm({
         <button
           className={retrying ? "icon-button primary" : "button primary compact"}
           type="button"
-          data-machine-action={retrying ? "retry-login" : "create"}
+          data-machine-action={retrying ? "retry-login" : kind === "create" ? "create" : "save"}
           title={retrying ? shown?.label : undefined}
           aria-label={retrying ? `${shown?.label}. Try again` : undefined}
           disabled={writesDisabled || saving || !valid}
@@ -973,9 +965,15 @@ export function NewMachineForm({
           ) : retrying ? (
             <RotateCw size={14} aria-hidden="true" />
           ) : null}
-          {retrying ? null : "Create machine"}
+          {retrying ? null : kind === "create" ? "Create machine" : "Save"}
         </button>
-        <button className="button secondary compact" type="button" onClick={onCancel}>
+        <button
+          className="button secondary compact"
+          type="button"
+          data-machine-action="cancel"
+          disabled={saving}
+          onClick={onCancel}
+        >
           Cancel
         </button>
       </div>

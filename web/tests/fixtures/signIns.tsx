@@ -36,7 +36,7 @@ function Harness() {
             </header>
             <SignInsFold
               machineName="gpu-1"
-              host={params.get("host") ?? "gpu-1.example"}
+              machineId={params.get("machine") ?? "m-gpu-1"}
               data={data}
               viewerUserId={viewer}
               writesDisabled={false}

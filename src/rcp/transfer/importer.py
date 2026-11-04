@@ -19,6 +19,7 @@ from rcp.core.authority import WriteAuthority
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.paper import PaperService
 from rcp.rcp_home import rcp_temp_dir
 from rcp.service import ProjectService
@@ -127,7 +128,7 @@ def import_project_transfer(
                     continue
                 declared = owners.manifest.repository_map[repository.alias]
                 install_repository_bundle(
-                    host=owners.manifest.machine_map[declared.machine].host,
+                    host=host_of(store, declared.machine),
                     path=declared.path,
                     bundle=archive_root / f"repositories/{repository.alias}.bundle",
                     expected_head=repository.source_commit,
@@ -261,9 +262,8 @@ def _target_owners(
     except (ValueError, tomlkit.exceptions.ParseError) as exc:
         raise ValueError("reviewed target manifest is invalid") from exc
     state_repository = manifest.repository_map[manifest.state.repository]
-    machine = manifest.machine_map[state_repository.machine]
-    if machine.host:
-        workspace = state_workspace_for_probe(manifest, catalog.data_dir)
+    if state_repository.machine != BACKEND_MACHINE_ID:
+        workspace = state_workspace_for_probe(manifest, catalog.data_dir, catalog.store)
     else:
         state_root = Path(state_repository.path) / ".research"
         workspace = LocalStateWorkspace(state_root, str(state_root))

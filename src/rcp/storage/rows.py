@@ -125,7 +125,7 @@ class RowMappingMixin:
     @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:
         data = dict(row)
-        data["state_remote"] = bool(data["state_remote"])
+        data["machine_ids_pending"] = bool(data["machine_ids_pending"])
         if data["reachable"] is not None:
             data["reachable"] = bool(data["reachable"])
         return ProjectRecord.model_validate(data)

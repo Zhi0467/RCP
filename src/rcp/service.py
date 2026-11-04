@@ -39,7 +39,6 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
-    MachineConfig,
     Manifest,
     launches_work_like,
     load_manifest,
@@ -102,6 +101,7 @@ from rcp.limits import (
     CHAT_PREVIEW_MAX_CHARS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
+from rcp.machine_cards import LoginKey, card, host_of
 from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.changes import PaperChanges
@@ -120,7 +120,7 @@ from rcp.providers.browser_grant import BrowserTurnStatus
 from rcp.providers.live_status import AgentStatus
 from rcp.provisioning_repositories import team_repository_sources
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.provider_login import parked_provider_work, provider_login_host, task_login_host
+from rcp.runs.provider_login import parked_provider_work, task_login_machine
 from rcp.skill_registry import (
     SkillDefaults,
     SkillReference,
@@ -139,7 +139,8 @@ from rcp.sources import (
 from rcp.storage import AppStore
 from rcp.storage.chat_display import chat_agent_setup
 from rcp.storage.chat_forks import ChatForkOrigin
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
+from rcp.transport.state import SSHStateWorkspace
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
 
@@ -1275,7 +1276,6 @@ class AgentProfileSettings(BaseModel):
     runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
-    run_on: str = Field(min_length=1)
 
 
 class ProjectSettingsRequest(BaseModel):
@@ -1355,11 +1355,11 @@ def agent_login_accounts(
 ) -> set[LoginKey]:
     """Resolve visible launch targets, including those of parked work."""
     pairs = {
-        (profile.provider, provider_login_host(manifest, profile.run_on))
+        (profile.provider, manifest.base_machine)
         for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
     }
     if store is None:
-        return {LoginKey(provider, host, MACHINE_LOGIN_ID) for provider, host in pairs}
+        return {LoginKey(provider, machine_id, MACHINE_LOGIN_ID) for provider, machine_id in pairs}
     resolver = ProviderAccounts.for_store(store)
     accounts: set[LoginKey] = set()
     if project_id is not None:
@@ -1376,18 +1376,17 @@ def agent_login_accounts(
             if task is None or not task.request.get("provider"):
                 continue
             provider = str(task.request["provider"])
-            host = task_login_host(store, task, lambda: manifest)
-            pairs.add((provider, host))
-    for provider, host in pairs:
-        selected, _ = resolver.resolve_login(provider, host, viewer_id)
+            pairs.add((provider, task_login_machine(store, task, lambda: manifest)))
+    for provider, machine_id in pairs:
+        selected, _ = resolver.resolve_login(provider, machine_id, viewer_id)
         if not isinstance(selected, LoginRefusal):
             accounts.add(selected)
         elif selected.login is not None:
             accounts.add(selected.login)
         else:
             accounts.update(
-                LoginKey(provider, host, row.login_id)
-                for row in store.provider_logins(provider, host)
+                LoginKey(provider, machine_id, row.login_id)
+                for row in store.provider_logins(provider, machine_id)
                 if (
                     row.member_id == viewer_id
                     if selected.source == "own"
@@ -1433,10 +1432,11 @@ class ProjectService:
         self._chat_graph_target = chat_graph_target
         self._project_service_resolver = project_service_resolver
         state_repository = manifest.repository_map[manifest.state.repository]
-        state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
             machine=state_repository.machine,
-            host=state_machine.host if history.workspace.remote else "",
+            host=(
+                history.workspace.host if isinstance(history.workspace, SSHStateWorkspace) else ""
+            ),
             root=(
                 str(PurePosixPath(state_repository.path) / ".research" / "chat")
                 if history.workspace.remote
@@ -1951,7 +1951,6 @@ class ProjectService:
         primary = project_primary_question(state)
         attention = project_graph_attention(state)
         counts = project_counts(state, attention)
-        refresh_profile = self.manifest.agent_profile("refresh")
         profiles = self.effective_profiles(self.manifest, self.launcher)
         return _ProjectSnapshotDraft(
             {
@@ -1962,7 +1961,7 @@ class ProjectService:
                 "graph_changes": None,
                 "state_repository": self.manifest.state.repository,
                 "canonical_state": self.history.workspace.status().model_dump(mode="json"),
-                "run_on": refresh_profile.run_on,
+                "run_on": self.manifest.base_machine,
                 "project_truth_scope": state.project_truth_scope,
                 "default_run_truth_scope": self.manifest.agent.default_run_truth_scope,
                 "default_auto_research_invocation_ceiling": (
@@ -1971,10 +1970,7 @@ class ProjectService:
                 "repositories": [
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
-                "machines": [
-                    machine.model_dump(include={"alias", "host", "os_account"})
-                    for machine in self.manifest.machines
-                ],
+                "machines": list(self.manifest.machines),
                 "primary_question": (
                     primary.model_dump(mode="json") if primary is not None else None
                 ),
@@ -2031,12 +2027,10 @@ class ProjectService:
     ) -> None:
         if provider_skills is None:
             return
-        for machine in manifest.machines:
+        for machine_id in manifest.machines:
             for provider in PROVIDER_IDS:
                 provider_skills.wait(
-                    provider,
-                    machine.host,
-                    launcher.provider_binary(provider, machine.host),
+                    provider, machine_id, launcher.provider_binary(provider, machine_id)
                 )
 
     def provider_skill_inventory_snapshot(self) -> dict[str, dict[ProviderId, object]]:
@@ -2052,24 +2046,21 @@ class ProjectService:
         launcher: AgentLauncher,
         provider_skills: ProviderSkillInventoryManager | None,
     ) -> dict[str, dict[ProviderId, object]]:
-        """Project provider inventories mapped through its machine aliases."""
+        """Project provider inventories by the project's machine ids."""
 
         if provider_skills is None:
             return {
-                machine.alias: {provider: None for provider in PROVIDER_IDS}
-                for machine in manifest.machines
+                machine_id: {provider: None for provider in PROVIDER_IDS}
+                for machine_id in manifest.machines
             }
         return {
-            machine.alias: {
+            machine_id: {
                 provider: provider_skills.snapshot(
-                    provider,
-                    machine.host,
-                    launcher.provider_binary(provider, machine.host),
-                    machine.alias,
+                    provider, machine_id, launcher.provider_binary(provider, machine_id)
                 ).model_dump(mode="json")
                 for provider in PROVIDER_IDS
             }
-            for machine in manifest.machines
+            for machine_id in manifest.machines
         }
 
     @staticmethod
@@ -2093,10 +2084,8 @@ class ProjectService:
                 sign_ins,
                 key,
                 viewer_id=viewer_id,
-                machines=sorted(
-                    machine.name for machine in store.space_machines() if machine.host == key.host
-                ),
-                provider_path=store.provider_binary(key.provider, key.host),
+                machines=[card(store, key.machine_id).name],
+                provider_path=store.provider_binary(key.provider, key.machine_id),
                 agent_used=True,
             )
             for key in sorted(accounts)
@@ -2104,20 +2093,21 @@ class ProjectService:
         ]
         if viewer_id is not None:
             pairs = {
-                (profile.provider, provider_login_host(manifest, profile.run_on))
+                (profile.provider, manifest.base_machine)
                 for profile in map(manifest.agent_profile, AGENT_EXECUTION_PROFILES)
             }
-            for provider, host in sorted(pairs):
-                selected, _ = launcher.accounts.resolve_login(provider, host, viewer_id)
+            for provider, machine_id in sorted(pairs):
+                selected, _ = launcher.accounts.resolve_login(provider, machine_id, viewer_id)
                 if (
                     isinstance(selected, LoginRefusal)
                     and selected.login is None
                     and selected.source == "own"
                     and not any(
-                        row.member_id == viewer_id for row in store.provider_logins(provider, host)
+                        row.member_id == viewer_id
+                        for row in store.provider_logins(provider, machine_id)
                     )
                 ):
-                    rows.append(missing_own_login_row(provider, host, viewer_id))
+                    rows.append(missing_own_login_row(provider, machine_id, viewer_id))
         return rows
 
     @staticmethod
@@ -2141,15 +2131,15 @@ class ProjectService:
         if accounts is None or not isinstance(machines, dict):
             return snapshot
 
-        def entry(host: str, provider: str, readiness: object) -> object:
+        def entry(machine_id: str, provider: str, readiness: object) -> object:
             if not isinstance(readiness, dict) or not (
                 profile_for(provider).authentication.manages_login
             ):
                 return readiness
             return launcher.member_readiness(
                 provider,
-                host=host,
-                binary=launcher.provider_binary(provider, host),
+                machine_id=machine_id,
+                binary=launcher.provider_binary(provider, machine_id),
                 refresh=refresh,
                 member_id=viewer_id,
                 machine_readiness=ProviderReadiness.model_validate(
@@ -2158,14 +2148,13 @@ class ProjectService:
             ).model_dump(mode="json")
 
         resolved: dict[str, object] = {}
-        for alias, providers in machines.items():
-            machine = manifest.machine_map.get(alias)
-            resolved[alias] = (
+        for machine_id, providers in machines.items():
+            resolved[machine_id] = (
                 {
-                    provider: entry(machine.host or "", provider, readiness)
+                    provider: entry(machine_id, provider, readiness)
                     for provider, readiness in providers.items()
                 }
-                if machine is not None and isinstance(providers, dict)
+                if machine_id in manifest.machines and isinstance(providers, dict)
                 else providers
             )
         return {**snapshot, "provider_readiness": resolved}
@@ -2187,61 +2176,54 @@ class ProjectService:
         """
 
         targets = [
-            (
-                machine.alias,
-                machine.host,
-                provider,
-                launcher.provider_binary(provider, machine.host),
-            )
-            for machine in manifest.machines
+            (machine_id, provider, launcher.provider_binary(provider, machine_id))
+            for machine_id in manifest.machines
             for provider in PROVIDER_IDS
         ]
 
         def inspect(
-            host: str,
+            machine_id: str,
             provider: ProviderId,
             binary: str | None,
         ) -> dict[str, object]:
             readiness = launcher.readiness(
-                LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary, refresh=refresh
+                LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=binary, refresh=refresh
             )
             if refresh and provider_skills is not None:
                 try:
-                    provider_skills.refresh(provider, host, binary, readiness, reuse_cached=False)
+                    provider_skills.refresh(
+                        provider, machine_id, binary, readiness, reuse_cached=False
+                    )
                 except Exception as exc:
                     # The inventory records its own probe failure; only a follower
                     # that outwaited the owner reaches here, and readiness still answers.
                     logger.warning(
                         "Provider skill refresh for %s on %s did not settle: %s",
                         provider,
-                        host or "local",
+                        machine_id,
                         exc,
                     )
             return readiness.model_dump(mode="json")
 
         readiness_by_machine: dict[str, dict[ProviderId, dict[str, object]]] = {
-            machine.alias: {} for machine in manifest.machines
+            machine_id: {} for machine_id in manifest.machines
         }
         with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as executor:
             probes = [
-                (
-                    alias,
-                    provider,
-                    executor.submit(inspect, host, provider, binary),
-                )
-                for alias, host, provider, binary in targets
+                (machine_id, provider, executor.submit(inspect, machine_id, provider, binary))
+                for machine_id, provider, binary in targets
             ]
-            for alias, provider, probe in probes:
-                readiness_by_machine[alias][provider] = probe.result()
-        coach_machine = manifest.agent_profile("paper_coach").run_on
+            for machine_id, provider, probe in probes:
+                readiness_by_machine[machine_id][provider] = probe.result()
+        cards = launcher.machine_cards()
         return {
             "provider_readiness": readiness_by_machine,
             "state_transfers": {
-                machine.alias: state_transfer_diagnostics(machine.host)
-                for machine in manifest.machines
-                if machine.host
+                machine_id: state_transfer_diagnostics(cards[machine_id].host)
+                for machine_id in manifest.machines
+                if machine_id in cards and cards[machine_id].host
             },
-            "providers": readiness_by_machine[coach_machine],
+            "providers": readiness_by_machine[manifest.base_machine],
         }
 
     def clear_rebuildable_caches(self) -> dict[str, object]:
@@ -2292,7 +2274,6 @@ class ProjectService:
                 runtime=requested.runtime,
                 model=requested.model,
                 reasoning=requested.reasoning,
-                run_on=requested.run_on,
             )
         except ValidationError as exc:
             detail = exc.errors()[0]["msg"].removeprefix("Value error, ")
@@ -2327,6 +2308,7 @@ class ProjectService:
                 "numbers, or hyphens"
             )
         machine = self.manifest.base_machine
+        host = host_of(self.paper.store, machine)
         folder = PurePosixPath(path)
         if not folder.is_absolute() or ".." in folder.parts or str(folder) != path:
             raise ValueError("Choose a folder by its full path.")
@@ -2340,7 +2322,7 @@ class ProjectService:
                 raise ValueError("The folder overlaps a repository of this project.")
         from rcp.setup import require_git_work_tree
 
-        require_git_work_tree(self.manifest.machine_map[machine].host, path)
+        require_git_work_tree(host, path)
 
         def add(state: GraphState) -> list[Patch]:
             if alias in self.manifest.repository_map:
@@ -2356,9 +2338,7 @@ class ProjectService:
                         SetProjectTruthScopeOperation(
                             op="set_project_truth_scope",
                             truth_scope=scope,
-                            repository=RepositoryDescriptor(
-                                alias=alias, machine=machine, path=path
-                            ),
+                            repository=RepositoryDescriptor(alias=alias, path=path),
                         )
                     ],
                     change_summary=[f"Added repository {alias}."],
@@ -2401,29 +2381,24 @@ class ProjectService:
         self.history.append_batch_from_state(change, authorized_by=authorized_by)
         self.paper.manifest = self.manifest
 
-    def add_machine(self, alias: str, host: str, os_account: str) -> None:
-        """Append one execution machine, copied from a space machine card."""
+    def add_machine(self, machine_id: str) -> None:
+        """Add one space card to the project by its id."""
 
-        if re.fullmatch(r"[a-z][a-z0-9-]{0,47}", alias) is None:
-            raise ValueError(
-                "machine names must start with a letter and use lowercase letters, "
-                "numbers, or hyphens"
-            )
-        self.history.add_machine(MachineConfig(alias=alias, host=host, os_account=os_account))
+        self.history.add_machine(machine_id)
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
-    def remove_machine(self, alias: str) -> None:
+    def remove_machine(self, machine_id: str) -> None:
         """Drop one machine this project no longer uses; its space card stays."""
 
-        self.history.remove_machine(alias)
+        self.history.remove_machine(machine_id)
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
     def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
         """Every project machine as seen from `run_on`, read from the manifest and cards now."""
         context = machine_compute_context(
-            self.manifest, self.launcher.machine_cards(), execution_machine=run_on
+            self.manifest, self.launcher.machine_cards(), machine_id=run_on
         )
         return [profile.model_dump(mode="json") for profile in context.active]
 
@@ -2978,9 +2953,7 @@ class ProjectService:
         if reasoning is not None:
             updates["reasoning"] = reasoning
         if run_on is not None:
-            if run_on not in self.manifest.machine_map:
-                raise ValueError(f"unknown execution machine: {run_on}")
-            updates["run_on"] = require_base_machine(
+            require_base_machine(
                 run_on, self.manifest.base_machine, label=surface.replace("_", " ")
             )
         return self._with_catalog_head(
@@ -3027,12 +3000,9 @@ class ProjectService:
         """
         if profile.model:
             return profile
-        machine = manifest.machine_map.get(profile.run_on)
-        if machine is None:
-            return profile
         readiness = launcher.cached_readiness(
-            LoginKey(profile.provider, machine.host, MACHINE_LOGIN_ID),
-            binary=launcher.provider_binary(profile.provider, machine.host),
+            LoginKey(profile.provider, manifest.base_machine, MACHINE_LOGIN_ID),
+            binary=launcher.provider_binary(profile.provider, manifest.base_machine),
         )
         if readiness is None or not readiness.models:
             return profile
@@ -3060,17 +3030,21 @@ class ProjectService:
     ) -> RunContext:
         materialization = self.history.current_materialization()
         state = self.history.require_writable(materialization.state)
-        profile = self.resolve_agent_profile(
+        self.resolve_agent_profile(
             surface,
             provider=request.provider,
             model=request.model,
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        execution_machine = self.manifest.machine_map[profile.run_on]
-        assembler = ContextAssembler(self.manifest, graph_root=self.history.root)
-        source_roots = assembler.source_roots(execution_machine.alias)
-        source_errors = preflight_provider_roots(source_roots, execution_machine)
+        execution_machine = self.manifest.base_machine
+        assembler = ContextAssembler(
+            self.manifest, cards=self.launcher.machine_cards(), graph_root=self.history.root
+        )
+        source_roots = assembler.source_roots(execution_machine)
+        source_errors = preflight_provider_roots(
+            source_roots, card(self.paper.store, execution_machine)
+        )
         imported = imported_source_inventory or self.imported_source_inventory(
             surface,
             execution_machine,
@@ -3098,7 +3072,7 @@ class ProjectService:
     def imported_source_inventory(
         self,
         surface: AgentSurface,
-        execution_machine: MachineConfig,
+        execution_machine: str,
     ) -> ImportedProviderSourceInventory | None:
         if self.imported_sources is None or surface not in {"seed", "refresh"}:
             return None
@@ -3170,7 +3144,9 @@ class ProjectService:
     def assemble_chat(self, request: RunRequest) -> ChatContext:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
-        return ContextAssembler(self.manifest, graph_root=self.history.root).chat_context(
+        return ContextAssembler(
+            self.manifest, cards=self.launcher.machine_cards(), graph_root=self.history.root
+        ).chat_context(
             self.history.state(),
             graph_target=self.history.graph_target,
             node_id=request.node_id if request.chat_scope == "node" else None,
@@ -3226,15 +3202,12 @@ class ProjectService:
                 raise ValueError(
                     "provider-native skills require a resolved provider and execution machine"
                 )
-            try:
-                machine = self.manifest.machine_map[request.run_on]
-            except KeyError:
-                raise ValueError(f"unknown execution machine: {request.run_on}") from None
+            if request.run_on not in self.manifest.machines:
+                raise ValueError(f"unknown execution machine: {request.run_on}")
             resolved_provider_skills = self.provider_skills.resolve(
                 request.provider,
-                machine.host,
-                self.launcher.provider_binary(request.provider, machine.host),
-                machine.alias,
+                request.run_on,
+                self.launcher.provider_binary(request.provider, request.run_on),
                 request.invoked_provider_skill_names,
             )
         return request.model_copy(
@@ -3249,7 +3222,9 @@ class ProjectService:
         )
 
     def coach_context(self, paper_path: Path | None = None) -> CoachContext:
-        return ContextAssembler(self.manifest).paper_pointers(paper_path)
+        return ContextAssembler(self.manifest, cards=self.launcher.machine_cards()).paper_pointers(
+            paper_path
+        )
 
     def pointer_hashes(self) -> tuple[str, int, str]:
         snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))

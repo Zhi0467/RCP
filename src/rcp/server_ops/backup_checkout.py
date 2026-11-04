@@ -7,10 +7,12 @@ import json
 import re
 import shlex
 import subprocess
+from collections.abc import Mapping
 from functools import lru_cache
 
 from rcp.limits import SERVER_PROJECT_CHECKOUT_TIMEOUT_SECONDS
 from rcp.server_ops.backup_models import BackupCheckoutRecoveryDescriptor
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError, inspect_checkout
 from rcp.transport.ssh import ssh_arguments
 
@@ -21,9 +23,9 @@ _REMOTE_CHECKOUT_OUTPUT_MAX_BYTES = 64 * 1024
 class BackupCheckoutHostUnavailable(CheckoutInspectionError):
     """The configured SSH route could not reach its checkout host."""
 
-    def __init__(self, message: str, *, machine_alias: str) -> None:
+    def __init__(self, message: str, *, machine_id: str) -> None:
         super().__init__(message)
-        self.machine_alias = machine_alias
+        self.machine_id = machine_id
 
 
 @lru_cache(maxsize=1)
@@ -35,12 +37,15 @@ def _remote_checkout_source() -> str:
     )
 
 
-def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> None:
-    """Prove every central checkout still matches its recovery descriptor."""
+def verify_checkout_identities(
+    recovery: BackupCheckoutRecoveryDescriptor, cards: Mapping[str, SpaceMachineRecord]
+) -> None:
+    """Prove every central checkout still matches its recovery descriptor, routed by its card."""
 
-    machines = {machine.alias: machine for machine in recovery.machines}
     for repository in recovery.repositories:
-        machine = machines[repository.machine_alias]
+        machine = cards.get(repository.machine_id)
+        if machine is None:
+            raise CheckoutInspectionError("The checkout's machine is no longer in this space.")
         origin = (
             None
             if repository.adopted
@@ -54,7 +59,7 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
             "" if origin is None else origin,
             repository.git_commit,
         )
-        if machine.location == "local":
+        if not machine.host:
             payload = inspect_checkout(
                 os_account=arguments[0],
                 repository_path=arguments[1],
@@ -79,12 +84,12 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise BackupCheckoutHostUnavailable(
                     "The remote checkout identity is unavailable.",
-                    machine_alias=machine.alias,
+                    machine_id=machine.machine_id,
                 ) from exc
             if result.returncode == 255:
                 raise BackupCheckoutHostUnavailable(
                     "The remote checkout host is unreachable.",
-                    machine_alias=machine.alias,
+                    machine_id=machine.machine_id,
                 )
             if (
                 result.returncode != 0

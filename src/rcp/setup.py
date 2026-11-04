@@ -33,6 +33,7 @@ from rcp.limits import (
     MACHINE_DIRECTORY_PAGE_SIZE,
     SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS,
 )
+from rcp.machine_cards import LoginKey, card
 from rcp.projects import ProjectCatalog
 from rcp.providers import (
     DEFAULT_PROVIDER,
@@ -43,8 +44,8 @@ from rcp.providers import (
 )
 from rcp.server_ops.models import redact_server_text
 from rcp.ssh_validation import validate_ssh_destination
-from rcp.storage import ProjectProvisioningRequestRecord, ProjectRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage import AppStore, ProjectProvisioningRequestRecord, ProjectRecord
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport import StateWorkspace, remote_repository_browser
 from rcp.transport.remote_compute_probe import classify_ssh_failure
@@ -509,14 +510,28 @@ class ProjectSetupManager:
         data_dir: Path,
         catalog: ProjectCatalog,
         launcher: AgentLauncher,
-        *,
-        machine_account: Callable[[str], str],
     ) -> None:
         self.data_dir = data_dir
         self.catalog = catalog
         self.launcher = launcher
-        # The account on the space's card for an SSH host; "" when it has none.
-        self.machine_account = machine_account
+
+    def _machine_ids(self, request: ProjectSetupRequest) -> dict[str, str]:
+        """The space card for each host the request names, made when the space has none."""
+
+        store = self.catalog.store
+        hosts = sorted(
+            {
+                repository.host if repository.location == "ssh" else ""
+                for repository in request.repositories
+            }
+        )
+        store.ensure_space_machines((host, "", host or "Backend") for host in hosts)
+        machine_ids: dict[str, str] = {}
+        for host in hosts:
+            machine = store.space_machine_for(host)
+            assert machine is not None
+            machine_ids[host] = machine.machine_id
+        return machine_ids
 
     def preflight(self, request: ProjectSetupRequest) -> SetupPreview:
         checks = [self._check_repository(repository) for repository in request.repositories]
@@ -588,30 +603,21 @@ class ProjectSetupManager:
             checks.append(self._check_canonical_writable(canonical))
 
         assert request.agents is not None
+        machine_ids = self._machine_ids(request)
         readiness_cache: dict[tuple[str, str], ProviderReadiness] = {}
-        machine_hosts = {
-            repository.host if repository.location == "ssh" else ""
-            for repository in request.repositories
-        }
-        machine_hosts.update(
-            request.agents.profile(surface).host
-            if request.agents.profile(surface).location == "ssh"
-            else ""
-            for surface in _SETUP_AGENT_EXECUTION_PROFILES
-        )
-        for host in sorted(machine_hosts):
+        for machine_id in sorted(machine_ids.values()):
             for provider in PROVIDER_IDS:
-                readiness_cache[(provider, host)] = self.launcher.readiness(
-                    LoginKey(provider, host, MACHINE_LOGIN_ID)
+                readiness_cache[(provider, machine_id)] = self.launcher.readiness(
+                    LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
                 )
         agent_readiness: dict[str, ProviderReadiness] = {}
         for surface in _SETUP_AGENT_EXECUTION_PROFILES:
             profile = request.agents.profile(surface)
             host = profile.host if profile.location == "ssh" else ""
-            key = (profile.provider, host)
+            key = (profile.provider, machine_ids[host])
             if key not in readiness_cache:
                 readiness_cache[key] = self.launcher.readiness(
-                    LoginKey(profile.provider, host, MACHINE_LOGIN_ID)
+                    LoginKey(profile.provider, machine_ids[host], MACHINE_LOGIN_ID)
                 )
             readiness = readiness_cache[key]
             agent_readiness[surface] = readiness
@@ -632,16 +638,14 @@ class ProjectSetupManager:
                 )
             )
         execution_host = request.execution.host if request.execution.location == "ssh" else ""
+        execution_machine = machine_ids.get(execution_host, "")
         providers = {
-            provider: readiness_cache.get((provider, execution_host))
-            or self.launcher.readiness(LoginKey(provider, execution_host, MACHINE_LOGIN_ID))
+            provider: readiness_cache.get((provider, execution_machine))
+            or self.launcher.readiness(LoginKey(provider, execution_machine, MACHINE_LOGIN_ID))
             for provider in PROVIDER_IDS
         }
 
-        manifest = render_manifest(
-            request,
-            {host: self.machine_account(host) for host in machine_hosts if host},
-        )
+        manifest = render_manifest(request, machine_ids)
         selected_existing_action = request.existing_research_action
         action_ready = (
             existing_content is None
@@ -736,17 +740,17 @@ class ProjectSetupManager:
             # Preflight probed every machine; these readiness reads are cached.
             self._record_provider_paths(
                 {
-                    machine.host: {
+                    machine_id: {
                         provider: readiness.binary_path
                         for provider in PROVIDER_IDS
                         if (
                             readiness := self.launcher.readiness(
-                                LoginKey(provider, machine.host, MACHINE_LOGIN_ID)
+                                LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
                             )
                         ).installed
                         and readiness.binary_path
                     }
-                    for machine in load_manifest(Path(locator)).machines
+                    for machine_id in load_manifest(Path(locator)).machines
                 }
             )
             # Creation is a write path: read canonical state, not the display
@@ -778,7 +782,7 @@ class ProjectSetupManager:
             raise ValueError("the prepared project targets another RCP space")
 
         manifest_content = render_prepared_team_manifest(request)
-        prepared_repositories = self._prepared_repositories(request)
+        prepared_repositories = self._prepared_repositories(request, self.catalog.store)
         for repository in prepared_repositories.values():
             self._require_prepared_checkout_path(repository)
         assert request.state_repository is not None
@@ -862,7 +866,7 @@ class ProjectSetupManager:
         ):
             raise ValueError("the incoming transfer import is not complete for this review")
 
-        prepared_repositories = self._prepared_repositories(request)
+        prepared_repositories = self._prepared_repositories(request, self.catalog.store)
         for repository in prepared_repositories.values():
             self._require_prepared_checkout_path(repository)
         assert request.state_repository is not None
@@ -888,18 +892,19 @@ class ProjectSetupManager:
 
     @staticmethod
     def _prepared_repositories(
-        request: ProjectProvisioningRequestRecord,
+        request: ProjectProvisioningRequestRecord, store: AppStore
     ) -> dict[str, SetupRepository]:
-        machine_map = {machine.alias: machine for machine in request.machines}
+        """Each prepared checkout where its card's route reaches it now."""
+
         prepared: dict[str, SetupRepository] = {}
         for repository in request.repositories:
             if repository.resolved_path is None:
                 raise ValueError(f"the prepared checkout path for {repository.alias} is missing")
-            machine = machine_map[repository.machine_alias]
+            host = card(store, repository.machine_id).host
             item = SetupRepository(
                 alias=repository.alias,
-                location=machine.location,
-                host=machine.host,
+                location="ssh" if host else "local",
+                host=host,
                 path=repository.resolved_path,
                 default_read=repository.alias in request.default_run_truth_scope,
             )
@@ -970,7 +975,7 @@ class ProjectSetupManager:
         if canonical.location == "local":
             return bool(_retained_patch_paths(Path(canonical.path) / ".research"))
         bootstrap = load_manifest(self._write_bootstrap(canonical, manifest_content))
-        workspace = state_workspace_for_probe(bootstrap, self.data_dir)
+        workspace = state_workspace_for_probe(bootstrap, self.data_dir, self.catalog.store)
         assert isinstance(workspace, SSHStateWorkspace)
         reachable, head = workspace.probe_remote_patch_log_head()
         if not reachable:
@@ -1067,8 +1072,7 @@ class ProjectSetupManager:
             return None
         raise ValueError(result.stderr.strip() or "Could not read the remote manifest")
 
-    @staticmethod
-    def _validate_existing_manifest(repository: SetupRepository, content: str) -> str:
+    def _validate_existing_manifest(self, repository: SetupRepository, content: str) -> str:
         try:
             if repository.location == "local":
                 manifest = load_manifest(Path(repository.path) / ".research" / "manifest.toml")
@@ -1078,7 +1082,13 @@ class ProjectSetupManager:
         except (ValueError, tomlkit.exceptions.ParseError) as exc:
             raise ValueError(f"Existing manifest is invalid: {exc}") from exc
         state = manifest.repository_map[manifest.state.repository]
-        machine = manifest.machine_map[state.machine]
+        try:
+            actual_host = card(self.catalog.store, state.machine).host
+        except KeyError:
+            raise ValueError(
+                "Existing manifest names a machine this space does not have; "
+                "RCP will not relabel or overwrite it."
+            ) from None
         expected_host = repository.host if repository.location == "ssh" else ""
         expected_path = str(
             PurePosixPath(repository.path)
@@ -1088,7 +1098,7 @@ class ProjectSetupManager:
         actual_path = str(
             PurePosixPath(state.path) if expected_host else Path(state.path).expanduser().resolve()
         )
-        if machine.host != expected_host or actual_path != expected_path:
+        if actual_host != expected_host or actual_path != expected_path:
             raise ValueError(
                 "Existing manifest points to a different canonical repository; "
                 "RCP will not relabel or overwrite it."
@@ -1106,7 +1116,7 @@ class ProjectSetupManager:
             bootstrap = self._write_bootstrap(repository, content)
             manifest = load_manifest(bootstrap)
 
-        workspace = state_workspace_for_probe(manifest, self.data_dir)
+        workspace = state_workspace_for_probe(manifest, self.data_dir, self.catalog.store)
         if workspace.remote and not workspace.refresh():
             raise ValueError(
                 f"Retained research is unavailable at {_canonical_location(repository)}."
@@ -1193,29 +1203,21 @@ class ProjectSetupManager:
     def record_prepared_provider_paths(self, request: ProjectProvisioningRequestRecord) -> None:
         """Fill the machine cards with the executables a reviewed request verified."""
 
-        machine_hosts = {machine.alias: machine.host for machine in request.machines}
-        self._record_provider_paths(
-            {
-                machine_hosts[alias]: paths
-                for alias, paths in prepared_provider_paths(request).items()
-            }
-        )
+        self._record_provider_paths(prepared_provider_paths(request))
 
-    def _record_provider_paths(self, paths_by_host: dict[str, dict[str, str]]) -> None:
+    def _record_provider_paths(self, paths_by_machine: dict[str, dict[str, str]]) -> None:
         """Record the executables setup verified on each machine card that has none yet."""
 
         store = self.catalog.store
-        for host, paths in paths_by_host.items():
-            card = store.space_machine_for(host)
-            if card is None:
-                continue
+        for machine_id, paths in paths_by_machine.items():
+            machine = card(store, machine_id)
             missing = {
                 provider: path
                 for provider, path in paths.items()
-                if provider not in card.provider_paths
+                if provider not in machine.provider_paths
             }
             if missing:
-                store.update_space_machine(card.machine_id, provider_paths=missing)
+                store.update_space_machine(machine.machine_id, provider_paths=missing)
 
     def _write_bootstrap(self, canonical: SetupRepository, content: str) -> Path:
         digest = hashlib.sha256(f"{canonical.host}\0{canonical.path}".encode()).hexdigest()[:16]
@@ -1230,13 +1232,12 @@ class ProjectSetupManager:
 def prepared_provider_paths(
     request: ProjectProvisioningRequestRecord,
 ) -> dict[str, dict[str, str]]:
-    """Each machine alias's verified provider executables from a ready request."""
+    """Each card's verified provider executables from a ready request."""
 
     if not request.configuration_complete:
         raise ValueError("the prepared project configuration is incomplete")
     if request.final_review_digest is None:
         raise ValueError("the prepared project has no final-review digest")
-    machine_map = {machine.alias: machine for machine in request.machines}
     profile_map = {check.profile: check for check in request.provider_checks}
     missing_profiles = set(AGENT_EXECUTION_PROFILES) - set(profile_map)
     extra_profiles = set(profile_map) - set(AGENT_EXECUTION_PROFILES)
@@ -1256,20 +1257,16 @@ def prepared_provider_paths(
         )
         if check.status != "ready" or any(value is None for value in proof):
             raise ValueError(f"the prepared {check.profile} provider proof is incomplete")
-        machine = machine_map[check.machine_alias]
-        if check.execution_account != machine.os_account:
-            raise ValueError(f"the prepared {check.profile} execution account changed")
         configured = check.runtime_id.removeprefix(f"{check.provider}:")
         public_runtime = configured_runtime(check.provider, configured)
         if check.resolved_runtime_id != configured_runtime_id(check.provider, public_runtime):
             raise ValueError(f"the prepared {check.profile} runtime proof changed")
         assert check.binary_path is not None
-        paths = provider_paths.setdefault(machine.alias, {})
+        paths = provider_paths.setdefault(check.machine_id, {})
         prior = paths.get(check.provider)
         if prior is not None and prior != check.binary_path:
             raise ValueError(
-                f"the prepared {check.provider} executable differs across profiles on "
-                f"{machine.alias}"
+                f"the prepared {check.provider} executable differs across profiles on one machine"
             )
         paths[check.provider] = check.binary_path
     return provider_paths
@@ -1289,14 +1286,7 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
     assert request.state_repository is not None
     document.add("name", request.name)
 
-    machines = tomlkit.aot()
-    for item in request.machines:
-        machine = tomlkit.table()
-        machine.add("alias", item.alias)
-        machine.add("host", item.host)
-        machine.add("os_account", item.os_account)
-        machines.append(machine)
-    document.add("machines", machines)
+    document.add("machines", list(dict.fromkeys(item.machine_id for item in request.machines)))
 
     repositories = tomlkit.aot()
     for item in request.repositories:
@@ -1308,7 +1298,7 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
             raise ValueError(f"the prepared repository {item.alias} is incomplete")
         repository = tomlkit.table()
         repository.add("alias", item.alias)
-        repository.add("machine", item.machine_alias)
+        repository.add("machine", item.machine_id)
         repository.add("path", item.resolved_path)
         repositories.append(repository)
     document.add("repositories", repositories)
@@ -1335,7 +1325,6 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
         profile.add("runtime", configured_runtime(check.provider, configured))
         profile.add("model", check.model)
         profile.add("reasoning", check.reasoning)
-        profile.add("run_on", check.machine_alias)
         permissions = tomlkit.table()
         for key, value in permissions_for(surface).model_dump(mode="json").items():
             permissions.add(key, value)
@@ -1355,46 +1344,21 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
     return content
 
 
-def render_manifest(
-    request: ProjectSetupRequest,
-    host_accounts: dict[str, str] | None = None,
-) -> str:
+def render_manifest(request: ProjectSetupRequest, machine_ids: dict[str, str]) -> str:
+    """The new project's manifest; `machine_ids` names each repository host's space card."""
+
     assert request.agents is not None
     document = tomlkit.document()
     document.add("name", request.name)
-
-    host_aliases: dict[str, str] = {}
-    needs_local = any(repository.location == "local" for repository in request.repositories) or any(
-        request.agents.profile(surface).location == "local"
-        for surface in _SETUP_AGENT_EXECUTION_PROFILES
+    document.add(
+        "machines", list(dict.fromkeys(machine_ids[item.host] for item in request.repositories))
     )
-    machines = tomlkit.aot()
-    if needs_local:
-        host_aliases[""] = "laptop"
-        machine = tomlkit.table()
-        machine.add("alias", "laptop")
-        machine.add("host", "")
-        machines.append(machine)
-    remote_hosts = sorted(
-        {repository.host for repository in request.repositories if repository.location == "ssh"}
-    )
-    for index, host in enumerate(remote_hosts, start=1):
-        alias = f"remote-{index}"
-        host_aliases[host] = alias
-        machine = tomlkit.table()
-        machine.add("alias", alias)
-        machine.add("host", host)
-        if account := (host_accounts or {}).get(host, ""):
-            # The wrong-account check needs it when the host does not name the user.
-            machine.add("os_account", account)
-        machines.append(machine)
-    document.add("machines", machines)
 
     repositories = tomlkit.aot()
     for item in request.repositories:
         repository = tomlkit.table()
         repository.add("alias", item.alias)
-        repository.add("machine", host_aliases[item.host])
+        repository.add("machine", machine_ids[item.host])
         repository.add("path", item.path)
         repositories.append(repository)
     document.add("repositories", repositories)
@@ -1423,7 +1387,6 @@ def render_manifest(
         profile.add("runtime", setup_profile.runtime)
         profile.add("model", setup_profile.model)
         profile.add("reasoning", setup_profile.reasoning)
-        profile.add("run_on", host_aliases[setup_profile.host])
         permissions = tomlkit.table()
         for key, value in permissions_for(surface).model_dump(mode="json").items():
             permissions.add(key, value)

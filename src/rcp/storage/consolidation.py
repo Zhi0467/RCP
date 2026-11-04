@@ -395,7 +395,6 @@ class ConsolidationStoreMixin(StoreMixinBase):
         input_head: int,
         target: str = "main",
         task: AgentTaskRecord | None = None,
-        execution_host: str = "",
         error_code: str | None = None,
         error_message: str | None = None,
         skipped: bool = False,
@@ -513,7 +512,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
                         "WHERE project_id=? AND chat_id=?",
                         (task.project_id, task.request["chat_id"]),
                     )
-                    task = self._bind_consolidation_stage(conn, task, execution_host)
+                    task = self._bind_consolidation_stage(conn, task)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
             skipped_dates = json.loads(target_state["skipped_dates_json"] or "[]")
             if skipped:
@@ -543,21 +542,22 @@ class ConsolidationStoreMixin(StoreMixinBase):
 
     @staticmethod
     def _bind_consolidation_stage(
-        connection: sqlite3.Connection, task: AgentTaskRecord, execution_host: str
+        connection: sqlite3.Connection, task: AgentTaskRecord
     ) -> AgentTaskRecord:
+        machine_id = task.request["run_on"]
         rows = connection.execute(
             "SELECT DISTINCT stage_root FROM graph_runs "
             "WHERE project_id=? AND kind=? AND history_only=0 "
             "AND json_extract(request_json, '$.chat_id')=? "
-            "AND COALESCE(stage_host, '')=? "
+            "AND stage_machine_id=? "
             "AND stage_root IS NOT NULL AND stage_root != ''",
-            (task.project_id, task.kind, task.request.get("chat_id"), execution_host),
+            (task.project_id, task.kind, task.request.get("chat_id"), machine_id),
         ).fetchall()
         if len(rows) > 1:
             raise ValueError("The consolidation chat has conflicting saved workspace bindings.")
         return task.model_copy(
             update={
-                "stage_host": (execution_host or None) if rows else None,
+                "stage_machine_id": machine_id if rows else None,
                 "stage_root": rows[0]["stage_root"] if rows else None,
             }
         )

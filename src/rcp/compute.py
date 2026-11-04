@@ -26,7 +26,7 @@ class ComputeConnectionProbe(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     compute_id: str
-    execution_machine: str
+    machine_id: str
     state: Literal[
         "reachable",
         "unreachable",
@@ -55,11 +55,13 @@ def _safe_probe_diagnostic(value: object) -> str:
 def _probe_one(
     connection: ResolvedComputeProfile,
     *,
-    execution_machine: str,
-    execution_host: str,
+    source: SpaceMachineRecord,
     space_kind: str,
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> ComputeConnectionProbe:
+    """Probe `connection` from the agent machine `source`, over its card's current route."""
+
+    execution_host = source.host
     if execution_host:
         command = shlex.join(
             [
@@ -89,7 +91,7 @@ def _probe_one(
                     "state": "unreachable",
                     "diagnostic": (
                         completed.stderr.strip()
-                        or f'Agent machine "{execution_machine}" could not run the compute probe.'
+                        or f'Agent machine "{source.name}" could not run the compute probe.'
                     ),
                 }
             else:
@@ -126,7 +128,7 @@ def _probe_one(
     # The check runs as the account RCP probes with, typed from the human's own prompt.
     check = operator_route(space_kind, execution_host).command(["ssh", connection.ssh_target])
     if state == "authentication_failed":
-        location = f'agent machine "{execution_machine}"'
+        location = f'agent machine "{source.name}"'
         if execution_host:
             location += f" ({execution_host})"
         required_action = (
@@ -136,12 +138,12 @@ def _probe_one(
     elif state == "host_key_failed":
         required_action = (
             f"Verify and add the SSH host key for {connection.name} on agent machine "
-            f'"{execution_machine}" by running `{check}`, then probe again.'
+            f'"{source.name}" by running `{check}`, then probe again.'
         )
     status_label, status_tone = _PROBE_PRESENTATION[state]
     return ComputeConnectionProbe(
         compute_id=connection.id,
-        execution_machine=execution_machine,
+        machine_id=source.machine_id,
         state=state,
         reachable=state == "reachable",
         diagnostic=diagnostic,
@@ -176,7 +178,7 @@ def probe_machine_reach(
         kind="ssh",
         ssh_target=_machine_route(target.host, target.os_account),
     )
-    others = [source for source in sources if source.host != target.host]
+    others = [source for source in sources if source.machine_id != target.machine_id]
     if not others:
         return []
     with ThreadPoolExecutor(max_workers=min(len(others), 8)) as executor:
@@ -186,8 +188,7 @@ def probe_machine_reach(
                 executor.submit(
                     _probe_one,
                     profile,
-                    execution_machine=source.name,
-                    execution_host=source.host,
+                    source=source,
                     space_kind=space_kind,
                     runner=runner,
                 ),
@@ -201,42 +202,42 @@ def machine_compute_context(
     manifest: Manifest,
     cards: Mapping[str, SpaceMachineRecord],
     *,
-    execution_machine: str,
+    machine_id: str,
 ) -> ResolvedComputeContext:
-    """Every project machine as seen from the agent's own machine.
+    """Every project machine as seen from the agent's own card, `machine_id`.
 
     The machine the agent runs on is local; any other machine is reached over its
-    SSH route from there. A host-less (server-local) machine has no route from an
-    agent running elsewhere, so that agent is not told about it. Each machine's
-    access hint and job manager come from its space card, keyed by host.
+    card's SSH route from there. A host-less (server-local) machine has no route
+    from an agent running elsewhere, and a card the space no longer has has no
+    route at all, so that agent is not told about either. `cards` is keyed by id.
     """
 
-    machines = manifest.machine_map
-    if execution_machine not in machines:
-        raise ValueError(f"unknown execution machine: {execution_machine}")
+    if machine_id not in manifest.machines:
+        raise ValueError(f"unknown execution machine: {machine_id}")
     profiles = []
-    for machine in manifest.machines:
-        card = cards.get(machine.host)
-        hint = card.access_hint if card is not None else ""
-        manager = "slurm" if card is not None and card.job_manager == "slurm" else ""
-        if machine.alias == execution_machine:
+    for project_machine in manifest.machines:
+        machine = cards.get(project_machine)
+        if machine is None:
+            continue
+        manager = "slurm" if machine.job_manager == "slurm" else ""
+        if machine.machine_id == machine_id:
             profiles.append(
                 ResolvedComputeProfile(
-                    id=machine.alias,
-                    name=machine.alias,
+                    id=machine.machine_id,
+                    name=machine.name,
                     kind="local",
-                    access_hint=hint,
+                    access_hint=machine.access_hint,
                     job_manager=manager,
                 )
             )
         elif machine.host:
             profiles.append(
                 ResolvedComputeProfile(
-                    id=machine.alias,
-                    name=machine.alias,
+                    id=machine.machine_id,
+                    name=machine.name,
                     kind="ssh",
                     ssh_target=_machine_route(machine.host, machine.os_account),
-                    access_hint=hint,
+                    access_hint=machine.access_hint,
                     job_manager=manager,
                 )
             )

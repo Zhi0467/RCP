@@ -5,18 +5,18 @@ import "../../src/styles.css";
 
 declare global {
   interface Window {
-    openedSignIns: { provider: string; host: string }[];
+    openedSignIns: { provider: string; machine_id: string }[];
   }
 }
 
 window.openedSignIns = [];
 
-// A signed-out shared Codex login on the local host.
+// A signed-out shared Codex login on the backend machine.
 const row = (patch = {}) =>
   loginRow({
     provider: "codex",
     label: "Codex",
-    host: "",
+    machine_id: "m-backend",
     state: "signed_out",
     generation: 0,
     changed_at: "2026-09-14T00:00:00Z",
@@ -29,13 +29,13 @@ const row = (patch = {}) =>
 createRoot(document.getElementById("root")!).render(
   <ProviderLoginNotice
     viewerUserId="u-me"
-    onOpenSignIns={({ provider, host }) => window.openedSignIns.push({ provider, host })}
+    onOpenSignIns={({ provider, machine_id }) => window.openedSignIns.push({ provider, machine_id })}
     states={[
       row({}),
       row({
         provider: "claude",
         label: "Claude",
-        host: "gpu-1.example",
+        machine_id: "m-gpu-1",
         login_id: "own-dee",
         kind: "own",
         owner_user_id: "u-dee",

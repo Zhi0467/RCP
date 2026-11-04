@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.skill_registry import official_registry
 from rcp.storage import (
@@ -171,13 +172,12 @@ def begin_episode_report_wrapup(
                 "model": continuation.request.get("model"),
                 "reasoning": continuation.request.get("reasoning"),
                 "run_on": continuation.request.get("run_on"),
-                "execution_host": continuation.stage_host or "",
                 "session_id": continuation.native_session_id,
             }
         )
         output_path = _report_output_path(
             stage_root=continuation.stage_root,
-            stage_host=continuation.stage_host,
+            stage_machine_id=continuation.stage_machine_id,
         )
     except (ValidationError, ValueError):
         return _fail_unlaunchable(
@@ -199,10 +199,9 @@ def begin_episode_report_wrapup(
         concluding_operation_id=continuation.operation_id,
         allocation_operation_id=operation_id,
         provider=request.provider,
-        run_on=request.run_on,
-        execution_host=request.execution_host,
+        machine_id=request.run_on,
         native_session_id=request.session_id,
-        stage_host=continuation.stage_host,
+        stage_machine_id=continuation.stage_machine_id,
         stage_root=continuation.stage_root,
         skill_id=skill.id,
         skill_version=skill.version,
@@ -228,7 +227,7 @@ def begin_episode_report_wrapup(
         status_message="Wrapping up visualization and report",
         parent_operation_id=continuation.operation_id,
         native_session_id=continuation.native_session_id,
-        stage_host=continuation.stage_host,
+        stage_machine_id=continuation.stage_machine_id,
         stage_root=continuation.stage_root,
         phase="queued",
         authorized_by=episode.authorized_by,
@@ -316,8 +315,8 @@ def _binding_diagnostic(
     return None
 
 
-def _report_output_path(*, stage_root: str, stage_host: str | None) -> str:
-    if stage_host:
+def _report_output_path(*, stage_root: str, stage_machine_id: str | None) -> str:
+    if stage_machine_id and stage_machine_id != BACKEND_MACHINE_ID:
         return str(PurePosixPath(stage_root) / "workspace" / _REPORT_OUTPUT_NAME)
     root = Path(stage_root)
     if not root.is_absolute():

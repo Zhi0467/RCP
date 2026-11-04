@@ -36,7 +36,6 @@ test("transfer option stays off by default, binds retries, and survives review r
         runtime: "exec",
         model: "test-model",
         reasoning: "medium",
-        run_on: "server",
       };
       await page.route("**/api/projects/**", async (route) => {
         const url = new URL(route.request().url());
@@ -46,8 +45,11 @@ test("transfer option stays off by default, binds retries, and survives review r
               name: "Transfer fixture",
               state_repository: "state",
               default_auto_research_invocation_ceiling: 3,
-              repositories: [{ alias: "state", machine: "server", path: "/tmp/personal-state" }],
-              machines: [{ alias: "server", host: "", os_account: "researcher" }],
+              repositories: [
+                { alias: "state", machine: "personal-card", path: "/tmp/personal-state" },
+                { alias: "code", machine: "personal-card", path: "/tmp/personal-code" },
+              ],
+              machines: [{ machine_id: "personal-card", compute: null, removable: false }],
               agent_profiles: Object.fromEntries(profiles.map((name) => [name, profile])),
             }
           : [];
@@ -81,9 +83,14 @@ test("transfer option stays off by default, binds retries, and survives review r
               ],
             },
           ];
+          const targetMachines = [
+            { machine_id: "target-server", name: "Team server", host: "", os_account: "rcp" },
+            { machine_id: "target-gpu", name: "GPU box", host: "gpu.example", os_account: "lab" },
+          ];
           window.__TAURI_INTERNALS__ = {
             invoke: async (command, args) => {
               if (command === "desktop_list_team_connections") return [connection];
+              if (command === "desktop_read_target_space_machines") return targetMachines;
               if (command === "desktop_probe_server_operator") {
                 if (localStorage.getItem("probe-reachable") !== "yes")
                   throw new Error("Operator route unreachable fixture");
@@ -109,7 +116,7 @@ test("transfer option stays off by default, binds retries, and survives review r
               const request = args.request;
               const repo = {
                 alias: "state",
-                machine_alias: "server",
+                machine_id: "target-gpu",
                 repository: { identity: "example/state" },
               };
               const bundle = {
@@ -133,7 +140,10 @@ test("transfer option stays off by default, binds retries, and survives review r
                   ...request.target_provisioning,
                   status_label: "Ready for review",
                   authorized_by: { display_name: "Fixture owner" },
-                  machines: request.target_provisioning.machines,
+                  machines: request.target_provisioning.machines.map((machine) => ({
+                    machine_id: machine.machine_id,
+                    intended_central_root: machine.central_root,
+                  })),
                   repositories: [{ ...repo, resolved_path: "/tmp/team-state" }],
                   readiness: {
                     repositories_ready: 1,
@@ -189,6 +199,20 @@ test("transfer option stays off by default, binds retries, and survives review r
       assert.equal(await checkbox.isChecked(), false);
       await page.getByText(/Local unpushed commits stay behind/).waitFor();
       if (includeLocalCommits) await checkbox.check();
+      const placements = page.locator(".team-machine-fields select");
+      assert.deepEqual(
+        await placements.evaluateAll((selects) => selects.map((select) => select.value)),
+        ["target-server", "target-server"],
+      );
+      assert.deepEqual(
+        await placements
+          .first()
+          .locator("option")
+          .evaluateAll((options) => options.map((option) => option.value)),
+        ["target-server", "target-gpu"],
+      );
+      await placements.first().selectOption("target-gpu");
+      await page.locator(".team-machine-fields input").fill("/srv/rcp");
       await page.getByRole("button", { name: "Prepare team target" }).click();
       if (includeLocalCommits) {
         await page
@@ -214,6 +238,21 @@ test("transfer option stays off by default, binds retries, and survives review r
         JSON.parse(localStorage.getItem("transfer-attempts")),
       );
       assert.equal(Object.hasOwn(attempts[0], "include_local_commits"), includeLocalCommits);
+      const provisioning = attempts[0].target_provisioning;
+      assert.deepEqual(provisioning.machines, [
+        { machine_id: "target-server", central_root: null },
+        { machine_id: "target-gpu", central_root: "/srv/rcp" },
+      ]);
+      assert.deepEqual(provisioning.repositories, [
+        { alias: "state", machine_id: "target-gpu" },
+        { alias: "code", machine_id: "target-server" },
+      ]);
+      assert.equal(provisioning.state_machine_id, "target-gpu");
+      assert.deepEqual(
+        provisioning.provider_checks.map((check) => check.machine_id),
+        profiles.map(() => "target-gpu"),
+      );
+      assert.equal(JSON.stringify(provisioning).includes("machine_alias"), false);
       if (includeLocalCommits) assert.deepEqual(attempts[0], attempts[1]);
       await page.reload();
       await page.getByRole("heading", { name: "Final review" }).waitFor();

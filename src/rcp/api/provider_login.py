@@ -19,6 +19,7 @@ from rcp.api.dependencies import (
 )
 from rcp.config import load_manifest
 from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
+from rcp.machine_cards import LoginKey, card
 from rcp.projects import ProjectCatalog
 from rcp.provider_login_rows import provider_login_row
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
@@ -30,11 +31,11 @@ from rcp.runs.provider_sign_in import (
 )
 from rcp.service import agent_login_accounts
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey, ProviderLoginSetting
+from rcp.storage.models import ProviderLoginSetting
 
 _LOGIN_STATE_FIELDS = {
     "provider",
-    "host",
+    "machine_id",
     "login_id",
     "state",
     "generation",
@@ -69,13 +70,13 @@ SignInsDependency = Annotated[ProviderSignInRunner, Depends(get_provider_sign_in
 
 class ProviderAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    host: str = ""
+    machine_id: str = Field(min_length=1)
     login_id: str = ""
 
 
 class ProviderTokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    host: str = ""
+    machine_id: str = Field(min_length=1)
     login_id: str = ""
     token: str = Field(min_length=1, max_length=PROVIDER_TOKEN_MAX_CHARS)
 
@@ -98,7 +99,7 @@ class ProviderLoginAccount(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str
-    host: str
+    machine_id: str
     login_id: str
     kind: Literal["shared", "own"]
     owner_user_id: str | None
@@ -141,24 +142,27 @@ def provider_login_accounts(
     visible: set[str],
     viewer_id: str | None = None,
 ) -> list[ProviderLoginAccount]:
-    machines: dict[str, set[str]] = {}
-    for machine in store.space_machines():
-        machines.setdefault(machine.host, set()).add(machine.name)
-    pairs = {(provider, host) for provider, host, _ in catalog.provider_targets()}
+    store.backend_space_machine()
+    machines = {machine.machine_id: machine.name for machine in store.space_machines()}
+    pairs = {
+        (provider, machine_id)
+        for provider, machine_id, _ in catalog.provider_targets()
+        if machine_id in machines
+    }
     # Every space machine can be signed in, even one no project uses yet.
-    pairs.update((provider, host) for host in machines for provider in PROVIDER_IDS)
-    # A stored row for a host the space no longer lists is history, not an
-    # account anyone can act on; Verify would refuse it as an unknown host.
+    pairs.update((provider, machine_id) for machine_id in machines for provider in PROVIDER_IDS)
+    # A stored row for a card the space no longer has is history, not an
+    # account anyone can act on; Verify would refuse it as an unknown machine.
     pairs.update(
-        (state.provider, state.host)
+        (state.provider, state.machine_id)
         for state in store.provider_login_states()
-        if not state.host or state.host in machines
+        if state.machine_id in machines
     )
     used = _agent_used_accounts(store, visible, viewer_id)
     accounts = []
-    for provider, host in sorted(pairs):
-        for state in store.provider_logins(provider, host):
-            key = LoginKey(provider, host, state.login_id)
+    for provider, machine_id in sorted(pairs):
+        for state in store.provider_logins(provider, machine_id):
+            key = LoginKey(provider, machine_id, state.login_id)
             accounts.append(
                 ProviderLoginAccount.model_validate(
                     provider_login_row(
@@ -167,8 +171,8 @@ def provider_login_accounts(
                         sign_ins,
                         key,
                         viewer_id=viewer_id,
-                        machines=sorted(machines.get(host, set())),
-                        provider_path=store.provider_binary(provider, host),
+                        machines=[machines[machine_id]],
+                        provider_path=store.provider_binary(provider, machine_id),
                         agent_used=key in used,
                     )
                 )
@@ -212,7 +216,7 @@ def verify_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    login = LoginKey(provider, body.host, body.login_id)
+    login = LoginKey(provider, body.machine_id, body.login_id)
     try:
         state = sign_ins.verify(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
@@ -235,7 +239,7 @@ def start_provider_sign_in(
     sign_ins: SignInsDependency,
 ) -> ProviderSignInStatus:
     member = get_identity_access(request).acting_user(request)
-    login = LoginKey(provider, body.host, body.login_id)
+    login = LoginKey(provider, body.machine_id, body.login_id)
     try:
         return sign_ins.start_sign_in(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
@@ -281,7 +285,7 @@ def save_provider_token(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    login = LoginKey(provider, body.host, body.login_id)
+    login = LoginKey(provider, body.machine_id, body.login_id)
     try:
         state = sign_ins.save_token(login, body.token, member_id=member.user_id)
     except ProviderLoginRefused as exc:
@@ -304,7 +308,7 @@ def sign_out_provider_login(
     sign_ins: SignInsDependency,
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
-    login = LoginKey(provider, body.host, body.login_id)
+    login = LoginKey(provider, body.machine_id, body.login_id)
     try:
         state = sign_ins.sign_out(login, member_id=member.user_id)
     except ProviderLoginRefused as exc:
@@ -319,28 +323,32 @@ def sign_out_provider_login(
 
 class ProviderLoginAddRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    host: str = ""
+    machine_id: str = Field(min_length=1)
     kind: Literal["shared", "own"]
 
 
 class ProviderLoginSettingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    host: str = ""
+    machine_id: str = Field(min_length=1)
     setting: ProviderLoginSetting
 
 
-def _managed_host(store: AppStore, provider: str, host: str) -> None:
+def _managed_machine(store: AppStore, provider: str, machine_id: str) -> None:
     if not profile_for(provider).authentication.manages_login:
         raise HTTPException(422, "This provider only supports the machine sign-in.")
-    if host == "*" or (host and store.space_machine_for(host) is None):
-        raise HTTPException(422, "Unknown provider execution host.")
+    try:
+        card(store, machine_id)
+    except KeyError:
+        raise HTTPException(422, "Unknown provider execution machine.") from None
 
 
-def _setting_item(store: AppStore, member_id: str, provider: str, host: str) -> dict[str, object]:
-    setting = store.provider_login_setting(member_id, provider, host)
+def _setting_item(
+    store: AppStore, member_id: str, provider: str, machine_id: str
+) -> dict[str, object]:
+    setting = store.provider_login_setting(member_id, provider, machine_id)
     return {
         "provider": provider,
-        "host": host,
+        "machine_id": machine_id,
         "setting": setting.setting,
         "changed_at": setting.changed_at,
         "stored": bool(setting.changed_at),
@@ -366,14 +374,15 @@ def provider_login_settings(
     )
     pairs = sorted(
         {
-            (row.provider, row.host)
+            (row.provider, row.machine_id)
             for row in rows
             if profile_for(row.provider).authentication.manages_login
         }
     )
     return {
         "settings": [
-            _setting_item(store, member.user_id, provider, host) for provider, host in pairs
+            _setting_item(store, member.user_id, provider, machine_id)
+            for provider, machine_id in pairs
         ],
         "other_member_count": sum(
             user.user_id != member.user_id and user.removal_started_at is None
@@ -391,14 +400,17 @@ def set_provider_login_setting(
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
-    _managed_host(store, provider, body.host)
-    store.set_provider_login_setting(member.user_id, provider, body.host, body.setting)
+    _managed_machine(store, provider, body.machine_id)
+    store.set_provider_login_setting(member.user_id, provider, body.machine_id, body.setting)
     try:
         assert sign_ins.resume_setting is not None
-        resumed = sign_ins.resume_setting(member.user_id, provider, body.host)
+        resumed = sign_ins.resume_setting(member.user_id, provider, body.machine_id)
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
-    return {**_setting_item(store, member.user_id, provider, body.host), "resumed": resumed}
+    return {
+        **_setting_item(store, member.user_id, provider, body.machine_id),
+        "resumed": resumed,
+    }
 
 
 @router.post("/api/providers/{provider}/logins/add")
@@ -410,11 +422,11 @@ def add_provider_login(
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
-    _managed_host(store, provider, body.host)
+    _managed_machine(store, provider, body.machine_id)
     try:
         state = store.add_provider_login(
             provider,
-            body.host,
+            body.machine_id,
             member_id=member.user_id if body.kind == "own" else None,
             added_by=member.user_id,
         )
@@ -424,7 +436,7 @@ def add_provider_login(
     if "device_code" in profile_for(provider).authentication.methods:
         try:
             status = sign_ins.start_sign_in(
-                LoginKey(provider, body.host, state.login_id), member_id=member.user_id
+                LoginKey(provider, body.machine_id, state.login_id), member_id=member.user_id
             )
         except ProviderLoginRefused as exc:
             raise _refused(exc) from exc
@@ -444,7 +456,7 @@ def remove_provider_login(
 ) -> dict[str, object]:
     member = get_identity_access(request).acting_user(request)
     store = sign_ins.store
-    key = LoginKey(provider, body.host, body.login_id)
+    key = LoginKey(provider, body.machine_id, body.login_id)
     try:
         state = sign_ins.require_login(key, member_id=member.user_id)
     except ProviderLoginRefused as exc:

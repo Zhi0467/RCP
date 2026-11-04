@@ -20,9 +20,10 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rcp.agents.write_scope import RegisteredRepositoryRoot
-from rcp.config import MachineConfig, Manifest
+from rcp.config import Manifest
 from rcp.git_access import ensure_checkout_git_access, missing_deploy_key
 from rcp.git_identity import GitIdentity, write_git_identity
 from rcp.limits import (
@@ -34,6 +35,7 @@ from rcp.limits import (
     TERMINAL_STOP_TIMEOUT_SECONDS,
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
+from rcp.machine_cards import card
 from rcp.terminals import launch, remote
 from rcp.terminals.backends import TerminalCapability, machine_capability
 from rcp.terminals.models import (
@@ -60,6 +62,10 @@ from rcp.terminals.utilities import (
 )
 from rcp.transport.run_stage import RemoteRunStage
 
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
+    from rcp.storage.models import SpaceMachineRecord
+
 logger = logging.getLogger(__name__)
 
 RECORD_FIELDS = frozenset(field.name for field in dataclasses.fields(TerminalSession))
@@ -76,21 +82,15 @@ RETAINED_REFUSAL = (
 )
 
 
-def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[str, str, str, str]:
-    """What this alias currently names: path, machine, host and account."""
+def manifest_registration(manifest: Manifest, repository_alias: str) -> tuple[str, str]:
+    """What this alias currently names: path and machine."""
     repository = manifest.repository_map[repository_alias]
-    machine = manifest.machine_map[repository.machine]
-    return (repository.path, repository.machine, machine.host, machine.os_account)
+    return (repository.path, repository.machine)
 
 
-def session_registration(session: TerminalSession) -> tuple[str, str, str, str]:
+def session_registration(session: TerminalSession) -> tuple[str, str]:
     """What the alias named when this session started."""
-    return (
-        session.declared_path,
-        session.declared_machine,
-        session.execution_host,
-        session.declared_account,
-    )
+    return (session.declared_path, session.machine_id)
 
 
 def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | None:
@@ -103,18 +103,21 @@ def registration_lapse(manifest: Manifest, session: TerminalSession) -> str | No
 
 
 def working_tree(session: TerminalSession) -> tuple[str, str]:
-    """The tree a session holds: the path it resolved, on the host that resolved it.
+    """The tree a session holds: the path it resolved, on the machine that resolved it.
 
     Every session resolved its own declaration, locally or on the execution
     machine, so two declarations that spell one tree meet here as one. A
     declaration is only how settings named the tree, and is never compared.
     """
-    return (session.path, session.execution_host)
+    return (session.path, session.machine_id)
 
 
 class TerminalManager:
-    def __init__(self, data_dir: Path, membership_check: Callable[[str, str], bool]) -> None:
+    def __init__(
+        self, data_dir: Path, membership_check: Callable[[str, str], bool], store: AppStore
+    ) -> None:
         self.probes = TerminalProbeCache()
+        self.store = store
         self.data_dir = data_dir
         self.directory = data_dir / "terminals"
         self.membership_check = membership_check
@@ -148,8 +151,8 @@ class TerminalManager:
     ) -> TerminalSession | None:
         """The session this alias still names, retiring one it no longer does.
 
-        The caller holds the manager lock. An alias that names another path,
-        machine or account has stopped naming what its session opened on, so
+        The caller holds the manager lock. An alias that names another path
+        or machine has stopped naming what its session opened on, so
         handing that session back would answer a request for one checkout with
         a shell somewhere else. Collisions with sessions under other aliases
         or projects are decided by the tree an open resolves, not here.
@@ -292,7 +295,7 @@ class TerminalManager:
             raise TerminalUnavailable(RETAINED_REFUSAL)
 
     async def capability(
-        self, machine: MachineConfig, probe: TerminalProbe | None
+        self, machine: SpaceMachineRecord, probe: TerminalProbe | None
     ) -> TerminalCapability:
         """Answer a machine's terminal capability, caching the local one.
 
@@ -316,7 +319,7 @@ class TerminalManager:
         that end a record, and names the file for the session in it. A record
         that does not look like that was not written by this version and is
         left as found. It is not read through the dataclass's defaults: an
-        absent or mistyped `execution_host` would read as local, and a remote
+        absent or mistyped `machine_id` could read as local, and a remote
         unit would then be cleaned up against a local one that was never
         there. Being unable to read a record is not evidence that its shell is
         gone, so whatever repository it still names stays blocked until the
@@ -370,6 +373,7 @@ class TerminalManager:
                 started_at="",
                 last_activity_at="",
                 unit="",
+                machine_id="",
                 containment="",  # type: ignore[arg-type]
             )
         )
@@ -625,7 +629,7 @@ class TerminalManager:
         end and sweep behind it, so only admission and publication take it.
         """
         repository = manifest.repository_map[repository_alias]
-        machine = manifest.machine_map[repository.machine]
+        machine = card(self.store, repository.machine)
         probe = await self.probes.ensure(machine) if machine.host else None
         capability = await self.capability(machine, probe)
         if capability.backend is None:
@@ -668,7 +672,9 @@ class TerminalManager:
                 }
         # A record retained on this tree blocks the open whatever alias filed
         # it, and a stop that can now be finished releases it.
-        await self._resolve_unfinished(project_id, repository_alias, (str(root), machine.host))
+        await self._resolve_unfinished(
+            project_id, repository_alias, (str(root), machine.machine_id)
+        )
         session_id = uuid.uuid4().hex
         session = TerminalSession(
             session_id=session_id,
@@ -676,14 +682,12 @@ class TerminalManager:
             member_id=member_id,
             repository_id=repository_alias,
             path=str(root),
+            machine_id=machine.machine_id,
             declared_path=repository.path,
-            declared_machine=repository.machine,
-            declared_account=machine.os_account,
             started_at=timestamp(),
             last_activity_at=timestamp(),
             unit=f"{self._unit_prefix}-{session_id}",
             containment=capability.backend.containment,
-            execution_host=machine.host,
         )
         async with self._reserved_tree(session):
             save_metadata(self.directory, session)
@@ -801,15 +805,8 @@ class TerminalManager:
             # it left running, so it never stops blocking its repository.
             return False
         try:
-            if session.execution_host:
-                await self.stop_thread(
-                    partial(
-                        remote.stop_remote_unit,
-                        session.execution_host,
-                        session.unit,
-                        session.declared_account,
-                    )
-                )
+            if session.remote:
+                await self.stop_thread(partial(self.stop_remote_unit, session))
             else:
                 await self.stop_thread(partial(launch.stop_unit, session.unit))
         except (TerminalUnavailable, OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -820,6 +817,11 @@ class TerminalManager:
             )
             return False
         return True
+
+    def stop_remote_unit(self, session: TerminalSession) -> None:
+        """Stop a remote session's unit through its card's current route and account."""
+        machine = card(self.store, session.machine_id)
+        remote.stop_remote_unit(machine.host, session.unit, machine.os_account)
 
     async def end_all(self, reason: str = "server_maintenance") -> None:
         async with self._lock:
@@ -908,7 +910,7 @@ class TerminalManager:
                 pass
             return (
                 "link_dropped"
-                if session.execution_host
+                if session.remote
                 and runtime.process.poll() == 255
                 and runtime.completion.exit_code is None
                 else "shell_exited"

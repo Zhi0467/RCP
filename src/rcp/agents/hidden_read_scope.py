@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from rcp.agents.write_scope import RegisteredRepositoryRoot
     from rcp.config import Manifest
     from rcp.providers import AgentCapability, ProviderId
+    from rcp.storage.models import SpaceMachineRecord
     from rcp.transport.run_stage import RemoteRunStage
 
 
@@ -19,7 +20,7 @@ class HiddenReadScopeResolver(Protocol):
         self,
         *,
         manifest: Manifest,
-        execution_machine: str,
+        machine: SpaceMachineRecord,
         provider: ProviderId,
         capability: AgentCapability,
         stage_root: str,

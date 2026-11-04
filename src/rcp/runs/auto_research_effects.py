@@ -104,7 +104,7 @@ def auto_research_command_effects(
     validate: AutoResearchValidateCommand,
     worker_request_factory: AutoResearchWorkerRequestFactory,
     graph_state: AutoResearchGraphState,
-    execution_host: str,
+    machine_id: str,
     apply_patch: AutoResearchApplyPatch | None = None,
     merge: AutoResearchMergeCommand | None = None,
     on_graph_applied: AutoResearchGraphApplied | None = None,
@@ -493,7 +493,7 @@ def auto_research_command_effects(
             arguments,
             watcher_id=planned_watcher_id,
             state=graph_state(),
-            execution_host=execution_host,
+            machine_id=machine_id,
             on_ready=on_watcher_ready,
         )
         return AutoResearchCommandEffectResult(
@@ -806,7 +806,7 @@ def auto_research_command_effects(
                 context,
                 request.arguments,
                 watcher_id=planned_effect_id,
-                execution_host=execution_host,
+                machine_id=machine_id,
             )
             if watcher is None:
                 return None

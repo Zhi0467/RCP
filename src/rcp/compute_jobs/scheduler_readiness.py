@@ -15,7 +15,7 @@ SLURM_TOOLS_CHECK = (
 )
 
 
-def probe_slurm_access(machine_alias: str, execution_host: str) -> ComputeBackendProbe:
+def probe_slurm_access(machine_id: str, host: str) -> ComputeBackendProbe:
     from rcp.watchers import WatchSpec, run_watcher_check
 
     # Use the watcher's login shell and bounded process owner. Check access
@@ -26,12 +26,12 @@ def probe_slurm_access(machine_alias: str, execution_host: str) -> ComputeBacken
             log_path="/dev/null",
             cwd="/",
         ),
-        execution_host,
+        host,
         COMPUTE_PROBE_TIMEOUT_SECONDS,
     )
     ready = result.state == "complete"
     return ComputeBackendProbe(
-        execution_machine=machine_alias,
+        machine_id=machine_id,
         backend_id="slurm",
         state="ready" if ready else "failed",
         ready=ready,

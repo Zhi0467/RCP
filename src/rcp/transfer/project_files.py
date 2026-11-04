@@ -378,8 +378,6 @@ def _capture_project_files_locked(
             legacy_introduction = records.paper is None and paper_sources == (
                 source_root / "paper/introduction.md",
             )
-            if paper_sources and not legacy_introduction and records.schema_version < 7:
-                raise ValueError("paper migration requires a new source transfer review")
             for source in paper_sources:
                 relative = source.relative_to(source_root / "paper")
                 entry = _capture_regular_file(

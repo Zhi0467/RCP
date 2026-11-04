@@ -10,6 +10,7 @@ from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.config import Manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.git_identity import GitIdentity
+from rcp.machine_cards import host_of
 from rcp.provisioning_repositories import is_server_only, team_repository_sources
 from rcp.server_ops.layout import ServerLayout, remote_project_deploy_key_relative_path
 from rcp.storage import AppStore
@@ -19,6 +20,7 @@ from rcp.storage import AppStore
 class ProviderGitAccess:
     identity: GitIdentity | None
     data_dir: Path
+    machine_id: str
     host: str
     checkouts: tuple[tuple[str, str], ...] = ()
 
@@ -45,7 +47,8 @@ def provider_git_access(
     data_dir: Path,
     layout: ServerLayout,
 ) -> ProviderGitAccess:
-    host = manifest.machine_map[run_on].host
+    """Access for a launch on card `run_on`, over the card's current host."""
+    host = host_of(store, run_on)
     sources = team_repository_sources(store, project_id)
     checkouts = tuple(
         (
@@ -57,11 +60,12 @@ def provider_git_access(
         for repository in manifest.repositories
         if store.space_kind == "team"
         and not is_server_only(sources, repository.alias)
-        and manifest.machine_map[repository.machine].host == host
+        and repository.machine == run_on
     )
     return ProviderGitAccess(
         identity=GitIdentity(member.user_id, member.display_name) if member else None,
         data_dir=Path("~/.local/share/rcp") if host else data_dir,
+        machine_id=run_on,
         host=host,
         checkouts=checkouts,
     )

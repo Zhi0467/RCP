@@ -29,7 +29,6 @@ from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_reposito
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    MachineConfig,
     Manifest,
     load_manifest,
 )
@@ -49,6 +48,8 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY
 from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+from rcp.machine_upgrade import LegacyManifest, read_legacy_manifest, upgraded_manifest_text
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
@@ -85,7 +86,11 @@ from rcp.storage import (
     ProjectRecord,
     ProjectStageRecord,
 )
-from rcp.storage.models import ProjectProvisioningMachineRecord
+from rcp.storage.machine_rekey import (
+    finish_project_machine_ids,
+    project_machine_upgrade_blocked,
+    rekey_project_machines,
+)
 from rcp.transport import (
     LocalStateWorkspace,
     RemoteRunStage,
@@ -102,7 +107,7 @@ from rcp.transport.state import (
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, AgentTaskRequest
 
-_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 5
+_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 6
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
 _LOGGER = logging.getLogger(__name__)
@@ -177,6 +182,7 @@ class RestoredProjectOwners:
 def inspect_backup_project_registration(
     record: ProjectRecord,
     *,
+    store: AppStore,
     data_dir: Path,
     provisioning_requests: Iterable[ProjectProvisioningRequestRecord],
 ) -> BackupProjectRegistration:
@@ -217,22 +223,20 @@ def inspect_backup_project_registration(
         raise BackupProjectUnavailable("The project catalog and registered manifest disagree.")
 
     state_repository = manifest.repository_map[manifest.state.repository]
-    state_machine = manifest.machine_map[state_repository.machine]
-    expected_state_location = (
-        f"{state_machine.host}:{state_repository.path}/.research"
-        if state_machine.host
-        else str(manifest.research_dir)
+    expected_state_path = (
+        str(manifest.research_dir)
+        if state_repository.machine == BACKEND_MACHINE_ID
+        else f"{state_repository.path}/.research"
     )
-    if record.state_location != expected_state_location or record.state_remote is not bool(
-        state_machine.host
+    if (record.state_machine_id, record.state_path) != (
+        state_repository.machine,
+        expected_state_path,
     ):
         raise BackupProjectUnavailable("The project catalog and canonical state location disagree.")
 
     configuration = BackupManifestConfiguration.from_manifest(manifest)
-    # Machines come from the current manifest, so one added after setup is kept.
-    # A provisioned root is reused only while the machine keeps its route.
     provisioned = {
-        machine.alias: machine
+        machine.machine_id: machine
         for completed in sorted(matches, key=lambda item: item.completed_at or "")
         for machine in completed.machines
         if machine.resolved_central_root is not None
@@ -248,13 +252,21 @@ def inspect_backup_project_registration(
             configuration=configuration,
             configuration_sha256=configuration.sha256,
             machines=tuple(
-                _backup_recovery_machine(machine, provisioned) for machine in manifest.machines
+                BackupRecoveryMachine(
+                    machine_id=machine_id,
+                    resolved_central_root=(
+                        provisioned[machine_id].resolved_central_root
+                        if machine_id in provisioned
+                        else None
+                    ),
+                )
+                for machine_id in manifest.machines
             ),
             repositories=tuple(
                 BackupRecoveryRepository(
                     alias=repository.alias,
                     repository=repository.repository,
-                    machine_alias=repository.machine_alias,
+                    machine_id=repository.machine_id,
                     resolved_path=repository.resolved_path,
                     git_commit=repository.git_check.commit,
                     deploy_key_label=repository.git_check.deploy_key_label,
@@ -282,83 +294,100 @@ def inspect_backup_project_registration(
     return BackupProjectRegistration(
         record=record,
         manifest=manifest,
-        workspace=state_workspace_for_probe(manifest, data_dir),
+        workspace=state_workspace_for_probe(manifest, data_dir, store),
         recovery=recovery,
     )
 
 
-def _backup_recovery_machine(
-    machine: MachineConfig,
-    provisioned: dict[str, ProjectProvisioningMachineRecord],
-) -> BackupRecoveryMachine:
-    intent = provisioned.get(machine.alias)
-    if intent is not None and (intent.host, intent.os_account) == (
-        machine.host,
-        machine.os_account,
-    ):
-        return BackupRecoveryMachine(
-            alias=machine.alias,
-            location=intent.location,
-            host=intent.host,
-            os_account=intent.os_account,
-            resolved_central_root=intent.resolved_central_root,
-        )
-    return BackupRecoveryMachine(
-        alias=machine.alias,
-        location="ssh" if machine.host else "local",
-        host=machine.host,
-        os_account=machine.os_account,
-        resolved_central_root=None,
-    )
-
-
-def record_space_machines(store: AppStore, manifest: Manifest) -> None:
-    """Give the space a card for every machine account this manifest names.
+def _record_legacy_machines(store: AppStore, legacy: LegacyManifest) -> None:
+    """Give the space a card for every machine account a legacy manifest names.
 
     Settings an older build kept in the manifest are copied into cards still
-    pending import. Only the startup sweep (`fill_space_machines`) settles a
-    card, since a registration reads one project and the card may be shared.
+    pending import; only `fill_space_machines` settles a card, since the card
+    may be shared with a project whose manifest it has not read.
     """
 
     conflicts = store.ensure_space_machines(
-        (machine.host, machine.os_account, machine.alias) for machine in manifest.machines
+        (machine.host, machine.os_account, machine.alias) for machine in legacy.machines
     )
     for host in conflicts:
         _LOGGER.warning(
             "Projects name different accounts for machine %s; its card now names none.", host
         )
-    for machine in manifest.machines:
-        compute = machine.legacy_compute
+    for machine in legacy.machines:
+        compute = machine.compute
         store.merge_legacy_machine_settings(
             machine.host,
             job_manager=compute.job_manager if compute else None,
             jobs_root=compute.jobs_root if compute else "",
-            access_hint=machine.legacy_access_hint,
-            provider_paths=machine.legacy_provider_paths,
+            access_hint=machine.access_hint,
+            provider_paths=machine.provider_paths,
         )
 
 
-def fill_space_machines(store: AppStore) -> None:
-    """Fill the space machine list from every registered project's manifest.
+def fill_space_machines(store: AppStore, data_dir: Path) -> None:
+    """Upgrade every project whose manifest still names its machines by alias.
 
-    Cards settle only after every manifest merged, so a machine two projects
-    share takes Slurm from either. While any manifest fails to read, which
-    machines it names is unknown, so no card settles until a start reads all.
+    Each pending manifest is read first: its machines become space cards and
+    the settings older builds kept there merge into them. Cards settle only
+    after every pending manifest merged, so a machine two projects share takes
+    Slurm from either. Then each project is rewritten to name its cards by id.
     """
 
+    pending = [project for project in store.projects() if project.machine_ids_pending]
     hosts: set[str] = set()
     unread = False
-    for project in store.projects():
+    for project in pending:
         try:
-            manifest = load_manifest(project.locator)
+            legacy = read_legacy_manifest(Path(project.locator))
         except (OSError, ValueError) as exc:
             _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
             unread = True
             continue
-        record_space_machines(store, manifest)
-        hosts.update(machine.host for machine in manifest.machines)
+        if legacy is not None:
+            _record_legacy_machines(store, legacy)
+            hosts.update(machine.host for machine in legacy.machines)
     if not unread:
         store.settle_legacy_machine_settings(hosts)
+    for project in pending:
+        if project_machine_upgrade_blocked(store, project.project_id):
+            continue
+        try:
+            upgrade_project_machine_ids(store, project, data_dir)
+        except (OSError, ValueError, StateUnavailable) as exc:
+            _LOGGER.warning("Project %s still names machines by alias: %s", project.project_id, exc)
+
+
+def upgrade_project_machine_ids(store: AppStore, record: ProjectRecord, data_dir: Path) -> None:
+    """Rewrite one project's manifest and alias-keyed rows to name space cards by id.
+
+    The aliases are mapped through the project's own canonical manifest. Rows
+    are rewritten before the manifest is published, and the pending flag is
+    cleared last, so an interrupted upgrade repeats on the next start.
+    """
+
+    cards = store.space_machines()
+    if record.state_machine_id == BACKEND_MACHINE_ID:
+        workspace: StateWorkspace = LocalStateWorkspace(Path(record.state_path), record.state_path)
+    else:
+        locator = Path(record.locator)
+        bootstrap = read_legacy_manifest(locator)
+        if bootstrap is not None:
+            mode = stat.S_IMODE(locator.stat().st_mode)
+            HistoryManager._atomic_text(
+                locator, upgraded_manifest_text(bootstrap, bootstrap.machine_ids(cards))
+            )
+            locator.chmod(mode)
+        workspace = state_workspace_for_probe(load_manifest(locator), data_dir, store)
+
+    def upgraded(path: Path) -> str | None:
+        legacy = read_legacy_manifest(path)
+        machine_ids = legacy.machine_ids(cards) if legacy is not None else {}
+        rekey_project_machines(store, record.project_id, machine_ids)
+        return upgraded_manifest_text(legacy, machine_ids) if legacy is not None else None
+
+    HistoryManager.publish_upgraded_manifest(workspace, upgraded)
+    finish_project_machine_ids(store, record.project_id)
 
 
 def rebind_restored_project_registration(
@@ -398,32 +427,36 @@ def rebind_restored_project_registration(
         )
     content = _render_restored_manifest(recovery.configuration, repository_paths)
     repositories = {item.alias: item for item in recovery.configuration.repositories}
-    machines = {item.alias: item for item in recovery.configuration.machines}
     state_repository = repositories[recovery.configuration.state_repository]
-    state_machine = machines[state_repository.machine]
-    state_path = repository_paths[state_repository.alias]
-    state_remote = bool(state_machine.host)
-    if state_remote:
+    state_machine_id = state_repository.machine
+    repository_path = repository_paths[state_repository.alias]
+    if state_machine_id == BACKEND_MACHINE_ID:
+        locator = Path(repository_path) / ".research" / "manifest.toml"
+        state_path = str(Path(repository_path) / ".research")
+    else:
+        try:
+            host = host_of(store, state_machine_id)
+        except KeyError as exc:
+            raise RestoredProjectRebindRefused(
+                "The restored canonical state names a machine this space does not know."
+            ) from exc
         locator = _write_restored_bootstrap_manifest(
             data_dir,
-            host=state_machine.host,
-            repository_path=state_path,
+            host=host,
+            repository_path=repository_path,
             content=content,
             uid=uid,
             gid=gid,
         )
-        state_location = f"{state_machine.host}:{state_path}/.research"
-    else:
-        locator = Path(state_path) / ".research" / "manifest.toml"
-        state_location = str(Path(state_path) / ".research")
+        state_path = f"{repository_path}/.research"
     try:
         stored = store.rebind_project_registration_for_restore(
             record.project_id,
             home_space_id=recovery.home_space_id,
             name=recovery.configuration.name,
             locator=str(locator),
-            state_location=state_location,
-            state_remote=state_remote,
+            state_machine_id=state_machine_id,
+            state_path=state_path,
         )
     except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
         raise RestoredProjectRebindRefused(
@@ -431,8 +464,7 @@ def rebind_restored_project_registration(
         ) from exc
     if (
         stored.locator != str(locator)
-        or stored.state_location != state_location
-        or stored.state_remote is not state_remote
+        or (stored.state_machine_id, stored.state_path) != (state_machine_id, state_path)
         or stored.reachable is not False
     ):
         raise RestoredProjectRebindRefused(
@@ -477,12 +509,12 @@ def restored_project_owners(
         raise RestoredProjectPublicationRefused(
             "The archived manifest, restored catalog, and recovery descriptor disagree."
         )
-    if record.state_remote:
+    if record.state_machine_id != BACKEND_MACHINE_ID:
         if local_workspace_root is not None:
             raise RestoredProjectPublicationRefused("Remote publication cannot use a local root.")
         try:
             bootstrap = load_manifest(record.locator)
-            workspace = state_workspace_for_probe(bootstrap, data_dir)
+            workspace = state_workspace_for_probe(bootstrap, data_dir, store)
             workspace.refresh()
         except (OSError, StateUnavailable, ValueError) as exc:
             raise RestoredProjectPublicationRefused(
@@ -490,7 +522,7 @@ def restored_project_owners(
             ) from exc
     else:
         workspace = LocalStateWorkspace(
-            local_workspace_root or Path(record.state_location), record.state_location
+            local_workspace_root or Path(record.state_path), record.state_path
         )
     history = HistoryManager(
         manifest,
@@ -569,27 +601,7 @@ def _render_restored_manifest(
 ) -> str:
     document = tomlkit.document()
     document.add("name", configuration.name)
-    machines = tomlkit.aot()
-    for item in configuration.machines:
-        machine = tomlkit.table()
-        machine.add("alias", item.alias)
-        machine.add("host", item.host)
-        machine.add("os_account", item.os_account)
-        if item.provider_paths:
-            paths = tomlkit.inline_table()
-            for provider in PROVIDER_IDS:
-                if provider in item.provider_paths:
-                    paths.append(provider, item.provider_paths[provider])
-            machine.add("provider_paths", paths)
-        if item.access_hint:
-            machine.add("access_hint", item.access_hint)
-        if item.compute is not None:
-            compute = tomlkit.table()
-            for key, value in item.compute.model_dump(exclude_defaults=True).items():
-                compute.add(key, value)
-            machine.add("compute", compute)
-        machines.append(machine)
-    document.add("machines", machines)
+    document.add("machines", list(configuration.machines))
     repositories = tomlkit.aot()
     for item in configuration.repositories:
         repository = tomlkit.table()
@@ -623,7 +635,6 @@ def _render_restored_manifest(
         profile.add("runtime", item.runtime)
         profile.add("model", item.model)
         profile.add("reasoning", item.reasoning)
-        profile.add("run_on", item.run_on)
         permissions = tomlkit.table()
         for key, value in item.permissions.model_dump(mode="json").items():
             permissions.add(key, value)
@@ -884,7 +895,7 @@ class ProjectCatalog:
         for record in self.store.projects():
             try:
                 workspaces[record.project_id] = state_workspace_for_probe(
-                    load_manifest(record.locator), self.data_dir
+                    load_manifest(record.locator), self.data_dir, self.store
                 )
             except (OSError, ValueError):
                 continue
@@ -1029,7 +1040,7 @@ class ProjectCatalog:
                 raise ProjectIdentityConflict(
                     "The incoming transfer project is already visible in the catalog."
                 )
-            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
             try:
                 actual_manifest_content = manifest.path.read_text(encoding="utf-8")
             except OSError as exc:
@@ -1065,8 +1076,8 @@ class ProjectCatalog:
             "home_space_id",
             "locator",
             "name",
-            "state_location",
-            "state_remote",
+            "state_machine_id",
+            "state_path",
             "added_at",
         )
         if stored is None or any(
@@ -1074,11 +1085,6 @@ class ProjectCatalog:
         ):
             raise RuntimeError("incoming transfer activation catalog readback differs")
         self._refresh_project_aliases()
-        # The transfer is already committed; a machine card is only a convenience.
-        try:
-            record_space_machines(self.store, load_manifest(stored.locator))
-        except (OSError, ValueError) as exc:
-            _LOGGER.warning("Could not record machines for transferred project: %s", exc)
 
     def _register(
         self,
@@ -1116,7 +1122,7 @@ class ProjectCatalog:
                     raise ProjectIdentityConflict(
                         "The prepared project identity is registered at another canonical home."
                     )
-            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
             history = self._history_for_manifest(manifest, workspace)
             identity = history.project_identity()
             if identity is None:
@@ -1148,7 +1154,7 @@ class ProjectCatalog:
             if existing is not None:
                 old_project_id = existing.project_id
             elif identity.action == "adopted":
-                old_project_id = _project_id(manifest)
+                old_project_id = _project_id(manifest, self.store)
             else:
                 old_project_id = identity.project_id
 
@@ -1214,7 +1220,6 @@ class ProjectCatalog:
                 )
             self._finish_alias_file_migrations(identity.project_id)
             self._seat_first_member(stored.project_id, seat_member, seated_by=seated_by)
-            record_space_machines(self.store, manifest)
             self._refresh_display_workspaces()
             return stored
 
@@ -1231,7 +1236,7 @@ class ProjectCatalog:
             bootstrap = load_manifest(locator)
             canonical_locator = str(bootstrap.path)
             existing = self.store.project_by_locator(canonical_locator)
-            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
             history = self._history_for_manifest(manifest, workspace)
             if materialization.state.replay_status != "degraded":
                 raise ValueError(
@@ -1243,7 +1248,9 @@ class ProjectCatalog:
                     f"Project {identity.project_id} belongs to space {identity.home_space_id}; "
                     f"this space is {self.store.space_id}. Registration is refused."
                 )
-            project_id = identity.project_id if identity is not None else _project_id(manifest)
+            project_id = (
+                identity.project_id if identity is not None else _project_id(manifest, self.store)
+            )
             self.ensure_registration_available(project_id)
             if existing is not None and existing.project_id != project_id:
                 raise ValueError(
@@ -1263,7 +1270,6 @@ class ProjectCatalog:
             )
             self.store.upsert_project(record)
             self._refresh_display_workspaces()
-            record_space_machines(self.store, manifest)
             paper = PaperService(
                 manifest,
                 self.store,
@@ -1330,7 +1336,7 @@ class ProjectCatalog:
             (
                 item
                 for item in self.store.projects()
-                if item.state_location.rstrip("/") == canonical_location.rstrip("/")
+                if self._state_location(item).rstrip("/") == canonical_location.rstrip("/")
             ),
             None,
         )
@@ -1349,6 +1355,13 @@ class ProjectCatalog:
             "Remove that registration before archiving its canonical research."
         )
 
+    def _state_location(self, record: ProjectRecord) -> str:
+        """Where the record's canonical state lives: `host:path` on a remote card."""
+
+        if record.state_machine_id == BACKEND_MACHINE_ID:
+            return record.state_path
+        return f"{host_of(self.store, record.state_machine_id)}:{record.state_path}"
+
     def _record_for_identity(
         self,
         manifest: Manifest,
@@ -1358,19 +1371,18 @@ class ProjectCatalog:
         home_space_id: str | None,
     ) -> ProjectRecord:
         state_repository = manifest.repository_map[manifest.state.repository]
-        state_machine = manifest.machine_map[state_repository.machine]
-        state_location = (
-            f"{state_machine.host}:{state_repository.path}/.research"
-            if state_machine.host
-            else str(manifest.research_dir)
-        )
+        state_machine_id = state_repository.machine
         return ProjectRecord(
             project_id=project_id,
             home_space_id=home_space_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=state_location,
-            state_remote=bool(state_machine.host),
+            state_machine_id=state_machine_id,
+            state_path=(
+                str(manifest.research_dir)
+                if state_machine_id == BACKEND_MACHINE_ID
+                else f"{state_repository.path}/.research"
+            ),
             added_at=existing.added_at if existing else self.store.now(),
             last_opened_at=existing.last_opened_at if existing else None,
             revision=existing.revision if existing else None,
@@ -1454,7 +1466,7 @@ class ProjectCatalog:
                 )
             return record.project_id
         bootstrap = load_manifest(record.locator)
-        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
         history = self._history_for_manifest(manifest, workspace, project_id=record.project_id)
         materialization = history.materialize(write_outputs=False)
         if materialization.state.replay_status == "degraded":
@@ -1656,23 +1668,16 @@ class ProjectCatalog:
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
-        manifest = load_manifest(record.locator)
-        repository = manifest.repository_map[manifest.state.repository]
-        return manifest.machine_map[repository.machine].host
+        return host_of(self.store, record.state_machine_id)
 
     def same_machine(self, project_id: str) -> bool:
-        """Whether state and base both live on the backend's machine, without opening."""
+        """Whether state and base, one card, are the backend's machine, without opening."""
 
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
-        manifest = load_manifest(record.locator)
-        repository = manifest.repository_map[manifest.state.repository]
-        return not (
-            manifest.machine_map[repository.machine].host
-            or manifest.machine_map[manifest.base_machine].host
-        )
+        return record.state_machine_id == BACKEND_MACHINE_ID
 
     def open(self, project_id: str) -> ProjectService:
         service, _ = self._service_or_open(project_id)
@@ -1715,7 +1720,7 @@ class ProjectCatalog:
         if record is None:
             raise KeyError(transfer.project_id)
         bootstrap = load_manifest(record.locator)
-        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
         history = HistoryManager(
             manifest,
             workspace,
@@ -1906,14 +1911,10 @@ class ProjectCatalog:
                 manifest = load_manifest(record.locator)
             except (FileNotFoundError, OSError, ValueError):
                 continue
-            for machine in manifest.machines:
+            for machine_id in manifest.machines:
                 for provider in PROVIDER_IDS:
                     targets.add(
-                        (
-                            provider,
-                            machine.host,
-                            self.launcher.provider_binary(provider, machine.host),
-                        )
+                        (provider, machine_id, self.launcher.provider_binary(provider, machine_id))
                     )
         return sorted(targets, key=lambda item: (item[1], item[0], item[2] or ""))
 
@@ -1926,7 +1927,7 @@ class ProjectCatalog:
                 service = self._services.get(record.project_id)
             try:
                 bootstrap = load_manifest(record.locator)
-                workspace = state_workspace_for_probe(bootstrap, self.data_dir)
+                workspace = state_workspace_for_probe(bootstrap, self.data_dir, self.store)
                 if service is not None and hasattr(service, "history"):
                     workspace = service.history.workspace
                 if isinstance(workspace, SSHStateWorkspace):
@@ -1948,10 +1949,9 @@ class ProjectCatalog:
         return sorted(
             roots,
             key=lambda item: (
-                item.execution_host,
+                item.machine,
                 item.project_id,
                 item.alias,
-                item.machine,
                 item.path,
             ),
         )
@@ -2034,26 +2034,12 @@ class ProjectCatalog:
                     ) = self._validated_deletion_targets(project_id, work_stopped=True)
 
                     from rcp.runs.browser_lifecycle import (
-                        browser_host_key,
                         close_chat_browser_owners,
                         retry_browser_cleanup,
                     )
 
                     close_chat_browser_owners(self.store, project_id, delete_profile=True)
-                    record = self.store.project(project_id)
-                    memory_host_key = None
-                    if record is not None and record.state_remote:
-                        try:
-                            memory_host_key = browser_host_key(
-                                record.state_location.partition(":/")[0]
-                            )
-                        except Exception:
-                            logging.getLogger(__name__).exception(
-                                "Project memory cleanup origin could not be resolved"
-                            )
-                    database_records = self.store.delete_project_records(
-                        project_id, memory_host_key=memory_host_key
-                    )
+                    database_records = self.store.delete_project_records(project_id)
                     retry_browser_cleanup(self.store)
                 except BaseException:
                     if stopped:
@@ -2386,6 +2372,17 @@ class ProjectCatalog:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    def forget_display_snapshot(self, project_id: str) -> None:
+        """Drop the project's cached display, so the next read rebuilds it from its cards."""
+
+        project_id = self._canonical_project_id(project_id)
+        with self._snapshot_lock(project_id):
+            _unlink_regular_app_file(self._cached_snapshot_path(project_id))
+            self._cached_snapshot_patch_heads.pop(project_id, None)
+        with self._display_lock:
+            self._display_services.pop(project_id, None)
+            self._display_snapshots.pop(project_id, None)
+
     def cached_snapshot(self, project_id: str) -> dict[str, object] | None:
         project_id = self._canonical_project_id(project_id)
         _status, snapshot = self.cached_snapshot_status(project_id)
@@ -2448,23 +2445,15 @@ class ProjectCatalog:
             return "invalid", None
         if not isinstance(envelope, dict):
             return "invalid", None
-        schema_version = envelope.get("schema_version")
-        if schema_version == 1 and set(envelope) == {
-            "schema_version",
-            "project_id",
-            "snapshot",
-        }:
-            patch_log_head = None
-        elif schema_version in {2, 3, 4, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
+        if envelope.get("schema_version") != _DISPLAY_SNAPSHOT_SCHEMA_VERSION or set(envelope) != {
             "schema_version",
             "project_id",
             "canonical_patch_head",
             "snapshot",
         }:
-            patch_log_head = envelope["canonical_patch_head"]
-            if not _valid_patch_log_head(patch_log_head):
-                return "invalid", None
-        else:
+            return "invalid", None
+        patch_log_head = envelope["canonical_patch_head"]
+        if not _valid_patch_log_head(patch_log_head):
             return "invalid", None
         if envelope["project_id"] != project_id:
             return "invalid", None
@@ -2491,13 +2480,6 @@ class ProjectCatalog:
         upgrade_graph_projection(graph_payload)
         try:
             graph = GraphState.model_validate(graph_payload)
-            if schema_version < 5:
-                # These shipped cache schemas predate selectable graph targets.
-                snapshot["graph_target"] = GraphTargetRef().model_dump(mode="json")
-                snapshot["graph_head"] = GraphHeadRef(revision=graph.revision).model_dump(
-                    mode="json"
-                )
-                snapshot["graph_changes"] = None
             expected_attention = project_graph_attention(graph)
             attention_payload = snapshot.get("attention")
             counts = snapshot.get("counts")
@@ -2539,8 +2521,6 @@ class ProjectCatalog:
             allow_pre_identity=allow_pre_identity,
         ):
             return "invalid", None
-        if schema_version == 1:
-            patch_log_head = _display_patch_log_head(snapshot)
         assert patch_log_head is None or isinstance(patch_log_head, int)
         self._cached_snapshot_patch_heads[project_id] = patch_log_head
         return "valid", snapshot
@@ -2596,8 +2576,13 @@ class ProjectCatalog:
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
+        if record.machine_ids_pending:
+            raise StateUnavailable(
+                "This project still names its machines the old way; restart RCP once its "
+                "state is reachable."
+            )
         bootstrap = load_manifest(record.locator)
-        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
         history = self._history_for_manifest(manifest, workspace, project_id=project_id)
         try:
             initialized = history.initialize()
@@ -2741,22 +2726,16 @@ class ProjectCatalog:
         )
         return _ProjectSnapshotDraft(snapshot)
 
-    def add_machine(
-        self,
-        project_id: str,
-        machine_id: str,
-        alias: str,
-    ) -> _ProjectSnapshotDraft:
-        """Append a space machine card's host and account to one project's manifest."""
+    def add_machine(self, project_id: str, machine_id: str) -> _ProjectSnapshotDraft:
+        """Add one space card to a project's manifest by its id."""
 
-        card = self.store.space_machine(machine_id)
+        self.store.space_machine(machine_id)
         project_id = self._canonical_project_id(project_id)
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
-        service.add_machine(alias, card.host, card.os_account)
+        service.add_machine(machine_id)
         self._persist_bootstrap_locator(project_id, service)
-        record_space_machines(self.store, service.manifest)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
@@ -2768,15 +2747,15 @@ class ProjectCatalog:
         )
         return _ProjectSnapshotDraft(snapshot)
 
-    def remove_machine(self, project_id: str, alias: str) -> _ProjectSnapshotDraft:
+    def remove_machine(self, project_id: str, machine_id: str) -> _ProjectSnapshotDraft:
         """Drop one machine from a project's manifest; the space card stays."""
 
         project_id = self._canonical_project_id(project_id)
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
-        service.remove_machine(alias)
-        self.store.delete_compute_backend_probe(project_id, alias)
+        service.remove_machine(machine_id)
+        self.store.delete_compute_backend_probe(project_id, machine_id)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
@@ -2815,8 +2794,9 @@ class ProjectCatalog:
             "home_space_id": record.home_space_id,
             "name": record.name,
             "locator": record.locator,
-            "state_location": record.state_location,
-            "remote": record.state_remote,
+            "state_machine_id": record.state_machine_id,
+            "state_path": record.state_path,
+            "remote": record.state_machine_id != BACKEND_MACHINE_ID,
             "last_opened_at": record.last_opened_at,
             "revision": record.revision,
             "primary_question": record.primary_question,
@@ -2889,31 +2869,26 @@ class ProjectDisplayCache:
         )
         manifest_machines = payload["machines"]
         assert isinstance(manifest_machines, list)
-        used = {repository["machine"] for repository in repositories} | {
-            profile["run_on"]
-            for profile in cast(dict[str, dict[str, str]], payload["agent_profiles"]).values()
-        }
+        used = {repository["machine"] for repository in repositories} | {payload["run_on"]}
         payload["machines"] = [
             {
-                "alias": machine["alias"],
-                "host": machine["host"],
-                "os_account": machine["os_account"],
+                "machine_id": machine_id,
                 # Read from the space card, which owns it; Runs reads it from here.
                 "compute": (
                     compute.model_dump(mode="json")
-                    if (compute := self._store.machine_compute(machine["host"]))
+                    if (compute := self._store.machine_compute(machine_id))
                     else None
                 ),
-                "removable": machine["alias"] not in used,
+                "removable": machine_id not in used,
                 "compute_probes": {
                     route: probe.model_dump(mode="json") if probe is not None else None
                     for route in ("scheduler", "helper")
                     for probe in [
-                        self._store.compute_backend_probe(payload["id"], machine["alias"], route)
+                        self._store.compute_backend_probe(payload["id"], machine_id, route)
                     ]
                 },
             }
-            for machine in manifest_machines
+            for machine_id in cast(list[str], manifest_machines)
         ]
         _stamp_display_signals(payload)
         return payload
@@ -3031,14 +3006,13 @@ class ProjectDisplayCache:
             ),
         )
 
-    def add_machine(self, project_id: str, machine_id: str, alias: str) -> dict[str, object]:
-        return self.complete_snapshot(
-            project_id,
-            self._catalog.add_machine(project_id, machine_id, alias),
-        )
+    def add_machine(self, project_id: str, machine_id: str) -> dict[str, object]:
+        return self.complete_snapshot(project_id, self._catalog.add_machine(project_id, machine_id))
 
-    def remove_machine(self, project_id: str, alias: str) -> dict[str, object]:
-        return self.complete_snapshot(project_id, self._catalog.remove_machine(project_id, alias))
+    def remove_machine(self, project_id: str, machine_id: str) -> dict[str, object]:
+        return self.complete_snapshot(
+            project_id, self._catalog.remove_machine(project_id, machine_id)
+        )
 
     def complete_transition_control(
         self,
@@ -3258,10 +3232,11 @@ def _control_node_ids(state: GraphState, candidates: Iterable[str] | None = None
     return control_ids
 
 
-def _project_id(manifest: Manifest) -> str:
+def _project_id(manifest: Manifest, store: AppStore) -> str:
+    """The id an older build derived for a project with no durable identity."""
+
     repository = manifest.repository_map[manifest.state.repository]
-    machine = manifest.machine_map[repository.machine]
-    identity = f"{manifest.name}\0{machine.host}\0{repository.path}"
+    identity = f"{manifest.name}\0{host_of(store, repository.machine)}\0{repository.path}"
     digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
     slug = re.sub(r"[^a-z0-9]+", "-", manifest.name.lower()).strip("-") or "project"
     return f"{slug[:42]}-{digest}"

@@ -1,4 +1,8 @@
-import type { Machine, SpaceMachine, SpaceMachineUpdateRequest } from "../core/types";
+import type {
+  SpaceMachine,
+  SpaceMachineCreateRequest,
+  SpaceMachineUpdateRequest,
+} from "../core/types";
 
 export type MachineSettingsRecord = SpaceMachine;
 
@@ -18,19 +22,25 @@ export function writablePathsRequest(
   };
 }
 
-/** The space record behind one of a project's manifest machines. */
-export function spaceMachineForProject(
+/** The PATCH body for a card's Name, SSH host and Account edit: only what changed. */
+export function machineEditRequest(
+  saved: Pick<SpaceMachine, "name" | "host" | "os_account">,
+  draft: SpaceMachineCreateRequest,
+): SpaceMachineUpdateRequest {
+  const request: SpaceMachineUpdateRequest = {};
+  for (const key of ["name", "host", "os_account"] as const) {
+    const value = draft[key].trim();
+    if (value !== saved[key]) request[key] = value;
+  }
+  return request;
+}
+
+/** The space card a machine id names. */
+export function spaceMachineById(
   machines: readonly SpaceMachine[],
-  projectId: string,
-  machine: Pick<Machine, "alias">,
+  machineId: string,
 ): SpaceMachine | null {
-  return (
-    machines.find((candidate) =>
-      candidate.projects.some(
-        (project) => project.project_id === projectId && project.alias === machine.alias,
-      ),
-    ) ?? null
-  );
+  return machines.find((candidate) => candidate.machine_id === machineId) ?? null;
 }
 
 /** Space machines a project does not use yet, which "Add machine" can offer. */
@@ -46,31 +56,6 @@ export function machinesToAdd(
 /** An empty host is the machine RCP runs on: the team server in a team space. */
 export function machineHostLabel(host: string, spaceKind: "personal" | "team"): string {
   return host || (spaceKind === "team" ? "Team server" : "This machine");
-}
-
-/** The backend's `AddProjectMachineRequest.alias` limit. */
-export const MACHINE_ALIAS_MAX_LENGTH = 48;
-
-/** A manifest alias suggested from a machine's display name. */
-export function suggestedMachineAlias(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, MACHINE_ALIAS_MAX_LENGTH)
-    .replace(/^-+|-+$/g, "");
-}
-
-/** A machine's name in one project: its suggested alias, numbered past any already taken. */
-export function projectMachineAlias(name: string, taken: readonly string[]): string {
-  const base = suggestedMachineAlias(name) || "machine";
-  const used = new Set(taken);
-  if (!used.has(base)) return base;
-  for (let index = 2; ; index += 1) {
-    const suffix = `-${index}`;
-    const candidate = `${base.slice(0, MACHINE_ALIAS_MAX_LENGTH - suffix.length)}${suffix}`;
-    if (!used.has(candidate)) return candidate;
-  }
 }
 
 export function replaceSpaceMachine(

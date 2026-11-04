@@ -3,28 +3,14 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents.launcher import ProviderReadiness
-from rcp.config import AgentSurfaceConfig, Manifest
 from rcp.history import HistoryManager
+from rcp.machine_cards import LoginKey
 from rcp.paper import PaperService
 from rcp.providers import ModelChoice
 from rcp.service import CoachRequest, ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey
 from tests.helpers import unchecked_write_authority
-
-
-def test_manifest_rejects_graph_agent_off_canonical_machine(manifest) -> None:
-    data = manifest.model_dump(mode="python")
-    data["machines"].append({"alias": "remote", "host": "gpu.example"})
-    data["agent"]["refresh"] = AgentSurfaceConfig(
-        provider="codex",
-        reasoning="medium",
-        run_on="remote",
-    ).model_dump(mode="python")
-
-    with pytest.raises(ValueError, match="canonical state machine"):
-        Manifest.model_validate(data)
 
 
 def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
@@ -62,14 +48,14 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
 
 @pytest.mark.parametrize("surface", ["refresh", "paper_coach"])
 def test_runtime_override_cannot_move_an_agent_off_the_base(manifest, tmp_path, surface) -> None:
-    manifest.machines.append(type(manifest.machines[0])(alias="remote", host="gpu.example"))
+    manifest.machines.append("c" * 32)
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
 
     with pytest.raises(ValueError):
-        service.resolve_agent_profile(surface, run_on="remote")
+        service.resolve_agent_profile(surface, run_on="c" * 32)
 
 
 def test_provider_override_does_not_inherit_previous_provider_model(manifest, tmp_path) -> None:
@@ -110,12 +96,11 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     store = AppStore(tmp_path / "rcp.sqlite3")
     paper = PaperService(manifest, store, history.workspace, project_id="project")
     service = ProjectService(manifest, history, paper, data_dir=tmp_path / "data")
-    machine = manifest.machine_map[manifest.agent_profile("project_chat").run_on]
     probed: list[tuple[str, str, str | None]] = []
 
     def cached_readiness(login: LoginKey, *, binary: str | None = None):
         """A catalog default the head itself does not list must not be used."""
-        probed.append((login.provider, login.host, binary))
+        probed.append((login.provider, login.machine_id, binary))
         if login.provider == "opencode":
             return ProviderReadiness(
                 provider="opencode",
@@ -176,7 +161,7 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
         "paper_coach",
         "orchestrator",
     }
-    assert probed[0] == ("codex", machine.host, None)
+    assert probed[0] == ("codex", manifest.base_machine, None)
 
 
 @pytest.mark.asyncio
@@ -195,7 +180,7 @@ async def test_old_coach_checkpoint_starts_fresh_on_base(manifest, tmp_path) -> 
     wire_saved_paper(service)
     execution = execution_for(service)
     execution.continuation = "resume"
-    execution.stage_host = "old.example"
+    execution.stage_machine_id = "d" * 32
     execution.stage_root = "/old/checkpoint"
     request = CoachRequest(
         message="Continue coaching", session_id="old-native", run_on="old-worker"
@@ -206,7 +191,7 @@ async def test_old_coach_checkpoint_starts_fresh_on_base(manifest, tmp_path) -> 
         async def stream(self, _provider, _prompt, **kwargs):
             launched.append(kwargs)
             assert kwargs["session_id"] is None
-            assert kwargs.get("host", "") == manifest.machine_map[manifest.base_machine].host
+            assert kwargs.get("host", "") == ""
             assert str(kwargs["cwd"]) != "/old/checkpoint"
             yield AgentEvent(event="session", session_id="new-native")
             yield AgentEvent(event="done")
@@ -225,4 +210,4 @@ async def test_old_coach_checkpoint_starts_fresh_on_base(manifest, tmp_path) -> 
     assert launched
     assert not [event for event in events if event.event == "error"]
     sessions = {session.native_session_id: session for session in service.paper.sessions()}
-    assert sessions["new-native"].execution_machine == manifest.base_machine
+    assert sessions["new-native"].machine_id == manifest.base_machine

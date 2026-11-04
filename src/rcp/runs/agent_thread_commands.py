@@ -28,6 +28,7 @@ from rcp.limits import (
     AGENT_PROJECT_DETAILS_MAX_ITEMS,
     AGENT_PROJECTS_MAX_ITEMS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.regular_file_reader import RegularFileTooLargeError, read_local_regular_file
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
@@ -397,13 +398,12 @@ def thread_agent(store: AppStore, thread: AgentThreadRecord) -> dict[str, str | 
         provider=pick.get("provider"),
         model=pick.get("model"),
         reasoning=pick.get("reasoning"),
-        run_on=pick.get("run_on"),
     )
     return {
         "provider": profile.provider,
         "model": profile.model,
         "reasoning": profile.reasoning,
-        "run_on": profile.run_on,
+        "run_on": BACKEND_MACHINE_ID,
     }
 
 
@@ -445,9 +445,7 @@ def store_thread_pick(
     and a launch is checked when it runs. An agent's handoff pick must run now.
     """
     if thread.project_id is None:
-        from rcp.runs.space_chat import space_agent_profile
-
-        run_on = space_agent_profile(store, provider=provider, run_on=run_on).run_on
+        run_on = BACKEND_MACHINE_ID
     else:
         from rcp.runs.auto_research_admission import (
             AutoResearchChildProfileInvalid,

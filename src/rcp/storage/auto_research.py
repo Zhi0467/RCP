@@ -637,15 +637,17 @@ class AutoResearchStoreMixin(StoreMixinBase):
                         "session and stage"
                     )
                 if clean_actor_retry:
-                    if (record.stage_host or "") != (parent["stage_host"] or ""):
-                        raise ValueError("a clean Retry must preserve its actor-owned stage host")
+                    if (record.stage_machine_id or "") != (parent["stage_machine_id"] or ""):
+                        raise ValueError(
+                            "a clean Retry must preserve its actor-owned stage machine"
+                        )
                     if record.stage_root != parent["stage_root"]:
                         raise ValueError("a clean Retry must preserve its actor-owned stage")
                 elif (
                     not parent["native_session_id"]
                     or not parent["stage_root"]
                     or record.native_session_id != parent["native_session_id"]
-                    or (record.stage_host or "") != (parent["stage_host"] or "")
+                    or (record.stage_machine_id or "") != (parent["stage_machine_id"] or "")
                     or record.stage_root != parent["stage_root"]
                     or record.request.get("session_id") != parent["native_session_id"]
                 ):
@@ -1121,7 +1123,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     )
                     and record.native_session_id is None
                     and request.get("session_id") is None
-                    and (record.stage_host or "") == (latest["stage_host"] or "")
+                    and (record.stage_machine_id or "") == (latest["stage_machine_id"] or "")
                     and record.stage_root == latest["stage_root"]
                 )
                 if (
@@ -1132,7 +1134,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     and not clean_retry
                     and (
                         record.native_session_id != latest["native_session_id"]
-                        or (record.stage_host or "") != (latest["stage_host"] or "")
+                        or (record.stage_machine_id or "") != (latest["stage_machine_id"] or "")
                         or record.stage_root != latest["stage_root"]
                     )
                 ):
@@ -1306,7 +1308,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
             control_node_id=invocation["control_node_id"],
             current_operation_id=str(latest["operation_id"]),
             native_session_id=latest["native_session_id"],
-            stage_host=latest["stage_host"],
+            stage_machine_id=latest["stage_machine_id"],
             stage_root=latest["stage_root"],
         )
 
@@ -1696,7 +1698,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                     """
                     UPDATE episode_wrapups
                     SET ending = 'stopped', partial = 1, native_session_id = NULL,
-                        stage_host = NULL, stage_root = NULL, receipt_json = ?,
+                        stage_machine_id = NULL, stage_root = NULL, receipt_json = ?,
                         receipt_sha256 = ?, state = 'skipped', diagnostic = ?,
                         updated_at = ?, finished_at = COALESCE(finished_at, ?)
                     WHERE episode_id = ?

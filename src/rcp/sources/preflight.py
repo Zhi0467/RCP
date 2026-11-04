@@ -7,11 +7,13 @@ import stat
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from rcp.config import MachineConfig
 from rcp.limits import REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS
 from rcp.transport.ssh import ssh_arguments
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 
 @dataclass(frozen=True)
@@ -51,9 +53,9 @@ print(json.dumps(results, separators=(",", ":")))
 
 
 def preflight_provider_roots(
-    source_roots: Mapping[str, list[str]], machine: MachineConfig
+    source_roots: Mapping[str, list[str]], machine: SpaceMachineRecord
 ) -> list[str]:
-    """Return best-effort metadata diagnostics for roots on ``machine``.
+    """Return best-effort metadata diagnostics for roots on the ``machine`` card.
 
     This intentionally performs no directory enumeration and reads no provider
     files. Every failure is converted to a diagnostic so source preflight can
@@ -76,7 +78,7 @@ def preflight_provider_roots(
         return [_diagnostic(machine, root, detail) for root in roots]
 
 
-def _preflight_local(machine: MachineConfig, roots: list[_ProviderRoot]) -> list[str]:
+def _preflight_local(machine: SpaceMachineRecord, roots: list[_ProviderRoot]) -> list[str]:
     diagnostics: list[str] = []
     for root in roots:
         try:
@@ -95,7 +97,7 @@ def _preflight_local(machine: MachineConfig, roots: list[_ProviderRoot]) -> list
     return diagnostics
 
 
-def _preflight_remote(machine: MachineConfig, roots: list[_ProviderRoot]) -> list[str]:
+def _preflight_remote(machine: SpaceMachineRecord, roots: list[_ProviderRoot]) -> list[str]:
     payload = json.dumps(
         [{"provider": root.provider, "root": root.probe_path} for root in roots],
         separators=(",", ":"),
@@ -147,6 +149,6 @@ def _preflight_remote(machine: MachineConfig, roots: list[_ProviderRoot]) -> lis
     return diagnostics
 
 
-def _diagnostic(machine: MachineConfig, root: _ProviderRoot, detail: str) -> str:
-    location = f"{machine.alias} ({machine.host})" if machine.host else machine.alias
+def _diagnostic(machine: SpaceMachineRecord, root: _ProviderRoot, detail: str) -> str:
+    location = f"{machine.name} ({machine.host})" if machine.host else machine.name
     return f"{location}/{root.provider} source root {root.agent_path!r}: {detail}"

@@ -67,7 +67,7 @@ def _experiment_maintenance_binding(
         node_id=resource.control_node_id,
         episode_id=resource.continuation.control_episode_id,
         graph_target=task.graph_target,
-        execution_host=resource.execution_host,
+        machine_id=resource.machine_id,
         continuation=resource.continuation,
     )
 
@@ -208,7 +208,7 @@ async def _process_experiment_watcher_maintenance(
                         await asyncio.to_thread(
                             validate_watch_specs,
                             handoff.observers,
-                            staged.resource.execution_host,
+                            staged.host,
                         )
                         if handoff.observers
                         else []

@@ -47,6 +47,7 @@ from rcp.live_artifacts import (
     ResolvedLiveVersion,
     parse_live_tag,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.regular_file_reader import read_local_regular_files
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -115,11 +116,20 @@ def _graph_history(service, task):
     ).history
 
 
-def _readable_roots(store, service, task, host):
+def _stage_host(store, task) -> str | None:
+    """The route to the task's stage, read from its card now; None on the backend."""
+    machine_id = task.stage_machine_id
+    if machine_id == BACKEND_MACHINE_ID:
+        return None
+    return host_of(store, machine_id)
+
+
+def _readable_roots(store, service, task):
+    machine_id = task.stage_machine_id
     roots = [
         repository.path
         for repository in service.manifest.repositories
-        if (service.manifest.machine_map[repository.machine].host or None) == (host or None)
+        if repository.machine == machine_id
     ]
     binding = None
     episode_id = _task_episode_id(task)
@@ -143,11 +153,10 @@ def _readable_roots(store, service, task, host):
         repository = service.manifest.repository_map.get(binding.repository_alias)
         if (
             repository is None
-            or repository.machine != binding.machine
-            or (binding.execution_host or None) != (host or None)
-            or service.manifest.machine_map[repository.machine].host != binding.execution_host
+            or repository.machine != binding.machine_id
+            or binding.machine_id != machine_id
         ):
-            raise ValueError("The artifact's worktree repository or host changed.")
+            raise ValueError("The artifact's worktree repository or machine changed.")
         # This is an immutable owner binding, not an arbitrary path pointer or
         # temporary write grant. A moved registration revokes its live reads.
         if PurePosixPath(repository.path) != PurePosixPath(binding.shared_path):
@@ -156,11 +165,11 @@ def _readable_roots(store, service, task, host):
     return roots
 
 
-def _file_root(store, service, task, host, path):
+def _file_root(store, service, task, path):
     candidate = PurePosixPath(path)
     roots = [
         root
-        for root in _readable_roots(store, service, task, host)
+        for root in _readable_roots(store, service, task)
         if candidate.is_relative_to(PurePosixPath(root))
     ]
     if not roots:
@@ -194,7 +203,7 @@ def resolve_artifact_live_version(
             graph_history = _graph_history(service, task)
             graph = None
             resolved.graph_branch_id = task.graph_target.branch_id
-            resolved.execution_host = task.stage_host or None
+            resolved.execution_host = _stage_host(store, task)
             for need in tag.needs:
                 binding = ResolvedLiveNeed(need=need)
                 if need.kind == "job":
@@ -232,12 +241,11 @@ def resolve_artifact_live_version(
                         raise ValueError("An episode need requires the artifact's own episode.")
                     binding.episode_id = episode.episode_id
                 else:
-                    binding.host = task.stage_host or None
+                    binding.host = resolved.execution_host
                     binding.root = _file_root(
                         store,
                         service,
                         task,
-                        binding.host,
                         need.dir if need.kind == "files" else need.path,
                     )
                 resolved.needs.append(binding)
@@ -345,8 +353,8 @@ def _validate_read(store, service, artifact, version):
     live = version.live
     if task.history_only:
         raise ValueError("Historical artifacts cannot resume live source reads.")
-    if live.graph_branch_id != task.graph_target.branch_id or live.execution_host != (
-        task.stage_host or None
+    if live.graph_branch_id != task.graph_target.branch_id or live.execution_host != _stage_host(
+        store, task
     ):
         raise ValueError("The artifact's recorded graph target or execution host changed.")
     graph_history = _graph_history(service, task)
@@ -359,7 +367,6 @@ def _validate_read(store, service, artifact, version):
                 store,
                 service,
                 task,
-                binding.host,
                 need.dir if need.kind == "files" else need.path,
             )
         ):
@@ -424,7 +431,7 @@ def _snapshot(store, service, artifact, version, *, final=False, head=None, grap
                 snapshot = _files_snapshot(binding, final=final)
             elif need.kind == "job":
                 job = store.compute_job(binding.job_id)
-                log, _ = _read(job.execution_host, job.log_path, tail=True)
+                log, _ = _read(host_of(store, job.machine_id), job.log_path, tail=True)
                 snapshot = JobSnapshot(
                     key=need.key,
                     state=job.status,

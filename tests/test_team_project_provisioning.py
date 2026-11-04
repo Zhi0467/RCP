@@ -12,12 +12,14 @@ from fastapi.testclient import TestClient
 
 import rcp.setup as setup_code
 import rcp.storage.models as storage_models
+import rcp.storage.provisioning as storage_provisioning
 from rcp.__main__ import build_parser
 from rcp.agents.launcher import ProviderExecutionAccount, ProviderReadiness
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ModelChoice, configured_runtime_id
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
@@ -74,7 +76,7 @@ class _Launcher:
         refresh: bool = False,
     ) -> ProviderReadiness:
         assert login.provider == "codex"
-        assert login.host in {"", "gpu.example"}
+        assert login.machine_id
         assert binary in {None, "/usr/local/bin/codex"}
         assert refresh is True
         return ProviderReadiness(
@@ -111,7 +113,7 @@ class _Credentials:
             project_id=project_id,
             repository_alias=repository_alias,
             repository=repository,
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             location=machine.location,
             host=machine.host,
             os_account=machine.os_account,
@@ -188,7 +190,7 @@ class _Checkouts:
         assert expected_commit == "a" * 40
         root = material.central_root
         return ProjectCheckoutResult(
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             repository_alias=repository_alias,
             central_root=root,
             repository_path=(f"{root}/{project_id}/repositories/{repository_alias}"),
@@ -237,6 +239,7 @@ def _store_and_request(
         tmp_path / "data" / "rcp.sqlite3",
         "Provisioning lab",
     )
+    store.ensure_space_machines([("", "rcp", "Server")])
     member = store.preprovision_team_member("Alice")
     authorizer = AuthorizedHuman(
         space_id=store.space_id,
@@ -244,9 +247,7 @@ def _store_and_request(
         display_name="Alice",
     )
     machine = ProjectProvisioningMachineIntent(
-        alias="server",
-        location="local",
-        os_account="rcp",
+        machine_id=BACKEND_MACHINE_ID,
         central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
     )
     project_configuration = (
@@ -261,14 +262,8 @@ def _store_and_request(
     )
     machines = [machine]
     if provider_only_machine:
-        machines.append(
-            ProjectProvisioningMachineIntent(
-                alias="worker",
-                location="ssh",
-                host="gpu.example",
-                os_account="alice",
-            )
-        )
+        worker = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+        machines.append(ProjectProvisioningMachineIntent(machine_id=worker.machine_id))
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authorizer,
@@ -282,7 +277,7 @@ def _store_and_request(
                     if server_only
                     else parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{index}.git")
                 ),
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
             for index, alias in enumerate(repository_aliases, start=1)
         ],
@@ -293,7 +288,7 @@ def _store_and_request(
                 runtime_id="codex:exec",
                 model="gpt-test",
                 reasoning="medium",
-                machine_alias="worker" if provider_only_machine else "server",
+                machine_id=machines[-1].machine_id,
             )
         ],
     )
@@ -512,9 +507,10 @@ def test_provider_only_machine_does_not_invent_a_checkout_root(tmp_path: Path) -
 
     ready = store.project_provisioning_request(request.request_id)
     assert ready is not None and ready.status == "ready_for_review"
-    machines = {machine.alias: machine for machine in ready.machines}
-    assert machines["server"].resolved_central_root == str(DEFAULT_SERVER_LAYOUT.projects_root)
-    assert machines["worker"].resolved_central_root is None
+    backend, worker = ready.machines
+    assert backend.machine_id == BACKEND_MACHINE_ID
+    assert backend.resolved_central_root == str(DEFAULT_SERVER_LAYOUT.projects_root)
+    assert worker.resolved_central_root is None
 
 
 def test_legacy_request_without_project_configuration_pauses_before_machine_work(
@@ -699,7 +695,7 @@ class _InitialCheckouts(_Checkouts):
         self.calls += 1
         root = machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root)
         return ProjectCheckoutResult(
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             repository_alias=kwargs["repository_alias"],
             central_root=root,
             repository_path=f"{root}/{kwargs['project_id']}/repositories/{kwargs['repository_alias']}",
@@ -710,7 +706,7 @@ class _InitialCheckouts(_Checkouts):
 
     def adopt_existing(self, machine, *, repository_alias, repository_path, expected_commit):
         return ProjectCheckoutResult(
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             repository_alias=repository_alias,
             central_root=machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root),
             repository_path=repository_path,
@@ -990,11 +986,13 @@ def _ready_team_app(
 ):
     layout = _test_server_layout(tmp_path / "installation")
     monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
+    monkeypatch.setattr(storage_provisioning, "DEFAULT_SERVER_LAYOUT", layout)
     data_dir = tmp_path / "app-data"
     store, _bootstrap = AppStore.initialize_team_space(
         data_dir / "rcp.sqlite3",
         "Final review lab",
     )
+    store.ensure_space_machines([("", "rcp", "Server")])
     alice = store.preprovision_team_member("Alice")
     bob = store.preprovision_team_member("Bob")
     authorized_by = AuthorizedHuman(
@@ -1015,9 +1013,7 @@ def _ready_team_app(
         default_run_truth_scope=repository_aliases,
         machines=[
             ProjectProvisioningMachineIntent(
-                alias="server",
-                location="local",
-                os_account="rcp",
+                machine_id=BACKEND_MACHINE_ID,
                 central_root=str(layout.projects_root),
             )
         ],
@@ -1029,7 +1025,7 @@ def _ready_team_app(
                     if server_only
                     else parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{alias}.git")
                 ),
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
             for alias in repository_aliases
         ],
@@ -1040,7 +1036,7 @@ def _ready_team_app(
                 runtime_id="codex:exec",
                 model="gpt-test",
                 reasoning="medium",
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
             for profile in AGENT_EXECUTION_PROFILES
         ],
@@ -1166,11 +1162,8 @@ def test_final_review_creates_exact_reserved_project_once(
     assert project.home_space_id == store.space_id
     manifest = load_manifest(repository_path / ".research" / "manifest.toml")
     assert manifest.name == "Reviewed team project"
-    assert [
-        machine.model_dump(include={"alias", "host", "os_account"}) for machine in manifest.machines
-    ] == [{"alias": "server", "host": "", "os_account": "rcp"}]
-    assert manifest.machines[0].legacy_provider_paths == {}
-    assert store.space_machine_for("").provider_paths == {"codex": "/usr/local/bin/codex"}
+    assert manifest.machines == [BACKEND_MACHINE_ID]
+    assert store.backend_space_machine().provider_paths == {"codex": "/usr/local/bin/codex"}
     assert manifest.repository_paths == {"paper": str(repository_path)}
     assert manifest.project.truth_scope == ["paper"]
     assert manifest.state.repository == "paper"
@@ -1182,7 +1175,6 @@ def test_final_review_creates_exact_reserved_project_once(
         assert profile.runtime == "exec"
         assert profile.model == "gpt-test"
         assert profile.reasoning == "medium"
-        assert profile.run_on == "server"
         assert profile.permissions == permissions_for(profile_name)
     members = store.project_members(ready.proposed_project_id)
     assert [(member.user_id, member.seated_by) for member in members] == [

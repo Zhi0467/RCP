@@ -19,6 +19,7 @@ from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_
 from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.codex_resume import REFUSAL, RETRY, record_refusal
@@ -35,6 +36,7 @@ from rcp.skill_registry import SkillSelection, official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AgentTaskRecord,
+    AppStore,
     Artifact,
     EpisodeRecord,
     EpisodeReportAttemptRecord,
@@ -61,7 +63,6 @@ class EpisodeReportRunRequest(BaseModel):
     model: str
     reasoning: str
     run_on: str = Field(min_length=1)
-    execution_host: str
     session_id: str = Field(min_length=1)
 
 
@@ -78,6 +79,7 @@ class _ReportStage:
     local: Path | None
     remote: RemoteRunStage | None
     workspace: Path
+    machine_id: str
     execution_host: str
     provider_binary: str | None
 
@@ -122,7 +124,7 @@ async def stream_episode_report_run(
             )
             return
 
-        stage = _open_exact_report_stage(service, turn)
+        stage = _open_exact_report_stage(service, execution.store, turn)
         output_name, report_output_path = _exact_report_output(turn.wrapup, stage)
         mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
         capability: AgentCapability = "work_auto"
@@ -131,7 +133,7 @@ async def stream_episode_report_run(
             # The report writes only its stage, never a repository.
             truth_scope=[],
             project_id=turn.task.project_id,
-            execution_machine=turn.request.run_on,
+            machine=card(execution.store, turn.request.run_on),
             capability=capability,
             stage_root=(
                 str(stage.remote.root)
@@ -183,7 +185,7 @@ async def stream_episode_report_run(
             accounts = ProviderAccounts.for_store(execution.store)
             resolved, _ = accounts.resolve_login(
                 request.provider,
-                stage.execution_host,
+                stage.machine_id,
                 turn.episode.authorized_by.user_id if turn.episode.authorized_by else None,
             )
             if isinstance(resolved, LoginRefusal):
@@ -434,7 +436,7 @@ async def finalize_recorded_episode_report_result(
     )
     if retained is None:
         raise ValueError("The episode report finalization context is unavailable.")
-    stage = _open_exact_report_stage(service, turn)
+    stage = _open_exact_report_stage(service, execution.store, turn)
     verdict = decode_recorded_turn(
         recorded,
         provider_turn_request(
@@ -480,6 +482,7 @@ async def finalize_recorded_episode_report_result(
                 execution,
                 provider=report_request.provider,
                 session_id=session_id,
+                machine_id=stage.machine_id,
                 host=stage.execution_host,
                 error=error,
             )
@@ -590,8 +593,7 @@ def _canonical_report_turn(
         raise ValueError("Episode report execution changed its concluding task lineage.")
     frozen = {
         "provider": wrapup.provider,
-        "run_on": wrapup.run_on,
-        "execution_host": wrapup.execution_host,
+        "run_on": wrapup.machine_id,
         "session_id": wrapup.native_session_id,
     }
     changed = [field for field, value in frozen.items() if getattr(durable, field) != value]
@@ -599,9 +601,9 @@ def _canonical_report_turn(
         raise ValueError("Episode report execution changed its frozen " + ", ".join(changed) + ".")
     if (
         task.native_session_id != wrapup.native_session_id
-        or (task.stage_host or "") != (wrapup.stage_host or "")
+        or (task.stage_machine_id or "") != (wrapup.stage_machine_id or "")
         or task.stage_root != wrapup.stage_root
-        or (execution.stage_host or "") != (wrapup.stage_host or "")
+        or (execution.stage_machine_id or "") != (wrapup.stage_machine_id or "")
         or execution.stage_root != wrapup.stage_root
     ):
         raise ValueError("Episode report execution changed its frozen native session or stage.")
@@ -630,28 +632,35 @@ def _concluding_operation_id(execution: AgentTaskExecution, task: AgentTaskRecor
 
 def _open_exact_report_stage(
     service: ProjectService,
+    store: AppStore,
     turn: _CanonicalReportTurn,
 ) -> _ReportStage:
-    machine = service.manifest.machine_map.get(turn.request.run_on)
-    if machine is None:
-        raise ValueError(f"Unknown episode report execution machine: {turn.request.run_on}")
-    if machine.host != turn.request.execution_host:
-        raise ValueError("Episode report execution host differs from its frozen machine.")
+    try:
+        machine = card(store, turn.request.run_on)
+    except KeyError:
+        raise ValueError(
+            f"Unknown episode report execution machine: {turn.request.run_on}"
+        ) from None
     stage_root = cast(str, turn.wrapup.stage_root)
     if machine.host:
-        if turn.wrapup.stage_host != machine.host:
-            raise ValueError("Episode report remote stage host differs from its frozen machine.")
+        if turn.wrapup.stage_machine_id != machine.machine_id:
+            raise ValueError("Episode report remote stage differs from its frozen machine.")
         remote = RemoteRunStage(machine.host).attach(stage_root)
         return _ReportStage(
             local=None,
             remote=remote,
             workspace=Path(str(remote.workspace)),
+            machine_id=machine.machine_id,
             execution_host=machine.host,
-            provider_binary=service.launcher.provider_binary(turn.request.provider, machine.host),
+            provider_binary=service.launcher.provider_binary(
+                turn.request.provider, machine.machine_id
+            ),
         )
 
     local = Path(stage_root)
-    if turn.wrapup.stage_host not in {None, ""} or not local.is_absolute():
+    if (
+        turn.wrapup.stage_machine_id or BACKEND_MACHINE_ID
+    ) != BACKEND_MACHINE_ID or not local.is_absolute():
         raise ValueError("Episode report local stage differs from its frozen machine.")
     if local.is_symlink() or not local.is_dir():
         raise ValueError("Episode report saved local stage is unavailable or unsafe.")
@@ -659,8 +668,9 @@ def _open_exact_report_stage(
         local=local,
         remote=None,
         workspace=local,
+        machine_id=machine.machine_id,
         execution_host="",
-        provider_binary=service.launcher.provider_binary(turn.request.provider, machine.host),
+        provider_binary=service.launcher.provider_binary(turn.request.provider, machine.machine_id),
     )
 
 
@@ -860,7 +870,7 @@ def report_rebootstrap_pending(execution: AgentTaskExecution, native_session_id:
     return execution.store.episode_report_rebootstrap_pending(
         record.project_id,
         native_session_id,
-        stage_host=record.stage_host,
+        stage_machine_id=record.stage_machine_id,
         stage_root=record.stage_root,
     )
 

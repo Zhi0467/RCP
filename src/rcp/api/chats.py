@@ -732,7 +732,7 @@ def conversation_worktree_controls(
     service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     try:
         require_chat_graph_target(service, store, project_id, chat_id)
-        profile = service.resolve_agent_profile(
+        service.resolve_agent_profile(
             "node_chat" if chat_scope == "node" else "project_chat", run_on=run_on
         )
         return project_conversation_worktree(
@@ -743,7 +743,7 @@ def conversation_worktree_controls(
                 chat_id=chat_id,
                 chat_scope=chat_scope,
                 node_id=node_id,
-                run_on=profile.run_on,
+                run_on=service.manifest.base_machine,
                 run_truth_scope=[] if run_truth_scope == [""] else run_truth_scope,
             ),
             inspect_removal=inspect_removal,
@@ -777,7 +777,7 @@ def delete_conversation_worktree(
                 chat_id=chat_id,
                 chat_scope=binding.chat_scope,
                 node_id=binding.node_id,
-                run_on=binding.machine,
+                run_on=binding.machine_id,
                 run_truth_scope=[binding.repository_alias],
             ),
         )

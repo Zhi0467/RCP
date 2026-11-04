@@ -170,18 +170,16 @@ def _retry_memory_cleanup(store: AppStore) -> None:
         for pending in pending_memory:
             try:
                 project = ProjectRecord.model_validate_json(pending["project_json"])
-                if project.state_remote:
-                    host = project.state_location.partition(":/")[0]
-                    if not pending["host_key"] or browser_host_key(host) != pending["host_key"]:
-                        logger.warning(
-                            "Project memory cleanup remains pending: base identity unavailable or changed"
-                        )
-                        continue
-                change_project_memory(store.path.parent, project, None)
+                change_project_memory(store, project, None)
                 with store.connection() as connection:
                     connection.execute(
-                        "DELETE FROM memory_deletions WHERE project_id = ? AND state_location = ?",
-                        (pending["project_id"], pending["state_location"]),
+                        "DELETE FROM memory_deletions WHERE project_id = ? "
+                        "AND state_machine_id = ? AND state_path = ?",
+                        (
+                            pending["project_id"],
+                            pending["state_machine_id"],
+                            pending["state_path"],
+                        ),
                     )
             except Exception:
                 logger.exception("Project memory cleanup remains pending")

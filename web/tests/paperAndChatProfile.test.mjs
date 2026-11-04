@@ -34,7 +34,6 @@ const profile = (provider) => ({
   provider,
   model: provider === "codex" ? "gpt-codex" : "claude-opus",
   reasoning: "medium",
-  run_on: "local",
   permissions: {},
 });
 
@@ -52,6 +51,7 @@ const project = {
   id: "project",
   name: "Project",
   revision: 3,
+  run_on: "local",
   agent_profiles: {
     node_chat: profile("codex"),
     project_chat: profile("codex"),
@@ -66,7 +66,7 @@ const project = {
   repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
   project_truth_scope: ["repo"],
   state_repository: "repo",
-  machines: [{ alias: "local", host: null }],
+  machines: [{ machine_id: "local" }],
 };
 
 const chatProps = {

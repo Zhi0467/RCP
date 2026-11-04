@@ -1714,8 +1714,11 @@ def provider_login_summary(database: Path) -> str:
         return "unavailable"
     try:
         rows = connection.execute(
-            "SELECT provider, host, state, source, changed_at FROM provider_login_states "
-            "WHERE removed_at IS NULL ORDER BY provider, host, login_id"
+            "SELECT login.provider, COALESCE(card.name, login.machine_id), login.state, "
+            "login.source, login.changed_at FROM provider_login_states AS login "
+            "LEFT JOIN space_machines AS card ON card.machine_id = login.machine_id "
+            "WHERE login.removed_at IS NULL "
+            "ORDER BY login.provider, login.machine_id, login.login_id"
         ).fetchall()
     except sqlite3.Error:
         return "unavailable"
@@ -1724,8 +1727,8 @@ def provider_login_summary(database: Path) -> str:
     if not rows:
         return "none recorded"
     return ";".join(
-        f"{provider}@{host or 'local'}={state}({source or 'unknown'},{changed_at})"
-        for provider, host, state, source, changed_at in rows
+        f"{provider}@{machine}={state}({source or 'unknown'},{changed_at})"
+        for provider, machine, state, source, changed_at in rows
     )
 
 

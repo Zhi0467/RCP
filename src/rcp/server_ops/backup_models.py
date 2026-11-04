@@ -16,7 +16,6 @@ from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     AgentPermissions,
-    MachineConfig,
     Manifest,
 )
 from rcp.core.transition_models import GraphHeadRef
@@ -39,7 +38,7 @@ from rcp.skill_registry import SkillDefaults
 from rcp.storage.artifact_models import ArtifactFile
 from rcp.storage.models import normalize_space_name
 
-BACKUP_MANIFEST_SCHEMA_VERSION = 1
+BACKUP_MANIFEST_SCHEMA_VERSION = 2
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -584,47 +583,9 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
         )
 
 
-class BackupManifestMachineCompute(_StrictBackupModel):
-    job_manager: Literal["slurm"] | None = None
-    jobs_root: str = ""
-
-
-class BackupManifestMachine(_StrictBackupModel):
-    alias: str
-    host: str
-    os_account: str
-    provider_paths: dict[ProviderId, str]
-    # Added without a format bump, like `declared_skill_defaults`: omitted when
-    # empty, so an archive without them keeps its exact bytes and digest.
-    access_hint: str = Field(default="", exclude_if=lambda value: not value)
-    compute: BackupManifestMachineCompute | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
-
-    @model_validator(mode="after")
-    def validate_machine(self) -> BackupManifestMachine:
-        MachineConfig.model_validate(self.model_dump())
-        return self
-
-    def matches(self, current: BackupManifestMachine) -> bool:
-        """Compare what this record states; an older one never recorded hint or compute."""
-        # An omitted field makes no claim, like a legacy receipt's skill defaults:
-        # an empty value and an older descriptor both leave the manifest's own.
-        omitted = {"access_hint", "compute"} - self.model_fields_set
-        return self.model_dump(exclude=omitted) == current.model_dump(exclude=omitted)
-
-
-class BackupManifestComputeConnection(_StrictBackupModel):
-    """A retired compute connection an older archive recorded; kept only for its digest."""
-
-    id: str
-    name: str
-    kind: Literal["local", "ssh"]
-    ssh_target: str = Field(max_length=255)
-    access_hint: str
-
-
 class BackupManifestRepository(_StrictBackupModel):
+    """One manifest repository; `machine` is its space card's id, or "" while unassigned."""
+
     alias: str
     machine: str
     path: str
@@ -641,15 +602,14 @@ class BackupManifestAgentProfile(_StrictBackupModel):
     runtime: str
     model: str
     reasoning: str
-    run_on: str
     permissions: AgentPermissions
 
-    # An archive outlives the provider catalog that validated it, so a retired
-    # runtime or model stays readable; restore re-resolves the profile.
-    @field_validator("runtime", "run_on")
+    @field_validator("runtime")
     @classmethod
-    def validate_bounded_field(cls, value: str, info) -> str:
-        return _stored_text(value, label=f"backup agent {info.field_name}", maximum=200)
+    def validate_bounded_field(cls, value: str) -> str:
+        """An archive outlives the provider catalog, so a retired runtime stays readable."""
+
+        return _stored_text(value, label="backup agent runtime", maximum=200)
 
 
 class BackupManifestSources(_StrictBackupModel):
@@ -672,8 +632,10 @@ class BackupManifestSources(_StrictBackupModel):
 
 
 class BackupManifestConfiguration(_StrictBackupModel):
+    """A project manifest's human configuration; `machines` are the space card ids it uses."""
+
     name: str = Field(min_length=1, max_length=120)
-    machines: tuple[BackupManifestMachine, ...]
+    machines: tuple[str, ...]
     repositories: tuple[BackupManifestRepository, ...]
     project_truth_scope: tuple[str, ...]
     state_repository: str
@@ -685,11 +647,6 @@ class BackupManifestConfiguration(_StrictBackupModel):
     )
     agent_profiles: tuple[BackupManifestAgentProfile, ...]
     sources: BackupManifestSources
-    # Retired with compute connections. An older archive keeps its exact payload and
-    # digest; restore, matching, and rendering ignore it, and new archives omit it.
-    compute_connections: tuple[BackupManifestComputeConnection, ...] = Field(
-        default=(), exclude_if=lambda value: not value
-    )
 
     @field_validator("project_truth_scope", "default_run_truth_scope")
     @classmethod
@@ -702,11 +659,13 @@ class BackupManifestConfiguration(_StrictBackupModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> BackupManifestConfiguration:
-        machines = {machine.alias for machine in self.machines}
+        machines = set(self.machines)
         repositories = {repository.alias for repository in self.repositories}
-        if len(machines) != len(self.machines) or len(repositories) != len(self.repositories):
-            raise ValueError("backup manifest aliases must be unique")
-        if any(repository.machine not in machines for repository in self.repositories):
+        if len(machines) != len(self.machines) or not all(self.machines):
+            raise ValueError("backup manifest machines must be unique card ids")
+        if len(repositories) != len(self.repositories):
+            raise ValueError("backup manifest repository aliases must be unique")
+        if any(repository.machine not in {*machines, ""} for repository in self.repositories):
             raise ValueError("backup manifest repository names an unknown machine")
         if self.state_repository not in repositories:
             raise ValueError("backup manifest state repository is unknown")
@@ -719,34 +678,13 @@ class BackupManifestConfiguration(_StrictBackupModel):
         profiles = [profile.profile for profile in self.agent_profiles]
         if set(profiles) != set(AGENT_EXECUTION_PROFILES) or len(profiles) != len(set(profiles)):
             raise ValueError("backup manifest must carry every agent profile exactly once")
-        if any(profile.run_on not in machines for profile in self.agent_profiles):
-            raise ValueError("backup agent profile names an unknown machine")
         return self
 
     @classmethod
     def from_manifest(cls, manifest: Manifest) -> BackupManifestConfiguration:
         return cls(
             name=manifest.name,
-            machines=tuple(
-                BackupManifestMachine(
-                    alias=machine.alias,
-                    host=machine.host,
-                    os_account=machine.os_account,
-                    # The manifest's own retired machine settings, recorded as
-                    # written; the space machine cards travel in the database.
-                    provider_paths=dict(machine.legacy_provider_paths),
-                    access_hint=machine.legacy_access_hint,
-                    compute=(
-                        None
-                        if machine.legacy_compute is None
-                        else BackupManifestMachineCompute(
-                            job_manager=machine.legacy_compute.job_manager,
-                            jobs_root=machine.legacy_compute.jobs_root,
-                        )
-                    ),
-                )
-                for machine in manifest.machines
-            ),
+            machines=tuple(manifest.machines),
             repositories=tuple(
                 BackupManifestRepository(
                     alias=repository.alias,
@@ -770,7 +708,6 @@ class BackupManifestConfiguration(_StrictBackupModel):
                     runtime=manifest.agent_profile(profile).runtime,
                     model=manifest.agent_profile(profile).model,
                     reasoning=manifest.agent_profile(profile).reasoning,
-                    run_on=manifest.agent_profile(profile).run_on,
                     permissions=manifest.agent_profile(profile).permissions,
                 )
                 for profile in AGENT_EXECUTION_PROFILES
@@ -790,36 +727,12 @@ class BackupManifestConfiguration(_StrictBackupModel):
             return self.skill_defaults.model_dump()
         return self.declared_skill_defaults
 
-    def _with_every_agent_on_base(self) -> BackupManifestConfiguration:
-        # An older receipt may record a Paper coach on another machine; the manifest
-        # it restores to drops that choice for the base, so compare it the same way.
-        base = next(
-            repository.machine
-            for repository in self.repositories
-            if repository.alias == self.state_repository
-        )
-        return self.model_copy(
-            update={
-                "agent_profiles": tuple(
-                    profile.model_copy(update={"run_on": base}) for profile in self.agent_profiles
-                )
-            }
-        )
-
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
-        """Compare human configuration, retaining old receipts' exact integrity hashes."""
-        exclude = {"skill_defaults", "declared_skill_defaults", "compute_connections", "machines"}
-        recorded = self._with_every_agent_on_base()
-        if recorded.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
-            return False
-        if len(self.machines) != len(current.machines) or not all(
-            recorded.matches(machine)
-            for recorded, machine in zip(self.machines, current.machines, strict=True)
-        ):
+        """Compare human configuration; an older receipt's skill defaults are resolved values."""
+        exclude = {"skill_defaults", "declared_skill_defaults"}
+        if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
             return False
         if self.declared_skill_defaults is None:
-            # A legacy receipt has only resolved values. Check every setting the
-            # manifest actually declares; omitted values belong to the running code.
             return all(
                 getattr(self.skill_defaults, name) == value
                 for name, value in current.skill_defaults_configuration.items()
@@ -835,16 +748,10 @@ class BackupManifestConfiguration(_StrictBackupModel):
 
 
 class BackupRecoveryMachine(_StrictBackupModel):
-    alias: str
-    location: Literal["local", "ssh"]
-    host: str
-    os_account: str
-    resolved_central_root: str | None
+    """One card a project's checkouts live on; host and account are read from the card."""
 
-    @model_validator(mode="after")
-    def validate_machine(self) -> BackupRecoveryMachine:
-        MachineConfig(alias=self.alias, host=self.host, os_account=self.os_account)
-        return self
+    machine_id: str = Field(min_length=1)
+    resolved_central_root: str | None
 
     @field_validator("resolved_central_root")
     @classmethod
@@ -853,19 +760,11 @@ class BackupRecoveryMachine(_StrictBackupModel):
             return None
         return _absolute_path(value, label="backup recovery central root")
 
-    @model_validator(mode="after")
-    def validate_location(self) -> BackupRecoveryMachine:
-        if self.location == "local" and self.host:
-            raise ValueError("a local backup recovery machine cannot name an SSH host")
-        if self.location == "ssh" and not self.host:
-            raise ValueError("an SSH backup recovery machine requires its route host")
-        return self
-
 
 class BackupRecoveryRepository(_StrictBackupModel):
     alias: str
     repository: GitHubRepositoryRef | None
-    machine_alias: str
+    machine_id: str
     resolved_path: str
     git_commit: str
     deploy_key_label: str | None
@@ -930,33 +829,27 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
     def validate_descriptor(self) -> BackupCheckoutRecoveryDescriptor:
         if self.configuration_sha256 != self.configuration.sha256:
             raise ValueError("backup manifest configuration digest does not match its payload")
-        machine_map = {machine.alias: machine for machine in self.machines}
+        machine_map = {machine.machine_id: machine for machine in self.machines}
         repository_map = {repository.alias: repository for repository in self.repositories}
         if len(machine_map) != len(self.machines) or len(repository_map) != len(self.repositories):
-            raise ValueError("backup recovery aliases must be unique")
-        configured_machines = {machine.alias: machine for machine in self.configuration.machines}
+            raise ValueError("backup recovery machines and repositories must be unique")
         configured_repositories = {
             repository.alias: repository for repository in self.configuration.repositories
         }
-        if machine_map.keys() != configured_machines.keys():
+        if machine_map.keys() != set(self.configuration.machines):
             raise ValueError("backup recovery machines differ from canonical configuration")
         if repository_map.keys() != configured_repositories.keys():
             raise ValueError("backup recovery repositories differ from canonical configuration")
-        for alias, machine in machine_map.items():
-            configured = configured_machines[alias]
-            if (machine.host, machine.os_account) != (
-                configured.host,
-                configured.os_account,
-            ):
-                raise ValueError("backup recovery route differs from canonical configuration")
         for alias, repository in repository_map.items():
             configured = configured_repositories[alias]
             if (
-                repository.machine_alias != configured.machine
+                repository.machine_id != configured.machine
                 or repository.resolved_path != configured.path
             ):
                 raise ValueError("backup recovery checkout differs from canonical configuration")
-            machine = machine_map[repository.machine_alias]
+            machine = machine_map.get(repository.machine_id)
+            if machine is None:
+                raise ValueError("backup recovery repository has no machine")
             if machine.resolved_central_root is None:
                 raise ValueError("backup recovery repository owner has no resolved central root")
             expected = (
@@ -1445,8 +1338,6 @@ __all__ = [
     "BackupImportedProviderSourceInventory",
     "BackupImportedProviderSourceCapture",
     "BackupManifestConfiguration",
-    "BackupManifestComputeConnection",
-    "BackupManifestMachineCompute",
     "BackupProjectCapture",
     "BackupRecoveryMachine",
     "BackupRecoveryRepository",

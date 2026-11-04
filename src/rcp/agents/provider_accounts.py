@@ -7,14 +7,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import LoginKey
 from rcp.providers import profile_for
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.models import (
-    MACHINE_LOGIN_ID,
-    LoginKey,
-    ProviderLoginStateRecord,
-    _required_timestamp,
-)
+from rcp.storage.models import MACHINE_LOGIN_ID, ProviderLoginStateRecord, _required_timestamp
 
 LoginSwitchReason = Literal[
     "unhealthy", "limited", "sender_setting", "setting_changed", "preferred_source_available"
@@ -50,7 +46,7 @@ def account_login_refusal(
     if state.removed_at:
         return "This sign-in was removed. Start a new chat."
     if not profile.authentication.credential_available(
-        credentials, key.host, key.login_id, login_state=state
+        credentials, key.machine_id, key.login_id, login_state=state
     ):
         return profile.authentication.missing_credential_detail
     if state.state == "signed_out":
@@ -85,11 +81,11 @@ def reset_logins_without_credentials(
     for state in store.provider_login_states():
         auth = profile_for(state.provider).authentication
         if state.state == "signed_in" and not auth.credential_available(
-            credentials, state.host, state.login_id, login_state=state
+            credentials, state.machine_id, state.login_id, login_state=state
         ):
             reset.append(
                 store.mark_provider_login_signed_out(
-                    LoginKey(state.provider, state.host, state.login_id),
+                    LoginKey(state.provider, state.machine_id, state.login_id),
                     member_id=None,
                     source="restore",
                     detail=auth.missing_credential_detail,
@@ -116,7 +112,7 @@ class ProviderAccounts:
         state = self.store.provider_login_state(key)
         auth = profile_for(key.provider).authentication
         if not auth.credential_available(
-            self.credentials, key.host, key.login_id, login_state=state
+            self.credentials, key.machine_id, key.login_id, login_state=state
         ):
             return state.model_copy(
                 update={"state": "signed_out", "detail": auth.missing_credential_detail}
@@ -139,7 +135,7 @@ class ProviderAccounts:
         return reset_logins_without_credentials(self.store, self.credentials)
 
     def previous_login(
-        self, provider: str, host: str, native_session_id: str, *, exclude_operation_id: str
+        self, provider: str, machine_id: str, native_session_id: str, *, exclude_operation_id: str
     ) -> PreviousProviderLogin | None:
         """Latest provider-started turn, excluding the task about to launch."""
         with self.store.connection() as connection:
@@ -149,22 +145,24 @@ class ProviderAccounts:
                 "ON start.operation_id = task.operation_id "
                 "AND start.category = 'provider_runtime_selected' "
                 "WHERE json_extract(task.request_json, '$.provider') = ? "
-                "AND COALESCE(task.stage_host, '') = ? AND task.native_session_id = ? "
+                "AND task.stage_machine_id = ? AND task.native_session_id = ? "
                 "AND task.operation_id != ? AND task.login_id IS NOT NULL "
                 "GROUP BY task.operation_id "
                 "ORDER BY started DESC, task.rowid DESC LIMIT 1",
-                (provider, host, native_session_id, exclude_operation_id),
+                (provider, machine_id, native_session_id, exclude_operation_id),
             ).fetchone()
         if row is None:
             return None
         return PreviousProviderLogin(
-            LoginKey(provider, host, row["login_id"]), row["started"], row["authorized_user_id"]
+            LoginKey(provider, machine_id, row["login_id"]),
+            row["started"],
+            row["authorized_user_id"],
         )
 
     def lineage_login(
         self,
         provider: str | None,
-        host: str,
+        machine_id: str,
         parent: AgentTaskRecord | None,
         *,
         graph_repair: bool = False,
@@ -176,20 +174,20 @@ class ProviderAccounts:
             and parent.login_id is not None
             and provider is not None
             and provider == parent.request.get("provider")
-            and host == (parent.stage_host or "")
+            and machine_id == parent.stage_machine_id
             and (
                 graph_repair
                 or lineage_receipt
                 or self.store.agent_task_has_receipt(parent.operation_id, "transport_auto_retry")
             )
         ):
-            return LoginKey(provider, host, parent.login_id)
+            return LoginKey(provider, machine_id, parent.login_id)
         return None
 
     def turn_inputs(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         *,
         session_id: str | None = None,
         exclude_operation_id: str = "",
@@ -201,7 +199,7 @@ class ProviderAccounts:
         if lineage_login is None and inherit_parent and task and task.parent_operation_id:
             lineage_login = self.lineage_login(
                 provider,
-                host,
+                machine_id,
                 self.store.agent_task(task.parent_operation_id),
                 lineage_receipt=self.store.agent_task_has_receipt(
                     task.operation_id, "provider_login_lineage"
@@ -211,7 +209,7 @@ class ProviderAccounts:
             lineage_login=lineage_login,
             previous=(
                 self.previous_login(
-                    provider, host, session_id, exclude_operation_id=exclude_operation_id
+                    provider, machine_id, session_id, exclude_operation_id=exclude_operation_id
                 )
                 if session_id
                 else None
@@ -221,7 +219,7 @@ class ProviderAccounts:
     def resolve_launch_login(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         member_id: str | None,
         *,
         session_id: str | None = None,
@@ -233,7 +231,7 @@ class ProviderAccounts:
         """Dry-run admission and readiness with the same session and lineage policy."""
         inputs = self.turn_inputs(
             provider,
-            host,
+            machine_id,
             session_id=session_id,
             lineage_login=lineage_login,
             exclude_operation_id=exclude_operation_id,
@@ -242,7 +240,7 @@ class ProviderAccounts:
         )
         return self.resolve_login(
             provider,
-            host,
+            machine_id,
             member_id,
             lineage_login=inputs.lineage_login,
             previous=inputs.previous,
@@ -251,7 +249,7 @@ class ProviderAccounts:
     def resolve_login(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         member_id: str | None,
         *,
         lineage_login: LoginKey | None = None,
@@ -269,8 +267,8 @@ class ProviderAccounts:
         session store).
         """
         for key in (lineage_login, previous.login if previous else None):
-            if key is not None and (key.provider, key.host) != (provider, host):
-                raise ValueError("Session login does not match the launch provider and host.")
+            if key is not None and (key.provider, key.machine_id) != (provider, machine_id):
+                raise ValueError("Session login does not match the launch provider and machine.")
         result: tuple[LoginKey | LoginRefusal, LoginSwitchReason | None] | None = None
 
         def select(connection: sqlite3.Connection) -> LoginKey | None:
@@ -278,7 +276,7 @@ class ProviderAccounts:
             result = self._resolve_login(
                 connection,
                 provider,
-                host,
+                machine_id,
                 member_id,
                 lineage_login=lineage_login,
                 previous=previous,
@@ -299,16 +297,16 @@ class ProviderAccounts:
         self,
         connection: sqlite3.Connection,
         provider: str,
-        host: str,
+        machine_id: str,
         member_id: str | None,
         *,
         lineage_login: LoginKey | None,
         previous: PreviousProviderLogin | None,
     ) -> tuple[LoginKey | LoginRefusal, LoginSwitchReason | None]:
         previous_login = previous.login if previous else None
-        machine = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        machine = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
         setting = self.store.provider_login_setting(
-            member_id or "", provider, host, connection=connection
+            member_id or "", provider, machine_id, connection=connection
         )
         sources: tuple[LoginSource, ...] = {
             "own": ("own",),
@@ -323,7 +321,7 @@ class ProviderAccounts:
                 state.state == "signed_in"
                 and not state.removed_at
                 and auth.credential_available(
-                    self.credentials, host, state.login_id, login_state=state
+                    self.credentials, machine_id, state.login_id, login_state=state
                 )
             )
 
@@ -343,7 +341,7 @@ class ProviderAccounts:
             if usable(state) and state.member_id in (None, member_id):
                 return lineage_login, None
 
-        rows = self.store.provider_logins(provider, host, connection=connection)
+        rows = self.store.provider_logins(provider, machine_id, connection=connection)
         assignable = [row for row in rows if not row.draining_since and usable(row)]
         allowed = [
             row
@@ -355,7 +353,7 @@ class ProviderAccounts:
         ]
 
         def key_for(row: ProviderLoginStateRecord) -> LoginKey:
-            return LoginKey(provider, host, row.login_id)
+            return LoginKey(provider, machine_id, row.login_id)
 
         def limited(row: ProviderLoginStateRecord) -> bool:
             return self.store.provider_login_limited(

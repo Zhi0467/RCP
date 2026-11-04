@@ -421,12 +421,6 @@ def _validate_source_manifest(
     provenance = {item.alias: item for item in source.repositories}
     if set(repositories) != set(provenance):
         raise ValueError("source manifest repository aliases differ from transfer provenance")
-    if any(repositories[alias].machine != item.machine_alias for alias, item in provenance.items()):
-        raise ValueError("source manifest machine aliases differ from transfer provenance")
-    if not {item.machine_alias for item in source.repositories}.issubset(manifest.machine_map):
-        raise ValueError("source transfer provenance names a missing machine alias")
-    if set(manifest.machine_map) != set(source.machine_aliases):
-        raise ValueError("source manifest machine aliases differ from transfer provenance")
     if (
         manifest.state.repository != source.state_repository
         or tuple(manifest.project.truth_scope) != source.project_truth_scope
@@ -453,14 +447,11 @@ def _validate_target_manifest(
     target_repositories = {alias: item.repository for alias, item in expected_repositories.items()}
     if target_repositories != source_repositories:
         raise ValueError("target manifest review names different GitHub repositories")
-    source_repository_machines = {item.alias: item.machine_alias for item in source.repositories}
-    target_repository_machines = {
-        item.alias: item.machine_alias for item in provisioning.repositories
-    }
-    if target_repository_machines != source_repository_machines:
-        raise ValueError("target manifest renames a historical repository machine alias")
-    if not set(source.machine_aliases).issubset(manifest.machine_map):
-        raise ValueError("target manifest omits a historical machine alias")
+    if any(
+        manifest.repository_map[item.alias].machine != item.machine_id
+        for item in provisioning.repositories
+    ):
+        raise ValueError("target manifest places a repository on another machine")
 
 
 def _replay_archive(

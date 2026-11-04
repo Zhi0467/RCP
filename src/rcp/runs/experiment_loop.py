@@ -35,6 +35,7 @@ from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.loop_status import LoopStatusProjection, chat_loop_status, loop_status_projection
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.shared import _stage_json_task_input, _stage_or_reuse_task_input
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
@@ -99,7 +100,7 @@ class EpisodeWakePreflight:
     readiness: EpisodeWakeReadiness
     diagnostic: str | None = None
     session_id: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
 
 
@@ -129,6 +130,7 @@ class StagedExperimentWatcherResource:
     """One live node-and-episode watcher resource exposed to a chat turn."""
 
     resource: ExperimentWatcherResourceRecord
+    host: str
     watcher_state_path: str
     watch_path: str
 
@@ -136,7 +138,7 @@ class StagedExperimentWatcherResource:
         return {
             "control_node_id": self.resource.control_node_id,
             "episode_id": self.resource.episode_id,
-            "execution_host": self.resource.execution_host,
+            "execution_host": self.host,
             "watcher_state_path": self.watcher_state_path,
             "watch_path": self.watch_path,
         }
@@ -238,6 +240,8 @@ def preflight_episode_wake(
     runtime: ExperimentLoopRuntime,
     episode: ExperimentEpisodeRecord | None,
     group: list[StoredWatcherRecord],
+    *,
+    store: AppStore,
 ) -> EpisodeWakePreflight:
     """Prove the episode session and exact stage before any claim or budget spend.
 
@@ -271,7 +275,7 @@ def preflight_episode_wake(
             ("project", episode.project_id, record.project_id),
             ("Experiment", episode.control_node_id, record.node_id),
             ("graph target", episode.graph_target, record.graph_target),
-            ("check host", episode.execution_host, record.execution_host),
+            ("check machine", episode.machine_id, record.machine_id),
             ("continuation Experiment", episode.control_node_id, continuation.control_node_id),
             ("origin episode", record.episode_id, continuation.control_episode_id),
             ("Patch authority", "experiment_loop", continuation.patch_kind),
@@ -289,8 +293,10 @@ def preflight_episode_wake(
             ),
         )
     assert episode.stage_root is not None
-    if episode.stage_host:
-        exists = RemoteRunStage(episode.stage_host).directory_exists(episode.stage_root)
+    if episode.stage_machine_id and episode.stage_machine_id != BACKEND_MACHINE_ID:
+        exists = RemoteRunStage(host_of(store, episode.stage_machine_id)).directory_exists(
+            episode.stage_root
+        )
     else:
         stage = Path(episode.stage_root)
         exists = stage.is_dir() and not stage.is_symlink()
@@ -310,7 +316,7 @@ def preflight_episode_wake(
     return EpisodeWakePreflight(
         readiness="ready",
         session_id=episode.native_session_id,
-        stage_host=episode.stage_host,
+        stage_machine_id=episode.stage_machine_id,
         stage_root=episode.stage_root,
     )
 
@@ -878,7 +884,7 @@ def prepare_experiment_watcher_records(
                 node_id=binding.node_id,
                 episode_id=binding.episode_id,
                 graph_target=binding.graph_target,
-                execution_host=binding.execution_host,
+                machine_id=binding.machine_id,
                 cancel_command=spec.cancel_command,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
@@ -938,7 +944,7 @@ def prepare_experiment_watcher_records(
                 node_id=binding.node_id,
                 episode_id=binding.episode_id,
                 graph_target=binding.graph_target,
-                execution_host=binding.execution_host,
+                machine_id=binding.machine_id,
                 condition=condition,
                 armed_revision=armed_revision,
                 continuation=binding.continuation,
@@ -1066,7 +1072,7 @@ def _watcher_state(
         item: dict[str, object] = {
             "watcher_id": record.watcher_id,
             "origin_operation_id": record.origin_operation_id,
-            "execution_host": record.execution_host,
+            "machine_id": record.machine_id,
             "status": record.status,
             "created_at": record.created_at,
             "completed_at": record.completed_at,
@@ -1234,6 +1240,7 @@ async def stage_chat_experiment_watcher_resources(
         staged.append(
             StagedExperimentWatcherResource(
                 resource=resource,
+                host=host_of(execution.store, resource.machine_id),
                 watcher_state_path=watcher_state_path,
                 watch_path=str(
                     workspace
@@ -1397,8 +1404,7 @@ def _prepare_experiment_episode_binding_intent(
     request: RunRequest,
     *,
     native_session_id: str | None,
-    execution_host: str,
-    stage_host: str | None,
+    stage_machine_id: str | None,
     stage_root: str | None,
     ending_signal: dict[str, object] | None,
 ) -> tuple[
@@ -1434,7 +1440,7 @@ def _prepare_experiment_episode_binding_intent(
         and (
             episode.provider != request.provider
             or episode.native_session_id != native_session_id
-            or episode.stage_host != stage_host
+            or episode.stage_machine_id != stage_machine_id
             or episode.stage_root != stage_root
         )
     )
@@ -1467,13 +1473,13 @@ def _prepare_experiment_episode_binding_intent(
             "previous": {
                 "provider": episode.provider,
                 "native_session_id": episode.native_session_id,
-                "stage_host": episode.stage_host,
+                "stage_machine_id": episode.stage_machine_id,
                 "stage_root": episode.stage_root,
             },
             "replacement": {
                 "provider": request.provider,
                 "native_session_id": native_session_id,
-                "stage_host": stage_host,
+                "stage_machine_id": stage_machine_id,
                 "stage_root": stage_root,
             },
         }
@@ -1488,8 +1494,7 @@ def commit_experiment_episode_binding(
     request: RunRequest,
     *,
     native_session_id: str | None,
-    execution_host: str,
-    stage_host: str | None,
+    stage_machine_id: str | None,
     stage_root: str | None,
     graph_result: str,
     watcher_ids: list[str],
@@ -1509,8 +1514,7 @@ def commit_experiment_episode_binding(
             execution,
             request,
             native_session_id=native_session_id,
-            execution_host=execution_host,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             ending_signal=ending_signal,
         )
@@ -1520,10 +1524,9 @@ def commit_experiment_episode_binding(
         project_id=task.project_id,
         control_node_id=request.control_node_id,
         provider=request.provider,
-        execution_machine=request.run_on,
-        execution_host=execution_host,
+        machine_id=request.run_on,
         native_session_id=native_session_id,
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=stage_root,
         chat_id=request.chat_id,
         operation_id=execution.operation_id,
@@ -1542,8 +1545,8 @@ def commit_experiment_episode_binding(
             "episode_id": request.control_episode_id,
             "invocation": request.control_invocation,
             "provider": request.provider,
-            "execution_machine": request.run_on,
-            "stage_host": stage_host,
+            "machine_id": request.run_on,
+            "stage_machine_id": stage_machine_id,
             "stage_root": stage_root,
             "graph_result": graph_result,
             "watcher_ids": watcher_ids,
@@ -1559,8 +1562,7 @@ def commit_experiment_episode_handoff(
     binding: WatcherBinding,
     *,
     native_session_id: str | None,
-    execution_host: str,
-    stage_host: str | None,
+    stage_machine_id: str | None,
     stage_root: str | None,
     graph_result: str,
     context_baseline: dict[str, object],
@@ -1575,8 +1577,7 @@ def commit_experiment_episode_handoff(
             execution,
             request,
             native_session_id=native_session_id,
-            execution_host=execution_host,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             ending_signal=ending_signal,
         )
@@ -1588,7 +1589,7 @@ def commit_experiment_episode_handoff(
         or binding.chat_id != request.chat_id
         or binding.node_id != request.node_id
         or binding.episode_id != request.control_episode_id
-        or binding.execution_host != execution_host
+        or binding.machine_id != request.run_on
         or continuation.browser_requested != request.browser_requested
         or continuation.provider != request.provider
         or continuation.run_on != request.run_on
@@ -1604,7 +1605,7 @@ def commit_experiment_episode_handoff(
         binding=binding,
         operation_id=execution.operation_id,
         native_session_id=native_session_id,
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=stage_root,
         graph_result=graph_result,
         context_baseline=context_baseline,
@@ -1621,8 +1622,8 @@ def commit_experiment_episode_handoff(
             "episode_id": request.control_episode_id,
             "invocation": request.control_invocation,
             "provider": request.provider,
-            "execution_machine": request.run_on,
-            "stage_host": stage_host,
+            "machine_id": request.run_on,
+            "stage_machine_id": stage_machine_id,
             "stage_root": stage_root,
             "graph_result": graph_result,
             "watcher_ids": [item.watcher_id for item in stored_watchers],

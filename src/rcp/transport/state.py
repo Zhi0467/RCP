@@ -21,7 +21,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Literal, NoReturn
+from typing import TYPE_CHECKING, Literal, NoReturn
 
 from pydantic import BaseModel
 
@@ -56,6 +56,9 @@ from rcp.transport.remote_read_kept_view import MISSING as _REMOTE_VIEW_MISSING
 from rcp.transport.remote_read_kept_view import TOO_LARGE as _REMOTE_VIEW_TOO_LARGE
 from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
 # Set once when the server shuts down. Every canonical-lock wait polls it, so a
@@ -2037,6 +2040,7 @@ class SSHStateWorkspace(StateWorkspace):
         repository_path: str,
         *,
         expected_project_name: str | None = None,
+        expected_machine_id: str | None = None,
     ) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", host):
             raise ValueError("SSH host contains unsupported characters")
@@ -2049,6 +2053,7 @@ class SSHStateWorkspace(StateWorkspace):
         self.host = host
         self.remote_repository = remote_repository
         self.expected_project_name = expected_project_name
+        self.expected_machine_id = expected_machine_id
         self.remote_root = remote_repository / ".research"
         self.lock_dir = self.remote_root / ".refresh.lock"
         self._last_refresh_monotonic = 0.0
@@ -2089,13 +2094,19 @@ class SSHStateWorkspace(StateWorkspace):
     def _validate_capture(self, stage: Path) -> None:
         manifest = load_manifest(stage / "manifest.toml")
         repository = manifest.repository_map[manifest.state.repository]
-        machine = manifest.machine_map[repository.machine]
-        if machine.host != self.host or repository.path != str(self.remote_repository):
+        if repository.path != str(self.remote_repository):
             raise ValueError("Canonical manifest changed its own remote state locator")
         expected_name = self.expected_project_name
+        expected_machine = self.expected_machine_id
         previous = self._generations.current
-        if expected_name is None and previous is not None:
-            expected_name = load_manifest(previous / "manifest.toml").name
+        if previous is not None and (expected_name is None or expected_machine is None):
+            retained = load_manifest(previous / "manifest.toml")
+            expected_name = retained.name if expected_name is None else expected_name
+            expected_machine = (
+                retained.base_machine if expected_machine is None else expected_machine
+            )
+        if expected_machine is not None and repository.machine != expected_machine:
+            raise ValueError("Canonical manifest changed its own remote state locator")
         if expected_name is not None and manifest.name != expected_name:
             raise ValueError("Canonical manifest belongs to a different project")
 
@@ -3263,17 +3274,12 @@ def _validated_patch_path(value: Path | str) -> Path:
     raise ValueError(f"invalid committed patch path: {relative}")
 
 
-def prepare_state_workspace(bootstrap: Manifest, data_dir: Path) -> tuple[Manifest, StateWorkspace]:
-    state_repository = bootstrap.repository_map[bootstrap.state.repository]
-    machine = bootstrap.machine_map[state_repository.machine]
-    if not machine.host:
-        return bootstrap, LocalStateWorkspace(
-            bootstrap.research_dir,
-            str(bootstrap.research_dir),
-        )
-
-    workspace = state_workspace_for_probe(bootstrap, data_dir)
-    assert isinstance(workspace, SSHStateWorkspace)
+def prepare_state_workspace(
+    bootstrap: Manifest, data_dir: Path, store: AppStore
+) -> tuple[Manifest, StateWorkspace]:
+    workspace = state_workspace_for_probe(bootstrap, data_dir, store)
+    if not isinstance(workspace, SSHStateWorkspace):
+        return bootstrap, workspace
     cache_root = workspace.root
     try:
         remote_exists = workspace.refresh()
@@ -3297,8 +3303,7 @@ def load_remote_workspace_manifest(
     with workspace.snapshot_lock:
         manifest = load_manifest(workspace.root / "manifest.toml", project_root=project_root)
         state_repository = bootstrap.repository_map[bootstrap.state.repository]
-        machine = bootstrap.machine_map[state_repository.machine]
-        _validate_remote_identity(bootstrap, manifest, machine.host, state_repository.path)
+        _validate_remote_identity(bootstrap, manifest, state_repository.path)
         return manifest
 
 
@@ -3323,32 +3328,47 @@ def _discard_absent_remote_snapshot(cache_root: Path) -> None:
         ) from exc
 
 
-def state_workspace_for_probe(bootstrap: Manifest, data_dir: Path) -> StateWorkspace:
-    """Construct the canonical workspace without refreshing or taking its lock."""
+def state_workspace_for_probe(
+    bootstrap: Manifest, data_dir: Path, store: AppStore
+) -> StateWorkspace:
+    """Construct the canonical workspace without refreshing or taking its lock.
+
+    The state repository's card is read now, so the route is the card's current
+    host. The mirror is keyed by card id and path, so a new host keeps its mirror.
+    """
+
+    from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 
     state_repository = bootstrap.repository_map[bootstrap.state.repository]
-    machine = bootstrap.machine_map[state_repository.machine]
-    if not machine.host:
+    machine_id = state_repository.machine
+    if not machine_id:
+        raise ValueError("Assign a machine to the state repository.")
+    if machine_id == BACKEND_MACHINE_ID:
         return LocalStateWorkspace(
             bootstrap.research_dir,
             str(bootstrap.research_dir),
         )
-    cache_key = hashlib.sha256(f"{machine.host}\0{state_repository.path}".encode()).hexdigest()[:16]
+    cache_key = hashlib.sha256(f"{machine_id}\0{state_repository.path}".encode()).hexdigest()[:16]
     cache_root = data_dir / "state-cache" / cache_key / ".research"
     return SSHStateWorkspace(
-        cache_root, machine.host, state_repository.path, expected_project_name=bootstrap.name
+        cache_root,
+        host_of(store, machine_id),
+        state_repository.path,
+        expected_project_name=bootstrap.name,
+        expected_machine_id=machine_id,
     )
 
 
 def _validate_remote_identity(
     bootstrap: Manifest,
     canonical: Manifest,
-    expected_host: str,
     expected_path: str,
 ) -> None:
     canonical_repository = canonical.repository_map[canonical.state.repository]
-    canonical_machine = canonical.machine_map[canonical_repository.machine]
     if canonical.name != bootstrap.name:
         raise ValueError("cached canonical manifest belongs to a different project")
-    if canonical_machine.host != expected_host or canonical_repository.path != expected_path:
+    if (
+        canonical_repository.machine != bootstrap.base_machine
+        or canonical_repository.path != expected_path
+    ):
         raise ValueError("canonical manifest changed its own remote state locator")

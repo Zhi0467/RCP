@@ -253,21 +253,14 @@ Handling by state:
 
 ## 5. Edit operation
 
-`PATCH /api/space/machines/{machine_id}` (`api/space_machines.py:626`) checks,
-in order:
-
-1. `validate_ssh_destination(host)`. Failure is 422 `invalid_host`.
-2. A blank host is refused unless this is the backend card. Changing the
-   backend card's host is 422 `backend_host_fixed`.
-3. If another card already has the host, the request fails with 409
-   `host_in_use`.
-4. `login_account(host)` (`machine_login.py:67`). The existing failure codes
-   return 422: `host_key_unknown` with `fingerprint`, which leads to Trust and a
-   retry, plus `host_key_changed`, `authentication_failed` and `unreachable`.
-5. The account must equal the login, or the request fails with 422
-   `account_mismatch`. A blank account is filled from the login in a team
-   space, as create does (`:556-583`).
-6. Given `provider_paths` are validated against the new host.
+`PATCH /api/space/machines/{machine_id}` (`api/space_machines.py:626`) has
+one check: the new host is reachable as the account. It runs
+`login_account(host)` (`machine_login.py:67`) and returns its existing failure
+codes as 422: `host_key_unknown` with `fingerprint`, which leads to Trust and a
+retry, plus `host_key_changed`, `authentication_failed` and `unreachable`. A
+blank account is filled from the login in a team space, as create does
+(`:556-583`). The `UNIQUE(host)` constraint still refuses a host another card
+holds.
 
 The write touches only `space_machines`. It then calls
 `invalidate_machine(machine_id)`, which clears readiness, skill inventories,

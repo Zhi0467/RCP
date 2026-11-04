@@ -70,7 +70,6 @@ export function projectOverview(
           provider: profile.provider,
           model: profile.effective_model || profile.model || null,
           reasoning: profile.reasoning,
-          run_on: profile.run_on,
         },
       ]),
     ),
@@ -269,7 +268,7 @@ export function providerLoginsForWebMcp(accounts: ProviderLoginAccount[]): Recor
     providers: accounts.map((account) => ({
       provider: account.provider,
       label: account.label,
-      host: account.host || null,
+      machine_id: account.machine_id,
       login_id: account.login_id,
       kind: account.kind,
       owner: account.owner_display_name,

@@ -71,12 +71,11 @@ def apply_replacement_proofs(
         raise ValueError("replacement checkout proof belongs to another project")
     original = {r.alias: r for r in proof.provisioned.repositories}
     replacements = {r.alias: r for r in proof.replacement.repositories}
-    old_machines = {m.alias: m for m in proof.provisioned.machines}
-    machines = {m.alias: m for m in recovery.machines}
+    old_machines = {m.machine_id: m for m in proof.provisioned.machines}
+    machines = {m.machine_id: m for m in recovery.machines}
     repositories = tuple(
         replacements[r.alias]
-        if original.get(r.alias) == r
-        and old_machines.get(r.machine_alias) == machines[r.machine_alias]
+        if original.get(r.alias) == r and old_machines.get(r.machine_id) == machines[r.machine_id]
         else r
         for r in recovery.repositories
     )

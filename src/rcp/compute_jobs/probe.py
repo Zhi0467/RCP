@@ -30,9 +30,11 @@ from rcp.limits import (
     COMPUTE_PROBE_JOB_SECONDS,
     COMPUTE_PROBE_TIMEOUT_SECONDS,
 )
+from rcp.machine_cards import card
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+    from rcp.storage.models import SpaceMachineRecord
 
 
 class _CgroupIsolationError(RuntimeError):
@@ -44,7 +46,7 @@ class _ProbeCleanupError(RuntimeError):
 
 
 def _result(
-    machine_alias: str,
+    machine_id: str,
     backend_id: str,
     state: str,
     diagnostic: str,
@@ -53,7 +55,7 @@ def _result(
     cgroup_isolated: bool | None = None,
 ) -> ComputeBackendProbe:
     return ComputeBackendProbe(
-        execution_machine=machine_alias,
+        machine_id=machine_id,
         backend_id=backend_id,
         state=state,
         ready=state == "ready",
@@ -167,33 +169,32 @@ def _run_probe_job(
 
 
 def probe_compute_backend(
-    manifest: Manifest,
-    machine_alias: str,
+    machine: SpaceMachineRecord,
     route: ComputeRoute,
     runner=subprocess.run,
     *,
     data_dir: Path,
-    compute: MachineComputeConfig | None = None,
 ) -> ComputeBackendProbe:
     """Exercise the actual owner, wrapper, liveness, exit file, and job log.
 
-    `compute` is the machine card's setting (`AppStore.machine_compute`).
+    The route and compute settings are the card's, read as the probe runs.
     """
     if route not in {"scheduler", "helper"}:
         raise ValueError("Unknown compute route")
+    machine_id = machine.machine_id
+    compute = machine.compute_config()
     backend_id = ""
     try:
-        machine = manifest.machine_map[machine_alias]
         if route == "scheduler":
             manager = JOB_MANAGERS.get(compute.job_manager or "") if compute else None
             if manager is None:
-                return _result(machine_alias, "", "unavailable", "No job manager is configured.")
+                return _result(machine_id, "", "unavailable", "No job manager is configured.")
             backend_id = manager.id
-            return manager.probe(machine_alias, machine.host)
-        context, profile = resolve_context(manifest, machine_alias, compute, runner)
+            return manager.probe(machine_id, machine.host)
+        context, profile = resolve_context(machine, runner)
         if profile is None:
             result = _result(
-                machine_alias,
+                machine_id,
                 "",
                 "unavailable",
                 f"No reliable compute process owner is available on {context.os_name}.",
@@ -226,7 +227,7 @@ def probe_compute_backend(
                 else:
                     isolated = _run_probe_job(context, profile, data_dir)
                 result = _result(
-                    machine_alias,
+                    machine_id,
                     backend_id,
                     "ready",
                     diagnostic,
@@ -235,7 +236,7 @@ def probe_compute_backend(
                 )
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         result = _result(
-            machine_alias,
+            machine_id,
             backend_id,
             "failed",
             str(exc),
@@ -270,14 +271,14 @@ def detect_slurm(host: str) -> bool | None:
     return False if result.exit_code == SLURM_TOOLS_MISSING_EXIT else None
 
 
-def settle_job_manager(store: AppStore, host: str) -> None:
+def settle_job_manager(store: AppStore, machine_id: str) -> None:
     """Turn Slurm on for a card nobody decided, when the machine has it; off when it lacks it."""
-    card = store.space_machine_for(host)
-    if card is None or card.job_manager is not None:
+    machine = card(store, machine_id)
+    if machine.job_manager is not None:
         return
-    found = detect_slurm(host)
+    found = detect_slurm(machine.host)
     if found is not None:
-        store.decide_job_manager(card.machine_id, "slurm" if found else "none")
+        store.decide_job_manager(machine_id, "slurm" if found else "none")
 
 
 def refresh_compute_probes(
@@ -293,17 +294,16 @@ def refresh_compute_probes(
     A card whose job manager nobody chose yet turns Slurm on here when the
     machine has it, and off when its tools are missing.
     """
-    for alias in manifest.machine_map if machines is None else machines:
-        host = manifest.machine_map[alias].host
-        settle_job_manager(store, host)
-        compute = store.machine_compute(host)
+    for machine_id in manifest.machines if machines is None else machines:
+        settle_job_manager(store, machine_id)
+        machine = card(store, machine_id)
         # Every agent runs on the base machine, so only it launches helper jobs.
-        routes = machine_compute_routes(compute, execution=alias == manifest.base_machine)
+        routes = machine_compute_routes(
+            machine.compute_config(), execution=machine_id == manifest.base_machine
+        )
         for route in ("scheduler", "helper"):
             if route not in routes:
-                store.delete_compute_backend_probe(project_id, alias, route=route)
+                store.delete_compute_backend_probe(project_id, machine_id, route=route)
         for route in routes:
-            probe = probe_compute_backend(
-                manifest, alias, route, data_dir=data_dir, compute=compute
-            )
+            probe = probe_compute_backend(machine, route, data_dir=data_dir)
             store.record_compute_backend_probe(project_id, probe, route)

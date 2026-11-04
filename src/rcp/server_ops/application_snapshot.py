@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops._local_primitives import (
     fsync_directory as _fsync_directory,
 )
@@ -95,10 +96,8 @@ def _project_restore_location(
     assert project.recovery is not None
     configuration = project.recovery.configuration
     repositories = {item.alias: item for item in project.recovery.repositories}
-    machines = {item.alias: item for item in project.recovery.machines}
     state_repository = repositories[configuration.state_repository]
-    machine = machines[state_repository.machine_alias]
-    if machine.location == "ssh":
+    if state_repository.machine_id != BACKEND_MACHINE_ID:
         return "remote_excluded", None
     repository_root = Path(state_repository.resolved_path)
     research_root = repository_root / ".research"

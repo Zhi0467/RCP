@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers import classify_terminal_error
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.provider_process import require_remote_provider_quiescence
@@ -82,10 +83,13 @@ def restart_stopping_experiment_recoveries(tasks: BackgroundAgentTasks) -> None:
                     problem = "the episode lost its human authorizer snapshot"
                 else:
                     try:
-                        if previous.stage_host:
-                            available = RemoteRunStage(previous.stage_host).directory_exists(
-                                previous.stage_root
-                            )
+                        if (
+                            previous.stage_machine_id
+                            and previous.stage_machine_id != BACKEND_MACHINE_ID
+                        ):
+                            available = RemoteRunStage(
+                                host_of(tasks.store, previous.stage_machine_id)
+                            ).directory_exists(previous.stage_root)
                         else:
                             stage = Path(previous.stage_root)
                             available = stage.is_dir() and not stage.is_symlink()
@@ -208,9 +212,7 @@ def retry_experiment_loop(
     if not isinstance(binding_request, RunRequest):
         raise ValueError("The Experiment episode binding does not belong to a Work task.")
 
-    active_run_on = (
-        episode.execution_machine if episode is not None and episode.session_bound else None
-    )
+    active_run_on = episode.machine_id if episode is not None and episode.session_bound else None
     baseline = {
         **original.model_dump(mode="json"),
         "run_on": active_run_on or binding_request.run_on,
@@ -272,12 +274,14 @@ def retry_experiment_loop(
         and current_config == active_config
     )
     session_id = episode.native_session_id if use_active_binding else previous.native_session_id
-    stage_host = episode.stage_host if use_active_binding else previous.stage_host
+    stage_machine_id = episode.stage_machine_id if use_active_binding else previous.stage_machine_id
     stage_root = episode.stage_root if use_active_binding else previous.stage_root
     owned_checkpoint = previous_checkpoint or use_active_binding
     stage_available: bool | None = True
-    if owned_checkpoint and stage_host:
-        stage_available = RemoteRunStage(stage_host).directory_exists(stage_root or "")
+    if owned_checkpoint and stage_machine_id and stage_machine_id != BACKEND_MACHINE_ID:
+        stage_available = RemoteRunStage(host_of(tasks.store, stage_machine_id)).directory_exists(
+            stage_root or ""
+        )
     elif owned_checkpoint and stage_root:
         stage = Path(stage_root)
         stage_available = stage.is_dir() and not stage.is_symlink()
@@ -294,7 +298,7 @@ def retry_experiment_loop(
             continuation="retry",
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             authorized_by=authorized_by,
         )
@@ -423,12 +427,18 @@ def preflight_experiment_episode_recovery(
             record.project_id,
             original,
             authorized_by=record.authorized_by,
-            execution_host=(record.stage_host or "") if record.stage_root else None,
+            machine_id=record.stage_machine_id if record.stage_root else None,
         )
     problem = tasks.store.experiment_episode_recovery_context_problem(record.operation_id)
     if problem is None:
-        if record.stage_host and record.stage_root:
-            require_remote_provider_quiescence(tasks.store, record.stage_host, record.stage_root)
+        if (
+            record.stage_machine_id
+            and record.stage_machine_id != BACKEND_MACHINE_ID
+            and record.stage_root
+        ):
+            require_remote_provider_quiescence(
+                tasks.store, record.stage_machine_id, record.stage_root
+            )
         return
     assert original.control_episode_id is not None
     assert original.control_node_id is not None

@@ -31,7 +31,7 @@ from rcp.limits import (
     MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS,
 )
 from rcp.machine_power_macos import InstallError, MacOSProfile
-from rcp.runs.provider_login import run_on_host
+from rcp.runs.provider_login import run_on_machine
 
 logger = logging.getLogger(__name__)
 # Profiles own platform commands and optional lid-mode capabilities.
@@ -99,17 +99,19 @@ def demand_snapshot(store, background) -> list[str]:
                 break
             if task.status == "queued":
                 provider = task.request.get("provider")
-                host = task.stage_host
-                if host is None:
+                machine_id = task.stage_machine_id
+                if machine_id is None:
                     try:
-                        host = run_on_host(store, project.project_id, task.request.get("run_on"))
+                        machine_id = run_on_machine(
+                            store, project.project_id, task.request.get("run_on")
+                        )
                     except (OSError, ValueError, KeyError):
                         # A task whose machine no longer resolves cannot launch.
                         continue
                 if not provider or not isinstance(
                     accounts.resolve_login(
                         provider,
-                        host,
+                        machine_id,
                         task.authorized_by.user_id if task.authorized_by else None,
                     )[0],
                     LoginRefusal,

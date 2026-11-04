@@ -355,7 +355,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         self,
         owner: BrowserOwnerKey,
         *,
-        execution_host: str | None,
+        machine_id: str,
         workspace_dir: str,
         stage_root: str,
         chat_id: str | None,
@@ -363,15 +363,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO browser_owners "
-                "(owner_token, owner_json, execution_host, workspace_dir, stage_root, chat_id, project_id) "
+                "(owner_token, owner_json, machine_id, workspace_dir, stage_root, chat_id, project_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_token) DO UPDATE SET "
-                "execution_host = excluded.execution_host, "
+                "machine_id = excluded.machine_id, "
                 "workspace_dir = excluded.workspace_dir, stage_root = excluded.stage_root, "
                 "chat_id = excluded.chat_id",
                 (
                     owner.token(),
                     owner.model_dump_json(),
-                    execution_host or "",
+                    machine_id,
                     workspace_dir,
                     stage_root,
                     chat_id,

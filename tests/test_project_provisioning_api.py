@@ -6,6 +6,7 @@ import pytest
 
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
     OPERATOR_SHELL,
@@ -31,19 +32,12 @@ def _payload(*, source: str = "https://github.com/OpenAI/RCP.git") -> dict[str, 
         "project_truth_scope": ["paper"],
         "default_run_truth_scope": ["paper"],
         "default_auto_research_invocation_ceiling": 10,
-        "machines": [
-            {
-                "alias": "server",
-                "location": "local",
-                "host": "",
-                "os_account": "rcp",
-            }
-        ],
+        "machines": [{"machine_id": BACKEND_MACHINE_ID}],
         "repositories": [
             {
                 "alias": "paper",
                 "source": source,
-                "machine_alias": "server",
+                "machine_id": BACKEND_MACHINE_ID,
             }
         ],
         "provider_checks": [
@@ -53,7 +47,7 @@ def _payload(*, source: str = "https://github.com/OpenAI/RCP.git") -> dict[str, 
                 "runtime_id": "codex:exec",
                 "model": "gpt-5.6-luna",
                 "reasoning": "medium",
-                "machine_alias": "server",
+                "machine_id": BACKEND_MACHINE_ID,
             }
             for profile in AGENT_EXECUTION_PROFILES
         ],
@@ -63,6 +57,7 @@ def _payload(*, source: str = "https://github.com/OpenAI/RCP.git") -> dict[str, 
 def _team_app(tmp_path: Path, *names: str):
     data_dir = tmp_path / "team"
     store, _bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    store.ensure_space_machines([("", "rcp", "Server"), ("gpu-lab", "alice", "GPU")])
     members = [store.preprovision_team_member(name) for name in names]
     selected = [members[0].user_id]
     app = create_app(
@@ -70,6 +65,12 @@ def _team_app(tmp_path: Path, *names: str):
         trusted_principal_resolver=lambda _request, opened: opened.space_user(selected[0]),
     )
     return data_dir, members, selected, app
+
+
+def _gpu(app) -> str:
+    card = app.state.background_tasks.store.space_machine_for("gpu-lab")
+    assert card is not None
+    return card.machine_id
 
 
 def _operator_action(request_id: str) -> ServerStep:
@@ -112,7 +113,9 @@ def test_repository_source_is_optional_and_round_trips(tmp_path) -> None:
     with signed_in_client(app) as client:
         for source in ({}, {"source": None}, {"source": "  "}):
             payload = _payload()
-            payload["repositories"] = [{"alias": "paper", "machine_alias": "server", **source}]
+            payload["repositories"] = [
+                {"alias": "paper", "machine_id": BACKEND_MACHINE_ID, **source}
+            ]
             response = client.post("/api/project-provisioning/requests", json=payload)
             assert response.status_code == 201
             created = response.json()
@@ -154,10 +157,7 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         {k: v for k, v in machine.items() if k != "status_label"} for machine in created["machines"]
     ] == [
         {
-            "alias": "server",
-            "location": "local",
-            "host": "",
-            "os_account": "rcp",
+            "machine_id": BACKEND_MACHINE_ID,
             "intended_central_root": str(DEFAULT_SERVER_LAYOUT.projects_root),
             "resolved_central_root": None,
             "ready": False,
@@ -238,22 +238,15 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
 def test_ssh_machine_can_defer_its_default_root_to_exact_account_resolution(tmp_path) -> None:
     _data_dir, (_alice,), _selected, app = _team_app(tmp_path, "Alice")
     payload = _payload()
-    payload["machines"] = [
-        {
-            "alias": "gpu",
-            "location": "ssh",
-            "host": "alice@gpu-lab",
-            "os_account": "alice",
-        }
-    ]
+    payload["machines"] = [{"machine_id": _gpu(app)}]
     repositories = payload["repositories"]
     providers = payload["provider_checks"]
     assert isinstance(repositories, list) and isinstance(repositories[0], dict)
     assert isinstance(providers, list) and isinstance(providers[0], dict)
-    repositories[0]["machine_alias"] = "gpu"
+    repositories[0]["machine_id"] = _gpu(app)
     for provider in providers:
         assert isinstance(provider, dict)
-        provider["machine_alias"] = "gpu"
+        provider["machine_id"] = _gpu(app)
 
     with signed_in_client(app) as client:
         response = client.post("/api/project-provisioning/requests", json=payload)
@@ -297,16 +290,9 @@ def test_new_team_request_requires_all_profiles_on_their_valid_machines(tmp_path
     machines = misplaced["machines"]
     misplaced_checks = misplaced["provider_checks"]
     assert isinstance(machines, list) and isinstance(misplaced_checks, list)
-    machines.append(
-        {
-            "alias": "worker",
-            "location": "ssh",
-            "host": "alice@gpu-lab",
-            "os_account": "alice",
-        }
-    )
+    machines.append({"machine_id": _gpu(app)})
     assert isinstance(misplaced_checks[0], dict)
-    misplaced_checks[0]["machine_alias"] = "worker"
+    misplaced_checks[0]["machine_id"] = _gpu(app)
 
     with signed_in_client(app) as client:
         incomplete_response = client.post(

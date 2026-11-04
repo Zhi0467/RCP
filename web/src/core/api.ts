@@ -1,5 +1,6 @@
 import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
+  AddProjectMachineRequest,
   EvidenceFlag,
   ChatBrowserPreference,
   MachineBrowserReadiness,
@@ -510,22 +511,22 @@ export function checkSpaceMachineCompute(machineId: string): Promise<MachineSett
 }
 
 /** Unlinks a machine from a project; the space card stays. */
-export function removeProjectMachine(projectId: string, alias: string): Promise<ProjectSnapshot> {
+export function removeProjectMachine(
+  projectId: string,
+  machineId: string,
+): Promise<ProjectSnapshot> {
   return api<ProjectSnapshot>(
-    `/api/projects/${encodeURIComponent(projectId)}/machines/${encodeURIComponent(alias)}`,
+    `/api/projects/${encodeURIComponent(projectId)}/machines/${encodeURIComponent(machineId)}`,
     { method: "DELETE" },
   );
 }
 
-/** Appends a space machine to a project's manifest under a project alias. */
-export function addProjectMachine(
-  projectId: string,
-  machineId: string,
-  alias: string,
-): Promise<ProjectSnapshot> {
+/** Appends a space machine to a project's manifest. */
+export function addProjectMachine(projectId: string, machineId: string): Promise<ProjectSnapshot> {
+  const request: AddProjectMachineRequest = { machine_id: machineId };
   return api<ProjectSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/machines`, {
     method: "POST",
-    body: JSON.stringify({ machine_id: machineId, alias }),
+    body: JSON.stringify(request),
   });
 }
 
@@ -540,6 +541,7 @@ export function loadProjectReadiness(
     | "providers"
     | "provider_skill_inventories"
     | "agent_profiles"
+    | "run_on"
   >
 > {
   return api(`${apiBase}/readiness${refresh ? "?refresh=true" : ""}`);
@@ -847,9 +849,9 @@ export function steerChatTurn(
 
 export function checkMachineCompute(
   apiBase: string,
-  alias: string,
+  machineId: string,
 ): Promise<Machine["compute_probes"]> {
-  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/check`, {
+  return api(`${apiBase}/machines/${encodeURIComponent(machineId)}/compute/check`, {
     method: "POST",
   });
 }
@@ -941,19 +943,19 @@ const postProviderLogin = <T>(provider: string, route: string, body: object): Pr
 /** Add a shared login, or the caller's own; Codex answers with a started device sign-in. */
 export function addProviderLogin(
   provider: string,
-  host: string,
+  machineId: string,
   kind: "shared" | "own",
 ): Promise<{
   login_id: string;
   state: ProviderLoginState;
   sign_in: ProviderSignInStatus | null;
 }> {
-  return postProviderLogin(provider, "add", { host, kind });
+  return postProviderLogin(provider, "add", { machine_id: machineId, kind });
 }
 
 export function removeProviderLogin(
   provider: string,
-  host: string,
+  machineId: string,
   loginId: string,
 ): Promise<{
   state: ProviderLoginState;
@@ -961,7 +963,7 @@ export function removeProviderLogin(
   removed_at: string | null;
   bound_running: number;
 }> {
-  return postProviderLogin(provider, "remove", { host, login_id: loginId });
+  return postProviderLogin(provider, "remove", { machine_id: machineId, login_id: loginId });
 }
 
 export function loadProviderLoginSettings(): Promise<ProviderLoginSettings> {
@@ -970,21 +972,21 @@ export function loadProviderLoginSettings(): Promise<ProviderLoginSettings> {
 
 export function saveProviderLoginSetting(
   provider: string,
-  host: string,
+  machineId: string,
   setting: ProviderLoginSettingValue,
 ): Promise<ProviderLoginSetting & { resumed: ProviderResumeSummary }> {
   return api(providerLoginsPath(provider, "setting"), {
     method: "PUT",
-    body: JSON.stringify({ host, setting }),
+    body: JSON.stringify({ machine_id: machineId, setting }),
   });
 }
 
 export function startProviderSignIn(
   provider: string,
-  host: string,
+  machineId: string,
   loginId: string,
 ): Promise<ProviderSignInStatus> {
-  return postProviderLogin(provider, "sign-in", { host, login_id: loginId });
+  return postProviderLogin(provider, "sign-in", { machine_id: machineId, login_id: loginId });
 }
 
 export function providerSignInStatus(
@@ -1005,30 +1007,30 @@ export function cancelProviderSignIn(
 
 export function saveProviderToken(
   provider: string,
-  host: string,
+  machineId: string,
   loginId: string,
   token: string,
 ): Promise<{ state: ProviderLoginState; resumed: ProviderResumeSummary }> {
-  return postProviderLogin(provider, "token", { host, login_id: loginId, token });
+  return postProviderLogin(provider, "token", { machine_id: machineId, login_id: loginId, token });
 }
 
 export function signOutProvider(
   provider: string,
-  host: string,
+  machineId: string,
   loginId: string,
 ): Promise<{ state: ProviderLoginState }> {
-  return postProviderLogin(provider, "sign-out", { host, login_id: loginId });
+  return postProviderLogin(provider, "sign-out", { machine_id: machineId, login_id: loginId });
 }
 
 export function verifyProviderLogin(
   provider: string,
-  host: string,
+  machineId: string,
   loginId: string,
 ): Promise<{
   state: ProviderLoginState;
   resumed: ProviderResumeSummary;
 }> {
-  return postProviderLogin(provider, "verify", { host, login_id: loginId });
+  return postProviderLogin(provider, "verify", { machine_id: machineId, login_id: loginId });
 }
 
 export function loadServiceConnections(): Promise<ServiceConnections> {
@@ -1149,9 +1151,9 @@ export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBr
 
 export function loadProjectMachineBrowser(
   apiBase: string,
-  machineAlias: string,
+  machineId: string,
 ): Promise<MachineBrowserReadiness> {
-  return api(`${apiBase}/machines/${encodeURIComponent(machineAlias)}/browser`);
+  return api(`${apiBase}/machines/${encodeURIComponent(machineId)}/browser`);
 }
 
 export function setChatBrowser(

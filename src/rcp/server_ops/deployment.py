@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from rcp.core.models import upgrade_graph_projection
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
     fsync_file_tree,
@@ -419,13 +420,13 @@ def _snapshot_roots(database: Path, data: Path, output: Path) -> list[dict]:
         sqlite3.connect(f"{database.as_uri()}?mode=ro&immutable=1", uri=True)
     ) as connection:
         rows = connection.execute(
-            "SELECT project_id, state_location, state_remote FROM projects ORDER BY project_id"
+            "SELECT project_id, state_path, state_machine_id FROM projects ORDER BY project_id"
         ).fetchall()
     roots = [{"live": str(data), "project_id": None}]
     roots.extend(
         {"live": location, "project_id": project_id}
-        for project_id, location, remote in rows
-        if not remote
+        for project_id, location, machine_id in rows
+        if machine_id == BACKEND_MACHINE_ID
     )
     for root in roots:
         path = Path(_absolute(root["live"]))
@@ -580,7 +581,7 @@ def verify_live_application(
             capture = captures[expected.project_id]
             remote = _project_restore_location(capture)[1] is None
             record = store.project(expected.project_id)
-            if record is None or bool(record.state_remote) != remote:
+            if record is None or (record.state_machine_id != BACKEND_MACHINE_ID) != remote:
                 raise MaintenanceRefused(
                     f"The switched release changed where project {expected.project_id} "
                     "keeps its state."

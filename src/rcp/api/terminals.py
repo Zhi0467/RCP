@@ -26,6 +26,7 @@ from rcp.limits import (
     TERMINAL_OUTPUT_ADMISSION_INTERVAL_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
+from rcp.machine_cards import card
 from rcp.provisioning_repositories import is_server_only, team_repository_sources
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
@@ -67,12 +68,15 @@ async def repositories(request: Request, project_id: str = _member) -> list[dict
     work = running_repository_work(
         services.store, project_id, manifest, services.identity_access.acting_user(request).user_id
     )
+    machines = {machine_id: card(services.store, machine_id) for machine_id in manifest.machines}
     capabilities = {}
-    for machine in manifest.machines:
+    for machine_id, machine in machines.items():
         probe = services.terminals.probes.get(machine) if machine.host else None
-        capabilities[machine.alias] = await services.terminals.capability(machine, probe)
+        capabilities[machine_id] = await services.terminals.capability(machine, probe)
     result = []
     for repository in manifest.repositories:
+        if not repository.machine:
+            continue
         capability = capabilities[repository.machine]
         backend = capability.backend
         result.append(
@@ -82,7 +86,7 @@ async def repositories(request: Request, project_id: str = _member) -> list[dict
                 "path": repository.path,
                 "eligible": backend is not None,
                 "probe_state": capability.probe_state
-                if manifest.machine_map[repository.machine].host
+                if machines[repository.machine].host
                 else None,
                 "os_name": capability.os_name,
                 "backend_id": backend.id if backend else None,
@@ -100,7 +104,8 @@ async def repositories(request: Request, project_id: str = _member) -> list[dict
 async def refresh_probes(request: Request, project_id: str = _member) -> list[dict[str, object]]:
     services = _api_services(request)
     manifest = get_project_writer(services.catalog, project_id).manifest
-    for machine in manifest.machines:
+    for machine_id in manifest.machines:
+        machine = card(services.store, machine_id)
         if machine.host:
             services.terminals.probes.invalidate(machine)
     # Refresh is the one place a member asks for a fresh answer, so the
@@ -159,7 +164,9 @@ async def open_session(
                 raise HTTPException(409, "A terminal is already open for this repository.")
             return terminal_session_payload(session, work)
     repository = manifest.repository_map[body.repository_id]
-    machine = manifest.machine_map[repository.machine]
+    if not repository.machine:
+        raise HTTPException(409, "Assign a machine to this repository first.")
+    machine = card(services.store, repository.machine)
     probe = await services.terminals.probes.ensure(machine) if machine.host else None
     capability = await services.terminals.capability(machine, probe)
     if capability.backend is None:
@@ -199,11 +206,7 @@ async def open_session(
             git_read_paths=paths,
             git_environment=environment,
             remote_git_key_relative=remote_key_relative,
-            machine_writable_paths=(
-                list(card.writable_paths)
-                if (card := services.store.space_machine_for(machine.host))
-                else []
-            ),
+            machine_writable_paths=list(machine.writable_paths),
             require_new=body.require_new,
         )
     except TerminalAlreadyOpen as exc:

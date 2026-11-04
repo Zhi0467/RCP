@@ -15,6 +15,7 @@ from rcp.conversation_worktrees import (
 from rcp.core.models import EpisodeIsolation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
+from rcp.machine_cards import card, host_of
 from rcp.storage import AppStore
 
 if TYPE_CHECKING:
@@ -24,11 +25,12 @@ if TYPE_CHECKING:
 isolation_locks = KeyedLocks()
 
 
-def _check_grants(store: AppStore, host: str, shared_path: str) -> None:
-    card = store.space_machine_for(host)
-    grants = list(card.writable_paths) if card else []
+def _check_grants(store: AppStore, machine_id: str, shared_path: str) -> None:
+    machine = card(store, machine_id)
+    grants = list(machine.writable_paths)
     if not grants:
         return
+    host = machine.host
     facts = worktree_command(
         store,
         host=host,
@@ -105,17 +107,13 @@ def validate_episode_admission(
         raise ValueError("episode_isolation_requires_one_repository")
     repository = manifest.repository_map[aliases[0]]
     # Graph-writing profiles default to the canonical state machine.
-    run_on = request.run_on or manifest.base_machine
-    host = manifest.machine_map[run_on].host
-    if repository.machine != run_on:
+    machine_id = request.run_on or manifest.base_machine
+    if repository.machine != machine_id:
         raise ValueError("episode_isolation_host_mismatch")
+    host = host_of(store, machine_id)
     if isolation and isolation.worktree:
         binding = isolation.worktree
-        if (
-            host != binding.execution_host
-            or repository.alias != binding.repository_alias
-            or repository.machine != binding.machine
-        ):
+        if machine_id != binding.machine_id or repository.alias != binding.repository_alias:
             raise ValueError("episode_isolation_host_mismatch")
         canonical = worktree_command(
             store,
@@ -134,7 +132,7 @@ def validate_episode_admission(
     elif owner is not None and owner.episode_id != episode_id:
         raise ValueError("episode_isolation_owner_missing")
     _require_episode_git(store, host)
-    _check_grants(store, host, repository.path)
+    _check_grants(store, machine_id, repository.path)
 
 
 def auto_research_code_worktree_eligible(
@@ -191,7 +189,7 @@ def ensure_episode_isolation(
             )
             store.create_episode_isolation(episode.project_id, isolation)
         if isolation.worktree:
-            _check_grants(store, isolation.worktree.execution_host, isolation.worktree.shared_path)
+            _check_grants(store, isolation.worktree.machine_id, isolation.worktree.shared_path)
         ensure_episode_worktree(service, store, episode.project_id, request, isolation)
         return isolation
 
@@ -240,10 +238,12 @@ def validate_episode_launch(
     roots = (
         [binding.worktree_path, binding.shared_path] if merge_launch else [binding.worktree_path]
     )
-    if scope.execution_host != binding.execution_host or sorted(scope.repository_roots) not in (
+    if scope.machine_id != binding.machine_id or sorted(scope.repository_roots) not in (
         [],
         sorted(roots),
     ):
         raise ValueError("episode_isolation_scope_mismatch")
-    _check_grants(store, binding.execution_host, binding.shared_path)
-    worktree_command(store, host=binding.execution_host, operation="inspect", binding=binding)
+    _check_grants(store, binding.machine_id, binding.shared_path)
+    worktree_command(
+        store, host=host_of(store, binding.machine_id), operation="inspect", binding=binding
+    )

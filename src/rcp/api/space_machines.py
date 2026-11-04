@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shlex
 import threading
 from contextlib import ExitStack
@@ -15,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.agents import AgentLauncher
 from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_inside
@@ -34,23 +35,23 @@ from rcp.compute import probe_machine_reach
 from rcp.compute_jobs.probe import refresh_compute_probes, settle_job_manager
 from rcp.compute_jobs.routes import ComputeRoute
 from rcp.config import (
-    AGENT_EXECUTION_PROFILES,
     MachineComputeConfig,
-    MachineConfig,
     load_manifest,
     validate_machine_access_hint,
     validate_machine_provider_paths,
 )
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, invalidate_machine
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
+from rcp.ssh_validation import validate_ssh_destination
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, SpaceMachineRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, SpaceMachineHostInUse, SpaceMachineRecord
 from rcp.transport.ssh import control_directory_candidate
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,8 @@ MACHINE_ATTACHMENT_LOCK = threading.Lock()
 #: Bounds one PATCH; a card holds a handful of grants, not a mount table.
 _MAX_WRITABLE_PATHS = 64
 
+_OS_ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
+
 #: The last reach check of each card, by data directory and card: run on demand,
 #: never on a read, because an unreachable SSH target can take its full timeout.
 _REACH: dict[tuple[str, str], list[dict[str, object]]] = {}
@@ -83,6 +86,13 @@ def _one_line(value: str, *, label: str, maximum: int) -> str:
     return value
 
 
+def _validated_os_account(value: str) -> str:
+    value = value.strip()
+    if value and _OS_ACCOUNT.fullmatch(value) is None:
+        raise ValueError("machine operating-system account is invalid")
+    return value
+
+
 class CreateSpaceMachineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +104,11 @@ class CreateSpaceMachineRequest(BaseModel):
     @classmethod
     def validate_name(cls, value: str) -> str:
         return _one_line(value, label="machine name", maximum=80)
+
+    @field_validator("os_account")
+    @classmethod
+    def validate_os_account(cls, value: str) -> str:
+        return _validated_os_account(value)
 
 
 class TrustHostKeyRequest(BaseModel):
@@ -108,6 +123,9 @@ class UpdateSpaceMachineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
+    #: A new SSH route for the card; checked by logging in, in `_checked_route`.
+    host: str | None = Field(default=None, max_length=255)
+    os_account: str | None = Field(default=None, max_length=128)
     writable_paths: list[str] | None = Field(default=None, max_length=_MAX_WRITABLE_PATHS)
     hidden_folders: list[str] | None = Field(default=None, max_length=HIDDEN_READ_PATH_MAX_COUNT)
     #: The providers to change; an empty value restores that CLI's own default.
@@ -168,6 +186,11 @@ class UpdateSpaceMachineRequest(BaseModel):
     def validate_name(cls, value: str | None) -> str | None:
         return None if value is None else _one_line(value, label="machine name", maximum=80)
 
+    @field_validator("os_account")
+    @classmethod
+    def validate_os_account(cls, value: str | None) -> str | None:
+        return None if value is None else _validated_os_account(value)
+
 
 class MachineDirectoriesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -190,22 +213,24 @@ class MachineDirectoriesRequest(BaseModel):
 
 
 class MachineUsage(NamedTuple):
+    """Projects by the card ids their manifests name, and the cards agents and repositories use."""
+
     projects: dict[str, list[dict[str, str]]]
     complete: bool
-    agent_hosts: set[str]
-    repository_hosts: set[str]
+    agent_machines: set[str]
+    repository_machines: set[str]
 
     def deletable(self, machine: SpaceMachineRecord) -> bool:
-        return self.complete and machine.host not in self.repository_hosts
+        return self.complete and machine.machine_id not in self.repository_machines
 
 
 def _machine_usage(store: AppStore) -> MachineUsage:
-    """Which registered projects name each machine account, whether every manifest
-    read, and the hosts with agents or repositories."""
+    """Which registered projects name each card, whether every manifest read, and
+    the cards with agents or repositories."""
 
     usage: dict[str, list[dict[str, str]]] = {}
-    agent_hosts: set[str] = set()
-    repository_hosts: set[str] = set()
+    agent_machines: set[str] = set()
+    repository_machines: set[str] = set()
     complete = True
     for project in store.projects():
         try:
@@ -214,22 +239,15 @@ def _machine_usage(store: AppStore) -> MachineUsage:
             logger.warning("Machine usage skipped an unreadable project manifest.")
             complete = False
             continue
-        for machine in manifest.machines:
-            usage.setdefault(machine.host, []).append(
-                {
-                    "project_id": project.project_id,
-                    "project_name": project.name,
-                    "alias": machine.alias,
-                }
+        for machine_id in manifest.machines:
+            usage.setdefault(machine_id, []).append(
+                {"project_id": project.project_id, "project_name": project.name}
             )
-        agent_hosts.update(
-            manifest.machine_map[manifest.agent_profile(profile).run_on].host
-            for profile in AGENT_EXECUTION_PROFILES
+        agent_machines.add(manifest.base_machine)
+        repository_machines.update(
+            repository.machine for repository in manifest.repositories if repository.machine
         )
-        repository_hosts.update(
-            manifest.machine_map[repository.machine].host for repository in manifest.repositories
-        )
-    return MachineUsage(usage, complete, agent_hosts, repository_hosts)
+    return MachineUsage(usage, complete, agent_machines, repository_machines)
 
 
 def _hidden_read_projection(
@@ -268,7 +286,7 @@ def _hidden_read_projection(
 
 
 def _compute_probes(
-    store: AppStore, projects: list[dict[str, str]]
+    store: AppStore, machine_id: str, projects: list[dict[str, str]]
 ) -> dict[str, dict[str, object] | None]:
     """The card's recorded route checks; every project on it shares the card's settings."""
 
@@ -276,7 +294,7 @@ def _compute_probes(
     routes: tuple[ComputeRoute, ...] = ("scheduler", "helper")
     for route in routes:
         for project in projects:
-            probe = store.compute_backend_probe(project["project_id"], project["alias"], route)
+            probe = store.compute_backend_probe(project["project_id"], machine_id, route)
             if probe is not None:
                 result[route] = probe.model_dump(mode="json")
                 break
@@ -290,10 +308,10 @@ def _machine_view(
     store: AppStore,
     launcher: AgentLauncher | None,
 ) -> dict[str, object]:
-    projects = usage.projects.get(machine.host, [])
+    projects = usage.projects.get(machine.machine_id, [])
     readiness = {
         provider: launcher.cached_readiness(
-            LoginKey(provider, machine.host, MACHINE_LOGIN_ID),
+            LoginKey(provider, machine.machine_id, MACHINE_LOGIN_ID),
             binary=machine.provider_paths.get(provider),
         )
         for provider in PROVIDER_IDS
@@ -339,9 +357,9 @@ def _machine_view(
             for provider, value in readiness.items()
             if value is not None
         },
-        "compute_probes": _compute_probes(store, projects),
+        "compute_probes": _compute_probes(store, machine.machine_id, projects),
         # Agents run on each project's base machine; only there does the helper launch.
-        "agents_run_here": machine.host in usage.agent_hosts,
+        "agents_run_here": machine.machine_id in usage.agent_machines,
         "reach": _REACH.get((str(store.path), machine.machine_id), []),
         "hidden_read": _hidden_read_projection(machine, store.path.parent).model_dump(mode="json"),
         # Use counts every project; only the viewer's own projects are named.
@@ -397,7 +415,7 @@ def _repository_state_paths(catalog: ProjectCatalog, machine: SpaceMachineRecord
         {
             str(PurePosixPath(item.path) / ".research")
             for item in catalog.repository_ownership_inventory()
-            if item.execution_host == machine.host
+            if item.machine == machine.machine_id
         }
     )
 
@@ -451,8 +469,8 @@ def _validated_hidden_folders(
     # Launches refuse a folder covering a configured provider binary; refuse it at save too.
     provider_roots = tuple(
         str(PurePosixPath(path).parent)
-        for _provider, host, path in catalog.provider_targets()
-        if host == machine.host and path
+        for _provider, machine_id, path in catalog.provider_targets()
+        if machine_id == machine.machine_id and path
     )
     # The policy owner checks syntax and bounds before any host request.
     paths = validate_machine_hidden_folders(
@@ -463,7 +481,7 @@ def _validated_hidden_folders(
     checkouts = [
         item.path
         for item in catalog.repository_ownership_inventory()
-        if item.execution_host == machine.host
+        if item.machine == machine.machine_id
     ]
     result = run_machine_directory_request(
         machine.host,
@@ -554,39 +572,85 @@ def create_space_machine(
     store: StoreDependency,
 ) -> dict[str, object]:
     identity_access.acting_user(request)
-    try:
-        machine = MachineConfig(alias="card", host=body.host, os_account=body.os_account)
-    except ValidationError as exc:
-        detail = exc.errors()[0]["msg"].removeprefix("Value error, ")
-        raise HTTPException(status_code=422, detail=detail) from None
-    # SSH picks the account from the host route and sign-in is keyed by host, so
-    # a second account on one host could not be told apart. The local card is
-    # filled from the running server's own account.
-    if not machine.host or any(card.host == machine.host for card in store.space_machines()):
+    host = body.host.strip()
+    if host:
+        try:
+            validate_ssh_destination(host)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+    # SSH picks the account from the host route, so a second account on one host
+    # could not be told apart. The local card is the backend's own.
+    if not host or any(card.host == host for card in store.space_machines()):
         raise HTTPException(status_code=409, detail="This space already has that machine.")
-    if store.space_kind == "team" and not machine.os_account:
+    os_account = body.os_account
+    if store.space_kind == "team" and not os_account:
         # Team projects are backed up, and a backup records each machine's
         # account: a blank one is the account this server's login lands on.
-        try:
-            account = login_account(machine.host)
-        except MachineLoginFailure as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": exc.code, "message": exc.code, "fingerprint": exc.fingerprint},
-            ) from None
-        try:
-            machine = MachineConfig(alias="card", host=machine.host, os_account=account)
-        except ValidationError:
-            raise HTTPException(
-                status_code=422, detail={"code": "unreachable", "message": "unreachable"}
-            ) from None
+        os_account = _login_account(host)
     try:
-        created = store.create_space_machine(
-            name=body.name, host=machine.host, os_account=machine.os_account
-        )
+        created = store.create_space_machine(name=body.name, host=host, os_account=os_account)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _one_machine_view(store, created, _visible_project_ids(request, identity_access, store))
+
+
+def _login_account(host: str) -> str:
+    """The account this server's login to `host` lands on; failures are the routes' 422."""
+
+    try:
+        account = login_account(host)
+    except MachineLoginFailure as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": exc.code, "fingerprint": exc.fingerprint},
+        ) from None
+    try:
+        return _validated_os_account(account)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail={"code": "unreachable", "message": "unreachable"}
+        ) from None
+
+
+def _refused(status_code: int, code: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code, "message": code})
+
+
+def _checked_route(
+    store: AppStore, machine: SpaceMachineRecord, body: UpdateSpaceMachineRequest
+) -> tuple[str, str]:
+    """The card's route after this edit, in the order its checks are documented.
+
+    The host must be an SSH destination no other card has; the backend card's
+    host is fixed. Then the account must be the one a login to the host lands
+    on, which is the only reachability check; a team space fills a blank one.
+    """
+
+    host = machine.host if body.host is None else body.host.strip()
+    os_account = machine.os_account if body.os_account is None else body.os_account
+    backend = machine.machine_id == BACKEND_MACHINE_ID
+    if host:
+        try:
+            validate_ssh_destination(host)
+        except ValueError:
+            raise _refused(422, "invalid_host") from None
+    if backend and host:
+        raise _refused(422, "backend_host_fixed")
+    if not backend and not host:
+        raise _refused(422, "invalid_host")
+    if (host, os_account) == (machine.host, machine.os_account) or backend:
+        return host, os_account
+    if any(
+        card.host == host and card.machine_id != machine.machine_id
+        for card in store.space_machines()
+    ):
+        raise _refused(409, "host_in_use")
+    account = _login_account(host)
+    if not os_account and store.space_kind == "team":
+        return host, account
+    if os_account and os_account != account:
+        raise _refused(422, "account_mismatch")
+    return host, os_account
 
 
 @router.post("/api/space/machines/host-key")
@@ -635,6 +699,8 @@ def update_space_machine(
 ) -> dict[str, object]:
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
+    host, os_account = _checked_route(store, machine, body)
+    route_changed = (host, os_account) != (machine.host, machine.os_account)
     writable_paths = None
     if body.writable_paths is not None:
         try:
@@ -658,7 +724,7 @@ def update_space_machine(
         try:
             recorded = validate_machine_provider_paths(
                 {provider: path for provider, path in body.provider_paths.items() if path.strip()},
-                host=machine.host,
+                host=host,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -667,29 +733,42 @@ def update_space_machine(
         body.job_manager is not None and body.job_manager != machine.job_manager
     ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
     usage = _machine_usage(store)
+    projects = usage.projects.get(machine_id, [])
     if compute_changed:
         # Fail closed: no project keeps a route check made under the old settings.
-        for project in usage.projects.get(machine.host, []):
-            store.delete_compute_backend_probe(project["project_id"], project["alias"])
+        for project in projects:
+            store.delete_compute_backend_probe(project["project_id"], machine_id)
     # A human edit makes the card the owner: no later start refills a field
     # this edit cleared from an older manifest.
     store.settle_legacy_machine_settings([machine.host])
-    updated = store.update_space_machine(
-        machine_id,
-        name=body.name,
-        writable_paths=writable_paths,
-        hidden_folders=hidden_folders,
-        provider_autocompact=body.provider_autocompact,
-        provider_shell_timeout=body.provider_shell_timeout,
-        job_manager=body.job_manager,
-        jobs_root=body.jobs_root,
-        access_hint=body.access_hint,
-        provider_paths=provider_paths,
-    )
+    try:
+        updated = store.update_space_machine(
+            machine_id,
+            name=body.name,
+            host=host if route_changed else None,
+            os_account=os_account if route_changed else None,
+            writable_paths=writable_paths,
+            hidden_folders=hidden_folders,
+            provider_autocompact=body.provider_autocompact,
+            provider_shell_timeout=body.provider_shell_timeout,
+            job_manager=body.job_manager,
+            jobs_root=body.jobs_root,
+            access_hint=body.access_hint,
+            provider_paths=provider_paths,
+        )
+    except SpaceMachineHostInUse:
+        raise _refused(409, "host_in_use") from None
+    if route_changed:
+        invalidate_machine(
+            store,
+            machine_id,
+            project_ids=[project["project_id"] for project in projects],
+            forget_display_snapshot=catalog.forget_display_snapshot,
+        )
     for provider, path in (provider_paths or {}).items():
         for binary in {machine.provider_paths.get(provider), path} - {None}:
             catalog.launcher.invalidate_readiness(
-                LoginKey(provider, machine.host, MACHINE_LOGIN_ID), binary=binary
+                LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=binary
             )
     if compute_changed:
         # Checked now, so the card this returns already shows the new routes.
@@ -705,9 +784,9 @@ def _refresh_machine_probes(
 ) -> None:
     """Settle the card's job manager, then check its routes once for every project on it."""
 
-    settle_job_manager(store, machine.host)
+    settle_job_manager(store, machine.machine_id)
     usage = _machine_usage(store)
-    for project in usage.projects.get(machine.host, []):
+    for project in usage.projects.get(machine.machine_id, []):
         record = store.project(project["project_id"])
         if record is None:
             continue
@@ -717,7 +796,7 @@ def _refresh_machine_probes(
                 load_manifest(record.locator),
                 record.project_id,
                 data_dir=catalog.data_dir,
-                machines=[project["alias"]],
+                machines=[machine.machine_id],
             )
         except Exception as exc:
             logger.warning("Could not check compute routes on %s: %s", machine.name, exc)
@@ -738,7 +817,7 @@ def check_space_machine_compute(
     machine = _machine_or_404(store, machine_id)
     _refresh_machine_probes(store, catalog, machine)
     usage = _machine_usage(store)
-    sources = [card for card in store.space_machines() if card.host in usage.agent_hosts]
+    sources = [card for card in store.space_machines() if card.machine_id in usage.agent_machines]
     reach = [
         {"from": source.name, "probe": probe.model_dump(mode="json")}
         for source, probe in probe_machine_reach(machine, sources, space_kind=store.space_kind)
@@ -772,7 +851,7 @@ def resolve_space_machine_provider(
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Unknown provider") from exc
     launcher = catalog.launcher
-    login = LoginKey(provider, machine.host, MACHINE_LOGIN_ID)
+    login = LoginKey(provider, machine.machine_id, MACHINE_LOGIN_ID)
     discovered = launcher.readiness(login, refresh=True)
     if discovered.path_state == "unreachable":
         raise HTTPException(
@@ -811,7 +890,7 @@ def delete_space_machine(
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
     listed = sorted(
-        {item["project_id"] for item in _machine_usage(store).projects.get(machine.host, [])}
+        {item["project_id"] for item in _machine_usage(store).projects.get(machine_id, [])}
     )
     # Each listing project's write fence comes first, as its own machine route takes
     # it, so a detach never edits a project mid-transfer or under another writer.
@@ -823,18 +902,16 @@ def delete_space_machine(
             if not usage.deletable(machine):
                 detail = (
                     "A repository lives on this machine."
-                    if machine.host in usage.repository_hosts
+                    if machine_id in usage.repository_machines
                     else "RCP could not read every project, so it cannot tell whether this "
                     "machine is used."
                 )
                 raise HTTPException(status_code=409, detail=detail)
-            projects = usage.projects.get(machine.host, [])
+            projects = usage.projects.get(machine_id, [])
             if {item["project_id"] for item in projects} - set(listed):
                 raise HTTPException(status_code=409, detail="A project started using this machine.")
             for project in projects:
-                detach_project_machine(
-                    project_display_cache, project["project_id"], project["alias"]
-                )
+                detach_project_machine(project_display_cache, project["project_id"], machine_id)
             store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 

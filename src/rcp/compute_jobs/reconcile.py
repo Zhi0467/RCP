@@ -18,23 +18,23 @@ def reconcile_compute_jobs(
     project_id: str,
     data_dir: Path,
 ) -> None:
-    unavailable_hosts: dict[str, str] = {}
+    unavailable_machines: dict[str, str] = {}
     for record in store.running_compute_jobs():
         if record.project_id != project_id:
             continue
         try:
-            if record.execution_host in unavailable_hosts:
+            if record.machine_id in unavailable_machines:
                 refreshed = store.record_compute_job_refresh(
                     record.job_id,
                     status="running",
-                    diagnostic=unavailable_hosts[record.execution_host],
+                    diagnostic=unavailable_machines[record.machine_id],
                 )
             else:
                 refreshed = refresh_compute_job(
                     store,
                     record.job_id,
                     data_dir=data_dir,
-                    unavailable_hosts=unavailable_hosts,
+                    unavailable_machines=unavailable_machines,
                 )
             if refreshed.diagnostic:
                 logger.warning("Compute job %s: %s", record.job_id, refreshed.diagnostic)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -20,8 +21,13 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.history.delta import RefreshDelta
 from rcp.providers import PROVIDERS
 
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
+
 
 class RepositoryPointer(BaseModel):
+    """Where an agent reads one repository: `machine` is the card id, `host` its route."""
+
     alias: str
     machine: str
     host: str = ""
@@ -124,8 +130,17 @@ class ChatContext(BaseModel):
 
 
 class ContextAssembler:
-    def __init__(self, manifest: Manifest, *, graph_root: Path | None = None) -> None:
+    """Builds launch context from the manifest and the space's cards, keyed by card id."""
+
+    def __init__(
+        self,
+        manifest: Manifest,
+        *,
+        cards: Mapping[str, SpaceMachineRecord],
+        graph_root: Path | None = None,
+    ) -> None:
         self.manifest = manifest
+        self.cards = cards
         self.graph_root = graph_root if graph_root is not None else manifest.research_dir
 
     def _repository_pointers(self) -> list[RepositoryPointer]:
@@ -133,7 +148,7 @@ class ContextAssembler:
             RepositoryPointer(
                 alias=item.alias,
                 machine=item.machine,
-                host=self.manifest.machine_map[item.machine].host,
+                host=self.cards[item.machine].host,
                 path=item.path,
             )
             for item in readable_repositories(self.manifest)
@@ -223,10 +238,9 @@ class ContextAssembler:
             relations=_one_hop_relations(state, node_id) if node_id else [],
         )
 
-    def source_roots(self, execution_machine: str | None) -> dict[str, list[str]]:
-        """Name every configured provider source root on the execution machine."""
-        machine = self.manifest.machine_map.get(execution_machine or "")
-        remote = bool(machine and machine.host)
+    def source_roots(self, machine_id: str) -> dict[str, list[str]]:
+        """Name every configured provider source root on the execution machine's card."""
+        remote = bool(self.cards[machine_id].host)
 
         def display(values: list[str]) -> list[str]:
             return [str(Path(value).expanduser()) if not remote else value for value in values]

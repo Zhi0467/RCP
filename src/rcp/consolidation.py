@@ -367,7 +367,6 @@ class ConsolidationPoller:
         graph_target = target_ref(target)
         input_head = 0
         task = None
-        execution_host = ""
         skipped = False
         error_code = None
         error_message = None
@@ -393,7 +392,6 @@ class ConsolidationPoller:
             if changed:
                 failure_code = "consolidation_launch_unavailable"
                 task = self._task(schedule, service, target, name)
-                execution_host = service.manifest.machine_map[task.request["run_on"]].host
             else:
                 skipped = True
         except (ValueError, KeyError, OSError, ReplayHalted, StateUnavailable) as exc:
@@ -407,7 +405,6 @@ class ConsolidationPoller:
             input_head=input_head,
             now=now.isoformat(),
             task=task,
-            execution_host=execution_host,
             skipped=skipped,
             error_code=error_code,
             error_message=error_message,
@@ -428,7 +425,7 @@ class ConsolidationPoller:
             provider=profile.provider,
             model=profile.model,
             reasoning=profile.reasoning,
-            run_on=profile.run_on,
+            run_on=service.manifest.base_machine,
             run_truth_scope=write_repositories(
                 service.for_graph_target(graph_target, initialize=False).history.state()
             ),

@@ -55,6 +55,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.branch_names import _chain_root
@@ -357,7 +358,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or task.request.get("provider") != origin.provider
                 or task.native_session_id != origin.native_session_id
                 or task.stage_root != origin.stage_root
-                or (task.stage_host or "") != (origin.stage_host or "")
+                or (task.stage_machine_id or "") != (origin.stage_machine_id or "")
                 or task.graph_target != origin.graph_target
                 or task.dispatch_authority is None
                 or task.dispatch_authority.task_contract != origin.capability
@@ -375,8 +376,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 connection, origin.project_id, task.kind, origin.owner_id
             ):
                 raise AgentTaskAdmissionConflict("question_session_paused")
-            if origin.stage_host and self._unresolved_remote_provider_passes(
-                connection, origin.stage_host, origin.stage_root
+            if origin.stage_machine_id and self._unresolved_remote_provider_passes(
+                connection, origin.stage_machine_id, origin.stage_root
             ):
                 raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
             unavailable = connection.execute(
@@ -422,7 +423,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 updated_at=now,
                 status_message="Queued question answer",
                 native_session_id=origin.native_session_id,
-                stage_host=origin.stage_host,
+                stage_machine_id=origin.stage_machine_id,
                 stage_root=origin.stage_root,
                 graph_target=origin.graph_target,
                 authorized_by=task.authorized_by,
@@ -566,7 +567,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             """
             SELECT operation_id FROM graph_runs
             WHERE operation_id != ? AND status IN ('queued', 'running', 'pausing')
-              AND COALESCE(stage_host, '') = ?
+              AND COALESCE(stage_machine_id, '') = ?
               AND (
                 (? IS NOT NULL AND ? != '' AND stage_root = ?)
                 OR (? IS NOT NULL AND ? != ''
@@ -578,7 +579,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             """,
             (
                 record.operation_id,
-                record.stage_host or "",
+                record.stage_machine_id or "",
                 record.stage_root,
                 record.stage_root,
                 record.stage_root,
@@ -860,7 +861,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 connection.execute(
                     "UPDATE graph_runs SET status='queued', attempt=attempt+1, updated_at=?, "
                     "started_at=NULL, finished_at=NULL, phase='queued', error=NULL, failure_kind=NULL, "
-                    "native_session_id=NULL, stage_root=NULL, stage_host=NULL, write_scope_fingerprint=NULL, "
+                    "native_session_id=NULL, stage_root=NULL, stage_machine_id=NULL, write_scope_fingerprint=NULL, "
                     "status_message='Recovering fork merge.' WHERE operation_id=?",
                     (now, operation_id),
                 )
@@ -1293,7 +1294,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
-                parent_operation_id, runtime_id, native_session_id, login_id, stage_host,
+                parent_operation_id, runtime_id, native_session_id, login_id, stage_machine_id,
                 history_only, stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
@@ -1320,7 +1321,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.runtime_id,
                 record.native_session_id,
                 record.login_id,
-                record.stage_host,
+                record.stage_machine_id,
                 int(record.history_only),
                 record.stage_root,
                 graph_target_json(record.graph_target),
@@ -1887,13 +1888,13 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return (
             {
                 "fork_session_id": source["native_session_id"],
-                "fork_source_host": source["stage_host"] or "",
+                "fork_source_machine_id": source["stage_machine_id"] or "",
                 "fork_source_cwd": self._chat_stage_workspace(
                     connection,
                     project_id=source["project_id"],
                     kind=source["kind"],
                     chat_id=source_request["chat_id"],
-                    stage_host=source["stage_host"] or "",
+                    stage_machine_id=source["stage_machine_id"] or "",
                     stage_root=source["stage_root"],
                 ),
                 # The source position a later attempt must still find to fork at all.
@@ -1911,7 +1912,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> tuple[AgentTaskRecord, dict[str, object] | None]:
         """Keep one exact scratch directory bound to a conversation.
 
-        Every later task in the same chat inherits the prior host/root pair
+        Every later task in the same chat inherits the prior machine/root pair
         while it is inserted under the same write transaction. This makes the
         task ledger authoritative even when project identity adoption rewrites
         ``graph_runs.project_id``; a provider's saved cwd is never renamed or
@@ -1923,7 +1924,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         edit = record.request.get("artifact_edit")
         if isinstance(edit, dict) and edit.get("stage_root"):
             origin = connection.execute(
-                "SELECT project_id, native_session_id, stage_host, stage_root "
+                "SELECT project_id, native_session_id, stage_machine_id, stage_root "
                 "FROM graph_runs WHERE operation_id = ? AND history_only = 0",
                 (edit.get("origin_operation_id"),),
             ).fetchone()
@@ -1931,7 +1932,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 origin is None
                 or origin["project_id"] != record.project_id
                 or origin["stage_root"] != edit["stage_root"]
-                or (origin["stage_host"] or "") != (edit.get("stage_host") or "")
+                or (origin["stage_machine_id"] or "") != (edit.get("stage_machine_id") or "")
                 or origin["native_session_id"] != record.request.get("session_id")
             ):
                 raise ValueError("The artifact edit no longer has its exact origin session.")
@@ -1939,7 +1940,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.model_copy(
                     update={
                         "native_session_id": origin["native_session_id"],
-                        "stage_host": origin["stage_host"],
+                        "stage_machine_id": origin["stage_machine_id"],
                         "stage_root": origin["stage_root"],
                     }
                 ),
@@ -2055,7 +2056,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     source_operation_id = binding["operation_id"]
                     record = record.model_copy(
                         update={
-                            "stage_host": binding["stage_host"],
+                            "stage_machine_id": binding["stage_machine_id"],
                             "stage_root": binding["stage_root"],
                         }
                     )
@@ -2131,7 +2132,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         session_id = current["native_session_id"]
                         if record.stage_root is not None and (
                             record.stage_root != current["stage_root"]
-                            or (record.stage_host or "") != (current["stage_host"] or "")
+                            or (record.stage_machine_id or "")
+                            != (current["stage_machine_id"] or "")
                         ):
                             raise ValueError(
                                 "The current chat session has a different saved stage."
@@ -2190,7 +2192,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         if isinstance(session_id, str) and session_id:
             rows = connection.execute(
                 """
-                SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root,
+                SELECT DISTINCT COALESCE(stage_machine_id, '') AS machine_id, stage_root AS root,
                                 graph_target_json, request_json,
                                 json_extract(request_json, '$.chat_id') AS chat_id
                 FROM graph_runs
@@ -2219,7 +2221,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             placeholders = ",".join("?" for _ in watcher_ids)
             rows = connection.execute(
                 f"""
-                SELECT DISTINCT COALESCE(run.stage_host, '') AS host,
+                SELECT DISTINCT COALESCE(run.stage_machine_id, '') AS machine_id,
                                 run.stage_root AS root
                 FROM watchers AS watcher
                 JOIN graph_runs AS run
@@ -2234,7 +2236,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchall()
         else:
             return record, resolution
-        bindings = {(str(row["host"]), str(row["root"])) for row in rows}
+        bindings = {(str(row["machine_id"]), str(row["root"])) for row in rows}
         if len(bindings) > 1:
             raise ValueError(
                 "This conversation has conflicting saved workspace bindings and cannot "
@@ -2242,9 +2244,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             )
         if not bindings:
             return record, resolution
-        saved_host, saved_root = next(iter(bindings))
+        saved_machine_id, saved_root = next(iter(bindings))
         return record.model_copy(
-            update={"stage_host": saved_host or None, "stage_root": saved_root}
+            update={"stage_machine_id": saved_machine_id or None, "stage_root": saved_root}
         ), resolution
 
     def chat_stage_layout(
@@ -2253,7 +2255,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         project_id: str,
         kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
     ) -> Literal["split-v1"] | None:
         """Return the one immutable local-chat stage-layout marker for a binding."""
@@ -2264,7 +2266,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 project_id=project_id,
                 kind=kind,
                 chat_id=chat_id,
-                stage_host=stage_host,
+                stage_machine_id=stage_machine_id,
                 stage_root=stage_root,
             )
 
@@ -2274,7 +2276,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         project_id: str,
         kind: str,
         chat_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
     ) -> str:
         """The provider cwd of a saved conversation stage, as every launch in it resolves it."""
@@ -2285,7 +2287,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 project_id=project_id,
                 kind=kind,
                 chat_id=chat_id,
-                stage_host=stage_host,
+                stage_machine_id=stage_machine_id,
                 stage_root=stage_root,
             )
 
@@ -2293,7 +2295,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         stage = PurePosixPath(binding["stage_root"])
         # A remote stage always runs in its workspace (`RemoteRunStage.workspace`); a
         # local one only when its layout marker says so.
-        if binding["stage_host"] or self._chat_stage_layout(connection, **binding):
+        if binding["stage_machine_id"] != BACKEND_MACHINE_ID or self._chat_stage_layout(
+            connection, **binding
+        ):
             return str(stage / "workspace")
         return str(stage)
 
@@ -2304,7 +2308,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         project_id: str,
         kind: str,
         chat_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
     ) -> Literal["split-v1"] | None:
         rows = connection.execute(
@@ -2315,7 +2319,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             WHERE receipt.category = 'chat_stage_layout'
               AND run.project_id = ? AND run.kind = ?
               AND json_extract(run.request_json, '$.chat_id') = ?
-              AND json_extract(receipt.payload_json, '$.stage_host') = ?
+              AND json_extract(receipt.payload_json, '$.stage_machine_id') = ?
               AND json_extract(receipt.payload_json, '$.stage_root') = ?
             ORDER BY receipt.receipt_id ASC
             """,
@@ -2323,7 +2327,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 project_id,
                 kind,
                 chat_id,
-                stage_host,
+                stage_machine_id,
                 stage_root,
             ),
         ).fetchall()
@@ -2337,7 +2341,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("The conversation stage layout marker is malformed.") from exc
         expected = {
             "layout": "split-v1",
-            "stage_host": stage_host,
+            "stage_machine_id": stage_machine_id,
             "stage_root": stage_root,
             "workspace_root": str(PurePosixPath(stage_root) / "workspace"),
         }
@@ -2352,7 +2356,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         project_id: str,
         kind: Literal["node_chat", "project_chat", "space_chat"],
         chat_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
     ) -> bool:
         """Return whether another task durably bound this exact conversation stage."""
@@ -2363,10 +2367,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT 1 FROM graph_runs
                 WHERE operation_id != ? AND project_id = ? AND kind = ?
                   AND json_extract(request_json, '$.chat_id') = ?
-                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                  AND COALESCE(stage_machine_id, '') = ? AND stage_root = ?
                 LIMIT 1
                 """,
-                (operation_id, project_id, kind, chat_id, stage_host, stage_root),
+                (operation_id, project_id, kind, chat_id, stage_machine_id, stage_root),
             ).fetchone()
         return row is not None
 
@@ -2396,7 +2400,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise ValueError("The agent task has no durable chat stage binding.")
             payload = {
                 "layout": "split-v1",
-                "stage_host": "",
+                "stage_machine_id": BACKEND_MACHINE_ID,
                 "stage_root": stage_root,
                 "workspace_root": workspace_root,
             }
@@ -2409,11 +2413,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 WHERE receipt.category = 'chat_stage_layout'
                   AND run.project_id = ? AND run.kind = ?
                   AND json_extract(run.request_json, '$.chat_id') = ?
-                  AND json_extract(receipt.payload_json, '$.stage_host') = ''
+                  AND json_extract(receipt.payload_json, '$.stage_machine_id') = ?
                   AND json_extract(receipt.payload_json, '$.stage_root') = ?
                 ORDER BY receipt.receipt_id ASC
                 """,
-                (task["project_id"], task["kind"], task["chat_id"], stage_root),
+                (task["project_id"], task["kind"], task["chat_id"], BACKEND_MACHINE_ID, stage_root),
             ).fetchall()
             if rows:
                 if any(row["payload_json"] != payload_json for row in rows):
@@ -2433,7 +2437,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT 1 FROM graph_runs
                 WHERE operation_id != ? AND project_id = ? AND kind = ?
                   AND json_extract(request_json, '$.chat_id') = ?
-                  AND COALESCE(stage_host, '') = '' AND stage_root = ?
+                  AND stage_machine_id = ? AND stage_root = ?
                 LIMIT 1
                 """,
                 (
@@ -2441,6 +2445,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     task["project_id"],
                     task["kind"],
                     task["chat_id"],
+                    BACKEND_MACHINE_ID,
                     stage_root,
                 ),
             ).fetchone()
@@ -3462,7 +3467,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id: str,
         node_id: str | None,
         provider: str,
-        execution_machine: str,
+        machine_id: str,
         native_session_id: str,
     ) -> bool:
         """Prove that RCP previously observed this session on the exact chat binding."""
@@ -3486,7 +3491,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     chat_id,
                     node_id,
                     provider,
-                    execution_machine,
+                    machine_id,
                     native_session_id,
                 ),
             ).fetchone()
@@ -3527,7 +3532,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def chat_session_context(
         self,
         provider: str,
-        execution_machine: str,
+        machine_id: str,
         native_session_id: str,
     ) -> ChatSessionContextRecord | None:
         """Read the durable baseline for one exact native provider session."""
@@ -3536,7 +3541,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             row = self._chat_session_context_row(
                 connection,
                 provider,
-                execution_machine,
+                machine_id,
                 native_session_id,
             )
         return self._chat_session_context_record(row) if row is not None else None
@@ -3544,7 +3549,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def validate_chat_session_context_binding(
         self,
         provider: str,
-        execution_machine: str,
+        machine_id: str,
         native_session_id: str,
         *,
         project_id: str,
@@ -3558,7 +3563,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             row = self._chat_session_context_row(
                 connection,
                 provider,
-                execution_machine,
+                machine_id,
                 native_session_id,
             )
             if row is None:
@@ -3576,7 +3581,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         self,
         *,
         provider: str,
-        execution_machine: str,
+        machine_id: str,
         native_session_id: str,
         project_id: str,
         kind: Literal["node_chat", "project_chat", "space_chat"],
@@ -3594,7 +3599,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ChatSessionContextRecord.model_validate(
             {
                 "provider": provider,
-                "execution_machine": execution_machine,
+                "machine_id": machine_id,
                 "native_session_id": native_session_id,
                 "project_id": project_id,
                 "kind": kind,
@@ -3622,7 +3627,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 row = self._chat_session_context_row(
                     connection,
                     provider,
-                    execution_machine,
+                    machine_id,
                     native_session_id,
                 )
                 if row is None:
@@ -3633,7 +3638,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     connection.execute(
                         """
                         INSERT INTO chat_session_contexts (
-                            provider, execution_machine, native_session_id,
+                            provider, machine_id, native_session_id,
                             project_id, kind, chat_id, node_id, protocol_version,
                             snapshot_json, snapshot_sha256, committed_operation_id,
                             created_at, updated_at
@@ -3641,7 +3646,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         """,
                         (
                             provider,
-                            execution_machine,
+                            machine_id,
                             native_session_id,
                             project_id,
                             kind,
@@ -3672,7 +3677,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         UPDATE chat_session_contexts
                         SET protocol_version = ?, snapshot_json = ?, snapshot_sha256 = ?,
                             committed_operation_id = ?, updated_at = ?
-                        WHERE provider = ? AND execution_machine = ? AND native_session_id = ?
+                        WHERE provider = ? AND machine_id = ? AND native_session_id = ?
                           AND snapshot_sha256 = ?
                         """,
                         (
@@ -3682,7 +3687,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                             committed_operation_id,
                             now,
                             provider,
-                            execution_machine,
+                            machine_id,
                             native_session_id,
                             expected_snapshot_sha256,
                         ),
@@ -3695,7 +3700,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 connection.rollback()
                 raise
 
-        stored = self.chat_session_context(provider, execution_machine, native_session_id)
+        stored = self.chat_session_context(provider, machine_id, native_session_id)
         assert stored is not None
         return stored
 
@@ -3979,7 +3984,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 AND paused.status = 'paused'
                 AND paused.history_only = 0
                 AND paused.native_session_id IS NOT NULL
-                AND (paused.stage_host IS NULL OR paused.stage_host = ''
+                AND (paused.stage_machine_id IS NULL OR paused.stage_machine_id = ?
                      OR paused.stage_root IS NOT NULL)
                 AND json_extract(paused.request_json, '$.chat_id') = ?
                 AND NOT EXISTS (
@@ -4000,7 +4005,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 )
             LIMIT 1
             """,
-            (project_id, kind, chat_id),
+            (project_id, kind, BACKEND_MACHINE_ID, chat_id),
         ).fetchone()
         return row is not None
 
@@ -4510,7 +4515,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     @staticmethod
     def _unresolved_remote_provider_passes(
-        connection: sqlite3.Connection, stage_host: str, stage_root: str
+        connection: sqlite3.Connection, stage_machine_id: str, stage_root: str
     ) -> list[tuple[str, str]]:
         rows = connection.execute(
             """
@@ -4518,7 +4523,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                    json_extract(started.payload_json, '$.pid_file') AS pid_file
             FROM graph_run_receipts AS started
             WHERE started.category = 'remote_provider_started'
-              AND json_extract(started.payload_json, '$.stage_host') = ?
+              AND json_extract(started.payload_json, '$.stage_machine_id') = ?
               AND json_extract(started.payload_json, '$.stage_root') = ?
               AND NOT EXISTS (
                   SELECT 1 FROM graph_run_receipts AS stopped
@@ -4529,21 +4534,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
               )
             ORDER BY started.receipt_id
             """,
-            (stage_host, stage_root),
+            (stage_machine_id, stage_root),
         ).fetchall()
         return [(str(row["operation_id"]), str(row["pid_file"])) for row in rows]
 
     def unresolved_remote_provider_passes(
-        self, stage_host: str, stage_root: str
+        self, stage_machine_id: str, stage_root: str
     ) -> list[tuple[str, str]]:
         """Return passes whose remote process group has not been confirmed absent."""
         with self.connection() as connection:
-            return self._unresolved_remote_provider_passes(connection, stage_host, stage_root)
+            return self._unresolved_remote_provider_passes(connection, stage_machine_id, stage_root)
 
     def begin_remote_provider_pass(
         self,
         operation_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
         pid_file: str,
         *,
@@ -4558,16 +4563,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
         root = PurePosixPath(stage_root)
         pid = PurePosixPath(pid_file)
         if (
-            not stage_host.strip()
+            stage_machine_id in {"", BACKEND_MACHINE_ID}
             or not root.is_absolute()
             or not pid.is_relative_to(root)
             or pid == root
             or ".." in pid.parts
         ):
-            raise ValueError("A remote provider pass requires its exact host, stage and pidfile.")
+            raise ValueError(
+                "A remote provider pass requires its exact machine, stage and pidfile."
+            )
         payload = self._bounded_receipt_payload(
             {
-                "stage_host": stage_host,
+                "stage_machine_id": stage_machine_id,
                 "stage_root": stage_root,
                 "pid_file": pid_file,
                 "supervised": supervised,
@@ -4575,7 +4582,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         )
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if self._unresolved_remote_provider_passes(connection, stage_host, stage_root):
+            if self._unresolved_remote_provider_passes(connection, stage_machine_id, stage_root):
                 raise AgentTaskAdmissionConflict(
                     "A provider call in this remote stage is live or its exit is unconfirmed."
                 )
@@ -4584,11 +4591,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     """
                 SELECT 1 FROM graph_run_receipts
                 WHERE category = 'remote_provider_started'
-                  AND (json_extract(payload_json, '$.stage_host') = ? OR operation_id = ?)
+                  AND (json_extract(payload_json, '$.stage_machine_id') = ? OR operation_id = ?)
                   AND json_extract(payload_json, '$.pid_file') = ?
                 LIMIT 1
                 """,
-                    (stage_host, operation_id, pid_file),
+                    (stage_machine_id, operation_id, pid_file),
                 ).fetchone()
                 is not None
             ):
@@ -5293,7 +5300,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         operation_id: str,
         *,
         native_session_id: str | None = None,
-        stage_host: str | None = None,
+        stage_machine_id: str | None = None,
         stage_root: str | None = None,
     ) -> None:
         now = self.now()
@@ -5322,7 +5329,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 record.model_copy(
                     update={
                         "native_session_id": native_session_id or record.native_session_id,
-                        "stage_host": stage_host or record.stage_host,
+                        "stage_machine_id": stage_machine_id or record.stage_machine_id,
                         "stage_root": stage_root or record.stage_root,
                     }
                 ),
@@ -5331,7 +5338,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """
                 UPDATE graph_runs
                 SET native_session_id = COALESCE(?, native_session_id),
-                    stage_host = COALESCE(?, stage_host),
+                    stage_machine_id = COALESCE(?, stage_machine_id),
                     stage_root = COALESCE(?, stage_root),
                     updated_at = ?, last_activity_at = ?
                 WHERE operation_id = ?
@@ -5343,7 +5350,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (
                     native_session_id,
-                    stage_host,
+                    stage_machine_id,
                     stage_root,
                     now,
                     now,
@@ -5421,7 +5428,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         operation_id: str,
         *,
         project_id: str,
-        stage_host: str,
+        stage_machine_id: str,
         stage_root: str,
         fingerprint: str,
     ) -> None:
@@ -5436,7 +5443,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT project_id, COALESCE(stage_host, '') AS stage_host, stage_root
+                SELECT project_id, COALESCE(stage_machine_id, '') AS stage_machine_id, stage_root
                 FROM graph_runs WHERE operation_id = ?
                 """,
                 (operation_id,),
@@ -5445,7 +5452,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 raise KeyError(operation_id)
             if row["project_id"] != project_id:
                 raise ValueError("agent task write scope belongs to a different project")
-            if row["stage_host"] != (stage_host or "") or row["stage_root"] != stage_root:
+            if (
+                row["stage_machine_id"] != (stage_machine_id or "")
+                or row["stage_root"] != stage_root
+            ):
                 raise ValueError("agent task write scope does not match its saved execution stage")
             connection.execute(
                 "UPDATE graph_runs SET write_scope_fingerprint = ?, updated_at = ? "
@@ -5553,7 +5563,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 UPDATE graph_runs
-                SET stage_host = NULL, stage_root = NULL, updated_at = ?
+                SET stage_machine_id = NULL, stage_root = NULL, updated_at = ?
                 WHERE operation_id = ?
                 """,
                 (now, operation_id),
@@ -5570,7 +5580,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         def add(
             *,
-            stage_host: object,
+            stage_machine_id: object,
             stage_root: object,
             owner_ref: str,
             must_exist: bool,
@@ -5578,9 +5588,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         ) -> None:
             if not isinstance(stage_root, str) or not stage_root:
                 return
-            host = stage_host if isinstance(stage_host, str) else ""
+            machine_id = stage_machine_id if isinstance(stage_machine_id, str) else ""
             aggregate = aggregates.setdefault(
-                (host, stage_root),
+                (machine_id, stage_root),
                 _RunStageLifecycleAggregate(owner_refs=set()),
             )
             aggregate.owner_refs.add(owner_ref)
@@ -5591,7 +5601,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             remote_pass_rows = connection.execute(
                 """
                 SELECT started.operation_id,
-                       json_extract(started.payload_json, '$.stage_host') AS stage_host,
+                       json_extract(started.payload_json, '$.stage_machine_id') AS stage_machine_id,
                        json_extract(started.payload_json, '$.stage_root') AS stage_root
                 FROM graph_run_receipts AS started
                 WHERE started.category = 'remote_provider_started'
@@ -5606,7 +5616,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchall()
             task_rows = connection.execute(
                 """
-                SELECT run.operation_id, COALESCE(run.stage_host, '') AS stage_host,
+                SELECT run.operation_id, COALESCE(run.stage_machine_id, '') AS stage_machine_id,
                        run.stage_root,
                        (
                          run.status IN ('queued', 'running', 'pausing')
@@ -5619,7 +5629,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchall()
             episode_rows = connection.execute(
                 """
-                SELECT state.episode_id, COALESCE(state.stage_host, '') AS stage_host,
+                SELECT state.episode_id, COALESCE(state.stage_machine_id, '') AS stage_machine_id,
                        state.stage_root,
                        episode.status IN ('queued', 'running', 'stopping', 'wrapping_up') AS live
                 FROM experiment_episode_state AS state
@@ -5629,7 +5639,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchall()
             wrapup_rows = connection.execute(
                 """
-                SELECT wrapup.episode_id, COALESCE(wrapup.stage_host, '') AS stage_host,
+                SELECT wrapup.episode_id, COALESCE(wrapup.stage_machine_id, '') AS stage_machine_id,
                        wrapup.stage_root,
                        wrapup.state IN ('pending', 'running') AS live
                 FROM episode_wrapups AS wrapup
@@ -5639,7 +5649,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             chat_rows = connection.execute(
                 """
                 SELECT context.native_session_id,
-                       COALESCE(run.stage_host, '') AS stage_host, run.stage_root
+                       COALESCE(run.stage_machine_id, '') AS stage_machine_id, run.stage_root
                 FROM chat_session_contexts AS context
                 JOIN graph_runs AS run
                   ON run.operation_id = context.committed_operation_id
@@ -5650,8 +5660,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """
                 SELECT candidate.candidate_id, candidate.source_artifact_id,
                        candidate.artifact_scope_id, candidate.source_name,
-                       candidate.stage_host, candidate.stage_root, candidate.status,
-                       COALESCE(source.stage_host, '') AS source_stage_host,
+                       candidate.stage_machine_id, candidate.stage_root, candidate.status,
+                       COALESCE(source.stage_machine_id, '') AS source_stage_machine_id,
                        source.stage_root AS source_stage_root,
                        NOT EXISTS (
                            SELECT 1
@@ -5670,7 +5680,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         for row in remote_pass_rows:
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"remote_provider:{row['operation_id']}",
                 must_exist=True,
@@ -5679,7 +5689,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in task_rows:
             live = bool(row["live"])
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"graph_runs:{row['operation_id']}",
                 must_exist=live,
@@ -5688,7 +5698,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in episode_rows:
             live = bool(row["live"])
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"experiment_episode_state:{row['episode_id']}",
                 must_exist=live,
@@ -5697,7 +5707,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         for row in wrapup_rows:
             live = bool(row["live"])
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"episode_wrapups:{row['episode_id']}",
                 must_exist=live,
@@ -5705,7 +5715,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             )
         for row in chat_rows:
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"chat_session_contexts:{row['native_session_id']}",
                 must_exist=False,
@@ -5717,7 +5727,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 scoped_artifact_id(row["artifact_scope_id"], row["source_name"]) in legacy_imports
             )
             add(
-                stage_host=row["stage_host"],
+                stage_machine_id=row["stage_machine_id"],
                 stage_root=row["stage_root"],
                 owner_ref=f"artifact_import_candidates:{row['candidate_id']}",
                 must_exist=unresolved,
@@ -5727,7 +5737,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 row["source_stage_required"]
             )
             add(
-                stage_host=row["source_stage_host"],
+                stage_machine_id=row["source_stage_machine_id"],
                 stage_root=row["source_stage_root"],
                 owner_ref=f"artifact_import_sources:{row['candidate_id']}",
                 must_exist=source_required,
@@ -5736,24 +5746,24 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         return tuple(
             RunStageLifecycleRecord(
-                stage_host=host,
+                stage_machine_id=machine_id,
                 stage_root=root,
                 owner_refs=tuple(sorted(aggregate.owner_refs)),
                 must_exist=aggregate.must_exist,
                 protect_from_cleanup=aggregate.protect_from_cleanup,
             )
-            for (host, root), aggregate in sorted(aggregates.items())
+            for (machine_id, root), aggregate in sorted(aggregates.items())
         )
 
-    def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]:
+    def protected_run_stage_roots(self, stage_machine_id: str) -> tuple[str, ...]:
         """Return exact stages whose durable lifecycle still depends on them."""
 
-        if not isinstance(stage_host, str):
-            raise ValueError("run-stage protection requires one execution host")
+        if not isinstance(stage_machine_id, str):
+            raise ValueError("run-stage protection requires one execution machine")
         return tuple(
             record.stage_root
             for record in self.run_stage_lifecycles()
-            if record.stage_host == stage_host and record.protect_from_cleanup
+            if record.stage_machine_id == stage_machine_id and record.protect_from_cleanup
         )
 
     def request_agent_task_pause(
@@ -6483,7 +6493,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _chat_session_context_row(
         connection: sqlite3.Connection,
         provider: str,
-        execution_machine: str,
+        machine_id: str,
         native_session_id: str,
     ) -> sqlite3.Row | None:
         rows = connection.execute(
@@ -6491,9 +6501,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (native_session_id,),
         ).fetchall()
         conflicts = [
-            row
-            for row in rows
-            if row["provider"] != provider or row["execution_machine"] != execution_machine
+            row for row in rows if row["provider"] != provider or row["machine_id"] != machine_id
         ]
         if conflicts:
             raise ValueError(
@@ -6503,7 +6511,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             (
                 row
                 for row in rows
-                if row["provider"] == provider and row["execution_machine"] == execution_machine
+                if row["provider"] == provider and row["machine_id"] == machine_id
             ),
             None,
         )
@@ -6566,7 +6574,7 @@ def _require_merge_destination_open(
 _FORK_FIELDS = (
     "fork_session_id",
     "fork_source_cwd",
-    "fork_source_host",
+    "fork_source_machine_id",
     "fork_source_operation_id",
 )
 

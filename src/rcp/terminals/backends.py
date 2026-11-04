@@ -7,11 +7,13 @@ import platform
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from rcp.config import MachineConfig
 from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 Containment = Literal["mirrored", "cooperative"]
 COOPERATIVE_NOTICE = (
@@ -90,7 +92,7 @@ def resolve_backend(os_name: str, is_remote: bool) -> TerminalBackend | None:
 
 
 def machine_capability(
-    machine: MachineConfig, probe: TerminalProbe | None = None
+    machine: SpaceMachineRecord, probe: TerminalProbe | None = None
 ) -> TerminalCapability:
     if machine.host:
         if probe is None:

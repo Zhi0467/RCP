@@ -30,24 +30,19 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from pydantic import TypeAdapter
 
-from rcp.agents.continuation_prompt import SECTIONS
-from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.api import create_app
-from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import WriteAuthority, Writer
 from rcp.core.models import AuthorizedHuman, BranchMergeReceipt, GraphState, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.report import ValidationReport
-from rcp.history import HistoryManager
-from rcp.projects import ProjectCatalog
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
-from rcp.transport.state import SSHStateWorkspace, StateWorkspace
 
 if TYPE_CHECKING:
     import pytest
 
     from rcp.agents.project_repositories import RepositoryReadScope
+    from rcp.background import BackgroundAgentTasks
     from rcp.config import Manifest
 
 
@@ -122,6 +117,8 @@ def unchecked_write_authority() -> WriteAuthority:
 def launch_contract_path(prompt: str) -> Path:
     """The contract file a launch names: its master pointer or bootstrap, else line two."""
 
+    from rcp.agents.continuation_prompt import SECTIONS
+
     named = re.search(
         re.escape(SECTIONS["master_pointer"].split("{path}")[0]) + r"([^`]+)`", prompt
     ) or re.search(re.escape(SECTIONS["master_bootstrap"].split("{path}")[0]) + r"(.+)", prompt)
@@ -130,6 +127,8 @@ def launch_contract_path(prompt: str) -> Path:
 
 def changed_values(prompt: str) -> dict[str, str]:
     """The changed values a continuation sends, by dotted key; strings lose their backticks."""
+
+    from rcp.agents.continuation_prompt import SECTIONS
 
     header = SECTIONS["context_delta"]
     if header not in prompt:
@@ -219,18 +218,16 @@ def write_test_manifest(tmp_path: Path) -> Manifest:
     path.write_text(
         f'''name = "test-paper"
 
-[[machines]]
-alias = "laptop"
-host = ""
+machines = ["{BACKEND_MACHINE_ID}"]
 
 [[repositories]]
 alias = "repo-a"
-machine = "laptop"
+machine = "{BACKEND_MACHINE_ID}"
 path = "{repo_a}"
 
 [[repositories]]
 alias = "repo-b"
-machine = "laptop"
+machine = "{BACKEND_MACHINE_ID}"
 path = "{repo_b}"
 
 [project]
@@ -245,14 +242,6 @@ default_run_truth_scope = ["repo-a"]
 [sources]
 claude_roots = ["{claude_root}"]
 codex_roots = ["{codex_root}"]
-
-[execution]
-run_on = "laptop"
-
-[paper.coach]
-default_provider = "codex"
-default_model = ""
-default_reasoning = "medium"
 ''',
         encoding="utf-8",
     )
@@ -261,6 +250,8 @@ default_reasoning = "medium"
 
 def create_named_app(*args: Any, **kwargs: Any):
     """Create a named test app."""
+
+    from rcp.api import create_app
 
     app = create_app(*args, **kwargs)
     store = app.state.background_tasks.store
@@ -308,18 +299,17 @@ def seated_on_every_project(_project_id: str, _user_id: str) -> bool:
 
 
 def write_local_test_manifest(directory: Path) -> Path:
-    """A real local execution account for engine tests that resolve run_on."""
+    """A project on the backend card for engine tests that resolve run_on."""
 
     path = directory / "manifest.toml"
     path.write_text(
         'name = "Test project"\n'
-        '[[machines]]\nalias = "laptop"\nhost = ""\n'
-        '[[repositories]]\nalias = "repo"\nmachine = "laptop"\n'
+        f'machines = ["{BACKEND_MACHINE_ID}"]\n'
+        f'[[repositories]]\nalias = "repo"\nmachine = "{BACKEND_MACHINE_ID}"\n'
         f"path = {json.dumps(str(directory))}\n"
         '[project]\ntruth_scope = ["repo"]\n'
         '[state]\nrepository = "repo"\n'
-        '[agent]\ndefault_run_truth_scope = ["repo"]\n'
-        '[execution]\nrun_on = "laptop"\n',
+        '[agent]\ndefault_run_truth_scope = ["repo"]\n',
         encoding="utf-8",
     )
     return path
@@ -331,6 +321,7 @@ def store_test_claude_token(store: AppStore, host: str = "") -> None:
     Imported locally because release-update bases import this module with an older
     `rcp`.
     """
+    from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.storage.models import MACHINE_LOGIN_ID
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
@@ -371,7 +362,7 @@ def experiment_run_task(
     now = store.now()
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_id=f"experiment-{episode_id}",
         chat_scope="node",
         node_id=control_node_id,
@@ -581,6 +572,8 @@ def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):
     Mirrors the cache update the production manager performs on guarded admission.
     """
 
+    from rcp.history import HistoryManager
+
     fixture_history = HistoryManager(
         service.manifest, service.history.workspace, write_authority=unchecked_write_authority()
     )
@@ -787,6 +780,8 @@ def isolate_host(
     for owner in ("rcp.api.app", "rcp.api.project_state"):
         monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
 
+    from rcp.background import BackgroundAgentTasks
+
     engines: list[BackgroundAgentTasks] = []
     construct = BackgroundAgentTasks.__init__
 
@@ -974,6 +969,9 @@ def trace_requests(app: Any) -> Iterator[RequestTrace]:
     import urllib.request
 
     import pytest
+
+    from rcp.projects import ProjectCatalog
+    from rcp.transport.state import SSHStateWorkspace, StateWorkspace
 
     trace = RequestTrace()
     store = _store_of(app)

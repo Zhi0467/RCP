@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurfaceConfig,
-    MachineConfig,
     Manifest,
     load_manifest,
     validate_project_scope_update,
@@ -359,6 +358,16 @@ def _is_exact_prepared_identity_prefix(
         and patch.ops == []
         and patch.project_identity == identity
     )
+
+
+@contextmanager
+def _exclusive_append_lock(root: Path) -> Iterator[None]:
+    with (root / ".append.lock").open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class HistoryManager:
@@ -1447,27 +1456,46 @@ class HistoryManager:
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
 
-    def add_machine(self, machine: MachineConfig) -> Manifest:
+    def add_machine(self, machine_id: str) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
             current = self.materialize(write_outputs=False)
             self.require_writable(current.state)
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            self.manifest = write_added_machine(self.manifest, machine)
+            self.manifest = write_added_machine(self.manifest, machine_id)
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
 
-    def remove_machine(self, alias: str) -> Manifest:
+    def remove_machine(self, machine_id: str) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
             current = self.materialize(write_outputs=False)
             self.require_writable(current.state)
             self._require_writable_home_locked(current)
             self._repair_materializations_locked()
-            self.manifest = write_removed_machine(self.manifest, alias)
+            self.manifest = write_removed_machine(self.manifest, machine_id)
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
+
+    @staticmethod
+    def publish_upgraded_manifest(
+        workspace: StateWorkspace, upgraded: Callable[[Path], str | None]
+    ) -> None:
+        """Replace a manifest that still names machines by alias with `upgraded(path)`.
+
+        `manifest.toml` is published state, not Patch history, so this neither
+        replays nor requires a writable home: read-only and non-home projects
+        upgrade too. It takes the workspace's transaction and append lock, as
+        every canonical write does; `upgraded` returns None for a current manifest.
+        """
+
+        with workspace.transaction(), _exclusive_append_lock(workspace.root):
+            path = workspace.root / "manifest.toml"
+            content = upgraded(path)
+            if content is not None:
+                HistoryManager._atomic_text(path, content)
+                workspace.publish([Path("manifest.toml")])
 
     def append_batch(
         self,
@@ -1810,6 +1838,8 @@ class HistoryManager:
             descriptor is None or descriptor["alias"] in self.manifest.repository_map
         ):
             return False
+        if descriptor is not None and descriptor.get("machine") not in self.manifest.machines:
+            descriptor["machine"] = self.manifest.base_machine
         self.manifest = write_project_scope(
             self.manifest,
             result.state.project_truth_scope,
@@ -1818,10 +1848,21 @@ class HistoryManager:
         return True
 
     def _synchronize_manifest_from_history(self, result: MaterializationResult) -> bool:
-        """Repair manifest membership and truth scope from accepted approvals."""
+        """Repair manifest membership and truth scope from accepted approvals.
+
+        A descriptor keeps its machine only when it is a card this project
+        uses; otherwise the repository is added with its machine unassigned.
+        """
 
         descriptors = [
-            operation.repository.model_dump(mode="python")
+            {
+                **operation.repository.model_dump(mode="python"),
+                "machine": (
+                    operation.repository.machine
+                    if operation.repository.machine in self.manifest.machines
+                    else ""
+                ),
+            }
             for patch in result.patches
             if patch.admission == "accepted"
             for operation in patch.ops
@@ -1928,13 +1969,8 @@ class HistoryManager:
 
     @contextmanager
     def _append_lock(self) -> Iterator[None]:
-        lock_path = self.root / ".append.lock"
-        with self._process_lock, lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with self._process_lock, _exclusive_append_lock(self.root):
+            yield
 
     @staticmethod
     def _atomic_json(path: Path, value: object) -> None:

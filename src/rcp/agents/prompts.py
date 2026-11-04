@@ -526,7 +526,7 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
         hint = connection.get("access_hint", "")
         manager = connection.get("job_manager", "")
         suffix = (f"; jobs: `{manager}`" if manager else "") + (f"; {hint}" if hint else "")
-        lines.append(f"- `{connection['id']}`: {route}{suffix}")
+        lines.append(f"- {connection['name']} (`{connection['id']}`): {route}{suffix}")
     lines.extend(job_manager_rules(item.get("job_manager", "") for item in connections))
     return """Project machines:
 {}

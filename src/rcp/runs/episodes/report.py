@@ -60,7 +60,7 @@ def start_episode_report(
             tasks.admit_provider_task(
                 episode.project_id,
                 report_request,
-                execution_host=report_request.execution_host,
+                machine_id=existing.stage_machine_id,
                 authorized_by=episode.authorized_by,
             )
         except AdmissionRefused:

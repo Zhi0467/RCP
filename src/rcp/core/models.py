@@ -217,20 +217,19 @@ class HiddenReadKeyEvidence(BaseModel):
 
 
 class HiddenReadScope(BaseModel):
-    """One immutable effective policy for any capability, on one execution host.
+    """One immutable effective policy for any capability, on one space card.
 
-    Empty execution_host denotes this backend's host, as in ProjectWriteScope;
-    execution_machine and os_account identify the machine account. Paths have
-    already been resolved there. Directories, literal files and glob patterns
-    remain distinct for provider rendering. Status includes browser/native-tool
-    gaps; hidden entries describe the effective denies on covered surfaces.
+    `machine_id` names the card, which owns the route; os_account is the
+    account the paths were resolved for. Directories, literal files and glob
+    patterns remain distinct for provider rendering. Status includes
+    browser/native-tool gaps; hidden entries describe the effective denies on
+    covered surfaces.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     schema_generation: Literal[1] = 1
-    execution_machine: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
-    execution_host: str = Field(max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
+    machine_id: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
     os_account: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
     # Canonical execution-account home; it locates the staged tool wrapper.
     account_home: HiddenReadPath | None = None
@@ -353,8 +352,7 @@ class WorktreeBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     repository_alias: str = Field(min_length=1)
-    machine: str = Field(min_length=1)
-    execution_host: str
+    machine_id: str = Field(min_length=1)
     shared_path: str = Field(min_length=1)
     worktree_path: str = Field(min_length=1)
     git_common_dir: str = Field(min_length=1)
@@ -442,6 +440,8 @@ SessionSourceId: TypeAlias = Literal[(*PROVIDER_IDS, "app_chat")]  # type: ignor
 
 
 class SourceRef(BaseModel):
+    """One cited session record. `machine` is a card id; older refs keep inert alias text."""
+
     machine: Annotated[str, GraphField("content")]
     truth_repository: Annotated[str, GraphField("content")]
     source: Annotated[SessionSourceId, GraphField("content")]

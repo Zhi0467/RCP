@@ -5,13 +5,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rcp.agents.launcher import AgentProcessControl
+from rcp.machine_cards import host_of
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 
-def require_remote_provider_quiescence(store: AppStore, host: str, root: str) -> None:
+def require_remote_provider_quiescence(store: AppStore, machine_id: str, root: str) -> None:
     """A task status or SSH exit is never a substitute for remote process absence.
+
+    The card's current host is the route asked, so an edited host is asked afresh.
 
     A host the probe cannot reach raises `StateUnreachable`, the typed word for
     a lost link, so the task this fails is classified as transport loss rather
@@ -22,7 +25,14 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
     started nothing. Without that, a launch which failed before the remote ran
     would fence its conversation until someone cleared the record by hand.
     """
-    for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root):
+    passes = store.unresolved_remote_provider_passes(machine_id, root)
+    try:
+        host = host_of(store, machine_id) if passes else ""
+    except KeyError as exc:
+        raise ValueError(
+            "The machine of a previous provider call was removed, so its process cannot be checked."
+        ) from exc
+    for operation_id, pid_file in passes:
         stopped = AgentProcessControl.remote_stopped(
             host, pid_file, raise_unreachable=True, absent_is_stopped=True
         )
@@ -40,6 +50,6 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
 
         if not any(
             pending_id == operation_id
-            for pending_id, _ in store.unresolved_remote_provider_passes(host, root)
+            for pending_id, _ in store.unresolved_remote_provider_passes(machine_id, root)
         ):
             finish_recorded_browser(store, operation_id)

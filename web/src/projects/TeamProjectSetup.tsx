@@ -21,6 +21,7 @@ import {
   createTeamProjectProvisioning,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
+  loadSpaceMachines,
 } from "../core/api";
 import {
   configureDesktopServerOperatorRoute,
@@ -49,6 +50,7 @@ import {
   formatCommandArgv,
   githubRepositoryName,
   invalidProjectProvisioningHash,
+  machineCardName,
   projectProvisioningHash,
   projectProvisioningRequestId,
   routeProvedBy,
@@ -57,6 +59,9 @@ import {
   withDefaultRepositoryName,
 } from "./projectSetupModel";
 import { OperatorActionPanel } from "./OperatorActionPanel";
+import { NewMachineForm } from "./MachineCard";
+import { AddMachineTile, MachineTile } from "./MachineTile";
+import { machineHostLabel } from "./spaceMachines";
 import { hasRow, rowOf } from "../core/agentRows";
 import type {
   AgentExecutionProfile,
@@ -65,6 +70,7 @@ import type {
   ProviderReadiness,
   SetupAgentProfile,
   SetupAgents,
+  SpaceMachine,
 } from "../core/types";
 
 interface Props {
@@ -73,12 +79,8 @@ interface Props {
   onCreated: (projectId: string) => void;
 }
 
-interface TeamMachineDraft {
-  id: number;
-  alias: string;
-  location: "local" | "ssh";
-  host: string;
-  os_account: string;
+interface TeamMachinePick {
+  machine_id: string;
   central_root: string;
 }
 
@@ -88,7 +90,7 @@ interface TeamRepositoryDraft {
   /** A typed name stays; otherwise the name follows the GitHub URL, else the project name. */
   nameEdited: boolean;
   source: string;
-  machine_alias: string;
+  machine_id: string;
 }
 
 const steps = [
@@ -108,7 +110,6 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
 ];
 const agentRows = agentProfiles.filter(({ id }) => hasRow(id));
 
-let machineSequence = 1;
 let repositorySequence = 1;
 
 const defaultProfile = (model = ""): SetupAgentProfile => ({
@@ -126,23 +127,16 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   const invalidResumeLink = invalidProjectProvisioningHash(initialHash);
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
-  const [machines, setMachines] = useState<TeamMachineDraft[]>([
-    {
-      id: machineSequence,
-      alias: "server",
-      location: "local",
-      host: "",
-      os_account: "rcp",
-      central_root: "",
-    },
-  ]);
+  const [spaceMachines, setSpaceMachines] = useState<SpaceMachine[]>([]);
+  const [machines, setMachines] = useState<TeamMachinePick[]>([]);
+  const [creatingMachine, setCreatingMachine] = useState(false);
   const [repositories, setRepositories] = useState<TeamRepositoryDraft[]>([
     {
       id: repositorySequence,
       alias: "research",
       nameEdited: false,
       source: "",
-      machine_alias: "server",
+      machine_id: "",
     },
   ]);
   const [stateRepository, setStateRepository] = useState("research");
@@ -198,6 +192,31 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                     },
               ]),
             ) as SetupAgents,
+        );
+      })
+      .catch((caught) => {
+        if (!stopped) setError(caught instanceof Error ? caught.message : String(caught));
+      });
+    return () => {
+      stopped = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    void loadSpaceMachines()
+      .then((cards) => {
+        if (stopped) return;
+        setSpaceMachines(cards);
+        const server = cards.find((card) => card.host === "");
+        if (!server) return;
+        setMachines((current) =>
+          current.length ? current : [{ machine_id: server.machine_id, central_root: "" }],
+        );
+        setRepositories((current) =>
+          current.map((item) =>
+            item.machine_id ? item : { ...item, machine_id: server.machine_id },
+          ),
         );
       })
       .catch((caught) => {
@@ -310,8 +329,35 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
 
   const canonicalMachine = useMemo(() => {
     const repository = repositories.find((item) => item.alias === stateRepository);
-    return repository?.machine_alias ?? machines[0]?.alias ?? "";
+    return repository?.machine_id ?? machines[0]?.machine_id ?? "";
   }, [machines, repositories, stateRepository]);
+
+  const cardFor = (machineId: string) =>
+    spaceMachines.find((card) => card.machine_id === machineId);
+
+  const pickMachine = (machineId: string) => {
+    setMachines((current) =>
+      current.some((item) => item.machine_id === machineId)
+        ? current
+        : [...current, { machine_id: machineId, central_root: "" }],
+    );
+    setRepositories((current) =>
+      current.map((item) => (item.machine_id ? item : { ...item, machine_id: machineId })),
+    );
+    setError(null);
+  };
+
+  const unpickMachine = (machineId: string) => {
+    const remaining = machines.filter((item) => item.machine_id !== machineId);
+    setMachines(remaining);
+    setRepositories((current) =>
+      current.map((item) =>
+        item.machine_id === machineId
+          ? { ...item, machine_id: remaining[0]?.machine_id ?? "" }
+          : item,
+      ),
+    );
+  };
 
   const nameRepository = (
     drafts: TeamRepositoryDraft[],
@@ -345,38 +391,26 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   const validate = (targetStep: number): string | null => {
     if (!name.trim()) return "Give this shared project a name.";
     if (targetStep < 1) return null;
-    const machineAliases = machines.map((machine) => machine.alias.trim());
+    const machineIds = machines.map((machine) => machine.machine_id);
     const repositoryAliases = repositories.map((repository) => repository.alias.trim());
-    if (machineAliases.some((alias) => !/^[a-z][a-z0-9-]{0,47}$/.test(alias))) {
-      return "Machine names must use lowercase letters, numbers, or hyphens.";
-    }
-    if (new Set(machineAliases).size !== machineAliases.length) {
-      return "Each machine needs a unique name.";
-    }
+    if (machineIds.length === 0) return "Pick at least one machine.";
     if (repositoryAliases.some((alias) => !/^[a-z][a-z0-9-]{0,47}$/.test(alias))) {
       return "Repository names must use lowercase letters, numbers, or hyphens.";
     }
     if (new Set(repositoryAliases).size !== repositoryAliases.length) {
       return "Each repository needs a unique name.";
     }
-    if (machines.some((machine) => machine.location === "ssh" && !machine.host.trim())) {
-      return "Every SSH machine needs an SSH host.";
-    }
-    if (machines.some((machine) => !machine.os_account.trim())) {
-      return "Every machine needs its exact Linux account.";
-    }
     if (
       machines.some(
         (machine) =>
-          machine.location === "ssh" &&
           machine.central_root.trim() &&
           (!machine.central_root.trim().startsWith("/") || machine.central_root.trim() === "/"),
       )
     ) {
       return "An explicit SSH central root must be a specific absolute path.";
     }
-    if (repositories.some((repository) => !machineAliases.includes(repository.machine_alias))) {
-      return "Every repository must name one configured machine.";
+    if (repositories.some((repository) => !machineIds.includes(repository.machine_id))) {
+      return "Every repository must name one picked machine.";
     }
     if (!repositoryAliases.includes(stateRepository)) {
       return "Choose a canonical state repository.";
@@ -399,13 +433,9 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       name,
       stateRepository,
       defaultAutoResearchInvocationCeiling,
-      machines: machines.map(({ id: _id, central_root, ...machine }) => ({
-        ...machine,
-        alias: machine.alias.trim(),
-        host: machine.location === "ssh" ? machine.host.trim() : "",
-        os_account: machine.location === "local" ? "rcp" : machine.os_account.trim(),
-        central_root:
-          machine.location === "ssh" && central_root.trim() ? central_root.trim() : null,
+      machines: machines.map(({ machine_id, central_root }) => ({
+        machine_id,
+        central_root: cardFor(machine_id)?.host && central_root.trim() ? central_root.trim() : null,
       })),
       repositories: repositories.map(({ id: _id, nameEdited: _nameEdited, ...repository }) => ({
         ...repository,
@@ -418,7 +448,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         runtime_id: agents[rowOf(id)].runtime,
         model: agents[rowOf(id)].model,
         reasoning: agents[rowOf(id)].reasoning,
-        machine_alias: canonicalMachine,
+        machine_id: canonicalMachine,
       })),
     });
 
@@ -679,71 +709,73 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               eyebrow="Team-owned execution"
               title="Place every central checkout on its exact machine account."
             />
-            <div className="team-machine-stack">
-              {machines.map((machine) => (
-                <MachineEditor
-                  key={machine.id}
-                  machine={machine}
-                  only={machines.length === 1}
-                  onChange={(patch) => {
-                    if (patch.alias !== undefined && patch.alias !== machine.alias) {
-                      setRepositories((current) =>
-                        current.map((item) =>
-                          item.machine_alias === machine.alias
-                            ? { ...item, machine_alias: patch.alias! }
-                            : item,
-                        ),
-                      );
-                    }
-                    setMachines((current) =>
-                      current.map((item) =>
-                        item.id === machine.id ? { ...item, ...patch } : item,
-                      ),
-                    );
-                    setError(null);
-                  }}
-                  onRemove={() => {
-                    const remaining = machines.filter((item) => item.id !== machine.id);
-                    const replacement = remaining[0]?.alias ?? "";
-                    setMachines(remaining);
-                    setRepositories((current) =>
-                      current.map((item) =>
-                        item.machine_alias === machine.alias
-                          ? { ...item, machine_alias: replacement }
-                          : item,
-                      ),
-                    );
-                  }}
-                />
-              ))}
-            </div>
-            <button
-              className="add-repository"
-              type="button"
-              onClick={() => {
-                machineSequence += 1;
-                setMachines((current) => [
-                  ...current,
-                  {
-                    id: machineSequence,
-                    alias: `machine-${machineSequence}`,
-                    location: "ssh",
-                    host: "",
-                    os_account: "",
-                    central_root: "",
-                  },
-                ]);
-              }}
-            >
-              <Plus size={16} /> <strong>Add machine</strong>
-            </button>
+            {creatingMachine ? (
+              <NewMachineForm
+                accountRequired
+                onCancel={() => setCreatingMachine(false)}
+                onCreated={(machine) => {
+                  setSpaceMachines((current) => [...current, machine]);
+                  pickMachine(machine.machine_id);
+                  setCreatingMachine(false);
+                }}
+              />
+            ) : (
+              <div className="machine-tiles" role="group" aria-label="Space machines">
+                {spaceMachines.map((machine) => {
+                  const picked = machines.some((item) => item.machine_id === machine.machine_id);
+                  return (
+                    <MachineTile
+                      key={machine.machine_id}
+                      machineId={machine.machine_id}
+                      name={machine.name}
+                      hostLabel={machineHostLabel(machine.host, "team")}
+                      account={machine.os_account}
+                      selected={picked}
+                      onSelect={() =>
+                        picked ? unpickMachine(machine.machine_id) : pickMachine(machine.machine_id)
+                      }
+                    />
+                  );
+                })}
+                <AddMachineTile label="New machine" onSelect={() => setCreatingMachine(true)} />
+              </div>
+            )}
+            {machines.some((machine) => cardFor(machine.machine_id)?.host) && (
+              <div className="team-machine-fields">
+                {machines
+                  .filter((machine) => cardFor(machine.machine_id)?.host)
+                  .map((machine) => (
+                    <label className="wide" key={machine.machine_id}>
+                      {machineCardName(spaceMachines, machine.machine_id)} central root (optional)
+                      <input
+                        value={machine.central_root}
+                        onChange={(event) => {
+                          const central_root = event.target.value;
+                          setMachines((current) =>
+                            current.map((item) =>
+                              item.machine_id === machine.machine_id
+                                ? { ...item, central_root }
+                                : item,
+                            ),
+                          );
+                          setError(null);
+                        }}
+                        placeholder="Defaults under the verified account home"
+                      />
+                    </label>
+                  ))}
+              </div>
+            )}
 
             <div className="repository-stack team-repository-stack">
               {repositories.map((repository) => (
                 <TeamRepositoryEditor
                   key={repository.id}
                   repository={repository}
-                  machines={machines}
+                  machines={machines.map(({ machine_id }) => ({
+                    machine_id,
+                    name: machineCardName(spaceMachines, machine_id),
+                  }))}
                   canonical={repository.alias === stateRepository}
                   only={repositories.length === 1}
                   onCanonical={() => setStateRepository(repository.alias)}
@@ -778,7 +810,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                     ),
                     nameEdited: false,
                     source: "",
-                    machine_alias: machines[0]?.alias ?? "",
+                    machine_id: machines[0]?.machine_id ?? "",
                   },
                 ]);
               }}
@@ -907,6 +939,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
         {!resumeLoading && !invalidResumeLink && step === 3 && request && (
           <ProvisioningStatus
             request={request}
+            spaceMachines={spaceMachines}
             events={events}
             desktop={desktop}
             connection={connection}
@@ -978,7 +1011,9 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
           <LedgerItem
             number="B"
             label="Central checkout owner"
-            value={canonicalMachine || "Not selected"}
+            value={
+              canonicalMachine ? machineCardName(spaceMachines, canonicalMachine) : "Not selected"
+            }
           />
           <LedgerItem
             number="C"
@@ -1000,101 +1035,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   );
 }
 
-function MachineEditor({
-  machine,
-  only,
-  onChange,
-  onRemove,
-}: {
-  machine: TeamMachineDraft;
-  only: boolean;
-  onChange: (patch: Partial<TeamMachineDraft>) => void;
-  onRemove: () => void;
-}) {
-  return (
-    <article className="team-machine-editor">
-      <header>
-        <Server size={16} />
-        <strong>{machine.alias || "Unnamed machine"}</strong>
-        {!only && (
-          <button
-            className="icon-button compact"
-            type="button"
-            aria-label={`Remove ${machine.alias}`}
-            onClick={onRemove}
-          >
-            <Trash2 size={14} />
-          </button>
-        )}
-      </header>
-      <div className="team-machine-fields">
-        <label>
-          Name
-          <input
-            value={machine.alias}
-            onChange={(event) => onChange({ alias: event.target.value })}
-          />
-        </label>
-        <label>
-          Location
-          <select
-            value={machine.location}
-            onChange={(event) =>
-              onChange(
-                event.target.value === "local"
-                  ? { location: "local", host: "", os_account: "rcp", central_root: "" }
-                  : { location: "ssh" },
-              )
-            }
-          >
-            <option value="local">RCP server</option>
-            <option value="ssh">SSH machine</option>
-          </select>
-        </label>
-        {machine.location === "ssh" ? (
-          <>
-            <label>
-              SSH host
-              <input
-                value={machine.host}
-                onChange={(event) => onChange({ host: event.target.value })}
-                placeholder="gpu.example.edu"
-              />
-            </label>
-            <label>
-              Linux account
-              <input
-                value={machine.os_account}
-                onChange={(event) => onChange({ os_account: event.target.value })}
-                placeholder="alice"
-              />
-            </label>
-            <label className="wide">
-              Central root (optional)
-              <input
-                value={machine.central_root}
-                onChange={(event) => onChange({ central_root: event.target.value })}
-                placeholder="Defaults under the verified account home"
-              />
-            </label>
-          </>
-        ) : (
-          <>
-            <label>
-              Linux account
-              <input value="rcp" disabled />
-            </label>
-            <label className="wide">
-              Central root
-              <input value="/var/lib/rcp/projects" disabled />
-            </label>
-          </>
-        )}
-      </div>
-    </article>
-  );
-}
-
 function TeamRepositoryEditor({
   repository,
   machines,
@@ -1105,7 +1045,7 @@ function TeamRepositoryEditor({
   onRemove,
 }: {
   repository: TeamRepositoryDraft;
-  machines: TeamMachineDraft[];
+  machines: Array<{ machine_id: string; name: string }>;
   canonical: boolean;
   only: boolean;
   onCanonical: () => void;
@@ -1152,12 +1092,13 @@ function TeamRepositoryEditor({
         <label>
           Central machine
           <select
-            value={repository.machine_alias}
-            onChange={(event) => onChange({ machine_alias: event.target.value })}
+            value={repository.machine_id}
+            onChange={(event) => onChange({ machine_id: event.target.value })}
           >
+            {!repository.machine_id && <option value="" disabled />}
             {machines.map((machine) => (
-              <option key={machine.alias} value={machine.alias}>
-                {machine.alias}
+              <option key={machine.machine_id} value={machine.machine_id}>
+                {machine.name}
               </option>
             ))}
           </select>
@@ -1234,6 +1175,7 @@ export function projectProvisioningCreateModeAvailable(
 
 export function ProvisioningStatus({
   request,
+  spaceMachines = [],
   events,
   desktop,
   connection,
@@ -1249,6 +1191,7 @@ export function ProvisioningStatus({
   onComplete,
 }: {
   request: ProjectProvisioningResponse;
+  spaceMachines?: SpaceMachine[];
   events: ServerCommandEvent[];
   desktop: boolean;
   connection: TeamConnectionMetadata | null;
@@ -1457,23 +1400,27 @@ export function ProvisioningStatus({
 
       <section className="provisioning-ledger">
         <h2>Machines</h2>
-        {request.machines.map((machine) => (
-          <article key={machine.alias}>
-            <strong>
-              {machine.alias} · {machine.status_label}
-            </strong>
-            <span>
-              {machine.location === "ssh"
-                ? `${machine.os_account}@${machine.host}`
-                : machine.os_account}
-            </span>
-            <code>
-              {machine.resolved_central_root ??
-                machine.intended_central_root ??
-                "Home-derived path pending"}
-            </code>
-          </article>
-        ))}
+        {request.machines.map((machine) => {
+          const card = spaceMachines.find((item) => item.machine_id === machine.machine_id);
+          return (
+            <article key={machine.machine_id}>
+              <strong>
+                {card?.name ?? machine.machine_id} · {machine.status_label}
+              </strong>
+              {card && (
+                <span>
+                  {machineHostLabel(card.host, "team")}
+                  {card.os_account ? ` · ${card.os_account}` : ""}
+                </span>
+              )}
+              <code>
+                {machine.resolved_central_root ??
+                  machine.intended_central_root ??
+                  "Home-derived path pending"}
+              </code>
+            </article>
+          );
+        })}
         <h2>Repositories</h2>
         {request.repositories.map((repository) => (
           <article key={repository.alias}>
@@ -1505,7 +1452,7 @@ export function ProvisioningStatus({
               className={`provider-role-chip ${providerChipTone(provider)}`}
               title={[
                 provider.status_label,
-                `${provider.provider} · ${provider.runtime_id} · ${provider.machine_alias}`,
+                `${provider.provider} · ${provider.runtime_id} · ${machineCardName(spaceMachines, provider.machine_id)}`,
                 provider.execution_account &&
                   `${provider.execution_account} · ${provider.binary_path}`,
               ]

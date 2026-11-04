@@ -34,6 +34,7 @@ from rcp.core.models import GraphState
 from rcp.core.validation.outcome_edges import edge_is_stale
 from rcp.core.validation.proposals import proposal_refresh_refusal, proposal_subject_node
 from rcp.keyed_locks import KeyedLocks
+from rcp.machine_cards import LoginKey
 from rcp.runs.proposal_refresh import (
     EDGE_REFRESH_SKILL_IDS,
     edge_refresh_key,
@@ -43,7 +44,7 @@ from rcp.runs.proposal_refresh import (
     proposal_refresh_skill_ids,
 )
 from rcp.service import ProjectService
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -216,10 +217,10 @@ def _light_refresh(
 def _lowest_effort(service: ProjectService) -> str | None:
     """The first effort the node-chat model's probed catalog lists, if one is cached."""
     profile = service.resolve_agent_profile("node_chat")
-    machine = service.manifest.machine_map[profile.run_on]
+    machine_id = service.manifest.base_machine
     readiness = service.launcher.cached_readiness(
-        LoginKey(profile.provider, machine.host, MACHINE_LOGIN_ID),
-        binary=service.launcher.provider_binary(profile.provider, machine.host),
+        LoginKey(profile.provider, machine_id, MACHINE_LOGIN_ID),
+        binary=service.launcher.provider_binary(profile.provider, machine_id),
     )
     efforts = next(
         (

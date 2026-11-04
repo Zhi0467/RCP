@@ -1140,6 +1140,7 @@ export function RepositoryEditor({
               {remoteMachines.map((machine) => (
                 <MachineTile
                   key={machine.machine_id}
+                  machineId={machine.machine_id}
                   name={machine.name}
                   hostLabel={machine.host}
                   account={machine.os_account}

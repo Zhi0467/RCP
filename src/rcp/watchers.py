@@ -30,6 +30,7 @@ from rcp.limits import (
     WATCHER_ERROR_MAX_CHARS,
     WATCHER_POLL_INTERVAL_SECONDS,
 )
+from rcp.machine_cards import host_of
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.storage import (
     AgentTaskKind,
@@ -140,7 +141,7 @@ class WatcherBinding(BaseModel):
     episode_id: str | None = None
     worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    execution_host: str = ""
+    machine_id: str
     continuation: WatcherContinuation
 
 
@@ -522,21 +523,9 @@ class _ProjectHistory(Protocol):
     def transition_trace_at_revision(self, revision: int) -> TransitionTrace | None: ...
 
 
-class _ExecutionMachine(Protocol):
-    host: str
-
-
-class _ProjectManifest(Protocol):
-    @property
-    def machine_map(self) -> Mapping[str, _ExecutionMachine]: ...
-
-
 class _ProjectService(Protocol):
     @property
     def history(self) -> _ProjectHistory: ...
-
-    @property
-    def manifest(self) -> _ProjectManifest: ...
 
 
 class _TaskExecution(Protocol):
@@ -557,7 +546,7 @@ class _EpisodeWakePreflight(Protocol):
     def session_id(self) -> str | None: ...
 
     @property
-    def stage_host(self) -> str | None: ...
+    def stage_machine_id(self) -> str | None: ...
 
     @property
     def stage_root(self) -> str | None: ...
@@ -624,7 +613,7 @@ class _WatcherNotificationStarter(Protocol):
         watcher_ids: list[str],
         *,
         authorized_by: AuthorizedHuman,
-        episode_stage_host: str | None = None,
+        episode_stage_machine_id: str | None = None,
         episode_stage_root: str | None = None,
         admission_fence: Callable[[Callable[[], None]], bool] | None = None,
     ) -> object | None: ...
@@ -857,19 +846,12 @@ class WatcherDelivery:
                         ),
                     )
                     return
-                current_machine = (
-                    service.manifest.machine_map.get(runtime.run_on)
-                    if runtime.run_on is not None
-                    else None
-                )
-                current_host = current_machine.host if current_machine is not None else None
-                binding_host = episode.execution_host if episode is not None else None
-                group_hosts = {item.execution_host for item in group}
+                machine_id = runtime.run_on
                 if (
-                    current_host is None
-                    or binding_host != current_host
-                    or (episode.stage_host or "") != current_host
-                    or group_hosts != {current_host}
+                    machine_id is None
+                    or episode.machine_id != machine_id
+                    or episode.stage_machine_id != machine_id
+                    or {item.machine_id for item in group} != {machine_id}
                 ):
                     if runtime.episode_id is not None:
                         self._store.record_experiment_episode_diagnostic(
@@ -969,7 +951,7 @@ class WatcherDelivery:
                     request,
                     watcher_ids,
                     authorized_by=authorized_by,
-                    episode_stage_host=preflight.stage_host,
+                    episode_stage_machine_id=preflight.stage_machine_id,
                     episode_stage_root=preflight.stage_root,
                     admission_fence=(
                         retry_generation.run_if_current if retry_generation is not None else None
@@ -1211,13 +1193,13 @@ def _retryable_sqlite_error(exc: Exception) -> bool:
 
 
 def _run_watcher_command(
-    shell_command: str, cwd: str, execution_host: str, timeout: float
+    shell_command: str, cwd: str, host: str, timeout: float
 ) -> subprocess.CompletedProcess[str]:
     """Use the same bounded shell and remote watchdog for checks and human actions."""
 
-    if execution_host:
+    if host:
         command = ssh_arguments(
-            execution_host,
+            host,
             shlex.join(
                 [
                     "python3",
@@ -1238,13 +1220,13 @@ def _run_watcher_command(
 
 def run_watcher_check(
     spec: WatchSpec,
-    execution_host: str = "",
+    host: str = "",
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
 ) -> WatcherCheckResult:
     """Ask a watcher from a fresh login shell without interpreting its command."""
 
     try:
-        result = _run_watcher_command(spec.check_command, spec.cwd, execution_host, timeout)
+        result = _run_watcher_command(spec.check_command, spec.cwd, host, timeout)
     except subprocess.TimeoutExpired as exc:
         detail = _process_error_output(exc.stderr, exc.stdout)
         message = f"check timed out after {timeout:g} seconds"
@@ -1284,7 +1266,7 @@ def run_watcher_check(
 
 def run_watcher_cancel(
     spec: WatchSpec,
-    execution_host: str = "",
+    host: str = "",
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
 ) -> str | None:
     """Run only a human-requested saved action; exit zero is command acceptance."""
@@ -1292,7 +1274,7 @@ def run_watcher_cancel(
     if spec.cancel_command is None:
         raise ValueError("This watcher has no cancel command.")
     try:
-        result = _run_watcher_command(spec.cancel_command, spec.cwd, execution_host, timeout)
+        result = _run_watcher_command(spec.cancel_command, spec.cwd, host, timeout)
     except subprocess.TimeoutExpired as exc:
         detail = _process_error_output(exc.stderr, exc.stdout)
         return _bounded_error(
@@ -1311,7 +1293,7 @@ def run_watcher_cancel(
 
 def validate_watch_specs(
     specs: list[WatchSpec],
-    execution_host: str,
+    host: str,
     *,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
@@ -1320,7 +1302,7 @@ def validate_watch_specs(
 
     if not specs:
         raise ValueError("a watch list must contain at least one watcher")
-    results = [check_runner(spec, execution_host, timeout) for spec in specs]
+    results = [check_runner(spec, host, timeout) for spec in specs]
     failures = [
         (index, specs[index], result)
         for index, result in enumerate(results)
@@ -1388,7 +1370,7 @@ def arm_watchers(
                 "episode": (record.episode_id, binding.episode_id),
                 "worker": (record.worker_id, binding.worker_id),
                 "graph target": (record.graph_target, binding.graph_target),
-                "execution host": (record.execution_host, binding.execution_host),
+                "machine": (record.machine_id, binding.machine_id),
                 "continuation": (record.continuation, binding.continuation),
             }
             mismatched = [
@@ -1438,7 +1420,7 @@ def arm_watchers(
     results = (
         validate_watch_specs(
             [spec for _, spec in fresh_specs],
-            binding.execution_host,
+            host_of(store, binding.machine_id),
             check_runner=check_runner,
             timeout=timeout,
         )
@@ -1460,7 +1442,7 @@ def arm_watchers(
                 episode_id=binding.episode_id,
                 worker_id=binding.worker_id,
                 graph_target=binding.graph_target,
-                execution_host=binding.execution_host,
+                machine_id=binding.machine_id,
                 cancel_command=spec.cancel_command,
                 check_command=spec.check_command,
                 log_path=spec.log_path,
@@ -1494,7 +1476,7 @@ def arm_watchers(
                     episode_id=binding.episode_id,
                     worker_id=binding.worker_id,
                     graph_target=binding.graph_target,
-                    execution_host=binding.execution_host,
+                    machine_id=binding.machine_id,
                     condition=condition,
                     armed_revision=state.revision,
                     continuation=binding.continuation,
@@ -1529,14 +1511,14 @@ def _active_twins(
             record.episode_id,
             record.worker_id,
             record.graph_target,
-            record.execution_host,
+            record.machine_id,
         )
         == (
             binding.node_id,
             binding.episode_id,
             binding.worker_id,
             binding.graph_target,
-            binding.execution_host,
+            binding.machine_id,
         )
     ]
     taken: set[str] = set()
@@ -1718,7 +1700,7 @@ class WatcherPoller:
             return current
         try:
             error = self.cancel_runner(
-                _spec_from_record(claimed), claimed.execution_host, self.timeout
+                _spec_from_record(claimed), host_of(self.store, claimed.machine_id), self.timeout
             )
         except Exception as exc:
             error = _bounded_error(f"Cancel command failed: {exc}")
@@ -1727,7 +1709,9 @@ class WatcherPoller:
         )
 
     def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
-        return self.check_runner(_spec_from_record(record), record.execution_host, self.timeout)
+        return self.check_runner(
+            _spec_from_record(record), host_of(self.store, record.machine_id), self.timeout
+        )
 
     def _check_records(self, records: list[WatcherRecord]) -> None:
         if records:

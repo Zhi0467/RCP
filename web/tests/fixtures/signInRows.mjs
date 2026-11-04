@@ -1,11 +1,11 @@
-// Login rows as `GET /api/providers/logins` serves them, for one host.
-export const HOST = "gpu-1.example";
+// Login rows as `GET /api/providers/logins` serves them, for one machine.
+export const MACHINE = "m-gpu-1";
 
 export function loginRow(overrides = {}) {
   return {
     provider: "claude",
     label: "Claude",
-    host: HOST,
+    machine_id: MACHINE,
     login_id: "",
     kind: "shared",
     owner_user_id: null,
@@ -39,7 +39,7 @@ export function signIn(overrides = {}) {
     attempt_id: "attempt-1",
     login_id: "",
     provider: "codex",
-    host: HOST,
+    machine_id: MACHINE,
     state: "pending",
     user_code: "ABCD-1234",
     verification_url: "https://example.invalid/device",
@@ -120,8 +120,8 @@ export const everyState = [
 
 export const settingsFor = (claude = "own_then_shared", codexSetting = "shared") => ({
   settings: [
-    { provider: "claude", host: HOST, setting: claude, changed_at: null, stored: true },
-    { provider: "codex", host: HOST, setting: codexSetting, changed_at: null, stored: true },
+    { provider: "claude", machine_id: MACHINE, setting: claude, changed_at: null, stored: true },
+    { provider: "codex", machine_id: MACHINE, setting: codexSetting, changed_at: null, stored: true },
   ],
   other_member_count: 4,
 });

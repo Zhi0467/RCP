@@ -161,7 +161,7 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     compute_commands = compute.add_subparsers(dest="compute_command", required=True)
     compute_probe = _leaf(compute_commands, "probe", "Probe one project's compute machine")
     compute_probe.add_argument("--project", dest="project_id", required=True, type=_project_id)
-    compute_probe.add_argument("machine_alias")
+    compute_probe.add_argument("machine_id", metavar="machine")
     compute_probe.add_argument(
         "--route", dest="compute_route", choices=("scheduler", "helper"), required=True
     )
@@ -444,7 +444,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             team_name=getattr(args, "team_name", None),
             request_id=getattr(args, "request_id", None),
             project_id=getattr(args, "project_id", None),
-            machine_alias=getattr(args, "machine_alias", None),
+            machine_id=getattr(args, "machine_id", None),
             compute_route=getattr(args, "compute_route", None),
             provider_update_provider=getattr(args, "provider_update_provider", None),
             member_id=getattr(args, "member_id", None),

@@ -760,7 +760,7 @@ def _merge_episode_branch(
                             service,
                             episode.episode_id,
                             run_on=(
-                                isolation.worktree.machine
+                                isolation.worktree.machine_id
                                 if (
                                     isolation := store.episode_isolation(
                                         project_id, episode.episode_id
@@ -1344,7 +1344,7 @@ def _resolved_auto_research_start_request(
         provider=profile.provider,
         model=profile.model,
         reasoning=profile.reasoning,
-        run_on=profile.run_on,
+        run_on=service.manifest.base_machine,
         # A code worktree narrows the run to its repository, as a chat worktree does.
         run_truth_scope=admitted_write_repositories(
             service.history.state(),
@@ -1377,7 +1377,7 @@ def _resolved_branch_merge_request(
         model=profile.model,
         reasoning=profile.reasoning,
         # A code-isolated merge runs where its worktree is.
-        run_on=run_on or profile.run_on,
+        run_on=run_on or service.manifest.base_machine,
         run_truth_scope=sorted(set(service.history.state().project_truth_scope)),
         chat_scope="project",
         mode="work",

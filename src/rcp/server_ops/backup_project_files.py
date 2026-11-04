@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from rcp.config import load_manifest, resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
@@ -493,7 +494,7 @@ class BackupProjectFileCaptureCoordinator:
             )
         except BackupCheckoutHostUnavailable as exc:
             discard_failed_project_capture(capture_root, project_root)
-            if _inventory_state_machine_alias(inventory) == exc.machine_alias:
+            if _inventory_state_machine_id(inventory) == exc.machine_id:
                 return BackupProjectCapture(
                     project_id=inventory.project_id,
                     home_space_id=inventory.home_space_id,
@@ -600,12 +601,15 @@ class BackupProjectFileCaptureCoordinator:
         )
         if not recovery.configuration.matches_manifest(manifest):
             raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")
-        verify_checkout_identities(recovery)
-        workspace = (
-            LocalStateWorkspace(copied_root, str(copied_root))
-            if copied_root is not None
-            else state_workspace_for_probe(manifest, self.data_dir)
-        )
+        with closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store:
+            verify_checkout_identities(
+                recovery, {card.machine_id: card for card in store.space_machines()}
+            )
+            workspace = (
+                LocalStateWorkspace(copied_root, str(copied_root))
+                if copied_root is not None
+                else state_workspace_for_probe(manifest, self.data_dir, store)
+            )
 
         with tempfile.TemporaryDirectory(
             prefix=f".sources-{inventory.project_id}-",
@@ -739,7 +743,7 @@ class BackupProjectFileCaptureCoordinator:
 
 
 def _inventory_state_is_remote(inventory: BackupSnapshotProjectInventory) -> bool:
-    return _inventory_state_machine_alias(inventory) is not None
+    return _inventory_state_machine_id(inventory) is not None
 
 
 def _uncaptured_project(
@@ -757,20 +761,20 @@ def _uncaptured_project(
     )
 
 
-def _inventory_state_machine_alias(
+def _inventory_state_machine_id(
     inventory: BackupSnapshotProjectInventory,
 ) -> str | None:
+    """The card holding a project's canonical state, when it is not the backend."""
+
     recovery = inventory.recovery
     if recovery is None:
         return None
     configuration = recovery.configuration
     repositories = {repository.alias: repository for repository in configuration.repositories}
-    machines = {machine.alias: machine for machine in configuration.machines}
     repository = repositories.get(configuration.state_repository)
-    if repository is None:
+    if repository is None or repository.machine in {"", BACKEND_MACHINE_ID}:
         return None
-    machine = machines.get(repository.machine)
-    return machine.alias if machine is not None and machine.host else None
+    return repository.machine
 
 
 def read_backup_project_file_capture_receipt(

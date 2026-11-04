@@ -35,9 +35,12 @@ def write_repositories(state: GraphState) -> list[str]:
 
 
 def readable_repositories(manifest: Manifest) -> list[RepositoryConfig]:
-    """Every repository of the project, in manifest order."""
+    """Every repository of the project on a machine, in manifest order.
 
-    return list(manifest.repositories)
+    A repository with no machine yet lives nowhere an agent can reach.
+    """
+
+    return [repository for repository in manifest.repositories if repository.machine]
 
 
 def admitted_write_repositories(

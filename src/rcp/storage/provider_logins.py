@@ -10,10 +10,10 @@ from typing import Literal
 from uuid import uuid4
 
 from rcp.limits import PROVIDER_LOGIN_DETAIL_MAX_CHARS, PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+from rcp.machine_cards import LoginKey
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     MACHINE_LOGIN_ID,
-    LoginKey,
     ProviderLoginAssignmentRecord,
     ProviderLoginSetting,
     ProviderLoginSettingRecord,
@@ -24,7 +24,7 @@ from rcp.storage.models import (
 RESTORED_LOGIN_DETAIL = (
     "This account was restored from an archive. Verify the sign-in on this machine."
 )
-_KEY_WHERE = "provider = ? AND host = ? AND login_id = ?"
+_KEY_WHERE = "provider = ? AND machine_id = ? AND login_id = ?"
 
 
 def migrate_per_member_provider_logins(connection: sqlite3.Connection) -> None:
@@ -115,7 +115,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             raise ValueError("Unknown provider login.")
         return ProviderLoginStateRecord(
             provider=key.provider,
-            host=key.host,
+            machine_id=key.machine_id,
             login_id=key.login_id,
         )
 
@@ -130,25 +130,25 @@ class ProviderLoginStoreMixin(StoreMixinBase):
     def provider_login_states(self) -> list[ProviderLoginStateRecord]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM provider_login_states WHERE removed_at IS NULL ORDER BY provider, host, login_id"
+                "SELECT * FROM provider_login_states WHERE removed_at IS NULL ORDER BY provider, machine_id, login_id"
             ).fetchall()
         return [ProviderLoginStateRecord(**dict(row)) for row in rows]
 
     def provider_logins(
-        self, provider: str, host: str, *, connection: sqlite3.Connection | None = None
+        self, provider: str, machine_id: str, *, connection: sqlite3.Connection | None = None
     ) -> list[ProviderLoginStateRecord]:
         with self._login_connection(connection) as db:
             rows = db.execute(
-                "SELECT * FROM provider_login_states WHERE provider=? AND host=? AND removed_at IS NULL ORDER BY login_id",
-                (provider, host),
+                "SELECT * FROM provider_login_states WHERE provider=? AND machine_id=? AND removed_at IS NULL ORDER BY login_id",
+                (provider, machine_id),
             ).fetchall()
         result = [ProviderLoginStateRecord(**dict(row)) for row in rows]
         if not any(row.login_id == MACHINE_LOGIN_ID for row in result):
-            result.insert(0, ProviderLoginStateRecord(provider=provider, host=host))
+            result.insert(0, ProviderLoginStateRecord(provider=provider, machine_id=machine_id))
         return result
 
     def add_provider_login(
-        self, provider: str, host: str, *, member_id: str | None = None, added_by: str
+        self, provider: str, machine_id: str, *, member_id: str | None = None, added_by: str
     ) -> ProviderLoginStateRecord:
         from rcp.providers import profile_for
 
@@ -156,7 +156,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             raise ValueError("OpenCode only supports the machine sign-in.")
         record = ProviderLoginStateRecord(
             provider=provider,
-            host=host,
+            machine_id=machine_id,
             login_id=str(uuid4()),
             member_id=member_id,
             added_by=added_by,
@@ -169,11 +169,13 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             if (
                 member_id is not None
                 and connection.execute(
-                    "SELECT 1 FROM provider_login_states WHERE provider=? AND host=? AND member_id=? AND removed_at IS NULL",
-                    (provider, host, member_id),
+                    "SELECT 1 FROM provider_login_states WHERE provider=? AND machine_id=? AND member_id=? AND removed_at IS NULL",
+                    (provider, machine_id, member_id),
                 ).fetchone()
             ):
-                raise ValueError("This member already has an own login for this provider and host.")
+                raise ValueError(
+                    "This member already has an own login for this provider and machine."
+                )
             self._write_provider_login_state(connection, record)
         return record
 
@@ -312,8 +314,8 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO provider_readiness_snapshots
-                (provider,host,login_id,binary,version,readiness_json,probed_at) VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(provider,host,login_id,binary) DO UPDATE SET version=excluded.version,
+                (provider,machine_id,login_id,binary,version,readiness_json,probed_at) VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(provider,machine_id,login_id,binary) DO UPDATE SET version=excluded.version,
                 readiness_json=excluded.readiness_json,probed_at=excluded.probed_at""",
                 (*key, record.binary, record.version, record.readiness_json, record.probed_at),
             )
@@ -352,14 +354,14 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         self,
         user_id: str,
         provider: str,
-        host: str,
+        machine_id: str,
         *,
         connection: sqlite3.Connection | None = None,
     ) -> ProviderLoginSettingRecord:
         with self._login_connection(connection) as db:
             row = db.execute(
-                "SELECT * FROM provider_login_settings WHERE user_id=? AND provider=? AND host IN (?, '*') ORDER BY CASE WHEN host=? THEN 0 ELSE 1 END LIMIT 1",
-                (user_id, provider, host, host),
+                "SELECT * FROM provider_login_settings WHERE user_id=? AND provider=? AND machine_id IN (?, '*') ORDER BY CASE WHEN machine_id=? THEN 0 ELSE 1 END LIMIT 1",
+                (user_id, provider, machine_id, machine_id),
             ).fetchone()
             if row:
                 return ProviderLoginSettingRecord(**dict(row))
@@ -369,22 +371,26 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         return ProviderLoginSettingRecord(
             user_id=user_id,
             provider=provider,
-            host=host,
+            machine_id=machine_id,
             setting="own" if kind == "team" else "shared",
         )
 
     def set_provider_login_setting(
-        self, user_id: str, provider: str, host: str, setting: ProviderLoginSetting
+        self, user_id: str, provider: str, machine_id: str, setting: ProviderLoginSetting
     ) -> ProviderLoginSettingRecord:
-        if host == "*":
+        if machine_id == "*":
             raise ValueError("Only the migration may write fallback settings.")
         record = ProviderLoginSettingRecord(
-            user_id=user_id, provider=provider, host=host, setting=setting, changed_at=self.now()
+            user_id=user_id,
+            provider=provider,
+            machine_id=machine_id,
+            setting=setting,
+            changed_at=self.now(),
         )
         with self.connection() as connection:
             connection.execute(
                 """INSERT INTO provider_login_settings VALUES(?,?,?,?,?)
-                ON CONFLICT(user_id,provider,host) DO UPDATE SET setting=excluded.setting,changed_at=excluded.changed_at""",
+                ON CONFLICT(user_id,provider,machine_id) DO UPDATE SET setting=excluded.setting,changed_at=excluded.changed_at""",
                 tuple(record.model_dump().values()),
             )
         return record
@@ -400,7 +406,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             ProviderLoginAssignmentRecord(**dict(row))
             if row
             else ProviderLoginAssignmentRecord(
-                provider=key.provider, host=key.host, login_id=key.login_id
+                provider=key.provider, machine_id=key.machine_id, login_id=key.login_id
             )
         )
 
@@ -432,8 +438,8 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             ) <= datetime.fromisoformat(current.limited_at):
                 return False
             connection.execute(
-                """INSERT INTO provider_login_assignments(provider,host,login_id,limited_at) VALUES(?,?,?,?)
-                ON CONFLICT(provider,host,login_id) DO UPDATE SET limited_at=excluded.limited_at""",
+                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at) VALUES(?,?,?,?)
+                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET limited_at=excluded.limited_at""",
                 (*key, self.now() if limited else None),
             )
         return True
@@ -472,8 +478,8 @@ class ProviderLoginStoreMixin(StoreMixinBase):
                     connection, self.provider_login_state(key, connection=connection)
                 )
             connection.execute(
-                """INSERT INTO provider_login_assignments(provider,host,login_id,last_assigned_at) VALUES(?,?,?,?)
-                ON CONFLICT(provider,host,login_id) DO UPDATE SET last_assigned_at=excluded.last_assigned_at""",
+                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,last_assigned_at) VALUES(?,?,?,?)
+                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET last_assigned_at=excluded.last_assigned_at""",
                 (*key, self.now()),
             )
         return key
@@ -487,9 +493,9 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         updates = ", ".join(
             f"{name}=excluded.{name}"
             for name in fields
-            if name not in {"provider", "host", "login_id"}
+            if name not in {"provider", "machine_id", "login_id"}
         )
         connection.execute(
-            f"INSERT INTO provider_login_states ({columns}) VALUES ({', '.join('?' for _ in fields)}) ON CONFLICT(provider,host,login_id) DO UPDATE SET {updates}",
+            f"INSERT INTO provider_login_states ({columns}) VALUES ({', '.join('?' for _ in fields)}) ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET {updates}",
             tuple(fields.values()),
         )

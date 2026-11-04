@@ -20,6 +20,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     RUN_STAGE_RETENTION_DAYS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
 from rcp.storage import AgentTaskRecord, AppStore, Artifact, ArtifactRevisionCandidateRecord
 from rcp.transport.run_stage import RemoteRunStage
@@ -85,10 +86,14 @@ def _read_source(
     if descriptor.kept_filename is not None:
         return scope, workspace().read_kept_artifact(descriptor.kept_filename), None
     root = candidate.stage_root if candidate else task.stage_root
-    host = candidate.stage_host if candidate else task.stage_host
+    machine_id = candidate.stage_machine_id if candidate else task.stage_machine_id
     if not root:
         raise FileNotFoundError("The original run stage is no longer retained.")
-    remote = RemoteRunStage(host).attach_artifact_source(root) if host else None
+    remote = (
+        RemoteRunStage(host_of(store, machine_id)).attach_artifact_source(root)
+        if machine_id is not None and machine_id != BACKEND_MACHINE_ID
+        else None
+    )
     if remote is not None:
         touched = remote.stage_last_touch()
     else:
@@ -110,7 +115,7 @@ def _read_source(
         )
     else:
         # Candidate provenance owns its exact saved root, independently of later task changes.
-        source_task = task.model_copy(update={"stage_root": root, "stage_host": host})
+        source_task = task.model_copy(update={"stage_root": root, "stage_machine_id": machine_id})
         directory = _local_chat_artifact_directory(store, source_task, scope)
         data = read_local_regular_file(
             directory, descriptor.name, max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES

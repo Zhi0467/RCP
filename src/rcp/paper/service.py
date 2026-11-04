@@ -50,7 +50,7 @@ class WritingSession(BaseModel):
     #: The umbrella provider name the session list shows.
     provider_label: str = ""
     native_session_id: str
-    execution_machine: str
+    machine_id: str
     project_id: str
     title: str | None = None
     model: str
@@ -119,12 +119,12 @@ class PaperService:
             connection.execute(
                 """
                 INSERT INTO writing_sessions (
-                    native_session_id, provider, runtime_id, execution_machine, project_id,
+                    native_session_id, provider, runtime_id, machine_id, project_id,
                     title, model, reasoning, created_at, last_resumed_at,
                     introduction_hash_examined, graph_revision_examined,
                     research_md_hash_examined
                 ) VALUES (
-                    :native_session_id, :provider, :runtime_id, :execution_machine, :project_id,
+                    :native_session_id, :provider, :runtime_id, :machine_id, :project_id,
                     :title, :model, :reasoning, :created_at, :last_resumed_at,
                     :introduction_hash_examined, :graph_revision_examined,
                     :research_md_hash_examined

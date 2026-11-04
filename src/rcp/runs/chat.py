@@ -62,6 +62,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
@@ -95,6 +96,7 @@ from rcp.storage import (
     AppStore,
     Artifact,
 )
+from rcp.storage.models import SpaceMachineRecord
 from rcp.storage.question_models import (
     SPACE_QUESTION_CAPABILITY,
     QuestionRecord,
@@ -310,7 +312,7 @@ def _chat_master_status(
     revoked = bool(record.stage_root) and execution.store.episode_report_rebootstrap_pending(
         record.project_id,
         session_id,
-        stage_host=record.stage_host,
+        stage_machine_id=record.stage_machine_id,
         stage_root=record.stage_root or "",
         owner="chat",
     )
@@ -715,7 +717,7 @@ def _commit_chat_prompt_state(
     snapshot_json = candidate.snapshot.model_dump_json()
     execution.store.commit_chat_session_context(
         provider=request.provider,
-        execution_machine=request.run_on,
+        machine_id=request.run_on,
         native_session_id=native_session_id,
         project_id=task.project_id,
         kind=kind,
@@ -760,7 +762,11 @@ def _prepare_local_chat_workspace(
         if task is None:
             raise ValueError("The local conversation stage has no durable task binding.")
     if saved_stage:
-        if task is None or task.stage_root != str(stage) or task.stage_host:
+        if (
+            task is None
+            or task.stage_root != str(stage)
+            or (task.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID
+        ):
             raise ValueError("The saved local conversation stage binding is unavailable.")
         workspace = _local_chat_workspace_for_task(execution.store, task)
         if workspace == stage:
@@ -782,7 +788,7 @@ def _prepare_local_chat_workspace(
                 project_id=task.project_id,
                 kind=task.kind,
                 chat_id=chat_id,
-                stage_host="",
+                stage_machine_id=BACKEND_MACHINE_ID,
                 stage_root=str(stage),
             )
             if layout is None and execution.store.chat_stage_has_prior_binding(
@@ -790,7 +796,7 @@ def _prepare_local_chat_workspace(
                 project_id=task.project_id,
                 kind=task.kind,
                 chat_id=chat_id,
-                stage_host="",
+                stage_machine_id=BACKEND_MACHINE_ID,
                 stage_root=str(stage),
             ):
                 _touch_local_stage(stage)
@@ -819,7 +825,7 @@ def _local_chat_workspace_for_task(store: AppStore, task: AgentTaskRecord) -> Pa
 
     if not task.stage_root:
         raise ValueError("The conversation's source stage is unavailable.")
-    if task.stage_host:
+    if (task.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID:
         raise ValueError("A remote conversation has no local workspace path.")
     chat_id = task.request.get("chat_id")
     if (
@@ -833,7 +839,7 @@ def _local_chat_workspace_for_task(store: AppStore, task: AgentTaskRecord) -> Pa
             project_id=task.project_id,
             kind=task.kind,
             chat_id=chat_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=task.stage_root,
         )
     )
@@ -1332,7 +1338,7 @@ def _chat_stage_name(
         raise ValueError("Chat requires a chat_id")
     if execution is not None:
         if execution.stage_root:
-            if execution.stage_host:
+            if (execution.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID:
                 stage_name = remote_stage_name(execution.stage_root) or ""
             else:
                 stage_name = Path(execution.stage_root).name
@@ -1363,7 +1369,7 @@ def _chat_stage_name(
 
 
 def open_remote_conversation_stage(
-    execution_host: str,
+    machine: SpaceMachineRecord,
     stage_name: str,
     execution: AgentTaskExecution | None,
     *,
@@ -1371,27 +1377,27 @@ def open_remote_conversation_stage(
 ) -> RemoteRunStage:
     """Open or attach the conversation's exact stage and checkpoint its binding."""
     if saved_stage:
-        root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
-        stage = RemoteRunStage(execution_host).attach(root)
+        root = _validated_remote_chat_resume_stage(execution, machine.machine_id, stage_name)
+        stage = RemoteRunStage(machine.host).attach(root)
     else:
-        stage = RemoteRunStage(execution_host).open(
+        stage = RemoteRunStage(machine.host).open(
             stage_name,
             reuse=True,
             protected_roots=_protected_run_stage_roots(
                 execution.store if execution is not None else None,
-                execution_host,
+                machine.machine_id,
             ),
         )
     stage.touch()
     assert stage.root is not None
     if execution is not None:
-        execution.checkpoint_stage(execution_host, str(stage.root))
+        execution.checkpoint_stage(machine.machine_id, str(stage.root))
     return stage
 
 
 def _validated_remote_chat_resume_stage(
     execution: AgentTaskExecution | None,
-    execution_host: str,
+    machine_id: str,
     stage_name: str,
 ) -> str:
     if execution is None or not execution.stage_root:
@@ -1399,7 +1405,7 @@ def _validated_remote_chat_resume_stage(
             "Cannot safely resume this chat because its saved stage is missing. "
             "Retry the turn from the beginning."
         )
-    if (execution.stage_host or "") != execution_host:
+    if (execution.stage_machine_id or "") != machine_id:
         raise ValueError(
             "Cannot safely resume this chat because its saved stage host does not match "
             "the execution machine. Retry the turn from the beginning."
@@ -1424,7 +1430,7 @@ def _validated_local_chat_resume_stage(
             "Retry the turn from the beginning."
         )
     stored = Path(execution.stage_root)
-    if execution.stage_host:
+    if (execution.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID:
         problem = "its saved stage host does not match the execution machine"
     elif stored.absolute() != expected.absolute() or stored.is_symlink() or not stored.is_dir():
         # A moved or copied data directory lands here: the saved path names the
@@ -1451,17 +1457,15 @@ def _chat_read_dirs(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     service: ProjectService,
-    execution_machine: str,
+    machine_id: str,
 ) -> list[Path]:
     """Provider-generic graph and exact repository roots outside chat scratch."""
-    read_dirs = [
-        Path(item.path) for item in context.repositories if item.machine == execution_machine
-    ]
+    read_dirs = [Path(item.path) for item in context.repositories if item.machine == machine_id]
     if remote_stage is not None:
         assert remote_stage.root is not None
         read_dirs.append(Path(str(remote_stage.root / "inputs")))
         state_repository = service.manifest.repository_map[service.manifest.state.repository]
-        if state_repository.machine == execution_machine:
+        if state_repository.machine == machine_id:
             state_root = Path(state_repository.path) / ".research"
             if str(state_root) not in {str(item) for item in read_dirs}:
                 read_dirs.append(state_root)
@@ -1474,22 +1478,18 @@ def _chat_read_dirs(
     return read_dirs
 
 
-def _machine_writable_paths(
-    service: ProjectService, execution_machine: str, store: AppStore | None
-) -> list[str]:
+def _machine_writable_paths(machine: SpaceMachineRecord, store: AppStore | None) -> list[str]:
     """The space-level writable paths granted on this execution machine."""
 
     if store is None:
         return []
-    machine = service.manifest.machine_map[execution_machine]
-    card = store.space_machine_for(machine.host)
-    return list(card.writable_paths) if card is not None else []
+    return list(machine.writable_paths)
 
 
 def _project_write_scope(
     context: ChatContext,
     service: ProjectService,
-    execution_machine: str,
+    machine: SpaceMachineRecord,
     *,
     workspace: Path,
     remote_stage: RemoteRunStage | None,
@@ -1580,7 +1580,7 @@ def _project_write_scope(
         manifest=service.manifest,
         truth_scope=write_repositories(service.history.state()),
         project_id=project_id,
-        execution_machine=execution_machine,
+        machine=machine,
         capability=capability,
         stage_root=stage_root,
         workspace_root=str(workspace),
@@ -1594,7 +1594,7 @@ def _project_write_scope(
         conversation_worktree=binding,
         include_shared_checkout=include_shared,
         machine_writable_paths=_machine_writable_paths(
-            service, execution_machine, execution.store if execution is not None else None
+            machine, execution.store if execution is not None else None
         ),
         additional_protected_write_paths=(
             [str(local_stage / "inputs")]
@@ -1799,8 +1799,8 @@ def reconcile_chat_question_answers(
                             }
                         ),
                         authorized_by=origin_task.authorized_by,
-                        execution_host=(
-                            (origin_task.stage_host or "") if origin_task.stage_root else None
+                        machine_id=(
+                            (origin_task.stage_machine_id or "") if origin_task.stage_root else None
                         ),
                     )
                 task = store.admit_chat_question_followup(question.question_id)

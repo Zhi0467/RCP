@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.artifact_comments import supports_comments
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
 from rcp.service import (
@@ -68,7 +69,7 @@ def artifact_edit_availability(
                 updated_at=now,
                 request={"provider": origin.request.get("provider")},
                 native_session_id=None if fresh else origin.native_session_id,
-                stage_host=None if fresh else origin.stage_host,
+                stage_machine_id=None if fresh else origin.stage_machine_id,
                 stage_root=None if fresh else origin.stage_root,
             )
         )
@@ -122,10 +123,13 @@ def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *,
     """Require resumable origin facts; availability skips SSH and content hashing."""
     available = not origin.history_only and bool(origin.native_session_id and origin.stage_root)
     if available:
-        if origin.stage_host:
+        if origin.stage_machine_id and origin.stage_machine_id != BACKEND_MACHINE_ID:
             if verify:
                 available = (
-                    RemoteRunStage(origin.stage_host).directory_exists(origin.stage_root) is True
+                    RemoteRunStage(host_of(store, origin.stage_machine_id)).directory_exists(
+                        origin.stage_root
+                    )
+                    is True
                 )
         else:
             stage = Path(origin.stage_root)
@@ -354,7 +358,7 @@ def admit_artifact_edit(
         master_operation_id=found[0] if found else None,
         master_sha256=found[1] if found else None,
         master_path=session_master_label("artifact-master", content) if content else None,
-        stage_host=origin.stage_host if not fresh else None,
+        stage_machine_id=origin.stage_machine_id if not fresh else None,
         stage_root=origin.stage_root if not fresh else None,
         reply_episode_id=reply_episode_id,
         episode_id=artifact.episode_id or origin.episode_id,
@@ -391,7 +395,7 @@ def admit_artifact_edit(
                 "provider": profile.provider,
                 "model": profile.model,
                 "reasoning": profile.reasoning,
-                "run_on": profile.run_on,
+                "run_on": service.manifest.base_machine,
             }
         )
     return admitted
@@ -405,12 +409,12 @@ def refused_artifact_edit_request(request: RunRequest) -> RunRequest:
         update={
             "session_id": None,
             "fork_session_id": None,
-            "fork_source_host": None,
+            "fork_source_machine_id": None,
             "fork_source_cwd": None,
             "artifact_edit": edit.model_copy(
                 update={
                     "fresh_session": True,
-                    "stage_host": None,
+                    "stage_machine_id": None,
                     "stage_root": None,
                     "master_operation_id": None,
                     "master_sha256": None,
@@ -437,7 +441,7 @@ def start_artifact_edit(
         tasks.admit_provider_task(
             project_id,
             request,
-            execution_host=edit.stage_host or "" if edit.stage_root else None,
+            machine_id=edit.stage_machine_id if edit.stage_root else None,
             graph_target=origin.graph_target,
             authorized_by=authorized_by,
         )
@@ -465,7 +469,11 @@ def start_artifact_edit(
         parent_operation_id=parent.operation_id if parent else None,
         attempt=parent.attempt + 1 if parent else 1,
         native_session_id=request.session_id,
-        stage_host=parent.stage_host if parent and continuation != "handoff" else edit.stage_host,
+        stage_machine_id=(
+            parent.stage_machine_id
+            if parent and continuation != "handoff"
+            else edit.stage_machine_id
+        ),
         stage_root=parent.stage_root if parent and continuation != "handoff" else edit.stage_root,
         phase="queued",
         last_activity_at=now,

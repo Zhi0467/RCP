@@ -552,7 +552,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                     SELECT run.operation_id, run.episode_id, run.kind, run.status, run.failure_kind,
                            run.created_at, run.last_activity_at, run.attempt,
                            run.parent_operation_id, run.native_session_id,
-                           run.history_only, run.stage_host, run.stage_root, run.visible,
+                           run.history_only, run.stage_machine_id, run.stage_root, run.visible,
                            run.rowid AS row_order,
                            invocation.actor_operation_id, invocation.role,
                            EXISTS (
@@ -734,10 +734,10 @@ class EpisodeStoreMixin(StoreMixinBase):
         connection.execute(
             """
             UPDATE episode_wrapups
-            SET native_session_id = NULL, stage_host = NULL, stage_root = NULL,
+            SET native_session_id = NULL, stage_machine_id = NULL, stage_root = NULL,
                 updated_at = ?
             WHERE state IN ('pending', 'running')
-              AND (native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL)
+              AND (native_session_id IS NOT NULL OR stage_machine_id IS NOT NULL OR stage_root IS NOT NULL)
             """,
             (now,),
         )
@@ -760,13 +760,13 @@ class EpisodeStoreMixin(StoreMixinBase):
         connection.execute(
             """
             UPDATE experiment_episode_state
-            SET native_session_id = NULL, stage_host = NULL, stage_root = NULL, updated_at = ?
+            SET native_session_id = NULL, stage_machine_id = NULL, stage_root = NULL, updated_at = ?
             WHERE episode_id IN (
                 SELECT episode_id FROM episodes
                 WHERE mode = 'experiment_loop'
                   AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
             )
-              AND (native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL)
+              AND (native_session_id IS NOT NULL OR stage_machine_id IS NOT NULL OR stage_root IS NOT NULL)
             """,
             (now,),
         )
@@ -827,7 +827,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                     """
                     UPDATE episode_wrapups
                     SET ending = 'stopped', partial = 1, native_session_id = NULL,
-                        stage_host = NULL, stage_root = NULL, receipt_json = ?,
+                        stage_machine_id = NULL, stage_root = NULL, receipt_json = ?,
                         receipt_sha256 = ?, state = 'skipped', diagnostic = ?,
                         updated_at = ?, finished_at = COALESCE(finished_at, ?)
                     WHERE episode_id = ?
@@ -1619,7 +1619,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 parent_operation_id=previous.operation_id,
                 runtime_id=previous.runtime_id,
                 native_session_id=previous.native_session_id,
-                stage_host=previous.stage_host,
+                stage_machine_id=previous.stage_machine_id,
                 stage_root=previous.stage_root,
                 phase="queued",
                 authorized_by=previous.authorized_by,
@@ -1837,7 +1837,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         project_id: str,
         native_session_id: str,
         *,
-        stage_host: str | None,
+        stage_machine_id: str | None,
         stage_root: str,
         owner: Literal["chat", "episode"] = "episode",
     ) -> bool:
@@ -1848,18 +1848,18 @@ class EpisodeStoreMixin(StoreMixinBase):
         an ordinary chat cannot clear the episode's pending reopening.
         """
 
-        session = (project_id, native_session_id, stage_host or "", stage_root)
+        session = (project_id, native_session_id, stage_machine_id or "", stage_root)
         with self.connection() as connection:
             reported = connection.execute(
                 """
                 SELECT MAX(revoked_at) AS reported_at FROM (
-                    SELECT run.project_id, run.native_session_id, run.stage_host,
+                    SELECT run.project_id, run.native_session_id, run.stage_machine_id,
                            run.stage_root, attempt.created_at AS revoked_at
                     FROM episode_report_attempts AS attempt
                     JOIN graph_runs AS run
                       ON run.operation_id = attempt.allocation_operation_id
                     UNION ALL
-                    SELECT project_id, native_session_id, stage_host, stage_root,
+                    SELECT project_id, native_session_id, stage_machine_id, stage_root,
                            created_at AS revoked_at
                     FROM graph_runs
                     WHERE kind = 'artifact_edit'
@@ -1867,7 +1867,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                       AND json_extract(request_json, '$.artifact_edit.launch_kind') = 'revoking'
                 )
                 WHERE project_id = ? AND native_session_id = ?
-                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                  AND COALESCE(stage_machine_id, '') = ? AND stage_root = ?
                 """,
                 session,
             ).fetchone()
@@ -1880,7 +1880,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                   ON master.operation_id = graph_runs.operation_id
                  AND master.role = 'session_master'
                 WHERE project_id = ? AND native_session_id = ?
-                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                  AND COALESCE(stage_machine_id, '') = ? AND stage_root = ?
                   AND kind IN ('node_chat', 'project_chat', 'auto_research')
                   AND json_extract(request_json, '$.artifact_edit') IS NULL
                   AND status = 'succeeded' AND master.created_at > ?
@@ -2303,7 +2303,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         required = {
             "allocation_operation_id": wrapup.allocation_operation_id,
             "provider": wrapup.provider,
-            "run_on": wrapup.run_on,
+            "machine_id": wrapup.machine_id,
             "native_session_id": wrapup.native_session_id,
             "stage_root": wrapup.stage_root,
             "skill_id": wrapup.skill_id,
@@ -2312,8 +2312,6 @@ class EpisodeStoreMixin(StoreMixinBase):
             "output_path": wrapup.output_path,
         }
         missing = sorted(name for name, value in required.items() if not value)
-        if wrapup.execution_host is None:
-            missing.append("execution_host")
         if missing:
             raise ValueError("episode wrap-up restart fence is incomplete: " + ", ".join(missing))
         if (
@@ -2323,14 +2321,15 @@ class EpisodeStoreMixin(StoreMixinBase):
             or wrapup.concluding_operation_id is None
             or task.parent_operation_id != wrapup.concluding_operation_id
             or task.native_session_id != wrapup.native_session_id
-            or (task.stage_host or "") != (wrapup.stage_host or "")
+            or (task.stage_machine_id or "") != (wrapup.stage_machine_id or "")
             or task.stage_root != wrapup.stage_root
             or task.episode_id != episode_id
         ):
             raise ValueError("the hidden report task does not match its wrap-up restart fence")
-        for field in ("provider", "run_on", "execution_host"):
-            if task.request.get(field) != getattr(wrapup, field):
-                raise ValueError(f"the hidden report task changed its frozen {field}")
+        if task.request.get("provider") != wrapup.provider:
+            raise ValueError("the hidden report task changed its frozen provider")
+        if task.request.get("run_on") != wrapup.machine_id:
+            raise ValueError("the hidden report task changed its frozen machine")
 
     def _insert_episode(
         self,
@@ -2416,11 +2415,11 @@ class EpisodeStoreMixin(StoreMixinBase):
             """
             INSERT INTO episode_wrapups (
                 episode_id, ending, partial, concluding_operation_id,
-                allocation_operation_id, provider, run_on, execution_host,
-                native_session_id, stage_host, stage_root, skill_id, skill_version,
+                allocation_operation_id, provider, machine_id,
+                native_session_id, stage_machine_id, stage_root, skill_id, skill_version,
                 output_name, output_path, receipt_json, receipt_sha256, state,
                 diagnostic, created_at, updated_at, finished_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
@@ -2429,10 +2428,9 @@ class EpisodeStoreMixin(StoreMixinBase):
                 record.concluding_operation_id,
                 record.allocation_operation_id,
                 record.provider,
-                record.run_on,
-                record.execution_host,
+                record.machine_id,
                 record.native_session_id,
-                record.stage_host,
+                record.stage_machine_id,
                 record.stage_root,
                 record.skill_id,
                 record.skill_version,
@@ -2462,10 +2460,9 @@ class EpisodeStoreMixin(StoreMixinBase):
             "partial",
             "concluding_operation_id",
             "provider",
-            "run_on",
-            "execution_host",
+            "machine_id",
             "native_session_id",
-            "stage_host",
+            "stage_machine_id",
             "stage_root",
             "skill_id",
             "skill_version",
@@ -2831,14 +2828,13 @@ def _migrate_campaign_wrapup(
         concluding_operation_id=concluding_operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=request.get("provider") if isinstance(request.get("provider"), str) else None,
-        run_on=request.get("run_on") if isinstance(request.get("run_on"), str) else None,
-        execution_host=(
+        machine_id=(
             request.get("execution_host")
             if isinstance(request.get("execution_host"), str)
             else None
         ),
         native_session_id=(report["native_session_id"] if report is not None else None),
-        stage_host=report["stage_host"] if report is not None else None,
+        stage_machine_id=report["stage_host"] if report is not None else None,
         stage_root=stage_root,
         skill_id="campaign-report" if report is not None else None,
         skill_version="legacy" if report is not None else None,
@@ -2853,7 +2849,11 @@ def _migrate_campaign_wrapup(
         finished_at=campaign["ended_at"] or campaign["updated_at"],
     )
     connection.execute("SELECT 1 FROM episodes WHERE episode_id = ?", (campaign_id,)).fetchone()
-    _insert_legacy_wrapup(connection, wrapup)
+    _insert_legacy_wrapup(
+        connection,
+        wrapup,
+        run_on=request.get("run_on") if isinstance(request.get("run_on"), str) else None,
+    )
     if report is None:
         return
     report_id = str(report["report_id"])
@@ -3360,7 +3360,15 @@ def _ops_pause_for_human(operations: list[object], control_node_id: str) -> bool
 def _insert_legacy_wrapup(
     connection: sqlite3.Connection,
     wrapup: EpisodeWrapupRecord,
+    *,
+    run_on: str | None = None,
 ) -> None:
+    """Write a schema-2 wrap-up row; migration 77 later maps its hosts to card ids.
+
+    Before that migration the row names machines by host, so `machine_id` and
+    `stage_machine_id` carry the host values here.
+    """
+
     connection.execute(
         """
         INSERT INTO episode_wrapups (
@@ -3379,10 +3387,10 @@ def _insert_legacy_wrapup(
             wrapup.concluding_operation_id,
             wrapup.allocation_operation_id,
             wrapup.provider,
-            wrapup.run_on,
-            wrapup.execution_host,
+            run_on,
+            wrapup.machine_id,
             wrapup.native_session_id,
-            wrapup.stage_host,
+            wrapup.stage_machine_id,
             wrapup.stage_root,
             wrapup.skill_id,
             wrapup.skill_version,

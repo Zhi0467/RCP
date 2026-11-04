@@ -348,3 +348,11 @@ export function routeProvedBy(
     probe.route.mode === route.mode
   );
 }
+
+/** A machine card's name, or its id when the card is not in the list. */
+export function machineCardName(
+  machines: ReadonlyArray<{ machine_id: string; name: string }>,
+  machineId: string,
+): string {
+  return machines.find((machine) => machine.machine_id === machineId)?.name ?? machineId;
+}

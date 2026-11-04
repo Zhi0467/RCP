@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from rcp.agents.project_repositories import readable_repositories
 from rcp.config import Manifest, load_manifest
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.transport import RepositoryAccess
 from rcp.transport.state import (
     SSHStateWorkspace,
@@ -81,7 +82,7 @@ class GroupContext(BaseModel):
 def build_group_context(
     service: ProjectService,
     store: AppStore | None,
-    execution_machine: str,
+    machine_id: str,
 ) -> GroupContext | None:
     """Resolve sibling reads; unavailable siblings remain visible but grant no access."""
     project_id = service._project_id
@@ -95,7 +96,6 @@ def build_group_context(
     ]
     if not sibling_ids:
         return None
-    execution_host = service.manifest.machine_map[execution_machine].host
     siblings = []
     for sibling_id in sibling_ids:
         record = None
@@ -103,27 +103,22 @@ def build_group_context(
             record = store.project(sibling_id)
             if record is None:
                 raise ValueError(f"Group project is unavailable: {sibling_id}")
-            manifest = _canonical_manifest(record.locator, service._data_dir)
+            manifest = _canonical_manifest(record.locator, service._data_dir, store)
 
             def pointer(
                 alias: str,
                 machine: str,
                 path: str,
-                manifest: Manifest = manifest,
                 sibling_id: str = sibling_id,
             ) -> RepositoryAccess:
-                host = manifest.machine_map[machine].host
-                if execution_host and not host:
+                assert store is not None
+                host = "" if machine == machine_id else host_of(store, machine)
+                if machine != machine_id and not host:
                     raise ValueError(
-                        f"Group project {sibling_id!r} machine {machine!r} has no SSH host "
-                        f"reachable from execution machine {execution_machine!r}."
+                        f"Group project {sibling_id!r} has a repository with no SSH host "
+                        "reachable from the agent's machine."
                     )
-                return RepositoryAccess(
-                    alias=alias,
-                    machine=machine,
-                    host="" if host == execution_host else host,
-                    path=path,
-                )
+                return RepositoryAccess(alias=alias, machine=machine, host=host, path=path)
 
             state_repository = manifest.repository_map[manifest.state.repository]
             root = PurePosixPath(state_repository.path) / ".research"
@@ -158,14 +153,13 @@ def build_group_context(
     )
 
 
-def _canonical_manifest(locator: str, data_dir: Path | None) -> Manifest:
+def _canonical_manifest(locator: str, data_dir: Path | None, store: AppStore) -> Manifest:
     bootstrap = load_manifest(locator)
-    state_repository = bootstrap.repository_map[bootstrap.state.repository]
-    if not bootstrap.machine_map[state_repository.machine].host:
+    if bootstrap.base_machine == BACKEND_MACHINE_ID:
         return bootstrap
     if data_dir is None:
         raise ValueError("Remote group project requires the space data directory.")
-    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    workspace = state_workspace_for_probe(bootstrap, data_dir, store)
     if not isinstance(workspace, SSHStateWorkspace):
         raise ValueError("Remote group project has no SSH state workspace.")
     return load_remote_workspace_manifest(

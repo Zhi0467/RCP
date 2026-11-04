@@ -12,6 +12,7 @@ from typing import BinaryIO, Literal, Protocol
 
 from rcp.agents.launcher import AgentLauncher, ProviderReadiness, work_like_launch_problem
 from rcp.config import AGENT_EXECUTION_PROFILES, AgentExecutionProfile, load_manifest
+from rcp.machine_cards import LoginKey, card
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.server_ops._local_primitives import canonical_json_bytes
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -41,7 +42,7 @@ from rcp.storage import (
     ProjectProvisioningProviderCheckRecord,
     ProjectProvisioningRequestRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 ProviderSelectorKind = Literal["request", "project"]
 _PROFILE_CAPABILITY: dict[AgentExecutionProfile, AgentCapability] = {
@@ -169,7 +170,7 @@ class _ProviderTarget:
     runtime_id: str
     model: str
     reasoning: str
-    machine_alias: str
+    machine_id: str
     location: Literal["local", "ssh"]
     host: str
     os_account: str
@@ -323,9 +324,9 @@ class ProviderReadinessCoordinator:
             raise ProviderReadinessRefused(
                 f"The selected provisioning request is already {request.status}."
             )
-        machines = {machine.alias: machine for machine in request.machines}
+        machines = {machine.machine_id: machine for machine in request.machines}
         targets = tuple(
-            self._request_target(number, index, check, machines[check.machine_alias])
+            self._request_target(number, index, check, machines[check.machine_id])
             for number, (index, check) in enumerate(enumerate(request.provider_checks), start=1)
         )
         return _ProviderBoundary(
@@ -349,6 +350,12 @@ class ProviderReadinessCoordinator:
         check: ProjectProvisioningProviderCheckRecord,
         machine: ProjectProvisioningMachineRecord,
     ) -> _ProviderTarget:
+        try:
+            route = card(self.store, machine.machine_id)
+        except KeyError as exc:
+            raise ProviderReadinessRefused(
+                "The provisioning request names a machine this space no longer has."
+            ) from exc
         return _target(
             number=number,
             profile=check.profile,
@@ -356,10 +363,10 @@ class ProviderReadinessCoordinator:
             runtime_id=check.runtime_id,
             model=check.model,
             reasoning=check.reasoning,
-            machine_alias=check.machine_alias,
-            location=machine.location,
-            host=machine.host,
-            os_account=machine.os_account,
+            machine_id=check.machine_id,
+            location="ssh" if route.host else "local",
+            host=route.host,
+            os_account=route.os_account,
             binary_path=check.binary_path,
             provider_index=index,
         )
@@ -381,13 +388,18 @@ class ProviderReadinessCoordinator:
         targets: list[_ProviderTarget] = []
         for number, profile_name in enumerate(AGENT_EXECUTION_PROFILES, start=1):
             configured = manifest.agent_profile(profile_name)
-            machine = manifest.machine_map[configured.run_on]
+            try:
+                machine = card(self.store, manifest.base_machine)
+            except KeyError as exc:
+                raise ProviderReadinessRefused(
+                    "The project's state repository has no machine in this space."
+                ) from exc
             os_account = machine.os_account or (
                 self.layout.service_account if not machine.host else ""
             )
             if not os_account:
                 raise ProviderReadinessRefused(
-                    f"Project machine {machine.alias!r} has no recorded remote execution account."
+                    f"Machine {machine.name!r} has no recorded remote execution account."
                 )
             targets.append(
                 _target(
@@ -397,11 +409,11 @@ class ProviderReadinessCoordinator:
                     runtime_id=configured.runtime,
                     model=configured.model,
                     reasoning=configured.reasoning,
-                    machine_alias=machine.alias,
+                    machine_id=machine.machine_id,
                     location="ssh" if machine.host else "local",
                     host=machine.host,
                     os_account=os_account,
-                    binary_path=self.store.provider_binary(configured.provider, machine.host),
+                    binary_path=self.store.provider_binary(configured.provider, machine.machine_id),
                     provider_index=None,
                 )
             )
@@ -476,7 +488,7 @@ class ProviderReadinessCoordinator:
                 None,
             )
         readiness = self.launcher.readiness(
-            LoginKey(target.provider, target.host, MACHINE_LOGIN_ID),
+            LoginKey(target.provider, target.machine_id, MACHINE_LOGIN_ID),
             binary=target.binary_path,
             refresh=True,
         )
@@ -701,7 +713,7 @@ class ProviderReadinessCoordinator:
                 "fields": (
                     NonsecretField(name="provider_profile", value=target.profile),
                     NonsecretField(name="provider", value=target.provider),
-                    NonsecretField(name="machine", value=target.machine_alias),
+                    NonsecretField(name="machine", value=target.machine_id),
                     NonsecretField(name="execution_account", value=target.os_account),
                 ),
                 "resume_argv": resume_argv or self._resume_argv(selector_kind, selector_id),
@@ -781,7 +793,7 @@ class ProviderReadinessCoordinator:
         return (
             NonsecretField(name="provider_profile", value=target.profile),
             NonsecretField(name="provider", value=target.provider),
-            NonsecretField(name="machine", value=target.machine_alias),
+            NonsecretField(name="machine", value=target.machine_id),
             NonsecretField(name="execution_account", value=proof["execution_account"]),
             NonsecretField(name="binary_path", value=proof["binary_path"]),
             NonsecretField(name="provider_version", value=proof["version"]),
@@ -838,7 +850,7 @@ def _target(
     runtime_id: str,
     model: str,
     reasoning: str,
-    machine_alias: str,
+    machine_id: str,
     location: Literal["local", "ssh"],
     host: str,
     os_account: str,
@@ -851,7 +863,7 @@ def _target(
         "runtime_id": runtime_id,
         "model": model,
         "reasoning": reasoning,
-        "machine_alias": machine_alias,
+        "machine_id": machine_id,
         "location": location,
         "host": host,
         "os_account": os_account,
@@ -865,7 +877,7 @@ def _target(
         runtime_id=runtime_id,
         model=model,
         reasoning=reasoning,
-        machine_alias=machine_alias,
+        machine_id=machine_id,
         location=location,
         host=host,
         os_account=os_account,
@@ -922,7 +934,7 @@ def _action_matches_target(step: ServerStep, target: _ProviderTarget) -> bool:
     return fields == {
         "provider_profile": target.profile,
         "provider": target.provider,
-        "machine": target.machine_alias,
+        "machine": target.machine_id,
         "execution_account": target.os_account,
     }
 

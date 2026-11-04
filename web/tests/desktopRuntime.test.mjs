@@ -21,6 +21,7 @@ import {
   prepareDesktopProjectTransfer,
   recoverTeamTransport,
   readDesktopTargetProjectProvisioningOptions,
+  readDesktopTargetSpaceMachines,
   returnDesktopToPersonal,
   reverifyBackendIdentity,
   runDesktopIncomingProjectProvision,
@@ -537,7 +538,9 @@ test("native transfer preparation bindings keep ids and provisioning intent publ
       targetProvisioning: {
         name: "Moved project",
         default_auto_research_invocation_ceiling: 3,
-        machines: [{ alias: "server", location: "local", os_account: "rcp" }],
+        machines: [{ machine_id: "card-gpu", central_root: "/srv/rcp" }],
+        repositories: [{ alias: "state", machine_id: "card-gpu" }],
+        state_machine_id: "card-gpu",
         provider_checks: [],
       },
     };
@@ -545,6 +548,7 @@ test("native transfer preparation bindings keep ids and provisioning intent publ
     await loadDesktopProjectTransfer(request.sourceRequestId);
     await runDesktopIncomingProjectProvision(request.sourceRequestId, () => undefined);
     await readDesktopTargetProjectProvisioningOptions(request.connectionId);
+    await readDesktopTargetSpaceMachines(request.connectionId);
     assert.deepEqual(
       invocations.map(({ command, args }) => ({ command, keys: Object.keys(args) })),
       [
@@ -552,14 +556,16 @@ test("native transfer preparation bindings keep ids and provisioning intent publ
         { command: "desktop_load_project_transfer", keys: ["sourceRequestId"] },
         { command: "desktop_run_incoming_project_provision", keys: ["sourceRequestId", "onEvent"] },
         { command: "desktop_read_target_project_provisioning_options", keys: ["connectionId"] },
+        { command: "desktop_read_target_space_machines", keys: ["connectionId"] },
       ],
     );
+    assert.equal(invocations.at(-1).args.connectionId, request.connectionId);
     assert.equal(invocations[0].args.request.source_request_id, request.sourceRequestId);
     assert.equal(invocations[0].args.request.target_request_id, request.targetRequestId);
     assert.equal(invocations[0].args.request.connection_id, request.connectionId);
     assert.equal(invocations[0].args.request.source_project_id, request.sourceProjectId);
     assert.equal(Object.hasOwn(invocations[0].args.request, "include_local_commits"), false);
-    assert.equal(invocations[0].args.request.target_provisioning.machines[0].host, "");
+    assert.deepEqual(invocations[0].args.request.target_provisioning, request.targetProvisioning);
     assert.equal(JSON.stringify(invocations).includes("archive_bytes"), false);
     assert.equal(JSON.stringify(invocations).includes("proof_bytes"), false);
     assert.equal(JSON.stringify(invocations).includes("member_token"), false);
@@ -669,7 +675,9 @@ test("native transfer reload keeps the complete provisioning action and review p
       targetProvisioning: {
         name: "Moved project",
         default_auto_research_invocation_ceiling: 3,
-        machines: [{ alias: "server", location: "local", os_account: "rcp" }],
+        machines: [{ machine_id: "card-server", central_root: null }],
+        repositories: [{ alias: "state", machine_id: "card-server" }],
+        state_machine_id: "card-server",
         provider_checks: [],
       },
     });

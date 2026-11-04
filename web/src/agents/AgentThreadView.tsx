@@ -28,6 +28,7 @@ import {
 import {
   AgentConfigChip,
   AgentConfigControls,
+  profileRunConfig,
   providerModels,
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
@@ -182,13 +183,8 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
         );
         const profile = readiness.agent_profiles.project_chat;
         return {
-          source: { provider_readiness: readiness.provider_readiness, machines: [] },
-          value: {
-            provider: profile.provider,
-            model: profile.model,
-            reasoning: profile.reasoning,
-            run_on: profile.run_on,
-          },
+          source: { provider_readiness: readiness.provider_readiness },
+          value: profileRunConfig(profile, readiness.run_on),
         };
       }
       // The Space thread runs on the backend's own machine, the one with no host.
@@ -203,7 +199,6 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
         provider_readiness: {
           [machine.machine_id]: machine.provider_readiness as Record<string, ProviderReadiness>,
         },
-        machines: [],
         registry: machine.providers,
       };
       const { model, reasoning = "" } = providerChange(

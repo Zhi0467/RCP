@@ -23,6 +23,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, host_of
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.auto_research import (
     AutoResearchCommandEffectResult,
@@ -40,7 +41,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.auto_research_questions import held_question_answer_mail
 from rcp.runs.experiment_admission import experiment_start_message
-from rcp.runs.provider_login import ProviderSignedOut, run_on_host
+from rcp.runs.provider_login import ProviderSignedOut, run_on_machine
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
 from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -56,7 +57,6 @@ from rcp.storage import (
     EpisodeRecord,
     WatcherContinuation,
 )
-from rcp.storage.models import LoginKey
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -181,19 +181,17 @@ def continue_auto_research(
     previous_root = AutoResearchRunRequest.model_validate(
         tasks._require_operation(binding.current_operation_id).request
     )
-    # The saved stage is frozen on one machine. Launch checks the alias against
-    # it; a repointed alias must refuse here, before the source is chained.
-    current_host = run_on_host(tasks.store, source.project_id, previous_root.run_on)
-    if current_host != (binding.stage_host or ""):
+    current_machine = run_on_machine(tasks.store, source.project_id, previous_root.run_on)
+    if current_machine != binding.stage_machine_id:
         raise ValueError(
-            "The orchestrator's saved stage is not on the machine its execution alias names "
-            "now, so its session cannot be resumed. Start a new Auto-research episode instead."
+            "The orchestrator's saved stage is not on the machine it runs on now, so its "
+            "session cannot be resumed. Start a new Auto-research episode instead."
         )
     tasks.admit_provider_task(
         source.project_id,
         previous_root.model_copy(update={"session_id": binding.native_session_id}),
         authorized_by=authorized_by,
-        execution_host=binding.stage_host or "",
+        machine_id=binding.stage_machine_id,
     )
     episode_id = str(uuid.uuid4())
     operation_id = str(uuid.uuid4())
@@ -256,7 +254,7 @@ def continue_auto_research(
         updated_at=now,
         status_message="Waiting for the background worker to resume the orchestrator.",
         native_session_id=binding.native_session_id,
-        stage_host=binding.stage_host,
+        stage_machine_id=binding.stage_machine_id,
         stage_root=binding.stage_root,
         estimate_seconds=estimate,
         estimate_samples=samples,
@@ -572,7 +570,7 @@ def start_auto_research_turn(
         )
 
     existing_actor = request.actor_operation_id != operation_id
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     if existing_actor:
         binding = tasks.store.auto_research_actor_binding(parent.operation_id)
@@ -593,7 +591,7 @@ def start_auto_research_turn(
                 "An Auto-research continuation cannot change its saved native session."
             )
         request = request.model_copy(update={"session_id": binding.native_session_id})
-        stage_host = binding.stage_host
+        stage_machine_id = binding.stage_machine_id
         stage_root = binding.stage_root
 
     request_data = request.model_dump(mode="json")
@@ -653,7 +651,7 @@ def start_auto_research_turn(
         episode.project_id,
         request,
         authorized_by=episode.authorized_by,
-        execution_host=(stage_host or "") if stage_root else None,
+        machine_id=stage_machine_id if stage_root else None,
     )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
@@ -662,7 +660,7 @@ def start_auto_research_turn(
         request,
         parent=parent,
         continuation=continuation,
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=stage_root,
         estimate_seconds=estimate,
         estimate_samples=samples,
@@ -1187,7 +1185,7 @@ def _start_auto_research_child_work_wake(
         attempt=current.attempt + 1,
         parent_operation_id=current.operation_id,
         native_session_id=current.native_session_id,
-        stage_host=current.stage_host,
+        stage_machine_id=current.stage_machine_id,
         stage_root=current.stage_root,
         estimate_seconds=estimate,
         estimate_samples=samples,
@@ -1345,7 +1343,7 @@ def resume_auto_research_child_work(
         attempt=previous.attempt + 1,
         parent_operation_id=previous.operation_id,
         native_session_id=None if fresh else previous.native_session_id,
-        stage_host=previous.stage_host,
+        stage_machine_id=previous.stage_machine_id,
         stage_root=previous.stage_root,
         estimate_seconds=previous.estimate_seconds,
         estimate_samples=previous.estimate_samples,
@@ -1654,7 +1652,7 @@ def resume_auto_research_child_experiment(
             continuation="resume",
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
-            stage_host=previous.stage_host,
+            stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             operation_id=operation_id,
         )
@@ -1783,7 +1781,7 @@ def retry_auto_research_task(
     starts_fresh = bool(rebound) or clean_orchestrator_retry or clean_worker_retry
     episode = auto_research_for_request(tasks, original.episode_id, original)
     lineage_login = ProviderAccounts.for_store(tasks.store).lineage_login(
-        original.provider, previous.stage_host or "", previous
+        original.provider, previous.stage_machine_id or BACKEND_MACHINE_ID, previous
     )
     # The existing allocation can wait queued for credentials without a new debit.
     with suppress(ProviderSignedOut):
@@ -1794,7 +1792,7 @@ def retry_auto_research_task(
             ),
             authorized_by=episode.authorized_by,
             lineage_login=lineage_login,
-            execution_host=(previous.stage_host or "") if previous.stage_root else None,
+            machine_id=previous.stage_machine_id if previous.stage_root else None,
         )
     logical_problem = (
         "the provider refused the saved native session"
@@ -1813,11 +1811,11 @@ def retry_auto_research_task(
     ):
         problem = logical_problem
     if problem is None and previous.stage_root:
-        if previous.stage_host:
+        if previous.stage_machine_id and previous.stage_machine_id != BACKEND_MACHINE_ID:
             try:
-                available = RemoteRunStage(previous.stage_host).directory_exists(
-                    previous.stage_root
-                )
+                available = RemoteRunStage(
+                    host_of(tasks.store, previous.stage_machine_id)
+                ).directory_exists(previous.stage_root)
             except Exception as exc:
                 if logical_problem is not None and _settle_unusable_recovery_if_stopping(
                     tasks, previous, logical_problem
@@ -1894,7 +1892,7 @@ def retry_auto_research_task(
             continuation="retry",
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
-            stage_host=previous.stage_host,
+            stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
         )
     except EpisodeNotRunning:
@@ -1959,13 +1957,13 @@ def _require_auto_research_retry_target_ready(
 
     if request.provider is None or request.run_on is None:
         raise ValueError("Auto-research Retry requires its pinned provider and execution machine.")
-    machine = service.manifest.machine_map.get(request.run_on)
-    if machine is None:
-        raise ValueError(f"unknown execution machine: {request.run_on}")
-    binary = service.launcher.provider_binary(request.provider, machine.host)
+    try:
+        binary = service.launcher.provider_binary(request.provider, request.run_on)
+    except KeyError as exc:
+        raise ValueError(f"unknown execution machine: {request.run_on}") from exc
     readiness = service.launcher.member_readiness(
         request.provider,
-        host=machine.host,
+        machine_id=request.run_on,
         binary=binary,
         refresh=True,
         member_id=authorized_by.user_id if authorized_by else None,
@@ -2026,14 +2024,14 @@ def auto_research_child_profile_choices(
     probed once, so a provider never checked on this machine is still offered.
     """
 
-    machine = service.manifest.machine_map.get(service.manifest.agent_profile(kind).run_on)
-    if machine is None:
+    machine_id = service.manifest.base_machine
+    if not machine_id:
         return {}
     choices: ChildProfileChoices = {}
     for provider in providers:
-        binary = service.launcher.provider_binary(provider, machine.host)
+        binary = service.launcher.provider_binary(provider, machine_id)
         readiness = service.launcher.member_readiness(
-            provider, host=machine.host, binary=binary, member_id=member_id
+            provider, machine_id=machine_id, binary=binary, member_id=member_id
         )
         if (
             readiness is None
@@ -2057,13 +2055,14 @@ def require_auto_research_provider_ready(
 
     if request.provider is None or request.run_on is None:
         raise ValueError("auto_research_profile_unavailable")
-    machine = service.manifest.machine_map.get(request.run_on)
-    if machine is None:
-        raise ValueError("machine_not_found")
+    try:
+        binary = service.launcher.provider_binary(request.provider, request.run_on)
+    except KeyError as exc:
+        raise ValueError("machine_not_found") from exc
     readiness = service.launcher.member_readiness(
         request.provider,
-        host=machine.host,
-        binary=service.launcher.provider_binary(request.provider, machine.host),
+        machine_id=request.run_on,
+        binary=binary,
         member_id=member_id,
         refresh=True,
     )
@@ -2354,7 +2353,7 @@ def _validate_existing_auto_research_wake(
         or existing.native_session_id != parent.native_session_id
         or not existing.stage_root
         or existing.stage_root != parent.stage_root
-        or (existing.stage_host or "") != (parent.stage_host or "")
+        or existing.stage_machine_id != parent.stage_machine_id
         or not binding_is_exact
     ):
         raise ValueError(
@@ -2442,7 +2441,7 @@ def _validate_existing_child_experiment_resume(
         or parent.episode_id != child_episode_id
         or existing.attempt != parent.attempt + 1
         or existing.native_session_id != parent.native_session_id
-        or (existing.stage_host or "") != (parent.stage_host or "")
+        or existing.stage_machine_id != parent.stage_machine_id
         or existing.stage_root != parent.stage_root
         or not isinstance(request, RunRequest)
         or request.patch_kind != "experiment_loop"
@@ -2625,7 +2624,7 @@ def _validate_existing_child_work_resume(
         or parent.episode_id != episode_id
         or existing.attempt != parent.attempt + 1
         or (not fresh and existing.native_session_id != expected_session)
-        or (existing.stage_host or "") != (parent.stage_host or "")
+        or existing.stage_machine_id != parent.stage_machine_id
         or existing.stage_root != parent.stage_root
         or not isinstance(request, RunRequest)
         or request.session_id != expected_session
@@ -2691,7 +2690,7 @@ def _validate_existing_child_work_wake(
         or existing.attempt != parent.attempt + 1
         or not existing.native_session_id
         or existing.native_session_id != parent.native_session_id
-        or (existing.stage_host or "") != (parent.stage_host or "")
+        or existing.stage_machine_id != parent.stage_machine_id
         or existing.stage_root != parent.stage_root
         or not existing.stage_root
         or not isinstance(request, RunRequest)
@@ -2743,9 +2742,11 @@ def _exact_child_resume_problem(tasks: BackgroundAgentTasks, record: AgentTaskRe
         or not tasks._session_is_rcp_owned(record)
     ):
         return "the attempt has no complete RCP-owned session and stage"
-    if record.stage_host:
+    if record.stage_machine_id and record.stage_machine_id != BACKEND_MACHINE_ID:
         try:
-            available = RemoteRunStage(record.stage_host).directory_exists(record.stage_root)
+            available = RemoteRunStage(
+                host_of(tasks.store, record.stage_machine_id)
+            ).directory_exists(record.stage_root)
         except Exception as exc:
             raise OSError(
                 "The saved provider workspace could not be checked because its remote "

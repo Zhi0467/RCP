@@ -46,7 +46,8 @@ from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 
 def remaining_startup_hold(started_at: float) -> float:
@@ -148,16 +149,9 @@ class ProviderCredentialGate:
         """Wait for exclusive use of this credential's startup window.
 
         The key is the credential's identity, not the turn's: one provider login
-        per execution account, where the host names the account. A blocked
-        caller waits rather than failing, because a staggered start is the
-        intended behavior and every holder releases within a bounded window.
-
-        Two spellings of one destination stay distinct here beyond case and
-        surrounding space. Proving them identical needs the remote account
-        probe, which is an SSH round trip this path cannot afford on every
-        turn, so an aliased duplicate of one machine keeps the old race.
-        Folding case is the safe direction: merging two keys only staggers
-        startups that did not need it.
+        per space card, and a space keeps one card per host. A blocked caller
+        waits rather than failing, because a staggered start is the intended
+        behavior and every holder releases within a bounded window.
         """
 
         claim = _Claim(self._lock_for(key), self._account_lock_path(key))
@@ -206,15 +200,13 @@ class ProviderCredentialGate:
         also need only the in-process lock.
         """
 
-        if key.host or key.login_id != MACHINE_LOGIN_ID:
+        if key.machine_id != BACKEND_MACHINE_ID or key.login_id != MACHINE_LOGIN_ID:
             return None
         return self._account_lock_root / f"{key.provider}.lock"
 
     def _lock_for(self, key: LoginKey) -> threading.Lock:
         with self._guard:
-            return self._locks.setdefault(
-                LoginKey(key.provider, key.host.strip().lower(), key.login_id), threading.Lock()
-            )
+            return self._locks.setdefault(key, threading.Lock())
 
 
 class _Claim:

@@ -37,6 +37,7 @@ from rcp.core.models import GraphState, HiddenReadScope, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card
 from rcp.providers import (
     AgentCapability,
     canonical_state_boundary,
@@ -46,7 +47,7 @@ from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
-from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES, MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES, MACHINE_LOGIN_ID
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
 from rcp.transport.run_stage import run_stage_partition
@@ -80,7 +81,7 @@ class _RecoveryStageStore(Protocol):
 
 
 class _RunStageProtectionStore(Protocol):
-    def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]: ...
+    def protected_run_stage_roots(self, stage_machine_id: str) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,9 @@ def checkpoint_local_recovery_stages(
 
     if not data_dir.is_absolute() or ".." in data_dir.parts:
         raise ValueError("recovery-stage inventory requires one absolute data directory")
-    bindings = tuple(item for item in store.run_stage_lifecycles() if not item.stage_host)
+    bindings = tuple(
+        item for item in store.run_stage_lifecycles() if item.stage_machine_id == BACKEND_MACHINE_ID
+    )
     if not bindings:
         return ()
 
@@ -385,7 +388,7 @@ def _make_local_tree_writable(target: Path) -> None:
 
 def _protected_run_stage_roots(
     store: _RunStageProtectionStore | None,
-    stage_host: str,
+    stage_machine_id: str,
 ) -> tuple[str, ...] | None:
     """Read cleanup exclusions, or decline cleanup when state cannot be read."""
 
@@ -395,7 +398,7 @@ def _protected_run_stage_roots(
     if reader is None:
         return None
     try:
-        return reader(stage_host)
+        return reader(stage_machine_id)
     except (sqlite3.Error, ValueError):
         return None
 
@@ -408,7 +411,7 @@ def _swept_stage_root(
 ) -> Path:
     """The local scratch root, with expired folders reclaimed before it is used."""
     stage_root = data_dir / "run-stage"
-    protected_roots = _protected_run_stage_roots(store, "")
+    protected_roots = _protected_run_stage_roots(store, BACKEND_MACHINE_ID)
     if protected_roots is not None:
         parents = [stage_root, *(data_dir / "agent-threads").glob("*/stages")]
         for parent in parents:
@@ -560,15 +563,15 @@ def _parent_task_contract_path(
     if record is None or record.parent_operation_id is None:
         raise ValueError("The resumed operation has no original task contract.")
 
-    stage_identity = (record.stage_host or "", record.stage_root)
+    stage_identity = (record.stage_machine_id or "", record.stage_root)
     ancestor_id: str | None = record.parent_operation_id
     while ancestor_id is not None:
         ancestor = execution.store.agent_task(ancestor_id)
         if ancestor is None:
             break
-        ancestor_stage = (ancestor.stage_host or "", ancestor.stage_root)
+        ancestor_stage = (ancestor.stage_machine_id or "", ancestor.stage_root)
         same_stage = ancestor_stage == stage_identity
-        legacy_stage = ancestor.stage_host is None and ancestor.stage_root is None
+        legacy_stage = ancestor.stage_machine_id is None and ancestor.stage_root is None
         if not same_stage and not legacy_stage:
             break
 
@@ -672,14 +675,21 @@ def _stage_task_contract(
     return contract_path, PromptFactory.launch_prompt(contract_path)
 
 
-def _pinned_to_profile(request: _RequestT, profile: AgentSurfaceConfig) -> _RequestT:
-    """Pin the resolved launch configuration onto the request the run will use."""
+def _pinned_to_profile(
+    request: _RequestT, profile: AgentSurfaceConfig, machine_id: str
+) -> _RequestT:
+    """Pin the resolved launch configuration onto the request the run will use.
+
+    `machine_id` is the base machine's card: every agent runs beside `.research/`.
+    """
+    if not machine_id:
+        raise ValueError("Assign a machine to the state repository.")
     return request.model_copy(
         update={
             "provider": profile.provider,
             "model": profile.model,
             "reasoning": profile.reasoning,
-            "run_on": profile.run_on,
+            "run_on": machine_id,
         }
     )
 
@@ -724,8 +734,7 @@ def _record_agent_launch_receipt(
             raise ValueError(f"{capability} launch receipt requires a provider")
         scope_payload = {
             "project_id": write_scope.project_id,
-            "execution_machine": write_scope.execution_machine,
-            "execution_host": write_scope.execution_host,
+            "machine_id": write_scope.machine_id,
             "capability": write_scope.capability,
             "canonical_write_roots": write_scope.writable_roots,
             "canonical_repository_roots": write_scope.repository_roots,
@@ -801,7 +810,6 @@ async def _prepare_hidden_read_scope(
     capability: AgentCapability,
     data_dir: Path | None = None,
     local_stage: Path | None = None,
-    execution_host: str = "",
     repository_inventory: list[RegisteredRepositoryRoot] | None = None,
 ) -> HiddenReadScope:
     """Resolve and stage the launch policy before its browser is acquired.
@@ -814,14 +822,14 @@ async def _prepare_hidden_read_scope(
         prepare_hidden_read_launch,
     )
 
-    execution_machine = request.run_on or execution_host or "unresolved"
+    machine_id = request.run_on or "unresolved"
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     try:
-        if execution is not None and execution.git_access is not None:
+        if execution is None:
+            raise ValueError("Hidden-read policy needs the task's space store.")
+        if execution.git_access is not None:
             await execution.git_access.prepare(ProviderProcessEnvironment())
-        machine = service.manifest.machine_map[request.run_on]
-        execution_host = machine.host
-        card = execution.store.space_machine_for(machine.host) if execution is not None else None
+        machine = card(execution.store, machine_id)
         history = service.history
         if isinstance(history, BranchHistoryManager):
             history = history.parent
@@ -832,37 +840,33 @@ async def _prepare_hidden_read_scope(
         return await asyncio.to_thread(
             prepare_hidden_read_launch,
             manifest=service.manifest,
-            execution_machine=request.run_on,
+            machine=machine,
             provider=request.provider,
             capability=capability,
             stage_root=str(
                 remote_stage.root if remote_stage is not None else local_stage or workspace
             ),
             workspace_root=str(workspace),
-            app_data_dir=data_dir
-            or (execution.store.path.parent if execution is not None else None),
+            app_data_dir=data_dir or execution.store.path.parent,
             remote_stage=remote_stage,
             repository_inventory=(
                 repository_inventory
                 if repository_inventory is not None
                 else service.repository_ownership_inventory(project_id=project_id)
             ),
-            machine_hidden_folders=list(card.hidden_folders) if card is not None else [],
-            machine_provider_paths=list(card.provider_paths.values()) if card is not None else [],
-            git_access=execution.git_access if execution is not None else None,
+            machine_hidden_folders=list(machine.hidden_folders),
+            machine_provider_paths=list(machine.provider_paths.values()),
+            git_access=execution.git_access,
             browser_enabled=bool(getattr(request, "browser_requested", False)),
             thread_owner=(
                 execution.store.private_chat_owner(request.chat_id)
-                if execution is not None
-                and isinstance(request, RunRequest)
+                if isinstance(request, RunRequest)
                 and request.chat_id is not None
                 and task is not None
                 and task.kind in {"space_chat", "project_chat"}
                 else None
             ),
-            member_ids=tuple(member.user_id for member in execution.store.space_users())
-            if execution is not None
-            else (),
+            member_ids=tuple(member.user_id for member in execution.store.space_users()),
         )
     except HiddenFolderRejected:
         raise
@@ -870,7 +874,7 @@ async def _prepare_hidden_read_scope(
         from rcp.agents.provider_environment import unhidden_read_scope
 
         logging.getLogger(__name__).exception("Hidden-read preparation failed; running unhidden")
-        return unhidden_read_scope(execution_machine=execution_machine, host=execution_host)
+        return unhidden_read_scope(machine_id=machine_id)
 
 
 async def _stream_agent_events(
@@ -906,8 +910,13 @@ async def _stream_agent_events(
     """
     from rcp.runs.codex_resume import record_refusal, start_context
 
+    machine_id = request.run_on
+    if not machine_id:
+        outcome.failed = True
+        yield _sse(AgentEvent(event="error", text="Assign a machine to the state repository."))
+        return
     if session_id is None:
-        history = start_context(execution, execution_host)
+        history = start_context(execution, machine_id)
         if history:
             prompt += "\n\n" + history
     if execution is not None and write_scope is not None:
@@ -927,7 +936,7 @@ async def _stream_agent_events(
     fork: dict[str, str] = {}
     # Only a chat request names a fork, recorded by its first turn's admission.
     if isinstance(request, RunRequest) and request.fork_session_id and session_id is None:
-        if request.fork_source_host != execution_host or not request.fork_source_cwd:
+        if request.fork_source_machine_id != machine_id or not request.fork_source_cwd:
             outcome.failed = True
             yield _sse(
                 AgentEvent(event="error", text="The source session's execution machine changed.")
@@ -959,14 +968,11 @@ async def _stream_agent_events(
             execution=execution,
             capability=capability,
             data_dir=data_dir,
-            execution_host=execution_host,
         )
     if hidden_read_scope is None:
         from rcp.agents.provider_environment import unhidden_read_scope
 
-        hidden_read_scope = unhidden_read_scope(
-            execution_machine=request.run_on or execution_host or "local", host=execution_host
-        )
+        hidden_read_scope = unhidden_read_scope(machine_id=machine_id)
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
         if execution is not None and remote_stage is not None and remote_stage.root
@@ -994,7 +1000,7 @@ async def _stream_agent_events(
                 await asyncio.to_thread(
                     require_remote_provider_quiescence,
                     execution.store,
-                    execution_host,
+                    machine_id,
                     str(remote_stage.root),
                 )
             await asyncio.to_thread(remote_stage.finalize_inputs)
@@ -1004,13 +1010,13 @@ async def _stream_agent_events(
             yield _sse(AgentEvent(event="error", text=str(exc)))
             return
     assert request.provider is not None
-    login_key = LoginKey(request.provider, execution_host, MACHINE_LOGIN_ID)
+    login_key = LoginKey(request.provider, machine_id, MACHINE_LOGIN_ID)
     accounts = ProviderAccounts.for_store(execution.store) if execution is not None else None
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     inputs = (
         accounts.turn_inputs(
             request.provider,
-            execution_host,
+            machine_id,
             session_id=session_id,
             exclude_operation_id=execution.operation_id,
             task=task,
@@ -1028,7 +1034,7 @@ async def _stream_agent_events(
         assert inputs is not None
         resolved, reason = accounts.resolve_login(
             request.provider,
-            execution_host,
+            machine_id,
             task.authorized_by.user_id if task is not None and task.authorized_by else None,
             lineage_login=inputs.lineage_login,
             previous=inputs.previous,
@@ -1111,6 +1117,7 @@ async def _stream_agent_events(
             read_dirs=read_dirs,
             write_dirs=write_dirs,
             write_scope=write_scope,
+            machine_id=machine_id,
             host=execution_host,
             control=execution.control if execution is not None else None,
             remote_pid_file=remote_pid_file,
@@ -1166,7 +1173,7 @@ async def _stream_agent_events(
                 remote_pid_file = event.text
                 execution.store.begin_remote_provider_pass(
                     execution.operation_id,
-                    execution_host,
+                    machine_id,
                     str(remote_stage.root),
                     remote_pid_file,
                     supervised=supervise_remote,
@@ -1242,6 +1249,7 @@ async def _stream_agent_events(
                     execution,
                     provider=request.provider,
                     session_id=session_id or fork.get("fork_session_id"),
+                    machine_id=machine_id,
                     host=execution_host,
                     error=event.text,
                 )
@@ -1400,24 +1408,24 @@ def _stage_context_paths(
     context: RunContext | ChatContext | CoachContext,
     service: ProjectService,
     stage: RemoteRunStage,
-    execution_machine: str,
+    machine_id: str,
 ) -> dict[str, object]:
     """Repository and materialized-state pointers a remote agent can open."""
     repositories = []
     for repository in context.repositories:
-        if repository.machine == execution_machine:
+        if repository.machine == machine_id:
             repositories.append(repository.model_copy(update={"host": ""}))
         elif not repository.host:
             raise StateUnavailable(
-                f"Repository {repository.alias!r} is on {repository.machine!r}, which has no "
-                f"SSH host reachable from execution machine {execution_machine!r}. Run the "
-                "agent on that repository's machine or configure a reachable host."
+                f"Repository {repository.alias!r} is on a machine with no SSH host reachable "
+                "from the agent's machine. Run the agent on that repository's machine or "
+                "configure a reachable host."
             )
         else:
             repositories.append(repository)
     updates: dict[str, object] = {"repositories": repositories}
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
-    if state_repository.machine != execution_machine:
+    if state_repository.machine != machine_id:
         raise StateUnavailable(
             "Graph-writing agents must run on the canonical state machine; "
             "cross-machine state staging is forbidden."

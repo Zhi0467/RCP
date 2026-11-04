@@ -246,7 +246,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 record.node_id,
                 record.episode_id,
                 record.worker_id,
-                record.execution_host,
+                record.machine_id,
                 record.continuation.model_dump_json(),
             )
             for record in records
@@ -312,7 +312,7 @@ class WatcherStoreMixin(StoreMixinBase):
             "node_id",
             "episode_id",
             "worker_id",
-            "execution_host",
+            "machine_id",
             "continuation",
             "group_id",
             "group_label",
@@ -430,7 +430,7 @@ class WatcherStoreMixin(StoreMixinBase):
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, node_id, episode_id, graph_target_json, execution_host,
+                chat_id, node_id, episode_id, graph_target_json, machine_id,
                 check_command, log_path, cwd, graph_condition_json, armed_revision,
                 continuation_json, status, created_at, last_checked_at,
                 last_exit_code, last_error, completed_at, next_check_at,
@@ -449,7 +449,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 record.node_id,
                 record.episode_id,
                 graph_target_json(record.graph_target),
-                record.execution_host,
+                record.machine_id,
                 check_command,
                 log_path,
                 cwd,
@@ -1198,7 +1198,7 @@ class WatcherStoreMixin(StoreMixinBase):
                     first.graph_target.key,
                     "experiment_loop",
                     first.node_id,
-                    first.execution_host,
+                    first.machine_id,
                     self._automatic_watcher_delivery_policy(first.continuation),
                 )
                 if first.continuation.patch_kind == "experiment_loop"
@@ -1208,7 +1208,7 @@ class WatcherStoreMixin(StoreMixinBase):
                     first.origin_task_kind,
                     first.chat_id,
                     first.node_id,
-                    first.execution_host,
+                    first.machine_id,
                     self._automatic_watcher_delivery_policy(first.continuation),
                 )
             )
@@ -1341,7 +1341,7 @@ class WatcherStoreMixin(StoreMixinBase):
                             "experiment_loop",
                             item.node_id,
                             item.graph_target.key,
-                            item.execution_host,
+                            item.machine_id,
                             self._automatic_watcher_delivery_policy(item.continuation),
                         )
                         if item.continuation.patch_kind == "experiment_loop"
@@ -1349,7 +1349,7 @@ class WatcherStoreMixin(StoreMixinBase):
                             item.origin_task_kind,
                             item.chat_id,
                             item.node_id,
-                            item.execution_host,
+                            item.machine_id,
                             self._watcher_delivery_policy(item.continuation),
                         )
                     )

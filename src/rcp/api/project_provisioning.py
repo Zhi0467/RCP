@@ -30,6 +30,7 @@ from rcp.core.operations import SetProjectTruthScopeOperation
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.policies import provisioning as provisioning_policy
 from rcp.policies import transfer as transfer_policy
 from rcp.project_transfer import capture_project_transfer_source
@@ -135,21 +136,17 @@ class ProjectCreationControl(_StrictModel):
 
 
 class ProjectProvisioningMachineRequest(_StrictModel):
-    alias: str
-    location: Literal["local", "ssh"]
-    host: str = ""
-    os_account: str
+    """One space card a request places repositories on; the backend's root is installed."""
+
+    machine_id: str
     central_root: str | None = None
 
     def intent(self) -> ProjectProvisioningMachineIntent:
         central_root = self.central_root
-        if self.location == "local" and central_root is None:
+        if self.machine_id == BACKEND_MACHINE_ID and central_root is None:
             central_root = str(DEFAULT_SERVER_LAYOUT.projects_root)
         return ProjectProvisioningMachineIntent(
-            alias=self.alias,
-            location=self.location,
-            host=self.host,
-            os_account=self.os_account,
+            machine_id=self.machine_id,
             central_root=central_root,
         )
 
@@ -157,7 +154,7 @@ class ProjectProvisioningMachineRequest(_StrictModel):
 class ProjectProvisioningRepositoryRequest(_StrictModel):
     alias: str
     source: str | None = None
-    machine_alias: str
+    machine_id: str
     count_as_project_truth: bool = True
 
     @field_validator("source")
@@ -172,7 +169,7 @@ class ProjectProvisioningRepositoryRequest(_StrictModel):
         return ProjectProvisioningRepositoryIntent(
             alias=self.alias,
             repository=parse_github_repository_ref(self.source) if self.source else None,
-            machine_alias=self.machine_alias,
+            machine_id=self.machine_id,
             count_as_project_truth=self.count_as_project_truth,
         )
 
@@ -208,11 +205,11 @@ class ProjectProvisioningCreateRequest(_StrictModel):
                 f"missing={sorted(missing)}"
             )
         repository_machines = {
-            repository.alias: repository.machine_alias for repository in self.repositories
+            repository.alias: repository.machine_id for repository in self.repositories
         }
         canonical_machine = repository_machines.get(self.state_repository)
         if canonical_machine is not None and any(
-            check.machine_alias != canonical_machine for check in self.provider_checks
+            check.machine_id != canonical_machine for check in self.provider_checks
         ):
             raise ValueError("every provider profile must run on the canonical state machine")
         return self
@@ -243,12 +240,12 @@ class ProjectRepositoryAddition(_StrictModel):
             raise ValueError("Add a repository from exactly one GitHub URL or folder.")
         return self
 
-    def intent(self, machine_alias: str) -> ProjectProvisioningRepositoryIntent:
+    def intent(self, machine_id: str) -> ProjectProvisioningRepositoryIntent:
         return ProjectProvisioningRepositoryIntent(
             alias=self.alias,
             repository=parse_github_repository_ref(self.source) if self.source else None,
             existing_path=self.path,
-            machine_alias=machine_alias,
+            machine_id=machine_id,
             count_as_project_truth=self.count_as_project_truth,
         )
 
@@ -276,16 +273,14 @@ class ProjectProvisioningCompleteRequest(_StrictModel):
 class ProjectTransferRepositorySourceRequest(_StrictModel):
     alias: str
     repository: GitHubRepositoryRef | None
-    machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
 
 class ProjectTransferSourceConfigurationRequest(_StrictModel):
     source_rcp_version: str
     source_schema_generation: int = Field(ge=1)
-    record_schema_version: Literal[2, 3, 4, 5, 6, 7] | None = None
+    record_schema_version: Literal[8]
     supported_archive_codecs: list[str] = Field(min_length=1, max_length=16)
-    machine_aliases: list[str] = Field(min_length=1, max_length=32)
     repositories: list[ProjectTransferRepositorySourceRequest] = Field(
         min_length=1,
         max_length=64,
@@ -375,10 +370,7 @@ class ProjectTransferCleanupAcknowledgmentRequest(_StrictModel):
 
 
 class ProjectProvisioningMachineProjection(_StrictModel):
-    alias: str
-    location: Literal["local", "ssh"]
-    host: str
-    os_account: str
+    machine_id: str
     intended_central_root: str | None
     resolved_central_root: str | None
     ready: bool
@@ -393,7 +385,7 @@ class ProjectProvisioningRepositoryProjection(_StrictModel):
     https_clone_url: str | None
     ssh_clone_url: str | None
     settings_url: str | None
-    machine_alias: str
+    machine_id: str
     intended_path: str | None
     resolved_path: str | None
     checkout_disposition: Literal["request_created", "reused_existing"] | None
@@ -414,7 +406,7 @@ class ProjectProvisioningProviderProjection(_StrictModel):
     runtime_id: str
     model: str
     reasoning: str
-    machine_alias: str
+    machine_id: str
     status: ProjectProvisioningCheckStatus
     status_label: str
     ready: bool
@@ -652,8 +644,8 @@ def create_source_project_transfer_request(
             service = catalog.open(body.project_id)
             configuration, _head = capture_project_transfer_source(
                 service,
+                store,
                 include_local_commits=body.include_local_commits,
-                record_schema_version=store.project_transfer_record_schema_version(body.project_id),
             )
         else:
             configuration = existing.source_configuration
@@ -855,10 +847,8 @@ def read_source_project_transfer_release_boundary(
             service = catalog.open(current.project_id)
             configuration, source_head = capture_project_transfer_source(
                 service,
+                store,
                 include_local_commits=current.source_configuration.includes_local_commits,
-                record_schema_version=store.project_transfer_record_schema_version(
-                    current.project_id
-                ),
             )
     except HTTPException:
         raise
@@ -898,10 +888,8 @@ def release_source_project_transfer_request(
                 service = catalog.open(transfer.project_id)
                 configuration, source_head = capture_project_transfer_source(
                     service,
+                    store,
                     include_local_commits=transfer.source_configuration.includes_local_commits,
-                    record_schema_version=store.project_transfer_record_schema_version(
-                        transfer.project_id
-                    ),
                 )
                 if (
                     project_transfer_source_configuration_sha256(configuration)
@@ -1280,7 +1268,7 @@ def create_project_repository_request(
                     if intent.existing_path is not None and any(
                         _paths_overlap(intent.existing_path, repository.path)
                         for repository in manifest.repositories
-                        if repository.machine == intent.machine_alias
+                        if repository.machine == intent.machine_id
                     ):
                         raise ValueError("The folder overlaps a repository of this project.")
                 else:
@@ -1295,7 +1283,7 @@ def create_project_repository_request(
                         )
                     descriptor = service.history.manifest.repository_map.get(previous.alias)
                     if descriptor is None or (
-                        descriptor.machine != previous.machine_alias
+                        descriptor.machine != previous.machine_id
                         or descriptor.path != previous.resolved_path
                     ):
                         raise ValueError(
@@ -1304,15 +1292,14 @@ def create_project_repository_request(
                     intent = ProjectProvisioningRepositoryIntent(
                         alias=previous.alias,
                         repository=parse_github_repository_ref(body.source),
-                        machine_alias=previous.machine_alias,
+                        machine_id=previous.machine_id,
                         count_as_project_truth=previous.count_as_project_truth,
                     )
                 if intent.repository is not None and any(
                     repo.repository == intent.repository for repo in inventory
                 ):
                     raise ValueError("This GitHub repository already belongs to the project.")
-                configured = service.history.manifest.machine_map.get(intent.machine_alias)
-                if configured is None:
+                if intent.machine_id not in service.history.manifest.machines:
                     raise ValueError(
                         "Repository provisioning requires an existing project machine."
                     )
@@ -1321,15 +1308,10 @@ def create_project_repository_request(
                         machine
                         for record in reversed(completed)
                         for machine in record.machines
-                        if machine.alias == intent.machine_alias
+                        if machine.machine_id == intent.machine_id
                     ),
                     None,
                 )
-                if machine is not None and (
-                    (configured.host or "") != (machine.host or "")
-                    or (configured.os_account != machine.os_account)
-                ):
-                    raise ValueError("The project machine changed since its checkout was prepared.")
                 created.append(
                     store.create_project_provisioning_request(
                         kind=body.kind,
@@ -1338,15 +1320,12 @@ def create_project_repository_request(
                         reviewed_boundary_sha256=_repository_review_boundary(service),
                         machines=[
                             ProjectProvisioningMachineIntent(
-                                alias=configured.alias,
-                                location="ssh" if configured.host else "local",
-                                host=configured.host or "",
-                                os_account=configured.os_account,
+                                machine_id=intent.machine_id,
                                 central_root=(
                                     (machine.resolved_central_root or machine.central_root)
                                     if machine is not None
                                     else None
-                                    if configured.host
+                                    if intent.machine_id != BACKEND_MACHINE_ID
                                     else str(DEFAULT_SERVER_LAYOUT.projects_root)
                                 ),
                             )
@@ -1597,7 +1576,7 @@ def _complete_repository_request(
         service = catalog.open(record.proposed_project_id)
         boundary = store.project_provisioning_review_boundary(record.request_id)
         repository = record.repositories[0]
-        for prepared in ProjectSetupManager._prepared_repositories(record).values():
+        for prepared in ProjectSetupManager._prepared_repositories(record, store).values():
             ProjectSetupManager._require_prepared_checkout_path(prepared)
 
         def approve(state: GraphState) -> list[Patch]:
@@ -1633,7 +1612,7 @@ def _complete_repository_request(
                     or not isinstance(operation, SetProjectTruthScopeOperation)
                     or operation.repository is None
                     or operation.repository.alias != repository.alias
-                    or operation.repository.machine != repository.machine_alias
+                    or operation.repository.machine != repository.machine_id
                     or operation.repository.path != repository.resolved_path
                     or (repository.alias in operation.truth_scope)
                     != repository.count_as_project_truth
@@ -1665,7 +1644,7 @@ def _complete_repository_request(
                                 "truth_scope": truth_scope,
                                 "repository": {
                                     "alias": repository.alias,
-                                    "machine": repository.machine_alias,
+                                    "machine": repository.machine_id,
                                     "path": repository.resolved_path,
                                 },
                             }
@@ -1969,10 +1948,7 @@ def _machine_projection(
 ) -> ProjectProvisioningMachineProjection:
     ready = machine.resolved_central_root is not None
     return ProjectProvisioningMachineProjection(
-        alias=machine.alias,
-        location=machine.location,
-        host=machine.host,
-        os_account=machine.os_account,
+        machine_id=machine.machine_id,
         intended_central_root=machine.central_root,
         resolved_central_root=machine.resolved_central_root,
         ready=ready,
@@ -1992,7 +1968,7 @@ def _repository_projection(
         https_clone_url=repository.repository.https_clone_url if repository.repository else None,
         ssh_clone_url=repository.repository.ssh_clone_url if repository.repository else None,
         settings_url=repository.repository.settings_url if repository.repository else None,
-        machine_alias=repository.machine_alias,
+        machine_id=repository.machine_id,
         intended_path=repository.intended_path,
         resolved_path=repository.resolved_path,
         checkout_disposition=repository.checkout_disposition,
@@ -2017,7 +1993,7 @@ def _provider_projection(
         runtime_id=check.runtime_id,
         model=check.model,
         reasoning=check.reasoning,
-        machine_alias=check.machine_alias,
+        machine_id=check.machine_id,
         status=check.status,
         status_label=_CHECK_LABELS[check.status],
         ready=check.status == "ready",

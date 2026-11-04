@@ -23,12 +23,11 @@ import type {
   ProviderReadiness,
 } from "./types";
 
-/** What a picker reads: each machine's provider readiness, and the machines' hosts. */
 /**
  * What a pick reads. `registry` is the backend's provider registry, when the source
  * carries it: every supported provider is offered, and readiness only annotates it.
  */
-export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness" | "machines"> & {
+export type AgentConfigSource = Pick<ProjectSnapshot, "provider_readiness"> & {
   registry?: (Pick<ProviderReadiness, "provider" | "label"> & { models?: ModelChoice[] })[];
 };
 
@@ -83,12 +82,13 @@ interface Props {
   ref?: Ref<HTMLDivElement>;
 }
 
-export function profileRunConfig(profile: AgentProfile): AgentRunConfig {
+/** A profile's pick, run on the project's base machine. */
+export function profileRunConfig(profile: AgentProfile, baseMachine: string): AgentRunConfig {
   return {
     provider: profile.provider,
     model: profile.model,
     reasoning: profile.reasoning,
-    run_on: profile.run_on,
+    run_on: baseMachine,
   };
 }
 
@@ -206,7 +206,6 @@ export function AgentConfigControls({
   const [reprobing, setReprobing] = useState(false);
   const onMachine = project.provider_readiness[value.run_on] ?? {};
   const readiness = onMachine[value.provider];
-  const machine = project.machines.find((item) => item.alias === value.run_on);
   // Work-like launches need more than an authenticated CLI, but only where this
   // profile can launch one. `reason` also carries benign notes, such as a
   // discovered path, so the badge reads the backend's own decisions rather than
@@ -215,16 +214,15 @@ export function AgentConfigControls({
     workLikeCapable &&
     (readiness?.work_like_available === false || Boolean(readiness?.work_like_reason));
   const workReason = workBlocked ? readiness?.work_like_reason : null;
-  const where = machine?.host || "this machine";
   const readinessMessage =
     readiness === undefined
       ? readinessPending
-        ? `Checking ${value.provider} on ${where}…`
-        : readinessError || `${value.provider} status is unavailable on ${where}. Re-check it.`
+        ? `Checking ${value.provider}…`
+        : readinessError || `${value.provider} status is unavailable. Re-check it.`
       : workReason ||
         (readiness.authenticated
-          ? `${readiness.version || value.provider} ready on ${where}`
-          : readiness.reason || `${value.provider} is not ready on ${where}`);
+          ? `${readiness.version || value.provider} ready`
+          : readiness.reason || `${value.provider} is not ready`);
   // A ready or pending provider is a mark with its sentence on hover; a fault stays written.
   const readinessQuiet =
     readiness === undefined ? readinessPending : readiness.authenticated && !workBlocked;

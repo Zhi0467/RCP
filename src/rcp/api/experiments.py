@@ -43,7 +43,6 @@ from rcp.runs.experiment_admission import (
     start_fresh_experiment,
 )
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
-from rcp.runs.provider_login import run_on_host
 from rcp.runs.work_experiment_commands import paused_experiment_refusal, unused_turns
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import (
@@ -521,19 +520,12 @@ def continue_experiment_episode(
             "invoked_skill_ids": [],
         }
     )
-    # The saved stage is frozen on one machine; the worker checks the alias
-    # against it. A repointed alias must refuse here, before the source is chained.
-    try:
-        current_host = run_on_host(
-            store, project_id, request.run_on, lambda: target_service.manifest
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if current_host != (experiment.stage_host or ""):
+    # The saved stage is frozen on one card; a turn on another card cannot reach it.
+    if (request.run_on or target_service.manifest.base_machine) != experiment.stage_machine_id:
         raise HTTPException(
             status_code=409,
             detail=(
-                "The saved stage is not on the machine its execution alias names now, so the "
+                "The saved stage is not on the machine this project's agents run on now, so the "
                 "session cannot be resumed. Start a new episode instead."
             ),
         )
@@ -544,7 +536,7 @@ def continue_experiment_episode(
             request,
             source=source,
             authorized_by=authorized_by,
-            stage_host=experiment.stage_host,
+            stage_machine_id=experiment.stage_machine_id,
             stage_root=experiment.stage_root,
             continuation_request_id=request_id,
         )

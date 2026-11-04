@@ -238,7 +238,8 @@ export function DetailDrawer({
     setStartMessage("");
   }, [node.id]);
   const launchConfig =
-    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+    pickedConfig ??
+    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   const launchReady =
     !project ||
     !launchConfig ||
@@ -255,9 +256,7 @@ export function DetailDrawer({
   });
   const [experimentBranch, setExperimentBranch] = useState("");
   // The worktree's one repository: a writable one on the Experiment's machine.
-  const worktreeRepositories = project
-    ? worktreeRepositoryChoices(project, project.agent_profiles.node_chat.run_on)
-    : [];
+  const worktreeRepositories = project ? worktreeRepositoryChoices(project, project.run_on) : [];
   const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<string | null>(null);
   // An inherited worktree is bound to its owner's repository; admission refuses any other.
   const inheritedRepository = inheritedIsolation?.worktree_repository ?? null;

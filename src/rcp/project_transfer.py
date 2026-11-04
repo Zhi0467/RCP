@@ -9,9 +9,14 @@ import subprocess
 from rcp import __version__
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS
+from rcp.machine_cards import host_of
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.service import ProjectService
-from rcp.storage import ProjectTransferRepositorySource, ProjectTransferSourceConfiguration
+from rcp.storage import (
+    AppStore,
+    ProjectTransferRepositorySource,
+    ProjectTransferSourceConfiguration,
+)
 from rcp.transfer import TRANSFER_ARCHIVE_CODEC
 from rcp.transfer.archive import TRANSFER_ARCHIVE_GIT_CODEC
 from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
@@ -23,27 +28,29 @@ PROJECT_TRANSFER_ARCHIVE_CODEC = TRANSFER_ARCHIVE_CODEC
 
 def capture_project_transfer_source(
     service: ProjectService,
+    store: AppStore,
     *,
     include_local_commits: bool = False,
-    record_schema_version: int = 1,
 ) -> tuple[ProjectTransferSourceConfiguration, GraphHeadRef]:
-    """Read the live manifest, repository identities, and canonical main head."""
+    """Read the live manifest, repository identities, and canonical main head.
 
-    if record_schema_version not in {1, 2, 3, 4, 5, 6, TRANSFER_RECORD_SCHEMA_VERSION}:
-        raise ValueError("source does not support the required transfer record schema")
+    Repositories carry no machine: the target places each on one of its own cards.
+    """
+
     materialization = service.history.current_materialization()
     head = service.history.head_ref(materialization)
     manifest = service.history.manifest
     manifest_bytes = (service.history.root / "manifest.toml").read_bytes()
     repositories = []
     for repository in sorted(manifest.repositories, key=lambda item: item.alias):
-        host = manifest.machine_map[repository.machine].host
+        if not repository.machine:
+            raise ValueError(f"Assign a machine to {repository.alias} before transferring.")
+        host = host_of(store, repository.machine)
         origin = _repository_origin(host=host, path=repository.path)
         repositories.append(
             ProjectTransferRepositorySource(
                 alias=repository.alias,
                 repository=parse_github_repository_ref(origin) if origin is not None else None,
-                machine_alias=repository.machine,
                 source_commit=(
                     _repository_revision(host=host, path=repository.path)
                     if include_local_commits or origin is None
@@ -59,13 +66,12 @@ def capture_project_transfer_source(
             if any(item.source_commit for item in repositories)
             else PROJECT_TRANSFER_ARCHIVE_CODEC,
         ),
-        machine_aliases=tuple(sorted(manifest.machine_map)),
         repositories=tuple(repositories),
         state_repository=manifest.state.repository,
         project_truth_scope=tuple(manifest.project.truth_scope),
         default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
         source_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
-        record_schema_version=record_schema_version if record_schema_version != 1 else None,
+        record_schema_version=TRANSFER_RECORD_SCHEMA_VERSION,
     )
     return configuration, head
 

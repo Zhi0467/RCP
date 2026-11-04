@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -48,53 +47,6 @@ class MachineComputeConfig(BaseModel):
         return self
 
 
-class MachineConfig(BaseModel):
-    """One space machine a project uses, named by the project's alias.
-
-    The machine's settings live on its space card (`rcp.storage.space_machines`).
-    The `legacy_*` fields read what older builds stored here; they are validated
-    and copied into the card once (`rcp.projects.record_space_machines`), and
-    nothing else reads them.
-    """
-
-    alias: str
-    host: str = ""
-    os_account: str = ""
-    legacy_provider_paths: dict[ProviderId, str] = Field(
-        default_factory=dict, alias="provider_paths"
-    )
-    legacy_compute: MachineComputeConfig | None = Field(default=None, alias="compute")
-    legacy_access_hint: str = Field(default="", max_length=512, alias="access_hint")
-
-    @model_validator(mode="after")
-    def validate_host(self) -> MachineConfig:
-        self.host = self.host.strip()
-        if self.host:
-            validate_ssh_destination(self.host)
-        return self
-
-    @model_validator(mode="after")
-    def validate_access_hint(self) -> MachineConfig:
-        self.legacy_access_hint = validate_machine_access_hint(self.legacy_access_hint)
-        return self
-
-    @model_validator(mode="after")
-    def validate_provider_paths(self) -> MachineConfig:
-        self.legacy_provider_paths = validate_machine_provider_paths(
-            self.legacy_provider_paths, host=self.host
-        )
-        return self
-
-    @model_validator(mode="after")
-    def validate_os_account(self) -> MachineConfig:
-        if (
-            self.os_account
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,127}", self.os_account) is None
-        ):
-            raise ValueError("machine operating-system account is invalid")
-        return self
-
-
 def validate_machine_access_hint(value: str) -> str:
     """One line of metadata every agent reads, never a credential channel."""
 
@@ -133,7 +85,6 @@ class ResolvedComputeProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # A machine's alias; any alias and host the manifest accepts resolves.
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     kind: Literal["local", "ssh"]
@@ -194,8 +145,10 @@ class ResolvedComputeContext(BaseModel):
 
 
 class RepositoryConfig(BaseModel):
+    """One repository; `machine` is its space card's id, or "" while unassigned."""
+
     alias: str
-    machine: str
+    machine: str = ""
     path: str
 
 
@@ -227,7 +180,6 @@ class AgentSurfaceConfig(BaseModel):
     runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
-    run_on: str
     permissions: AgentPermissions | None = None
 
     @model_validator(mode="after")
@@ -275,48 +227,46 @@ class SourcesConfig(BaseModel):
     remote_codex_roots: list[str] = Field(default_factory=lambda: ["~/.codex/sessions"])
 
 
-class ExecutionConfig(BaseModel):
-    run_on: str
-
-
 class PaperCoachConfig(BaseModel):
     default_provider: ProviderId = DEFAULT_PROVIDER
     default_model: str = ""
     default_reasoning: str = "medium"
 
 
+class LegacyManifestError(ValueError):
+    """The manifest still names machines by per-project alias; `rcp.machine_upgrade` reads it."""
+
+
 class Manifest(BaseModel):
+    """One project's settings. `machines` lists the space card ids the project uses."""
+
     name: str
-    machines: list[MachineConfig]
+    machines: list[str] = Field(default_factory=list)
     repositories: list[RepositoryConfig]
     project: ProjectConfig
     state: StateConfig
     agent: AgentConfig
     sources: SourcesConfig = Field(default_factory=SourcesConfig)
-    execution: ExecutionConfig | None = None
-    paper: dict[str, Any] = Field(default_factory=dict)
     _path: Path = PrivateAttr()
 
     @model_validator(mode="before")
     @classmethod
     def ignore_legacy_compute_connections(cls, value: Any) -> Any:
-        # Compute connections were retired when every project machine became a
-        # compute resource. An older manifest still loads; the next write drops it.
         if isinstance(value, dict) and LEGACY_COMPUTE_CONNECTIONS_KEY in value:
             value = {k: v for k, v in value.items() if k != LEGACY_COMPUTE_CONNECTIONS_KEY}
         return value
 
     @model_validator(mode="after")
     def validate_references(self) -> Manifest:
-        machine_aliases = [item.alias for item in self.machines]
         repository_aliases = [item.alias for item in self.repositories]
-        if len(machine_aliases) != len(set(machine_aliases)):
-            raise ValueError("machine aliases must be unique")
+        if not all(self.machines):
+            raise ValueError("machine ids must not be blank")
+        if len(self.machines) != len(set(self.machines)):
+            raise ValueError("machine ids must be unique")
         if len(repository_aliases) != len(set(repository_aliases)):
             raise ValueError("repository aliases must be unique")
-        machines = set(machine_aliases)
         repositories = set(repository_aliases)
-        missing_machines = {item.machine for item in self.repositories} - machines
+        missing_machines = {item.machine for item in self.repositories} - {*self.machines, ""}
         if missing_machines:
             raise ValueError(f"repositories use unknown machines: {sorted(missing_machines)}")
         unknown_scope = set(self.project.truth_scope) - repositories
@@ -331,30 +281,9 @@ class Manifest(BaseModel):
         default_outside = set(self.agent.default_run_truth_scope) - set(self.project.truth_scope)
         if default_outside or not self.agent.default_run_truth_scope:
             raise ValueError("agent.default_run_truth_scope must be a non-empty project subset")
-        legacy_execution = self.execution
-        if legacy_execution is None and any(
-            getattr(self.agent, surface) is None for surface in _AGENT_SURFACES
-        ):
-            raise ValueError(
-                "agent profiles must all be configured when legacy [execution] is absent"
-            )
-        legacy_coach = PaperCoachConfig.model_validate(self.paper.get("coach", {}))
-        state_machine = self.base_machine
         for surface in _AGENT_SURFACES:
-            profile = getattr(self.agent, surface)
-            if profile is None:
-                assert legacy_execution is not None
-                profile = AgentSurfaceConfig(
-                    provider=(
-                        legacy_coach.default_provider if surface == "paper_coach" else "codex"
-                    ),
-                    model=legacy_coach.default_model if surface == "paper_coach" else "",
-                    reasoning=(
-                        legacy_coach.default_reasoning if surface == "paper_coach" else "medium"
-                    ),
-                    run_on=legacy_execution.run_on,
-                )
-                setattr(self.agent, surface, profile)
+            if getattr(self.agent, surface) is None:
+                setattr(self.agent, surface, AgentSurfaceConfig())
         if self.agent.orchestrator is None:
             refresh = self.agent.refresh
             assert refresh is not None
@@ -362,30 +291,14 @@ class Manifest(BaseModel):
                 deep=True,
                 update={"permissions": permissions_for("orchestrate")},
             )
-        coach = self.agent.paper_coach
-        assert coach is not None
-        # The coach once chose its own machine. Every agent now runs on the base,
-        # the canonical state machine, so an older choice is dropped on load.
-        coach.run_on = state_machine
         for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
-            if profile.run_on not in machines:
-                raise ValueError(f"agent.{surface}.run_on must name a registered machine")
-            profile.run_on = require_base_machine(
-                profile.run_on, state_machine, label=f"agent.{surface}.run_on"
-            )
             expected = permissions_for(surface)
-            if profile.permissions is None:
-                profile.permissions = expected
-            elif surface in {
-                "node_chat",
-                "project_chat",
-            } and profile.permissions == permissions_for("scratch_patch"):
-                # Before conversation modes, chat surfaces carried the same
-                # patch permission as ingestion. Accept that one exact legacy
-                # contract, but normalize it to Discuss in memory so a saved
-                # manifest cannot silently authorize Work.
+            legacy_chat = surface in {"node_chat", "project_chat"} and (
+                profile.permissions == permissions_for("scratch_patch")
+            )
+            if profile.permissions is None or legacy_chat:
                 profile.permissions = expected
             elif profile.permissions != expected:
                 raise ValueError(
@@ -408,11 +321,9 @@ class Manifest(BaseModel):
 
     @property
     def base_machine(self) -> str:
-        return self.repository_map[self.state.repository].machine
+        """The state repository's card id: every agent runs beside `.research/`."""
 
-    @property
-    def machine_map(self) -> dict[str, MachineConfig]:
-        return {item.alias: item for item in self.machines}
+        return self.repository_map[self.state.repository].machine
 
     @property
     def repository_paths(self) -> dict[str, str]:
@@ -555,13 +466,15 @@ def load_manifest(
     project_root: Path | None = None,
 ) -> Manifest:
     path = resolve_manifest_path(value, local_home=local_home)
-    data = tomlkit.parse(path.read_text(encoding="utf-8"))
-    manifest = Manifest.model_validate(data.unwrap())
+    data = tomlkit.parse(path.read_text(encoding="utf-8")).unwrap()
+    if is_legacy_manifest_document(data):
+        raise LegacyManifestError(f"{path} names machines by alias; upgrade it first")
+    manifest = Manifest.model_validate(data)
     manifest._path = path
     project_root = path.parent.parent if project_root is None else project_root
     for repository in manifest.repositories:
         repository_path = _expand_local_user_path(repository.path, local_home=local_home)
-        if not repository_path.is_absolute() and not manifest.machine_map[repository.machine].host:
+        if not repository_path.is_absolute():
             repository.path = str((project_root / repository_path).resolve())
     manifest.sources.claude_roots = [
         _resolve_local_source_root(project_root, root, local_home=local_home)
@@ -572,6 +485,13 @@ def load_manifest(
         for root in manifest.sources.codex_roots
     ]
     return manifest
+
+
+def is_legacy_manifest_document(data: dict[str, Any]) -> bool:
+    """Whether a parsed manifest still holds `[[machines]]` tables."""
+
+    machines = data.get("machines")
+    return isinstance(machines, list) and any(isinstance(item, dict) for item in machines)
 
 
 def write_project_scope(
@@ -597,7 +517,10 @@ def _project_scope_content(
     truth_scope: list[str],
     repository_descriptor: dict[str, str] | None,
 ) -> str:
-    if repository_descriptor and repository_descriptor.get("machine") not in manifest.machine_map:
+    if repository_descriptor and repository_descriptor.get("machine", "") not in {
+        *manifest.machines,
+        "",
+    }:
         raise ValueError(
             f"repository uses unknown machine: {repository_descriptor.get('machine')!r}"
         )
@@ -607,7 +530,7 @@ def _project_scope_content(
         if repository_descriptor["alias"] not in aliases:
             repository = tomlkit.table()
             repository.add("alias", repository_descriptor["alias"])
-            repository.add("machine", repository_descriptor["machine"])
+            repository.add("machine", repository_descriptor.get("machine", ""))
             repository.add("path", repository_descriptor["path"])
             repositories = document.get("repositories")
             if repositories is None:
@@ -662,21 +585,12 @@ def write_agent_settings(
         table.add("runtime", profile.runtime)
         table.add("model", profile.model)
         table.add("reasoning", profile.reasoning)
-        table.add("run_on", profile.run_on)
         permission_table = tomlkit.table()
         for key, value in permissions_for(surface).model_dump(mode="json").items():
             permission_table.add(key, value)
         table.add("permissions", permission_table)
         agent[surface] = table
 
-    if "execution" in document:
-        del document["execution"]
-    paper = document.get("paper")
-    if paper is not None and "coach" in paper:
-        del paper["coach"]
-        if not paper:
-            del document["paper"]
-
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
 
     content = tomlkit.dumps(document)
@@ -685,43 +599,32 @@ def write_agent_settings(
     return load_manifest(manifest.path)
 
 
-def write_added_machine(manifest: Manifest, machine: MachineConfig) -> Manifest:
-    """Append one execution machine; existing aliases and repositories stay as they are."""
+def write_added_machine(manifest: Manifest, machine_id: str) -> Manifest:
+    """Add one space card to the project; existing repositories stay as they are."""
 
-    if machine.alias in manifest.machine_map:
-        raise ValueError(f"this project already has a machine named {machine.alias}")
-    if any(existing.host == machine.host for existing in manifest.machines):
+    if not machine_id:
+        raise ValueError("a project machine names a space card")
+    if machine_id in manifest.machines:
         raise ValueError("this project already uses that machine")
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
-    table = tomlkit.table()
-    table.add("alias", machine.alias)
-    table.add("host", machine.host)
-    table.add("os_account", machine.os_account)
-    document.setdefault("machines", tomlkit.aot()).append(table)
+    document["machines"] = [*manifest.machines, machine_id]
     document.pop(LEGACY_COMPUTE_CONNECTIONS_KEY, None)
-    content = tomlkit.dumps(document)
-    Manifest.model_validate(tomlkit.parse(content).unwrap())
-    _atomic_write(manifest.path, content)
-    return load_manifest(manifest.path)
+    return _publish(manifest, document)
 
 
-def write_removed_machine(manifest: Manifest, alias: str) -> Manifest:
+def write_removed_machine(manifest: Manifest, machine_id: str) -> Manifest:
     """Drop one machine the project no longer uses; its space card stays."""
 
-    if alias not in manifest.machine_map:
-        raise ValueError(f"unknown machine: {alias}")
-    if any(repository.machine == alias for repository in manifest.repositories):
-        raise ValueError(f"a repository lives on {alias}")
+    if machine_id not in manifest.machines:
+        raise ValueError(f"unknown machine: {machine_id}")
+    if any(repository.machine == machine_id for repository in manifest.repositories):
+        raise ValueError("a repository lives on this machine")
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
-    machines = document["machines"]
-    for index, table in enumerate(machines):
-        if str(table.get("alias")) == alias:
-            del machines[index]
-            break
-    state_machine = manifest.base_machine
-    for table in document.get("agent", {}).values():
-        if isinstance(table, dict) and table.get("run_on") == alias:
-            table["run_on"] = state_machine
+    document["machines"] = [item for item in manifest.machines if item != machine_id]
+    return _publish(manifest, document)
+
+
+def _publish(manifest: Manifest, document: tomlkit.TOMLDocument) -> Manifest:
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     _atomic_write(manifest.path, content)

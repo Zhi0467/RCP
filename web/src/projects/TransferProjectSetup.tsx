@@ -26,11 +26,11 @@ import {
   prepareDesktopProjectTransfer,
   probeDesktopServerOperator,
   readDesktopTargetProjectProvisioningOptions,
+  readDesktopTargetSpaceMachines,
   runDesktopIncomingProjectProvision,
   selectDesktopProjectTransferExport,
   type ProjectTransferBundle,
   type ProjectTransferCommandEvent,
-  type ProjectTransferMachineIntent,
   type ProjectTransferProviderIntent,
   type ProjectTransferRunResult,
   type ServerCommandEvent,
@@ -48,6 +48,7 @@ import {
 } from "./providers";
 import {
   formatCommandArgv,
+  machineCardName,
   projectMoveSetupHash,
   routeProvedBy,
   type ProjectSetupRoute,
@@ -61,6 +62,7 @@ import type {
   ProviderReadiness,
   ProjectTransferTargetProvisioningIntent,
   SetupAgentProfile,
+  SpaceMachine,
 } from "../core/types";
 
 type MoveSetupRoute = Extract<ProjectSetupRoute, { kind: "move" }>;
@@ -75,10 +77,6 @@ export interface TransferActiveWorkSummary {
   activeTaskCount: number;
   liveEpisodeCount: number;
   totalCount: number;
-}
-
-interface TransferMachineDraft extends ProjectTransferMachineIntent {
-  central_root: string | null;
 }
 
 const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
@@ -141,22 +139,21 @@ function asProviderReadiness(providers: TargetProviderSetupProjection[]): Provid
   }));
 }
 
-function initialMachines(project: ProjectSnapshot): TransferMachineDraft[] {
-  return project.machines.map((machine) => ({
-    alias: machine.alias,
-    location: machine.host ? "ssh" : "local",
-    host: machine.host,
-    os_account: machine.host ? machine.os_account : "rcp",
-    central_root: null,
-  }));
-}
-
-function canonicalMachine(project: ProjectSnapshot): string {
-  return (
-    project.repositories.find((repository) => repository.alias === project.state_repository)
-      ?.machine ??
-    project.machines[0]?.alias ??
-    ""
+/** Each source repository on the card it already names, else the target's backend host. */
+function placementsOn(
+  repositories: ProjectSnapshot["repositories"],
+  cards: SpaceMachine[],
+  current: Record<string, string>,
+): Record<string, string> {
+  const fallback = (cards.find((card) => card.host === "") ?? cards[0])?.machine_id ?? "";
+  return Object.fromEntries(
+    repositories.map((repository) => {
+      const placed = current[repository.alias];
+      return [
+        repository.alias,
+        cards.some((card) => card.machine_id === placed) ? placed : fallback,
+      ];
+    }),
   );
 }
 
@@ -206,7 +203,6 @@ function initialProviderChecks(
   providers: TargetProviderSetupProjection[],
 ): ProjectTransferProviderIntent[] {
   const readiness = asProviderReadiness(providers);
-  const canonical = canonicalMachine(project);
   return agentProfiles.map(({ id }) => {
     const resolved = resolvedProfile(project.agent_profiles[id], readiness);
     return {
@@ -215,7 +211,7 @@ function initialProviderChecks(
       runtime_id: resolved.runtime,
       model: resolved.model,
       reasoning: resolved.reasoning,
-      machine_alias: canonical,
+      machine_id: "",
     };
   });
 }
@@ -273,7 +269,9 @@ export function TransferProjectSetup({
     sourceRequestId: string;
     targetRequestId: string;
   } | null>(null);
-  const [machines, setMachines] = useState<TransferMachineDraft[]>([]);
+  const [targetMachines, setTargetMachines] = useState<SpaceMachine[]>([]);
+  const [placements, setPlacements] = useState<Record<string, string>>({});
+  const [centralRoots, setCentralRoots] = useState<Record<string, string>>({});
   const [providerChecks, setProviderChecks] = useState<ProjectTransferProviderIntent[]>([]);
   const [bundle, setBundle] = useState<ProjectTransferBundle | null>(null);
   const [events, setEvents] = useState<Array<ServerCommandEvent | ProjectTransferCommandEvent>>([]);
@@ -305,7 +303,6 @@ export function TransferProjectSetup({
         setSource({ project, tasks, episodes });
         setTargetName(project.name);
         setTargetCeiling(project.default_auto_research_invocation_ceiling);
-        setMachines(initialMachines(project));
       })
       .catch((caught) => {
         if (!stopped && !routeHasRequestPair) {
@@ -353,14 +350,21 @@ export function TransferProjectSetup({
         setTargetProviders(loaded.target_provider_setup);
         setTargetName(loaded.incoming_provisioning.name ?? "");
         setTargetCeiling(loaded.incoming_provisioning.default_auto_research_invocation_ceiling);
-        setMachines(
-          loaded.incoming_provisioning.machines.map((machine) => ({
-            alias: machine.alias,
-            location: machine.location,
-            host: machine.host,
-            os_account: machine.os_account,
-            central_root: machine.intended_central_root,
-          })),
+        setPlacements(
+          Object.fromEntries(
+            loaded.incoming_provisioning.repositories.map((repository) => [
+              repository.alias,
+              repository.machine_id,
+            ]),
+          ),
+        );
+        setCentralRoots(
+          Object.fromEntries(
+            loaded.incoming_provisioning.machines.map((machine) => [
+              machine.machine_id,
+              machine.intended_central_root ?? "",
+            ]),
+          ),
         );
         setProviderChecks(loaded.incoming_provisioning.provider_checks);
         setStep(2);
@@ -429,6 +433,10 @@ export function TransferProjectSetup({
     probeAttempt,
   ]);
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
+  const stateMachineId = source ? (placements[source.project.state_repository] ?? "") : "";
+  const placedMachines = targetMachines.filter((card) =>
+    Object.values(placements).includes(card.machine_id),
+  );
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
   const preparationLocked = busy !== null || preparedRequestIds !== null;
@@ -453,10 +461,13 @@ export function TransferProjectSetup({
       ) {
         throw new Error("The established session did not match the selected team space.");
       }
-      const known = await readDesktopTargetProjectProvisioningOptions(
-        selectedConnection.connection_id,
-      );
+      const [known, cards] = await Promise.all([
+        readDesktopTargetProjectProvisioningOptions(selectedConnection.connection_id),
+        readDesktopTargetSpaceMachines(selectedConnection.connection_id),
+      ]);
       setTargetProviders(known);
+      setTargetMachines(cards);
+      setPlacements((current) => placementsOn(source.project.repositories, cards, current));
       setProviderChecks(initialProviderChecks(source.project, known));
       setStep(1);
     } catch (caught) {
@@ -472,14 +483,21 @@ export function TransferProjectSetup({
     if (!Number.isSafeInteger(targetCeiling) || targetCeiling < 1) {
       return "Set the auto-research ceiling to at least 1 operational invocation.";
     }
-    if (machines.length !== source.project.machines.length) {
-      return "Every historical machine name needs one target placement.";
+    if (
+      source.project.repositories.some(
+        (repository) =>
+          !targetMachines.some((card) => card.machine_id === placements[repository.alias]),
+      )
+    ) {
+      return "Place every repository on one target machine.";
     }
-    if (machines.some((machine) => !machine.os_account.trim())) {
-      return "Every target machine needs its exact Linux account.";
-    }
-    if (machines.some((machine) => machine.location === "ssh" && !machine.host?.trim())) {
-      return "Every SSH target machine needs its exact host.";
+    if (
+      placedMachines.some((card) => {
+        const root = centralRoots[card.machine_id]?.trim();
+        return card.host && root && (!root.startsWith("/") || root === "/");
+      })
+    ) {
+      return "An explicit SSH central root must be a specific absolute path.";
     }
     if (providerChecks.length !== agentProfiles.length) {
       return "Every agent role needs a target provider configuration.";
@@ -512,13 +530,16 @@ export function TransferProjectSetup({
     const targetProvisioning: ProjectTransferTargetProvisioningIntent = {
       name: targetName.trim(),
       default_auto_research_invocation_ceiling: targetCeiling,
-      machines: machines.map((machine) => ({
-        ...machine,
-        host: machine.location === "ssh" ? machine.host?.trim() : "",
-        os_account: machine.location === "local" ? "rcp" : machine.os_account.trim(),
-        central_root: machine.central_root?.trim() || null,
+      machines: placedMachines.map((card) => ({
+        machine_id: card.machine_id,
+        central_root: (card.host && centralRoots[card.machine_id]?.trim()) || null,
       })),
-      provider_checks: providerChecks,
+      repositories: source.project.repositories.map((repository) => ({
+        alias: repository.alias,
+        machine_id: placements[repository.alias],
+      })),
+      state_machine_id: stateMachineId,
+      provider_checks: providerChecks.map((check) => ({ ...check, machine_id: stateMachineId })),
     };
     setBusy("prepare");
     setError(null);
@@ -784,22 +805,12 @@ export function TransferProjectSetup({
                     <h2 id="transfer-source-title">Personal working copies stay in place</h2>
                   </header>
                   <div className="transfer-path-list">
-                    {source.project.repositories.map((repository) => {
-                      const machine = source.project.machines.find(
-                        (candidate) => candidate.alias === repository.machine,
-                      );
-                      return (
-                        <div
-                          className="transfer-path"
-                          key={`${repository.alias}:${repository.path}`}
-                        >
-                          <span>
-                            {repository.alias} · {machine?.os_account ?? "current user"}
-                          </span>
-                          <code>{repository.path}</code>
-                        </div>
-                      );
-                    })}
+                    {source.project.repositories.map((repository) => (
+                      <div className="transfer-path" key={`${repository.alias}:${repository.path}`}>
+                        <span>{repository.alias}</span>
+                        <code>{repository.path}</code>
+                      </div>
+                    ))}
                   </div>
                 </section>
                 <section
@@ -891,97 +902,50 @@ export function TransferProjectSetup({
                 onChange={(event) => setTargetCeiling(Number(event.target.value))}
               />
             </label>
-            <div className="team-machine-stack">
-              {machines.map((machine) => (
-                <article className="team-machine-editor" key={machine.alias}>
-                  <header>
-                    <Server size={16} />
-                    <strong>{machine.alias}</strong>
-                  </header>
-                  <div className="team-machine-fields">
-                    <label>
-                      Location
-                      <select
-                        value={machine.location}
-                        disabled={preparationLocked}
-                        onChange={(event) =>
-                          setMachines((current) =>
-                            current.map((item) =>
-                              item.alias === machine.alias
-                                ? {
-                                    ...item,
-                                    location: event.target.value as "local" | "ssh",
-                                    host: event.target.value === "local" ? "" : item.host,
-                                    os_account:
-                                      event.target.value === "local" ? "rcp" : item.os_account,
-                                  }
-                                : item,
-                            ),
-                          )
-                        }
-                      >
-                        <option value="local">RCP server</option>
-                        <option value="ssh">SSH machine</option>
-                      </select>
-                    </label>
-                    {machine.location === "ssh" && (
-                      <label>
-                        SSH host
-                        <input
-                          value={machine.host ?? ""}
-                          disabled={preparationLocked}
-                          onChange={(event) =>
-                            setMachines((current) =>
-                              current.map((item) =>
-                                item.alias === machine.alias
-                                  ? { ...item, host: event.target.value }
-                                  : item,
-                              ),
-                            )
-                          }
-                        />
-                      </label>
-                    )}
-                    <label>
-                      Linux account
+            <div className="team-machine-editor">
+              <div className="team-machine-fields">
+                {source.project.repositories.map((repository) => (
+                  <label key={repository.alias}>
+                    {repository.alias}
+                    <select
+                      value={placements[repository.alias] ?? ""}
+                      disabled={preparationLocked}
+                      onChange={(event) => {
+                        const machineId = event.target.value;
+                        setPlacements((current) => ({
+                          ...current,
+                          [repository.alias]: machineId,
+                        }));
+                        setError(null);
+                      }}
+                    >
+                      {!placements[repository.alias] && <option value="" disabled />}
+                      {targetMachines.map((card) => (
+                        <option key={card.machine_id} value={card.machine_id}>
+                          {card.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                {placedMachines
+                  .filter((card) => card.host)
+                  .map((card) => (
+                    <label className="wide" key={card.machine_id}>
+                      {card.name} central root (optional)
                       <input
-                        value={machine.os_account}
-                        disabled={preparationLocked || machine.location === "local"}
-                        onChange={(event) =>
-                          setMachines((current) =>
-                            current.map((item) =>
-                              item.alias === machine.alias
-                                ? { ...item, os_account: event.target.value }
-                                : item,
-                            ),
-                          )
-                        }
+                        value={centralRoots[card.machine_id] ?? ""}
+                        disabled={preparationLocked}
+                        placeholder="Defaults under the verified account home"
+                        onChange={(event) => {
+                          const root = event.target.value;
+                          setCentralRoots((current) => ({ ...current, [card.machine_id]: root }));
+                          setError(null);
+                        }}
                       />
                     </label>
-                    <label className="wide">
-                      Central root
-                      <input
-                        value={machine.central_root ?? ""}
-                        disabled={preparationLocked}
-                        placeholder={
-                          machine.location === "local"
-                            ? "/var/lib/rcp/projects"
-                            : "Absolute target path"
-                        }
-                        onChange={(event) =>
-                          setMachines((current) =>
-                            current.map((item) =>
-                              item.alias === machine.alias
-                                ? { ...item, central_root: event.target.value }
-                                : item,
-                            ),
-                          )
-                        }
-                      />
-                    </label>
-                  </div>
-                </article>
-              ))}
+                  ))}
+              </div>
             </div>
             <div className="agent-role-stack">
               {agentProfiles.map(({ id, label }) => {
@@ -993,7 +957,7 @@ export function TransferProjectSetup({
                   <article className="agent-role-card" key={id}>
                     <header>
                       <strong>{label}</strong>
-                      <span className="tag">{profile.machine_alias}</span>
+                      <span className="tag">{machineCardName(targetMachines, stateMachineId)}</span>
                     </header>
                     <div className="agent-role-fields">
                       <label>
@@ -1129,8 +1093,8 @@ export function TransferProjectSetup({
                 {bundle.incoming_provisioning.repositories.map((repository) => (
                   <div className="transfer-path" key={repository.alias}>
                     <span>
-                      {repository.alias} · {repository.machine_alias} ·{" "}
-                      {repository.repository?.identity ?? "Server only"}
+                      {repository.alias} · {machineCardName(targetMachines, repository.machine_id)}{" "}
+                      · {repository.repository?.identity ?? "Server only"}
                     </span>
                     <code>
                       {repository.resolved_path ??

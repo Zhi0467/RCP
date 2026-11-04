@@ -329,10 +329,11 @@ def load_episode_health(
         blocked = (
             wrapup is not None
             and wrapup.provider is not None
+            and wrapup.machine_id is not None
             and isinstance(
                 accounts.resolve_login(
                     wrapup.provider,
-                    wrapup.execution_host or "",
+                    wrapup.machine_id,
                     episode.authorized_by.user_id if episode.authorized_by else None,
                 )[0],
                 LoginRefusal,

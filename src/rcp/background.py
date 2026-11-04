@@ -33,6 +33,7 @@ from rcp.limits import (
     PROJECT_DELETION_STOP_TIMEOUT_SECONDS,
     REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, host_of
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
 from rcp.providers.base import AgentStatusDelta
@@ -73,7 +74,7 @@ from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
     ProviderSignedOut,
-    run_on_host,
+    run_on_machine,
 )
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.provider_usage import record_provider_usage
@@ -108,7 +109,7 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.storage.chat_forks import ChatForkRefused
-from rcp.storage.models import AgentTaskAlreadyContinued, LoginKey
+from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
@@ -264,7 +265,7 @@ class AgentTaskExecution:
     login_generation: int = 0
     login_key: LoginKey | None = None
     provider_auth_refused: LoginKey | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     write_scope_fingerprint: str | None = None
     continuation: AgentTaskContinuation = "fresh"
@@ -305,20 +306,22 @@ class AgentTaskExecution:
     def reuses_native_checkpoint(self) -> bool:
         return self.continuation in _NATIVE_CHECKPOINT_CONTINUATIONS
 
-    def checkpoint_stage(self, host: str, root: str) -> None:
-        if host:
-            require_remote_provider_quiescence(self.store, host, root)
-        self.stage_host = host or None
+    def checkpoint_stage(self, machine_id: str, root: str) -> None:
+        """Bind the task's stage to the card it runs on, `root` on that card's host."""
+        remote = machine_id != BACKEND_MACHINE_ID
+        if remote:
+            require_remote_provider_quiescence(self.store, machine_id, root)
+        self.stage_machine_id = machine_id
         self.stage_root = root
         self.store.checkpoint_agent_task(
             self.operation_id,
-            stage_host=host or None,
+            stage_machine_id=machine_id,
             stage_root=root,
         )
         self.store.record_agent_task_receipt(
             self.operation_id,
             "stage_checkpoint",
-            {"remote": bool(host), "stage_available": bool(root)},
+            {"remote": remote, "stage_available": bool(root)},
             tier="diagnostic",
         )
 
@@ -336,7 +339,7 @@ class AgentTaskExecution:
         self.store.bind_agent_task_write_scope(
             self.operation_id,
             project_id=scope.project_id,
-            stage_host=self.stage_host or "",
+            stage_machine_id=self.stage_machine_id or "",
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
         )
@@ -495,7 +498,7 @@ class BackgroundAgentTasks:
         project_id: str,
         request: AgentTaskRequest,
         *,
-        execution_host: str | None = None,
+        machine_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         lineage_login: LoginKey | None = None,
         isolation_episode_id: str | None = None,
@@ -518,13 +521,13 @@ class BackgroundAgentTasks:
                 episode_id=isolation_episode_id,
                 graph_target=graph_target,
             )
-        host = execution_host
-        if host is None:
-            host = run_on_host(self.store, project_id, request.run_on)
+        machine = machine_id
+        if machine is None:
+            machine = run_on_machine(self.store, project_id, request.run_on)
         accounts = ProviderAccounts.for_store(self.store)
         resolved, _ = accounts.resolve_launch_login(
             request.provider,
-            host,
+            machine,
             authorized_by.user_id if authorized_by else None,
             session_id=getattr(request, "session_id", None),
             lineage_login=lineage_login,
@@ -532,7 +535,7 @@ class BackgroundAgentTasks:
         if isinstance(resolved, LoginRefusal):
             raise ProviderSignedOut(resolved.detail)
         if self.dependency_checker is not None and (
-            reason := self.dependency_checker.launch_refusal(host)
+            reason := self.dependency_checker.launch_refusal(host_of(self.store, machine))
         ):
             raise MachineDependenciesMissing(reason)
 
@@ -742,7 +745,7 @@ class BackgroundAgentTasks:
         handoff_wake_id: str | None = None,
         queue_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
-        stage_host: str | None = None,
+        stage_machine_id: str | None = None,
         stage_root: str | None = None,
         graph_target: GraphTargetRef | None = None,
         graph_base_head: GraphHeadRef | None = None,
@@ -788,7 +791,7 @@ class BackgroundAgentTasks:
                 "Seed and refresh sessions can only be resumed from an RCP background "
                 "task checkpoint."
             )
-        if stage_host is not None or stage_root is not None:
+        if stage_machine_id is not None or stage_root is not None:
             raise ValueError("A new task cannot inherit a saved stage.")
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
@@ -804,7 +807,7 @@ class BackgroundAgentTasks:
             handoff_wake_id=handoff_wake_id,
             queue_id=queue_id,
             authorized_by=authorized_by,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             graph_target=graph_target,
             graph_base_head=graph_base_head,
@@ -872,7 +875,7 @@ class BackgroundAgentTasks:
             continuation=continuation,
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
-            stage_host=previous.stage_host,
+            stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
         )
@@ -1023,10 +1026,11 @@ class BackgroundAgentTasks:
         if graph_repair:
             problem = None
             stage_available: bool | None = True
-            if owned_checkpoint and previous.stage_host:
-                stage_available = RemoteRunStage(previous.stage_host).directory_exists(
-                    previous.stage_root or ""
-                )
+            if owned_checkpoint and previous.stage_machine_id not in {None, BACKEND_MACHINE_ID}:
+                assert previous.stage_machine_id is not None
+                stage_available = RemoteRunStage(
+                    host_of(self.store, previous.stage_machine_id)
+                ).directory_exists(previous.stage_root or "")
             elif owned_checkpoint and previous.stage_root:
                 stage = Path(previous.stage_root)
                 stage_available = stage.is_dir() and not stage.is_symlink()
@@ -1057,7 +1061,7 @@ class BackgroundAgentTasks:
                 continuation="graph_repair" if graph_repair else "retry",
                 estimate_seconds=previous.estimate_seconds,
                 estimate_samples=previous.estimate_samples,
-                stage_host=previous.stage_host,
+                stage_machine_id=previous.stage_machine_id,
                 stage_root=previous.stage_root,
                 authorized_by=authorized_by,
             )
@@ -1080,7 +1084,7 @@ class BackgroundAgentTasks:
                 continuation="retry",
                 estimate_seconds=previous.estimate_seconds,
                 estimate_samples=previous.estimate_samples,
-                stage_host=previous.stage_host,
+                stage_machine_id=previous.stage_machine_id,
                 stage_root=previous.stage_root,
                 authorized_by=authorized_by,
             )
@@ -1179,7 +1183,7 @@ class BackgroundAgentTasks:
             claim_graph_repair_parent=True,
             estimate_seconds=previous.estimate_seconds,
             estimate_samples=previous.estimate_samples,
-            stage_host=previous.stage_host,
+            stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
         )
@@ -1282,15 +1286,18 @@ class BackgroundAgentTasks:
     def _pause_waiting_remote_result(self, record: AgentTaskRecord) -> AgentTaskRecord:
         """Stop a detached remote turn now, or leave it untouched if not provable."""
 
-        host = record.stage_host or ""
+        machine_id = record.stage_machine_id or ""
         root = record.stage_root or ""
         passes = [
             pid_file
-            for operation_id, pid_file in self.store.unresolved_remote_provider_passes(host, root)
+            for operation_id, pid_file in self.store.unresolved_remote_provider_passes(
+                machine_id, root
+            )
             if operation_id == record.operation_id
         ]
-        if not host or not root or not passes:
+        if machine_id in {"", BACKEND_MACHINE_ID} or not root or not passes:
             raise ValueError("This task has no outstanding remote provider pass to stop.")
+        host = host_of(self.store, machine_id)
         pid_file = passes[-1]
         # A waiting pass's launch is over: no pidfile means it started nothing,
         # which Pause can settle like any stopped pass.
@@ -1405,13 +1412,14 @@ class BackgroundAgentTasks:
         return None
 
     def _stop_detached_turn_for_deletion(self, record: AgentTaskRecord) -> str | None:
-        host = record.stage_host or ""
+        machine_id = record.stage_machine_id or ""
         reason: str | None = None
         for operation_id, pid_file in self.store.unresolved_remote_provider_passes(
-            host, record.stage_root or ""
+            machine_id, record.stage_root or ""
         ):
             if operation_id != record.operation_id:
                 continue
+            host = host_of(self.store, machine_id)
             # A waiting pass's launch is over: no pidfile means it started nothing.
             stopped, identity = AgentProcessControl.remote_process_state(
                 host, pid_file, absent_is_stopped=True
@@ -1566,7 +1574,7 @@ class BackgroundAgentTasks:
         estimate_samples: int,
         parent: AgentTaskRecord | None = None,
         continuation: AgentTaskContinuation = "fresh",
-        stage_host: str | None = None,
+        stage_machine_id: str | None = None,
         stage_root: str | None = None,
         operation_id: str | None = None,
         handoff_id: str | None = None,
@@ -1643,11 +1651,11 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by,
                 lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
                     request.provider,
-                    stage_host or "",
+                    stage_machine_id or "",
                     parent,
                     graph_repair=claim_graph_repair_parent,
                 ),
-                execution_host=(stage_host or "") if stage_root else None,
+                machine_id=(stage_machine_id or "") if stage_root else None,
                 isolation_episode_id=parent.episode_id if parent else None,
                 graph_target=parent.graph_target if parent else graph_target,
             )
@@ -1728,7 +1736,7 @@ class BackgroundAgentTasks:
             attempt=(parent.attempt + 1) if parent and recovery else 1,
             parent_operation_id=parent.operation_id if parent else None,
             native_session_id=request.session_id,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             estimate_seconds=estimate_seconds,
             estimate_samples=estimate_samples,
@@ -1950,7 +1958,7 @@ class BackgroundAgentTasks:
 
         lineage_login = ProviderAccounts.for_store(self.store).lineage_login(
             request.provider,
-            record.stage_host or "",
+            record.stage_machine_id or "",
             self.store.agent_task(record.parent_operation_id)
             if record.parent_operation_id
             else None,
@@ -1963,7 +1971,7 @@ class BackgroundAgentTasks:
             request,
             authorized_by=record.authorized_by,
             lineage_login=lineage_login,
-            execution_host=(record.stage_host or "") if record.stage_root else None,
+            machine_id=(record.stage_machine_id or "") if record.stage_root else None,
         )
 
         intent = self.store.agent_task_admission_intent(operation_id)
@@ -2025,7 +2033,7 @@ class BackgroundAgentTasks:
             require_runtime_id(request.provider, record.runtime_id)
         elif record.runtime_id:
             raise ValueError("The admitted task has a runtime without a provider.")
-        if record.stage_host is not None and record.stage_root is None:
+        if record.stage_machine_id is not None and record.stage_root is None:
             raise ValueError("The admitted task has an incoherent execution stage binding.")
         if record.stage_root is not None and not record.stage_root.strip():
             raise ValueError("The admitted task has an empty execution stage root.")
@@ -2167,7 +2175,7 @@ class BackgroundAgentTasks:
             or (parent is None) != (current.parent_operation_id is None)
             or (parent is not None and current.parent_operation_id != parent.operation_id)
             or current.native_session_id != record.native_session_id
-            or current.stage_host != record.stage_host
+            or current.stage_machine_id != record.stage_machine_id
             or current.stage_root != record.stage_root
             or current.write_scope_fingerprint != record.write_scope_fingerprint
             or current.authorized_by != record.authorized_by
@@ -2288,7 +2296,7 @@ class BackgroundAgentTasks:
                 store=self.store,
                 control=control,
                 runtime_id=record.runtime_id,
-                stage_host=record.stage_host,
+                stage_machine_id=record.stage_machine_id,
                 stage_root=record.stage_root,
                 write_scope_fingerprint=record.write_scope_fingerprint,
                 continuation=continuation,
@@ -2304,7 +2312,7 @@ class BackgroundAgentTasks:
             store=self.store,
             control=control,
             runtime_id=record.runtime_id,
-            stage_host=record.stage_host,
+            stage_machine_id=record.stage_machine_id,
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=continuation,
@@ -2416,10 +2424,10 @@ class BackgroundAgentTasks:
                 # classification and the exception type, never the error text:
                 # that is provider output and can carry token-shaped values.
                 logger.warning(
-                    "task failed operation=%s kind=%s host=%s failure_kind=%s exception=%s",
+                    "task failed operation=%s kind=%s machine=%s failure_kind=%s exception=%s",
                     operation_id,
                     record.kind,
-                    execution.stage_host or "local",
+                    execution.stage_machine_id or "-",
                     failure_kind or "-",
                     type(exc).__name__,
                 )
@@ -2537,15 +2545,25 @@ class BackgroundAgentTasks:
                 remote_pid_file=remote_pid_file,
             )
 
-    def _bound_execution_host(self, operation_id: str, request: AgentTaskRequest) -> str:
-        """The host a request runs on, or "" when it is the backend or cannot be resolved."""
+    def _bound_machine(self, operation_id: str, request: AgentTaskRequest) -> str:
+        """The card a turn runs on: its checkpointed stage's, else its request's target."""
 
         record = self.store.agent_task(operation_id)
         if record is None:
-            return ""
+            return BACKEND_MACHINE_ID
+        if record.stage_machine_id:
+            return record.stage_machine_id
         try:
-            return run_on_host(self.store, record.project_id, getattr(request, "run_on", None))
+            return run_on_machine(self.store, record.project_id, getattr(request, "run_on", None))
         except (OSError, ValueError, KeyError):
+            return BACKEND_MACHINE_ID
+
+    def _bound_host(self, machine_id: str) -> str:
+        """The card's current route, or "" when the card is gone."""
+
+        try:
+            return host_of(self.store, machine_id)
+        except KeyError:
             return ""
 
     def _failure_kind(
@@ -2564,12 +2582,15 @@ class BackgroundAgentTasks:
         from rcp.runs.codex_resume import record_refusal
 
         provider = request.provider
+        machine_id = execution.stage_machine_id or self._bound_machine(operation_id, request)
+        host = self._bound_host(machine_id)
         # Replayed remote journals reach settlement without the live stream loop.
         record_refusal(
             execution,
             provider=provider or "",
             session_id=request.session_id or getattr(request, "fork_session_id", None),
-            host=execution.stage_host or self._bound_execution_host(operation_id, request),
+            machine_id=machine_id,
+            host=host,
             error=error,
         )
         profile = None
@@ -2580,9 +2601,9 @@ class BackgroundAgentTasks:
         kind = classify_agent_failure(
             error=error,
             return_code=exit.return_code if exit is not None else None,
-            # A stage that never opened checkpointed no host; the turn was
+            # A stage that never opened checkpointed no machine; the turn was
             # still bound to one, and a link lost opening the stage is on it.
-            host=execution.stage_host or self._bound_execution_host(operation_id, request),
+            host=host,
             profile=profile,
             provider_spoke_for_itself=exit is not None and exit.spoke_for_itself,
             link_lost_before_provider=exit is None and execution.stage_unreachable,
@@ -2658,14 +2679,16 @@ class BackgroundAgentTasks:
             control=AgentProcessControl(),
             runtime_id=record.runtime_id,
             login_key=(
-                LoginKey(str(record.request["provider"]), record.stage_host or "", record.login_id)
+                LoginKey(
+                    str(record.request["provider"]), record.stage_machine_id or "", record.login_id
+                )
                 if record.request.get("provider") and record.login_id is not None
                 else None
             ),
             # A restart lost the captured generation. Never revoke a credential
             # using the current generation as if it belonged to the old turn.
             login_generation=-1,
-            stage_host=record.stage_host,
+            stage_machine_id=record.stage_machine_id,
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
