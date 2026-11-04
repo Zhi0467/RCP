@@ -347,6 +347,125 @@ def test_fresh_thread_seed_is_staged_in_its_private_stage(manifest, tmp_path):
         assert str(seed) in launcher.prompts[0] and b"prior-private-answer" in seed.read_bytes()
 
 
+def test_queued_message_with_a_file_starts_as_the_members_turn_after_the_running_one(
+    manifest, tmp_path
+):
+    """A removed message never starts, and its files can be sent again."""
+    import asyncio
+    import threading
+    import uuid
+    from typing import cast
+
+    from rcp.agents import AgentLauncher
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+    from rcp.runs.tasks.work import stream_work_run
+    from tests.helpers import (
+        append_fixture_patch,
+        seed_patch,
+        wait_for_task,
+        wait_for_task_response,
+        wait_until,
+    )
+    from tests.test_chat_prompt_protocol import _RecordingLauncher
+
+    class HeldLauncher(_RecordingLauncher):
+        def __init__(self) -> None:
+            super().__init__("queue-session")
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        async def stream(self, _provider, prompt, **kwargs):
+            if not self.prompts:
+                self.started.set()
+                while not self.release.is_set():
+                    await asyncio.sleep(0.01)
+            async for event in super().stream(_provider, prompt, **kwargs):
+                yield event
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    append_fixture_patch(service, seed_patch())
+    launcher = HeldLauncher()
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, cast(AgentLauncher, launcher), request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][1]
+        project_id, thread_id = thread["project_id"], thread["thread_id"]
+        base = f"/api/agent-threads/{thread_id}/queue"
+
+        def upload(content: bytes) -> dict[str, str]:
+            client_id = str(uuid.uuid4())
+            response = client.post(
+                f"/api/projects/{project_id}/chats/{thread_id}/attachments",
+                files={"file": ("notes.txt", content, "text/plain")},
+                data={"client_id": client_id},
+            )
+            assert response.status_code == 200, response.text
+            return {
+                "attachment_set_id": response.json()["attachment_set_id"],
+                "attachment_client_id": client_id,
+            }
+
+        def queue(message: str, files: dict[str, str]):
+            response = client.post(
+                base,
+                json={"message": message, **files},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            assert response.status_code == 202, response.text
+            return response.json()
+
+        running = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": thread_id,
+                "chat_scope": "project",
+                "message": "Start",
+                "mode": "work",
+            },
+        )
+        assert running.status_code == 202, running.text
+        assert launcher.started.wait(10)
+        queued = queue("Queued follow-up", upload(b"queued-file-marker"))
+        assert queued["operation_id"] is None
+        dropped_files = upload(b"dropped-file-marker")
+        dropped = queue("Never mind", dropped_files)
+        assert client.delete(f"{base}/{dropped['queue_id']}").status_code == 200
+        resent = queue("Never mind", dropped_files)
+        assert client.delete(f"{base}/{resent['queue_id']}").status_code == 200
+        launcher.release.set()
+        first = wait_for_task_response(client, project_id, running.json()["operation_id"])
+        assert first["status"] == "succeeded", first
+        operation_id = wait_until(
+            lambda: (row := store.agent_thread_queue_item(queued["queue_id"])) and row.operation_id
+        )
+        assert operation_id == queued_turn_operation_id(queued["queue_id"])
+        turn = wait_for_task(app, operation_id, expect="succeeded")
+        assert turn.request["message"] == "Queued follow-up"
+        assert turn.request["trigger"] == "human" and "source" not in turn.request
+        assert turn.authorized_by is not None
+        assert turn.authorized_by.user_id == store.private_chat_owner(thread_id)
+        assert "Queued follow-up" in launcher.prompts[1]
+        assert turn.stage_root is not None
+        (staged,) = [
+            path
+            for path in Path(turn.stage_root).rglob("*")
+            if path.is_file() and path.read_bytes() == b"queued-file-marker"
+        ]
+        assert str(staged) in launcher.prompts[1]
+        assert len(launcher.prompts) == 2
+        for removed in (dropped, resent):
+            assert store.agent_task(queued_turn_operation_id(removed["queue_id"])) is None
+        assert client.get(base).json()["items"] == []
+
+
 def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
     """The row names the turn before its member message reaches the transcript."""
     import uuid
