@@ -41,8 +41,10 @@ steerable. Two waits are invisible:
   first in, first out. Nothing orders the two kinds against each other.
 - **Remove.** The member removes their own unstarted message. A handoff is not
   removable here; it belongs to the Space turn that sent it.
-- Attachments and artifact comments still need an idle thread with nothing
-  waiting, as they do today.
+- **Attachments.** A message with attachments or project references cannot steer,
+  because steering is text-only. While a turn is active it queues. Its files
+  reach the agent when the queued turn starts. Artifact comments still need an
+  idle thread with nothing waiting, as they do today.
 
 ## Data
 
@@ -56,7 +58,8 @@ has none of these, and the cross-cutting rules forbid a kind selector.
 | `queue_id` | primary key, uuid4 |
 | `thread_id`, `user_id` | a project thread owned by the member |
 | `idempotency_key` | UUID4 header value. Unique per `(thread_id, idempotency_key)`. A reused key with a different message is refused (422) |
-| `message` | at most `AGENT_THREAD_QUEUE_MAX_CHARS` (16 000) |
+| `message` | at most `AGENT_THREAD_QUEUE_MAX_CHARS` (16 000); may be empty when files are attached |
+| `attachment_set_id`, `attachment_client_id`, `references_json` | the composer's files and project references, as a live project send takes them |
 | `created_at` | order; ties break by `queue_id` |
 | `operation_id` | set when its turn is claimed |
 | `refusal_reason`, `deferred_at` | final refusal; first transient deferral |
@@ -72,6 +75,14 @@ has none of these, and the cross-cutting rules forbid a kind selector.
   `AGENT_THREAD_QUEUE_MAX_ITEMS = 20` per thread (over the limit returns 409).
   The transient wait reuses `AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS`.
 - Remove and Dismiss delete the row.
+- **Files.** The queue POST claims the attachment set and the references for
+  the queued turn's own operation id, `uuid5(…queue_id)`. The claim uses
+  `ChatAttachmentStore.claim`, which binds the set to that id and extends its
+  retention. This happens through the helper that `start_ordinary_task` uses
+  today; it moves out of the route into `runs/` so both paths share it. At
+  admission the same claim repeats with the same id, which is a no-op. Remove,
+  Dismiss and every final refusal release the set
+  (`ChatAttachmentStore.release`).
 
 Each owner that handles `agent_handoffs` today also handles the new table:
 
@@ -135,7 +146,9 @@ All routes are on `api/agent_threads.py` and are owner-only. A thread that does
 not belong to the member, or a Space thread, returns 404.
 
 - `POST /api/agent-threads/{thread_id}/queue`
-  - Body `{message}`, plus an `Idempotency-Key` header.
+  - Body `{message, attachment_set_id?, attachment_client_id?, references?}`,
+    the same shape as a live project send, plus an `Idempotency-Key` header.
+    It needs a message or files.
   - Needs `require_patch_capable_identity` and the project's write admission.
   - Returns 202 `{queue_id, operation_id | null}`. `operation_id` is set when
     the POST's own pass started the turn.
@@ -177,8 +190,9 @@ not belong to the member, or a Space thread, returns 404.
   - paused waits;
   - closed, removed member and blank name refused;
   - transient errors defer, then time out.
-- **Fake-agent journey:** a running turn, then Queue, then settle; the queued
-  turn starts with the member's text and identity. A removed item never starts.
+- **Fake-agent journey:** a running turn, then Queue with a file, then settle.
+  The queued turn starts with the member's text, the staged file and the
+  member's identity. A removed item never starts, and its set is released.
 - **Browser:**
   - rows render;
   - Enter steers a steerable run and queues otherwise, and queues on an idle
